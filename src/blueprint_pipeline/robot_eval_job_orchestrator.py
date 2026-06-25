@@ -38,6 +38,16 @@ from .arena_result_ingest import build_arena_result_ingest
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
+from .failure_diagnosis_contract import (
+    FAILURE_LABEL_PROOF_EFFECT,
+    build_failure_diagnosis_audit,
+    dedupe as _dedupe_refs,
+    evidence_refs as _failure_evidence_refs,
+    failure_root_cause_category as _failure_root_cause_category,
+    frame_or_clip_refs as _failure_frame_or_clip_refs,
+    remediation_candidate as _failure_remediation_candidate,
+    review_status_for_failure_label as _failure_review_status,
+)
 from .local_capture import resolve_local_capture_context
 from .live_robot_eval_closure import build_live_robot_eval_closure_manifest
 from .post_training_data_package import build_post_training_data_package_export
@@ -4126,6 +4136,80 @@ def _expand_fixture_artifacts_to_scenario_eval_runs(
         "attempts": expanded_attempts,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
+    expanded_failure_label_rows: List[Dict[str, Any]] = []
+    expanded_nonreviewable_label_ids: List[str] = []
+    for index, attempt in enumerate(failures, start=1):
+        label_id = f"fixture_label_{index:04d}"
+        failure_mode_ids = _string_list(attempt.get("failure_mode_ids"))
+        frame_refs = _failure_frame_or_clip_refs(attempt)
+        source_trace_refs = _dedupe_refs(
+            [
+                "normalized_attempt_trace.json",
+                *_string_list(attempt.get("source_trace_refs")),
+            ]
+        )
+        evidence_refs = _failure_evidence_refs(
+            attempt,
+            extra_refs=tuple(source_trace_refs),
+        )
+        review_status = _failure_review_status(
+            supplied_review_status=attempt.get("review_status"),
+            supplied_status=attempt.get("status"),
+            generated_rollout=True,
+            frame_or_clip_ref_count=len(frame_refs),
+        )
+        root_cause_category = _failure_root_cause_category(
+            failure_mode_ids,
+            failure_reason=_string(attempt.get("failure_reason")) or None,
+        )
+        if review_status == "non_reviewable_failure_hypothesis":
+            expanded_nonreviewable_label_ids.append(label_id)
+        expanded_failure_label_rows.append(
+            {
+                "label_id": label_id,
+                "attempt_id": attempt.get("attempt_id"),
+                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+                "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
+                "variation_name": attempt.get("variation_name"),
+                "task_id": attempt.get("task_id"),
+                "scenario_id": attempt.get("scenario_id"),
+                "policy_id": attempt.get("policy_id"),
+                "failure_mode_ids": failure_mode_ids,
+                "failure_reason": _string(attempt.get("failure_reason")) or None,
+                "source": "site_eval_fixture_expanded_to_scenario_eval_matrix",
+                "evidence_refs": evidence_refs,
+                "source_trace_refs": source_trace_refs,
+                "frame_or_clip_refs": frame_refs,
+                "visual_smoke_ref": attempt.get("visual_smoke_ref")
+                or attempt.get("visualSmokeRef"),
+                "confidence": attempt.get("confidence"),
+                "status": "review_required",
+                "review_status": review_status,
+                "reviewer_acceptance_required": True,
+                "root_cause_category": root_cause_category,
+                "remediation_candidate": _failure_remediation_candidate(
+                    root_cause_category,
+                    failure_mode_ids,
+                ),
+                "unknown_when_evidence_weak": bool(
+                    not frame_refs
+                    or not evidence_refs
+                    or review_status == "non_reviewable_failure_hypothesis"
+                ),
+                "non_reviewable_failure_hypothesis": (
+                    review_status == "non_reviewable_failure_hypothesis"
+                ),
+                "generated_wam_rollout": True,
+                "model_derived_support_artifact": True,
+                "proof_effect": FAILURE_LABEL_PROOF_EFFECT,
+            }
+        )
+    expanded_failure_diagnosis_coverage_complete = all(
+        label.get("failure_mode_ids")
+        and label.get("evidence_refs")
+        and label.get("review_status")
+        for label in expanded_failure_label_rows
+    )
     failure_labels = {
         **_mapping(copied.get("failure_labels")),
         "schema_version": FAILURE_LABELS_SCHEMA_VERSION,
@@ -4142,23 +4226,19 @@ def _expand_fixture_artifacts_to_scenario_eval_runs(
         ),
         "missing_failed_scenario_eval_run_ids": [],
         "failed_run_label_coverage_complete": True,
-        "labels": [
-            {
-                "label_id": f"fixture_label_{index:04d}",
-                "attempt_id": attempt.get("attempt_id"),
-                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
-                "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
-                "variation_name": attempt.get("variation_name"),
-                "task_id": attempt.get("task_id"),
-                "scenario_id": attempt.get("scenario_id"),
-                "policy_id": attempt.get("policy_id"),
-                "failure_mode_ids": _string_list(attempt.get("failure_mode_ids")),
-                "failure_reason": _string(attempt.get("failure_reason")) or None,
-                "status": "review_required",
-                "proof_effect": "none_until_review_accepted_or_owner_proof_supplied",
-            }
-            for index, attempt in enumerate(failures, start=1)
-        ],
+        "failure_diagnosis_coverage_complete": expanded_failure_diagnosis_coverage_complete,
+        "failure_diagnosis_review_complete": not expanded_nonreviewable_label_ids,
+        "failure_diagnosis_complete": (
+            expanded_failure_diagnosis_coverage_complete
+            and not expanded_nonreviewable_label_ids
+        ),
+        "failure_diagnosis_blockers": (
+            ["failure_labels_nonreviewable_failure_hypotheses"]
+            if expanded_nonreviewable_label_ids
+            else []
+        ),
+        "nonreviewable_failure_hypothesis_label_ids": expanded_nonreviewable_label_ids,
+        "labels": expanded_failure_label_rows,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     prediction_records = [
@@ -4200,25 +4280,142 @@ def _expand_fixture_artifacts_to_scenario_eval_runs(
         "sim_vs_real_calibration_score": None,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
+    label_by_attempt_id = {
+        _string(label.get("attempt_id")): label
+        for label in expanded_failure_label_rows
+        if _string(label.get("attempt_id"))
+    }
+    aggregation_map: Dict[tuple[str, str, str, str, str], Dict[str, Any]] = {}
+    dominant_map: Dict[str, Dict[str, Any]] = {}
+    breakage_records: List[Dict[str, Any]] = []
+    for attempt in failures:
+        label = label_by_attempt_id.get(_string(attempt.get("attempt_id"))) or {}
+        failure_mode_ids = _string_list(label.get("failure_mode_ids")) or _string_list(
+            attempt.get("failure_mode_ids")
+        ) or ["unknown_failure_mode"]
+        root_cause_category = _string(label.get("root_cause_category")) or _failure_root_cause_category(
+            failure_mode_ids,
+            failure_reason=_string(attempt.get("failure_reason")) or None,
+        )
+        media_refs = _failure_frame_or_clip_refs(label or attempt)
+        refs = _failure_evidence_refs(label or attempt)
+        record = {
+            "scenario_id": attempt.get("scenario_id"),
+            "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+            "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
+            "variation_name": attempt.get("variation_name"),
+            "task_id": attempt.get("task_id"),
+            "policy_id": attempt.get("policy_id"),
+            "failure_mode_ids": failure_mode_ids,
+            "failure_reason": _string(attempt.get("failure_reason")) or None,
+            "root_cause_category": root_cause_category,
+            "review_required": True,
+            "review_status": label.get("review_status"),
+            "evidence_refs": refs,
+            "frame_or_clip_refs": media_refs,
+        }
+        breakage_records.append(record)
+        exemplar = {
+            "attempt_id": attempt.get("attempt_id"),
+            "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+            "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
+            "variation_name": attempt.get("variation_name"),
+            "policy_id": attempt.get("policy_id"),
+            "task_id": attempt.get("task_id"),
+            "scenario_id": attempt.get("scenario_id"),
+            "failure_mode_ids": failure_mode_ids,
+            "root_cause_category": root_cause_category,
+            "evidence_refs": refs,
+            "frame_or_clip_refs": media_refs,
+            "visual_smoke_ref": label.get("visual_smoke_ref"),
+            "review_status": label.get("review_status"),
+        }
+        for failure_mode_id in failure_mode_ids:
+            key = (
+                _string(attempt.get("policy_id")) or "unknown_policy",
+                _string(attempt.get("task_id")) or "unknown_task",
+                _string(attempt.get("scenario_id")) or "unknown_scenario",
+                failure_mode_id,
+                root_cause_category,
+            )
+            bucket = aggregation_map.setdefault(
+                key,
+                {
+                    "policy_id": key[0],
+                    "task_id": key[1],
+                    "scenario_id": key[2],
+                    "failure_mode_id": key[3],
+                    "root_cause_category": key[4],
+                    "failed_attempt_count": 0,
+                    "scenario_eval_run_ids": [],
+                    "exemplar_failed_attempts": [],
+                    "media_refs": [],
+                    "evidence_refs": [],
+                },
+            )
+            bucket["failed_attempt_count"] += 1
+            bucket["scenario_eval_run_ids"] = _dedupe_refs(
+                [*bucket["scenario_eval_run_ids"], _string(attempt.get("scenario_eval_run_id"))]
+            )
+            if len(bucket["exemplar_failed_attempts"]) < 3:
+                bucket["exemplar_failed_attempts"].append(exemplar)
+            bucket["media_refs"] = _dedupe_refs([*bucket["media_refs"], *media_refs])
+            bucket["evidence_refs"] = _dedupe_refs([*bucket["evidence_refs"], *refs])
+            dominant = dominant_map.setdefault(
+                failure_mode_id,
+                {
+                    "failure_mode_id": failure_mode_id,
+                    "failed_attempt_count": 0,
+                    "root_cause_categories": [],
+                    "exemplar_failed_attempts": [],
+                    "media_refs": [],
+                    "evidence_refs": [],
+                },
+            )
+            dominant["failed_attempt_count"] += 1
+            dominant["root_cause_categories"] = _dedupe_refs(
+                [*dominant["root_cause_categories"], root_cause_category]
+            )
+            if len(dominant["exemplar_failed_attempts"]) < 3:
+                dominant["exemplar_failed_attempts"].append(exemplar)
+            dominant["media_refs"] = _dedupe_refs([*dominant["media_refs"], *media_refs])
+            dominant["evidence_refs"] = _dedupe_refs([*dominant["evidence_refs"], *refs])
+    aggregations = sorted(
+        aggregation_map.values(),
+        key=lambda row: (
+            -int(row["failed_attempt_count"]),
+            _string(row["policy_id"]),
+            _string(row["task_id"]),
+            _string(row["scenario_id"]),
+            _string(row["failure_mode_id"]),
+            _string(row["root_cause_category"]),
+        ),
+    )
+    dominant_failure_modes = sorted(
+        dominant_map.values(),
+        key=lambda row: (-int(row["failed_attempt_count"]), _string(row["failure_mode_id"])),
+    )
     breakage_library = {
         **_mapping(copied.get("breakage_library")),
         "schema_version": BREAKAGE_LIBRARY_SCHEMA_VERSION,
         "generated_at": generated_at,
         "status": "review_required" if failures else "no_breakages_recorded",
         "record_count": len(failures),
-        "records": [
-            {
-                "scenario_id": attempt.get("scenario_id"),
-                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
-                "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
-                "variation_name": attempt.get("variation_name"),
-                "task_id": attempt.get("task_id"),
-                "failure_mode_ids": _string_list(attempt.get("failure_mode_ids")),
-                "failure_reason": _string(attempt.get("failure_reason")) or None,
-                "review_required": True,
-            }
-            for attempt in failures
+        "records": breakage_records,
+        "aggregation_keys": [
+            "policy_id",
+            "task_id",
+            "scenario_id",
+            "failure_mode_id",
+            "root_cause_category",
         ],
+        "aggregation_count": len(aggregations),
+        "aggregations": aggregations,
+        "dominant_failure_modes": dominant_failure_modes,
+        "dominant_failure_mode_id": dominant_failure_modes[0]["failure_mode_id"]
+        if dominant_failure_modes
+        else None,
+        "source_failure_labels": "failure_labels.json",
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
@@ -5267,7 +5464,13 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "wam_eval_claim_boundary.json",
         "real_world_validation_followup_request.json",
         "srcc_validation_plan.json",
+        "candidate_selection_report.json",
+        "candidate_selection_report.md",
         "robot_pov_observation_manifest.json",
+        "robot_camera_profile_registry.json",
+        "robot_camera_profile_launch_readiness.json",
+        "robot_pov_observation_candidate_set.json",
+        "selected_initial_policy_observation.json",
         "robot_pov_observations.jsonl",
         "robot_pov_frame_sequence_manifest.json",
         "robot_pov_render_storyboard.json",
@@ -5325,7 +5528,16 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "job_run_manifest.json",
         "blocked_manifest.json",
     ]
-    return {Path(name).stem: name for name in names if (job_dir / name).is_file()}
+    paths: Dict[str, str] = {}
+    for name in names:
+        if not (job_dir / name).is_file():
+            continue
+        path = Path(name)
+        key = path.stem
+        if path.suffix == ".md":
+            key = f"{key}_markdown"
+        paths[key] = name
+    return paths
 
 
 def _explicitly_blocked_scenario_eval_run_records(
@@ -5411,6 +5623,12 @@ def _webapp_robot_eval_status_projection(
     )
     labels = _mapping(copied_artifacts.get("failure_labels")) or _read_optional_mapping(
         job_dir / "failure_labels.json"
+    )
+    policy_trace = _read_optional_mapping(job_dir / "policy_execution_trace.json")
+    failure_diagnosis_audit = build_failure_diagnosis_audit(
+        labels_payload=labels,
+        trace_payload=trace,
+        policy_trace_payload=policy_trace,
     )
     batch_closure = _read_optional_mapping(job_dir / "simulator_command_batch_closure_manifest.json")
     batch_trace_manifest = _read_optional_mapping(
@@ -5574,6 +5792,18 @@ def _webapp_robot_eval_status_projection(
             "robot_pov_observation_manifest_path": artifact_paths.get(
                 "robot_pov_observation_manifest"
             ),
+            "robot_camera_profile_registry_path": artifact_paths.get(
+                "robot_camera_profile_registry"
+            ),
+            "robot_camera_profile_launch_readiness_path": artifact_paths.get(
+                "robot_camera_profile_launch_readiness"
+            ),
+            "robot_pov_observation_candidate_set_path": artifact_paths.get(
+                "robot_pov_observation_candidate_set"
+            ),
+            "selected_initial_policy_observation_path": artifact_paths.get(
+                "selected_initial_policy_observation"
+            ),
             "robot_pov_frame_sequence_manifest_path": artifact_paths.get(
                 "robot_pov_frame_sequence_manifest"
             ),
@@ -5597,7 +5827,16 @@ def _webapp_robot_eval_status_projection(
             ),
             "failure_label_coverage_complete": bool(
                 batch_closure.get("failure_label_coverage_complete")
-                or bool(labels.get("label_count") is not None)
+                or failure_diagnosis_audit.get("failure_diagnosis_coverage_complete")
+            ),
+            "failure_diagnosis_coverage_complete": bool(
+                failure_diagnosis_audit.get("failure_diagnosis_coverage_complete")
+            ),
+            "failure_diagnosis_complete": bool(
+                failure_diagnosis_audit.get("failure_diagnosis_complete")
+            ),
+            "failure_diagnosis_blockers": _string_list(
+                failure_diagnosis_audit.get("blockers")
             ),
         },
         "batch_closure": {
@@ -5685,6 +5924,18 @@ def _webapp_robot_eval_status_projection(
             "blocked_requirement_ids": _string_list(
                 robot_team_grade_closure.get("blocked_requirement_ids")
             ),
+            "all_blocked_requirement_ids": _string_list(
+                robot_team_grade_closure.get("all_blocked_requirement_ids")
+            ),
+            "sim_only_beta_blocked_requirement_ids": _string_list(
+                robot_team_grade_closure.get("sim_only_beta_blocked_requirement_ids")
+            ),
+            "robot_team_grade_blocked_requirement_ids": _string_list(
+                robot_team_grade_closure.get("robot_team_grade_blocked_requirement_ids")
+            ),
+            "deployment_readiness_blocked_requirement_ids": _string_list(
+                robot_team_grade_closure.get("deployment_readiness_blocked_requirement_ids")
+            ),
             "closure_manifest_path": artifact_paths.get(
                 "robot_team_grade_eval_closure_manifest"
             ),
@@ -5711,6 +5962,8 @@ def _webapp_robot_eval_status_projection(
                 "normalized_attempt_trace",
                 "failure_labels",
                 "robot_pov_observation_manifest",
+                "robot_camera_profile_registry",
+                "robot_camera_profile_launch_readiness",
                 "robot_pov_frame_sequence_manifest",
                 "policy_package_manifest",
                 "policy_execution_manifest",
@@ -5766,6 +6019,12 @@ def _robot_team_grade_eval_closure_manifest(
     labels = _mapping(copied_artifacts.get("failure_labels")) or _read_optional_mapping(
         job_dir / "failure_labels.json"
     )
+    policy_trace = _read_optional_mapping(job_dir / "policy_execution_trace.json")
+    failure_diagnosis_audit = build_failure_diagnosis_audit(
+        labels_payload=labels,
+        trace_payload=trace,
+        policy_trace_payload=policy_trace,
+    )
     batch_closure = _read_optional_mapping(job_dir / "simulator_command_batch_closure_manifest.json")
     digital_twin_fidelity_artifact = _read_optional_mapping(
         job_dir / "simulator_command_digital_twin_fidelity_qa.json"
@@ -5781,6 +6040,116 @@ def _robot_team_grade_eval_closure_manifest(
         job_dir / "simulator_command_batch_trace_package_manifest.json"
     )
     calibration_report = _read_optional_mapping(job_dir / "sim_vs_real_calibration_report.json")
+    policy_ranking_scorecard = _read_optional_mapping(job_dir / "policy_ranking_scorecard.json")
+    wam_claim_boundary = _read_optional_mapping(job_dir / "wam_eval_claim_boundary.json")
+    policy_comparison_policy_count = int(
+        _number(policy_ranking_scorecard.get("policy_count"), 0) or 0
+    )
+    policy_comparison_status = _string(policy_ranking_scorecard.get("status"))
+    policy_comparison_completed_statuses = {
+        "completed",
+        "completed_low_confidence_ranking",
+        "completed_ambiguous_ranking",
+    }
+    policy_comparison_required_run_ids = _string_list(
+        policy_ranking_scorecard.get("required_scenario_eval_run_ids")
+    )
+    policy_comparison_missing_by_policy = {
+        _string(policy_id): _string_list(missing)
+        for policy_id, missing in _mapping(
+            policy_ranking_scorecard.get("missing_by_policy")
+        ).items()
+    }
+    policy_comparison_extra_by_policy = {
+        _string(policy_id): _string_list(extra)
+        for policy_id, extra in _mapping(policy_ranking_scorecard.get("extra_by_policy")).items()
+    }
+    policy_comparison_attempt_count_by_policy = {
+        _string(policy_id): int(_number(count, 0) or 0)
+        for policy_id, count in _mapping(
+            policy_ranking_scorecard.get("attempt_count_by_policy")
+        ).items()
+    }
+    policy_comparison_coverage_rows = [
+        _mapping(item)
+        for item in policy_ranking_scorecard.get("per_policy_coverage", []) or []
+        if isinstance(item, Mapping)
+    ]
+    policy_comparison_coverage_complete = bool(
+        policy_ranking_scorecard.get("coverage_complete")
+    )
+    policy_comparison_score_ranges_valid = bool(
+        policy_ranking_scorecard.get("score_ranges_valid")
+    )
+    policy_comparison_blockers = _string_list(
+        policy_ranking_scorecard.get("comparison_blockers")
+    )
+    policy_comparison_visual_review_blockers = _string_list(
+        policy_ranking_scorecard.get("visual_review_blockers")
+    )
+    policy_comparison_review_grade_complete = bool(
+        policy_ranking_scorecard.get("review_grade_policy_ranking") is True
+        and policy_ranking_scorecard.get(
+            "visual_rollout_useful_for_task_success_review"
+        )
+        is True
+    )
+    policy_comparison_missing_required_scenarios = sorted(
+        {
+            run_id
+            for missing in policy_comparison_missing_by_policy.values()
+            for run_id in missing
+        }
+    )
+    policy_comparison_extra_scenarios = sorted(
+        {
+            run_id
+            for extra in policy_comparison_extra_by_policy.values()
+            for run_id in extra
+        }
+    )
+    policy_comparison_attempt_count_mismatch = bool(
+        policy_comparison_required_run_ids
+        and any(
+            count != len(policy_comparison_required_run_ids)
+            for count in policy_comparison_attempt_count_by_policy.values()
+        )
+    )
+    policy_comparison_boundary = _mapping(policy_ranking_scorecard.get("claim_boundary"))
+    policy_comparison_contract = _mapping(policy_ranking_scorecard.get("comparison_contract"))
+    policy_comparison_non_overclaiming_boundary = bool(
+        policy_comparison_boundary.get("policy_ranking_is_evaluator_bounded") is True
+        and policy_comparison_boundary.get("policy_ranking_is_not_deployment_readiness") is True
+        and policy_comparison_boundary.get("robot_readiness_proven") is False
+        and policy_comparison_boundary.get("public_claim_upgrade_allowed") is False
+        and policy_comparison_contract.get("deployment_readiness_claimed") is False
+        and policy_comparison_contract.get("external_deployment_grade_claimed") is False
+    )
+    policy_comparison_symmetric_coverage = bool(
+        policy_comparison_coverage_complete
+        and policy_comparison_coverage_rows
+        and all(
+            set(_string_list(row.get("required_scenario_eval_run_ids")))
+            == set(policy_comparison_required_run_ids)
+            and bool(row.get("coverage_complete"))
+            for row in policy_comparison_coverage_rows
+        )
+    )
+    evaluator_policy_comparison_contract_complete = bool(
+        policy_comparison_status in policy_comparison_completed_statuses
+        and policy_comparison_policy_count >= 2
+        and policy_comparison_symmetric_coverage
+        and policy_comparison_score_ranges_valid
+        and not policy_comparison_missing_required_scenarios
+        and not policy_comparison_extra_scenarios
+        and not policy_comparison_attempt_count_mismatch
+        and not policy_comparison_blockers
+        and policy_comparison_non_overclaiming_boundary
+    )
+    evaluator_policy_comparison_complete = bool(
+        evaluator_policy_comparison_contract_complete
+        and policy_comparison_review_grade_complete
+    )
     digital_twin_fidelity = digital_twin_fidelity_artifact or _mapping(
         batch_closure.get("digital_twin_fidelity_qa")
     )
@@ -5983,6 +6352,12 @@ def _robot_team_grade_eval_closure_manifest(
     full_trace_evidence = {
         "normalized_attempt_trace": artifact_paths.get("normalized_attempt_trace"),
         "robot_pov_observation_manifest": artifact_paths.get("robot_pov_observation_manifest"),
+        "robot_pov_observation_candidate_set": artifact_paths.get(
+            "robot_pov_observation_candidate_set"
+        ),
+        "selected_initial_policy_observation": artifact_paths.get(
+            "selected_initial_policy_observation"
+        ),
         "robot_pov_frame_sequence_manifest": artifact_paths.get(
             "robot_pov_frame_sequence_manifest"
         ),
@@ -6106,8 +6481,15 @@ def _robot_team_grade_eval_closure_manifest(
     if selected_docker_runtime_not_versioned:
         policy_interface_blockers.append("policy_docker_container_runtime_image_not_versioned")
     policy_interface_ready = not policy_interface_blockers
+    failure_diagnosis_blockers = _string_list(failure_diagnosis_audit.get("blockers"))
+    failure_diagnosis_complete = bool(
+        labels and failure_diagnosis_audit.get("failure_diagnosis_complete")
+    )
     task_metric_closure_complete = bool(
-        not missing_metric_fields and labels and not metric_coverage_blockers
+        not missing_metric_fields
+        and labels
+        and not metric_coverage_blockers
+        and failure_diagnosis_complete
     )
     full_trace_package_complete = bool(
         not missing_trace_parts
@@ -6180,6 +6562,25 @@ def _robot_team_grade_eval_closure_manifest(
                 artifact_paths.get("failure_labels"),
                 artifact_paths.get("simulator_command_batch_metrics"),
                 artifact_paths.get("evaluation_result"),
+            ],
+        ),
+        requirement(
+            "failure_diagnosis",
+            title="Failure diagnosis labels are evidence-backed and accepted or reviewable",
+            passed=failure_diagnosis_complete,
+            blockers=[
+                *(["failure_labels_missing"] if not labels else []),
+                *failure_diagnosis_blockers,
+            ],
+            evidence_paths=[
+                artifact_paths.get("normalized_attempt_trace"),
+                artifact_paths.get("failure_labels"),
+            ],
+            notes=[
+                "failure_diagnosis_coverage_complete="
+                f"{bool(failure_diagnosis_audit.get('failure_diagnosis_coverage_complete'))}",
+                "failure_diagnosis_review_complete="
+                f"{bool(failure_diagnosis_audit.get('failure_diagnosis_review_complete'))}",
             ],
         ),
         requirement(
@@ -6299,8 +6700,85 @@ def _robot_team_grade_eval_closure_manifest(
             ],
         ),
         requirement(
+            "evaluator_bounded_policy_comparison",
+            title="Policy ranking compares candidate policies inside the configured evaluator",
+            passed=evaluator_policy_comparison_complete,
+            blockers=[]
+            if evaluator_policy_comparison_complete
+            else [
+                *(
+                    ["policy_ranking_scorecard_missing_or_incomplete"]
+                    if policy_comparison_status not in policy_comparison_completed_statuses
+                    else []
+                ),
+                *(
+                    ["policy_comparison_requires_at_least_two_candidates"]
+                    if policy_comparison_policy_count < 2
+                    else []
+                ),
+                *(
+                    ["policy_comparison_required_scenario_eval_run_ids_missing"]
+                    if not policy_comparison_required_run_ids
+                    else []
+                ),
+                *(
+                    ["policy_comparison_policy_coverage_not_symmetric"]
+                    if not policy_comparison_symmetric_coverage
+                    else []
+                ),
+                *(
+                    ["policy_comparison_missing_required_scenario_eval_run_ids"]
+                    if policy_comparison_missing_required_scenarios
+                    else []
+                ),
+                *(
+                    ["policy_comparison_extra_scenario_eval_run_ids"]
+                    if policy_comparison_extra_scenarios
+                    else []
+                ),
+                *(
+                    ["policy_comparison_attempt_count_mismatch"]
+                    if policy_comparison_attempt_count_mismatch
+                    else []
+                ),
+                *(
+                    ["policy_comparison_score_ranges_invalid"]
+                    if not policy_comparison_score_ranges_valid
+                    else []
+                ),
+                *(
+                    ["policy_ranking_boundary_not_evaluator_bounded"]
+                    if not policy_comparison_non_overclaiming_boundary
+                    else []
+                ),
+                *[
+                    f"policy_ranking_scorecard_blocker:{blocker}"
+                    for blocker in policy_comparison_blockers
+                ],
+                *(
+                    [
+                        f"policy_ranking_visual_review_blocker:{blocker}"
+                        for blocker in (
+                            policy_comparison_visual_review_blockers
+                            or ["policy_ranking_visual_review_gate_not_passed"]
+                        )
+                    ]
+                    if evaluator_policy_comparison_contract_complete
+                    and not policy_comparison_review_grade_complete
+                    else []
+                ),
+            ],
+            evidence_paths=[
+                artifact_paths.get("policy_ranking_scorecard"),
+                artifact_paths.get("wam_eval_claim_boundary"),
+            ],
+            sim_only_beta_required=False,
+            robot_team_grade_required=False,
+            deployment_readiness_required=False,
+        ),
+        requirement(
             "sim_vs_real_calibration_path",
-            title="Sim-vs-real calibration is measured before deployment readiness claims",
+            title="Real-world anchors calibrate evaluator ranking before external claims",
             passed=bool(calibration_report.get("sim_vs_real_calibration_score") is not None),
             blockers=_string_list(calibration_report.get("blockers"))
             or ["sim_vs_real_calibration_not_required_for_sim_only_beta"],
@@ -6315,6 +6793,24 @@ def _robot_team_grade_eval_closure_manifest(
     deployment_required = [
         item for item in requirements if item["deployment_readiness_required"]
     ]
+    all_blocked_requirement_ids = [
+        item["requirement_id"] for item in requirements if not item["passed"]
+    ]
+    sim_only_beta_blocked_requirement_ids = [
+        item["requirement_id"]
+        for item in sim_only_required
+        if not item["passed"]
+    ]
+    robot_team_grade_blocked_requirement_ids = [
+        item["requirement_id"]
+        for item in robot_team_required
+        if not item["passed"]
+    ]
+    deployment_readiness_blocked_requirement_ids = [
+        item["requirement_id"]
+        for item in deployment_required
+        if not item["passed"]
+    ]
     return {
         "schema_version": ROBOT_TEAM_GRADE_EVAL_CLOSURE_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -6327,14 +6823,57 @@ def _robot_team_grade_eval_closure_manifest(
         else "blocked_robot_team_grade_requirements",
         "requirement_count": len(requirements),
         "passed_requirement_count": sum(1 for item in requirements if item["passed"]),
-        "blocked_requirement_ids": [
-            item["requirement_id"] for item in requirements if not item["passed"]
-        ],
+        "blocked_requirement_ids": robot_team_grade_blocked_requirement_ids,
+        "all_blocked_requirement_ids": all_blocked_requirement_ids,
+        "sim_only_beta_blocked_requirement_ids": sim_only_beta_blocked_requirement_ids,
+        "robot_team_grade_blocked_requirement_ids": robot_team_grade_blocked_requirement_ids,
+        "deployment_readiness_blocked_requirement_ids": (
+            deployment_readiness_blocked_requirement_ids
+        ),
         "sim_only_beta_core_complete": all(item["passed"] for item in sim_only_required),
         "robot_team_grade_evaluation_complete": all(
             item["passed"] for item in robot_team_required
         ),
         "deployment_readiness_complete": all(item["passed"] for item in deployment_required),
+        "primary_proof_target": "policy_comparison_within_configured_evaluator",
+        "evaluator_bounded_policy_comparison_complete": evaluator_policy_comparison_complete,
+        "policy_comparison_summary": {
+            "status": policy_comparison_status or "not_available",
+            "policy_count": policy_comparison_policy_count,
+            "top_policy_id": policy_ranking_scorecard.get("top_policy_id"),
+            "evaluator_top_policy_id": policy_ranking_scorecard.get(
+                "evaluator_top_policy_id"
+            ),
+            "single_best_policy_claimed": bool(
+                policy_ranking_scorecard.get("single_best_policy_claimed")
+            ),
+            "ranking_basis": policy_ranking_scorecard.get("ranking_basis"),
+            "required_scenario_eval_run_ids": policy_comparison_required_run_ids,
+            "coverage_complete": policy_comparison_coverage_complete,
+            "symmetric_policy_coverage": policy_comparison_symmetric_coverage,
+            "missing_by_policy": policy_comparison_missing_by_policy,
+            "extra_by_policy": policy_comparison_extra_by_policy,
+            "attempt_count_by_policy": policy_comparison_attempt_count_by_policy,
+            "comparison_blockers": policy_comparison_blockers,
+            "visual_smoke_status": policy_ranking_scorecard.get("visual_smoke_status"),
+            "visual_rollout_useful_for_task_success_review": bool(
+                policy_ranking_scorecard.get(
+                    "visual_rollout_useful_for_task_success_review"
+                )
+            ),
+            "visual_review_blockers": policy_comparison_visual_review_blockers,
+            "fixture_evaluator_only": bool(
+                policy_ranking_scorecard.get("fixture_evaluator_only")
+            ),
+            "review_grade_policy_ranking": policy_comparison_review_grade_complete,
+            "score_ranges_valid": policy_comparison_score_ranges_valid,
+            "ranking_confidence": _mapping(policy_ranking_scorecard.get("ranking_confidence")),
+            "policy_ranking_is_evaluator_bounded": bool(
+                policy_comparison_boundary.get("policy_ranking_is_evaluator_bounded")
+            ),
+            "non_overclaiming_claim_boundary": policy_comparison_non_overclaiming_boundary,
+            "claim_boundary_path": "wam_eval_claim_boundary.json" if wam_claim_boundary else None,
+        },
         "scenario_execution_summary": {
             "required_scenario_eval_run_count": required_count,
             "covered_scenario_eval_run_count": covered_count,
@@ -6353,6 +6892,11 @@ def _robot_team_grade_eval_closure_manifest(
             "no_readiness_claim_upgrade_without_evidence": no_claim_upgrade,
             "selected_scenario_runs_closed": selected_scenario_runs_closed,
             "task_metric_closure_complete": task_metric_closure_complete,
+            "failure_diagnosis_coverage_complete": bool(
+                failure_diagnosis_audit.get("failure_diagnosis_coverage_complete")
+            ),
+            "failure_diagnosis_complete": failure_diagnosis_complete,
+            "failure_diagnosis_blockers": failure_diagnosis_blockers,
             "full_trace_package_complete": full_trace_package_complete,
             "missing_required_artifacts": missing_closure_artifacts,
         },
@@ -6380,6 +6924,8 @@ def _robot_team_grade_eval_closure_manifest(
                 "normalized_attempt_trace",
                 "failure_labels",
                 "robot_pov_observation_manifest",
+                "robot_pov_observation_candidate_set",
+                "selected_initial_policy_observation",
                 "robot_pov_frame_sequence_manifest",
                 "simulator_command_batch_trace_package_manifest",
                 "simulator_command_batch_closure_manifest",
@@ -6389,10 +6935,23 @@ def _robot_team_grade_eval_closure_manifest(
                 "proof_boundary",
                 "sim_vs_real_calibration_report",
                 "post_training_data_package_export_manifest",
+                "policy_ranking_scorecard",
+                "wam_eval_claim_boundary",
             }
         },
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
+            "primary_proof_target": "policy_comparison_within_configured_evaluator",
+            "evaluator_bounded_policy_comparison_complete": evaluator_policy_comparison_complete,
+            "review_grade_policy_comparison_complete": policy_comparison_review_grade_complete,
+            "visual_smoke_required_for_review_grade_policy_ranking": True,
+            "evaluator_bounded_policy_comparison_requires_symmetric_coverage": True,
+            "evaluator_bounded_policy_comparison_single_best_policy_claimed": bool(
+                policy_ranking_scorecard.get("single_best_policy_claimed")
+            ),
+            "policy_ranking_is_not_deployment_readiness": True,
+            "traditional_sim_is_optional_cross_check_for_wam_eval": True,
+            "spearman_pearson_mmrv_status": "not_measured_until_real_anchors_exist",
             "sim_only_beta_core_complete": all(item["passed"] for item in sim_only_required),
             "robot_team_grade_evaluation_complete": all(
                 item["passed"] for item in robot_team_required
@@ -6870,6 +7429,10 @@ def build_robot_eval_job(
             "claim_boundary": {
                 **_mapping(eval_result.get("claim_boundary")),
                 "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
+                "primary_proof_target": "policy_comparison_within_configured_evaluator",
+                "policy_ranking_is_evaluator_bounded": True,
+                "policy_ranking_is_not_deployment_readiness": True,
+                "traditional_sim_is_optional_cross_check_for_wam_eval": True,
                 "generated_wam_rollouts_are_model_derived_support_artifacts": True,
                 "customer_specific_srcc_claimed": False,
                 "passing_wam_eval_is_not_deployment_approval": True,
@@ -6927,12 +7490,20 @@ def build_robot_eval_job(
             **dict(proof_boundary),
             "evaluation_substrate": selected_evaluation_substrate,
             "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
+            "primary_proof_target": "policy_comparison_within_configured_evaluator",
+            "policy_ranking_is_evaluator_bounded": True,
+            "policy_ranking_is_not_deployment_readiness": True,
+            "traditional_sim_is_optional_cross_check_for_wam_eval": True,
             "generated_wam_rollouts_are_model_derived_support_artifacts": True,
             "customer_specific_srcc_claimed": False,
             "passing_wam_eval_is_not_deployment_approval": True,
             "claim_boundary": {
                 **_mapping(proof_boundary.get("claim_boundary")),
                 "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
+                "primary_proof_target": "policy_comparison_within_configured_evaluator",
+                "policy_ranking_is_evaluator_bounded": True,
+                "policy_ranking_is_not_deployment_readiness": True,
+                "traditional_sim_is_optional_cross_check_for_wam_eval": True,
                 "generated_wam_rollouts_are_model_derived_support_artifacts": True,
                 "customer_specific_srcc_claimed": False,
                 "passing_wam_eval_is_not_deployment_approval": True,
@@ -7348,8 +7919,14 @@ def build_robot_eval_job(
             "post_training_data_package_export_manifest.json"
         ),
         "webapp_robot_eval_status_projection": "webapp_robot_eval_status_projection.json",
-        "scenario_eval_matrix": "scenario_eval_matrix.json",
+            "scenario_eval_matrix": "scenario_eval_matrix.json",
             "robot_pov_observation_manifest": "robot_pov_observation_manifest.json",
+            "robot_camera_profile_registry": "robot_camera_profile_registry.json",
+            "robot_camera_profile_launch_readiness": (
+                "robot_camera_profile_launch_readiness.json"
+            ),
+            "robot_pov_observation_candidate_set": "robot_pov_observation_candidate_set.json",
+            "selected_initial_policy_observation": "selected_initial_policy_observation.json",
             "robot_pov_observations": "robot_pov_observations.jsonl",
             "robot_pov_frame_sequence_manifest": "robot_pov_frame_sequence_manifest.json",
             "robot_pov_render_storyboard": "robot_pov_render_storyboard.json",
@@ -7384,6 +7961,8 @@ def build_robot_eval_job(
             "clips_manifest": "clips_manifest.json",
             "review_resolution_ledger": "review_resolution_ledger.json",
             "accepted_failure_labels": "accepted_failure_labels.json",
+            "candidate_selection_report": "candidate_selection_report.json",
+            "candidate_selection_report_markdown": "candidate_selection_report.md",
             "customer_handoff_report": "customer_handoff_report.json",
             "delivery_manifest": "delivery_manifest.json",
             "arena_rerun_plan": "arena_rerun_plan.json",

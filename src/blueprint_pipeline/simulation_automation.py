@@ -2047,6 +2047,8 @@ def _build_simulator_engine_plugin_registry(
                 "simulator_result": f"simulators/{framework}_result.json",
                 "normalized_attempt_trace": "normalized_attempt_trace.json",
                 "robot_pov_observation_manifest": "robot_pov_observation_manifest.json",
+                "robot_pov_observation_candidate_set": "robot_pov_observation_candidate_set.json",
+                "selected_initial_policy_observation": "selected_initial_policy_observation.json",
                 "robot_pov_frame_sequence_manifest": "robot_pov_frame_sequence_manifest.json",
                 "policy_execution_trace": "policy_execution_trace.json",
                 "owner_gpu_proof": "gpu_owner_system_proof.json",

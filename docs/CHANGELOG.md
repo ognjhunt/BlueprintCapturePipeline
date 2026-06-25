@@ -1,5 +1,21 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-06-25
+
+### User-Facing
+
+- Connected scene WAM episode packets to capture-derived robot POV synthesis.
+  For each task and robot profile, the packet can now write source QA,
+  coverage/quality reports, contact sheets, and recapture guidance when no
+  depth-splat candidate passes. Passing synthesized/splatted frames can seed the
+  WAM initial-observation lane, but remain explicitly labeled as support
+  artifacts, not raw capture truth, physical robot POV evidence, safety
+  validation, or deployment approval.
+- Clarified WAM/substrate evaluation as evaluator-bounded policy comparison:
+  policy ranking scorecards can compare policy A/B/C inside the configured
+  evaluator, while MMRV/Pearson/Spearman require real-world anchors and do not
+  create deployment-readiness or physical-readiness claims.
+
 ## 2026-06-24
 
 ### User-Facing

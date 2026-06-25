@@ -130,13 +130,17 @@ def probe_git_repo(repo: Path) -> dict[str, Any]:
     head, head_error = _git_output(repo, "rev-parse", "HEAD")
     origin_main, origin_error = _git_output(repo, "rev-parse", "origin/main")
     status, status_error = _git_output(repo, "status", "--porcelain")
+    dirty_entries = [line for line in status.splitlines() if line.strip()]
+    max_dirty_entries = 200
     return {
         "path": str(repo),
         "head": head or None,
         "origin_main": origin_main or None,
         "head_matches_origin_main": bool(head and origin_main and head == origin_main),
         "worktree_clean": status == "" and status_error is None,
-        "dirty_entries_count": len([line for line in status.splitlines() if line.strip()]),
+        "dirty_entries_count": len(dirty_entries),
+        "dirty_entries": dirty_entries[:max_dirty_entries],
+        "dirty_entries_truncated": len(dirty_entries) > max_dirty_entries,
         "errors": [error for error in (head_error, origin_error, status_error) if error],
     }
 

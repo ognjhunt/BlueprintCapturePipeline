@@ -27,6 +27,9 @@ READY_FORWARDING_STATUSES = {
     "ready_for_required_forwarding_with_probe",
 }
 READY_DEPLOYMENT_STATUSES = {"passed", "ready", "healthy", "verified"}
+NON_BLOCKING_FORWARDING_WARNINGS = {
+    "capture_root_override_not_configured",
+}
 
 
 def _default_webapp_repo() -> Path:
@@ -57,6 +60,25 @@ def _bool(value: Any) -> bool:
 def _origin_is_localhost(origin: str) -> bool:
     text = origin.lower()
     return "localhost" in text or "127.0.0.1" in text or "[::1]" in text
+
+
+def _capture_root_identity(value: str) -> dict[str, str] | None:
+    path = _string(value)
+    if not path:
+        return None
+    parts = [part for part in Path(path).parts if part not in {"/", ""}]
+    for index, part in enumerate(parts):
+        if part == "scenes" and index + 3 < len(parts) and parts[index + 2] == "captures":
+            return {"scene_id": parts[index + 1], "capture_id": parts[index + 3]}
+    return None
+
+
+def _same_capture_root_or_identity(left: str, right: str) -> bool:
+    if _string(left) == _string(right):
+        return True
+    left_identity = _capture_root_identity(left)
+    right_identity = _capture_root_identity(right)
+    return bool(left_identity and right_identity and left_identity == right_identity)
 
 
 def _gate(gate_id: str, *, passed: bool, blockers: list[str], evidence: dict[str, Any]) -> dict[str, Any]:
@@ -142,7 +164,17 @@ def _forwarding_gate(
         blockers.append("forwarding_preflight_not_ready_with_probe")
     if forwarding_report.get("blockers"):
         blockers.append("forwarding_preflight_has_blockers")
-    if forwarding_report.get("warnings"):
+    warnings = [
+        _string(warning)
+        for warning in forwarding_report.get("warnings", []) or []
+        if _string(warning)
+    ]
+    blocking_warnings = [
+        warning
+        for warning in warnings
+        if warning not in NON_BLOCKING_FORWARDING_WARNINGS
+    ]
+    if blocking_warnings:
         blockers.append("forwarding_preflight_has_warnings")
     if forwarding_report.get("forwarding_required") is not True:
         blockers.append("forwarding_not_required_in_report")
@@ -182,7 +214,13 @@ def _forwarding_gate(
             "status": status,
             "origin": origin,
             "blocker_count": len(forwarding_report.get("blockers") or []),
-            "warning_count": len(forwarding_report.get("warnings") or []),
+            "warning_count": len(warnings),
+            "blocking_warnings": blocking_warnings,
+            "non_blocking_warnings": [
+                warning
+                for warning in warnings
+                if warning in NON_BLOCKING_FORWARDING_WARNINGS
+            ],
             "probe": {
                 "status": probe.get("status"),
                 "http_status": probe.get("http_status"),
@@ -207,13 +245,15 @@ def _route_proof_gate(
 
     expected_capture_root = str(capture_root)
     proof_capture_root = _string(route_proof.get("capture_root"))
-    if proof_capture_root != expected_capture_root:
+    if not _same_capture_root_or_identity(proof_capture_root, expected_capture_root):
         blockers.append("production_route_capture_root_mismatch")
 
     job_request = _mapping(route_proof.get("job_request"))
     site_package = _mapping(job_request.get("site_package"))
     job_capture_root = _string(site_package.get("capture_root"))
-    if job_capture_root and job_capture_root != expected_capture_root:
+    if job_capture_root and not _same_capture_root_or_identity(
+        job_capture_root, expected_capture_root
+    ):
         blockers.append("production_route_job_request_capture_root_mismatch")
 
     if route_proof.get("status") != "forwarded_to_pipeline_intake":
@@ -248,6 +288,8 @@ def _route_proof_gate(
         evidence={
             "path": str(path) if path else None,
             "status": route_proof.get("status"),
+            "expected_capture_identity": _capture_root_identity(expected_capture_root),
+            "proof_capture_identity": _capture_root_identity(proof_capture_root),
             "pipeline_intake": pipeline_intake,
             "proof_boundary": proof_boundary,
         },

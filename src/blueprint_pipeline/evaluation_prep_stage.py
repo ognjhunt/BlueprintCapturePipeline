@@ -1219,6 +1219,8 @@ def robot_eval_job_evaluation_prep_surface(
         "policy_package_manifest": "policy_package_manifest.json",
         "scenario_eval_matrix": "scenario_eval_matrix.json",
         "robot_pov_observation_manifest": "robot_pov_observation_manifest.json",
+        "robot_pov_observation_candidate_set": "robot_pov_observation_candidate_set.json",
+        "selected_initial_policy_observation": "selected_initial_policy_observation.json",
         "robot_pov_observations": "robot_pov_observations.jsonl",
         "robot_pov_frame_sequence_manifest": "robot_pov_frame_sequence_manifest.json",
         "robot_pov_render_storyboard": "robot_pov_render_storyboard.json",

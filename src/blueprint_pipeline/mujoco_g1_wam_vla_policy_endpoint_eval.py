@@ -73,6 +73,10 @@ from .wam_generated_video_review import (
     validate_generated_mp4_for_review,
     visual_smoke_generated_rollouts_for_review,
 )
+from .wam_auxiliary_observation import (
+    build_wam_auxiliary_observation_manifest,
+    summarize_wam_auxiliary_observation_manifest,
+)
 
 
 def _float_env(name: str, default: float) -> float:
@@ -104,9 +108,7 @@ DEFAULT_WAM_LOOP_STEP_COUNT = 12
 DEFAULT_WAM_GENERATION_TIMEOUT_SECONDS = 900.0
 WAM_GENERATION_TIMEOUT_ENV = "BLUEPRINT_WAM_GENERATION_TIMEOUT_SECONDS"
 DEFAULT_POLICY_ACTION_MODEL_COMMAND_TIMEOUT_SECONDS = 1800.0
-POLICY_ACTION_MODEL_COMMAND_TIMEOUT_ENV = (
-    "BLUEPRINT_POLICY_ACTION_MODEL_COMMAND_TIMEOUT_SECONDS"
-)
+POLICY_ACTION_MODEL_COMMAND_TIMEOUT_ENV = "BLUEPRINT_POLICY_ACTION_MODEL_COMMAND_TIMEOUT_SECONDS"
 DEFAULT_VIDEO_FRAME_STRIDE_STEPS = 8
 DEFAULT_REVIEW_VIDEO_FPS = 60
 DEFAULT_EXTEND_TERMINAL_FRAME_FOR_REVIEW = False
@@ -280,9 +282,7 @@ EXTRA_G1_POLICY_ONLINE_CANDIDATES = (
     {
         "name": "isaac_groot_n17",
         "url": "https://github.com/NVIDIA/Isaac-GR00T",
-        "candidate_use": (
-            "GR00T N1.7 VLA policy candidate for Unitree G1/SONIC action chunks."
-        ),
+        "candidate_use": ("GR00T N1.7 VLA policy candidate for Unitree G1/SONIC action chunks."),
     },
     {
         "name": "groot_wholebodycontrol_sonic",
@@ -499,9 +499,7 @@ def _unitree_endpoint_policy_response_summary(
     unitree_endpoint_hand_policy_output_observed = any(
         _string(row.get("policy_id"))
         in UNITREE_ENDPOINT_HAND_POLICY_IDS | UNITREE_ENDPOINT_HAND_POLICY_REPLAY_IDS
-        or bool(
-            _mapping(row.get("claim_boundary")).get("unitree_hand_manipulation_policy_used")
-        )
+        or bool(_mapping(row.get("claim_boundary")).get("unitree_hand_manipulation_policy_used"))
         for row in rows
     )
     unitree_endpoint_provider_output_replay_used = any(
@@ -512,16 +510,8 @@ def _unitree_endpoint_policy_response_summary(
     unitree_endpoint_action_chunk_used = any(
         bool(_mapping(row.get("action")).get("unitree_unifolm_action_chunk_present"))
         or bool(_mapping(row.get("action")).get("unitree_unifolm_action_chunk"))
-        or bool(
-            _mapping(row.get("action")).get(
-                "unitree_groot_n17_sonic_action_chunk_present"
-            )
-        )
-        or bool(
-            _mapping(row.get("action")).get(
-                "unitree_groot_n17_sonic_action_payload_present"
-            )
-        )
+        or bool(_mapping(row.get("action")).get("unitree_groot_n17_sonic_action_chunk_present"))
+        or bool(_mapping(row.get("action")).get("unitree_groot_n17_sonic_action_payload_present"))
         or bool(_mapping(row.get("action")).get("sonic_latent_action"))
         or bool(_mapping(row.get("action")).get("action_chunk"))
         for row in rows
@@ -538,9 +528,7 @@ def _unitree_endpoint_policy_response_summary(
             or bool(row.get("unitree_unifolm_policy_action_command_ran"))
             or bool(row.get("unitree_groot_n17_sonic_policy_action_command_ran"))
             or bool(
-                _mapping(row.get("claim_boundary")).get(
-                    "unitree_hand_manipulation_policy_used"
-                )
+                _mapping(row.get("claim_boundary")).get("unitree_hand_manipulation_policy_used")
             )
         )
         for row in rows
@@ -556,9 +544,7 @@ def _unitree_endpoint_policy_response_summary(
         "unitree_endpoint_fresh_policy_action_command_ran": (
             unitree_endpoint_fresh_policy_action_command_ran
         ),
-        "unitree_endpoint_hand_policy_used": (
-            unitree_endpoint_fresh_policy_action_command_ran
-        ),
+        "unitree_endpoint_hand_policy_used": (unitree_endpoint_fresh_policy_action_command_ran),
         "g1_robot_policy_selection_contract": "unitree_native_policy_required_for_g1_claims",
         "g1_robot_policy_selected_family": (
             "unitree_native_hand_policy_endpoint"
@@ -1473,15 +1459,15 @@ def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any
             blockers.append("blocked_policy_action_model_command_unavailable")
         if command_value and not policy_worker_contract.get("repeated_policy_loop_allowed"):
             blockers.extend(
-                str(item)
-                for item in policy_worker_contract.get("blockers", [])
-                if str(item)
+                str(item) for item in policy_worker_contract.get("blockers", []) if str(item)
             )
         if not checkpoint_value:
             blockers.append("blocked_missing_policy_action_model_checkpoint")
         elif not checkpoint_configured:
             blockers.append("blocked_policy_action_model_checkpoint_missing")
-        elif spec["candidate_id"] == GROOT_POLICY_ID and is_known_base_n17_without_unitree_g1_sonic_support(
+        elif spec[
+            "candidate_id"
+        ] == GROOT_POLICY_ID and is_known_base_n17_without_unitree_g1_sonic_support(
             checkpoint_original_value
         ):
             # The base checkpoint is incompatible with UNITREE_G1_SONIC, but
@@ -1567,9 +1553,7 @@ def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any
             "command_from_default": command_default_applied,
             "command_available": command_available,
             "command_value_redacted": "<configured>" if command_value else None,
-            "command_value_for_execution": command_value
-            if command_default_applied
-            else None,
+            "command_value_for_execution": command_value if command_default_applied else None,
             "checkpoint_env": checkpoint_env or list(spec["checkpoint_envs"])[0],
             "checkpoint_configured": checkpoint_configured,
             "checkpoint_exists": checkpoint_exists,
@@ -1580,13 +1564,9 @@ def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any
             "checkpoint_default_applied": checkpoint_default_applied,
             "checkpoint_known_base_model_without_unitree_g1_sonic_support": bool(
                 spec["candidate_id"] == GROOT_POLICY_ID
-                and is_known_base_n17_without_unitree_g1_sonic_support(
-                    checkpoint_original_value
-                )
+                and is_known_base_n17_without_unitree_g1_sonic_support(checkpoint_original_value)
             ),
-            "checkpoint_provenance": unitree_g1_sonic_checkpoint_provenance(
-                checkpoint_value
-            )
+            "checkpoint_provenance": unitree_g1_sonic_checkpoint_provenance(checkpoint_value)
             if spec["candidate_id"] == GROOT_POLICY_ID
             else None,
             "trusted_for_production": False,
@@ -1603,9 +1583,7 @@ def discover_policy_action_model_commands(*, generated_at: str) -> dict[str, Any
             "extra_required_roots": extra_root_rows,
             "provider_worker_contract_schema_version": PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
             "policy_worker_contract": policy_worker_contract,
-            "policy_worker_invocation_kind": policy_worker_contract.get(
-                "invocation_kind"
-            ),
+            "policy_worker_invocation_kind": policy_worker_contract.get("invocation_kind"),
             "repeated_policy_loop_allowed": bool(
                 policy_worker_contract.get("repeated_policy_loop_allowed")
             ),
@@ -1830,9 +1808,7 @@ def _unitree_policy_action_execution_flags(
         "unitree_manipulation_policy_action_command_ran": bool(
             manipulation_selected and unitree_manipulation_policy_ran
         ),
-        "unitree_specific_policy_candidate_ran": bool(
-            unitree_selected and unitree_policy_ran
-        ),
+        "unitree_specific_policy_candidate_ran": bool(unitree_selected and unitree_policy_ran),
         "unitree_specific_manipulation_candidate_ran": bool(
             manipulation_selected and unitree_manipulation_policy_ran
         ),
@@ -2016,17 +1992,28 @@ def _scene_packet_policy_action_model_input(
         if frame_path is not None:
             observation["camera_frame_path"] = str(frame_path)
             visual_observation["camera_frame_path"] = str(frame_path)
+        capture_derived_synthetic = bool(
+            visual_observation.get("capture_derived_robot_pov_synthesis_used")
+            or observation.get("capture_derived_robot_pov_frame_path")
+            or visual_observation.get("capture_derived_robot_pov_frame_path")
+        )
         visual_observation["available"] = frame_available
         visual_observation.setdefault(
             "camera_id",
             _policy_action_model_frame_camera_id(frame_path) or "head_pov",
         )
         visual_observation["first_person_policy_observation_candidate"] = frame_available
-        visual_observation["simulated_camera_view"] = frame_available
+        visual_observation["simulated_camera_view"] = (
+            frame_available and not capture_derived_synthetic
+        )
+        visual_observation["capture_derived_robot_pov_synthesis_used"] = (
+            frame_available and capture_derived_synthetic
+        )
+        visual_observation["synthesized_or_splatted_outputs_are_not_raw_capture_truth"] = True
         visual_observation["physical_robot_sensor_proof"] = False
-        visual_observation["blockers"] = [] if frame_available else [
-            "scene_packet_policy_observation_frame_missing"
-        ]
+        visual_observation["blockers"] = (
+            [] if frame_available else ["scene_packet_policy_observation_frame_missing"]
+        )
         observation["visual_observation"] = visual_observation
         task_id = _string(observation.get("task_id") or packet.get("task_id"))
         target_object_id = _string(
@@ -2066,7 +2053,14 @@ def _scene_packet_policy_action_model_input(
             "scene_wam_policy_episode_packet_path": str(packet_path),
             "claim_boundary": {
                 "sample_input_is_scene_packet_not_task_success_evidence": True,
-                "visual_frame_is_simulated_mujoco_policy_observation": frame_available,
+                "visual_frame_is_simulated_mujoco_policy_observation": (
+                    frame_available and not capture_derived_synthetic
+                ),
+                "visual_frame_is_capture_derived_synthetic_robot_pov": (
+                    frame_available and capture_derived_synthetic
+                ),
+                "visual_frame_is_raw_capture_truth": False,
+                "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
                 "unitree_g1_sonic_state_is_simulated_observation": True,
                 "unitree_g1_sonic_state_is_contract_probe": (
                     observation.get("unitree_g1_sonic_state_source")
@@ -2273,11 +2267,7 @@ def run_policy_action_model_command_contract(
         sample_input,
     )
     ready_candidates = sorted(
-        [
-            row
-            for row in discovery["candidates"]
-            if row.get("ready_for_policy_action_command")
-        ],
+        [row for row in discovery["candidates"] if row.get("ready_for_policy_action_command")],
         key=lambda row: (
             row.get("candidate_id") != discovery.get("selected_candidate_id"),
             bool(row.get("command_from_default")),
@@ -2297,9 +2287,10 @@ def run_policy_action_model_command_contract(
     )
     selected_contract_command = ""
     if isinstance(selected_contract_candidate, Mapping):
-        selected_contract_command = _string(
-            selected_contract_candidate.get("command_value_for_execution")
-        ) or os.getenv(str(selected_contract_candidate.get("command_env") or ""), "").strip()
+        selected_contract_command = (
+            _string(selected_contract_candidate.get("command_value_for_execution"))
+            or os.getenv(str(selected_contract_candidate.get("command_env") or ""), "").strip()
+        )
     provider_worker_contract = write_provider_worker_contract(
         output_dir=job_dir,
         generated_at=generated_at,
@@ -2361,9 +2352,10 @@ def run_policy_action_model_command_contract(
         write_json(job_dir / "policy_action_model_command_execution.json", result)
         return result
     selected = ready_candidates[0]
-    command = _string(selected.get("command_value_for_execution")) or os.getenv(
-        str(selected["command_env"]), ""
-    ).strip()
+    command = (
+        _string(selected.get("command_value_for_execution"))
+        or os.getenv(str(selected["command_env"]), "").strip()
+    )
     started = time.monotonic()
     env = {
         **os.environ,
@@ -2540,9 +2532,10 @@ def _execute_policy_action_model_candidate(
     write_json(input_path, dict(payload))
     if output_path.exists():
         output_path.unlink()
-    command = _string(candidate.get("command_value_for_execution")) or os.getenv(
-        str(candidate.get("command_env") or ""), ""
-    ).strip()
+    command = (
+        _string(candidate.get("command_value_for_execution"))
+        or os.getenv(str(candidate.get("command_env") or ""), "").strip()
+    )
     selected_candidate_id = str(candidate.get("candidate_id") or "")
     started = time.monotonic()
     policy_worker_contract = _mapping(candidate.get("policy_worker_contract"))
@@ -2550,9 +2543,7 @@ def _execute_policy_action_model_candidate(
         policy_worker_contract = classify_policy_worker_command(command)
     if not policy_worker_contract.get("repeated_policy_loop_allowed"):
         blockers = [
-            str(item)
-            for item in policy_worker_contract.get("blockers", [])
-            if str(item)
+            str(item) for item in policy_worker_contract.get("blockers", []) if str(item)
         ] or ["blocked_policy_worker_not_safe_for_repeated_loop"]
         command_result = {
             "status": "blocked",
@@ -2843,7 +2834,9 @@ def discover_wam_generation_command(*, generated_at: str) -> dict[str, Any]:
         "gate_env": WAM_GENERATION_COMMAND_GATE_ENV,
         "gate_enabled": gate_enabled,
         "selected_backend_id": selected_candidate.get("backend_id") if selected_candidate else None,
-        "selected_command_env": selected_candidate.get("command_env") if selected_candidate else None,
+        "selected_command_env": selected_candidate.get("command_env")
+        if selected_candidate
+        else None,
         "selected_backend_ready_for_live_wam_generation": bool(
             selected and selected.get("ready_for_live_wam_generation")
         ),
@@ -2879,7 +2872,9 @@ def _candidate_path_from_payload(
     return None
 
 
-def _extract_generated_frame_from_video(video_path: Path, target_frame: Path) -> tuple[bool, str | None]:
+def _extract_generated_frame_from_video(
+    video_path: Path, target_frame: Path
+) -> tuple[bool, str | None]:
     try:
         import cv2  # type: ignore[import-untyped]
     except Exception as exc:  # pragma: no cover - environment dependent
@@ -2931,11 +2926,14 @@ def _materialize_wam_generated_frame(
         if isinstance(item, str):
             frame = Path(item).expanduser()
         elif isinstance(item, Mapping):
-            frame = _candidate_path_from_payload(
-                item,
-                output_path=output_path,
-                keys=("path", "frame_path", "image_path", "camera_frame_path"),
-            ) or Path()
+            frame = (
+                _candidate_path_from_payload(
+                    item,
+                    output_path=output_path,
+                    keys=("path", "frame_path", "image_path", "camera_frame_path"),
+                )
+                or Path()
+            )
         else:
             continue
         if frame.is_file():
@@ -3138,9 +3136,7 @@ def _select_wam_skeleton_conditioning(
         "camera_id": best_row.get("camera_id"),
         "projected_landmark_count": int(best_row.get("projected_landmark_count") or 0),
         "segments": [
-            dict(item)
-            for item in best_row.get("segments") or []
-            if isinstance(item, Mapping)
+            dict(item) for item in best_row.get("segments") or [] if isinstance(item, Mapping)
         ],
         "landmarks": landmarks[:16],
         "blockers": [],
@@ -3217,11 +3213,7 @@ def _render_default_wam_next_observation_frame(
         if isinstance(value, (int, float))
     ]
     magnitude = sum(abs(value) for value in values[:6]) / max(1, min(6, len(values)))
-    dx = (
-        int(max(-0.32, min(0.32, sum(values[0::2]) * 0.08)) * width)
-        if values
-        else width // 10
-    )
+    dx = int(max(-0.32, min(0.32, sum(values[0::2]) * 0.08)) * width) if values else width // 10
     dy = (
         int(max(-0.24, min(0.24, sum(values[1::2]) * -0.08)) * height)
         if len(values) > 1
@@ -3629,6 +3621,25 @@ def _execute_live_wam_generation_step(
     input_path = input_dir / f"wam_generation_step_{step_index:04d}_input.json"
     output_path = output_dir / f"wam_generation_step_{step_index:04d}_output.json"
     ensure_dir(output_path.parent)
+    auxiliary_observation = build_wam_auxiliary_observation_manifest(
+        output_dir=input_dir / f"wam_auxiliary_observation_step_{step_index:04d}",
+        source_image_path=source_frame,
+        policy_observation=current_observation,
+        source_policy_action=current_action,
+        generated_at=generated_at,
+        source_kind=_string(current_observation.get("source_kind"))
+        or _string(_mapping(current_observation.get("visual_observation")).get("source_kind"))
+        or None,
+        camera_id=_string(_mapping(current_observation.get("visual_observation")).get("camera_id"))
+        or _string(current_observation.get("camera_id"))
+        or None,
+        robot_profile_id=_string(current_observation.get("robot_profile_id")) or None,
+        task_id=_string(current_observation.get("task_id")) or None,
+        target_object_id=_string(current_observation.get("target_object_id")) or None,
+    )
+    auxiliary_observation_summary = summarize_wam_auxiliary_observation_manifest(
+        auxiliary_observation
+    )
     input_payload = {
         "schema_version": "wam_generation_step_input.v1",
         "generated_at": generated_at,
@@ -3637,6 +3648,8 @@ def _execute_live_wam_generation_step(
         "source_policy_observation_frame_path": str(source_frame),
         "source_policy_action": dict(current_action),
         "current_policy_observation": dict(current_observation),
+        "wam_auxiliary_observation_manifest_path": auxiliary_observation["manifest_path"],
+        "auxiliary_observation": auxiliary_observation_summary,
         "requested_output": {
             "next_observation_frame_path": str(target_frame),
             "action_conditioned_generation_required": True,
@@ -3671,6 +3684,7 @@ def _execute_live_wam_generation_step(
         "command_ran": False,
         "status": "blocked",
         "blockers": [],
+        "wam_auxiliary_observation_manifest_path": auxiliary_observation["manifest_path"],
     }
     payload: dict[str, Any] = {}
     try:
@@ -3750,6 +3764,8 @@ def _execute_live_wam_generation_step(
         "output_path": str(output_path),
         "payload_redacted": _redact(payload) if payload else {},
         "materialization": materialization,
+        "wam_auxiliary_observation": auxiliary_observation_summary,
+        "wam_auxiliary_observation_manifest_path": auxiliary_observation["manifest_path"],
         "wam_model_checkpoint_used": any(
             bool(row.get("checkpoint_configured"))
             for row in discovery.get("candidates", [])
@@ -3893,9 +3909,7 @@ def _write_wam_generation_command_artifacts(
                 "default_local_wam_generator_is_not_live_oscar_or_cosmos_model": bool(
                     default_success_count
                 ),
-                "default_local_outputs_are_support_evidence_only": bool(
-                    default_success_count
-                ),
+                "default_local_outputs_are_support_evidence_only": bool(default_success_count),
                 "learned_wam_checkpoint_invoked": bool(live_success_count),
                 "physical_robot_readiness_proven": False,
                 "deployment_readiness_proven": False,
@@ -3984,24 +3998,21 @@ def _write_robot_policy_wam_side_by_side_trace_html(
             "\n".join(
                 [
                     '<section class="transition">',
-                    f'<h2>Transition {html.escape(str(row.get("transition_index")))}</h2>',
+                    f"<h2>Transition {html.escape(str(row.get('transition_index')))}</h2>",
                     '<div class="grid">',
-                    '<div><h3>Policy POV Input</h3>',
+                    "<div><h3>Policy POV Input</h3>",
                     policy_img,
-                    f'<p>source: {html.escape(str(row.get("policy_observation_source")))}</p></div>',
-                    '<div><h3>GR00T/SONIC Action Summary</h3>',
+                    f"<p>source: {html.escape(str(row.get('policy_observation_source')))}</p></div>",
+                    "<div><h3>GR00T/SONIC Action Summary</h3>",
                     f"<pre>{action_summary}</pre></div>",
-                    '<div><h3>WAM Generated Next Observation</h3>',
+                    "<div><h3>WAM Generated Next Observation</h3>",
                     wam_img,
+                    (f"<p>backend: {html.escape(str(row.get('wam_evaluator_backend')))}</p></div>"),
+                    "<div><h3>Next Policy Call</h3>",
                     (
-                        "<p>backend: "
-                        f'{html.escape(str(row.get("wam_evaluator_backend")))}</p></div>'
-                    ),
-                    '<div><h3>Next Policy Call</h3>',
-                    (
-                        f'<p>status: {html.escape(str(row.get("next_policy_call_status")))}</p>'
-                        f'<p>provider replay: '
-                        f'{html.escape(str(row.get("next_policy_call_provider_output_replay_used")))}</p>'
+                        f"<p>status: {html.escape(str(row.get('next_policy_call_status')))}</p>"
+                        f"<p>provider replay: "
+                        f"{html.escape(str(row.get('next_policy_call_provider_output_replay_used')))}</p>"
                     ),
                     f"<pre>{next_action_summary}</pre></div>",
                     "</div>",
@@ -4144,9 +4155,7 @@ def run_robot_policy_wam_closed_loop_attempt(
     if not discovery and (job_dir / "policy_action_model_command_discovery.json").is_file():
         discovery = _mapping(
             json.loads(
-                (job_dir / "policy_action_model_command_discovery.json").read_text(
-                    encoding="utf-8"
-                )
+                (job_dir / "policy_action_model_command_discovery.json").read_text(encoding="utf-8")
             )
         )
     selected_candidate_id = _string(
@@ -4154,9 +4163,7 @@ def run_robot_policy_wam_closed_loop_attempt(
         or discovery.get("selected_candidate_id")
     )
     candidates = [
-        _mapping(row)
-        for row in discovery.get("candidates", []) or []
-        if isinstance(row, Mapping)
+        _mapping(row) for row in discovery.get("candidates", []) or [] if isinstance(row, Mapping)
     ]
     selected = next(
         (
@@ -4178,7 +4185,9 @@ def run_robot_policy_wam_closed_loop_attempt(
     write_json(loop_dir / "wam_generation_command_discovery.json", wam_generation_discovery)
     blockers: list[str] = []
     if selected is None:
-        blockers.extend(discovery.get("blockers", []) or ["blocked_missing_unitree_policy_action_model_command"])
+        blockers.extend(
+            discovery.get("blockers", []) or ["blocked_missing_unitree_policy_action_model_command"]
+        )
     if (
         selected_candidate_id
         and selected_candidate_id not in UNITREE_MANIPULATION_POLICY_ACTION_MODEL_CANDIDATE_IDS
@@ -4190,9 +4199,7 @@ def run_robot_policy_wam_closed_loop_attempt(
             for item in policy_action_model_command_execution.get("blockers", [])
             or ["blocked_initial_unitree_policy_action_command_not_run"]
         )
-    initial_action = _mapping(
-        policy_action_model_command_execution.get("action_payload_redacted")
-    )
+    initial_action = _mapping(policy_action_model_command_execution.get("action_payload_redacted"))
     if not initial_action:
         blockers.append("blocked_initial_unitree_policy_action_missing")
     if blockers:
@@ -4266,9 +4273,7 @@ def run_robot_policy_wam_closed_loop_attempt(
             "side_by_side_trace_manifest": str(
                 loop_dir / "robot_policy_wam_side_by_side_trace_manifest.json"
             ),
-            "side_by_side_trace_path": str(
-                loop_dir / "robot_policy_wam_side_by_side_trace.jsonl"
-            ),
+            "side_by_side_trace_path": str(loop_dir / "robot_policy_wam_side_by_side_trace.jsonl"),
             "side_by_side_trace_html_path": str(
                 loop_dir / "robot_policy_wam_side_by_side_trace.html"
             ),
@@ -4321,9 +4326,7 @@ def run_robot_policy_wam_closed_loop_attempt(
                 )
             ),
             "unitree_specific_policy_candidate_ran": bool(
-                policy_action_model_command_execution.get(
-                    "unitree_specific_policy_candidate_ran"
-                )
+                policy_action_model_command_execution.get("unitree_specific_policy_candidate_ran")
             ),
             "unitree_specific_manipulation_candidate_ran": bool(
                 policy_action_model_command_execution.get(
@@ -4347,6 +4350,10 @@ def run_robot_policy_wam_closed_loop_attempt(
         job_dir=job_dir,
     )
     current_observation = _mapping(base_packet.get("observation"))
+    initial_visual = _mapping(current_observation.get("visual_observation"))
+    if initial_visual.get("capture_derived_robot_pov_synthesis_used"):
+        policy_calls[0]["observation_source"] = "initial_capture_derived_robot_pov_observation"
+        policy_calls[0]["capture_derived_robot_pov_synthesis_used"] = True
     source_frame_text = _mapping(current_observation.get("visual_observation")).get(
         "camera_frame_path"
     ) or current_observation.get("camera_frame_path")
@@ -4460,9 +4467,7 @@ def run_robot_policy_wam_closed_loop_attempt(
     )
     _write_jsonl(trace_path, policy_calls)
     _write_jsonl(generated_observation_trace_path, generated_observations)
-    structural_action_responses = sum(
-        1 for row in policy_calls if row.get("status") == "completed"
-    )
+    structural_action_responses = sum(1 for row in policy_calls if row.get("status") == "completed")
     replay_action_responses = sum(
         1
         for row in policy_calls
@@ -4511,8 +4516,7 @@ def run_robot_policy_wam_closed_loop_attempt(
             row.get("unitree_unifolm_policy_action_command_ran") for row in policy_calls
         ),
         "unitree_groot_n17_sonic_policy_action_command_ran": any(
-            row.get("unitree_groot_n17_sonic_policy_action_command_ran")
-            for row in policy_calls
+            row.get("unitree_groot_n17_sonic_policy_action_command_ran") for row in policy_calls
         ),
         "repeated_policy_calls_count": repeated_policy_calls,
         "fresh_policy_action_call_count": repeated_policy_calls,
@@ -4523,9 +4527,7 @@ def run_robot_policy_wam_closed_loop_attempt(
         "live_wam_generation_command_ran": any(
             row.get("command_ran") for row in wam_execution_steps
         ),
-        "action_conditioned_generation_ran": bool(
-            action_conditioned_generation_success_count
-        ),
+        "action_conditioned_generation_ran": bool(action_conditioned_generation_success_count),
         "live_wam_generation_success_count": live_wam_generation_success_count,
         "default_wam_generation_success_count": default_wam_generation_success_count,
         "action_conditioned_generation_success_count": (
@@ -4540,12 +4542,8 @@ def run_robot_policy_wam_closed_loop_attempt(
         "real_world_manipulation_success_proven": False,
         "policy_call_trace_path": str(trace_path),
         "generated_next_observation_trace": str(generated_observation_trace_path),
-        "wam_generation_command_discovery": str(
-            loop_dir / "wam_generation_command_discovery.json"
-        ),
-        "wam_generation_command_execution": str(
-            loop_dir / "wam_generation_command_execution.json"
-        ),
+        "wam_generation_command_discovery": str(loop_dir / "wam_generation_command_discovery.json"),
+        "wam_generation_command_execution": str(loop_dir / "wam_generation_command_execution.json"),
         "wam_generation_command_output": str(loop_dir / "wam_generation_command_output.json"),
         "policy_call_output_dir": str(policy_call_dir),
         "generated_next_observation_dir": str(generated_dir),
@@ -4553,12 +4551,8 @@ def run_robot_policy_wam_closed_loop_attempt(
             loop_dir / "robot_policy_wam_side_by_side_trace_manifest.json"
         ),
         "side_by_side_trace_path": str(loop_dir / "robot_policy_wam_side_by_side_trace.jsonl"),
-        "side_by_side_trace_html_path": str(
-            loop_dir / "robot_policy_wam_side_by_side_trace.html"
-        ),
-        "side_by_side_transition_count": int(
-            side_by_side_manifest.get("transition_count") or 0
-        ),
+        "side_by_side_trace_html_path": str(loop_dir / "robot_policy_wam_side_by_side_trace.html"),
+        "side_by_side_transition_count": int(side_by_side_manifest.get("transition_count") or 0),
         "blockers": sorted(set(blockers)),
         "claim_boundary": {
             "simulator_only": True,
@@ -4654,7 +4648,9 @@ def discover_unitree_manipulation_policy(*, generated_at: str) -> dict[str, Any]
         extra_checkpoints_ready = all(
             row.get("checkpoint_configured") for row in extra_checkpoint_rows
         )
-        extra_roots_ready = all(row.get("root_configured") and row.get("root_exists") for row in extra_root_rows)
+        extra_roots_ready = all(
+            row.get("root_configured") and row.get("root_exists") for row in extra_root_rows
+        )
         candidate_ready = bool(
             command_ready
             and checkpoint_ready
@@ -5299,15 +5295,9 @@ def build_policy_command_adapter_manifest(
             "unitree_provider_output_replay_is_not_fresh_per_observation_inference": (
                 unitree_provider_replay_observed
             ),
-            "openvla_observed_policy_is_not_default_unitree_g1_policy": (
-                openvla_policy_observed
-            ),
-            "wam_observed_policy_is_evaluator_support_not_g1_robot_policy": (
-                wam_policy_observed
-            ),
-            "reference_policy_observed_is_endpoint_plumbing_only": (
-                reference_policy_observed
-            ),
+            "openvla_observed_policy_is_not_default_unitree_g1_policy": (openvla_policy_observed),
+            "wam_observed_policy_is_evaluator_support_not_g1_robot_policy": (wam_policy_observed),
+            "reference_policy_observed_is_endpoint_plumbing_only": (reference_policy_observed),
         },
         "supported_action_types": [
             "waypoint",
@@ -5356,9 +5346,7 @@ def build_policy_endpoint_runtime_manifest(
             "g1_robot_policy_selection_contract",
             "unitree_native_policy_required_for_g1_claims",
         ),
-        "g1_robot_policy_selected_family": unitree_summary.get(
-            "g1_robot_policy_selected_family"
-        ),
+        "g1_robot_policy_selected_family": unitree_summary.get("g1_robot_policy_selected_family"),
         "unitree_hand_manipulation_policy_scope": unitree_summary.get(
             "unitree_hand_manipulation_policy_scope"
         ),
@@ -7922,22 +7910,15 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         job_dir=job_dir,
         generated_at=generated_at,
         allow_policy_action_model_command_run=allow_policy_action_model_command_run,
-        timeout_seconds=_policy_action_model_command_timeout_seconds(
-            endpoint_timeout_seconds
-        ),
+        timeout_seconds=_policy_action_model_command_timeout_seconds(endpoint_timeout_seconds),
     )
-    if (
-        policy_action_model_command_execution.get("selected_candidate_id")
-        == GROOT_POLICY_ID
-    ):
+    if policy_action_model_command_execution.get("selected_candidate_id") == GROOT_POLICY_ID:
         unitree_groot_n17_sonic_audit = probe_unitree_groot_n17_sonic_runtime(
             generated_at=generated_at
         )
-        unitree_groot_n17_sonic_truth = (
-            build_unitree_groot_n17_sonic_runtime_truth_boundary(
-                audit=unitree_groot_n17_sonic_audit,
-                policy_action_command_result=policy_action_model_command_execution,
-            )
+        unitree_groot_n17_sonic_truth = build_unitree_groot_n17_sonic_runtime_truth_boundary(
+            audit=unitree_groot_n17_sonic_audit,
+            policy_action_command_result=policy_action_model_command_execution,
         )
         unitree_groot_n17_sonic_runtime_summary = {
             **unitree_groot_n17_sonic_runtime_summary,
@@ -7947,9 +7928,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 )
             ),
             "unitree_policy_action_command_ran": bool(
-                policy_action_model_command_execution.get(
-                    "unitree_policy_action_command_ran"
-                )
+                policy_action_model_command_execution.get("unitree_policy_action_command_ran")
             ),
             "unitree_specific_manipulation_candidate_ran": bool(
                 policy_action_model_command_execution.get(
@@ -8185,9 +8164,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "generated_at": generated_at,
         "status": "skipped",
         "policy_id": GROOT_POLICY_ID,
-        "selected_candidate_id": policy_action_model_command_execution.get(
-            "selected_candidate_id"
-        ),
+        "selected_candidate_id": policy_action_model_command_execution.get("selected_candidate_id"),
         "unitree_groot_n17_sonic_sim2sim_command_ran": False,
         "unitree_groot_n17_sonic_action_chunk_consumed": False,
         "blockers": ["skipped_unitree_groot_n17_sonic_policy_action_command_not_completed"],
@@ -8199,12 +8176,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "real_world_manipulation_success_proven": False,
         },
     }
-    if (
-        policy_action_model_command_execution.get("selected_candidate_id")
-        == GROOT_POLICY_ID
-        and policy_action_model_command_execution.get(
-            "unitree_groot_n17_sonic_policy_action_command_ran"
-        )
+    if policy_action_model_command_execution.get(
+        "selected_candidate_id"
+    ) == GROOT_POLICY_ID and policy_action_model_command_execution.get(
+        "unitree_groot_n17_sonic_policy_action_command_ran"
     ):
         phase("unitree_groot_n17_sonic_sim2sim_started", "running")
         unitree_groot_n17_sonic_sim2sim_execution = run_unitree_groot_n17_sonic_sim2sim(
@@ -8228,12 +8203,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         unitree_groot_n17_sonic_audit = probe_unitree_groot_n17_sonic_runtime(
             generated_at=generated_at
         )
-        unitree_groot_n17_sonic_truth = (
-            build_unitree_groot_n17_sonic_runtime_truth_boundary(
-                audit=unitree_groot_n17_sonic_audit,
-                policy_action_command_result=policy_action_model_command_execution,
-                sim2sim_result=unitree_groot_n17_sonic_sim2sim_execution,
-            )
+        unitree_groot_n17_sonic_truth = build_unitree_groot_n17_sonic_runtime_truth_boundary(
+            audit=unitree_groot_n17_sonic_audit,
+            policy_action_command_result=policy_action_model_command_execution,
+            sim2sim_result=unitree_groot_n17_sonic_sim2sim_execution,
         )
         unitree_groot_n17_sonic_runtime_summary = {
             **unitree_groot_n17_sonic_runtime_summary,
@@ -8244,9 +8217,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 )
             ),
             "unitree_policy_action_command_ran": bool(
-                policy_action_model_command_execution.get(
-                    "unitree_policy_action_command_ran"
-                )
+                policy_action_model_command_execution.get("unitree_policy_action_command_ran")
             ),
             "unitree_specific_manipulation_candidate_ran": bool(
                 policy_action_model_command_execution.get(
@@ -9325,8 +9296,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         ),
     )
     if (
-        policy_action_model_command_execution.get("selected_candidate_id")
-        == GROOT_POLICY_ID
+        policy_action_model_command_execution.get("selected_candidate_id") == GROOT_POLICY_ID
         and policy_action_model_command_execution.get(
             "unitree_groot_n17_sonic_policy_action_command_ran"
         )
@@ -9356,12 +9326,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         unitree_groot_n17_sonic_audit = probe_unitree_groot_n17_sonic_runtime(
             generated_at=generated_at
         )
-        unitree_groot_n17_sonic_truth = (
-            build_unitree_groot_n17_sonic_runtime_truth_boundary(
-                audit=unitree_groot_n17_sonic_audit,
-                policy_action_command_result=policy_action_model_command_execution,
-                sim2sim_result=unitree_groot_n17_sonic_sim2sim_execution,
-            )
+        unitree_groot_n17_sonic_truth = build_unitree_groot_n17_sonic_runtime_truth_boundary(
+            audit=unitree_groot_n17_sonic_audit,
+            policy_action_command_result=policy_action_model_command_execution,
+            sim2sim_result=unitree_groot_n17_sonic_sim2sim_execution,
         )
         unitree_groot_n17_sonic_runtime_summary = {
             **unitree_groot_n17_sonic_runtime_summary,
@@ -9372,9 +9340,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 )
             ),
             "unitree_policy_action_command_ran": bool(
-                policy_action_model_command_execution.get(
-                    "unitree_policy_action_command_ran"
-                )
+                policy_action_model_command_execution.get("unitree_policy_action_command_ran")
             ),
             "unitree_specific_manipulation_candidate_ran": bool(
                 policy_action_model_command_execution.get(
@@ -9706,14 +9672,11 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         if row.get("source") == "endpoint_policy"
     ]
     endpoint_policy_inner_responses = [
-        _mapping(_mapping(row.get("endpoint_metadata")).get("raw_response_redacted"))
-        or row
+        _mapping(_mapping(row.get("endpoint_metadata")).get("raw_response_redacted")) or row
         for row in endpoint_policy_responses
     ]
     unitree_groot_n17_sonic_sim2sim_command_ran = bool(
-        unitree_groot_n17_sonic_sim2sim_execution.get(
-            "unitree_groot_n17_sonic_sim2sim_command_ran"
-        )
+        unitree_groot_n17_sonic_sim2sim_execution.get("unitree_groot_n17_sonic_sim2sim_command_ran")
     )
     unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim = bool(
         unitree_groot_n17_sonic_sim2sim_execution.get(
@@ -9779,21 +9742,16 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
             ),
             "unitree_groot_n17_sonic_object_robot_contact_count": int(
-                unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count")
-                or 0
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count") or 0
             ),
             "unitree_groot_n17_sonic_object_displacement_m": (
                 unitree_groot_n17_sonic_sim2sim_execution.get("object_displacement_m")
             ),
             "unitree_groot_n17_sonic_object_horizontal_displacement_m": (
-                unitree_groot_n17_sonic_sim2sim_execution.get(
-                    "object_horizontal_displacement_m"
-                )
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_horizontal_displacement_m")
             ),
             "unitree_groot_n17_sonic_object_displacement_success_axis": (
-                unitree_groot_n17_sonic_sim2sim_execution.get(
-                    "object_displacement_success_axis"
-                )
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_displacement_success_axis")
             ),
             "unitree_groot_n17_sonic_object_displacement_without_robot_contact": bool(
                 unitree_groot_n17_sonic_sim2sim_execution.get(
@@ -9801,8 +9759,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 )
             ),
             "unitree_groot_n17_sonic_contact_rollout_blockers": list(
-                unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers")
-                or []
+                unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers") or []
             ),
             "results": [
                 {
@@ -9818,8 +9775,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         },
     )
     manipulation_validated = bool(
-        manipulation_successes
-        or unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
+        manipulation_successes or unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
     )
     manipulation_blockers: list[str] = []
     if not contact_attempts:
@@ -9841,9 +9797,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "blocked_unitree_hand_policy_endpoint_used_provider_output_replay_not_fresh_per_observation"
         )
     if (
-        (unitree_endpoint_hand_policy_used or unitree_groot_n17_sonic_sim2sim_command_ran)
-        and not unitree_action_chunk_consumed_by_any_sim_path
-    ):
+        unitree_endpoint_hand_policy_used or unitree_groot_n17_sonic_sim2sim_command_ran
+    ) and not unitree_action_chunk_consumed_by_any_sim_path:
         manipulation_blockers.append("blocked_unitree_hand_policy_endpoint_missing_action_chunk")
     if (
         unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
@@ -9919,17 +9874,13 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
             ),
             "unitree_groot_n17_sonic_object_robot_contact_count": int(
-                unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count")
-                or 0
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count") or 0
             ),
             "unitree_groot_n17_sonic_object_horizontal_displacement_m": (
-                unitree_groot_n17_sonic_sim2sim_execution.get(
-                    "object_horizontal_displacement_m"
-                )
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_horizontal_displacement_m")
             ),
             "unitree_groot_n17_sonic_contact_rollout_blockers": list(
-                unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers")
-                or []
+                unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers") or []
             ),
             "unitree_action_chunk_consumed_by_any_sim_path": (
                 unitree_action_chunk_consumed_by_any_sim_path
@@ -10548,10 +10499,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     final_success_blockers = sorted(
         {
             *[str(blocker) for blocker in manipulation_blockers],
-            *[
-                str(blocker)
-                for blocker in robot_policy_wam_closed_loop_attempt.get("blockers", [])
-            ],
+            *[str(blocker) for blocker in robot_policy_wam_closed_loop_attempt.get("blockers", [])],
         }
     )
     if not final_success_unitree_endpoint_action_available:
@@ -10576,7 +10524,9 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "generated_at": generated_at,
         "status": "completed" if final_success_policy_command_ran else "blocked",
         "final_question": final_success_question,
-        "answer": "yes" if final_success_policy_chunk_integrated_into_contact_rollout else "not_proven",
+        "answer": "yes"
+        if final_success_policy_chunk_integrated_into_contact_rollout
+        else "not_proven",
         "scene_task_id": scene_task.get("task_id") or None,
         "scene_target_object_id": scene_task.get("target_object_id") or None,
         "scene_wam_policy_episode_packet_path": (
@@ -10619,13 +10569,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count") or 0
         ),
         "unitree_groot_n17_sonic_object_horizontal_displacement_m": (
-            unitree_groot_n17_sonic_sim2sim_execution.get(
-                "object_horizontal_displacement_m"
-            )
+            unitree_groot_n17_sonic_sim2sim_execution.get("object_horizontal_displacement_m")
         ),
         "unitree_groot_n17_sonic_contact_rollout_blockers": list(
-            unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers")
-            or []
+            unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers") or []
         ),
         "unitree_groot_n17_sonic_policy_action_command_ran": bool(
             policy_action_model_command_execution.get(
@@ -10698,17 +10645,13 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 unitree_groot_n17_sonic_policy_chunk_integrated_contact_rollout
             ),
             "unitree_groot_n17_sonic_object_robot_contact_count": int(
-                unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count")
-                or 0
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_robot_contact_count") or 0
             ),
             "unitree_groot_n17_sonic_object_horizontal_displacement_m": (
-                unitree_groot_n17_sonic_sim2sim_execution.get(
-                    "object_horizontal_displacement_m"
-                )
+                unitree_groot_n17_sonic_sim2sim_execution.get("object_horizontal_displacement_m")
             ),
             "unitree_groot_n17_sonic_contact_rollout_blockers": list(
-                unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers")
-                or []
+                unitree_groot_n17_sonic_sim2sim_execution.get("contact_rollout_blockers") or []
             ),
             "policy_action_chunk_consumed_by_sim": final_success_policy_action_consumed_by_sim,
             "policy_action_chunk_integrated_into_contact_rollout": (
@@ -10898,9 +10841,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             job_dir / "robot_policy_wam_closed_loop" / "robot_policy_wam_loop_trace.jsonl"
         ),
         "wam_generated_next_observation_trace": str(
-            job_dir
-            / "robot_policy_wam_closed_loop"
-            / "wam_generated_next_observations.jsonl"
+            job_dir / "robot_policy_wam_closed_loop" / "wam_generated_next_observations.jsonl"
         ),
         "robot_policy_wam_side_by_side_trace_manifest": str(
             job_dir
@@ -11154,9 +11095,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "whole_unitree_policy_stack_installed"
         ],
         "unitree_policy_stack_installation_status": unitree_stack_installation_audit["status"],
-        "unitree_policy_stack_installation_blockers": unitree_stack_installation_audit[
-            "blockers"
-        ],
+        "unitree_policy_stack_installation_blockers": unitree_stack_installation_audit["blockers"],
         "wam_vla_runtime_proven": bool(
             endpoint_policy_used
             and selected_runtime
@@ -11243,9 +11182,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             unitree_groot_n17_sonic_runtime_summary.get("status")
         ),
         "unitree_groot_n17_sonic_policy_configured": (
-            unitree_groot_n17_sonic_runtime_summary.get(
-                "unitree_groot_n17_sonic_policy_configured"
-            )
+            unitree_groot_n17_sonic_runtime_summary.get("unitree_groot_n17_sonic_policy_configured")
         ),
         "unitree_groot_n17_sonic_ready_for_policy_action_command": (
             unitree_groot_n17_sonic_runtime_summary.get("ready_for_policy_action_command")
@@ -11292,9 +11229,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "generated_video_review_validation_count": len(generated_video_review_validations),
         "final_success_judge_status": final_success_judge["status"],
         "final_success_judge_score": final_success_judge["score"],
-        "object_or_tote_correctly_placed": final_success_judge[
-            "object_or_tote_correctly_placed"
-        ],
+        "object_or_tote_correctly_placed": final_success_judge["object_or_tote_correctly_placed"],
         "final_success_judge_answer": final_success_judge["answer"],
         "unitree_endpoint_action_command_count": len(unitree_endpoint_command_rows),
         "unitree_endpoint_action_controller_clamped_command_count": unitree_controller_clamped_command_count,
@@ -11451,9 +11386,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 job_dir / "robot_policy_wam_closed_loop" / "robot_policy_wam_loop_trace.jsonl"
             ),
             "wam_generated_next_observations_jsonl": str(
-                job_dir
-                / "robot_policy_wam_closed_loop"
-                / "wam_generated_next_observations.jsonl"
+                job_dir / "robot_policy_wam_closed_loop" / "wam_generated_next_observations.jsonl"
             ),
             "robot_policy_wam_side_by_side_trace_manifest": str(
                 job_dir

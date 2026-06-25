@@ -675,6 +675,58 @@ def test_policy_action_model_input_uses_scene_wam_episode_packet(tmp_path: Path)
     assert success_field == "sink_handle_turned_on"
 
 
+def test_policy_action_model_input_preserves_capture_derived_pov_boundary(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "scene-policy-action-capture-derived"
+    job_dir.mkdir()
+    frame = job_dir / "capture_derived_robot_pov_synthesis" / "candidate.jpg"
+    frame.parent.mkdir()
+    frame.write_bytes(b"fake-jpeg")
+    observation = {
+        "schema_version": "scene_wam_policy_initial_observation.v1",
+        "task_id": "turn_on_sink_handle",
+        "target_object_id": "Sink054_handle",
+        "camera_frame_path": str(frame),
+        "capture_derived_robot_pov_frame_path": str(frame),
+        "visual_observation": {
+            "available": True,
+            "camera_frame_path": str(frame),
+            "camera_id": "head_pov",
+            "capture_derived_robot_pov_synthesis_used": True,
+            "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
+        },
+    }
+    observation_path = job_dir / "initial_policy_observation.json"
+    observation_path.write_text(json.dumps(observation), encoding="utf-8")
+    packet_path = job_dir / "scene_wam_policy_episode_packet.json"
+    packet_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "scene_wam_policy_episode_packet.v1",
+                "task_id": "turn_on_sink_handle",
+                "target_object_id": "Sink054_handle",
+                "initial_policy_observation_path": str(observation_path),
+                "initial_policy_observation_frame_path": str(frame),
+                "capture_derived_robot_pov_synthesis_used": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sample = lane._sample_policy_action_model_input(generated_at="now", job_dir=job_dir)
+
+    assert sample["observation"]["visual_observation"]["available"] is True
+    assert sample["observation"]["visual_observation"]["simulated_camera_view"] is False
+    assert (
+        sample["observation"]["visual_observation"]["capture_derived_robot_pov_synthesis_used"]
+        is True
+    )
+    assert sample["claim_boundary"]["visual_frame_is_simulated_mujoco_policy_observation"] is False
+    assert sample["claim_boundary"]["visual_frame_is_capture_derived_synthetic_robot_pov"] is True
+    assert sample["claim_boundary"]["visual_frame_is_raw_capture_truth"] is False
+
+
 def test_unitree_lerobot_policy_action_model_can_drive_wam_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

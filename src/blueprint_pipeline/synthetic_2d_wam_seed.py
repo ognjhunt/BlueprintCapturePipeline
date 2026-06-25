@@ -10,11 +10,15 @@ import argparse
 import hashlib
 import shutil
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 from PIL import Image
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .wam_auxiliary_observation import (
+    build_wam_auxiliary_observation_manifest,
+    summarize_wam_auxiliary_observation_manifest,
+)
 
 
 SCHEMA_VERSION = "synthetic_2d_wam_seed_job.v1"
@@ -47,6 +51,9 @@ def _truth_boundary() -> dict[str, Any]:
         "geometry_truth": False,
         "collision_truth": False,
         "visual_seed_for_wam_experiment": True,
+        "provider_success_separate_from_visually_useful_rollout": True,
+        "visually_useful_rollout": False,
+        "visual_seed_quality_is_not_rollout_quality": True,
         "real_capture_evidence": False,
         "physical_robot_readiness_proven": False,
         "deployment_readiness_proven": False,
@@ -88,8 +95,7 @@ def _image_info(path: Path) -> dict[str, Any]:
         "height": height,
         "mode": mode,
         "aspect_ratio": aspect_ratio,
-        "review_resolution_floor_passed": width >= MIN_REVIEW_WIDTH
-        and height >= MIN_REVIEW_HEIGHT,
+        "review_resolution_floor_passed": width >= MIN_REVIEW_WIDTH and height >= MIN_REVIEW_HEIGHT,
         "sha256": _sha256(path),
         "size_bytes": path.stat().st_size,
     }
@@ -184,7 +190,9 @@ def build_synthetic_2d_wam_seed_job(
 
     if selected_copied_candidate is None:
         selected_candidate_id = "selected_external_image"
-        selected_copied_candidate = seed_dir / f"{selected_candidate_id}{selected_source.suffix or '.png'}"
+        selected_copied_candidate = (
+            seed_dir / f"{selected_candidate_id}{selected_source.suffix or '.png'}"
+        )
         shutil.copy2(selected_source, selected_copied_candidate)
 
     selected_frame = job / "selected_initial_policy_frame.png"
@@ -294,6 +302,42 @@ def build_synthetic_2d_wam_seed_job(
         },
         "claim_boundary": boundary,
     }
+    camera_intrinsics = {
+        "width": selected_info["width"],
+        "height": selected_info["height"],
+        "fx_pixels": round(float(selected_info["width"]) * 0.9, 6),
+        "fy_pixels": round(float(selected_info["width"]) * 0.9, 6),
+        "cx_pixels": round(float(selected_info["width"]) / 2.0, 6),
+        "cy_pixels": round(float(selected_info["height"]) / 2.0, 6),
+        "source": "synthetic_2d_seed_nominal_pinhole_estimate_not_capture_calibration",
+        "intrinsics_truth": False,
+    }
+    head_pose = {
+        "frame": camera_id,
+        "source": "synthetic_2d_seed_nominal_head_pov_not_measured_robot_pose",
+        "pose_truth": False,
+    }
+    auxiliary_observation = build_wam_auxiliary_observation_manifest(
+        output_dir=job / "wam_auxiliary_observation",
+        source_image_path=selected_frame,
+        policy_observation=policy_observation,
+        generated_at=generated,
+        source_kind=SOURCE_KIND,
+        camera_id=camera_id,
+        robot_profile_id=robot_profile_id,
+        task_id=task_id,
+        target_object_id=target_object_id,
+        camera_intrinsics=camera_intrinsics,
+        head_pose=head_pose,
+    )
+    auxiliary_summary = summarize_wam_auxiliary_observation_manifest(auxiliary_observation)
+    policy_observation["wam_auxiliary_observation_manifest_path"] = auxiliary_observation[
+        "manifest_path"
+    ]
+    policy_observation["wam_auxiliary_observation"] = auxiliary_summary
+    visual_observation["wam_auxiliary_observation_manifest_path"] = auxiliary_observation[
+        "manifest_path"
+    ]
     policy_observation_path = job / "policy_observation.json"
     policy_input_path = job / "policy_input.json"
     write_json(policy_observation_path, {"observation": policy_observation})
@@ -313,6 +357,8 @@ def build_synthetic_2d_wam_seed_job(
         "selected_initial_policy_frame_path": str(selected_frame),
         "policy_observation_path": str(policy_observation_path),
         "policy_input_path": str(policy_input_path),
+        "wam_auxiliary_observation_manifest_path": auxiliary_observation["manifest_path"],
+        "wam_auxiliary_observation": auxiliary_summary,
         "expected_loop_shape": [
             "initial_synthetic_image",
             "unitree_groot_n17_sonic_policy_call",
@@ -363,6 +409,7 @@ def build_synthetic_2d_wam_seed_job(
         "policy_observation_path": str(policy_observation_path),
         "policy_input_path": str(policy_input_path),
         "wam_rollout_input_manifest_path": str(job / "wam_rollout_input_manifest.json"),
+        "wam_auxiliary_observation_manifest_path": auxiliary_observation["manifest_path"],
         "claim_boundary_path": str(job / "claim_boundary.json"),
         "claim_boundary": boundary,
         "blockers": [] if selected_visual_qa_passed else ["selected_seed_failed_visual_qa"],
@@ -406,7 +453,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_tool=args.source_tool,
         source_model=args.source_model,
     )
-    print(f"[synthetic-2d-wam-seed] manifest={manifest['job_dir']}/synthetic_2d_wam_seed_job_manifest.json")
+    print(
+        f"[synthetic-2d-wam-seed] manifest={manifest['job_dir']}/synthetic_2d_wam_seed_job_manifest.json"
+    )
     print(f"[synthetic-2d-wam-seed] status={manifest['status']}")
     blockers = manifest.get("blockers") or []
     if blockers:

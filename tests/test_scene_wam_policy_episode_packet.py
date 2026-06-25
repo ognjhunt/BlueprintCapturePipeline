@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 from blueprint_pipeline import scene_wam_policy_episode_packet as packet
@@ -100,6 +101,57 @@ def _write_lightwheel_scenario_specs(path: Path) -> None:
     )
 
 
+def _write_robot_pov_reference_index(
+    capture_root: Path,
+    *,
+    robot_pose: dict,
+    target_pose: dict,
+    camera_role: str = "head_pov",
+) -> None:
+    context = packet.resolve_local_capture_context(capture_root)
+    frame_dir = context.storage_root / context.bucket / "reference_frames"
+    depth_dir = context.storage_root / context.bucket / "reference_depth"
+    index_dir = context.storage_root / context.bucket / "sites" / context.scene_id / "reference_memory"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    depth_dir.mkdir(parents=True, exist_ok=True)
+    index_dir.mkdir(parents=True, exist_ok=True)
+    width = 320
+    height = 180
+    rng = np.random.default_rng(20260625)
+    rgb = rng.integers(20, 235, size=(height, width, 3), dtype=np.uint8)
+    Image.fromarray(rgb).save(frame_dir / "head_pov_reference.jpg", quality=92)
+    depth_mm = np.full((height, width), 2000, dtype=np.uint16)
+    Image.fromarray(depth_mm, mode="I;16").save(depth_dir / "head_pov_reference.png")
+    target_T = packet._robot_pov_target_T_world_camera(
+        robot_pose=robot_pose,
+        target_pose=target_pose,
+        video_camera=camera_role,
+    )
+    intrinsics = packet._synthetic_robot_pov_intrinsics(width=width, height=height)
+    record = {
+        "reference_id": "head-pov-ref-001",
+        "frame_id": "000001",
+        "capture_id": context.capture_id,
+        "scene_id": context.scene_id,
+        "site_id": context.scene_id,
+        "pass_id": "robot-pov-pass-001",
+        "T_world_camera": target_T.tolist(),
+        "intrinsics": intrinsics,
+        "depth_uri": f"gs://{context.bucket}/reference_depth/head_pov_reference.png",
+        "frame_uri": f"gs://{context.bucket}/reference_frames/head_pov_reference.jpg",
+        "site_frame_transform": None,
+        "quality": {
+            "tracking_state": "normal",
+            "sharpness_score": 140.0,
+            "world_mapping_status": "mapped",
+        },
+    }
+    (index_dir / "site_reference_index.jsonl").write_text(
+        json.dumps(record) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _scene_with_counter_obstacle(tmp_path: Path) -> Path:
     scene = tmp_path / "KitchenRoom.usda"
     scene.write_text(
@@ -192,13 +244,43 @@ def test_scene_wam_policy_episode_packet_blocks_without_real_renderer(
     assert (output_dir / "initial_policy_observation.json").is_file()
     assert (output_dir / "scene_episode_task_manifest.json").is_file()
     assert (output_dir / "scene_policy_wam_claim_boundary.json").is_file()
+    recapture_guidance = (
+        output_dir
+        / "capture_derived_robot_pov_synthesis"
+        / "turn_on_sink_handle_unitree_g1_sonic"
+        / "capture_derived_robot_pov_recapture_guidance.json"
+    )
+    source_qa = (
+        output_dir
+        / "capture_derived_robot_pov_synthesis"
+        / "turn_on_sink_handle_unitree_g1_sonic"
+        / "capture_derived_robot_pov_source_qa.json"
+    )
+    contact_sheet = (
+        output_dir
+        / "capture_derived_robot_pov_synthesis"
+        / "turn_on_sink_handle_unitree_g1_sonic"
+        / "capture_derived_robot_pov_contact_sheet.jpg"
+    )
+    assert recapture_guidance.is_file()
+    assert source_qa.is_file()
+    assert contact_sheet.is_file()
 
     observation = json.loads(
         (output_dir / "initial_policy_observation.json").read_text(encoding="utf-8")
     )
     assert observation["visual_observation"]["available"] is False
     assert observation["visual_observation"]["blank_or_placeholder_image_used"] is False
+    assert observation["visual_observation"]["synthesized_or_splatted_outputs_are_not_raw_capture_truth"] is True
+    assert observation["capture_derived_robot_pov_synthesis"]["status"] == "blocked"
     assert observation["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert observation["claim_boundary"]["synthesized_or_splatted_outputs_are_not_raw_capture_truth"] is True
+    guidance = json.loads(recapture_guidance.read_text(encoding="utf-8"))
+    qa = json.loads(source_qa.read_text(encoding="utf-8"))
+    assert guidance["status"] == "required"
+    assert guidance["recapture_required"] is True
+    assert qa["status"] == "blocked"
+    assert "site_reference_index_missing" in qa["blockers"]
     assert "initial_policy_observation_render_not_available" in result["blockers"]
 
 
@@ -251,6 +333,125 @@ def test_scene_wam_policy_episode_packet_ready_with_rendered_frame(
     assert claim_boundary["physical_robot_readiness_proven"] is False
     assert claim_boundary["deployment_readiness_proven"] is False
     assert claim_boundary["safety_validation_proven"] is False
+
+
+def test_capture_derived_robot_pov_synthesis_selects_depth_splat_candidate(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    output_dir = capture_root / "pipeline" / "scene_wam_policy_episode_packet"
+    robot_pose = packet._pose("1,1,0", fallback_xyz=[1.0, 1.0, 0.0], source="test")
+    target_pose = packet._pose("1,2,1", fallback_xyz=[1.0, 2.0, 1.0], source="test")
+    _write_robot_pov_reference_index(
+        capture_root,
+        robot_pose=robot_pose,
+        target_pose=target_pose,
+    )
+    context = packet.resolve_local_capture_context(capture_root)
+
+    result = packet._build_capture_derived_robot_pov_synthesis(
+        capture_root=capture_root,
+        output_dir=output_dir,
+        site_id=context.scene_id,
+        storage_root=context.storage_root,
+        bucket=context.bucket,
+        task_id="turn_on_sink_handle",
+        robot_profile_id="unitree_g1_sonic",
+        target_object_id="sink_handle",
+        robot_pose=robot_pose,
+        target_pose=target_pose,
+        video_camera="head_pov",
+        generated_at="2026-06-25T00:00:00+00:00",
+    )
+
+    profile_dir = (
+        output_dir
+        / "capture_derived_robot_pov_synthesis"
+        / "turn_on_sink_handle_unitree_g1_sonic"
+    )
+    quality = json.loads(
+        (profile_dir / "capture_derived_robot_pov_quality_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    qa = json.loads(
+        (profile_dir / "capture_derived_robot_pov_source_qa.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    recapture = json.loads(
+        (profile_dir / "capture_derived_robot_pov_recapture_guidance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert result["status"] == "completed"
+    assert result["selected_frame_can_seed_wam_initial_observation"] is True
+    assert Path(result["selected_frame_path"]).is_file()
+    assert Path(result["contact_sheet_path"]).is_file()
+    assert quality["status"] == "passed"
+    assert quality["passing_candidate_count"] >= 1
+    assert qa["status"] == "ready"
+    assert qa["source_records_are_raw_capture_references"] is True
+    assert qa["synthesized_outputs_are_raw_capture_truth"] is False
+    assert recapture["status"] == "not_required"
+    assert result["claim_boundary"]["synthesized_or_splatted_outputs_are_not_raw_capture_truth"] is True
+
+
+def test_scene_wam_policy_episode_packet_uses_capture_derived_pov_when_render_blocked(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    scene = _scene_asset(tmp_path)
+    robot_pose = packet._pose("1,1,0", fallback_xyz=[1.0, 1.0, 0.0], source="test")
+    target_pose = packet._pose("1,2,1", fallback_xyz=[1.0, 2.0, 1.0], source="test")
+    _write_robot_pov_reference_index(
+        capture_root,
+        robot_pose=robot_pose,
+        target_pose=target_pose,
+    )
+
+    def fake_render(**kwargs):
+        return {
+            "schema_version": packet.RENDER_SCHEMA_VERSION,
+            "generated_at": kwargs["generated_at"],
+            "status": "blocked",
+            "frame_path": None,
+            "real_scene_observation_rendered": False,
+            "blockers": ["renderer_blocked_for_test"],
+        }
+
+    monkeypatch.setattr(packet, "_render_initial_observation", fake_render)
+    result = packet.build_scene_wam_policy_episode_packet(
+        capture_root=capture_root,
+        scene_asset=scene,
+        task_id="turn_on_sink_handle",
+        target_object_id="sink_handle",
+        target_anchor_pose="1,2,1",
+        robot_start_pose="1,1,0",
+        output_dir=capture_root / "pipeline" / "scene_wam_policy_episode_packet",
+    )
+
+    output_dir = Path(result["initial_policy_observation_path"]).parent
+    observation = json.loads(
+        (output_dir / "initial_policy_observation.json").read_text(encoding="utf-8")
+    )
+    claim_boundary = json.loads(
+        (output_dir / "scene_policy_wam_claim_boundary.json").read_text(encoding="utf-8")
+    )
+
+    assert result["status"] == "ready_for_policy_wam_loop"
+    assert result["initial_policy_observation_frame_source"] == "capture_derived_depth_splat_robot_pov"
+    assert Path(result["initial_policy_observation_frame_path"]).is_file()
+    assert result["capture_derived_robot_pov_synthesis_used"] is True
+    assert observation["camera_frame_source"] == "capture_derived_depth_splat_robot_pov"
+    assert observation["visual_observation"]["capture_derived_robot_pov_synthesis_used"] is True
+    assert observation["visual_observation"]["scene_observation_rendered_from_usd"] is False
+    assert observation["visual_observation"]["physical_robot_sensor_proof"] is False
+    assert observation["claim_boundary"]["real_robot_pov_evidence_proven"] is False
+    assert claim_boundary["synthesized_or_splatted_outputs_are_not_raw_capture_truth"] is True
+    assert claim_boundary["raw_capture_authority_preserved"] is True
 
 
 def test_robot_start_pose_resolution_rejects_obstacle_overlap_and_keeps_truth_boundary(

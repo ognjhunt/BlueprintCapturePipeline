@@ -25,6 +25,10 @@ from .oscar_wam_command_adapter import (
     DEFAULT_WIDTH,
     _materialize_oscar_input_package,
 )
+from .wam_auxiliary_observation import (
+    build_wam_auxiliary_observation_manifest,
+    summarize_wam_auxiliary_observation_manifest,
+)
 from .wam_generated_video_review import (
     validate_generated_mp4_for_review,
     visual_smoke_generated_rollouts_for_review,
@@ -100,6 +104,252 @@ def _source_action_values(step_input: Mapping[str, Any]) -> list[float]:
     return result
 
 
+def _load_json_if_file(path_text: str) -> dict[str, Any]:
+    if not path_text:
+        return {}
+    path = Path(path_text).expanduser()
+    if not path.is_file():
+        return {}
+    return _read_json(path)
+
+
+def _auxiliary_observation_path_from_wam_generation_step(
+    step_input: Mapping[str, Any],
+) -> str:
+    observation = _mapping(step_input.get("current_policy_observation"))
+    visual = _mapping(observation.get("visual_observation"))
+    auxiliary_inline = _mapping(step_input.get("auxiliary_observation"))
+    candidates = [
+        step_input.get("wam_auxiliary_observation_manifest_path"),
+        auxiliary_inline.get("manifest_path"),
+        observation.get("wam_auxiliary_observation_manifest_path"),
+        _mapping(observation.get("wam_auxiliary_observation")).get("manifest_path"),
+        visual.get("wam_auxiliary_observation_manifest_path"),
+    ]
+    for candidate in candidates:
+        text = _string(candidate)
+        if text:
+            return text
+    return ""
+
+
+def _auxiliary_observation_from_wam_generation_step(
+    *,
+    step_input: Mapping[str, Any],
+    source_frame: Path,
+    work_dir: Path,
+    generated_at: str,
+) -> tuple[dict[str, Any], str]:
+    inline = _mapping(step_input.get("auxiliary_observation"))
+    path_text = _auxiliary_observation_path_from_wam_generation_step(step_input)
+    loaded = _load_json_if_file(path_text)
+    if loaded:
+        return loaded, _string(loaded.get("manifest_path")) or path_text
+    if inline:
+        return inline, path_text
+    observation = _mapping(step_input.get("current_policy_observation"))
+    manifest = build_wam_auxiliary_observation_manifest(
+        output_dir=work_dir / "wam_auxiliary_observation",
+        source_image_path=source_frame,
+        policy_observation=observation,
+        source_policy_action=_mapping(step_input.get("source_policy_action")),
+        generated_at=generated_at,
+        source_kind=_string(observation.get("source_kind"))
+        or _string(_mapping(observation.get("visual_observation")).get("source_kind"))
+        or None,
+        camera_id=_string(_mapping(observation.get("visual_observation")).get("camera_id"))
+        or _string(observation.get("camera_id"))
+        or None,
+        robot_profile_id=_string(observation.get("robot_profile_id")) or None,
+        task_id=_string(observation.get("task_id")) or None,
+        target_object_id=_string(observation.get("target_object_id")) or None,
+    )
+    return manifest, _string(manifest.get("manifest_path"))
+
+
+def _path_from_auxiliary_observation(auxiliary_observation: Mapping[str, Any]) -> Path:
+    text = _string(auxiliary_observation.get("manifest_path"))
+    if not text:
+        return Path()
+    return Path(text).expanduser()
+
+
+def _omit_local_path_field(section: dict[str, Any], key: str) -> None:
+    value = _string(section.get(key))
+    if value.startswith("/"):
+        section[key] = None
+        section[f"local_{key}_omitted_from_runtime_manifest"] = True
+
+
+def _runtime_auxiliary_observation_manifest(
+    auxiliary_observation: Mapping[str, Any],
+    *,
+    manifest_runtime_path: str,
+    source_image_runtime_path: str,
+    projected_skeleton_runtime_path: str | None = None,
+) -> dict[str, Any]:
+    try:
+        runtime_auxiliary = json.loads(json.dumps(dict(auxiliary_observation)))
+    except TypeError:
+        runtime_auxiliary = dict(auxiliary_observation)
+    runtime_auxiliary["manifest_path"] = manifest_runtime_path
+    runtime_auxiliary["source_image_path"] = source_image_runtime_path
+    runtime_auxiliary["source_image_path_exists"] = True
+    depth = _mapping(runtime_auxiliary.get("depth"))
+    if depth:
+        _omit_local_path_field(depth, "depth_map_path")
+        _omit_local_path_field(depth, "depth_confidence_path")
+        runtime_auxiliary["depth"] = depth
+    segmentation = _mapping(runtime_auxiliary.get("segmentation"))
+    if segmentation:
+        _omit_local_path_field(segmentation, "target_segmentation_mask_path")
+        _omit_local_path_field(segmentation, "robot_mask_path")
+        runtime_auxiliary["segmentation"] = segmentation
+    action_conditioning = _mapping(runtime_auxiliary.get("action_conditioning"))
+    if action_conditioning:
+        if projected_skeleton_runtime_path:
+            action_conditioning["projected_skeleton_trace_path"] = projected_skeleton_runtime_path
+            action_conditioning["projected_hand_keypoint_trace_path"] = (
+                projected_skeleton_runtime_path
+            )
+            action_conditioning["projected_trace_runtime_path_rewritten_for_provider_bundle"] = True
+        else:
+            _omit_local_path_field(action_conditioning, "projected_skeleton_trace_path")
+            _omit_local_path_field(action_conditioning, "projected_hand_keypoint_trace_path")
+        runtime_auxiliary["action_conditioning"] = action_conditioning
+    runtime_auxiliary["runtime_paths_rewritten_for_provider_bundle"] = True
+    runtime_auxiliary["runtime_path_root"] = "BLUEPRINT_WAM_PROVIDER_BUNDLE_DIR"
+    runtime_auxiliary["claim_boundary"] = {
+        **_mapping(runtime_auxiliary.get("claim_boundary")),
+        "runtime_manifest_paths_point_to_provider_runtime_inputs": True,
+        "local_uncopied_auxiliary_sidecar_paths_omitted_from_runtime_manifest": True,
+    }
+    return _scrub_local_absolute_paths(runtime_auxiliary)
+
+
+def _point_to_pixels(value: Any, *, width: int, height: int) -> tuple[int, int] | None:
+    if isinstance(value, Mapping):
+        if "point" in value:
+            return _point_to_pixels(value.get("point"), width=width, height=height)
+        x_value = value.get("x", value.get("u", value.get("cx")))
+        y_value = value.get("y", value.get("v", value.get("cy")))
+    else:
+        sequence = value if isinstance(value, Sequence) else []
+        if isinstance(sequence, (str, bytes, bytearray)) or len(sequence) < 2:
+            return None
+        x_value = sequence[0]
+        y_value = sequence[1]
+    try:
+        x = float(x_value)
+        y = float(y_value)
+    except (TypeError, ValueError):
+        return None
+    if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+        x *= float(width)
+        y *= float(height)
+    return (
+        max(0, min(width - 1, int(round(x)))),
+        max(0, min(height - 1, int(round(y)))),
+    )
+
+
+def _bbox_to_pixels(value: Any, *, width: int, height: int) -> tuple[int, int, int, int] | None:
+    if isinstance(value, Mapping):
+        if {"x_min", "y_min", "x_max", "y_max"}.issubset(value):
+            raw = [value.get("x_min"), value.get("y_min"), value.get("x_max"), value.get("y_max")]
+        elif {"left", "top", "right", "bottom"}.issubset(value):
+            raw = [value.get("left"), value.get("top"), value.get("right"), value.get("bottom")]
+        elif {"x", "y", "width", "height"}.issubset(value):
+            try:
+                x = float(value.get("x"))
+                y = float(value.get("y"))
+                raw = [x, y, x + float(value.get("width")), y + float(value.get("height"))]
+            except (TypeError, ValueError):
+                raw = []
+        else:
+            raw = []
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        raw = list(value[:4])
+    else:
+        raw = []
+    if len(raw) < 4:
+        return None
+    try:
+        x0, y0, x1, y1 = [float(item) for item in raw[:4]]
+    except (TypeError, ValueError):
+        return None
+    if max(abs(x0), abs(y0), abs(x1), abs(y1)) <= 1.0:
+        x0 *= float(width)
+        x1 *= float(width)
+        y0 *= float(height)
+        y1 *= float(height)
+    if x1 < x0:
+        x0, x1 = x1, x0
+    if y1 < y0:
+        y0, y1 = y1, y0
+    return (
+        max(0, min(width - 1, int(round(x0)))),
+        max(0, min(height - 1, int(round(y0)))),
+        max(0, min(width - 1, int(round(x1)))),
+        max(0, min(height - 1, int(round(y1)))),
+    )
+
+
+def _auxiliary_target_keypoint_pixels(
+    auxiliary_observation: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+) -> list[tuple[int, int]]:
+    segmentation = _mapping(auxiliary_observation.get("segmentation"))
+    value = segmentation.get("target_keypoints")
+    points: list[tuple[int, int]] = []
+    if isinstance(value, Mapping):
+        candidates = value.values()
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        candidates = value
+    else:
+        candidates = []
+    for candidate in candidates:
+        point = _point_to_pixels(candidate, width=width, height=height)
+        if point is not None:
+            points.append(point)
+    return points
+
+
+def _auxiliary_affordance_point_pixels(
+    auxiliary_observation: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+) -> tuple[int, int] | None:
+    segmentation = _mapping(auxiliary_observation.get("segmentation"))
+    value = segmentation.get("affordance_points")
+    if isinstance(value, Mapping):
+        if "turn_handle_axis" in value:
+            axis = value.get("turn_handle_axis")
+            if isinstance(axis, Mapping):
+                return _point_to_pixels(
+                    axis.get("center") or axis.get("point"),
+                    width=width,
+                    height=height,
+                )
+        return _point_to_pixels(value, width=width, height=height)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) and value:
+        return _point_to_pixels(value[0], width=width, height=height)
+    return None
+
+
+def _auxiliary_target_bbox_pixels(
+    auxiliary_observation: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int] | None:
+    segmentation = _mapping(auxiliary_observation.get("segmentation"))
+    return _bbox_to_pixels(segmentation.get("target_bbox"), width=width, height=height)
+
+
 def _task_prompt_from_wam_generation_step(step_input: Mapping[str, Any]) -> str:
     observation = _mapping(step_input.get("current_policy_observation"))
     for key in (
@@ -155,6 +405,7 @@ def _render_step_action_conditioning_video(
     *,
     source_frame: Path,
     action_values: Sequence[float],
+    auxiliary_observation: Mapping[str, Any] | None,
     output_path: Path,
     width: int,
     height: int,
@@ -186,22 +437,78 @@ def _render_step_action_conditioning_video(
     left_bias = values[0] if values else 0.0
     right_bias = values[1] if len(values) > 1 else -left_bias
     reach_bias = values[2] if len(values) > 2 else action_energy
+    auxiliary = _mapping(auxiliary_observation)
+    auxiliary_target_bbox = _auxiliary_target_bbox_pixels(
+        auxiliary,
+        width=width,
+        height=height,
+    )
+    auxiliary_affordance_point = _auxiliary_affordance_point_pixels(
+        auxiliary,
+        width=width,
+        height=height,
+    )
+    auxiliary_keypoints = _auxiliary_target_keypoint_pixels(
+        auxiliary,
+        width=width,
+        height=height,
+    )
+    auxiliary_target_overlay_used = bool(
+        auxiliary_target_bbox or auxiliary_affordance_point or auxiliary_keypoints
+    )
+    depth_available = bool(_mapping(auxiliary.get("depth")).get("available"))
+    segmentation = _mapping(auxiliary.get("segmentation"))
+    target_mask_available = bool(segmentation.get("target_segmentation_mask_path"))
+    robot_mask_available = bool(segmentation.get("robot_mask_path"))
     for index in range(max(1, int(num_frames))):
         progress = index / max(int(num_frames) - 1, 1)
         canvas = cv2.convertScaleAbs(base, alpha=0.72, beta=18)
         overlay = canvas.copy()
-        target_center = (
+        heuristic_target_center = (
             int(width * (0.52 + 0.08 * np.tanh(left_bias + progress * reach_bias))),
             int(height * (0.45 - 0.06 * np.tanh(right_bias + progress * action_energy))),
         )
-        cv2.rectangle(
-            overlay,
-            (target_center[0] - max(18, width // 22), target_center[1] - max(14, height // 28)),
-            (target_center[0] + max(18, width // 22), target_center[1] + max(14, height // 28)),
-            (32, 190, 220),
-            -1,
-            cv2.LINE_AA,
-        )
+        target_center = auxiliary_affordance_point or heuristic_target_center
+        if auxiliary_target_bbox:
+            x0, y0, x1, y1 = auxiliary_target_bbox
+            target_center = auxiliary_affordance_point or ((x0 + x1) // 2, (y0 + y1) // 2)
+            cv2.rectangle(
+                overlay,
+                (x0, y0),
+                (x1, y1),
+                (32, 190, 220),
+                -1,
+                cv2.LINE_AA,
+            )
+        else:
+            cv2.rectangle(
+                overlay,
+                (target_center[0] - max(18, width // 22), target_center[1] - max(14, height // 28)),
+                (target_center[0] + max(18, width // 22), target_center[1] + max(14, height // 28)),
+                (32, 190, 220),
+                -1,
+                cv2.LINE_AA,
+            )
+        for point in auxiliary_keypoints:
+            cv2.circle(overlay, point, max(4, width // 90), (42, 245, 255), -1, cv2.LINE_AA)
+        if auxiliary_affordance_point:
+            cv2.circle(
+                overlay,
+                auxiliary_affordance_point,
+                max(7, width // 65),
+                (12, 252, 168),
+                -1,
+                cv2.LINE_AA,
+            )
+        if depth_available:
+            cv2.line(
+                overlay,
+                (max(2, width // 80), max(2, height // 80)),
+                (max(18, width // 8), max(2, height // 80)),
+                (196, 245, 92),
+                max(2, width // 240),
+                cv2.LINE_AA,
+            )
         canvas = cv2.addWeighted(overlay, 0.22, canvas, 0.78, 0)
         left_wrist = (
             int(width * (0.30 + 0.08 * progress + 0.03 * np.tanh(left_bias))),
@@ -234,7 +541,9 @@ def _render_step_action_conditioning_video(
                 finger_len = int(width * (0.028 - 0.002 * min(finger_idx, 2)))
                 dx = int(side * finger_len * np.cos(np.deg2rad(angle)))
                 dy = int(finger_len * np.sin(np.deg2rad(angle)) - height * 0.035)
-                cv2.line(canvas, palm, (palm[0] + dx, palm[1] + dy), (245, 245, 230), 2, cv2.LINE_AA)
+                cv2.line(
+                    canvas, palm, (palm[0] + dx, palm[1] + dy), (245, 245, 230), 2, cv2.LINE_AA
+                )
         midpoint = ((left_wrist[0] + right_wrist[0]) // 2, (left_wrist[1] + right_wrist[1]) // 2)
         cv2.arrowedLine(canvas, midpoint, target_center, arm_color, 5, cv2.LINE_AA, tipLength=0.2)
         cv2.circle(canvas, target_center, max(8, width // 55), target_color, 4, cv2.LINE_AA)
@@ -271,6 +580,13 @@ def _render_step_action_conditioning_video(
             "max_non_dark_fraction": round(max(non_dark_fractions), 6)
             if non_dark_fractions
             else 0.0,
+            "auxiliary_target_overlay_used": auxiliary_target_overlay_used,
+            "auxiliary_target_bbox_used": bool(auxiliary_target_bbox),
+            "auxiliary_affordance_point_used": bool(auxiliary_affordance_point),
+            "auxiliary_target_keypoint_count": len(auxiliary_keypoints),
+            "auxiliary_depth_available": depth_available,
+            "auxiliary_target_segmentation_mask_available": target_mask_available,
+            "auxiliary_robot_mask_available": robot_mask_available,
         },
     }
 
@@ -286,6 +602,18 @@ def _materialize_oscar_input_package_from_wam_generation_step(
 ) -> dict[str, Any]:
     source_frame = _source_frame_from_wam_generation_step(step_input)
     package_dir = work_dir / "oscar_input"
+    generated = utc_now_iso()
+    auxiliary_observation, auxiliary_observation_manifest_path = (
+        _auxiliary_observation_from_wam_generation_step(
+            step_input=step_input,
+            source_frame=source_frame,
+            work_dir=package_dir,
+            generated_at=generated,
+        )
+    )
+    auxiliary_observation_summary = summarize_wam_auxiliary_observation_manifest(
+        auxiliary_observation
+    )
     first_frame = _materialize_step_first_frame(
         source_frame=source_frame,
         output_path=package_dir / "first_frame.png",
@@ -296,6 +624,7 @@ def _materialize_oscar_input_package_from_wam_generation_step(
     skeleton_video = _render_step_action_conditioning_video(
         source_frame=source_frame,
         action_values=action_values,
+        auxiliary_observation=auxiliary_observation,
         output_path=package_dir / "blueprint_proxy_skeleton_conditioning.mp4",
         width=width,
         height=height,
@@ -312,6 +641,7 @@ def _materialize_oscar_input_package_from_wam_generation_step(
         ],
         output_dir=work_dir / "oscar_input_conditioning_visual_review",
         generated_at=utc_now_iso(),
+        require_review_quality_profile=False,
     )
     observation = _mapping(step_input.get("current_policy_observation"))
     requested_output = _mapping(step_input.get("requested_output"))
@@ -337,6 +667,8 @@ def _materialize_oscar_input_package_from_wam_generation_step(
         "height": height,
         "width": width,
         "source_policy_observation_frame_path": str(source_frame),
+        "wam_auxiliary_observation_manifest_path": auxiliary_observation_manifest_path,
+        "wam_auxiliary_observation": auxiliary_observation_summary,
         "source_action": {
             "action_type": _mapping(step_input.get("source_policy_action")).get("action_type"),
             "action_chunk_value_count": len(action_values),
@@ -356,9 +688,7 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             "omitted_for_wam_generation_step_single_frame_input": True,
         },
         "source_review_video": {
-            "camera": _string(
-                _mapping(observation.get("visual_observation")).get("camera_id")
-            )
+            "camera": _string(_mapping(observation.get("visual_observation")).get("camera_id"))
             or "head_pov",
             "source": "wam_generation_step_source_policy_observation_frame",
             "review_video_available": False,
@@ -373,9 +703,7 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             "conditioning_source": "policy_action_proxy_video_from_unitree_sonic_action_chunk",
             "simulated_state_not_physical_robot_sensor_evidence": True,
         },
-        "source_camera": _string(
-            _mapping(observation.get("visual_observation")).get("camera_id")
-        )
+        "source_camera": _string(_mapping(observation.get("visual_observation")).get("camera_id"))
         or "head_pov",
         "task_id": observation.get("task_id"),
         "target_object_id": observation.get("target_object_id"),
@@ -393,6 +721,12 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             "rgb_video_used_for_oscar_rgb_latent_context": False,
             "rgb_context_mode": "never",
             "true_robot_proprioceptive_skeleton_available": False,
+            "auxiliary_observation_manifest_packaged": bool(auxiliary_observation_manifest_path),
+            "auxiliary_observation_is_conditioning_support": True,
+            "raw_auxiliary_modalities_consumed_by_public_oscar_entrypoint": False,
+            "auxiliary_target_overlay_may_condition_oscar_video": bool(
+                _mapping(skeleton_video.get("visual_signal")).get("auxiliary_target_overlay_used")
+            ),
             "generated_input_is_not_model_output": True,
             "conditioning_video_visual_smoke_is_not_wam_output_success": True,
             "physical_robot_readiness_proven": False,
@@ -470,6 +804,7 @@ def _runtime_input_package_manifest(
     skeleton_runtime_path: str,
     rgb_runtime_path: str | None = None,
     projected_skeleton_runtime_path: str | None = None,
+    auxiliary_observation_runtime_path: str | None = None,
 ) -> dict[str, Any]:
     try:
         runtime_package = json.loads(json.dumps(dict(input_package)))
@@ -516,14 +851,40 @@ def _runtime_input_package_manifest(
                 source_review_video["local_review_video_path_omitted_from_runtime_manifest"] = True
             runtime_package["source_review_video"] = source_review_video
     if runtime_package.pop("source_mujoco_endpoint_eval_job_dir", None):
-        runtime_package["local_source_mujoco_endpoint_eval_job_dir_omitted_from_runtime_manifest"] = True
+        runtime_package[
+            "local_source_mujoco_endpoint_eval_job_dir_omitted_from_runtime_manifest"
+        ] = True
+    auxiliary_observation = _mapping(runtime_package.get("wam_auxiliary_observation"))
+    if auxiliary_observation:
+        if auxiliary_observation_runtime_path:
+            auxiliary_observation["manifest_path"] = auxiliary_observation_runtime_path
+            auxiliary_observation["runtime_path_rewritten_for_provider_bundle"] = True
+        elif auxiliary_observation.pop("manifest_path", None):
+            auxiliary_observation[
+                "local_auxiliary_observation_manifest_path_omitted_from_runtime_manifest"
+            ] = True
+        if auxiliary_observation.pop("source_image_path", None):
+            auxiliary_observation[
+                "local_auxiliary_source_image_path_omitted_from_runtime_manifest"
+            ] = True
+        runtime_package["wam_auxiliary_observation"] = auxiliary_observation
+    if auxiliary_observation_runtime_path:
+        runtime_package["wam_auxiliary_observation_manifest_path"] = (
+            auxiliary_observation_runtime_path
+        )
+    elif runtime_package.pop("wam_auxiliary_observation_manifest_path", None):
+        runtime_package[
+            "local_wam_auxiliary_observation_manifest_path_omitted_from_runtime_manifest"
+        ] = True
     projected_trace = _mapping(runtime_package.get("projected_skeleton_trace"))
     if projected_trace:
         if projected_skeleton_runtime_path:
             projected_trace["path"] = projected_skeleton_runtime_path
             projected_trace["runtime_path_rewritten_for_provider_bundle"] = True
         elif projected_trace.pop("path", None):
-            projected_trace["local_projected_skeleton_trace_path_omitted_from_runtime_manifest"] = True
+            projected_trace["local_projected_skeleton_trace_path_omitted_from_runtime_manifest"] = (
+                True
+            )
         runtime_package["projected_skeleton_trace"] = projected_trace
     validation = _mapping(runtime_package.get("conditioning_video_review_validation"))
     if validation:
@@ -567,9 +928,7 @@ def _runtime_input_package_manifest(
             rgb_context_mode == "never" and not rgb_runtime_path
         ),
         "projected_g1_skeleton_conditioning_suppresses_rgb_context": projected_conditioning_suppresses_rgb_context,
-        "projected_g1_rgb_context_enabled": bool(
-            projected_conditioning_used and rgb_runtime_path
-        ),
+        "projected_g1_rgb_context_enabled": bool(projected_conditioning_used and rgb_runtime_path),
         "raw_secret_values_recorded": False,
     }
     runtime_package["oscar_projected_skeleton_runtime_contract"] = {
@@ -580,6 +939,13 @@ def _runtime_input_package_manifest(
         ),
         "raw_secret_values_recorded": False,
     }
+    runtime_package["oscar_auxiliary_observation_runtime_contract"] = {
+        "auxiliary_observation_manifest_packaged": bool(auxiliary_observation_runtime_path),
+        "auxiliary_observation_manifest_runtime_path": auxiliary_observation_runtime_path,
+        "raw_aux_modalities_consumed_by_public_oscar_entrypoint": False,
+        "auxiliary_overlays_are_conditioning_metadata_not_truth_proof": True,
+        "raw_secret_values_recorded": False,
+    }
     runtime_package["claim_boundary"] = {
         **_mapping(runtime_package.get("claim_boundary")),
         "runtime_manifest_paths_point_to_provider_runtime_inputs": True,
@@ -587,10 +953,11 @@ def _runtime_input_package_manifest(
         "rgb_video_uses_selected_review_video": bool(rgb_runtime_path),
         "rgb_context_packaging_is_input_contract_not_rollout_quality_proof": True,
         "projected_g1_skeleton_trace_packaging_is_input_provenance_not_rollout_quality_proof": True,
-        "projected_g1_skeleton_conditioning_suppresses_rgb_context": projected_conditioning_suppresses_rgb_context,
-        "projected_g1_rgb_context_enabled": bool(
-            projected_conditioning_used and rgb_runtime_path
+        "auxiliary_observation_packaging_is_input_provenance_not_rollout_quality_proof": bool(
+            auxiliary_observation_runtime_path
         ),
+        "projected_g1_skeleton_conditioning_suppresses_rgb_context": projected_conditioning_suppresses_rgb_context,
+        "projected_g1_rgb_context_enabled": bool(projected_conditioning_used and rgb_runtime_path),
     }
     return _scrub_local_absolute_paths(runtime_package)
 
@@ -599,6 +966,7 @@ def _runtime_rollout_manifest(
     rollout_manifest: Mapping[str, Any],
     *,
     projected_skeleton_runtime_path: str | None = None,
+    auxiliary_observation_runtime_path: str | None = None,
 ) -> dict[str, Any]:
     try:
         runtime_manifest = json.loads(json.dumps(dict(rollout_manifest)))
@@ -608,18 +976,42 @@ def _runtime_rollout_manifest(
         runtime_manifest[
             "local_source_mujoco_endpoint_eval_job_dir_omitted_from_runtime_manifest"
         ] = True
+    auxiliary_observation = _mapping(runtime_manifest.get("auxiliary_observation"))
+    if auxiliary_observation:
+        if auxiliary_observation_runtime_path:
+            auxiliary_observation["manifest_path"] = auxiliary_observation_runtime_path
+            auxiliary_observation["runtime_path_rewritten_for_provider_bundle"] = True
+        elif auxiliary_observation.pop("manifest_path", None):
+            auxiliary_observation[
+                "local_auxiliary_observation_manifest_path_omitted_from_runtime_manifest"
+            ] = True
+        if auxiliary_observation.pop("source_image_path", None):
+            auxiliary_observation[
+                "local_auxiliary_source_image_path_omitted_from_runtime_manifest"
+            ] = True
+        runtime_manifest["auxiliary_observation"] = auxiliary_observation
+    if auxiliary_observation_runtime_path:
+        runtime_manifest["wam_auxiliary_observation_manifest_path"] = (
+            auxiliary_observation_runtime_path
+        )
+    elif runtime_manifest.pop("wam_auxiliary_observation_manifest_path", None):
+        runtime_manifest[
+            "local_wam_auxiliary_observation_manifest_path_omitted_from_runtime_manifest"
+        ] = True
     inputs = _mapping(runtime_manifest.get("inputs"))
     if inputs:
+        if auxiliary_observation_runtime_path:
+            inputs["wam_auxiliary_observation_manifest_path"] = auxiliary_observation_runtime_path
+        elif inputs.pop("wam_auxiliary_observation_manifest_path", None):
+            inputs[
+                "local_wam_auxiliary_observation_manifest_path_omitted_from_runtime_manifest"
+            ] = True
         if projected_skeleton_runtime_path:
             inputs["g1_projected_skeleton_trace_jsonl"] = projected_skeleton_runtime_path
         elif inputs.pop("g1_projected_skeleton_trace_jsonl", None):
-            inputs[
-                "local_g1_projected_skeleton_trace_jsonl_omitted_from_runtime_manifest"
-            ] = True
+            inputs["local_g1_projected_skeleton_trace_jsonl_omitted_from_runtime_manifest"] = True
         if inputs.pop("g1_projected_skeleton_manifest", None):
-            inputs[
-                "local_g1_projected_skeleton_manifest_omitted_from_runtime_manifest"
-            ] = True
+            inputs["local_g1_projected_skeleton_manifest_omitted_from_runtime_manifest"] = True
         runtime_manifest["inputs"] = inputs
     runtime_manifest["runtime_paths_rewritten_for_provider_bundle"] = True
     runtime_manifest["runtime_path_root"] = "BLUEPRINT_WAM_PROVIDER_BUNDLE_DIR"
@@ -669,6 +1061,7 @@ def _materialized_package_from_existing(
         ],
         output_dir=oscar_input_dir.parent / "oscar_input_conditioning_visual_review",
         generated_at=utc_now_iso(),
+        require_review_quality_profile=False,
     )
     manifest["conditioning_video_review_validation"] = conditioning_validation
     manifest["conditioning_video_visual_smoke"] = conditioning_visual_smoke
@@ -2668,7 +3061,7 @@ if __name__ == "__main__":
 '''
 
 
-REMOTE_ENTRYPOINT = r'''#!/usr/bin/env bash
+REMOTE_ENTRYPOINT = r"""#!/usr/bin/env bash
 set +e
 write_missing_result() {
   local runner_rc="${1:-999}"
@@ -2718,7 +3111,7 @@ if [ ! -f "${BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR:-runtime_output}/wam_runtime_resu
   write_missing_result "$rc" "$RUNNER_LOG"
 fi
 exit $rc
-'''
+"""
 
 
 def _write_runtime_files(
@@ -2756,6 +3149,14 @@ def _write_runtime_files(
         _string(_mapping(input_package.get("projected_skeleton_trace")).get("path"))
     ).expanduser()
     runtime_projected_trace = oscar_input_dir / "g1_projected_skeleton_trace.jsonl"
+    auxiliary_observation_source = _path_from_auxiliary_observation(
+        _mapping(input_package.get("wam_auxiliary_observation"))
+    )
+    if not auxiliary_observation_source.is_file():
+        auxiliary_observation_source = Path(
+            _string(input_package.get("wam_auxiliary_observation_manifest_path"))
+        ).expanduser()
+    runtime_auxiliary_observation = oscar_input_dir / "wam_auxiliary_observation_manifest.json"
     _copy_file(first_frame, runtime_first_frame)
     _copy_file(skeleton, runtime_skeleton)
     rgb_runtime_path = None
@@ -2768,6 +3169,20 @@ def _write_runtime_files(
         projected_skeleton_runtime_path = (
             "provider_runtime/oscar_input/g1_projected_skeleton_trace.jsonl"
         )
+    auxiliary_observation_runtime_path = None
+    if auxiliary_observation_source.is_file():
+        auxiliary_observation_runtime_path = (
+            "provider_runtime/oscar_input/wam_auxiliary_observation_manifest.json"
+        )
+        write_json(
+            runtime_auxiliary_observation,
+            _runtime_auxiliary_observation_manifest(
+                _read_json(auxiliary_observation_source),
+                manifest_runtime_path=auxiliary_observation_runtime_path,
+                source_image_runtime_path="provider_runtime/oscar_input/first_frame.png",
+                projected_skeleton_runtime_path=projected_skeleton_runtime_path,
+            ),
+        )
     runtime_input_package = _runtime_input_package_manifest(
         input_package,
         first_frame_runtime_path="provider_runtime/oscar_input/first_frame.png",
@@ -2776,12 +3191,14 @@ def _write_runtime_files(
         ),
         rgb_runtime_path=rgb_runtime_path,
         projected_skeleton_runtime_path=projected_skeleton_runtime_path,
+        auxiliary_observation_runtime_path=auxiliary_observation_runtime_path,
     )
     write_json(
         runtime_dir / "wam_rollout_input_manifest.json",
         _runtime_rollout_manifest(
             rollout_manifest,
             projected_skeleton_runtime_path=projected_skeleton_runtime_path,
+            auxiliary_observation_runtime_path=auxiliary_observation_runtime_path,
         ),
     )
     runtime_manifest = {
@@ -2831,6 +3248,8 @@ def _write_runtime_files(
             ),
             "projected_skeleton_trace_packaged": bool(projected_skeleton_runtime_path),
             "projected_skeleton_trace_runtime_path": projected_skeleton_runtime_path,
+            "auxiliary_observation_manifest_packaged": bool(auxiliary_observation_runtime_path),
+            "auxiliary_observation_manifest_runtime_path": (auxiliary_observation_runtime_path),
             "remote_runner_records_actual_argv_redacted_in_wam_runtime_result": True,
             "raw_secret_values_recorded": False,
         },
@@ -2840,6 +3259,7 @@ def _write_runtime_files(
             "generated_success_label_requires_external_vlm_or_human_judge": True,
             "rgb_context_packaging_is_not_visual_usefulness_proof": True,
             "projected_g1_skeleton_packaging_is_not_visual_usefulness_proof": True,
+            "auxiliary_observation_packaging_is_not_visual_usefulness_proof": True,
         },
     }
     write_json(runtime_dir / "wam_provider_runtime_manifest.json", runtime_manifest)
@@ -2980,6 +3400,12 @@ def build_oscar_wam_provider_bundle(
         "input_package_conditioning_video_blockers": conditioning_video_blockers,
         "input_package_materialization_error": materialization_error,
         "input_package_source_schema_version": rollout_manifest.get("schema_version"),
+        "input_package_wam_auxiliary_observation_manifest_path": input_package.get(
+            "wam_auxiliary_observation_manifest_path"
+        ),
+        "input_package_wam_auxiliary_observation": _mapping(
+            input_package.get("wam_auxiliary_observation")
+        ),
         "blockers": blockers,
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
@@ -3027,7 +3453,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         fps=args.fps,
         bundle_filename=args.bundle_filename,
     )
-    print(f"[oscar-wam-provider-bundle] manifest={Path(args.job_dir).resolve() / 'oscar_wam_provider_bundle_manifest.json'}")
+    print(
+        f"[oscar-wam-provider-bundle] manifest={Path(args.job_dir).resolve() / 'oscar_wam_provider_bundle_manifest.json'}"
+    )
     print(f"[oscar-wam-provider-bundle] status={manifest.get('status')}")
     blockers = manifest.get("blockers") or []
     if blockers:

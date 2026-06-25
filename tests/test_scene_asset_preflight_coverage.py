@@ -151,6 +151,43 @@ def test_scene_asset_preflight_scalar_path_and_ascii_ply_edges(
     assert sap._inspect_ascii_ply(capped, sap._parse_ply_header(lines), header_end)["sampled_point_count"] == 200000
 
 
+def test_scene_frame_selection_rejects_degenerate_pointcloud_for_collider_bounds() -> None:
+    thin_ply = {
+        "asset_type": "ply",
+        "path": "/tmp/canonical_pointcloud.ply",
+        "bounds": {"min": [0.0, 0.0, 1.2], "max": [1.26, 0.0, 1.2]},
+        "centroid": [0.63, 0.0, 1.2],
+        "floor_z_estimate": 1.2,
+        "confidence": "medium",
+        "collision_evidence": {"real_collider_proven": False, "proxy_estimated": True},
+    }
+    collider_glb = {
+        "asset_type": "glb",
+        "path": "/tmp/worldlabs_collider.glb",
+        "bounds": {"min": [-13.0, -7.5, -1.0], "max": [13.0, 1.5, 3.0]},
+        "centroid": [0.0, -3.0, 1.0],
+        "floor_z_estimate": -1.0,
+        "confidence": "medium",
+        "collision_evidence": {
+            "real_collider_proven": True,
+            "portable_collider_glb_present": True,
+        },
+    }
+
+    frame, rejected = sap._select_scene_frame_source([thin_ply, collider_glb])
+
+    assert frame is not None
+    assert frame["source_asset"] == "/tmp/worldlabs_collider.glb"
+    assert frame["selection_reason"] == "ranked_non_degenerate_local_scene_asset_bounds"
+    assert rejected == [
+        {
+            "path": "/tmp/canonical_pointcloud.ply",
+            "asset_type": "ply",
+            "reason": "missing_or_degenerate_xy_bounds",
+        }
+    ]
+
+
 def test_scene_asset_preflight_binary_ply_and_usd_dependency_edges(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

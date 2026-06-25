@@ -8,8 +8,10 @@ still decide whether the decoded rollout is useful for task-success judging.
 from __future__ import annotations
 
 import json
+import math
+import re
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 SCHEMA_VERSION = "wam_generated_video_review_validation.v1"
@@ -22,6 +24,12 @@ REVIEW_QUALITY_MIN_WIDTH = 320
 REVIEW_QUALITY_MIN_HEIGHT = 256
 REVIEW_QUALITY_MIN_FPS = 8.0
 REVIEW_QUALITY_MIN_NUM_FRAMES = 12
+TARGET_CENTER_MIN_X = 0.15
+TARGET_CENTER_MAX_X = 0.85
+TARGET_CENTER_MIN_Y = 0.12
+TARGET_CENTER_MAX_Y = 0.88
+TARGET_VISIBLE_AREA_RATIO_MIN = 0.55
+TARGET_MIN_FRAME_AREA_RATIO = 0.00035
 
 
 def _blocked(path: Path, blockers: list[str], **fields: Any) -> dict[str, Any]:
@@ -135,6 +143,679 @@ def _round_float(value: Any, digits: int = 6) -> float:
         return round(float(value), digits)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _string(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        values: Iterable[Any] = []
+    elif isinstance(value, str):
+        values = [value]
+    elif isinstance(value, Iterable):
+        values = value
+    else:
+        values = [value]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = _string(item)
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _normalize_text(*parts: Any) -> str:
+    text = " ".join(_string(part).lower() for part in parts if _string(part))
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _tokens(*parts: Any) -> set[str]:
+    return {token for token in _normalize_text(*parts).split() if token}
+
+
+def _semantic_index_objects(object_index: Mapping[str, Any] | Sequence[Any] | None) -> list[dict[str, Any]]:
+    if object_index is None:
+        return []
+    raw_objects: Any
+    if isinstance(object_index, Mapping):
+        raw_objects = object_index.get("objects") or object_index.get("object_index_entries")
+    else:
+        raw_objects = object_index
+    if not isinstance(raw_objects, Sequence) or isinstance(raw_objects, (str, bytes)):
+        return []
+    return [dict(item) for item in raw_objects if isinstance(item, Mapping)]
+
+
+def _semantic_object_id(entry: Mapping[str, Any]) -> str:
+    for key in ("object_id", "instance_id", "id", "uuid", "name"):
+        text = _string(entry.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _semantic_object_label(entry: Mapping[str, Any]) -> str:
+    for key in ("label", "class_name", "category", "name", "source_prompt"):
+        text = _string(entry.get(key))
+        if text:
+            return text
+    return _semantic_object_id(entry) or "object"
+
+
+def _semantic_object_crops(entry: Mapping[str, Any]) -> list[str]:
+    crops: list[str] = []
+    for key in ("reference_crop", "crop_path"):
+        value = _string(entry.get(key))
+        if value and value not in crops:
+            crops.append(value)
+    for key in ("all_crops", "crop_paths", "image_paths"):
+        for value in _string_list(entry.get(key)):
+            if value not in crops:
+                crops.append(value)
+    return crops
+
+
+def _semantic_object_mask_path(entry: Mapping[str, Any]) -> str:
+    for key in ("mask_path", "mask_uri", "mask"):
+        value = _string(entry.get(key))
+        if value:
+            return value
+    raw_entry = _mapping(entry.get("raw_entry"))
+    for key in ("mask_path", "mask_uri", "mask"):
+        value = _string(raw_entry.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _semantic_object_keypoints(entry: Mapping[str, Any]) -> Any:
+    if entry.get("keypoints"):
+        return entry.get("keypoints")
+    return _mapping(entry.get("raw_entry")).get("keypoints")
+
+
+def _semantic_object_bbox(entry: Mapping[str, Any]) -> Any:
+    for key in (
+        "source_frame_bbox",
+        "bbox_xyxy",
+        "bbox",
+        "boundingBox",
+        "box",
+        "mean_box_px",
+    ):
+        value = entry.get(key)
+        if value:
+            return value
+    raw_entry = _mapping(entry.get("raw_entry"))
+    for key in ("source_frame_bbox", "bbox_xyxy", "bbox", "boundingBox", "box", "mean_box_px"):
+        value = raw_entry.get(key)
+        if value:
+            return value
+    return None
+
+
+def _semantic_object_is_synthetic(entry: Mapping[str, Any]) -> bool:
+    if bool(entry.get("synthetic_label") or entry.get("synthetic_labeled_frame")):
+        return True
+    raw_entry = _mapping(entry.get("raw_entry"))
+    if bool(raw_entry.get("synthetic_label") or raw_entry.get("synthetic_labeled_frame")):
+        return True
+    source_text = _normalize_text(
+        entry.get("source"),
+        entry.get("label_source"),
+        entry.get("provenance"),
+        raw_entry.get("source"),
+        raw_entry.get("label_source"),
+    )
+    return "synthetic" in source_text
+
+
+def _candidate_match_score(
+    entry: Mapping[str, Any],
+    *,
+    target_object_id: str | None,
+    task_id: str | None,
+) -> float:
+    target_text = _normalize_text(target_object_id, task_id)
+    if not target_text:
+        return 0.0
+    object_id = _semantic_object_id(entry)
+    label = _semantic_object_label(entry)
+    entry_text = _normalize_text(
+        object_id,
+        label,
+        entry.get("source_prompt"),
+        entry.get("description"),
+        _mapping(entry.get("raw_entry")).get("source_prompt"),
+    )
+    if not entry_text:
+        return 0.0
+    score = 0.0
+    if entry_text == target_text:
+        score += 1.0
+    if target_text in entry_text or entry_text in target_text:
+        score += 0.7
+    target_tokens = _tokens(target_object_id, task_id)
+    entry_tokens = _tokens(object_id, label, entry.get("source_prompt"))
+    overlap = target_tokens & entry_tokens
+    if overlap:
+        score += min(0.6, 0.12 * len(overlap))
+    if {"handle", "knob", "button", "switch", "lever"} & target_tokens & entry_tokens:
+        score += 0.25
+    if {"sink", "faucet", "stovetop", "stove", "dishwasher", "cabinet"} & target_tokens & entry_tokens:
+        score += 0.15
+    return score
+
+
+def _selected_semantic_target(
+    *,
+    object_index: Mapping[str, Any] | Sequence[Any] | None,
+    eval_ready_task_grounding: Mapping[str, Any] | None,
+    target_object_id: str | None,
+    task_id: str | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    grounding = _mapping(eval_ready_task_grounding)
+    selected = _mapping(grounding.get("selected_task_target"))
+    if selected:
+        score = _candidate_match_score(
+            selected,
+            target_object_id=target_object_id,
+            task_id=task_id,
+        )
+        if score > 0.0 or not target_object_id:
+            return selected, {
+                "source": "eval_ready_task_grounding.selected_task_target",
+                "match_score": _round_float(score),
+            }
+
+    objects = _semantic_index_objects(object_index)
+    if not objects:
+        return None, {"source": "none", "match_score": 0.0}
+    scored = [
+        (
+            _candidate_match_score(
+                entry,
+                target_object_id=target_object_id,
+                task_id=task_id,
+            ),
+            entry,
+        )
+        for entry in objects
+    ]
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_entry = scored[0]
+    if best_score <= 0.0:
+        return None, {"source": "object_index", "match_score": 0.0}
+    return dict(best_entry), {
+        "source": "object_index",
+        "match_score": _round_float(best_score),
+    }
+
+
+def _bbox_xyxy(value: Any) -> tuple[float, float, float, float] | None:
+    if isinstance(value, Mapping):
+        lowered = {str(key).lower(): item for key, item in value.items()}
+        if {"x", "y", "width", "height"} <= set(lowered):
+            x0 = _safe_float(lowered.get("x"))
+            y0 = _safe_float(lowered.get("y"))
+            width = _safe_float(lowered.get("width"))
+            height = _safe_float(lowered.get("height"))
+            return (x0, y0, x0 + width, y0 + height) if width > 0 and height > 0 else None
+        if {"left", "top", "width", "height"} <= set(lowered):
+            x0 = _safe_float(lowered.get("left"))
+            y0 = _safe_float(lowered.get("top"))
+            width = _safe_float(lowered.get("width"))
+            height = _safe_float(lowered.get("height"))
+            return (x0, y0, x0 + width, y0 + height) if width > 0 and height > 0 else None
+        x0 = lowered.get("x0", lowered.get("xmin", lowered.get("x_min")))
+        y0 = lowered.get("y0", lowered.get("ymin", lowered.get("y_min")))
+        x1 = lowered.get("x1", lowered.get("xmax", lowered.get("x_max")))
+        y1 = lowered.get("y1", lowered.get("ymax", lowered.get("y_max")))
+        if x0 is not None and y0 is not None and x1 is not None and y1 is not None:
+            box = (_safe_float(x0), _safe_float(y0), _safe_float(x1), _safe_float(y1))
+            return box if box[2] > box[0] and box[3] > box[1] else None
+        if {"cx", "cy", "width", "height"} <= set(lowered):
+            cx = _safe_float(lowered.get("cx"))
+            cy = _safe_float(lowered.get("cy"))
+            width = _safe_float(lowered.get("width"))
+            height = _safe_float(lowered.get("height"))
+            if width > 0 and height > 0:
+                return (cx - width * 0.5, cy - height * 0.5, cx + width * 0.5, cy + height * 0.5)
+        return None
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 4:
+        x0 = _safe_float(value[0])
+        y0 = _safe_float(value[1])
+        third = _safe_float(value[2])
+        fourth = _safe_float(value[3])
+        if third > x0 and fourth > y0:
+            return (x0, y0, third, fourth)
+        return (x0, y0, x0 + third, y0 + fourth) if third > 0 and fourth > 0 else None
+    return None
+
+
+def _point2(value: Any) -> list[float] | None:
+    if isinstance(value, Mapping):
+        for key in ("center", "center_px", "target_center_px", "uv", "point"):
+            point = _point2(value.get(key))
+            if point is not None:
+                return point
+        if "x" in value and "y" in value:
+            return [_safe_float(value.get("x")), _safe_float(value.get("y"))]
+        if "u" in value and "v" in value:
+            return [_safe_float(value.get("u")), _safe_float(value.get("v"))]
+        return None
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        if len(value) >= 2 and not isinstance(value[0], (Mapping, list, tuple)):
+            return [_safe_float(value[0]), _safe_float(value[1])]
+        for item in value:
+            point = _point2(item)
+            if point is not None:
+                return point
+    return None
+
+
+def _target_center_and_radius(entry: Mapping[str, Any]) -> tuple[list[float] | None, float | None]:
+    bbox = _bbox_xyxy(_semantic_object_bbox(entry))
+    if bbox is not None:
+        width = max(1.0, bbox[2] - bbox[0])
+        height = max(1.0, bbox[3] - bbox[1])
+        return [bbox[0] + width * 0.5, bbox[1] + height * 0.5], max(width, height) * 0.6
+    point = _point2(_semantic_object_keypoints(entry))
+    return (point, 40.0) if point is not None else (None, None)
+
+
+def _resolve_local_artifact_path(value: Any, *, base_dir: str | Path | None) -> Path | None:
+    text = _string(value)
+    if not text or "://" in text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute() and base_dir is not None:
+        path = Path(base_dir).expanduser() / path
+    return path
+
+
+def _luma_region_stats(array: Any) -> dict[str, Any]:
+    import numpy as np
+
+    luma = 0.2126 * array[:, :, 0] + 0.7152 * array[:, :, 1] + 0.0722 * array[:, :, 2]
+    height, width = luma.shape
+    histogram, _ = np.histogram(luma, bins=128, range=(0, 255))
+    total = int(histogram.sum())
+    probabilities = histogram[histogram > 0] / max(total, 1)
+    entropy_bits = float(-(probabilities * np.log2(probabilities)).sum()) if total else 0.0
+    gradient_y, gradient_x = np.gradient(luma)
+    gradient_magnitude = np.hypot(gradient_x, gradient_y)
+    return {
+        "status": "completed",
+        "width": int(width),
+        "height": int(height),
+        "mean_luma": _round_float(float(luma.mean()), 3),
+        "std_luma": _round_float(float(luma.std()), 3),
+        "luma_range": _round_float(float(luma.max() - luma.min()), 3),
+        "dark_pixel_ratio": _round_float(float((luma < 32.0).mean()), 6),
+        "entropy_bits": _round_float(entropy_bits, 6),
+        "edge_density": _round_float(float((gradient_magnitude > 18.0).mean()), 6),
+    }
+
+
+def _target_region_stats(
+    frame_path: str | Path | None,
+    *,
+    target: Mapping[str, Any],
+    base_dir: str | Path | None,
+) -> dict[str, Any]:
+    if frame_path is None:
+        return {"status": "blocked", "blockers": ["source_policy_observation_frame_missing"]}
+    try:
+        from PIL import Image
+        import numpy as np
+    except Exception as exc:  # pragma: no cover - dependency/environment edge.
+        return {"status": "blocked", "blockers": [f"target_region_dependency_import_failed:{type(exc).__name__}"]}
+    try:
+        with Image.open(Path(frame_path).expanduser()) as image:
+            rgb = image.convert("RGB")
+            array = np.asarray(rgb).astype("float32")
+    except Exception as exc:
+        return {"status": "blocked", "blockers": [f"source_policy_observation_frame_unreadable:{type(exc).__name__}"]}
+
+    height, width = array.shape[:2]
+    bbox = _bbox_xyxy(_semantic_object_bbox(target))
+    center, radius = _target_center_and_radius(target)
+    if bbox is not None:
+        x0, y0, x1, y1 = bbox
+        pad_x = max(4.0, (x1 - x0) * 0.15)
+        pad_y = max(4.0, (y1 - y0) * 0.15)
+        region = (x0 - pad_x, y0 - pad_y, x1 + pad_x, y1 + pad_y)
+    elif center is not None and radius is not None:
+        region = (
+            center[0] - radius,
+            center[1] - radius,
+            center[0] + radius,
+            center[1] + radius,
+        )
+    else:
+        region = None
+
+    if region is not None:
+        x0 = max(0, int(math.floor(region[0])))
+        y0 = max(0, int(math.floor(region[1])))
+        x1 = min(width, int(math.ceil(region[2])))
+        y1 = min(height, int(math.ceil(region[3])))
+        if x1 > x0 and y1 > y0:
+            stats = _luma_region_stats(array[y0:y1, x0:x1])
+            stats["source"] = "source_frame_target_region"
+            stats["region_xyxy"] = [x0, y0, x1, y1]
+            return stats
+
+    for crop in _semantic_object_crops(target):
+        crop_path = _resolve_local_artifact_path(crop, base_dir=base_dir)
+        if crop_path is None or not crop_path.is_file():
+            continue
+        try:
+            with Image.open(crop_path) as crop_image:
+                crop_rgb = crop_image.convert("RGB")
+                crop_array = np.asarray(crop_rgb).astype("float32")
+        except Exception:
+            continue
+        stats = _luma_region_stats(crop_array)
+        stats["source"] = "object_index_crop"
+        stats["crop_path"] = str(crop_path)
+        return stats
+
+    return {"status": "blocked", "blockers": ["target_task_region_visual_probe_unavailable"]}
+
+
+def _mask_visibility_stats(
+    target: Mapping[str, Any],
+    *,
+    frame_width: int,
+    frame_height: int,
+    base_dir: str | Path | None,
+) -> dict[str, Any]:
+    mask_path_text = _semantic_object_mask_path(target)
+    if not mask_path_text:
+        return {"available": False}
+    path = _resolve_local_artifact_path(mask_path_text, base_dir=base_dir)
+    if path is None or not path.is_file():
+        return {"available": True, "path": mask_path_text, "local_file_exists": False}
+    try:
+        from PIL import Image
+        import numpy as np
+
+        with Image.open(path) as image:
+            mask = np.asarray(image.convert("L"))
+    except Exception as exc:
+        return {
+            "available": True,
+            "path": str(path),
+            "local_file_exists": True,
+            "status": f"unreadable:{type(exc).__name__}",
+        }
+    nonzero = mask > 0
+    nonzero_ratio = float(nonzero.mean()) if mask.size else 0.0
+    frame_area = max(1, int(frame_width) * int(frame_height))
+    source_frame_ratio = float(nonzero.sum()) / float(frame_area)
+    return {
+        "available": True,
+        "path": str(path),
+        "local_file_exists": True,
+        "width": int(mask.shape[1]) if mask.ndim >= 2 else 0,
+        "height": int(mask.shape[0]) if mask.ndim >= 2 else 0,
+        "mask_nonzero_ratio": _round_float(nonzero_ratio, 6),
+        "source_frame_area_ratio": _round_float(source_frame_ratio, 6),
+    }
+
+
+def _target_region_quality_passed(stats: Mapping[str, Any]) -> tuple[bool, list[str]]:
+    if stats.get("status") != "completed":
+        return False, _string_list(stats.get("blockers")) or [
+            "target_task_region_visual_probe_unavailable"
+        ]
+    mean_luma = float(stats.get("mean_luma") or 0.0)
+    std_luma = float(stats.get("std_luma") or 0.0)
+    luma_range = float(stats.get("luma_range") or 0.0)
+    dark_ratio = float(stats.get("dark_pixel_ratio") or 0.0)
+    entropy = float(stats.get("entropy_bits") or 0.0)
+    edge_density = float(stats.get("edge_density") or 0.0)
+    blockers: list[str] = []
+    if mean_luma < 35.0 or dark_ratio > 0.60:
+        blockers.append("target_task_region_too_dark_or_low_information")
+    if std_luma < 8.0 or luma_range < 35.0 or entropy < 1.35 or edge_density < 0.002:
+        blockers.append("target_task_region_too_flat_or_low_detail")
+    return not blockers, blockers
+
+
+def _semantic_target_quality(
+    *,
+    frame_path: str | Path | None,
+    stats: Mapping[str, Any],
+    target_object_id: str | None,
+    task_id: str | None,
+    object_index: Mapping[str, Any] | Sequence[Any] | None,
+    eval_ready_task_grounding: Mapping[str, Any] | None,
+    semantic_artifact_base_dir: str | Path | None,
+) -> dict[str, Any]:
+    objects = _semantic_index_objects(object_index)
+    grounding = _mapping(eval_ready_task_grounding)
+    semantic_available = bool(objects or grounding)
+    result: dict[str, Any] = {
+        "schema_version": "source_policy_observation_semantic_target_quality.v1",
+        "status": "not_available",
+        "available": semantic_available,
+        "target_object_id": target_object_id,
+        "task_id": task_id,
+        "eval_ready_task_grounding_used": bool(grounding),
+        "object_index_used": bool(objects),
+        "semantic_artifact_base_dir": str(Path(semantic_artifact_base_dir).expanduser())
+        if semantic_artifact_base_dir
+        else None,
+        "gates": {},
+        "warnings": [],
+        "blockers": [],
+    }
+    if not semantic_available:
+        result["warnings"] = ["semantic_target_artifacts_not_supplied"]
+        return result
+    if stats.get("status") != "completed":
+        result["status"] = "failed"
+        result["blockers"] = _string_list(stats.get("blockers")) or [
+            "source_policy_observation_visual_probe_failed"
+        ]
+        return result
+
+    target, selection = _selected_semantic_target(
+        object_index=object_index,
+        eval_ready_task_grounding=grounding,
+        target_object_id=target_object_id,
+        task_id=task_id,
+    )
+    result["selection"] = selection
+    if target is None:
+        result["status"] = "failed"
+        result["blockers"] = ["target_object_not_found_in_semantic_index"]
+        result["gates"] = {
+            "target_object_visibility": {
+                "passed": False,
+                "reason": "target_object_not_found_in_semantic_index",
+            }
+        }
+        return result
+
+    width = int(stats.get("width") or 0)
+    height = int(stats.get("height") or 0)
+    bbox = _bbox_xyxy(_semantic_object_bbox(target))
+    center, radius = _target_center_and_radius(target)
+    crops = _semantic_object_crops(target)
+    mask_path = _semantic_object_mask_path(target)
+    keypoints = _semantic_object_keypoints(target)
+    mask_stats = _mask_visibility_stats(
+        target,
+        frame_width=width,
+        frame_height=height,
+        base_dir=semantic_artifact_base_dir,
+    )
+    synthetic_label = _semantic_object_is_synthetic(target)
+    target_summary = {
+        "object_id": _semantic_object_id(target),
+        "label": _semantic_object_label(target),
+        "bbox_xyxy": [_round_float(value, 3) for value in bbox] if bbox is not None else None,
+        "target_center_px": [_round_float(value, 3) for value in center] if center else None,
+        "target_radius_px": _round_float(radius, 3) if radius is not None else None,
+        "crop_paths": crops,
+        "crop_available": bool(crops),
+        "mask_path": mask_path or None,
+        "mask_available": bool(mask_path or mask_stats.get("available")),
+        "keypoints_available": bool(keypoints),
+        "synthetic_label_evidence": synthetic_label,
+    }
+    result["selected_target"] = target_summary
+    blockers: list[str] = []
+    warnings: list[str] = []
+    gates: dict[str, Any] = {}
+
+    semantic_evidence_passed = bool(bbox or center or mask_path or crops)
+    gates["target_semantic_evidence"] = {
+        "passed": semantic_evidence_passed,
+        "bbox_available": bbox is not None,
+        "crop_available": bool(crops),
+        "mask_available": bool(mask_path or mask_stats.get("available")),
+        "keypoints_available": bool(keypoints),
+        "synthetic_label_evidence": synthetic_label,
+    }
+    if not semantic_evidence_passed:
+        blockers.append("target_object_index_lacks_crop_mask_keypoint_or_bbox")
+
+    visible_passed = False
+    visible_ratio = None
+    frame_area_ratio = None
+    if bbox is not None and width > 0 and height > 0:
+        x0, y0, x1, y1 = bbox
+        box_area = max(0.0, (x1 - x0) * (y1 - y0))
+        ix0 = min(max(0.0, x0), float(width))
+        iy0 = min(max(0.0, y0), float(height))
+        ix1 = min(max(0.0, x1), float(width))
+        iy1 = min(max(0.0, y1), float(height))
+        visible_area = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+        visible_ratio = visible_area / box_area if box_area > 0 else 0.0
+        frame_area_ratio = visible_area / float(max(1, width * height))
+        visible_passed = bool(
+            visible_area > 0
+            and visible_ratio >= TARGET_VISIBLE_AREA_RATIO_MIN
+            and frame_area_ratio >= TARGET_MIN_FRAME_AREA_RATIO
+        )
+    elif center is not None and width > 0 and height > 0:
+        visible_passed = 0.0 <= center[0] < float(width) and 0.0 <= center[1] < float(height)
+    gates["target_object_visibility"] = {
+        "passed": visible_passed,
+        "visible_area_ratio": _round_float(visible_ratio) if visible_ratio is not None else None,
+        "source_frame_area_ratio": _round_float(frame_area_ratio)
+        if frame_area_ratio is not None
+        else None,
+    }
+    if not visible_passed:
+        if center is not None and (center[0] < 0 or center[0] >= width or center[1] < 0 or center[1] >= height):
+            blockers.append("target_object_offscreen_in_source_observation")
+        else:
+            blockers.append("target_object_not_visible_in_source_observation")
+    if frame_area_ratio is not None and frame_area_ratio < TARGET_MIN_FRAME_AREA_RATIO:
+        blockers.append("target_object_too_small_for_initial_observation")
+
+    centered_passed = bool(
+        center is not None
+        and width > 0
+        and height > 0
+        and TARGET_CENTER_MIN_X <= center[0] / float(width) <= TARGET_CENTER_MAX_X
+        and TARGET_CENTER_MIN_Y <= center[1] / float(height) <= TARGET_CENTER_MAX_Y
+    )
+    gates["target_centering"] = {
+        "passed": centered_passed,
+        "center_px": target_summary["target_center_px"],
+        "center_normalized": [
+            _round_float(center[0] / float(width)),
+            _round_float(center[1] / float(height)),
+        ]
+        if center is not None and width > 0 and height > 0
+        else None,
+        "accepted_normalized_bounds": {
+            "min_x": TARGET_CENTER_MIN_X,
+            "max_x": TARGET_CENTER_MAX_X,
+            "min_y": TARGET_CENTER_MIN_Y,
+            "max_y": TARGET_CENTER_MAX_Y,
+        },
+    }
+    if center is None:
+        blockers.append("target_region_center_unavailable")
+    elif not centered_passed:
+        blockers.append("target_object_not_centered_for_initial_wam_observation")
+
+    occlusion_text = _normalize_text(
+        target.get("occlusion"),
+        target.get("occlusion_status"),
+        target.get("visibility"),
+        target.get("visibility_status"),
+    )
+    explicit_occluded = any(
+        token in occlusion_text
+        for token in ("occluded", "blocked", "hidden", "not visible", "invisible", "covered")
+    ) and not any(token in occlusion_text for token in ("not occluded", "visible", "clear"))
+    mask_area_ratio = float(mask_stats.get("source_frame_area_ratio") or 0.0)
+    mask_too_small = bool(mask_stats.get("local_file_exists") and mask_area_ratio < TARGET_MIN_FRAME_AREA_RATIO)
+    occlusion_passed = bool(visible_passed and not explicit_occluded and not mask_too_small)
+    gates["target_occlusion"] = {
+        "passed": occlusion_passed,
+        "explicit_occlusion_text": occlusion_text or None,
+        "mask_visibility": mask_stats,
+    }
+    if explicit_occluded:
+        blockers.append("target_object_marked_occluded_by_semantic_evidence")
+    if mask_too_small:
+        blockers.append("target_mask_too_small_for_visibility")
+
+    region_stats = _target_region_stats(
+        frame_path,
+        target=target,
+        base_dir=semantic_artifact_base_dir,
+    )
+    region_passed, region_blockers = _target_region_quality_passed(region_stats)
+    gates["task_region_quality"] = {
+        "passed": region_passed,
+        "metrics": region_stats,
+    }
+    blockers.extend(region_blockers)
+
+    readiness = _mapping(grounding.get("readiness"))
+    grounding_blockers = _string_list(readiness.get("blockers"))
+    if grounding and any("missing_task_target" in blocker for blocker in grounding_blockers):
+        blockers.append("eval_ready_task_grounding_target_blocked")
+    if grounding and readiness.get("target_crop_available") is False and not crops:
+        warnings.append("eval_ready_task_grounding_reports_target_crop_unavailable")
+    if grounding and readiness.get("target_mask_or_keypoint_available") is False and not (
+        keypoints or mask_path
+    ):
+        warnings.append("eval_ready_task_grounding_reports_target_mask_or_keypoint_unavailable")
+
+    result["gates"] = gates
+    result["warnings"] = sorted(set(warnings))
+    result["blockers"] = sorted(set(blockers))
+    result["status"] = "passed" if not result["blockers"] else "failed"
+    result["synthetic_label_evidence_used"] = synthetic_label
+    return result
 
 
 def _frame_visual_stats(
@@ -318,6 +999,9 @@ def assess_source_policy_observation_visual_qa(
     generated_at: str,
     target_object_id: str | None = None,
     task_id: str | None = None,
+    object_index: Mapping[str, Any] | Sequence[Any] | None = None,
+    eval_ready_task_grounding: Mapping[str, Any] | None = None,
+    semantic_artifact_base_dir: str | Path | None = None,
     visual_profile: str = "smoke",
     review_quality_required: bool = False,
 ) -> dict[str, Any]:
@@ -335,7 +1019,19 @@ def assess_source_policy_observation_visual_qa(
         target_object_id=target_object_id,
         review_quality_required=review_quality_required,
     )
+    semantic_target_quality = _semantic_target_quality(
+        frame_path=frame_path,
+        stats=stats,
+        target_object_id=target_object_id,
+        task_id=task_id,
+        object_index=object_index,
+        eval_ready_task_grounding=eval_ready_task_grounding,
+        semantic_artifact_base_dir=semantic_artifact_base_dir,
+    )
+    if semantic_target_quality.get("status") == "failed":
+        blockers.extend(_string_list(semantic_target_quality.get("blockers")))
     passed = bool(stats.get("status") == "completed" and not blockers)
+    semantic_status = _string(semantic_target_quality.get("status"))
     return {
         "schema_version": SOURCE_POLICY_OBSERVATION_VISUAL_QA_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -347,6 +1043,13 @@ def assess_source_policy_observation_visual_qa(
         "target_object_id": target_object_id,
         "task_id": task_id,
         "target_visibility_status": (
+            "failed_semantic_gate"
+            if semantic_status == "failed"
+            else "passed_semantic_gate"
+            if semantic_status == "passed" and passed
+            else "not_proven"
+            if semantic_status == "passed"
+            else
             "failed_visual_proxy"
             if "target_object_visibility_failed_visual_proxy" in blockers
             else "not_declared"
@@ -356,10 +1059,15 @@ def assess_source_policy_observation_visual_qa(
             else "not_proven"
         ),
         "metrics": stats,
-        "blockers": blockers,
+        "semantic_target_quality": semantic_target_quality,
+        "blockers": sorted(set(blockers)),
         "claim_boundary": {
             "visual_qa_is_not_task_success_proof": True,
-            "target_visibility_is_heuristic_without_detector": True,
+            "target_visibility_is_heuristic_without_detector": semantic_status == "not_available",
+            "semantic_target_gates_are_initial_observation_quality_checks": True,
+            "synthetic_labels_are_support_evidence_not_raw_capture_truth": bool(
+                semantic_target_quality.get("synthetic_label_evidence_used")
+            ),
             "physical_robot_readiness_proven": False,
             "deployment_readiness_proven": False,
             "safety_validation_proven": False,
@@ -694,6 +1402,7 @@ def visual_smoke_generated_rollouts_for_review(
     rollouts: Sequence[Mapping[str, Any]],
     output_dir: Path,
     generated_at: str,
+    require_review_quality_profile: bool = True,
 ) -> dict[str, Any]:
     """Return a lightweight visual sanity check for generated rollout videos."""
     frame_dir = output_dir / "generated_rollout_frame_review" / "frames"
@@ -713,6 +1422,8 @@ def visual_smoke_generated_rollouts_for_review(
             "claim_boundary": {
                 "valid_mp4_file_generated": bool(rollouts),
                 "visual_rollout_useful_for_task_success_review": False,
+                "valid_media_artifact_is_not_task_success_review_evidence": True,
+                "task_success_review_requires_visual_smoke_pass": True,
                 "raw_secret_values_recorded": False,
                 "secret_hashes_recorded": False,
             },
@@ -745,6 +1456,37 @@ def visual_smoke_generated_rollouts_for_review(
             continue
         try:
             frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+            width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            media_profile_blockers: list[str] = []
+            if width < REVIEW_QUALITY_MIN_WIDTH or height < REVIEW_QUALITY_MIN_HEIGHT:
+                media_profile_blockers.append(
+                    "generated_rollout_video_resolution_too_low_for_task_success_review"
+                )
+            if fps < REVIEW_QUALITY_MIN_FPS:
+                media_profile_blockers.append(
+                    "generated_rollout_video_fps_too_low_for_task_success_review"
+                )
+            if frame_count < REVIEW_QUALITY_MIN_NUM_FRAMES:
+                media_profile_blockers.append(
+                    "generated_rollout_video_too_short_for_task_success_review"
+                )
+            media_profile_reviewable = not media_profile_blockers
+            result["media_profile"] = {
+                "width": width,
+                "height": height,
+                "fps": _round_float(fps, 3),
+                "frame_count": frame_count,
+                "review_quality_minimum": {
+                    "width": REVIEW_QUALITY_MIN_WIDTH,
+                    "height": REVIEW_QUALITY_MIN_HEIGHT,
+                    "fps": REVIEW_QUALITY_MIN_FPS,
+                    "num_frames": REVIEW_QUALITY_MIN_NUM_FRAMES,
+                },
+                "reviewable_for_task_success_evidence": media_profile_reviewable,
+                "blockers": media_profile_blockers,
+            }
             if frame_count <= 0:
                 result["blockers"] = ["generated_video_frame_count_unavailable"]
                 blockers.append("generated_video_frame_count_unavailable")
@@ -849,6 +1591,8 @@ def visual_smoke_generated_rollouts_for_review(
                 quality_blockers.append(
                     "generated_rollout_later_frames_lost_scene_structure"
                 )
+            if require_review_quality_profile:
+                quality_blockers.extend(media_profile_blockers)
             result.update(
                 {
                     "status": "failed_visual_quality_smoke"
@@ -860,6 +1604,9 @@ def visual_smoke_generated_rollouts_for_review(
                         "first_frame_preserves_source_scene": first_preserves_scene,
                         "later_frames_flat_or_dark": later_flat_or_dark,
                         "later_frames_lost_scene_structure": later_lost_scene_structure,
+                        "media_profile_reviewable_for_task_success": (
+                            media_profile_reviewable
+                        ),
                         "success_review_not_reliable_from_this_rollout": bool(
                             quality_blockers
                         ),
@@ -885,6 +1632,9 @@ def visual_smoke_generated_rollouts_for_review(
             "generated_rollout_first_frame_not_scene_like",
             "generated_rollout_later_frames_flat_or_dark",
             "generated_rollout_later_frames_lost_scene_structure",
+            "generated_rollout_video_resolution_too_low_for_task_success_review",
+            "generated_rollout_video_fps_too_low_for_task_success_review",
+            "generated_rollout_video_too_short_for_task_success_review",
         }.intersection(blockers)
         else "blocked_visual_probe_failed"
     )
@@ -898,6 +1648,9 @@ def visual_smoke_generated_rollouts_for_review(
         "claim_boundary": {
             "valid_mp4_file_generated": bool(rollouts),
             "visual_rollout_useful_for_task_success_review": useful,
+            "valid_media_artifact_is_not_task_success_review_evidence": not useful,
+            "task_success_review_requires_visual_smoke_pass": require_review_quality_profile,
+            "review_quality_profile_required": require_review_quality_profile,
             "visual_smoke_is_not_forward_inverse_consistency": True,
             "raw_secret_values_recorded": False,
             "secret_hashes_recorded": False,

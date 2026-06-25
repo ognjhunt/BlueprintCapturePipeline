@@ -864,6 +864,8 @@ def build_policy_improvement_run_offer(
         "wam_eval_claim_boundary": "wam_eval_claim_boundary.json",
         "real_world_validation_followup_request": "real_world_validation_followup_request.json",
         "srcc_validation_plan": "srcc_validation_plan.json",
+        "candidate_selection_report": "candidate_selection_report.json",
+        "candidate_selection_report_markdown": "candidate_selection_report.md",
         "post_training_data_package_export_manifest": (
             "post_training_data_package_export_manifest.json"
         ),
@@ -920,6 +922,9 @@ def build_policy_improvement_run_offer(
     )
     wam_scorecard = _read_optional_mapping(resolved_job_dir / "policy_ranking_scorecard.json")
     wam_claim_boundary = _read_optional_mapping(resolved_job_dir / "wam_eval_claim_boundary.json")
+    candidate_selection_report = _read_optional_mapping(
+        resolved_job_dir / "candidate_selection_report.json"
+    )
     evaluation_result = _read_optional_mapping(resolved_job_dir / "evaluation_result.json")
 
     customer_input_summary = _customer_inputs(
@@ -1052,6 +1057,26 @@ def build_policy_improvement_run_offer(
             "evaluation_substrate": wam_scorecard.get("evaluation_substrate")
             or wam_claim_boundary.get("evaluation_substrate"),
             "top_policy_id": wam_scorecard.get("top_policy_id"),
+            "candidate_selection_status": candidate_selection_report.get("status")
+            or "missing",
+            "candidate_selection_top_policy_id": candidate_selection_report.get("top_policy_id"),
+            "candidate_selection_runner_up_policy_id": candidate_selection_report.get(
+                "runner_up_policy_id"
+            ),
+            "candidate_selection_margin": candidate_selection_report.get("margin"),
+            "ranking_ambiguous": _mapping(
+                candidate_selection_report.get("selection")
+            ).get("ranking_ambiguous"),
+            "candidate_shortlist": candidate_selection_report.get("candidate_shortlist") or [],
+            "decisive_scenario_count": len(
+                candidate_selection_report.get("decisive_scenarios") or []
+            ),
+            "failure_cluster_count": len(
+                candidate_selection_report.get("failure_clusters") or []
+            ),
+            "candidate_selection_report_path": (
+                "candidate_selection_report.json" if candidate_selection_report else None
+            ),
             "policy_count": wam_scorecard.get("policy_count"),
             "scenario_attempt_count": wam_scorecard.get("scenario_attempt_count"),
             "customer_specific_srcc_claimed": False,

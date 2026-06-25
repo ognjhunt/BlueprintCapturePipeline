@@ -8,6 +8,8 @@ from .common import utc_now_iso
 
 
 VISION_SUCCESS_LABELS_SCHEMA_VERSION = "vision_success_labels.v1"
+FIXTURE_VISUAL_SMOKE_STATUS = "fixture_evaluator_only_no_visual_smoke"
+FIXTURE_VISUAL_REVIEW_BLOCKER = "fixture_evaluator_only_no_review_grade_visual_evidence"
 
 
 def _mapping(value: Any) -> Dict[str, Any]:
@@ -63,6 +65,22 @@ def build_fixture_vision_success_labels(
         failure_modes = _string_list(rollout.get("failure_mode_ids"))
         if ood_flags and "wam_ood_uncertain" not in failure_modes:
             failure_modes.append("wam_ood_uncertain")
+        visual_smoke_status = (
+            _string(rollout.get("visual_smoke_status"))
+            or _string(rollout.get("generated_rollout_visual_smoke_status"))
+            or FIXTURE_VISUAL_SMOKE_STATUS
+        )
+        visual_rollout_useful = bool(
+            rollout.get("visual_rollout_useful_for_task_success_review")
+            or rollout.get("generated_rollout_visually_useful_for_success_review")
+        )
+        visual_review_blockers = _string_list(
+            rollout.get("visual_review_blockers")
+            or rollout.get("generated_rollout_visual_quality_blockers")
+            or rollout.get("blockers")
+        )
+        if not visual_rollout_useful and FIXTURE_VISUAL_REVIEW_BLOCKER not in visual_review_blockers:
+            visual_review_blockers.append(FIXTURE_VISUAL_REVIEW_BLOCKER)
         labels.append(
             {
                 "label_id": f"fixture_wam_label_{index:04d}",
@@ -86,10 +104,21 @@ def build_fixture_vision_success_labels(
                 "status": "labeled",
                 "human_review_required": bool(ood_flags or uncertainty >= 0.5),
                 "model_calls_performed": False,
+                "visual_smoke_status": visual_smoke_status,
+                "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+                "visual_review_blockers": visual_review_blockers,
+                "fixture_evaluator_only": True,
+                "review_grade_visual_evidence_available": visual_rollout_useful,
+                "review_grade_success_label": False,
+                "authoritative_task_success_label": False,
                 "claim_boundary": {
                     "label_is_deterministic_fixture_output": True,
                     "label_is_not_human_or_live_vlm_review": True,
                     "generated_rollout_video_is_not_raw_capture_evidence": True,
+                    "fixture_evaluator_only": True,
+                    "visual_smoke_required_for_review_grade_success_label": True,
+                    "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+                    "review_grade_success_label": False,
                     "robot_readiness_proven": False,
                     "public_claim_upgrade_allowed": False,
                 },
@@ -97,6 +126,23 @@ def build_fixture_vision_success_labels(
         )
     successful = [label for label in labels if label["task_success"]]
     failed = [label for label in labels if not label["task_success"]]
+    visual_rollout_useful = bool(labels) and all(
+        label["visual_rollout_useful_for_task_success_review"] for label in labels
+    )
+    visual_smoke_statuses = sorted(
+        {
+            _string(label.get("visual_smoke_status"))
+            for label in labels
+            if _string(label.get("visual_smoke_status"))
+        }
+    )
+    visual_review_blockers = sorted(
+        {
+            blocker
+            for label in labels
+            for blocker in _string_list(label.get("visual_review_blockers"))
+        }
+    )
     return {
         "schema_version": VISION_SUCCESS_LABELS_SCHEMA_VERSION,
         "generated_at": generated,
@@ -104,6 +150,19 @@ def build_fixture_vision_success_labels(
         "labeler": "fixture_vision_success_judge",
         "evaluation_substrate": substrate,
         "model_calls_performed": False,
+        "visual_smoke_status": "passed_visual_quality_smoke"
+        if visual_rollout_useful
+        else visual_smoke_statuses[0]
+        if len(visual_smoke_statuses) == 1
+        else "mixed_visual_smoke_statuses"
+        if visual_smoke_statuses
+        else FIXTURE_VISUAL_SMOKE_STATUS,
+        "visual_smoke_statuses": visual_smoke_statuses,
+        "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+        "visual_review_blockers": visual_review_blockers,
+        "fixture_evaluator_only": True,
+        "review_grade_visual_evidence_available": visual_rollout_useful,
+        "review_grade_success_labels": False,
         "label_count": len(labels),
         "successful_label_count": len(successful),
         "failed_label_count": len(failed),
@@ -116,6 +175,10 @@ def build_fixture_vision_success_labels(
         "claim_boundary": {
             "vision_labels_are_model_derived_support_artifacts": True,
             "fixture_labeler_used_for_local_tests": True,
+            "fixture_evaluator_only": True,
+            "visual_smoke_required_for_review_grade_success_label": True,
+            "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+            "review_grade_success_labels": False,
             "live_vlm_or_human_review_proven": False,
             "customer_specific_srcc_claimed": False,
             "robot_readiness_proven": False,

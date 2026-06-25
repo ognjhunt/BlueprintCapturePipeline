@@ -195,10 +195,7 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
         is True
     )
     assert (
-        runtime_manifest["oscar_runtime_argv_contract"][
-            "projected_skeleton_trace_packaged"
-        ]
-        is True
+        runtime_manifest["oscar_runtime_argv_contract"]["projected_skeleton_trace_packaged"] is True
     )
     assert runtime_rollout_manifest["inputs"]["g1_projected_skeleton_trace_jsonl"] == (
         "provider_runtime/oscar_input/g1_projected_skeleton_trace.jsonl"
@@ -239,14 +236,15 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
         is True
     )
     assert (
-        runtime_input_package["oscar_rgb_context_runtime_contract"]["rgb_context_packaged"]
-        is False
+        runtime_input_package["oscar_rgb_context_runtime_contract"]["rgb_context_packaged"] is False
     )
     assert (
-        runtime_input_package["oscar_rgb_context_runtime_contract"]["rgb_context_mode"]
-        == "never"
+        runtime_input_package["oscar_rgb_context_runtime_contract"]["rgb_context_mode"] == "never"
     )
-    assert runtime_input_package["oscar_rgb_context_runtime_contract"]["expected_inference_arg"] is None
+    assert (
+        runtime_input_package["oscar_rgb_context_runtime_contract"]["expected_inference_arg"]
+        is None
+    )
     assert (
         runtime_input_package["oscar_rgb_context_runtime_contract"][
             "rgb_video_arg_omitted_by_rgb_context_mode"
@@ -259,16 +257,11 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
         ]
         is True
     )
-    assert (
-        runtime_manifest["oscar_runtime_argv_contract"]["rgb_video_arg_expected"]
-        is False
-    )
+    assert runtime_manifest["oscar_runtime_argv_contract"]["rgb_video_arg_expected"] is False
     assert runtime_manifest["oscar_runtime_argv_contract"]["rgb_context_mode"] == "never"
     assert runtime_manifest["oscar_runtime_argv_contract"]["rgb_video_arg"] is None
     assert (
-        runtime_manifest["oscar_runtime_argv_contract"][
-            "rgb_video_arg_omitted_by_rgb_context_mode"
-        ]
+        runtime_manifest["oscar_runtime_argv_contract"]["rgb_video_arg_omitted_by_rgb_context_mode"]
         is True
     )
     assert (
@@ -364,11 +357,7 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
     assert "gripper_scenario.mp4" in runner_text
     assert "rgb_context.mp4" in runner_text
     assert "--rgb-video" in runner_text
-    assert (
-        "inference_checkpoint_path = (\n"
-        "            checkpoint_path / \"model\""
-        not in runner_text
-    )
+    assert 'inference_checkpoint_path = (\n            checkpoint_path / "model"' not in runner_text
 
 
 def test_build_oscar_wam_provider_bundle_records_official_case_smoke_env(
@@ -401,9 +390,7 @@ def test_build_oscar_wam_provider_bundle_records_official_case_smoke_env(
 
     with zipfile.ZipFile(Path(str(manifest["bundle_path"]))) as archive:
         runtime_manifest = json.loads(
-            archive.read("provider_runtime/wam_provider_runtime_manifest.json").decode(
-                "utf-8"
-            )
+            archive.read("provider_runtime/wam_provider_runtime_manifest.json").decode("utf-8")
         )
     assert runtime_manifest["official_case_smoke"] == "agibot_465"
 
@@ -485,9 +472,13 @@ def test_build_oscar_wam_provider_bundle_packages_projected_g1_overlay_rgb_conte
         runtime_manifest = json.loads(runtime_manifest_text)
     assert "provider_runtime/oscar_input/rgb_context.mp4" in names
     runtime_input_package = runtime_manifest["input_package"]
-    assert runtime_input_package["rgb_video"]["path"] == "provider_runtime/oscar_input/rgb_context.mp4"
+    assert (
+        runtime_input_package["rgb_video"]["path"] == "provider_runtime/oscar_input/rgb_context.mp4"
+    )
     assert runtime_input_package["rgb_video"]["used_for_oscar_rgb_latent_context"] is True
-    assert runtime_input_package["oscar_rgb_context_runtime_contract"]["rgb_context_packaged"] is True
+    assert (
+        runtime_input_package["oscar_rgb_context_runtime_contract"]["rgb_context_packaged"] is True
+    )
     assert (
         runtime_input_package["oscar_rgb_context_runtime_contract"][
             "projected_g1_skeleton_conditioning_suppresses_rgb_context"
@@ -505,10 +496,7 @@ def test_build_oscar_wam_provider_bundle_packages_projected_g1_overlay_rgb_conte
         "provider_runtime/oscar_input/rgb_context.mp4"
     )
     assert (
-        runtime_manifest["oscar_runtime_argv_contract"][
-            "projected_g1_rgb_context_enabled"
-        ]
-        is True
+        runtime_manifest["oscar_runtime_argv_contract"]["projected_g1_rgb_context_enabled"] is True
     )
     assert str(review_video) not in runtime_manifest_text
     assert str(tmp_path) not in runtime_manifest_text
@@ -771,6 +759,12 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
 ) -> None:
     source_frame = tmp_path / "policy_observation.jpg"
     _write_review_png(source_frame)
+    depth = tmp_path / "depth.npy"
+    depth.write_bytes(b"depth")
+    target_mask = tmp_path / "target_mask.png"
+    robot_mask = tmp_path / "robot_mask.png"
+    _write_review_png(target_mask)
+    _write_review_png(robot_mask)
     step_input = tmp_path / "wam_generation_step_0001_input.json"
     step_input.write_text(
         json.dumps(
@@ -786,7 +780,24 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
                 "current_policy_observation": {
                     "task_id": "turn_on_sink_handle",
                     "target_object_id": "Sink054_handle",
-                    "visual_observation": {"camera_id": "head_pov"},
+                    "robot_profile_id": "unitree_g1_sonic",
+                    "source_kind": "synthetic_gpt_image_2_seed",
+                    "visual_observation": {
+                        "camera_id": "head_pov",
+                        "depth_map_path": str(depth),
+                        "target_segmentation_mask_path": str(target_mask),
+                        "robot_mask_path": str(robot_mask),
+                        "target_bbox": {
+                            "x_min": 0.42,
+                            "y_min": 0.30,
+                            "x_max": 0.60,
+                            "y_max": 0.52,
+                        },
+                        "target_keypoints": {"handle_tip": {"x": 0.54, "y": 0.42}},
+                        "affordance_points": {
+                            "turn_handle_axis": {"center": {"x": 0.51, "y": 0.41}}
+                        },
+                    },
                 },
                 "requested_output": {
                     "next_observation_frame_path": str(tmp_path / "next.jpg"),
@@ -814,8 +825,14 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
     assert bundle_path.is_file()
     with zipfile.ZipFile(bundle_path) as archive:
         names = set(archive.namelist())
+        runtime_auxiliary = json.loads(
+            archive.read("provider_runtime/oscar_input/wam_auxiliary_observation_manifest.json")
+        )
     assert "provider_runtime/oscar_input/first_frame.png" in names
     assert "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4" in names
+    assert "provider_runtime/oscar_input/wam_auxiliary_observation_manifest.json" in names
+    assert runtime_auxiliary["source_image_path"] == "provider_runtime/oscar_input/first_frame.png"
+    assert str(tmp_path) not in json.dumps(runtime_auxiliary)
     runtime_manifest = _read_json(
         tmp_path
         / "step-bundle-job"
@@ -825,10 +842,31 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
     )
     input_package = runtime_manifest["input_package"]
     assert input_package["source_action"]["unitree_groot_n17_sonic_action_chunk_present"] is True
-    assert (
-        input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is True
+    assert input_package["wam_auxiliary_observation_manifest_path"] == (
+        "provider_runtime/oscar_input/wam_auxiliary_observation_manifest.json"
     )
+    assert input_package["wam_auxiliary_observation"]["modalities_available"]["depth"] is True
+    assert (
+        input_package["oscar_auxiliary_observation_runtime_contract"][
+            "auxiliary_observation_manifest_packaged"
+        ]
+        is True
+    )
+    assert input_package["skeleton_video"]["visual_signal"]["auxiliary_target_overlay_used"] is True
+    assert input_package["skeleton_video"]["visual_signal"]["auxiliary_target_bbox_used"] is True
+    assert input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is True
+    assert input_package["claim_boundary"]["auxiliary_observation_manifest_packaged"] is True
     assert input_package["claim_boundary"]["physical_robot_readiness_proven"] is False
+    runtime_rollout = _read_json(
+        tmp_path
+        / "step-bundle-job"
+        / "oscar_wam_provider_bundle"
+        / "provider_runtime"
+        / "wam_rollout_input_manifest.json"
+    )
+    assert runtime_rollout["wam_auxiliary_observation_manifest_path"] == (
+        "provider_runtime/oscar_input/wam_auxiliary_observation_manifest.json"
+    )
 
 
 def test_oscar_wam_provider_bundle_zip_integrity_and_cli_edges(

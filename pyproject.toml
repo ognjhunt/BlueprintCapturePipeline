@@ -136,6 +136,7 @@ blueprint-run-unitree-groot-n17-sonic-policy-runtime = "blueprint_pipeline.unitr
 blueprint-run-unitree-groot-n17-sonic-policy-provider-smoke = "blueprint_pipeline.unitree_groot_n17_sonic_provider_smoke:main"
 blueprint-run-unitree-groot-n17-sonic-vast-image-canary = "blueprint_pipeline.unitree_groot_n17_sonic_vast_image_canary:main"
 blueprint-run-unitree-groot-n17-sonic-vast-persistent-session = "blueprint_pipeline.unitree_groot_n17_sonic_vast_persistent_session:main"
+blueprint-run-persistent-wam-short-visual-sanity = "blueprint_pipeline.persistent_wam_short_visual_sanity:main"
 blueprint-run-unitree-groot-n17-sonic-sim2sim-command = "blueprint_pipeline.unitree_groot_n17_sonic_sim2sim_command:main"
 blueprint-run-oscar-cosmos-wam-evaluator = "blueprint_pipeline.oscar_cosmos_wam_evaluator:main"
 blueprint-run-oscar-cosmos-wam-command-adapter = "blueprint_pipeline.oscar_cosmos_wam_command_adapter:main"

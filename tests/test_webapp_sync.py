@@ -132,6 +132,16 @@ def test_sync_payload_projects_robot_eval_status_without_provider_details(monkey
                 "deployment_readiness_complete": False,
                 "blocked_requirement_ids": [
                     "remote_cloud_execution_path",
+                ],
+                "all_blocked_requirement_ids": [
+                    "remote_cloud_execution_path",
+                    "sim_vs_real_calibration_path",
+                ],
+                "robot_team_grade_blocked_requirement_ids": [
+                    "remote_cloud_execution_path",
+                ],
+                "deployment_readiness_blocked_requirement_ids": [
+                    "remote_cloud_execution_path",
                     "sim_vs_real_calibration_path",
                 ],
                 "closure_manifest_path": "robot_team_grade_eval_closure_manifest.json",
@@ -198,6 +208,16 @@ def test_sync_payload_projects_robot_eval_status_without_provider_details(monkey
         projection["robot_team_grade_eval_closure"]["robot_team_grade_evaluation_complete"]
         is False
     )
+    assert projection["robot_team_grade_eval_closure"]["blocked_requirement_ids"] == [
+        "remote_cloud_execution_path"
+    ]
+    assert projection["robot_team_grade_eval_closure"]["all_blocked_requirement_ids"] == [
+        "remote_cloud_execution_path",
+        "sim_vs_real_calibration_path",
+    ]
+    assert projection["robot_team_grade_eval_closure"][
+        "deployment_readiness_blocked_requirement_ids"
+    ] == ["remote_cloud_execution_path", "sim_vs_real_calibration_path"]
     assert "private_requirement_notes" not in projection["robot_team_grade_eval_closure"]
     assert projection["proof_boundary"]["public_claim_upgrade_allowed"] is False
     assert projection["buyer_display_guardrails"]["readiness_claim_upgrade_allowed"] is False

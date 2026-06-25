@@ -1258,7 +1258,7 @@ def _auto_stage_robot_eval_job_request(
                 "source_type": "blueprint_default_baseline_trace",
                 "confidence_coverage_note": (
                     "Auto-staged baseline for harness automation; not a robot-team "
-                    "policy or deployment-readiness claim."
+                    "policy claim and not deployment approval."
                 ),
             }
         },

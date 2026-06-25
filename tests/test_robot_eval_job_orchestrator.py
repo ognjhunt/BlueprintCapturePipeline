@@ -15,7 +15,10 @@ from blueprint_pipeline import robot_eval_provider_input_setup as provider_input
 from blueprint_pipeline.evaluation_prep_stage import robot_eval_job_evaluation_prep_surface
 from blueprint_pipeline.live_robot_eval_closure import build_live_robot_eval_closure_manifest
 from blueprint_pipeline.post_training_data_package import build_post_training_data_package_export
-from blueprint_pipeline.robot_eval_execution import build_scenario_eval_matrix
+from blueprint_pipeline.robot_eval_execution import (
+    build_deployment_validation_bundle,
+    build_scenario_eval_matrix,
+)
 from blueprint_pipeline.robot_eval_job_orchestrator import (
     AgentsSdkRobotEvalJobAdapter,
     FakeRobotEvalJobAgentAdapter,
@@ -801,6 +804,79 @@ def _full_job_request(
     }
 
 
+def _anchor_prediction(
+    *,
+    policy_id: str,
+    run_id: str,
+    variation_id: str,
+    predicted_success: bool,
+    task_id: str = "place_return_in_bin",
+    scenario_id: str = "scenario_place_return_in_bin_mobile",
+) -> dict[str, object]:
+    return {
+        "record_id": f"prediction-{policy_id}-{run_id}",
+        "scenario_eval_run_id": run_id,
+        "policy_id": policy_id,
+        "task_id": task_id,
+        "scenario_id": scenario_id,
+        "scenario_variation_instance_id": variation_id,
+        "predicted_success": predicted_success,
+        "source": "unit_test_prediction_ledger",
+    }
+
+
+def _anchor_actual(
+    *,
+    record_id: str,
+    policy_id: str,
+    run_id: str,
+    variation_id: str,
+    actual_success: bool,
+    task_id: str = "place_return_in_bin",
+    scenario_id: str = "scenario_place_return_in_bin_mobile",
+    **extra: object,
+) -> dict[str, object]:
+    return {
+        "outcome_id": record_id,
+        "scenario_eval_run_id": run_id,
+        "policy_id": policy_id,
+        "task_id": task_id,
+        "scenario_id": scenario_id,
+        "scenario_variation_instance_id": variation_id,
+        "actual_success": actual_success,
+        "evidence_refs": {"pilot_log": f"owner://pilot/{record_id}"},
+        **extra,
+    }
+
+
+def _build_anchor_calibration_bundle(
+    tmp_path: Path,
+    *,
+    predictions: list[dict[str, object]],
+    actuals: list[dict[str, object]],
+    job_id: str,
+) -> dict[str, object]:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / job_id
+    return build_deployment_validation_bundle(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request={
+            "schema_version": "robot_eval_job_request.v1",
+            "actual_outcomes": {
+                "schema_version": "actual_outcome_manifest.v1",
+                "records": actuals,
+            },
+        },
+        prediction_ledger={
+            "schema_version": "robot_eval_prediction_outcome_ledger.v1",
+            "records": predictions,
+        },
+        attempt_trace={"schema_version": "robot_eval_attempt_trace.v1", "attempts": []},
+        generated_at="2026-06-25T12:00:00Z",
+    )
+
+
 def _webapp_execution_request() -> dict[str, object]:
     return {
         "schema_version": "blueprint.robot_eval_execution_request.v1",
@@ -1386,7 +1462,7 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
                 "      'scenario_variation_instance_id': run.get('scenario_variation_instance_id'),",
                 "      'variation_name': run.get('variation_name'),",
                 "      'task_id': run['task_id'],",
-                "      'policy_id': 'policy-live-command',",
+                "      'policy_id': 'policy-live-command' if index % 2 else 'policy-live-alt-command',",
                 "      'status': 'completed',",
                 "      'success': True,",
                 "      'metrics': {'cycle_time_seconds': 11.25, 'intervention_count': 0},",
@@ -1429,7 +1505,7 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
                 "      'scenario_variation_instance_id': obs.get('scenario_variation_instance_id'),",
                 "      'variation_name': obs.get('variation_name'),",
                 "      'task_id': obs['task_id'],",
-                "      'policy_id': 'policy-live-command',",
+                "      'policy_id': 'policy-live-command' if index % 2 else 'policy-live-alt-command',",
                 "      'status': 'completed',",
                 "      'success': True,",
                 "      'actions': [{'t': 0.0, 'action': 'pick'}, {'t': 1.0, 'action': 'place'}]",
@@ -1463,20 +1539,23 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
     request["actual_outcomes"] = {
         "records": [
             {
-                "outcome_id": "pilot-live-1",
+                "outcome_id": f"pilot-live-{index}",
                 "task_id": "place_return_in_bin",
                 "scenario_id": "scenario_place_return_in_bin_mobile",
-                "scenario_eval_run_id": _scenario_eval_run_id("lighting_variation", 1),
+                "scenario_eval_run_id": _scenario_eval_run_id(variation_name, index),
                 "scenario_variation_instance_id": _scenario_variation_instance_id(
-                    "lighting_variation"
+                    variation_name
                 ),
-                "policy_id": "policy-live-command",
+                "policy_id": "policy-live-command"
+                if index % 2
+                else "policy-live-alt-command",
                 "actual_success": True,
                 "cycle_time_seconds": 11.5,
                 "intervention_count": 0,
                 "failure_mode_ids": [],
-                "evidence_refs": {"pilot_log": "owner://pilot/live-1"},
+                "evidence_refs": {"pilot_log": f"owner://pilot/live-{index}"},
             }
+            for index, variation_name in enumerate(POLICY_REFERENCE_VARIATION_NAMES, start=1)
         ]
     }
     staged_closure_evidence_path = (
@@ -3998,6 +4077,216 @@ def test_live_robot_eval_closure_blocks_failure_labels_without_failure_modes(
     assert gate["evidence"]["labels_missing_failure_mode_ids"] == ["label_attempt_run_1"]
 
 
+def test_live_robot_eval_closure_blocks_failure_label_without_evidence_refs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-no-failure-evidence"
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "status": "completed",
+            "attempts": [
+                {
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "success": False,
+                    "failure_mode_ids": ["failure_navigation_blocked"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "failure_labels.json",
+        {
+            "status": "review_required",
+            "label_count": 1,
+            "labels": [
+                {
+                    "label_id": "label_attempt_run_1",
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "failure_mode_ids": ["failure_navigation_blocked"],
+                    "review_status": "accepted_reviewed_failure_label",
+                    "status": "review_required",
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["failure_labels"]
+    assert gate["passed"] is False
+    assert "failure_labels_missing_evidence_refs" in gate["blockers"]
+    assert gate["evidence"]["labels_missing_evidence_refs"] == ["label_attempt_run_1"]
+    assert gate["evidence"]["failure_diagnosis_coverage_complete"] is False
+
+
+def test_live_robot_eval_closure_heuristic_failure_text_stays_non_authoritative(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-heuristic-failure"
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "status": "completed",
+            "attempts": [
+                {
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "success": False,
+                    "failure_mode_ids": ["failure_navigation_blocked"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "failure_labels.json",
+        {
+            "status": "review_required",
+            "label_count": 1,
+            "labels": [
+                {
+                    "label_id": "label_attempt_run_1",
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "failure_mode_ids": ["failure_navigation_blocked"],
+                    "failure_reason": "looks blocked from heuristic text",
+                    "status": "review_required",
+                    "proof_effect": (
+                        "none_until_review_accepted_or_real_world_validation_supplied"
+                    ),
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["failure_labels"]
+    assert gate["passed"] is False
+    assert "failure_labels_missing_evidence_refs" in gate["blockers"]
+    assert "failure_labels_missing_review_status" in gate["blockers"]
+    assert gate["evidence"]["failure_diagnosis_complete"] is False
+
+
+def test_live_robot_eval_closure_accepts_reviewed_failure_label_with_evidence_refs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-reviewed-failure"
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "status": "completed",
+            "attempts": [
+                {
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "success": False,
+                    "failure_mode_ids": ["failure_navigation_blocked"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "failure_labels.json",
+        {
+            "status": "review_required",
+            "label_count": 1,
+            "labels": [
+                {
+                    "label_id": "label_attempt_run_1",
+                    "attempt_id": "attempt-run-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "failure_mode_ids": ["failure_navigation_blocked"],
+                    "evidence_refs": ["review/label_attempt_run_1.json"],
+                    "source_trace_refs": ["normalized_attempt_trace.json"],
+                    "frame_or_clip_refs": ["review/attempt-run-1.mp4"],
+                    "review_status": "accepted_reviewed_failure_label",
+                    "status": "review_required",
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["failure_labels"]
+    assert gate["passed"] is True
+    assert gate["evidence"]["failure_diagnosis_coverage_complete"] is True
+    assert gate["evidence"]["failure_diagnosis_complete"] is True
+
+
+def test_live_robot_eval_closure_nonreviewable_generated_failure_records_blocker(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-nonreviewable-failure"
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "status": "completed",
+            "attempts": [
+                {
+                    "attempt_id": "wam-attempt-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "success": False,
+                    "failure_mode_ids": ["generated_rollout_visual_quality_not_reviewable"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "failure_labels.json",
+        {
+            "status": "review_required",
+            "label_count": 1,
+            "failure_diagnosis_complete": False,
+            "labels": [
+                {
+                    "label_id": "wam_nonreviewable_failure_hypothesis_0001",
+                    "attempt_id": "wam-attempt-1",
+                    "rollout_id": "rollout-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "failure_mode_ids": ["generated_rollout_visual_quality_not_reviewable"],
+                    "evidence_refs": ["wam_generated_rollout_visual_smoke.json"],
+                    "source_trace_refs": ["wam_generated_rollout_results.json"],
+                    "review_status": "non_reviewable_failure_hypothesis",
+                    "non_reviewable_failure_hypothesis": True,
+                    "generated_wam_rollout": True,
+                    "status": "review_required",
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["failure_labels"]
+    assert gate["passed"] is False
+    assert "failure_labels_nonreviewable_failure_hypotheses" in gate["blockers"]
+    assert gate["evidence"]["nonreviewable_failure_hypothesis_label_ids"] == [
+        "wam_nonreviewable_failure_hypothesis_0001"
+    ]
+    assert gate["evidence"]["failure_diagnosis_coverage_complete"] is True
+    assert gate["evidence"]["failure_diagnosis_complete"] is False
+
+
 def test_live_robot_eval_closure_blocks_invalid_scorecard_metric_values(
     tmp_path: Path,
 ) -> None:
@@ -4540,6 +4829,227 @@ def test_live_robot_eval_closure_blocks_simulator_failed_status_even_with_proof_
     assert gate["evidence"]["normalized_attempt_trace_status"] == "failed"
 
 
+def test_real_world_calibration_no_anchors_leaves_not_measured(tmp_path: Path) -> None:
+    prediction = _anchor_prediction(
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        predicted_success=True,
+    )
+
+    bundle = _build_anchor_calibration_bundle(
+        tmp_path,
+        predictions=[prediction],
+        actuals=[],
+        job_id="job-no-real-world-calibration-anchors",
+    )
+    calibration = bundle["calibration_report"]
+
+    assert calibration["status"] == "not_measured"
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["accepted_anchor_count"] == 0
+    assert "insufficient_anchor_count" in calibration["blockers"]
+    assert calibration["accepted_anchor_schema"]["join_keys"] == [
+        "scenario_eval_run_id",
+        "policy_id",
+        "task_id",
+        "scenario_variation_instance_id",
+    ]
+
+
+def test_real_world_calibration_insufficient_anchors_block_accuracy_claim(
+    tmp_path: Path,
+) -> None:
+    prediction = _anchor_prediction(
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        predicted_success=True,
+    )
+    actual = _anchor_actual(
+        record_id="anchor-a-1",
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        actual_success=True,
+    )
+
+    bundle = _build_anchor_calibration_bundle(
+        tmp_path,
+        predictions=[prediction],
+        actuals=[actual],
+        job_id="job-insufficient-real-world-calibration-anchors",
+    )
+    calibration = bundle["calibration_report"]
+
+    assert calibration["status"] == "blocked_insufficient_anchor_count"
+    assert calibration["accepted_anchor_count"] == 1
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["spearman_rank_correlation"] is None
+    assert calibration["pearson_success_rate_correlation"] is None
+    assert calibration["deployment_accuracy_claim_allowed"] is False
+    assert "insufficient_anchor_count" in calibration["blockers"]
+
+
+def test_real_world_calibration_matched_anchors_compute_metrics(
+    tmp_path: Path,
+) -> None:
+    predictions = [
+        _anchor_prediction(
+            policy_id="policy-a",
+            run_id="run-a-1",
+            variation_id="variation-a-1",
+            predicted_success=True,
+        ),
+        _anchor_prediction(
+            policy_id="policy-a",
+            run_id="run-a-2",
+            variation_id="variation-a-2",
+            predicted_success=True,
+        ),
+        _anchor_prediction(
+            policy_id="policy-b",
+            run_id="run-b-1",
+            variation_id="variation-b-1",
+            predicted_success=False,
+        ),
+        _anchor_prediction(
+            policy_id="policy-b",
+            run_id="run-b-2",
+            variation_id="variation-b-2",
+            predicted_success=False,
+        ),
+    ]
+    actuals = [
+        _anchor_actual(
+            record_id="anchor-a-1",
+            policy_id="policy-a",
+            run_id="run-a-1",
+            variation_id="variation-a-1",
+            actual_success=True,
+        ),
+        _anchor_actual(
+            record_id="anchor-a-2",
+            policy_id="policy-a",
+            run_id="run-a-2",
+            variation_id="variation-a-2",
+            actual_success=False,
+        ),
+        _anchor_actual(
+            record_id="anchor-b-1",
+            policy_id="policy-b",
+            run_id="run-b-1",
+            variation_id="variation-b-1",
+            actual_success=False,
+        ),
+        _anchor_actual(
+            record_id="anchor-b-2",
+            policy_id="policy-b",
+            run_id="run-b-2",
+            variation_id="variation-b-2",
+            actual_success=False,
+        ),
+    ]
+
+    bundle = _build_anchor_calibration_bundle(
+        tmp_path,
+        predictions=predictions,
+        actuals=actuals,
+        job_id="job-matched-real-world-calibration-anchors",
+    )
+    calibration = bundle["calibration_report"]
+
+    assert calibration["status"] == "completed"
+    assert calibration["blockers"] == []
+    assert calibration["accepted_anchor_count"] == 4
+    assert calibration["policy_group_count"] == 2
+    assert calibration["sim_vs_real_calibration_score"] == 0.75
+    assert calibration["mean_absolute_success_rate_error"] == 0.25
+    assert calibration["spearman_rank_correlation"] == 1.0
+    assert calibration["pearson_success_rate_correlation"] == 1.0
+    assert calibration["mmrv"] == 0.0
+    assert calibration["confidence_intervals"]["mean_absolute_success_rate_error"][
+        "sample_count"
+    ] > 0
+    assert calibration["deployment_accuracy_claim_allowed"] is True
+
+
+def test_real_world_calibration_unmatched_stale_and_conflicting_anchors_block(
+    tmp_path: Path,
+) -> None:
+    predictions = [
+        _anchor_prediction(
+            policy_id="policy-a",
+            run_id="run-stale",
+            variation_id="variation-stale",
+            predicted_success=True,
+        ),
+        _anchor_prediction(
+            policy_id="policy-a",
+            run_id="run-conflict",
+            variation_id="variation-conflict",
+            predicted_success=True,
+        ),
+        _anchor_prediction(
+            policy_id="policy-b",
+            run_id="run-prediction-only",
+            variation_id="variation-prediction-only",
+            predicted_success=False,
+        ),
+    ]
+    actuals = [
+        _anchor_actual(
+            record_id="anchor-stale",
+            policy_id="policy-a",
+            run_id="run-stale",
+            variation_id="variation-stale",
+            actual_success=True,
+            anchor_status="stale",
+        ),
+        _anchor_actual(
+            record_id="anchor-conflict-a",
+            policy_id="policy-a",
+            run_id="run-conflict",
+            variation_id="variation-conflict",
+            actual_success=True,
+        ),
+        _anchor_actual(
+            record_id="anchor-conflict-b",
+            policy_id="policy-a",
+            run_id="run-conflict",
+            variation_id="variation-conflict",
+            actual_success=False,
+        ),
+        _anchor_actual(
+            record_id="anchor-unmatched",
+            policy_id="policy-c",
+            run_id="run-actual-only",
+            variation_id="variation-actual-only",
+            actual_success=True,
+        ),
+    ]
+
+    bundle = _build_anchor_calibration_bundle(
+        tmp_path,
+        predictions=predictions,
+        actuals=actuals,
+        job_id="job-blocked-real-world-calibration-anchors",
+    )
+    calibration = bundle["calibration_report"]
+
+    assert calibration["status"] == "blocked_anchor_quality"
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert "unmatched_prediction_rows" in calibration["blockers"]
+    assert "unmatched_actual_rows" in calibration["blockers"]
+    assert "stale_anchor_rows" in calibration["blockers"]
+    assert "conflicting_anchor_rows" in calibration["blockers"]
+    assert calibration["stale_anchor_row_ids"] == ["anchor-stale"]
+    assert set(calibration["conflicting_anchor_row_ids"]) == {
+        "anchor-conflict-a",
+        "anchor-conflict-b",
+    }
+
+
 def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
     tmp_path: Path,
     monkeypatch,
@@ -4650,7 +5160,7 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
         beta_checks["deployment_outcome_joins"]["evidence"][
             "predicted_vs_actual_gate_passed"
         ]
-        is True
+        is False
     )
     assert policy_execution["modality_results"]["policy_api_endpoint"]["status"] == "completed"
     assert policy_trace["attempt_count"] >= 1
@@ -4663,14 +5173,15 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
     assert deployment["missing_owner_evidence_record_ids"] == []
     assert deployment["real_world_outcome_proven"] is True
     assert deployment["records"][0]["owner_evidence_present"] is True
-    assert calibration["status"] == "completed"
-    assert calibration["sim_vs_real_calibration_score"] == 0.0
+    assert calibration["status"] == "blocked_anchor_quality"
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["accepted_anchor_count"] == 0
+    assert "insufficient_anchor_count" in calibration["blockers"]
+    assert "unmatched_actual_rows" in calibration["blockers"]
+    assert "unmatched_prediction_rows" in calibration["blockers"]
     assert calibration["exact_prediction_record_count"] == 1
     assert calibration["weak_prediction_match_record_count"] == 0
-    assert evaluation["standard_policy_scorecard"]["sim_vs_real_calibration_score"] == 0.0
-    assert (
-        evaluation["sim_vs_real_calibration_report_path"] == "sim_vs_real_calibration_report.json"
-    )
+    assert evaluation["standard_policy_scorecard"]["sim_vs_real_calibration_score"] is None
     assert calibration["missed_failure_count"] == 1
     assert calibration["site_modification_count"] == 1
     assert deployment_summary["how_much_real_world_tuning_was_needed"] == {
@@ -4955,10 +5466,13 @@ def test_robot_eval_job_ingests_inline_real_world_outcomes_from_job_request(
     assert intake["record_count"] == 1
     assert intake["real_world_outcome_records_present"] is True
     assert intake["real_world_outcome_proven"] is False
-    assert calibration["status"] == "blocked_weak_prediction_matches"
+    assert calibration["status"] == "blocked_anchor_quality"
     assert calibration["real_world_outcome_records_present"] is True
     assert calibration["real_world_outcome_proven"] is False
     assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["accepted_anchor_count"] == 0
+    assert "insufficient_anchor_count" in calibration["blockers"]
+    assert "unmatched_actual_rows" in calibration["blockers"]
     assert calibration["exact_prediction_record_count"] == 0
     assert calibration["weak_prediction_match_record_count"] == 1
     assert calibration["weak_prediction_match_record_ids"] == ["inline-pilot-outcome-1"]
@@ -4969,7 +5483,8 @@ def test_robot_eval_job_ingests_inline_real_world_outcomes_from_job_request(
     assert deployment_summary["what_actually_happened"][0]["exact_prediction_match"] is False
     predicted_gate = live_closure["gates"]["predicted_vs_actual_calibration"]
     assert predicted_gate["passed"] is False
-    assert "predicted_vs_actual_weak_prediction_matches" in predicted_gate["blockers"]
+    assert "insufficient_anchor_count" in predicted_gate["blockers"]
+    assert "unmatched_actual_rows" in predicted_gate["blockers"]
     assert "predicted_vs_actual_no_exact_prediction_matches" in predicted_gate["blockers"]
     assert predicted_gate["evidence"]["weak_prediction_match_record_ids"] == [
         "inline-pilot-outcome-1"
@@ -5229,7 +5744,7 @@ def test_robot_eval_job_blocks_predicted_vs_actual_with_unmatched_actual_run_id(
     assert calibration.get("unmatched_actual_record_ids") == ["pilot-unmatched-run-1"]
     assert deployment_summary.get("unmatched_actual_record_ids") == ["pilot-unmatched-run-1"]
     assert gate["passed"] is False
-    assert "predicted_vs_actual_unmatched_actual_records" in gate["blockers"]
+    assert "unmatched_actual_rows" in gate["blockers"]
     assert gate["evidence"]["unmatched_actual_record_ids"] == ["pilot-unmatched-run-1"]
 
 
@@ -5642,6 +6157,11 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     assert remote_closure["status"] == "not_required_for_local_execution"
     assert remote_closure["remote_cloud_execution_proven"] is False
     assert robot_team_closure["schema_version"] == "robot_team_grade_eval_closure.v1"
+    assert robot_team_closure["primary_proof_target"] == (
+        "policy_comparison_within_configured_evaluator"
+    )
+    assert robot_team_closure["claim_boundary"]["policy_ranking_is_not_deployment_readiness"] is True
+    assert robot_team_closure["evaluator_bounded_policy_comparison_complete"] is False
     assert robot_team_closure["robot_team_grade_evaluation_complete"] is False
     assert robot_team_closure["deployment_readiness_complete"] is False
     assert "task_success_metrics" in robot_team_closure["blocked_requirement_ids"]
@@ -6839,7 +7359,239 @@ def test_robot_team_grade_closure_accepts_explicitly_blocked_scenario_runs(
     ]
 
 
-def test_robot_team_grade_closure_marks_sim_only_beta_core_complete_with_trace_media_metrics(
+def test_robot_team_grade_closure_blocks_policy_missing_required_run(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "robot_eval_jobs" / "job-policy-missing-run"
+    scenario_eval_matrix = {
+        "status": "completed",
+        "scenario_eval_run_count": 2,
+        "runs": [
+            {"scenario_eval_run_id": "run-1", "task_id": "task-1", "scenario_id": "s-1"},
+            {"scenario_eval_run_id": "run-2", "task_id": "task-1", "scenario_id": "s-2"},
+        ],
+    }
+    _write_json(job_dir / "scenario_eval_matrix.json", scenario_eval_matrix)
+    _write_json(
+        job_dir / "policy_ranking_scorecard.json",
+        {
+            "status": "completed",
+            "policy_count": 2,
+            "top_policy_id": "policy-a",
+            "evaluator_top_policy_id": "policy-a",
+            "ranking_basis": "fixture_vision_success_labels_over_model_derived_wam_rollouts",
+            "required_scenario_eval_run_ids": ["run-1", "run-2"],
+            "coverage_complete": False,
+            "per_policy_coverage": [
+                {
+                    "policy_id": "policy-a",
+                    "required_scenario_eval_run_ids": ["run-1", "run-2"],
+                    "covered_scenario_eval_run_ids": ["run-1", "run-2"],
+                    "missing_scenario_eval_run_ids": [],
+                    "extra_scenario_eval_run_ids": [],
+                    "attempt_count": 2,
+                    "expected_attempt_count": 2,
+                    "coverage_complete": True,
+                },
+                {
+                    "policy_id": "policy-b",
+                    "required_scenario_eval_run_ids": ["run-1", "run-2"],
+                    "covered_scenario_eval_run_ids": ["run-1"],
+                    "missing_scenario_eval_run_ids": ["run-2"],
+                    "extra_scenario_eval_run_ids": [],
+                    "attempt_count": 1,
+                    "expected_attempt_count": 2,
+                    "coverage_complete": False,
+                },
+            ],
+            "missing_by_policy": {"policy-a": [], "policy-b": ["run-2"]},
+            "extra_by_policy": {"policy-a": [], "policy-b": []},
+            "attempt_count_by_policy": {"policy-a": 2, "policy-b": 1},
+            "comparison_blockers": [
+                "policy_coverage_missing_required_scenario_eval_run_ids",
+                "policy_attempt_count_not_equal_required_scenario_count",
+            ],
+            "score_ranges_valid": True,
+            "ranking_confidence": {
+                "top_policy_margin": 0.5,
+                "tie_band": 0.05,
+                "ranking_ambiguous": False,
+                "uncertainty_penalty_applied": False,
+                "ood_blockers": [],
+            },
+            "comparison_contract": {
+                "deployment_readiness_claimed": False,
+                "external_deployment_grade_claimed": False,
+            },
+            "claim_boundary": {
+                "policy_ranking_is_evaluator_bounded": True,
+                "policy_ranking_is_not_deployment_readiness": True,
+                "robot_readiness_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        },
+    )
+    _write_json(job_dir / "wam_eval_claim_boundary.json", {"status": "present"})
+
+    closure = _robot_team_grade_eval_closure_manifest(
+        job_dir=job_dir,
+        job_id="job-policy-missing-run",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        status="completed",
+        blockers=[],
+        scenario_eval_matrix=scenario_eval_matrix,
+        simulator_result={},
+        copied_artifacts={},
+        robot_pov_manifest={},
+        policy_manifest={"interface_contract": {"reproducible_replay_required": True}},
+        policy_execution_manifest={},
+        evaluation_result={},
+        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        live_closure={},
+        remote_cloud_closure={},
+        webapp_status_projection={},
+        data_package_export={},
+        generated_at="2026-06-25T00:00:00Z",
+    )
+
+    requirements = {item["requirement_id"]: item for item in closure["requirements"]}
+    policy_requirement = requirements["evaluator_bounded_policy_comparison"]
+    assert closure["evaluator_bounded_policy_comparison_complete"] is False
+    assert policy_requirement["passed"] is False
+    assert "policy_comparison_policy_coverage_not_symmetric" in policy_requirement["blockers"]
+    assert "policy_comparison_missing_required_scenario_eval_run_ids" in policy_requirement[
+        "blockers"
+    ]
+    assert "policy_comparison_attempt_count_mismatch" in policy_requirement["blockers"]
+    assert "evaluator_bounded_policy_comparison" in closure["all_blocked_requirement_ids"]
+    assert closure["policy_comparison_summary"]["missing_by_policy"]["policy-b"] == ["run-2"]
+
+
+def test_robot_team_grade_closure_blocks_nonreviewable_policy_ranking(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "robot_eval_jobs" / "job-policy-visual-blocked"
+    scenario_eval_matrix = {
+        "status": "completed",
+        "scenario_eval_run_count": 2,
+        "runs": [
+            {"scenario_eval_run_id": "run-1", "task_id": "task-1", "scenario_id": "s-1"},
+            {"scenario_eval_run_id": "run-2", "task_id": "task-1", "scenario_id": "s-2"},
+        ],
+    }
+    _write_json(job_dir / "scenario_eval_matrix.json", scenario_eval_matrix)
+    _write_json(
+        job_dir / "policy_ranking_scorecard.json",
+        {
+            "status": "completed",
+            "policy_count": 2,
+            "top_policy_id": "policy-a",
+            "evaluator_top_policy_id": "policy-a",
+            "ranking_basis": "vlm_judge_generated_video",
+            "required_scenario_eval_run_ids": ["run-1", "run-2"],
+            "coverage_complete": True,
+            "per_policy_coverage": [
+                {
+                    "policy_id": "policy-a",
+                    "required_scenario_eval_run_ids": ["run-1", "run-2"],
+                    "covered_scenario_eval_run_ids": ["run-1", "run-2"],
+                    "missing_scenario_eval_run_ids": [],
+                    "extra_scenario_eval_run_ids": [],
+                    "attempt_count": 2,
+                    "expected_attempt_count": 2,
+                    "coverage_complete": True,
+                },
+                {
+                    "policy_id": "policy-b",
+                    "required_scenario_eval_run_ids": ["run-1", "run-2"],
+                    "covered_scenario_eval_run_ids": ["run-1", "run-2"],
+                    "missing_scenario_eval_run_ids": [],
+                    "extra_scenario_eval_run_ids": [],
+                    "attempt_count": 2,
+                    "expected_attempt_count": 2,
+                    "coverage_complete": True,
+                },
+            ],
+            "missing_by_policy": {"policy-a": [], "policy-b": []},
+            "extra_by_policy": {"policy-a": [], "policy-b": []},
+            "attempt_count_by_policy": {"policy-a": 2, "policy-b": 2},
+            "comparison_blockers": [],
+            "visual_smoke_status": "failed_visual_quality_smoke",
+            "visual_rollout_useful_for_task_success_review": False,
+            "visual_review_blockers": [
+                "generated_rollout_later_frames_lost_scene_structure"
+            ],
+            "review_grade_policy_ranking": False,
+            "review_grade_policy_ranking_status": "blocked_visual_review_required",
+            "score_ranges_valid": True,
+            "ranking_confidence": {
+                "top_policy_margin": 0.5,
+                "tie_band": 0.05,
+                "ranking_ambiguous": False,
+                "uncertainty_penalty_applied": False,
+                "ood_blockers": [],
+            },
+            "comparison_contract": {
+                "deployment_readiness_claimed": False,
+                "external_deployment_grade_claimed": False,
+                "review_grade_policy_ranking_requires_passed_visual_smoke": True,
+            },
+            "claim_boundary": {
+                "policy_ranking_is_evaluator_bounded": True,
+                "policy_ranking_is_not_deployment_readiness": True,
+                "visual_smoke_required_for_review_grade_policy_ranking": True,
+                "robot_readiness_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        },
+    )
+    _write_json(job_dir / "wam_eval_claim_boundary.json", {"status": "present"})
+
+    closure = _robot_team_grade_eval_closure_manifest(
+        job_dir=job_dir,
+        job_id="job-policy-visual-blocked",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        status="completed",
+        blockers=[],
+        scenario_eval_matrix=scenario_eval_matrix,
+        simulator_result={},
+        copied_artifacts={},
+        robot_pov_manifest={},
+        policy_manifest={"interface_contract": {"reproducible_replay_required": True}},
+        policy_execution_manifest={},
+        evaluation_result={},
+        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        live_closure={},
+        remote_cloud_closure={},
+        webapp_status_projection={},
+        data_package_export={},
+        generated_at="2026-06-25T00:00:00Z",
+    )
+
+    requirements = {item["requirement_id"]: item for item in closure["requirements"]}
+    policy_requirement = requirements["evaluator_bounded_policy_comparison"]
+    assert closure["evaluator_bounded_policy_comparison_complete"] is False
+    assert closure["claim_boundary"]["review_grade_policy_comparison_complete"] is False
+    assert policy_requirement["passed"] is False
+    assert (
+        "policy_ranking_visual_review_blocker:"
+        "generated_rollout_later_frames_lost_scene_structure"
+    ) in policy_requirement["blockers"]
+    assert closure["policy_comparison_summary"]["visual_smoke_status"] == (
+        "failed_visual_quality_smoke"
+    )
+    assert closure["policy_comparison_summary"][
+        "visual_rollout_useful_for_task_success_review"
+    ] is False
+    assert "generated_rollout_later_frames_lost_scene_structure" in closure[
+        "policy_comparison_summary"
+    ]["visual_review_blockers"]
+    assert closure["policy_comparison_summary"]["review_grade_policy_ranking"] is False
+
+
+def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_ranking_allowed(
     tmp_path: Path,
 ) -> None:
     job_dir = tmp_path / "robot_eval_jobs" / "job-sim-beta-complete"
@@ -6936,6 +7688,8 @@ def test_robot_team_grade_closure_marks_sim_only_beta_core_complete_with_trace_m
         (job_dir / name).write_text("{}\n", encoding="utf-8")
     for name in (
         "robot_pov_observation_manifest.json",
+        "robot_pov_observation_candidate_set.json",
+        "selected_initial_policy_observation.json",
         "robot_pov_frame_sequence_manifest.json",
         "live_eval_closure_manifest.json",
         "proof_boundary.json",
@@ -6943,6 +7697,91 @@ def test_robot_team_grade_closure_marks_sim_only_beta_core_complete_with_trace_m
         "webapp_robot_eval_status_projection.json",
     ):
         _write_json(job_dir / name, {"status": "present"})
+    _write_json(
+        job_dir / "policy_ranking_scorecard.json",
+        {
+            "schema_version": "policy_ranking_scorecard.v1",
+            "status": "completed",
+            "policy_count": 2,
+            "top_policy_id": "policy-a",
+            "evaluator_top_policy_id": "policy-a",
+            "single_best_policy_claimed": True,
+            "ranking_basis": "fixture_vision_success_labels_over_model_derived_wam_rollouts",
+            "required_scenario_eval_run_ids": ["run-1"],
+            "coverage_complete": True,
+            "per_policy_coverage": [
+                {
+                    "policy_id": "policy-a",
+                    "required_scenario_eval_run_ids": ["run-1"],
+                    "covered_scenario_eval_run_ids": ["run-1"],
+                    "missing_scenario_eval_run_ids": [],
+                    "extra_scenario_eval_run_ids": [],
+                    "attempt_count": 1,
+                    "expected_attempt_count": 1,
+                    "coverage_complete": True,
+                },
+                {
+                    "policy_id": "policy-b",
+                    "required_scenario_eval_run_ids": ["run-1"],
+                    "covered_scenario_eval_run_ids": ["run-1"],
+                    "missing_scenario_eval_run_ids": [],
+                    "extra_scenario_eval_run_ids": [],
+                    "attempt_count": 1,
+                    "expected_attempt_count": 1,
+                    "coverage_complete": True,
+                },
+            ],
+            "missing_by_policy": {"policy-a": [], "policy-b": []},
+            "extra_by_policy": {"policy-a": [], "policy-b": []},
+            "attempt_count_by_policy": {"policy-a": 1, "policy-b": 1},
+            "comparison_blockers": [],
+            "visual_review_blockers": [],
+            "score_ranges_valid": True,
+            "review_grade_policy_ranking": True,
+            "visual_rollout_useful_for_task_success_review": True,
+            "ranking_confidence": {
+                "top_policy_margin": 0.5,
+                "tie_band": 0.05,
+                "ranking_ambiguous": False,
+                "uncertainty_penalty_applied": False,
+                "ood_blockers": [],
+                "real_world_calibration_metrics": {
+                    "spearman_rank_correlation": "not_measured",
+                    "pearson_success_rate_correlation": "not_measured",
+                    "mean_maximum_rank_violation": "not_measured",
+                },
+            },
+            "comparison_contract": {
+                "deployment_readiness_claimed": False,
+                "external_deployment_grade_claimed": False,
+            },
+            "claim_boundary": {
+                "policy_ranking_is_evaluator_bounded": True,
+                "policy_ranking_is_not_deployment_readiness": True,
+                "robot_readiness_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        },
+    )
+    _write_json(
+        job_dir / "wam_eval_claim_boundary.json",
+        {
+            "policy_ranking_is_evaluator_bounded": True,
+            "policy_ranking_is_not_deployment_readiness": True,
+            "customer_specific_srcc_claimed": False,
+        },
+    )
+    _write_json(
+        job_dir / "sim_vs_real_calibration_report.json",
+        {
+            "schema_version": "sim_vs_real_calibration_report.v1",
+            "status": "not_measured",
+            "sim_vs_real_calibration_score": None,
+            "accepted_anchor_count": 0,
+            "minimum_accepted_anchor_count": 4,
+            "blockers": ["insufficient_anchor_count"],
+        },
+    )
     evaluation_result = {
         "standard_policy_scorecard": {
             "cycle_time": {"sample_count": 1},
@@ -6982,9 +7821,20 @@ def test_robot_team_grade_closure_marks_sim_only_beta_core_complete_with_trace_m
     )
 
     assert closure["sim_only_beta_core_complete"] is True
+    assert closure["evaluator_bounded_policy_comparison_complete"] is True
     assert closure["robot_team_grade_evaluation_complete"] is False
+    assert closure["deployment_readiness_complete"] is False
+    assert closure["policy_comparison_summary"]["policy_ranking_is_evaluator_bounded"] is True
     assert "digital_twin_fidelity_qa" in closure["blocked_requirement_ids"]
     assert "robot_team_policy_interface" in closure["blocked_requirement_ids"]
+    assert "sim_vs_real_calibration_path" not in closure["blocked_requirement_ids"]
+    assert "sim_vs_real_calibration_path" in closure["all_blocked_requirement_ids"]
+    assert "sim_vs_real_calibration_path" in closure[
+        "deployment_readiness_blocked_requirement_ids"
+    ]
+    assert "sim_vs_real_calibration_path" not in closure[
+        "robot_team_grade_blocked_requirement_ids"
+    ]
     sim_only_blockers = [
         item["requirement_id"]
         for item in closure["requirements"]
@@ -10056,12 +10906,71 @@ def test_robot_eval_job_can_run_fixture_wam_evaluation_substrate(tmp_path: Path)
     assert labels["status"] == "completed"
     assert scorecard["status"] == "completed"
     assert scorecard["top_policy_id"] == "site_finetune_policy"
+    assert scorecard["comparison_contract"]["comparison_scope"] == "configured_evaluator_only"
+    assert scorecard["comparison_contract"]["external_deployment_grade_claimed"] is False
     assert claim_boundary["generated_rollouts_are_model_derived_support_artifacts"] is True
+    assert claim_boundary["primary_proof_target"] == (
+        "policy_comparison_within_configured_evaluator"
+    )
+    assert claim_boundary["policy_ranking_is_evaluator_bounded"] is True
+    assert claim_boundary["policy_ranking_is_not_deployment_readiness"] is True
     assert claim_boundary["customer_specific_srcc_claimed"] is False
     assert claim_boundary["passing_wam_heldout_eval_is_not_deployment_approval"] is True
     assert followup["minimum_validation_requirements"]["paired_real_outcome_records_required"] is True
     assert run_manifest["robot_readiness_proven"] is False
     assert run_manifest["public_claim_upgrade_allowed"] is False
+
+
+def test_robot_eval_job_candidate_selection_handoff_is_artifact_indexed(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request = _full_job_request(capture_root)
+    request["evaluation_substrate"] = "fixture_wam"
+    request["policy_candidates"] = [
+        {
+            "policy_id": "baseline_policy",
+            "capabilities": ["clearance_aware_navigation"],
+        },
+        {
+            "policy_id": "site_finetune_policy",
+            "capabilities": [
+                "clearance_aware_navigation",
+                "dynamic_obstacle_yield",
+                "visual_recheck",
+                "grasp_alignment_correction",
+            ],
+        },
+    ]
+    request_path = tmp_path / "job-request-wam-candidate.json"
+    _write_json(request_path, request)
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-fixture-wam-candidate",
+        provisioner="fixture_local",
+        simulator="fixture",
+        evaluation_substrate="fixture_wam",
+    )
+
+    job_dir = Path(result["job_dir"])
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    report = _read_json(job_dir / "candidate_selection_report.json")
+    handoff = _read_json(job_dir / "customer_handoff_report.json")
+
+    assert run_manifest["artifacts"]["candidate_selection_report"] == (
+        "candidate_selection_report.json"
+    )
+    assert run_manifest["artifacts"]["candidate_selection_report_markdown"] == (
+        "candidate_selection_report.md"
+    )
+    assert (job_dir / "candidate_selection_report.md").is_file()
+    assert report["status"] in {"clear_winner", "ambiguous_candidate_shortlist"}
+    assert report["claim_boundary"]["do_not_use_for_deployment_approval"] is True
+    assert handoff["candidate_selection_report_path"] == "candidate_selection_report.json"
 
 
 def test_robot_eval_job_can_run_fake_cosmos_wam_provider_adapter(
@@ -10166,7 +11075,11 @@ def test_robot_eval_job_can_run_fake_cosmos_wam_provider_adapter(
     assert provider_upload["evidence"]["api_key"] == "<redacted>"
     assert runtime_package["evaluation_substrate"] == "cosmos3_wam"
     assert runtime_package["artifact_output_uri"] == "gs://bucket/customer-job/wam"
-    assert scorecard["status"] == "completed"
+    assert scorecard["status"] == "blocked_inconclusive_ranking"
+    assert "policy_comparison_requires_at_least_two_candidates" in scorecard[
+        "comparison_blockers"
+    ]
+    assert scorecard["single_best_policy_claimed"] is False
     assert claim_boundary["live_provider_calls_performed"] is True
     assert claim_boundary["robot_readiness_proven"] is False
     assert run_manifest["public_claim_upgrade_allowed"] is False

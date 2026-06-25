@@ -337,6 +337,7 @@ def _extract_provider_payload(
             rollouts=rewritten_rollouts,
             output_dir=extraction_dir.parent / "provider_generated_rollout_visual_smoke",
             generated_at=utc_now_iso(),
+            require_review_quality_profile=False,
         )
         payload["generated_rollout_visual_smoke"] = visual_smoke
         payload["generated_rollout_visual_smoke_status"] = visual_smoke.get("status")

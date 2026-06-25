@@ -51,6 +51,11 @@ def test_build_synthetic_2d_wam_seed_job_writes_policy_and_truth_boundary(
     assert generation["claim_boundary"]["capture_truth"] is False
     assert generation["claim_boundary"]["geometry_truth"] is False
     assert generation["claim_boundary"]["collision_truth"] is False
+    assert generation["claim_boundary"]["visually_useful_rollout"] is False
+    assert (
+        generation["claim_boundary"]["provider_success_separate_from_visually_useful_rollout"]
+        is True
+    )
 
     visual_qa = _read(job_dir / "seed_image_visual_qa.json")
     assert visual_qa["status"] == "passed"
@@ -67,12 +72,26 @@ def test_build_synthetic_2d_wam_seed_job_writes_policy_and_truth_boundary(
     assert observation["unitree_g1_sonic_state_source"] == (
         "synthetic_2d_seed_contract_probe_zero_state"
     )
+    aux_path = Path(observation["wam_auxiliary_observation_manifest_path"])
+    assert aux_path.is_file()
+    auxiliary = _read(aux_path)
+    assert auxiliary["schema_version"] == "wam_auxiliary_observation_manifest.v1"
+    assert auxiliary["source_kind"] == "synthetic_gpt_image_2_seed"
+    assert auxiliary["modalities_available"]["rgb"] is True
+    assert auxiliary["modalities_available"]["camera_intrinsics"] is True
+    assert auxiliary["modalities_available"]["proprioception"] is True
+    assert auxiliary["claim_boundary"]["capture_truth"] is False
+    assert auxiliary["claim_boundary"]["geometry_truth"] is False
+    assert auxiliary["claim_boundary"]["collision_truth"] is False
+    assert auxiliary["claim_boundary"]["synthetic_2d_sidecars_are_estimated_support_only"] is True
 
     rollout = _read(job_dir / "wam_rollout_input_manifest.json")
     assert rollout["schema_version"] == "wam_rollout_input_manifest.v1"
     assert rollout["status"] == "ready_for_image_only_wam_seed"
     assert rollout["camera_id"] == "synthetic_head_pov"
     assert rollout["source_image_path"].endswith("selected_initial_policy_frame.png")
+    assert Path(rollout["wam_auxiliary_observation_manifest_path"]).is_file()
+    assert rollout["wam_auxiliary_observation"]["modalities_available"]["rgb"] is True
     assert "oscar_wam_next_observation_generation" in rollout["expected_loop_shape"]
 
     boundary = _read(job_dir / "claim_boundary.json")

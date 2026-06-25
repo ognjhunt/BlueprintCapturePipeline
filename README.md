@@ -140,6 +140,16 @@ Artifact families and advisory downstream outputs:
 - `simulation_automation/agent_review_queue.json`
 - `simulation_automation/site_eval_director_run_manifest.json`
 - `simulation_automation/site_eval_director_proof_boundary.json`
+- `scene_wam_policy_episode_packet/scene_wam_policy_episode_packet.json`
+- `scene_wam_policy_episode_packet/initial_policy_observation.json`
+- `scene_wam_policy_episode_packet/initial_policy_observation_render.json`
+- `scene_wam_policy_episode_packet/scene_episode_task_manifest.json`
+- `scene_wam_policy_episode_packet/scene_policy_wam_claim_boundary.json`
+- `scene_wam_policy_episode_packet/capture_derived_robot_pov_synthesis/<task_robot_profile>/capture_derived_robot_pov_synthesis_manifest.json`
+- `scene_wam_policy_episode_packet/capture_derived_robot_pov_synthesis/<task_robot_profile>/capture_derived_robot_pov_quality_report.json`
+- `scene_wam_policy_episode_packet/capture_derived_robot_pov_synthesis/<task_robot_profile>/capture_derived_robot_pov_contact_sheet.jpg`
+- `scene_wam_policy_episode_packet/capture_derived_robot_pov_synthesis/<task_robot_profile>/capture_derived_robot_pov_source_qa.json`
+- `scene_wam_policy_episode_packet/capture_derived_robot_pov_synthesis/<task_robot_profile>/capture_derived_robot_pov_recapture_guidance.json`
 - `robot_eval_jobs/<job_id>/job_request.json`
 - `robot_eval_jobs/<job_id>/job_validation.json`
 - `robot_eval_jobs/<job_id>/job_plan.json`
@@ -181,6 +191,9 @@ Artifact families and advisory downstream outputs:
   evaluation is requested
 - `robot_eval_jobs/<job_id>/wam_rollout_results.json` when WAM/substrate
   evaluation is requested
+- `persistent_wam_short_visual_sanity_manifest.json` when the short
+  review-quality WAM visual sanity command is run before longer learned-WAM
+  rollouts
 - `robot_eval_jobs/<job_id>/vision_success_labels.json` when WAM/substrate
   evaluation is requested
 - `robot_eval_jobs/<job_id>/wam_vision_success_review_queue.json` when
@@ -220,6 +233,8 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/wam_classical_sim_cross_check_plan.json` when
   WAM/substrate evaluation is requested
 - `robot_eval_jobs/<job_id>/robot_pov_observation_manifest.json`
+- `robot_eval_jobs/<job_id>/robot_camera_profile_registry.json`
+- `robot_eval_jobs/<job_id>/robot_camera_profile_launch_readiness.json`
 - `robot_eval_jobs/<job_id>/robot_pov_observations.jsonl`
 - `robot_eval_jobs/<job_id>/robot_pov_frame_sequence_manifest.json`
 - `robot_eval_jobs/<job_id>/robot_pov_render_storyboard.json`
@@ -363,7 +378,7 @@ export BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true
 export BLUEPRINT_MUJOCO_G1_MODEL_ROOT=/path/to/mujoco_menagerie/unitree_g1
 ```
 
-With this profile, uploads without explicit requested outputs default into `qualification`, `evaluation_prep`, and `simulation_automation`; auto-staged `robot_eval_job_request.v1` work uses the MuJoCo runtime profile; and the control plane can drain accepted WebApp-style job requests into the packaged `blueprint_pipeline.mujoco_g1_simulator_command`. `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION` remains an explicit gate, and a MuJoCo G1 asset root or `BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS=true` is required before the packaged command is configured. This proves only sim-only beta execution when the job artifacts contain trace, metric, visual media, and scenario-run coverage evidence. It does not prove physical robot readiness, deployment readiness, or robot-team-grade closure.
+With this profile, uploads without explicit requested outputs default into `qualification`, `evaluation_prep`, and `simulation_automation`; auto-staged `robot_eval_job_request.v1` work uses the MuJoCo runtime profile; and the control plane can drain accepted WebApp-style job requests into the packaged `blueprint_pipeline.mujoco_g1_simulator_command`. `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION` remains an explicit gate, and a MuJoCo G1 asset root or `BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS=true` is required before the packaged command is configured. This proves only sim-only beta execution when the job artifacts contain trace, metric, visual media, and scenario-run coverage evidence. It does not prove physical robot readiness, deployment readiness, or external robot-team closure. WAM/substrate outputs, when requested, add evaluator-bounded policy comparison only.
 
 Local sim-only beta gate:
 
@@ -892,6 +907,17 @@ validation follow-up artifacts. It performs no live provider calls and does not
 prove physical robot readiness, deployment approval, safety approval, public
 readiness, or customer-specific SRCC.
 
+The intended WAM/substrate proof target is narrow: compare policy A against
+policies B and C inside the configured evaluator over the same scenario matrix,
+observation protocol, and scoring protocol. This follows the OSCAR / SC3-Eval
+style of using generated or simulated evaluator rollouts to preserve policy
+rankings and measure correlation with real anchors when such anchors exist. A
+passing `policy_ranking_scorecard.json` can say which policy ranked higher in
+that evaluator. It cannot say the policy is deployable, safe, physically ready,
+or generally superior outside the evaluator. Metrics such as MMRV, Spearman, and
+Pearson belong to calibration against paired real-world anchors, not to a
+default sim-only or fixture-only run.
+
 When `eval_ready_task_grounding.json` is present, the OSCAR/Cosmos WAM evaluator
 copies it into the job directory, enriches task prompts with the selected
 task-object target, attaches the camera calibration quality gate, consumes the
@@ -1039,6 +1065,37 @@ The adapter receives `BLUEPRINT_WAM_PROVIDER_INPUT` and
 adapter commands, missing auth envs, failed commands, timeouts, invalid JSON, or
 empty rollout outputs write blocked WAM provider manifests instead of making a
 readiness claim.
+
+For learned-WAM review-quality rollouts, run the short visual sanity gate before
+attempting longer autoregressive loops:
+
+```bash
+blueprint-run-persistent-wam-short-visual-sanity \
+  --policy-observation /path/to/policy_observation.json \
+  --provider runpod \
+  --transition-count 2
+```
+
+The command first runs source policy-observation visual QA locally. If that QA
+fails, no provider runner starts. When it proceeds, it forces review-quality WAM
+settings for one or two transitions, writes
+`persistent_wam_short_visual_sanity_manifest.json` plus the source QA report,
+WAM visual-quality report, contact sheet, frame stats, review-video status, and
+ffprobe metadata. If RunPod or Vast is used, the manifest also records teardown
+status and `continuing_spend_from_this_run`. Longer review-quality WAM rollouts
+must set `BLUEPRINT_PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST` to a passed
+short-sanity manifest for the same policy observation; the legacy
+`BLUEPRINT_ALLOW_PERSISTENT_WAM_LONG_REVIEW_ROLLOUT` flag alone is not enough to
+unlock the long run. These artifacts prove only reviewability of model-derived
+support media, not task success, safety, deployment readiness, physical robot
+readiness, or raw capture truth.
+
+Synthetic fallback initial observations and synthetic 2D WAM seeds are blocked
+from live or review-quality WAM provider bundles by default. Use
+`BLUEPRINT_ALLOW_SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT=true` only for an
+explicit experiment; emitted bundle, runtime, and review artifacts must still
+label `capture_truth=false`, `geometry_truth=false`, and
+`visually_useful_rollout` separately from provider/runtime success.
 
 To consume WebApp-exported request JSON files, point the same entrypoint at an
 inbox:

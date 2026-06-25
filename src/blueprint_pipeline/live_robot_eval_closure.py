@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 from urllib.parse import urlparse
 
 from .common import ensure_dir, read_json_any, resolve_gs_uri_to_path, utc_now_iso, write_json
+from .failure_diagnosis_contract import build_failure_diagnosis_audit
 from .local_capture import resolve_local_capture_context
 from .scenario_variation_instantiator import SCENARIO_VARIATION_NAMES
 from .simulation_automation import SIMULATOR_FRAMEWORKS, WORLD_MODEL_ENGINE_TARGETS
@@ -1383,7 +1384,10 @@ def _robot_team_beta_readiness_summary(
         "ready_for_real_world_validation",
         "review_required",
         "no_followup_required",
+        "not_measured",
         "blocked_missing_real_world_outcomes",
+        "blocked_insufficient_anchor_count",
+        "blocked_anchor_quality",
     }
     deployment_join_blockers: List[str] = []
     if not deployment_intake_path.is_file():
@@ -2841,10 +2845,17 @@ def _predicted_vs_actual_calibration_gate(job_dir: Path) -> Dict[str, Any]:
     report = _read_optional_mapping(report_path)
     summary = _read_optional_mapping(summary_path)
     score = _number(report.get("sim_vs_real_calibration_score"))
+    report_status = _string(report.get("status"))
+    report_blockers = _string_list(report.get("blockers"))
+    accepted_anchor_count = int(report.get("accepted_anchor_count") or 0)
+    minimum_anchor_count = int(report.get("minimum_accepted_anchor_count") or 0)
     matched_count = int(report.get("matched_prediction_record_count") or 0)
     exact_count = int(report.get("exact_prediction_record_count") or 0)
     weak_ids = _string_list(report.get("weak_prediction_match_record_ids"))
     unmatched_ids = _string_list(report.get("unmatched_actual_record_ids"))
+    unmatched_prediction_rows = report.get("unmatched_prediction_rows") or []
+    stale_anchor_ids = _string_list(report.get("stale_anchor_row_ids"))
+    conflicting_anchor_ids = _string_list(report.get("conflicting_anchor_row_ids"))
     missing_summary_sections = sorted(
         section
         for section in PREDICTED_VS_ACTUAL_SUMMARY_REQUIRED_SECTIONS
@@ -2855,13 +2866,26 @@ def _predicted_vs_actual_calibration_gate(job_dir: Path) -> Dict[str, Any]:
         blockers.append("sim_vs_real_calibration_report_missing")
     if not summary_path.is_file():
         blockers.append("prediction_vs_actual_deployment_summary_missing")
-    if report_path.is_file() and report.get("status") != "completed":
+    if report_path.is_file() and report_status != "completed":
+        blockers.extend(report_blockers)
+        if report_status == "not_measured" and "insufficient_anchor_count" not in blockers:
+            blockers.append("insufficient_anchor_count")
         if weak_ids:
             blockers.append("predicted_vs_actual_weak_prediction_matches")
         if unmatched_ids:
-            blockers.append("predicted_vs_actual_unmatched_actual_records")
+            blockers.append("unmatched_actual_rows")
     if report_path.is_file() and score is not None and not (0.0 <= score <= 1.0):
         blockers.append("sim_vs_real_calibration_score_invalid")
+    if report_path.is_file() and report_status == "completed" and score is None:
+        blockers.append("sim_vs_real_calibration_score_missing")
+    if report_path.is_file() and accepted_anchor_count < minimum_anchor_count:
+        blockers.append("insufficient_anchor_count")
+    if report_path.is_file() and unmatched_prediction_rows:
+        blockers.append("unmatched_prediction_rows")
+    if report_path.is_file() and stale_anchor_ids:
+        blockers.append("stale_anchor_rows")
+    if report_path.is_file() and conflicting_anchor_ids:
+        blockers.append("conflicting_anchor_rows")
     if report_path.is_file() and matched_count <= 0:
         blockers.append("predicted_vs_actual_no_matched_prediction_records")
     if report_path.is_file() and exact_count <= 0:
@@ -2878,13 +2902,19 @@ def _predicted_vs_actual_calibration_gate(job_dir: Path) -> Dict[str, Any]:
                 summary_path,
                 base_dir=job_dir,
             ),
-            "calibration_status": report.get("status"),
+            "calibration_status": report_status,
             "summary_status": summary.get("status"),
             "sim_vs_real_calibration_score": score,
+            "accepted_anchor_count": accepted_anchor_count,
+            "minimum_accepted_anchor_count": minimum_anchor_count,
+            "report_blockers": report_blockers,
             "matched_prediction_record_count": matched_count,
             "exact_prediction_record_count": exact_count,
             "weak_prediction_match_record_ids": weak_ids,
             "unmatched_actual_record_ids": unmatched_ids,
+            "unmatched_prediction_rows": unmatched_prediction_rows,
+            "stale_anchor_row_ids": stale_anchor_ids,
+            "conflicting_anchor_row_ids": conflicting_anchor_ids,
             "missing_summary_sections": missing_summary_sections,
         },
     )
@@ -3429,109 +3459,17 @@ def _failure_labels_gate(job_dir: Path) -> Dict[str, Any]:
     trace = _read_optional_mapping(trace_path)
     policy_trace = _read_optional_mapping(policy_trace_path)
     status = _string(payload.get("status")).lower()
-
-    def failed_attempt_rows(source_payload: Mapping[str, Any], source_name: str) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
-        for attempt in source_payload.get("attempts", []) or []:
-            if not isinstance(attempt, Mapping):
-                continue
-            if (
-                attempt.get("success") is False
-                or _string(attempt.get("status") or attempt.get("result")).lower()
-                in {"collision", "failed", "failure", "timeout", "unsafe"}
-                or bool(_string_list(attempt.get("failure_mode_ids") or attempt.get("failureModeIds")))
-            ):
-                row = dict(attempt)
-                row["failure_label_source_trace"] = source_name
-                rows.append(row)
-        return rows
-
-    simulator_failed_attempts = failed_attempt_rows(trace, "normalized_attempt_trace")
-    policy_failed_attempts = failed_attempt_rows(policy_trace, "policy_execution_trace")
-    failed_attempts = [*simulator_failed_attempts, *policy_failed_attempts]
-    label_rows = [
-        dict(label)
-        for label in payload.get("labels", []) or []
-        if isinstance(label, Mapping)
-    ]
-    required_attempt_ids = sorted(
-        {
-            _string(attempt.get("attempt_id") or attempt.get("attemptId"))
-            for attempt in failed_attempts
-            if _string(attempt.get("attempt_id") or attempt.get("attemptId"))
-        }
+    audit = build_failure_diagnosis_audit(
+        labels_payload=payload,
+        trace_payload=trace,
+        policy_trace_payload=policy_trace,
     )
-    required_run_ids = sorted(
-        {
-            _string(attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId"))
-            for attempt in failed_attempts
-            if _string(attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId"))
-        }
-    )
-    failed_attempt_id_set = set(required_attempt_ids)
-    failed_run_id_set = set(required_run_ids)
-    labels_missing_failure_mode_ids: List[str] = []
-    coverage_label_rows: List[Dict[str, Any]] = []
-    for index, label in enumerate(label_rows, start=1):
-        attempt_id = _string(
-            label.get("attempt_id")
-            or label.get("attemptId")
-            or label.get("policy_attempt_id")
-            or label.get("policyAttemptId")
-        )
-        run_id = _string(label.get("scenario_eval_run_id") or label.get("scenarioEvalRunId"))
-        if attempt_id not in failed_attempt_id_set and run_id not in failed_run_id_set:
-            continue
-        failure_mode_ids = _string_list(
-            label.get("failure_mode_ids")
-            or label.get("failureModeIds")
-            or label.get("failure_modes")
-            or label.get("failureModes")
-        )
-        if not failure_mode_ids:
-            labels_missing_failure_mode_ids.append(
-                _string(label.get("label_id") or label.get("labelId"))
-                or attempt_id
-                or run_id
-                or f"label_{index:04d}"
-            )
-            continue
-        coverage_label_rows.append(label)
-    covered_attempt_ids = sorted(
-        {
-            _string(
-                label.get("attempt_id")
-                or label.get("attemptId")
-                or label.get("policy_attempt_id")
-                or label.get("policyAttemptId")
-            )
-            for label in coverage_label_rows
-            if _string(
-                label.get("attempt_id")
-                or label.get("attemptId")
-                or label.get("policy_attempt_id")
-                or label.get("policyAttemptId")
-            )
-        }
-    )
-    covered_run_ids = sorted(
-        {
-            _string(label.get("scenario_eval_run_id") or label.get("scenarioEvalRunId"))
-            for label in coverage_label_rows
-            if _string(label.get("scenario_eval_run_id") or label.get("scenarioEvalRunId"))
-        }
-    )
-    missing_attempt_ids = sorted(set(required_attempt_ids) - set(covered_attempt_ids))
-    missing_run_ids = sorted(set(required_run_ids) - set(covered_run_ids))
     blockers: List[str] = []
     if not path.is_file():
         blockers.append("missing_failure_labels")
     if status.startswith("blocked") or status in {"missing", "not_available"}:
         blockers.append("failure_labels_not_available")
-    if labels_missing_failure_mode_ids:
-        blockers.append("failure_labels_missing_failure_mode_ids")
-    if missing_attempt_ids or missing_run_ids:
-        blockers.append("failure_labels_missing_failed_attempt_coverage")
+    blockers.extend(_string_list(audit.get("blockers")))
     return _gate(
         "failure_labels",
         passed=not blockers,
@@ -3542,16 +3480,7 @@ def _failure_labels_gate(job_dir: Path) -> Dict[str, Any]:
             "policy_execution_trace": _artifact(policy_trace_path, base_dir=job_dir),
             "status": status,
             "label_count": int(payload.get("label_count") or 0),
-            "failed_attempt_count": len(failed_attempts),
-            "failed_simulator_attempt_count": len(simulator_failed_attempts),
-            "failed_policy_attempt_count": len(policy_failed_attempts),
-            "required_failed_attempt_ids": required_attempt_ids,
-            "covered_failed_attempt_ids": covered_attempt_ids,
-            "missing_failed_attempt_ids": missing_attempt_ids,
-            "required_failed_scenario_eval_run_ids": required_run_ids,
-            "covered_failed_scenario_eval_run_ids": covered_run_ids,
-            "missing_failed_scenario_eval_run_ids": missing_run_ids,
-            "labels_missing_failure_mode_ids": labels_missing_failure_mode_ids,
+            **audit,
         },
     )
 

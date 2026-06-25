@@ -24,6 +24,13 @@ WAM_PROVIDER_ARTIFACT_UPLOAD_PROOF_SCHEMA_VERSION = "wam_provider_artifact_uploa
 WAM_POLICY_INTERFACE_BINDING_SCHEMA_VERSION = "wam_policy_interface_binding.v1"
 WAM_VISION_REVIEW_QUEUE_SCHEMA_VERSION = "wam_vision_success_review_queue.v1"
 WAM_REAL_WORLD_ANCHOR_SCHEMA_VERSION = "wam_real_world_validation_anchor_manifest.v1"
+ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION = "accepted_real_world_anchor.v1"
+ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS = (
+    "scenario_eval_run_id",
+    "policy_id",
+    "task_id",
+    "scenario_variation_instance_id",
+)
 WAM_CUSTOMER_VALIDATION_ENVELOPE_SCHEMA_VERSION = "wam_customer_validation_envelope.v1"
 WAM_PRODUCTION_OPS_SCHEMA_VERSION = "wam_production_ops_manifest.v1"
 WAM_CLASSICAL_SIM_CROSS_CHECK_SCHEMA_VERSION = "wam_classical_sim_cross_check_plan.v1"
@@ -524,6 +531,15 @@ def real_world_anchor_manifest(
     for record in records:
         run_id = _string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId"))
         policy_id = _string(record.get("policy_id") or record.get("policyId"))
+        task_id = _string(record.get("task_id") or record.get("taskId"))
+        variation_id = _string(
+            record.get("scenario_variation_instance_id")
+            or record.get("scenarioVariationInstanceId")
+            or record.get("variation_instance_id")
+            or record.get("variationInstanceId")
+            or record.get("variation_id")
+            or record.get("variationId")
+        )
         hardware_id = _string(record.get("hardware_id") or record.get("hardwareId"))
         owner_evidence = _string(
             record.get("owner_evidence_uri")
@@ -536,6 +552,8 @@ def real_world_anchor_manifest(
             for field, value in {
                 "scenario_eval_run_id": run_id,
                 "policy_id": policy_id,
+                "task_id": task_id,
+                "scenario_variation_instance_id": variation_id,
                 "hardware_id": hardware_id,
                 "owner_evidence_or_operator_attestation": owner_evidence,
             }.items()
@@ -553,6 +571,8 @@ def real_world_anchor_manifest(
                 {
                     "scenario_eval_run_id": run_id,
                     "policy_id": policy_id,
+                    "task_id": task_id,
+                    "scenario_variation_instance_id": variation_id,
                     "hardware_id": hardware_id,
                     "actual_success": bool(
                         record.get("actual_success")
@@ -568,6 +588,25 @@ def real_world_anchor_manifest(
         "status": "ready_for_srcc_computation" if usable and not missing else "requires_real_world_rollout_anchors",
         "evaluation_substrate": substrate,
         "top_policy_id": scorecard.get("top_policy_id"),
+        "accepted_anchor_schema": {
+            "schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+            "join_keys": list(ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS),
+            "required_prediction_fields": [
+                *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
+                "predicted_success",
+            ],
+            "required_actual_fields": [
+                *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
+                "actual_success",
+                "owner_evidence_or_operator_attestation",
+            ],
+            "metrics_enabled_after_acceptance": [
+                "spearman_rank_correlation",
+                "pearson_success_rate_correlation",
+                "mean_maximum_rank_violation",
+                "mean_absolute_success_rate_error",
+            ],
+        },
         "deployment_outcome_ledger_path": "deployment_outcome_ledger.json"
         if (job_dir / "deployment_outcome_ledger.json").is_file()
         else None,
@@ -581,6 +620,8 @@ def real_world_anchor_manifest(
                     "paired_real_world_rollout_outcomes",
                     "scenario_eval_run_id",
                     "policy_id",
+                    "task_id",
+                    "scenario_variation_instance_id",
                     "hardware_id",
                     "owner_evidence_or_operator_attestation",
                 ]
@@ -631,6 +672,8 @@ def customer_validation_envelope(
             "paired_real_world_rollouts",
             "exact_scenario_eval_run_id_join",
             "exact_policy_or_checkpoint_id_join",
+            "exact_task_id_join",
+            "exact_scenario_variation_instance_id_join",
             "exact_hardware_id_join",
             "owner_evidence_or_operator_attestation",
         ],

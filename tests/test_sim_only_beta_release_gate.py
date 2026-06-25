@@ -49,13 +49,18 @@ def _local_gate_report(path: Path) -> None:
     )
 
 
-def _forwarding_report(path: Path, *, ready: bool = True) -> None:
+def _forwarding_report(
+    path: Path,
+    *,
+    ready: bool = True,
+    warnings: list[str] | None = None,
+) -> None:
     _write_json(
         path,
         {
             "status": "ready_for_required_forwarding_with_probe" if ready else "blocked",
             "blockers": [] if ready else ["missing_env_ROBOT_EVAL_JOB_REQUEST_FORWARD_URL"],
-            "warnings": [],
+            "warnings": list(warnings or []),
             "forwarding_required": True,
             "endpoint_configured": ready,
             "configured_env": {
@@ -193,6 +198,98 @@ def test_release_gate_passes_with_local_sim_core_and_production_proofs(tmp_path:
     assert report["ready_for_beta_release"] is True
     assert report["blockers"] == []
     assert [gate["status"] for gate in report["gates"]] == ["passed", "passed", "passed", "passed"]
+
+
+def test_release_gate_allows_known_nonblocking_forwarding_warning(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    local_gate = capture_root / "local_gate.json"
+    forwarding = tmp_path / "forwarding.json"
+    route = tmp_path / "route.json"
+    deployment = tmp_path / "deployment.json"
+    _local_gate_report(local_gate)
+    _forwarding_report(forwarding, warnings=["capture_root_override_not_configured"])
+    _route_proof(route, capture_root)
+    _deployment_proof(deployment)
+
+    report = build_release_gate_report(
+        capture_root=capture_root,
+        local_gate_report_path=local_gate,
+        forwarding_preflight_report_path=forwarding,
+        production_route_forwarding_proof_path=route,
+        production_deployment_proof_path=deployment,
+    )
+
+    assert report["status"] == "passed"
+    forwarding_gate = next(
+        gate
+        for gate in report["gates"]
+        if gate["id"] == "production_webapp_to_pipeline_forwarding"
+    )
+    assert forwarding_gate["evidence"]["blocking_warnings"] == []
+    assert forwarding_gate["evidence"]["non_blocking_warnings"] == [
+        "capture_root_override_not_configured"
+    ]
+
+
+def test_release_gate_blocks_unknown_forwarding_warning(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    local_gate = capture_root / "local_gate.json"
+    forwarding = tmp_path / "forwarding.json"
+    route = tmp_path / "route.json"
+    deployment = tmp_path / "deployment.json"
+    _local_gate_report(local_gate)
+    _forwarding_report(forwarding, warnings=["unknown_warning"])
+    _route_proof(route, capture_root)
+    _deployment_proof(deployment)
+
+    report = build_release_gate_report(
+        capture_root=capture_root,
+        local_gate_report_path=local_gate,
+        forwarding_preflight_report_path=forwarding,
+        production_route_forwarding_proof_path=route,
+        production_deployment_proof_path=deployment,
+    )
+
+    assert report["status"] == "blocked"
+    assert "production_webapp_to_pipeline_forwarding:forwarding_preflight_has_warnings" in report[
+        "blockers"
+    ]
+
+
+def test_release_gate_accepts_route_proof_with_same_scene_capture_identity(
+    tmp_path: Path,
+) -> None:
+    capture_root = (
+        tmp_path
+        / "local-blueprint"
+        / "scenes"
+        / "scene-1"
+        / "captures"
+        / "capture-1"
+    )
+    production_capture_root = Path(
+        "/var/lib/blueprint/pipeline-control-plane/captures/local-blueprint/scenes/scene-1/captures/capture-1"
+    )
+    local_gate = capture_root / "local_gate.json"
+    forwarding = tmp_path / "forwarding.json"
+    route = tmp_path / "route.json"
+    deployment = tmp_path / "deployment.json"
+    _local_gate_report(local_gate)
+    _forwarding_report(forwarding)
+    _route_proof(route, production_capture_root)
+    _deployment_proof(deployment)
+
+    report = build_release_gate_report(
+        capture_root=capture_root,
+        local_gate_report_path=local_gate,
+        forwarding_preflight_report_path=forwarding,
+        production_route_forwarding_proof_path=route,
+        production_deployment_proof_path=deployment,
+    )
+
+    assert report["status"] == "passed"
+    assert report["ready_for_beta_release"] is True
+    assert report["blockers"] == []
 
 
 def test_release_gate_blocks_route_proof_for_different_capture_root(tmp_path: Path) -> None:

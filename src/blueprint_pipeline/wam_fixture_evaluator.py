@@ -7,6 +7,15 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
+from .failure_diagnosis_contract import (
+    FAILURE_LABEL_PROOF_EFFECT,
+    dedupe as _dedupe_refs,
+    evidence_refs as _failure_evidence_refs,
+    failure_root_cause_category as _failure_root_cause_category,
+    frame_or_clip_refs as _failure_frame_or_clip_refs,
+    remediation_candidate as _failure_remediation_candidate,
+    review_status_for_failure_label as _failure_review_status,
+)
 from .wam_eval_substrate import (
     WAM_EVALUATION_SUBSTRATES,
     build_wam_eval_claim_boundary,
@@ -31,12 +40,19 @@ from .wam_provider_runtime import (
     substrate_provider_command as _substrate_provider_command,
     vision_review_queue as _vision_review_queue,
 )
-from .wam_vision_success_judge import build_fixture_vision_success_labels
+from .wam_vision_success_judge import (
+    FIXTURE_VISUAL_REVIEW_BLOCKER,
+    FIXTURE_VISUAL_SMOKE_STATUS,
+    build_fixture_vision_success_labels,
+)
 
 
 WAM_ROLLOUT_MANIFEST_SCHEMA_VERSION = "wam_rollout_manifest.v1"
 WAM_ROLLOUT_RESULTS_SCHEMA_VERSION = "wam_rollout_results.v1"
 POLICY_RANKING_SCORECARD_SCHEMA_VERSION = "policy_ranking_scorecard.v1"
+POLICY_RANKING_TIE_BAND = 0.05
+POLICY_RANKING_HIGH_UNCERTAINTY_THRESHOLD = 0.65
+POLICY_RANKING_HIGH_OOD_RATE_THRESHOLD = 0.5
 REAL_WORLD_VALIDATION_FOLLOWUP_SCHEMA_VERSION = "real_world_validation_followup_request.v1"
 SRCC_VALIDATION_PLAN_SCHEMA_VERSION = "srcc_validation_plan.v1"
 NORMALIZED_ATTEMPT_TRACE_SCHEMA_VERSION = "robot_eval_job_normalized_attempt_trace.v1"
@@ -44,6 +60,16 @@ FAILURE_LABELS_SCHEMA_VERSION = "robot_eval_job_failure_labels.v1"
 PREDICTION_OUTCOME_LEDGER_SCHEMA_VERSION = "robot_eval_job_prediction_outcome_ledger.v1"
 CALIBRATION_REPORT_SCHEMA_VERSION = "robot_eval_job_calibration_report.v1"
 BREAKAGE_LIBRARY_SCHEMA_VERSION = "robot_eval_job_breakage_library.v1"
+ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION = "accepted_real_world_anchor.v1"
+ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS = (
+    "scenario_eval_run_id",
+    "policy_id",
+    "task_id",
+    "scenario_variation_instance_id",
+)
+CANDIDATE_SELECTION_REPORT_SCHEMA_VERSION = "wam_candidate_selection_report.v1"
+CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN = 0.05
+CANDIDATE_SELECTION_HIGH_UNCERTAINTY_THRESHOLD = 0.5
 
 WAM_ARTIFACT_PATHS = {
     "evaluation_substrate_registry": "evaluation_substrate_registry.json",
@@ -70,6 +96,8 @@ WAM_ARTIFACT_PATHS = {
     "wam_customer_validation_envelope": "wam_customer_validation_envelope.json",
     "wam_production_ops_manifest": "wam_production_ops_manifest.json",
     "wam_classical_sim_cross_check_plan": "wam_classical_sim_cross_check_plan.json",
+    "candidate_selection_report": "candidate_selection_report.json",
+    "candidate_selection_report_markdown": "candidate_selection_report.md",
     "customer_handoff_report": "customer_handoff_report.json",
     "customer_handoff_report_markdown": "customer_handoff_report.md",
 }
@@ -100,10 +128,98 @@ def _number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _optional_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ordered_unique_strings(values: Sequence[Any]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        text = _string(value)
+        if text and text not in seen:
+            seen.add(text)
+            ordered.append(text)
+    return ordered
+
+
+def _dedupe(values: Sequence[str]) -> list[str]:
+    return _ordered_unique_strings(values)
+
+
 def _safe_id(value: Any, *, fallback: str = "item") -> str:
     text = _string(value) or fallback
     cleaned = "".join(char.lower() if char.isalnum() else "_" for char in text)
     return "_".join(part for part in cleaned.split("_") if part) or fallback
+
+
+def _visual_review_gate_from_labels(labels: Mapping[str, Any]) -> Dict[str, Any]:
+    label_rows = [row for row in labels.get("labels", []) or [] if isinstance(row, Mapping)]
+    visual_smoke_statuses = _string_list(labels.get("visual_smoke_statuses"))
+    if not visual_smoke_statuses:
+        visual_smoke_statuses = sorted(
+            {
+                _string(row.get("visual_smoke_status"))
+                for row in label_rows
+                if _string(row.get("visual_smoke_status"))
+            }
+        )
+    visual_rollout_useful = bool(
+        labels.get("visual_rollout_useful_for_task_success_review")
+    ) or bool(
+        label_rows
+        and all(
+            bool(row.get("visual_rollout_useful_for_task_success_review"))
+            for row in label_rows
+        )
+    )
+    fixture_only = bool(labels.get("fixture_evaluator_only")) or any(
+        bool(row.get("fixture_evaluator_only")) for row in label_rows
+    )
+    review_grade_success_labels = bool(
+        labels.get("review_grade_success_labels")
+        and visual_rollout_useful
+        and not fixture_only
+    )
+    blockers = _string_list(labels.get("visual_review_blockers"))
+    for row in label_rows:
+        blockers.extend(_string_list(row.get("visual_review_blockers")))
+    if fixture_only and FIXTURE_VISUAL_REVIEW_BLOCKER not in blockers:
+        blockers.append(FIXTURE_VISUAL_REVIEW_BLOCKER)
+    if not visual_rollout_useful and not blockers:
+        blockers.append("generated_rollout_visual_smoke_missing_or_failed")
+    blockers = sorted(set(blockers))
+    status = (
+        "review_grade_success_labels_available"
+        if review_grade_success_labels
+        else "fixture_evaluator_only"
+        if fixture_only
+        else "blocked_visual_review_required"
+    )
+    return {
+        "status": status,
+        "visual_smoke_status": labels.get("visual_smoke_status")
+        or (
+            visual_smoke_statuses[0]
+            if len(visual_smoke_statuses) == 1
+            else "mixed_visual_smoke_statuses"
+            if visual_smoke_statuses
+            else FIXTURE_VISUAL_SMOKE_STATUS
+        ),
+        "visual_smoke_statuses": visual_smoke_statuses,
+        "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+        "review_grade_visual_evidence_available": bool(
+            labels.get("review_grade_visual_evidence_available") or visual_rollout_useful
+        ),
+        "review_grade_success_labels": review_grade_success_labels,
+        "fixture_evaluator_only": fixture_only,
+        "blockers": blockers,
+    }
 
 
 def _read_optional_mapping(path: Path) -> Dict[str, Any]:
@@ -424,6 +540,27 @@ def _normalized_attempt_trace(
                 "success": success,
                 "task_success": success,
                 "failure_mode_ids": _string_list(label.get("failure_mode_ids")),
+                "confidence": label.get("confidence"),
+                "evidence_refs": _failure_evidence_refs(
+                    label,
+                    extra_refs=("vision_success_labels.json",),
+                ),
+                "source_trace_refs": _dedupe_refs(["vision_success_labels.json"]),
+                "frame_or_clip_refs": _failure_frame_or_clip_refs(label),
+                "visual_smoke_ref": label.get("visual_smoke_ref")
+                or label.get("visualSmokeRef"),
+                "visual_smoke_status": label.get("visual_smoke_status"),
+                "visual_rollout_useful_for_task_success_review": bool(
+                    label.get("visual_rollout_useful_for_task_success_review")
+                ),
+                "visual_review_blockers": _string_list(label.get("visual_review_blockers")),
+                "fixture_evaluator_only": bool(label.get("fixture_evaluator_only")),
+                "review_grade_visual_evidence_available": bool(
+                    label.get("review_grade_visual_evidence_available")
+                ),
+                "review_grade_success_label": bool(label.get("review_grade_success_label")),
+                "generated_wam_rollout": True,
+                "model_derived_support_artifact": True,
                 "metrics": {
                     "world_model_uncertainty": _number(label.get("uncertainty_score")),
                     "intervention_count": 0 if success else 1,
@@ -435,6 +572,14 @@ def _normalized_attempt_trace(
                 "claim_boundary": {
                     "generated_wam_attempt": True,
                     "model_derived_support_artifact": True,
+                    "visual_smoke_required_for_review_grade_success_label": True,
+                    "visual_rollout_useful_for_task_success_review": bool(
+                        label.get("visual_rollout_useful_for_task_success_review")
+                    ),
+                    "fixture_evaluator_only": bool(label.get("fixture_evaluator_only")),
+                    "review_grade_success_label": bool(
+                        label.get("review_grade_success_label")
+                    ),
                     "simulator_execution_proven": False,
                     "robot_policy_execution_proven": False,
                     "robot_readiness_proven": False,
@@ -476,11 +621,140 @@ def _failure_labels(
 ) -> Dict[str, Any]:
     attempts = [item for item in trace.get("attempts", []) or [] if isinstance(item, Mapping)]
     failures = [attempt for attempt in attempts if not bool(attempt.get("success"))]
+    labels: list[Dict[str, Any]] = []
+    labels_missing_failure_modes: list[str] = []
+    labels_missing_evidence_refs: list[str] = []
+    labels_missing_review_status: list[str] = []
+    nonreviewable_labels: list[str] = []
+    visual_smoke_statuses: list[str] = []
+    visual_review_blockers: list[str] = []
+    for index, attempt in enumerate(failures, start=1):
+        label_id = f"wam_failure_label_{index:04d}"
+        failure_mode_ids = _string_list(attempt.get("failure_mode_ids"))
+        frame_refs = _failure_frame_or_clip_refs(attempt)
+        source_trace_refs = _dedupe_refs(
+            [
+                "normalized_attempt_trace.json",
+                *_string_list(attempt.get("source_trace_refs")),
+                "vision_success_labels.json",
+            ]
+        )
+        evidence_refs = _failure_evidence_refs(
+            attempt,
+            extra_refs=tuple(source_trace_refs),
+        )
+        visual_smoke_ref = (
+            _string(attempt.get("visual_smoke_ref") or attempt.get("visualSmokeRef")) or None
+        )
+        review_status = _failure_review_status(
+            supplied_review_status=attempt.get("review_status"),
+            supplied_status=attempt.get("status"),
+            generated_rollout=True,
+            frame_or_clip_ref_count=len(frame_refs),
+        )
+        root_cause_category = _failure_root_cause_category(
+            failure_mode_ids,
+            ood_flags=_string_list(attempt.get("ood_flags")),
+            failure_reason="fixture_wam_predicted_task_failure",
+        )
+        unknown_when_evidence_weak = bool(
+            not frame_refs or not evidence_refs or review_status == "non_reviewable_failure_hypothesis"
+        )
+        visual_smoke_status = (
+            _string(attempt.get("visual_smoke_status")) or FIXTURE_VISUAL_SMOKE_STATUS
+        )
+        visual_rollout_useful = bool(
+            attempt.get("visual_rollout_useful_for_task_success_review")
+        )
+        attempt_visual_blockers = _string_list(attempt.get("visual_review_blockers"))
+        fixture_only = bool(attempt.get("fixture_evaluator_only"))
+        if fixture_only and FIXTURE_VISUAL_REVIEW_BLOCKER not in attempt_visual_blockers:
+            attempt_visual_blockers.append(FIXTURE_VISUAL_REVIEW_BLOCKER)
+        if not visual_rollout_useful and not attempt_visual_blockers:
+            attempt_visual_blockers.append("generated_rollout_visual_smoke_missing_or_failed")
+        visual_smoke_statuses.append(visual_smoke_status)
+        visual_review_blockers.extend(attempt_visual_blockers)
+        label = {
+            "label_id": label_id,
+            "attempt_id": attempt.get("attempt_id"),
+            "rollout_id": attempt.get("rollout_id"),
+            "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+            "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
+            "variation_name": attempt.get("variation_name"),
+            "task_id": attempt.get("task_id"),
+            "scenario_id": attempt.get("scenario_id"),
+            "policy_id": attempt.get("policy_id"),
+            "evaluation_substrate": substrate,
+            "failure_mode_ids": failure_mode_ids,
+            "failure_reason": "fixture_wam_predicted_task_failure",
+            "source": "vision_success_labels",
+            "evidence_refs": evidence_refs,
+            "source_trace_refs": source_trace_refs,
+            "frame_or_clip_refs": frame_refs,
+            "visual_smoke_ref": visual_smoke_ref,
+            "confidence": attempt.get("confidence"),
+            "status": "review_required",
+            "review_status": review_status,
+            "reviewer_acceptance_required": True,
+            "root_cause_category": root_cause_category,
+            "remediation_candidate": _failure_remediation_candidate(
+                root_cause_category,
+                failure_mode_ids,
+            ),
+            "unknown_when_evidence_weak": unknown_when_evidence_weak,
+            "non_reviewable_failure_hypothesis": (
+                review_status == "non_reviewable_failure_hypothesis"
+            ),
+            "visual_smoke_status": visual_smoke_status,
+            "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+            "visual_review_blockers": sorted(set(attempt_visual_blockers)),
+            "fixture_evaluator_only": fixture_only,
+            "review_grade_failure_diagnosis": False,
+            "authoritative_failure_diagnosis": False,
+            "generated_wam_rollout": True,
+            "model_derived_support_artifact": True,
+            "proof_effect": FAILURE_LABEL_PROOF_EFFECT,
+        }
+        if not failure_mode_ids:
+            labels_missing_failure_modes.append(label_id)
+        if not evidence_refs:
+            labels_missing_evidence_refs.append(label_id)
+        if not review_status:
+            labels_missing_review_status.append(label_id)
+        if review_status == "non_reviewable_failure_hypothesis":
+            nonreviewable_labels.append(label_id)
+        if fixture_only or not visual_rollout_useful:
+            nonreviewable_labels.append(label_id)
+        labels.append(label)
+    coverage_blockers = []
+    if labels_missing_failure_modes:
+        coverage_blockers.append("failure_labels_missing_failure_mode_ids")
+    if labels_missing_evidence_refs:
+        coverage_blockers.append("failure_labels_missing_evidence_refs")
+    if labels_missing_review_status:
+        coverage_blockers.append("failure_labels_missing_review_status")
+    deduped_nonreviewable_labels = sorted(set(nonreviewable_labels))
+    visual_review_blockers = sorted(set(visual_review_blockers))
+    visual_rollout_useful_for_review = bool(failures) and not visual_review_blockers and all(
+        bool(attempt.get("visual_rollout_useful_for_task_success_review"))
+        for attempt in failures
+    )
     return {
         "schema_version": FAILURE_LABELS_SCHEMA_VERSION,
         "generated_at": generated_at,
         "status": "review_required" if failures else "no_failures_labeled",
         "evaluation_substrate": substrate,
+        "visual_smoke_status": visual_smoke_statuses[0]
+        if len(set(visual_smoke_statuses)) == 1
+        else "mixed_visual_smoke_statuses"
+        if visual_smoke_statuses
+        else FIXTURE_VISUAL_SMOKE_STATUS,
+        "visual_smoke_statuses": sorted(set(visual_smoke_statuses)),
+        "visual_rollout_useful_for_task_success_review": visual_rollout_useful_for_review,
+        "visual_review_blockers": visual_review_blockers,
+        "fixture_evaluator_only": any(bool(attempt.get("fixture_evaluator_only")) for attempt in failures),
+        "review_grade_failure_diagnosis": False,
+        "authoritative_failure_diagnosis": False,
         "label_count": len(failures),
         "failed_attempt_count": len(failures),
         "covered_failed_attempt_ids": sorted(_string(attempt.get("attempt_id")) for attempt in failures),
@@ -494,25 +768,27 @@ def _failure_labels(
         ),
         "missing_failed_scenario_eval_run_ids": [],
         "failed_run_label_coverage_complete": True,
-        "labels": [
-            {
-                "label_id": f"wam_failure_label_{index:04d}",
-                "attempt_id": attempt.get("attempt_id"),
-                "rollout_id": attempt.get("rollout_id"),
-                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
-                "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
-                "variation_name": attempt.get("variation_name"),
-                "task_id": attempt.get("task_id"),
-                "scenario_id": attempt.get("scenario_id"),
-                "policy_id": attempt.get("policy_id"),
-                "failure_mode_ids": _string_list(attempt.get("failure_mode_ids")),
-                "failure_reason": "fixture_wam_predicted_task_failure",
-                "source": "vision_success_labels",
-                "status": "review_required",
-                "proof_effect": "none_until_review_accepted_or_real_world_validation_supplied",
-            }
-            for index, attempt in enumerate(failures, start=1)
+        "failure_diagnosis_coverage_complete": not coverage_blockers,
+        "failure_diagnosis_review_complete": not deduped_nonreviewable_labels,
+        "failure_diagnosis_complete": bool(
+            failures and not coverage_blockers and not deduped_nonreviewable_labels
+        )
+        if failures
+        else True,
+        "failure_diagnosis_blockers": [
+            *coverage_blockers,
+            *visual_review_blockers,
+            *(
+                ["failure_labels_nonreviewable_failure_hypotheses"]
+                if deduped_nonreviewable_labels
+                else []
+            ),
         ],
+        "labels_missing_failure_mode_ids": labels_missing_failure_modes,
+        "labels_missing_evidence_refs": labels_missing_evidence_refs,
+        "labels_missing_review_status": labels_missing_review_status,
+        "nonreviewable_failure_hypothesis_label_ids": deduped_nonreviewable_labels,
+        "labels": labels,
         "claim_boundary": _claim_boundary(substrate=substrate, generated_at=generated_at),
     }
 
@@ -521,6 +797,7 @@ def _prediction_ledgers(
     *,
     substrate: str,
     trace: Mapping[str, Any],
+    failure_labels: Mapping[str, Any] | None = None,
     generated_at: str,
 ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     attempts = [item for item in trace.get("attempts", []) or [] if isinstance(item, Mapping)]
@@ -556,16 +833,152 @@ def _prediction_ledgers(
     calibration = {
         "schema_version": CALIBRATION_REPORT_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "needs_real_world_outcomes",
+        "status": "not_measured",
         "evaluation_substrate": substrate,
         "record_count": len(records),
         "records": records,
+        "accepted_anchor_schema": {
+            "schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+            "join_keys": list(ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS),
+            "required_prediction_fields": [
+                *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
+                "predicted_success",
+            ],
+            "required_actual_fields": [
+                *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
+                "actual_success",
+                "owner_evidence_or_operator_attestation",
+            ],
+        },
+        "accepted_anchor_count": 0,
         "sim_vs_real_calibration_score": None,
+        "spearman_rank_correlation": None,
+        "pearson_success_rate_correlation": None,
+        "mean_maximum_rank_violation": None,
+        "mmrv": None,
+        "mean_absolute_success_rate_error": None,
+        "confidence_intervals": {},
+        "blockers": ["insufficient_anchor_count", "unmatched_prediction_rows"]
+        if records
+        else ["insufficient_anchor_count"],
         "srcc_validation_status": "not_measured",
         "customer_specific_srcc_claimed": False,
         "claim_boundary": _claim_boundary(substrate=substrate, generated_at=generated_at),
     }
     failures = [record for record in records if not record["predicted_success"]]
+    label_rows = [
+        dict(label)
+        for label in (failure_labels or {}).get("labels", []) or []
+        if isinstance(label, Mapping)
+    ]
+    labels_by_attempt = {
+        _string(label.get("attempt_id")): label
+        for label in label_rows
+        if _string(label.get("attempt_id"))
+    }
+    labels_by_run = {
+        _string(label.get("scenario_eval_run_id")): label
+        for label in label_rows
+        if _string(label.get("scenario_eval_run_id"))
+    }
+    aggregation_map: Dict[tuple[str, str, str, str, str], Dict[str, Any]] = {}
+    dominant_map: Dict[str, Dict[str, Any]] = {}
+    for record in failures:
+        label = labels_by_run.get(_string(record.get("scenario_eval_run_id"))) or labels_by_attempt.get(
+            _string(record.get("attempt_id"))
+        )
+        failure_mode_ids = _string_list(
+            (label or {}).get("failure_mode_ids") if label else record.get("failure_mode_ids")
+        ) or ["unknown_failure_mode"]
+        root_cause = _string((label or {}).get("root_cause_category")) or _failure_root_cause_category(
+            failure_mode_ids,
+            failure_reason=_string((label or {}).get("failure_reason")),
+        )
+        evidence_refs = _failure_evidence_refs(label or record)
+        media_refs = _failure_frame_or_clip_refs(label or record)
+        exemplar = {
+            "attempt_id": (label or {}).get("attempt_id") or record.get("attempt_id"),
+            "scenario_eval_run_id": record.get("scenario_eval_run_id"),
+            "scenario_variation_instance_id": record.get("scenario_variation_instance_id"),
+            "variation_name": record.get("variation_name"),
+            "policy_id": record.get("policy_id"),
+            "task_id": record.get("task_id"),
+            "scenario_id": record.get("scenario_id"),
+            "failure_mode_ids": failure_mode_ids,
+            "root_cause_category": root_cause,
+            "evidence_refs": evidence_refs,
+            "frame_or_clip_refs": media_refs,
+            "visual_smoke_ref": (label or {}).get("visual_smoke_ref"),
+            "review_status": (label or {}).get("review_status"),
+        }
+        for failure_mode_id in failure_mode_ids:
+            key = (
+                _string(record.get("policy_id")) or "unknown_policy",
+                _string(record.get("task_id")) or "unknown_task",
+                _string(record.get("scenario_id")) or "unknown_scenario",
+                failure_mode_id,
+                root_cause,
+            )
+            bucket = aggregation_map.setdefault(
+                key,
+                {
+                    "policy_id": key[0],
+                    "task_id": key[1],
+                    "scenario_id": key[2],
+                    "failure_mode_id": key[3],
+                    "root_cause_category": key[4],
+                    "failed_attempt_count": 0,
+                    "scenario_eval_run_ids": [],
+                    "exemplar_failed_attempts": [],
+                    "media_refs": [],
+                    "evidence_refs": [],
+                },
+            )
+            bucket["failed_attempt_count"] += 1
+            bucket["scenario_eval_run_ids"] = _dedupe_refs(
+                [
+                    *bucket["scenario_eval_run_ids"],
+                    _string(record.get("scenario_eval_run_id")),
+                ]
+            )
+            if len(bucket["exemplar_failed_attempts"]) < 3:
+                bucket["exemplar_failed_attempts"].append(exemplar)
+            bucket["media_refs"] = _dedupe_refs([*bucket["media_refs"], *media_refs])
+            bucket["evidence_refs"] = _dedupe_refs([*bucket["evidence_refs"], *evidence_refs])
+            dominant = dominant_map.setdefault(
+                failure_mode_id,
+                {
+                    "failure_mode_id": failure_mode_id,
+                    "failed_attempt_count": 0,
+                    "root_cause_categories": [],
+                    "exemplar_failed_attempts": [],
+                    "media_refs": [],
+                    "evidence_refs": [],
+                },
+            )
+            dominant["failed_attempt_count"] += 1
+            dominant["root_cause_categories"] = _dedupe_refs(
+                [*dominant["root_cause_categories"], root_cause]
+            )
+            if len(dominant["exemplar_failed_attempts"]) < 3:
+                dominant["exemplar_failed_attempts"].append(exemplar)
+            dominant["media_refs"] = _dedupe_refs([*dominant["media_refs"], *media_refs])
+            dominant["evidence_refs"] = _dedupe_refs([*dominant["evidence_refs"], *evidence_refs])
+    aggregations = sorted(
+        aggregation_map.values(),
+        key=lambda row: (
+            -int(row["failed_attempt_count"]),
+            _string(row["policy_id"]),
+            _string(row["task_id"]),
+            _string(row["scenario_id"]),
+            _string(row["failure_mode_id"]),
+            _string(row["root_cause_category"]),
+        ),
+    )
+    dominant_failure_modes = sorted(
+        dominant_map.values(),
+        key=lambda row: (-int(row["failed_attempt_count"]), _string(row["failure_mode_id"])),
+    )
     breakage = {
         "schema_version": BREAKAGE_LIBRARY_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -573,6 +986,20 @@ def _prediction_ledgers(
         "evaluation_substrate": substrate,
         "record_count": len(failures),
         "records": failures,
+        "aggregation_keys": [
+            "policy_id",
+            "task_id",
+            "scenario_id",
+            "failure_mode_id",
+            "root_cause_category",
+        ],
+        "aggregation_count": len(aggregations),
+        "aggregations": aggregations,
+        "dominant_failure_modes": dominant_failure_modes,
+        "dominant_failure_mode_id": dominant_failure_modes[0]["failure_mode_id"]
+        if dominant_failure_modes
+        else None,
+        "source_failure_labels": "failure_labels.json",
         "claim_boundary": _claim_boundary(substrate=substrate, generated_at=generated_at),
     }
     return prediction, calibration, breakage
@@ -588,15 +1015,96 @@ def _policy_scorecard(
     substrate: str,
     labels: Mapping[str, Any],
     generated_at: str,
+    required_scenario_eval_run_ids: Sequence[str] = (),
+    policy_ids: Sequence[str] = (),
 ) -> Dict[str, Any]:
     label_rows = [dict(item) for item in labels.get("labels", []) or [] if isinstance(item, Mapping)]
+    visual_review_gate = _visual_review_gate_from_labels(labels)
     by_policy: Dict[str, list[Dict[str, Any]]] = {}
     for label in label_rows:
         by_policy.setdefault(_string(label.get("policy_id")) or "policy", []).append(label)
+    required_run_ids = _ordered_unique_strings(required_scenario_eval_run_ids)
+    if not required_run_ids:
+        required_run_ids = _ordered_unique_strings(
+            [
+                label.get("scenario_eval_run_id")
+                for label in label_rows
+                if _string(label.get("scenario_eval_run_id"))
+            ]
+        )
+    declared_policy_ids = _ordered_unique_strings(
+        [
+            *policy_ids,
+            *[
+                _string(label.get("policy_id")) or "policy"
+                for label in label_rows
+            ],
+        ]
+    )
     rows: list[Dict[str, Any]] = []
-    for policy_id, policy_labels in by_policy.items():
+    per_policy_coverage: list[Dict[str, Any]] = []
+    missing_by_policy: Dict[str, list[str]] = {}
+    extra_by_policy: Dict[str, list[str]] = {}
+    attempt_count_by_policy: Dict[str, int] = {}
+    duplicate_required_attempts_by_policy: Dict[str, list[str]] = {}
+    required_run_set = set(required_run_ids)
+    for policy_id in declared_policy_ids:
+        policy_labels = by_policy.get(policy_id, [])
+        observed_run_ids = _ordered_unique_strings(
+            [label.get("scenario_eval_run_id") for label in policy_labels]
+        )
+        run_attempt_counts = {
+            run_id: sum(
+                1
+                for label in policy_labels
+                if _string(label.get("scenario_eval_run_id")) == run_id
+            )
+            for run_id in observed_run_ids
+        }
+        covered_required_ids = [
+            run_id for run_id in required_run_ids if run_id in set(observed_run_ids)
+        ]
+        missing_ids = [run_id for run_id in required_run_ids if run_id not in set(observed_run_ids)]
+        extra_ids = sorted(set(observed_run_ids) - required_run_set) if required_run_ids else []
+        duplicate_required_ids = [
+            run_id
+            for run_id, count in run_attempt_counts.items()
+            if run_id in required_run_set and count > 1
+        ]
+        attempt_count = len(policy_labels)
+        expected_attempt_count = len(required_run_ids)
+        policy_coverage_complete = bool(
+            required_run_ids
+            and not missing_ids
+            and not extra_ids
+            and not duplicate_required_ids
+            and attempt_count == expected_attempt_count
+        )
+        missing_by_policy[policy_id] = missing_ids
+        extra_by_policy[policy_id] = extra_ids
+        attempt_count_by_policy[policy_id] = attempt_count
+        duplicate_required_attempts_by_policy[policy_id] = duplicate_required_ids
+        per_policy_coverage.append(
+            {
+                "policy_id": policy_id,
+                "required_scenario_eval_run_ids": list(required_run_ids),
+                "covered_scenario_eval_run_ids": covered_required_ids,
+                "missing_scenario_eval_run_ids": missing_ids,
+                "extra_scenario_eval_run_ids": extra_ids,
+                "attempt_count": attempt_count,
+                "expected_attempt_count": expected_attempt_count,
+                "duplicate_required_scenario_eval_run_ids": duplicate_required_ids,
+                "coverage_complete": policy_coverage_complete,
+            }
+        )
         success_count = sum(1 for label in policy_labels if bool(label.get("task_success")))
-        uncertainties = [_number(label.get("uncertainty_score")) for label in policy_labels]
+        uncertainties = [
+            value
+            for label in policy_labels
+            for value in [_optional_number(label.get("uncertainty_score"))]
+            if value is not None
+        ]
+        ood_flag_count = sum(1 for label in policy_labels if _string_list(label.get("ood_flags")))
         rows.append(
             {
                 "policy_id": policy_id,
@@ -609,7 +1117,10 @@ def _policy_scorecard(
                 "mean_uncertainty": round(sum(uncertainties) / len(uncertainties), 6)
                 if uncertainties
                 else None,
-                "ood_flag_count": sum(1 for label in policy_labels if _string_list(label.get("ood_flags"))),
+                "ood_flag_count": ood_flag_count,
+                "ood_rate": round(ood_flag_count / len(policy_labels), 6)
+                if policy_labels
+                else 0.0,
                 "failure_taxonomy": sorted(
                     {
                         mode
@@ -629,16 +1140,162 @@ def _policy_scorecard(
     )
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
+    score_range_blockers: list[str] = []
+    for label in label_rows:
+        uncertainty = _optional_number(label.get("uncertainty_score"))
+        if uncertainty is not None and not 0.0 <= uncertainty <= 1.0:
+            score_range_blockers.append("uncertainty_score_out_of_range")
+        confidence = _optional_number(label.get("confidence"))
+        if confidence is not None and not 0.0 <= confidence <= 1.0:
+            score_range_blockers.append("confidence_score_out_of_range")
+    score_ranges_valid = not score_range_blockers
+    coverage_complete = bool(
+        declared_policy_ids
+        and required_run_ids
+        and all(item["coverage_complete"] for item in per_policy_coverage)
+    )
+    top_policy_margin: float | None = None
+    if len(ranked) >= 2:
+        top_policy_margin = round(
+            _number(ranked[0].get("predicted_success_rate"))
+            - _number(ranked[1].get("predicted_success_rate")),
+            6,
+        )
+    ranking_ambiguous = bool(
+        len(ranked) >= 2
+        and top_policy_margin is not None
+        and top_policy_margin <= POLICY_RANKING_TIE_BAND
+    )
+    uncertainty_penalty_applied = any(
+        _optional_number(row.get("mean_uncertainty")) is not None
+        and _number(row.get("mean_uncertainty")) >= POLICY_RANKING_HIGH_UNCERTAINTY_THRESHOLD
+        for row in ranked
+    )
+    ood_blockers = [
+        f"policy:{row['policy_id']}:ood_rate_high"
+        for row in ranked
+        if _number(row.get("ood_rate")) >= POLICY_RANKING_HIGH_OOD_RATE_THRESHOLD
+        and int(row.get("ood_flag_count") or 0) > 0
+    ]
+    comparison_blockers: list[str] = []
+    if not label_rows:
+        comparison_blockers.append("policy_labels_missing")
+    if len(declared_policy_ids) < 2:
+        comparison_blockers.append("policy_comparison_requires_at_least_two_candidates")
+    if not required_run_ids:
+        comparison_blockers.append("required_scenario_eval_run_ids_missing")
+    if any(missing_by_policy.values()):
+        comparison_blockers.append("policy_coverage_missing_required_scenario_eval_run_ids")
+    if any(extra_by_policy.values()):
+        comparison_blockers.append("policy_coverage_contains_unknown_scenario_eval_run_ids")
+    if any(duplicate_required_attempts_by_policy.values()):
+        comparison_blockers.append("policy_coverage_duplicate_required_scenario_attempts")
+    if required_run_ids and any(
+        count != len(required_run_ids) for count in attempt_count_by_policy.values()
+    ):
+        comparison_blockers.append("policy_attempt_count_not_equal_required_scenario_count")
+    if not score_ranges_valid:
+        comparison_blockers.extend(score_range_blockers)
+    comparison_blockers = _dedupe(comparison_blockers)
+    if comparison_blockers:
+        status = "blocked_inconclusive_ranking"
+    elif ranking_ambiguous:
+        status = "completed_ambiguous_ranking"
+    elif uncertainty_penalty_applied or ood_blockers:
+        status = "completed_low_confidence_ranking"
+    else:
+        status = "completed"
+    single_best_policy_claimed = bool(
+        ranked and not comparison_blockers and not ranking_ambiguous
+    )
+    evaluator_top_policy_id = ranked[0]["policy_id"] if ranked else None
+    confidence_level = "blocked"
+    if not comparison_blockers:
+        if ranking_ambiguous:
+            confidence_level = "ambiguous"
+        elif uncertainty_penalty_applied or ood_blockers:
+            confidence_level = "low"
+        else:
+            confidence_level = "medium_evaluator_only"
+    review_grade_policy_ranking = bool(
+        status == "completed"
+        and visual_review_gate["review_grade_success_labels"]
+        and visual_review_gate["visual_rollout_useful_for_task_success_review"]
+    )
     return {
         "schema_version": POLICY_RANKING_SCORECARD_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "completed" if ranked else "blocked_missing_labels",
+        "status": status,
         "evaluation_substrate": substrate,
         "ranking_basis": "fixture_vision_success_labels_over_model_derived_wam_rollouts",
+        "visual_smoke_status": visual_review_gate["visual_smoke_status"],
+        "visual_smoke_statuses": visual_review_gate["visual_smoke_statuses"],
+        "visual_rollout_useful_for_task_success_review": visual_review_gate[
+            "visual_rollout_useful_for_task_success_review"
+        ],
+        "visual_review_blockers": visual_review_gate["blockers"],
+        "fixture_evaluator_only": visual_review_gate["fixture_evaluator_only"],
+        "review_grade_visual_evidence_available": visual_review_gate[
+            "review_grade_visual_evidence_available"
+        ],
+        "review_grade_success_labels": visual_review_gate["review_grade_success_labels"],
+        "review_grade_policy_ranking": review_grade_policy_ranking,
+        "review_grade_policy_ranking_status": "completed"
+        if review_grade_policy_ranking
+        else "blocked_visual_review_required",
+        "comparison_contract": {
+            "primary_eval_question": (
+                "which policy_or_checkpoint performs better inside this configured evaluator"
+            ),
+            "comparison_scope": "configured_evaluator_only",
+            "same_scenario_eval_matrix_required": True,
+            "same_observation_and_label_protocol_required": True,
+            "ranking_metrics": [
+                "predicted_success_rate",
+                "mean_uncertainty",
+                "failure_taxonomy",
+            ],
+            "validation_metrics_when_real_anchors_exist": [
+                "spearman_rank_correlation",
+                "pearson_success_rate_correlation",
+                "mean_maximum_rank_violation",
+                "mean_absolute_success_rate_error",
+            ],
+            "traditional_sim_cross_check_optional": True,
+            "deployment_readiness_claimed": False,
+            "external_deployment_grade_claimed": False,
+            "single_best_policy_claim_requires_margin_above_tie_band": True,
+            "review_grade_policy_ranking_requires_passed_visual_smoke": True,
+            "fixture_evaluator_only_ranking_is_not_review_grade": True,
+        },
         "policy_count": len(ranked),
         "scenario_attempt_count": len(label_rows),
+        "required_scenario_eval_run_ids": list(required_run_ids),
+        "per_policy_coverage": per_policy_coverage,
+        "coverage_complete": coverage_complete,
+        "missing_by_policy": missing_by_policy,
+        "extra_by_policy": extra_by_policy,
+        "attempt_count_by_policy": attempt_count_by_policy,
+        "comparison_blockers": comparison_blockers,
+        "score_ranges_valid": score_ranges_valid,
+        "score_range_blockers": _dedupe(score_range_blockers),
         "policy_rankings": ranked,
-        "top_policy_id": ranked[0]["policy_id"] if ranked else None,
+        "evaluator_top_policy_id": evaluator_top_policy_id,
+        "top_policy_id": evaluator_top_policy_id if single_best_policy_claimed else None,
+        "single_best_policy_claimed": single_best_policy_claimed,
+        "ranking_confidence": {
+            "top_policy_margin": top_policy_margin,
+            "tie_band": POLICY_RANKING_TIE_BAND,
+            "ranking_ambiguous": ranking_ambiguous,
+            "uncertainty_penalty_applied": uncertainty_penalty_applied,
+            "ood_blockers": ood_blockers,
+            "confidence_level": confidence_level,
+            "real_world_calibration_metrics": {
+                "spearman_rank_correlation": "not_measured",
+                "pearson_success_rate_correlation": "not_measured",
+                "mean_maximum_rank_violation": "not_measured",
+            },
+        },
         "failure_taxonomy": sorted(
             {
                 mode
@@ -656,7 +1313,15 @@ def _policy_scorecard(
             if label_rows
             else None,
         },
-        "claim_boundary": _claim_boundary(substrate=substrate, generated_at=generated_at),
+        "claim_boundary": {
+            **_claim_boundary(substrate=substrate, generated_at=generated_at),
+            "visual_smoke_required_for_review_grade_policy_ranking": True,
+            "visual_rollout_useful_for_task_success_review": visual_review_gate[
+                "visual_rollout_useful_for_task_success_review"
+            ],
+            "fixture_evaluator_only": visual_review_gate["fixture_evaluator_only"],
+            "review_grade_policy_ranking": review_grade_policy_ranking,
+        },
     }
 
 
@@ -704,16 +1369,679 @@ def _srcc_validation_plan(*, job_id: str, substrate: str, generated_at: str) -> 
             "spearman_rank_correlation",
             "pearson_success_rate_correlation",
             "mean_absolute_success_rate_error",
-            "maximum_rank_violation",
+            "mean_maximum_rank_violation",
             "failure_mode_agreement",
         ],
+        "accepted_anchor_join_keys": list(ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS),
         "customer_specific_srcc_claimed": False,
         "blocked_report_reason": "missing_paired_real_world_rollout_outcomes",
         "claim_boundary": _claim_boundary(substrate=substrate, generated_at=generated_at),
     }
 
 
+def _policy_metadata(policies: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    metadata: Dict[str, Dict[str, Any]] = {}
+    for policy in policies:
+        policy_id = _string(policy.get("policy_id") or policy.get("policyId"))
+        if not policy_id:
+            continue
+        metadata[policy_id] = {
+            "policy_id": policy_id,
+            "display_name": _string(policy.get("display_name") or policy.get("name")) or policy_id,
+            "adapter_id": _string(
+                policy.get("adapter_id")
+                or policy.get("adapterId")
+                or policy.get("policy_adapter_id")
+                or policy.get("policyAdapterId")
+            )
+            or None,
+            "checkpoint_id": _string(
+                policy.get("checkpoint_id")
+                or policy.get("checkpointId")
+                or policy.get("checkpoint")
+            )
+            or None,
+        }
+    return metadata
+
+
+def _policy_ranking_rows(scorecard: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    rows = [dict(item) for item in scorecard.get("policy_rankings", []) or [] if isinstance(item, Mapping)]
+    return sorted(
+        rows,
+        key=lambda row: (
+            _number(row.get("rank"), 999999),
+            -_number(row.get("predicted_success_rate")),
+            _string(row.get("policy_id")),
+        ),
+    )
+
+
+def _candidate_selection_summary(scorecard: Mapping[str, Any]) -> Dict[str, Any]:
+    ranked = _policy_ranking_rows(scorecard)
+    if not ranked:
+        return {
+            "status": "blocked_missing_ranking_evidence",
+            "top_policy_id": None,
+            "runner_up_policy_id": None,
+            "margin": None,
+            "ranking_ambiguous": True,
+            "tie_or_ambiguity_status": "no_candidate_ranking_available",
+            "candidate_shortlist": [],
+            "ambiguity_reasons": ["policy_ranking_scorecard_missing_or_empty"],
+            "policy_rankings": [],
+        }
+    if len(ranked) == 1:
+        only = ranked[0]
+        return {
+            "status": "single_candidate_no_comparative_ranking",
+            "top_policy_id": None,
+            "runner_up_policy_id": None,
+            "margin": None,
+            "ranking_ambiguous": True,
+            "tie_or_ambiguity_status": "single_candidate_no_comparison",
+            "candidate_shortlist": [only],
+            "ambiguity_reasons": ["only_one_policy_candidate_was_evaluated"],
+            "policy_rankings": ranked,
+        }
+
+    top = ranked[0]
+    runner_up = ranked[1]
+    success_margin = round(
+        _number(top.get("predicted_success_rate"))
+        - _number(runner_up.get("predicted_success_rate")),
+        6,
+    )
+    uncertainty_delta = None
+    if top.get("mean_uncertainty") is not None and runner_up.get("mean_uncertainty") is not None:
+        uncertainty_delta = round(
+            _number(runner_up.get("mean_uncertainty"))
+            - _number(top.get("mean_uncertainty")),
+            6,
+        )
+    shortlist = [
+        row
+        for row in ranked
+        if round(
+            _number(top.get("predicted_success_rate"))
+            - _number(row.get("predicted_success_rate")),
+            6,
+        )
+        < CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN
+    ]
+    ambiguous = success_margin < CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN
+    return {
+        "status": "ambiguous_candidate_shortlist" if ambiguous else "clear_winner",
+        "top_policy_id": None if ambiguous else top.get("policy_id"),
+        "runner_up_policy_id": runner_up.get("policy_id"),
+        "margin": {
+            "predicted_success_rate": success_margin,
+            "mean_uncertainty_advantage": uncertainty_delta,
+            "ambiguity_threshold": CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN,
+        },
+        "ranking_ambiguous": ambiguous,
+        "tie_or_ambiguity_status": "ambiguous" if ambiguous else "clear",
+        "candidate_shortlist": shortlist if ambiguous else [],
+        "ambiguity_reasons": ["top_two_success_rates_within_threshold"] if ambiguous else [],
+        "policy_rankings": ranked,
+    }
+
+
+def _scenario_metadata(matrix: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    metadata: Dict[str, Dict[str, Any]] = {}
+    for run in _matrix_runs(matrix):
+        run_id = _string(run.get("scenario_eval_run_id"))
+        if not run_id:
+            continue
+        metadata[run_id] = {
+            "scenario_eval_run_id": run_id,
+            "scenario_variation_instance_id": run.get("scenario_variation_instance_id")
+            or run.get("scenarioVariationInstanceId"),
+            "task_id": _string(run.get("task_id") or run.get("taskId")) or None,
+            "scenario_id": _string(run.get("scenario_id") or run.get("scenarioId")) or None,
+            "variation_name": _string(run.get("variation_name") or run.get("variationName"))
+            or None,
+            "split": _string(run.get("split")) or None,
+        }
+    return metadata
+
+
+def _label_rows(labels: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    return [dict(item) for item in labels.get("labels", []) or [] if isinstance(item, Mapping)]
+
+
+def _label_evidence_ref(label: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "artifact_path": "vision_success_labels.json",
+        "label_id": label.get("label_id"),
+        "attempt_id": label.get("attempt_id"),
+        "rollout_id": label.get("rollout_id"),
+        "scenario_eval_run_id": label.get("scenario_eval_run_id"),
+        "policy_id": label.get("policy_id"),
+    }
+
+
+def _scenario_matrix_coverage(
+    *,
+    matrix: Mapping[str, Any],
+    labels: Mapping[str, Any],
+    scorecard: Mapping[str, Any],
+) -> Dict[str, Any]:
+    metadata = _scenario_metadata(matrix)
+    rows = _label_rows(labels)
+    matrix_run_ids = sorted(metadata)
+    covered_run_ids = sorted(
+        {_string(label.get("scenario_eval_run_id")) for label in rows if label.get("scenario_eval_run_id")}
+    )
+    required_run_ids = matrix_run_ids or covered_run_ids
+    missing_run_ids = sorted(set(required_run_ids) - set(covered_run_ids))
+    policy_count = int(_number(scorecard.get("policy_count"), 0) or 0)
+    expected_attempt_count = len(required_run_ids) * policy_count if required_run_ids and policy_count else None
+    observed_attempt_count = len(rows)
+    return {
+        "scenario_eval_run_count": len(required_run_ids),
+        "policy_count": policy_count,
+        "expected_candidate_attempt_count": expected_attempt_count,
+        "observed_candidate_attempt_count": observed_attempt_count,
+        "coverage_complete": bool(
+            required_run_ids
+            and not missing_run_ids
+            and (expected_attempt_count is None or observed_attempt_count >= expected_attempt_count)
+        ),
+        "required_scenario_eval_run_ids": required_run_ids,
+        "covered_scenario_eval_run_ids": covered_run_ids,
+        "missing_scenario_eval_run_ids": missing_run_ids,
+        "coverage_source": "scenario_eval_matrix" if matrix_run_ids else "vision_success_labels",
+    }
+
+
+def _decisive_scenarios(
+    *,
+    matrix: Mapping[str, Any],
+    labels: Mapping[str, Any],
+) -> list[Dict[str, Any]]:
+    metadata = _scenario_metadata(matrix)
+    by_run: Dict[str, list[Dict[str, Any]]] = {}
+    for label in _label_rows(labels):
+        run_id = _string(label.get("scenario_eval_run_id"))
+        if run_id:
+            by_run.setdefault(run_id, []).append(label)
+    decisive: list[Dict[str, Any]] = []
+    for run_id, rows in sorted(by_run.items()):
+        outcomes = []
+        successes = []
+        failures = []
+        for label in sorted(rows, key=lambda item: _string(item.get("policy_id"))):
+            policy_id = _string(label.get("policy_id")) or "policy"
+            success = bool(label.get("task_success"))
+            if success:
+                successes.append(policy_id)
+            else:
+                failures.append(policy_id)
+            outcomes.append(
+                {
+                    "policy_id": policy_id,
+                    "task_success": success,
+                    "uncertainty_score": _number(label.get("uncertainty_score")),
+                    "failure_mode_ids": _string_list(label.get("failure_mode_ids")),
+                    "ood_flags": _string_list(label.get("ood_flags")),
+                    "evidence_ref": _label_evidence_ref(label),
+                }
+            )
+        if successes and failures:
+            decisive.append(
+                {
+                    **metadata.get(run_id, {"scenario_eval_run_id": run_id}),
+                    "successful_policy_ids": successes,
+                    "failed_policy_ids": failures,
+                    "policy_outcomes": outcomes,
+                    "failure_mode_ids": sorted(
+                        {mode for outcome in outcomes for mode in outcome["failure_mode_ids"]}
+                    ),
+                    "exemplar_evidence_refs": [
+                        outcome["evidence_ref"] for outcome in outcomes[:4]
+                    ],
+                }
+            )
+    return decisive
+
+
+def _high_uncertainty_scenarios(labels: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    rows = [
+        label
+        for label in _label_rows(labels)
+        if _number(label.get("uncertainty_score")) >= CANDIDATE_SELECTION_HIGH_UNCERTAINTY_THRESHOLD
+    ]
+    rows = sorted(
+        rows,
+        key=lambda label: (
+            -_number(label.get("uncertainty_score")),
+            _string(label.get("scenario_eval_run_id")),
+            _string(label.get("policy_id")),
+        ),
+    )
+    return [
+        {
+            "scenario_eval_run_id": label.get("scenario_eval_run_id"),
+            "scenario_variation_instance_id": label.get("scenario_variation_instance_id"),
+            "policy_id": label.get("policy_id"),
+            "uncertainty_score": _number(label.get("uncertainty_score")),
+            "ood_flags": _string_list(label.get("ood_flags")),
+            "review_status": "needs_review",
+            "evidence_ref": _label_evidence_ref(label),
+        }
+        for label in rows
+    ]
+
+
+def _ood_blockers(labels: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for label in _label_rows(labels):
+        for flag in _string_list(label.get("ood_flags")):
+            row = grouped.setdefault(
+                flag,
+                {
+                    "ood_flag": flag,
+                    "count": 0,
+                    "scenario_eval_run_ids": set(),
+                    "affected_policy_ids": set(),
+                    "exemplar_evidence_refs": [],
+                },
+            )
+            row["count"] += 1
+            if label.get("scenario_eval_run_id"):
+                row["scenario_eval_run_ids"].add(_string(label.get("scenario_eval_run_id")))
+            if label.get("policy_id"):
+                row["affected_policy_ids"].add(_string(label.get("policy_id")))
+            if len(row["exemplar_evidence_refs"]) < 3:
+                row["exemplar_evidence_refs"].append(_label_evidence_ref(label))
+    return [
+        {
+            **{key: value for key, value in row.items() if key not in {"scenario_eval_run_ids", "affected_policy_ids"}},
+            "scenario_eval_run_ids": sorted(row["scenario_eval_run_ids"]),
+            "affected_policy_ids": sorted(row["affected_policy_ids"]),
+        }
+        for row in sorted(grouped.values(), key=lambda item: (-item["count"], item["ood_flag"]))
+    ]
+
+
+def _failure_hook_template(failure_mode_id: str) -> Dict[str, list[str]]:
+    templates = {
+        "blocked_path_or_clearance_failure": {
+            "data_to_collect": [
+                "robot POV clips through blocked and narrow-clearance approaches",
+                "depth, pose, near-miss, and contact annotations at obstacle boundaries",
+            ],
+            "scenario_variants_to_add": [
+                "narrow aisle clearance sweeps",
+                "partially blocked path variants",
+                "movable obstacle offsets near the target approach",
+            ],
+        },
+        "dynamic_agent_safety_failure": {
+            "data_to_collect": [
+                "robot POV and third-person clips with humans or carts crossing the route",
+                "time-aligned agent trajectories and yield-distance labels",
+            ],
+            "scenario_variants_to_add": [
+                "human crossing timing offsets",
+                "forklift or cart crossing speed variants",
+                "late-yield and stop-go interaction cases",
+            ],
+        },
+        "perception_ambiguity_failure": {
+            "data_to_collect": [
+                "multi-angle robot POV clips for visually similar targets",
+                "object identity, occlusion, glare, and missing-label annotations",
+            ],
+            "scenario_variants_to_add": [
+                "glare and low-light target views",
+                "partial occlusion variants",
+                "wrong-object distractor placements",
+            ],
+        },
+        "manipulation_alignment_failure": {
+            "data_to_collect": [
+                "hand-camera clips of grasp, place, and object-rotation attempts",
+                "object pose, gripper pose, slip, and final-placement labels",
+            ],
+            "scenario_variants_to_add": [
+                "object rotation variants",
+                "shifted cart or bin target poses",
+                "grasp approach angle sweeps",
+            ],
+        },
+        "wam_ood_uncertain": {
+            "data_to_collect": [
+                "paired real rollout anchors for high-uncertainty generated scenarios",
+                "operator review labels explaining whether the generated observation is usable",
+            ],
+            "scenario_variants_to_add": [
+                "near-distribution versions of the OOD scenario",
+                "single-factor OOD ablations for glare, occlusion, or target ambiguity",
+            ],
+        },
+        "fixture_policy_failure": {
+            "data_to_collect": [
+                "policy command traces and robot POV clips around the forced failure case",
+                "review notes confirming whether the fixture failure matches a real failure",
+            ],
+            "scenario_variants_to_add": [
+                "direct regression case for the failing scenario_eval_run_id",
+                "one-factor neighboring variants around the failing setup",
+            ],
+        },
+        "unknown_needs_review": {
+            "data_to_collect": [
+                "human-reviewed rollout clips with failure reason annotations",
+                "policy action traces, observations, and task-state snapshots near failure",
+            ],
+            "scenario_variants_to_add": [
+                "minimal reproduction variants once the reviewer labels the failure",
+                "neighboring scenario variants that isolate the suspected cause",
+            ],
+        },
+    }
+    return templates.get(failure_mode_id, templates["unknown_needs_review"])
+
+
+def _retry_policy_refs(
+    policy_ids: Sequence[str],
+    policy_metadata: Mapping[str, Mapping[str, Any]],
+) -> list[Dict[str, Any]]:
+    refs: list[Dict[str, Any]] = []
+    for policy_id in _string_list(policy_ids):
+        metadata = _mapping(policy_metadata.get(policy_id))
+        refs.append(
+            {
+                "policy_id": policy_id,
+                "display_name": metadata.get("display_name") or policy_id,
+                "adapter_id": metadata.get("adapter_id"),
+                "checkpoint_id": metadata.get("checkpoint_id"),
+                "retry_reason": "rerun_after_failure_cluster_data_package_update",
+            }
+        )
+    return refs
+
+
+def _failure_clusters(
+    *,
+    failure_labels: Mapping[str, Any],
+    selection: Mapping[str, Any],
+    policy_metadata: Mapping[str, Mapping[str, Any]],
+) -> list[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for label in [
+        dict(item)
+        for item in failure_labels.get("labels", []) or []
+        if isinstance(item, Mapping)
+    ]:
+        modes = _string_list(label.get("failure_mode_ids")) or ["unknown_needs_review"]
+        for mode in modes:
+            row = grouped.setdefault(
+                mode,
+                {
+                    "failure_mode_id": mode,
+                    "count": 0,
+                    "affected_policy_ids": set(),
+                    "scenario_eval_run_ids": set(),
+                    "exemplar_evidence_refs": [],
+                },
+            )
+            row["count"] += 1
+            if label.get("policy_id"):
+                row["affected_policy_ids"].add(_string(label.get("policy_id")))
+            if label.get("scenario_eval_run_id"):
+                row["scenario_eval_run_ids"].add(_string(label.get("scenario_eval_run_id")))
+            if len(row["exemplar_evidence_refs"]) < 3:
+                row["exemplar_evidence_refs"].append(
+                    {
+                        "artifact_path": "failure_labels.json",
+                        "label_id": label.get("label_id"),
+                        "attempt_id": label.get("attempt_id"),
+                        "rollout_id": label.get("rollout_id"),
+                        "scenario_eval_run_id": label.get("scenario_eval_run_id"),
+                        "policy_id": label.get("policy_id"),
+                    }
+                )
+    fallback_policy_ids = [
+        _string(row.get("policy_id"))
+        for row in selection.get("candidate_shortlist", []) or []
+        if isinstance(row, Mapping) and _string(row.get("policy_id"))
+    ]
+    if not fallback_policy_ids and selection.get("top_policy_id"):
+        fallback_policy_ids = [_string(selection.get("top_policy_id"))]
+    clusters: list[Dict[str, Any]] = []
+    for mode, row in sorted(grouped.items(), key=lambda item: (-item[1]["count"], item[0])):
+        affected_policy_ids = sorted(row["affected_policy_ids"]) or fallback_policy_ids
+        template = _failure_hook_template(mode)
+        weak = mode == "unknown_needs_review"
+        clusters.append(
+            {
+                "cluster_id": f"failure_cluster_{_safe_id(mode)}",
+                "failure_mode_id": mode if not weak else None,
+                "diagnosis": "unknown_needs_review"
+                if weak
+                else "failure_mode_observed_root_cause_needs_review",
+                "evidence_strength": "weak" if weak else "label_only_needs_review",
+                "count": row["count"],
+                "affected_policy_ids": affected_policy_ids,
+                "scenario_eval_run_ids": sorted(row["scenario_eval_run_ids"]),
+                "exemplar_evidence_refs": row["exemplar_evidence_refs"],
+                "post_training_data_package_hooks": {
+                    **template,
+                    "policy_adapter_or_checkpoint_to_retry": _retry_policy_refs(
+                        affected_policy_ids,
+                        policy_metadata,
+                    ),
+                },
+            }
+        )
+    return clusters
+
+
+def _dominant_failure_modes_from_clusters(
+    clusters: Sequence[Mapping[str, Any]],
+) -> list[Dict[str, Any]]:
+    if not clusters:
+        return []
+    return [
+        {
+            "failure_mode_id": cluster.get("failure_mode_id") or "unknown_needs_review",
+            "count": int(_number(cluster.get("count"), 0) or 0),
+            "diagnosis": cluster.get("diagnosis") or "unknown_needs_review",
+            "evidence_strength": cluster.get("evidence_strength") or "weak",
+        }
+        for cluster in clusters
+    ]
+
+
+def _candidate_selection_report(
+    *,
+    job_id: str,
+    substrate: str,
+    matrix: Mapping[str, Any],
+    policies: Sequence[Mapping[str, Any]],
+    labels: Mapping[str, Any],
+    failure_labels: Mapping[str, Any],
+    scorecard: Mapping[str, Any],
+    followup: Mapping[str, Any],
+    anchor_manifest: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    selection = _candidate_selection_summary(scorecard)
+    policy_meta = _policy_metadata(policies)
+    decisive = _decisive_scenarios(matrix=matrix, labels=labels)
+    clusters = _failure_clusters(
+        failure_labels=failure_labels,
+        selection=selection,
+        policy_metadata=policy_meta,
+    )
+    coverage = _scenario_matrix_coverage(matrix=matrix, labels=labels, scorecard=scorecard)
+    high_uncertainty = _high_uncertainty_scenarios(labels)
+    ood_blockers = _ood_blockers(labels)
+    exemplar_refs: list[Dict[str, Any]] = []
+    for scenario in decisive[:4]:
+        exemplar_refs.extend(
+            ref
+            for ref in scenario.get("exemplar_evidence_refs", []) or []
+            if isinstance(ref, Mapping)
+        )
+    for cluster in clusters[:4]:
+        exemplar_refs.extend(
+            ref
+            for ref in cluster.get("exemplar_evidence_refs", []) or []
+            if isinstance(ref, Mapping)
+        )
+    usable_anchor_count = int(_number(anchor_manifest.get("usable_anchor_count"), 0) or 0)
+    claim_boundary = {
+        **_claim_boundary(substrate=substrate, generated_at=generated_at),
+        "boundary_statement": "do not use for deployment approval",
+        "do_not_use_for_deployment_approval": True,
+        "deployment_approval_claimed": False,
+        "real_world_success_claimed": False,
+        "best_policy_statement_scope": "configured_evaluator_only",
+    }
+    return {
+        "schema_version": CANDIDATE_SELECTION_REPORT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "job_id": job_id,
+        "status": selection["status"],
+        "evaluation_substrate": substrate,
+        "primary_eval_question": "which policy performed best in this evaluator, and what broke",
+        "selection": selection,
+        "top_policy_id": selection.get("top_policy_id"),
+        "runner_up_policy_id": selection.get("runner_up_policy_id"),
+        "margin": selection.get("margin"),
+        "tie_or_ambiguity_status": selection.get("tie_or_ambiguity_status"),
+        "candidate_shortlist": selection.get("candidate_shortlist"),
+        "scenario_matrix_coverage": coverage,
+        "decisive_scenarios": decisive,
+        "high_uncertainty_scenarios": high_uncertainty,
+        "ood_blockers": ood_blockers,
+        "dominant_failure_modes": _dominant_failure_modes_from_clusters(clusters),
+        "failure_clusters": clusters,
+        "failure_evidence_status": "unknown_needs_review"
+        if clusters and all(cluster.get("evidence_strength") == "weak" for cluster in clusters)
+        else ("no_failures_observed_in_evaluator" if not clusters else "label_only_needs_review"),
+        "exemplar_evidence_refs": exemplar_refs[:10],
+        "real_world_validation_followup_request": {
+            "artifact_path": "real_world_validation_followup_request.json",
+            "status": followup.get("status") or "requested_real_world_validation_anchors",
+            "triggered_by_no_real_world_anchors": usable_anchor_count == 0,
+            "usable_anchor_count": usable_anchor_count,
+            "requested_anchor_rollouts": _string_list(followup.get("requested_anchor_rollouts")),
+            "minimum_validation_requirements": followup.get("minimum_validation_requirements")
+            or {},
+        },
+        "real_world_validation_requests": [
+            {
+                "request_type": "paired_real_world_rollout_anchors",
+                "status": followup.get("status") or "requested_real_world_validation_anchors",
+                "artifact_path": "real_world_validation_followup_request.json",
+                "needed_before_external_claims": True,
+            }
+        ],
+        "artifact_paths": {
+            "policy_ranking_scorecard": "policy_ranking_scorecard.json",
+            "vision_success_labels": "vision_success_labels.json",
+            "failure_labels": "failure_labels.json",
+            "wam_rollout_results": "wam_rollout_results.json",
+            "real_world_validation_followup_request": (
+                "real_world_validation_followup_request.json"
+            ),
+            "wam_real_world_validation_anchor_manifest": (
+                "wam_real_world_validation_anchor_manifest.json"
+            ),
+        },
+        "claim_boundary": claim_boundary,
+    }
+
+
+def _candidate_selection_markdown(report: Mapping[str, Any]) -> str:
+    selection = _mapping(report.get("selection"))
+    margin = _mapping(report.get("margin"))
+    top_policy = report.get("top_policy_id") or "ambiguous, use shortlist"
+    shortlist = [
+        _string(row.get("policy_id"))
+        for row in report.get("candidate_shortlist", []) or []
+        if isinstance(row, Mapping) and _string(row.get("policy_id"))
+    ]
+    lines = [
+        "# WAM Candidate Selection Report",
+        "",
+        f"Status: `{report.get('status')}`",
+        f"Evaluation substrate: `{report.get('evaluation_substrate')}`",
+        f"Top policy: `{top_policy}`",
+        f"Runner-up: `{report.get('runner_up_policy_id')}`",
+        f"Predicted success-rate margin: `{margin.get('predicted_success_rate')}`",
+        f"Tie or ambiguity status: `{report.get('tie_or_ambiguity_status')}`",
+        "",
+        "Boundary: do not use for deployment approval.",
+        "",
+    ]
+    if shortlist:
+        lines.extend(
+            [
+                "## Candidate Shortlist",
+                "",
+                *[f"- `{policy_id}`" for policy_id in shortlist],
+                "",
+            ]
+        )
+    decisive = report.get("decisive_scenarios", []) or []
+    lines.extend(["## Decisive Scenarios", ""])
+    if decisive:
+        for scenario in decisive[:8]:
+            if not isinstance(scenario, Mapping):
+                continue
+            lines.append(
+                f"- `{scenario.get('scenario_eval_run_id')}`: "
+                f"passed={scenario.get('successful_policy_ids')} "
+                f"failed={scenario.get('failed_policy_ids')}"
+            )
+    else:
+        lines.append("- None found in this evaluator run.")
+    lines.append("")
+    clusters = report.get("failure_clusters", []) or []
+    lines.extend(["## Failure Clusters", ""])
+    if clusters:
+        for cluster in clusters[:8]:
+            if not isinstance(cluster, Mapping):
+                continue
+            lines.append(
+                f"- `{cluster.get('cluster_id')}`: {cluster.get('diagnosis')} "
+                f"({cluster.get('count')} labels)"
+            )
+    else:
+        lines.append("- No failed evaluator labels were produced.")
+    lines.extend(
+        [
+            "",
+            "## Real-World Validation",
+            "",
+            (
+                "- Follow-up request: "
+                f"`{_mapping(report.get('real_world_validation_followup_request')).get('status')}`"
+            ),
+            "",
+        ]
+    )
+    if selection.get("ambiguity_reasons"):
+        lines.extend(
+            [
+                "## Ambiguity Reasons",
+                "",
+                *[f"- `{reason}`" for reason in _string_list(selection.get("ambiguity_reasons"))],
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _customer_handoff_markdown(report: Mapping[str, Any]) -> str:
+    visual_gate = _mapping(report.get("visual_reviewability_gate"))
+    blockers = _string_list(visual_gate.get("blockers"))
     return "\n".join(
         [
             "# WAM Policy Evaluation Handoff",
@@ -721,8 +2049,14 @@ def _customer_handoff_markdown(report: Mapping[str, Any]) -> str:
             f"Status: `{report.get('status')}`",
             f"Evaluation substrate: `{report.get('evaluation_substrate')}`",
             f"Top policy: `{report.get('top_policy_id')}`",
+            f"Visual review gate: `{visual_gate.get('status')}`",
+            f"Visual review blockers: `{', '.join(blockers) if blockers else 'none'}`",
             "",
-            "Generated rollouts and fixture labels are support artifacts. They do not prove real-world success, deployment readiness, robot safety, or customer-specific SRCC.",
+            (
+                "This ranks policies inside the configured evaluator. Generated rollouts "
+                "and fixture labels are support artifacts; they do not prove real-world "
+                "success, deployment approval, robot safety, or customer-specific SRCC."
+            ),
             "",
         ]
     )
@@ -733,25 +2067,58 @@ def _customer_handoff_report(
     job_id: str,
     substrate: str,
     scorecard: Mapping[str, Any],
+    candidate_selection_report: Mapping[str, Any],
     generated_at: str,
 ) -> Dict[str, Any]:
+    visual_gate = {
+        "status": scorecard.get("review_grade_policy_ranking_status")
+        or "blocked_visual_review_required",
+        "visual_smoke_status": scorecard.get("visual_smoke_status")
+        or FIXTURE_VISUAL_SMOKE_STATUS,
+        "visual_rollout_useful_for_task_success_review": bool(
+            scorecard.get("visual_rollout_useful_for_task_success_review")
+        ),
+        "review_grade_policy_ranking": bool(scorecard.get("review_grade_policy_ranking")),
+        "fixture_evaluator_only": bool(scorecard.get("fixture_evaluator_only")),
+        "blockers": _string_list(scorecard.get("visual_review_blockers")),
+    }
     return {
         "schema_version": "wam_customer_handoff_report.v1",
         "generated_at": generated_at,
         "job_id": job_id,
         "status": "generated",
         "evaluation_substrate": substrate,
-        "top_policy_id": scorecard.get("top_policy_id"),
+        "top_policy_id": candidate_selection_report.get("top_policy_id"),
+        "candidate_selection_report_path": "candidate_selection_report.json",
+        "candidate_selection_summary": {
+            "status": candidate_selection_report.get("status"),
+            "top_policy_id": candidate_selection_report.get("top_policy_id"),
+            "runner_up_policy_id": candidate_selection_report.get("runner_up_policy_id"),
+            "margin": candidate_selection_report.get("margin"),
+            "tie_or_ambiguity_status": candidate_selection_report.get(
+                "tie_or_ambiguity_status"
+            ),
+            "candidate_shortlist": candidate_selection_report.get("candidate_shortlist"),
+        },
+        "legacy_scorecard_top_policy_id": scorecard.get("top_policy_id"),
+        "visual_reviewability_gate": visual_gate,
         "artifact_paths": {
             key: value
             for key, value in WAM_ARTIFACT_PATHS.items()
-            if key not in {"customer_handoff_report_markdown"}
+            if key not in {"customer_handoff_report_markdown", "candidate_selection_report_markdown"}
         },
         "reader_boundary": (
             "Generated WAM rollouts are model-derived support artifacts, not raw truth or "
-            "deployment approval."
+            "deployment approval. Fixture-only labels and rankings are not review-grade "
+            "task-success evidence unless an explicit visual smoke artifact says the "
+            "rollout is useful for task-success review."
         ),
-        "claim_boundary": _claim_boundary(substrate=substrate, generated_at=generated_at),
+        "claim_boundary": {
+            **_claim_boundary(substrate=substrate, generated_at=generated_at),
+            "visual_smoke_required_for_review_grade_policy_ranking": True,
+            "fixture_evaluator_only": bool(scorecard.get("fixture_evaluator_only")),
+            "review_grade_policy_ranking": bool(scorecard.get("review_grade_policy_ranking")),
+        },
     }
 
 
@@ -845,7 +2212,15 @@ def _blocked_wam_artifacts(
         trace=trace,
         generated_at=generated_at,
     )
-    scorecard = _policy_scorecard(substrate=substrate, labels=labels, generated_at=generated_at)
+    scorecard = _policy_scorecard(
+        substrate=substrate,
+        labels=labels,
+        generated_at=generated_at,
+        required_scenario_eval_run_ids=[
+            _string(run.get("scenario_eval_run_id")) for run in _matrix_runs(matrix)
+        ],
+        policy_ids=[_string(policy.get("policy_id")) for policy in policies],
+    )
     claim_boundary = _claim_boundary(substrate=substrate, generated_at=generated_at)
     review_queue = _vision_review_queue(
         substrate=substrate,
@@ -863,6 +2238,18 @@ def _blocked_wam_artifacts(
         job_dir=job_dir,
         substrate=substrate,
         scorecard=scorecard,
+        generated_at=generated_at,
+    )
+    candidate_report = _candidate_selection_report(
+        job_id=job_id,
+        substrate=substrate,
+        matrix=matrix,
+        policies=policies,
+        labels=labels,
+        failure_labels=failure_labels,
+        scorecard=scorecard,
+        followup=followup,
+        anchor_manifest=anchor_manifest,
         generated_at=generated_at,
     )
     validation_envelope = _customer_validation_envelope(
@@ -889,6 +2276,13 @@ def _blocked_wam_artifacts(
         scorecard=scorecard,
         generated_at=generated_at,
     )
+    handoff = _customer_handoff_report(
+        job_id=job_id,
+        substrate=substrate,
+        scorecard=scorecard,
+        candidate_selection_report=candidate_report,
+        generated_at=generated_at,
+    )
     payloads = {
         "wam_provider_runtime_package": runtime_package,
         "wam_provider_execution_manifest": provider_execution,
@@ -910,8 +2304,18 @@ def _blocked_wam_artifacts(
         "wam_customer_validation_envelope": validation_envelope,
         "wam_production_ops_manifest": production_ops,
         "wam_classical_sim_cross_check_plan": cross_check_plan,
+        "candidate_selection_report": candidate_report,
+        "customer_handoff_report": handoff,
     }
     _write_wam_artifacts(job_dir, payloads)
+    write_text(
+        job_dir / WAM_ARTIFACT_PATHS["candidate_selection_report_markdown"],
+        _candidate_selection_markdown(candidate_report),
+    )
+    write_text(
+        job_dir / WAM_ARTIFACT_PATHS["customer_handoff_report_markdown"],
+        _customer_handoff_markdown(handoff),
+    )
     return {
         "status": "blocked",
         "blockers": list(blockers),
@@ -1098,9 +2502,18 @@ def run_wam_eval_job(
     prediction, calibration, breakage = _prediction_ledgers(
         substrate=substrate,
         trace=trace,
+        failure_labels=failure_labels,
         generated_at=generated,
     )
-    scorecard = _policy_scorecard(substrate=substrate, labels=labels, generated_at=generated)
+    scorecard = _policy_scorecard(
+        substrate=substrate,
+        labels=labels,
+        generated_at=generated,
+        required_scenario_eval_run_ids=[
+            _string(run.get("scenario_eval_run_id")) for run in runs
+        ],
+        policy_ids=[_string(policy.get("policy_id")) for policy in policies],
+    )
     claim_boundary = _claim_boundary(substrate=substrate, generated_at=generated)
     if provider_command_used and provider_execution_status == "completed":
         claim_boundary = {**claim_boundary, "live_provider_calls_performed": True}
@@ -1120,6 +2533,18 @@ def run_wam_eval_job(
         job_dir=resolved_job_dir,
         substrate=substrate,
         scorecard=scorecard,
+        generated_at=generated,
+    )
+    candidate_report = _candidate_selection_report(
+        job_id=job_id,
+        substrate=substrate,
+        matrix=matrix,
+        policies=policies,
+        labels=labels,
+        failure_labels=failure_labels,
+        scorecard=scorecard,
+        followup=followup,
+        anchor_manifest=anchor_manifest,
         generated_at=generated,
     )
     validation_envelope = _customer_validation_envelope(
@@ -1177,6 +2602,7 @@ def run_wam_eval_job(
         job_id=job_id,
         substrate=substrate,
         scorecard=scorecard,
+        candidate_selection_report=candidate_report,
         generated_at=generated,
     )
     payloads = {
@@ -1203,9 +2629,14 @@ def run_wam_eval_job(
         "wam_customer_validation_envelope": validation_envelope,
         "wam_production_ops_manifest": production_ops,
         "wam_classical_sim_cross_check_plan": cross_check_plan,
+        "candidate_selection_report": candidate_report,
         "customer_handoff_report": handoff,
     }
     _write_wam_artifacts(resolved_job_dir, payloads)
+    write_text(
+        resolved_job_dir / WAM_ARTIFACT_PATHS["candidate_selection_report_markdown"],
+        _candidate_selection_markdown(candidate_report),
+    )
     write_text(
         resolved_job_dir / WAM_ARTIFACT_PATHS["customer_handoff_report_markdown"],
         _customer_handoff_markdown(handoff),

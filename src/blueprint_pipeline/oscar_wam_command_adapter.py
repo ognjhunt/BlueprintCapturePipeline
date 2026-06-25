@@ -1111,6 +1111,7 @@ def _materialize_oscar_input_package(
         ],
         output_dir=work_dir / "oscar_input_conditioning_visual_review",
         generated_at=utc_now_iso(),
+        require_review_quality_profile=False,
     )
     projected_g1_skeleton_rendered = bool(
         skeleton_video.get("projected_g1_skeleton_rendered")

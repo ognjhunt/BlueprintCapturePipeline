@@ -44,6 +44,8 @@ def _git_probe(repo: Path) -> dict[str, Any]:
         "head_matches_origin_main": True,
         "worktree_clean": True,
         "dirty_entries_count": 0,
+        "dirty_entries": [],
+        "dirty_entries_truncated": False,
         "errors": [],
     }
 
@@ -188,6 +190,7 @@ def test_deployment_parity_proof_blocks_without_deployed_commit_and_clean_tree()
         if repo.name == "webapp":
             payload["worktree_clean"] = False
             payload["dirty_entries_count"] = 2
+            payload["dirty_entries"] = [" M client/src/App.tsx", "?? output/pipeline/"]
         return payload
 
     report = build_deployment_parity_proof(
@@ -208,6 +211,10 @@ def test_deployment_parity_proof_blocks_without_deployed_commit_and_clean_tree()
     assert "webapp_worktree_dirty" in report["blockers"]
     assert "webapp_deployed_commit_missing" in report["blockers"]
     assert "pipeline_deployed_commit_missing" in report["blockers"]
+    assert report["checks"]["git"]["repos"]["webapp"]["dirty_entries"] == [
+        " M client/src/App.tsx",
+        "?? output/pipeline/",
+    ]
 
 
 def test_deployment_parity_proof_blocks_unready_health() -> None:

@@ -657,6 +657,11 @@ def test_mujoco_package_coverage_closure_and_cli_helpers(
     assert mg._sequence3([1, "bad", 3]) is None
     assert mg._mesh_bounds_summary({"bounds": [[0, 0, 0], [1, 2, 3]]})["volume_m3_estimate"] == 6.0
     assert mg._mesh_bounds_summary({"extents": [1, 0, 1]})["positive_extents"] is False
+    assert mg._bounds_payload(np.array([[0, 0, 0], [1, 2, 3]], dtype=float)) == {
+        "bounds": [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]],
+        "extents": [1.0, 2.0, 3.0],
+        "volume_m3_estimate": 6.0,
+    }
     assert mg._int_set(["1", "bad", 2]) == {1, 2}
     assert mg._visual_object_physics_coverage(
         object_semantics_summary={},

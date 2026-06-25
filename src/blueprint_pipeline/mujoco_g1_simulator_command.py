@@ -85,23 +85,26 @@ def _safe_id(value: Any, *, fallback: str = "item") -> str:
 
 
 def _float_triplet(value: Any) -> list[float] | None:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) < 3:
+    if isinstance(value, (str, bytes)):
         return None
     try:
+        if len(value) < 3:
+            return None
         return [float(value[index]) for index in range(3)]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, IndexError):
         return None
 
 
 def _bounds_payload(bounds: Any) -> dict[str, Any] | None:
-    if (
-        not isinstance(bounds, Sequence)
-        or isinstance(bounds, (str, bytes))
-        or len(bounds) < 2
-    ):
+    if isinstance(bounds, (str, bytes)):
         return None
-    lower = _float_triplet(bounds[0])
-    upper = _float_triplet(bounds[1])
+    try:
+        if len(bounds) < 2:
+            return None
+        lower = _float_triplet(bounds[0])
+        upper = _float_triplet(bounds[1])
+    except (TypeError, IndexError):
+        return None
     if lower is None or upper is None:
         return None
     extents = [upper[index] - lower[index] for index in range(3)]

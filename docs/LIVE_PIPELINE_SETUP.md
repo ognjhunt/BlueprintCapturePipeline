@@ -103,7 +103,9 @@ Do not enable `BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES=true` for customer beta
 closure evidence; sim-only beta core closure still requires visual media
 coverage, trace package coverage, attempt metrics, and scenario-run coverage.
 This profile does not prove physical robot readiness, deployment readiness, live
-customer delivery, or robot-team-grade evaluation completion.
+customer delivery, or external robot-team closure. WAM/substrate artifacts add
+only evaluator-bounded policy comparison unless paired real-world validation
+anchors are accepted separately.
 
 That packet is the machine-readable handoff for the remaining external inputs:
 

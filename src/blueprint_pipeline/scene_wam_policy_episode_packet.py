@@ -21,6 +21,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import numpy as np
 from .common import ensure_dir, read_json, utc_now_iso, write_json
 from .episode_spec import build_episode_specs
 from .local_capture import resolve_local_capture_context
@@ -32,10 +33,22 @@ OBSERVATION_SCHEMA_VERSION = "scene_wam_policy_initial_observation.v1"
 TASK_MANIFEST_SCHEMA_VERSION = "scene_episode_task_manifest.v1"
 CLAIM_BOUNDARY_SCHEMA_VERSION = "scene_policy_wam_claim_boundary.v1"
 RENDER_SCHEMA_VERSION = "scene_policy_observation_render_manifest.v1"
+ROBOT_POV_SYNTHESIS_SCHEMA_VERSION = "capture_derived_robot_pov_synthesis.v1"
+ROBOT_POV_SYNTHESIS_SOURCE_QA_SCHEMA_VERSION = "capture_derived_robot_pov_source_qa.v1"
+ROBOT_POV_SYNTHESIS_QUALITY_REPORT_SCHEMA_VERSION = (
+    "capture_derived_robot_pov_quality_report.v1"
+)
+ROBOT_POV_SYNTHESIS_RECAPTURE_SCHEMA_VERSION = (
+    "capture_derived_robot_pov_recapture_guidance.v1"
+)
 DEFAULT_USD_VISUAL_MJCF_MAX_MESHES = 40
 DEFAULT_USD_VISUAL_MJCF_MAX_TRIANGLES_PER_MESH = 2000
 DEFAULT_POLICY_RENDER_WIDTH = 960
 DEFAULT_POLICY_RENDER_HEIGHT = 540
+DEFAULT_SYNTHETIC_ROBOT_POV_WIDTH = 640
+DEFAULT_SYNTHETIC_ROBOT_POV_HEIGHT = 360
+DEFAULT_ROBOT_POV_SYNTHESIS_COVERAGE_THRESHOLD = 0.03
+DEFAULT_ROBOT_POV_SYNTHESIS_RETRIEVAL_MAX_DISTANCE_M = 3.0
 FALLBACK_MUJOCO_RENDER_WIDTH = 640
 FALLBACK_MUJOCO_RENDER_HEIGHT = 480
 DEFAULT_UNITREE_G1_FOOTPRINT_RADIUS_M = 0.55
@@ -68,6 +81,13 @@ def _read_optional_json(path: Path) -> dict[str, Any]:
         return read_json(path)
     except Exception:
         return {}
+
+
+def _first_existing_path(*paths: Path) -> str | None:
+    for path in paths:
+        if path.is_file():
+            return str(path)
+    return None
 
 
 def _float_list(value: Any, *, fallback: Sequence[float]) -> list[float]:
@@ -1274,6 +1294,588 @@ def _mujoco_camera_from_poses(
     camera.azimuth = math.degrees(math.atan2(direction[0], direction[1] or 1e-9))
     camera.elevation = -math.degrees(math.atan2(direction[2], horizontal or 1e-9))
     return camera
+
+
+def _robot_pov_eye_and_look(
+    *,
+    robot_pose: Mapping[str, Any],
+    target_pose: Mapping[str, Any],
+    video_camera: str,
+) -> tuple[list[float], list[float]]:
+    robot_xyz = _vec3(robot_pose.get("xyz"), fallback=[0.0, -1.0, 0.0])
+    target_xyz = _vec3(target_pose.get("xyz"), fallback=[0.0, 0.0, 1.0])
+    camera_role = str(video_camera or "head_pov").strip()
+    if camera_role == "torso_pov":
+        camera_height = max(1.0, target_xyz[2] + 0.35) if target_xyz[2] > 0.25 else 1.0
+        look_z = target_xyz[2] + 0.18 if target_xyz[2] > 0.25 else target_xyz[2] + 0.55
+        forward_offset = 0.16
+    else:
+        camera_height = max(1.35, target_xyz[2] + 0.75) if target_xyz[2] > 0.25 else 1.35
+        look_z = target_xyz[2] + 0.24 if target_xyz[2] > 0.25 else target_xyz[2] + 0.75
+        forward_offset = 0.22
+    offset_x, offset_y = _forward_offset_xy(robot_pose, forward_offset)
+    eye = [robot_xyz[0] + offset_x, robot_xyz[1] + offset_y, robot_xyz[2] + camera_height]
+    look = [target_xyz[0], target_xyz[1], look_z]
+    return eye, look
+
+
+def _unit_vector(value: np.ndarray, *, fallback: Sequence[float]) -> np.ndarray:
+    norm = float(np.linalg.norm(value))
+    if norm <= 1e-9 or not math.isfinite(norm):
+        return np.array(fallback, dtype=np.float64)
+    return value / norm
+
+
+def _look_at_T_world_camera(*, eye: Sequence[float], look: Sequence[float]) -> np.ndarray:
+    eye_np = np.array(eye[:3], dtype=np.float64)
+    look_np = np.array(look[:3], dtype=np.float64)
+    forward = _unit_vector(look_np - eye_np, fallback=[0.0, 1.0, 0.0])
+    world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    right = _unit_vector(np.cross(forward, world_up), fallback=[1.0, 0.0, 0.0])
+    camera_up = _unit_vector(np.cross(right, forward), fallback=[0.0, 0.0, 1.0])
+    T = np.eye(4, dtype=np.float64)
+    T[:3, 0] = right
+    T[:3, 1] = -camera_up
+    T[:3, 2] = forward
+    T[:3, 3] = eye_np
+    return T
+
+
+def _robot_pov_target_T_world_camera(
+    *,
+    robot_pose: Mapping[str, Any],
+    target_pose: Mapping[str, Any],
+    video_camera: str,
+) -> np.ndarray:
+    eye, look = _robot_pov_eye_and_look(
+        robot_pose=robot_pose,
+        target_pose=target_pose,
+        video_camera=video_camera,
+    )
+    return _look_at_T_world_camera(eye=eye, look=look)
+
+
+def _synthetic_robot_pov_intrinsics(
+    *,
+    width: int = DEFAULT_SYNTHETIC_ROBOT_POV_WIDTH,
+    height: int = DEFAULT_SYNTHETIC_ROBOT_POV_HEIGHT,
+    vertical_fov_degrees: float = 55.0,
+) -> dict[str, float]:
+    fy = (float(height) / 2.0) / math.tan(math.radians(vertical_fov_degrees) / 2.0)
+    return {
+        "fx": fy,
+        "fy": fy,
+        "cx": float(width) / 2.0,
+        "cy": float(height) / 2.0,
+        "width": int(width),
+        "height": int(height),
+        "vertical_fov_degrees": float(vertical_fov_degrees),
+    }
+
+
+def _robot_pov_synthesis_camera_roles(video_camera: str) -> list[str]:
+    roles: list[str] = []
+    for role in (video_camera, "head_pov", "torso_pov"):
+        text = _string(role) or "head_pov"
+        if text not in roles:
+            roles.append(text)
+    return roles
+
+
+def _synthesis_uri_to_local(uri: str, *, storage_root: Path, bucket: str) -> Path:
+    if not uri.startswith("gs://"):
+        return Path(uri)
+    remainder = uri[5:]
+    uri_bucket, _, key = remainder.partition("/")
+    bucket_candidate = storage_root / uri_bucket / key
+    if bucket_candidate.exists():
+        return bucket_candidate
+    flat_candidate = storage_root / key
+    if flat_candidate.exists():
+        return flat_candidate
+    if uri_bucket == bucket:
+        return storage_root / bucket / key
+    return bucket_candidate
+
+
+def _robot_pov_synthesis_source_qa(
+    *,
+    site_id: str,
+    storage_root: Path,
+    bucket: str,
+    generated_at: str,
+) -> dict[str, Any]:
+    index_path = storage_root / bucket / "sites" / site_id / "reference_memory" / (
+        "site_reference_index.jsonl"
+    )
+    records: list[dict[str, Any]] = []
+    malformed_count = 0
+    if index_path.is_file():
+        for line in index_path.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                value = json.loads(text)
+            except json.JSONDecodeError:
+                malformed_count += 1
+                continue
+            if isinstance(value, Mapping):
+                records.append(dict(value))
+            else:
+                malformed_count += 1
+
+    frame_uri_count = 0
+    depth_uri_count = 0
+    pose_count = 0
+    local_frame_count = 0
+    local_depth_count = 0
+    tracking_normal_count = 0
+    for record in records:
+        frame_uri = _string(record.get("frame_uri"))
+        depth_uri = _string(record.get("depth_uri"))
+        if frame_uri:
+            frame_uri_count += 1
+            if _synthesis_uri_to_local(
+                frame_uri,
+                storage_root=storage_root,
+                bucket=bucket,
+            ).is_file():
+                local_frame_count += 1
+        if depth_uri:
+            depth_uri_count += 1
+            if _synthesis_uri_to_local(
+                depth_uri,
+                storage_root=storage_root,
+                bucket=bucket,
+            ).is_file():
+                local_depth_count += 1
+        if record.get("T_site_camera") is not None or record.get("T_world_camera") is not None:
+            pose_count += 1
+        quality = _mapping(record.get("quality"))
+        if _string(quality.get("tracking_state")).lower() == "normal":
+            tracking_normal_count += 1
+
+    blockers: list[str] = []
+    if not index_path.is_file():
+        blockers.append("site_reference_index_missing")
+    if index_path.is_file() and not records:
+        blockers.append("site_reference_index_empty")
+    if records and local_frame_count == 0:
+        blockers.append("no_local_reference_frames")
+    if records and pose_count == 0:
+        blockers.append("no_reference_camera_poses")
+    if records and depth_uri_count == 0:
+        blockers.append("no_reference_depth_maps")
+    if malformed_count:
+        blockers.append("site_reference_index_has_malformed_rows")
+    status = "ready" if not blockers else "blocked"
+    return {
+        "schema_version": ROBOT_POV_SYNTHESIS_SOURCE_QA_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": status,
+        "site_id": site_id,
+        "storage_root": str(storage_root),
+        "bucket": bucket,
+        "site_reference_index_path": str(index_path),
+        "site_reference_index_available": index_path.is_file(),
+        "reference_record_count": len(records),
+        "malformed_record_count": malformed_count,
+        "frame_uri_count": frame_uri_count,
+        "depth_uri_count": depth_uri_count,
+        "pose_count": pose_count,
+        "local_frame_count": local_frame_count,
+        "local_depth_count": local_depth_count,
+        "tracking_normal_count": tracking_normal_count,
+        "source_records_are_raw_capture_references": True,
+        "synthesized_outputs_are_raw_capture_truth": False,
+        "blockers": blockers,
+    }
+
+
+def _robot_pov_synthesis_candidate_pass(
+    *,
+    result: Mapping[str, Any],
+    image_summary: Mapping[str, Any],
+    min_coverage_frac: float,
+    max_retrieval_distance_m: float,
+) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    if result.get("status") != "completed":
+        reason = _string(result.get("reason")) or "synthesis_failed"
+        reasons.append(reason)
+    coverage = float(result.get("coverage_frac") or 0.0)
+    if coverage < min_coverage_frac:
+        reasons.append("coverage_below_threshold")
+    retrieval_dist = result.get("retrieval_dist_m")
+    if retrieval_dist is None:
+        reasons.append("retrieval_distance_missing")
+    else:
+        try:
+            if float(retrieval_dist) > max_retrieval_distance_m:
+                reasons.append("retrieval_distance_above_threshold")
+        except (TypeError, ValueError):
+            reasons.append("retrieval_distance_invalid")
+    if image_summary and not image_summary.get("contentful"):
+        reasons.extend(str(item) for item in image_summary.get("blockers", []))
+    return not reasons, reasons
+
+
+def _write_robot_pov_contact_sheet(
+    *,
+    candidates: Sequence[Mapping[str, Any]],
+    output_path: Path,
+    title: str,
+) -> dict[str, Any]:
+    try:
+        from PIL import Image, ImageDraw, ImageOps  # type: ignore[import-untyped]
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "contact_sheet_path": str(output_path),
+            "blockers": [f"pillow_unavailable:{type(exc).__name__}"],
+        }
+    ensure_dir(output_path.parent)
+    thumb_w = 220
+    thumb_h = 124
+    label_h = 86
+    margin = 16
+    columns = 2
+    rows = max(1, math.ceil(max(1, len(candidates)) / columns))
+    sheet_w = margin + columns * (thumb_w + margin)
+    sheet_h = margin + 34 + rows * (thumb_h + label_h + margin)
+    sheet = Image.new("RGB", (sheet_w, sheet_h), (245, 246, 248))
+    draw = ImageDraw.Draw(sheet)
+    draw.text((margin, margin), title[:110], fill=(20, 24, 33))
+    if not candidates:
+        draw.text(
+            (margin, margin + 46),
+            "No robot POV candidates were generated.",
+            fill=(95, 38, 38),
+        )
+    for index, candidate in enumerate(candidates):
+        col = index % columns
+        row = index // columns
+        x = margin + col * (thumb_w + margin)
+        y = margin + 36 + row * (thumb_h + label_h + margin)
+        frame_path = Path(_string(candidate.get("output_path")))
+        if frame_path.is_file():
+            try:
+                thumb = ImageOps.fit(
+                    Image.open(frame_path).convert("RGB"),
+                    (thumb_w, thumb_h),
+                    method=Image.Resampling.LANCZOS,
+                )
+            except Exception:
+                thumb = Image.new("RGB", (thumb_w, thumb_h), (30, 31, 36))
+        else:
+            thumb = Image.new("RGB", (thumb_w, thumb_h), (30, 31, 36))
+        sheet.paste(thumb, (x, y))
+        border = (24, 118, 72) if candidate.get("passed") else (154, 61, 54)
+        draw.rectangle((x, y, x + thumb_w - 1, y + thumb_h - 1), outline=border, width=3)
+        coverage = candidate.get("coverage_frac")
+        retrieval = candidate.get("retrieval_dist_m")
+        label = "\n".join(
+            [
+                _string(candidate.get("candidate_id"))[:38],
+                f"camera={_string(candidate.get('camera_role'))[:28]}",
+                f"coverage={coverage} retrieval_m={retrieval}",
+                "passed" if candidate.get("passed") else "blocked",
+            ]
+        )
+        draw.multiline_text((x, y + thumb_h + 6), label, fill=(20, 24, 33), spacing=2)
+    sheet.save(output_path, quality=90)
+    return {
+        "status": "completed",
+        "contact_sheet_path": str(output_path),
+        "candidate_count": len(candidates),
+        "blockers": [],
+    }
+
+
+def _robot_pov_recapture_guidance(
+    *,
+    generated_at: str,
+    task_id: str,
+    robot_profile_id: str,
+    target_object_id: str,
+    robot_pose: Mapping[str, Any],
+    target_pose: Mapping[str, Any],
+    camera_roles: Sequence[str],
+    no_pass_reasons: Sequence[str],
+    selected_candidate: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    recapture_required = selected_candidate is None
+    return {
+        "schema_version": ROBOT_POV_SYNTHESIS_RECAPTURE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "required" if recapture_required else "not_required",
+        "recapture_required": recapture_required,
+        "task_id": task_id,
+        "robot_profile_id": robot_profile_id,
+        "target_object_id": target_object_id,
+        "robot_start_pose": dict(robot_pose),
+        "target_anchor_pose": dict(target_pose),
+        "preferred_camera_roles": list(camera_roles),
+        "no_passing_candidate_reasons": list(no_pass_reasons),
+        "selected_candidate_id": selected_candidate.get("candidate_id")
+        if selected_candidate
+        else None,
+        "guidance": [
+            "Capture a slow head-height walkthrough from the robot start area toward the task target.",
+            "Keep the target object visible for several seconds from head and torso camera heights.",
+            "Preserve depth, intrinsics, camera poses, timestamps, and tracking quality metadata.",
+            "Repeat the pass if tracking is not normal, depth is missing, or the target is occluded.",
+        ]
+        if recapture_required
+        else [],
+        "minimum_source_requirements": {
+            "depth_required": True,
+            "camera_pose_required": True,
+            "intrinsics_required": True,
+            "local_reference_frame_required": True,
+            "target_visible_from_robot_start_area": True,
+        },
+        "claim_boundary": {
+            "recapture_guidance_does_not_claim_robot_readiness": True,
+            "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
+            "raw_capture_authority_preserved": True,
+        },
+    }
+
+
+def _build_capture_derived_robot_pov_synthesis(
+    *,
+    capture_root: Path,
+    output_dir: Path,
+    site_id: str,
+    storage_root: Path,
+    bucket: str,
+    task_id: str,
+    robot_profile_id: str,
+    target_object_id: str,
+    robot_pose: Mapping[str, Any],
+    target_pose: Mapping[str, Any],
+    video_camera: str,
+    generated_at: str,
+    min_coverage_frac: float = DEFAULT_ROBOT_POV_SYNTHESIS_COVERAGE_THRESHOLD,
+    max_retrieval_distance_m: float = DEFAULT_ROBOT_POV_SYNTHESIS_RETRIEVAL_MAX_DISTANCE_M,
+) -> dict[str, Any]:
+    from .synthesis.synthesize import synthesize_view
+
+    task_robot_profile_id = f"{task_id}:{robot_profile_id}"
+    profile_dir = output_dir / "capture_derived_robot_pov_synthesis" / _slug(
+        f"{task_id}_{robot_profile_id}",
+        fallback="task_robot_profile",
+    )
+    frames_dir = profile_dir / "candidates"
+    ensure_dir(frames_dir)
+    source_qa = _robot_pov_synthesis_source_qa(
+        site_id=site_id,
+        storage_root=storage_root,
+        bucket=bucket,
+        generated_at=generated_at,
+    )
+    camera_roles = _robot_pov_synthesis_camera_roles(video_camera)
+    intrinsics = _synthetic_robot_pov_intrinsics()
+    candidates: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    if source_qa.get("status") != "ready":
+        blockers.extend(str(item) for item in source_qa.get("blockers", []))
+    else:
+        for index, camera_role in enumerate(camera_roles):
+            candidate_id = _slug(
+                f"{task_id}_{robot_profile_id}_{camera_role}_{index}",
+                fallback=f"robot_pov_{index}",
+            )
+            output_path = frames_dir / f"{candidate_id}.jpg"
+            target_T = _robot_pov_target_T_world_camera(
+                robot_pose=robot_pose,
+                target_pose=target_pose,
+                video_camera=camera_role,
+            )
+            try:
+                result = synthesize_view(
+                    site_id=site_id,
+                    storage_root=storage_root,
+                    bucket=bucket,
+                    target_T_world_camera=target_T,
+                    target_intrinsics=intrinsics,
+                    target_h=int(intrinsics["height"]),
+                    target_w=int(intrinsics["width"]),
+                    output_path=output_path,
+                    mode="splat_only",
+                    k=3,
+                    query_mode="spatial",
+                    depth_scale=0.001,
+                    fill_holes=False,
+                )
+            except Exception as exc:
+                result = {
+                    "status": "failed",
+                    "reason": f"synthesize_view_failed:{type(exc).__name__}",
+                }
+            image_summary = (
+                _rendered_image_content_summary(output_path)
+                if result.get("status") == "completed"
+                else {}
+            )
+            passed, failure_reasons = _robot_pov_synthesis_candidate_pass(
+                result=result,
+                image_summary=image_summary,
+                min_coverage_frac=min_coverage_frac,
+                max_retrieval_distance_m=max_retrieval_distance_m,
+            )
+            coverage = float(result.get("coverage_frac") or 0.0)
+            retrieval = result.get("retrieval_dist_m")
+            retrieval_float = float(retrieval) if retrieval is not None else None
+            quality_score = coverage / (1.0 + max(0.0, retrieval_float or 0.0))
+            candidates.append(
+                {
+                    "candidate_id": candidate_id,
+                    "task_robot_profile_id": task_robot_profile_id,
+                    "task_id": task_id,
+                    "robot_profile_id": robot_profile_id,
+                    "target_object_id": target_object_id,
+                    "camera_role": camera_role,
+                    "status": "passed" if passed else "blocked",
+                    "passed": passed,
+                    "output_path": str(output_path) if output_path.is_file() else None,
+                    "coverage_frac": result.get("coverage_frac"),
+                    "retrieval_dist_m": result.get("retrieval_dist_m"),
+                    "quality_score": round(float(quality_score), 6),
+                    "synthesis_result": result,
+                    "image_content_summary": image_summary,
+                    "failure_reasons": failure_reasons,
+                    "target_T_world_camera": target_T.tolist(),
+                    "target_intrinsics": dict(intrinsics),
+                    "claim_boundary": {
+                        "candidate_is_depth_splat_synthetic_view": True,
+                        "candidate_is_not_raw_capture_truth": True,
+                        "physical_robot_sensor_proof": False,
+                    },
+                }
+            )
+    passing = [candidate for candidate in candidates if candidate.get("passed")]
+    passing.sort(
+        key=lambda candidate: (
+            -float(candidate.get("quality_score") or 0.0),
+            _string(candidate.get("candidate_id")),
+        )
+    )
+    selected = dict(passing[0]) if passing else None
+    if selected is None:
+        blockers.append("no_capture_derived_robot_pov_candidate_passed_quality_gate")
+    contact_sheet_path = profile_dir / "capture_derived_robot_pov_contact_sheet.jpg"
+    contact_sheet = _write_robot_pov_contact_sheet(
+        candidates=candidates,
+        output_path=contact_sheet_path,
+        title=f"{task_id} / {robot_profile_id} capture-derived robot POV",
+    )
+    no_pass_reasons = sorted(
+        {
+            str(reason)
+            for candidate in candidates
+            for reason in candidate.get("failure_reasons", [])
+            if str(reason)
+        }
+    )
+    if not candidates and source_qa.get("blockers"):
+        no_pass_reasons.extend(str(item) for item in source_qa.get("blockers", []))
+    recapture_guidance = _robot_pov_recapture_guidance(
+        generated_at=generated_at,
+        task_id=task_id,
+        robot_profile_id=robot_profile_id,
+        target_object_id=target_object_id,
+        robot_pose=robot_pose,
+        target_pose=target_pose,
+        camera_roles=camera_roles,
+        no_pass_reasons=no_pass_reasons,
+        selected_candidate=selected,
+    )
+    quality_report = {
+        "schema_version": ROBOT_POV_SYNTHESIS_QUALITY_REPORT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "passed" if selected else "blocked",
+        "task_robot_profile_id": task_robot_profile_id,
+        "task_id": task_id,
+        "robot_profile_id": robot_profile_id,
+        "target_object_id": target_object_id,
+        "candidate_count": len(candidates),
+        "passing_candidate_count": len(passing),
+        "selected_candidate_id": selected.get("candidate_id") if selected else None,
+        "selected_frame_path": selected.get("output_path") if selected else None,
+        "thresholds": {
+            "min_coverage_frac": float(min_coverage_frac),
+            "max_retrieval_distance_m": float(max_retrieval_distance_m),
+        },
+        "source_qa_path": str(profile_dir / "capture_derived_robot_pov_source_qa.json"),
+        "contact_sheet_path": str(contact_sheet_path),
+        "recapture_guidance_path": str(
+            profile_dir / "capture_derived_robot_pov_recapture_guidance.json"
+        ),
+        "candidates": candidates,
+        "blockers": blockers,
+        "claim_boundary": {
+            "coverage_quality_report_is_support_artifact": True,
+            "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
+            "raw_capture_authority_preserved": True,
+        },
+    }
+    manifest = {
+        "schema_version": ROBOT_POV_SYNTHESIS_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "completed" if selected else "blocked",
+        "capture_root": str(capture_root),
+        "site_id": site_id,
+        "storage_root": str(storage_root),
+        "bucket": bucket,
+        "task_robot_profile_id": task_robot_profile_id,
+        "task_id": task_id,
+        "robot_profile_id": robot_profile_id,
+        "target_object_id": target_object_id,
+        "selected_candidate": selected,
+        "selected_frame_path": selected.get("output_path") if selected else None,
+        "selected_frame_can_seed_wam_initial_observation": bool(selected),
+        "quality_report_path": str(
+            profile_dir / "capture_derived_robot_pov_quality_report.json"
+        ),
+        "contact_sheet_path": str(contact_sheet_path),
+        "source_qa_path": str(profile_dir / "capture_derived_robot_pov_source_qa.json"),
+        "recapture_guidance_path": str(
+            profile_dir / "capture_derived_robot_pov_recapture_guidance.json"
+        ),
+        "contact_sheet": contact_sheet,
+        "source_qa_summary": {
+            "status": source_qa.get("status"),
+            "reference_record_count": source_qa.get("reference_record_count"),
+            "local_frame_count": source_qa.get("local_frame_count"),
+            "local_depth_count": source_qa.get("local_depth_count"),
+            "pose_count": source_qa.get("pose_count"),
+            "blockers": source_qa.get("blockers", []),
+        },
+        "blockers": blockers,
+        "claim_boundary": {
+            "capture_derived_robot_pov_synthesis_used": bool(selected),
+            "depth_splat_output_is_model_derived_support_artifact": True,
+            "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
+            "raw_capture_authority_preserved": True,
+            "physical_robot_sensor_proof": False,
+            "real_robot_pov_evidence_proven": False,
+            "deployment_readiness_proven": False,
+        },
+    }
+    write_json(profile_dir / "capture_derived_robot_pov_source_qa.json", source_qa)
+    write_json(
+        profile_dir / "capture_derived_robot_pov_quality_report.json",
+        quality_report,
+    )
+    write_json(
+        profile_dir / "capture_derived_robot_pov_recapture_guidance.json",
+        recapture_guidance,
+    )
+    write_json(profile_dir / "capture_derived_robot_pov_synthesis_manifest.json", manifest)
+    return manifest
 
 
 def _rgba_from_value(value: Any) -> tuple[float, float, float, float] | None:
@@ -2673,6 +3275,10 @@ def build_scene_wam_policy_episode_packet(
     robot_start_pose: str | Sequence[float] | Mapping[str, Any] | None = None,
     video_camera: str = "head_pov",
     output_dir: str | Path | None = None,
+    synthesis_site_id: str | None = None,
+    synthesis_storage_root: str | Path | None = None,
+    synthesis_bucket: str | None = None,
+    enable_capture_robot_pov_synthesis: bool = True,
 ) -> dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
     resolved_scene_asset = Path(scene_asset).expanduser().resolve()
@@ -2724,7 +3330,55 @@ def build_scene_wam_policy_episode_packet(
         video_camera=video_camera,
         generated_at=generated_at,
     )
-    frame_path = render.get("frame_path") if render.get("status") == "completed" else None
+    rendered_frame_path = render.get("frame_path") if render.get("status") == "completed" else None
+    robot_profile_id = "unitree_g1_sonic"
+    robot_pov_synthesis: dict[str, Any] = {
+        "schema_version": ROBOT_POV_SYNTHESIS_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "disabled",
+        "blockers": ["capture_derived_robot_pov_synthesis_disabled"],
+        "selected_frame_path": None,
+        "claim_boundary": {
+            "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
+            "raw_capture_authority_preserved": True,
+        },
+    }
+    if enable_capture_robot_pov_synthesis:
+        robot_pov_synthesis = _build_capture_derived_robot_pov_synthesis(
+            capture_root=context.capture_root,
+            output_dir=resolved_output_dir,
+            site_id=synthesis_site_id or context.scene_id,
+            storage_root=Path(synthesis_storage_root).expanduser().resolve()
+            if synthesis_storage_root is not None
+            else context.storage_root,
+            bucket=synthesis_bucket or context.bucket,
+            task_id=task_id,
+            robot_profile_id=robot_profile_id,
+            target_object_id=target_object_id,
+            robot_pose=robot_pose,
+            target_pose=target_pose,
+            video_camera=video_camera,
+            generated_at=generated_at,
+        )
+    synthetic_frame_text = _string(robot_pov_synthesis.get("selected_frame_path"))
+    synthetic_frame_path = synthetic_frame_text if Path(synthetic_frame_text).is_file() else None
+    frame_path = synthetic_frame_path or rendered_frame_path
+    object_index_path = _first_existing_path(
+        context.capture_root / "raw" / "object_index.json",
+        context.capture_root / "raw" / "arkit" / "objects" / "index.json",
+        context.capture_root / "object_index.json",
+    )
+    eval_ready_task_grounding_path = _first_existing_path(
+        context.capture_root / "pipeline" / "simulation_automation" / "eval_ready_task_grounding.json",
+        context.capture_root / "simulation_automation" / "eval_ready_task_grounding.json",
+    )
+    frame_source = (
+        "capture_derived_depth_splat_robot_pov"
+        if synthetic_frame_path
+        else "scene_policy_observation_render"
+        if rendered_frame_path
+        else "not_available"
+    )
     g1_composition = (
         dict(render.get("unitree_g1_scene_composition"))
         if isinstance(render.get("unitree_g1_scene_composition"), Mapping)
@@ -2746,21 +3400,40 @@ def build_scene_wam_policy_episode_packet(
         "capture_id": context.capture_id,
         "task_id": task_id,
         "target_object_id": target_object_id,
-        "robot_profile_id": "unitree_g1_sonic",
+        "robot_profile_id": robot_profile_id,
         "selected_candidate_id": "unitree_groot_n17_sonic_policy",
         "camera_frame_path": frame_path,
+        "camera_frame_source": frame_source,
+        "rendered_scene_camera_frame_path": rendered_frame_path,
+        "capture_derived_robot_pov_frame_path": synthetic_frame_path,
+        "object_index_path": object_index_path,
+        "eval_ready_task_grounding_path": eval_ready_task_grounding_path,
         "visual_observation": {
             "available": bool(frame_path),
             "camera_frame_path": frame_path,
             "camera_id": video_camera,
+            "object_index_path": object_index_path,
+            "eval_ready_task_grounding_path": eval_ready_task_grounding_path,
             "first_person_policy_observation_candidate": bool(frame_path),
-            "scene_observation_rendered_from_usd": bool(frame_path),
+            "scene_observation_rendered_from_usd": bool(rendered_frame_path),
+            "capture_derived_robot_pov_synthesis_used": bool(synthetic_frame_path),
+            "capture_derived_robot_pov_frame_path": synthetic_frame_path,
+            "rendered_scene_camera_frame_path": rendered_frame_path,
+            "camera_frame_source": frame_source,
             "unitree_g1_asset_spawned_in_mujoco_scene": unitree_g1_spawned_in_mujoco,
             "unitree_g1_scene_composition_path": g1_composition_path,
             "blank_or_placeholder_image_used": False,
             "physical_robot_sensor_proof": False,
-            "blockers": [] if frame_path else list(render.get("blockers", [])),
+            "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
+            "raw_capture_truth_preserved": True,
+            "blockers": []
+            if frame_path
+            else [
+                *list(render.get("blockers", [])),
+                *list(robot_pov_synthesis.get("blockers", [])),
+            ],
         },
+        "capture_derived_robot_pov_synthesis": robot_pov_synthesis,
         "robot_start_pose": robot_pose,
         "robot_start_pose_resolution": robot_placement,
         "target_anchor_pose": target_pose,
@@ -2774,8 +3447,13 @@ def build_scene_wam_policy_episode_packet(
         "unitree_g1_sonic_state_source": "scene_packet_contract_probe_zero_state",
         "claim_boundary": {
             "simulator_generated_world_observation_only": True,
+            "capture_derived_robot_pov_synthesis_used": bool(synthetic_frame_path),
+            "initial_observation_can_seed_wam_but_is_not_raw_capture_truth": True,
+            "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
+            "raw_capture_authority_preserved": True,
             "blank_or_placeholder_image_used": False,
             "physical_robot_sensor_proof": False,
+            "real_robot_pov_evidence_proven": False,
             "physical_robot_readiness_proven": False,
             "deployment_readiness_proven": False,
             "safety_validation_proven": False,
@@ -2791,10 +3469,28 @@ def build_scene_wam_policy_episode_packet(
         "task_id": task_id,
         "target_object_id": target_object_id,
         "target_anchor_pose": target_pose,
-        "robot_profile_id": "unitree_g1_sonic",
+        "robot_profile_id": robot_profile_id,
         "robot_spawn_pose": robot_pose,
         "robot_start_pose_resolution": robot_placement,
         "video_camera": video_camera,
+        "capture_derived_robot_pov_synthesis_manifest_path": str(
+            resolved_output_dir
+            / "capture_derived_robot_pov_synthesis"
+            / _slug(f"{task_id}_{robot_profile_id}", fallback="task_robot_profile")
+            / "capture_derived_robot_pov_synthesis_manifest.json"
+        ),
+        "capture_derived_robot_pov_quality_report_path": robot_pov_synthesis.get(
+            "quality_report_path"
+        ),
+        "capture_derived_robot_pov_contact_sheet_path": robot_pov_synthesis.get(
+            "contact_sheet_path"
+        ),
+        "capture_derived_robot_pov_source_qa_path": robot_pov_synthesis.get("source_qa_path"),
+        "capture_derived_robot_pov_recapture_guidance_path": robot_pov_synthesis.get(
+            "recapture_guidance_path"
+        ),
+        "capture_derived_robot_pov_synthesis_status": robot_pov_synthesis.get("status"),
+        "capture_derived_robot_pov_synthesis_used": bool(synthetic_frame_path),
         "scene_physics_required_for_wam_loop": False,
         "physics_contact_validated": False,
         "static_usd_aabb_clearance_proxy_passed": (
@@ -2815,7 +3511,17 @@ def build_scene_wam_policy_episode_packet(
             *([] if resolved_scene_asset.is_file() else ["scene_asset_missing"]),
             *list(scene_summary.get("blockers", [])),
             *list(robot_placement.get("blockers", [])),
-            *([] if frame_path else ["initial_policy_observation_render_not_available"]),
+            *([] if frame_path else ["initial_policy_observation_not_available"]),
+            *(
+                []
+                if frame_path or rendered_frame_path
+                else ["initial_policy_observation_render_not_available"]
+            ),
+            *(
+                []
+                if frame_path or synthetic_frame_path
+                else ["capture_derived_robot_pov_candidate_not_available"]
+            ),
         ],
     }
     claim_boundary = {
@@ -2826,6 +3532,11 @@ def build_scene_wam_policy_episode_packet(
         "scene_packet_is_policy_loop_input_not_success_proof": True,
         "wam_evaluator_is_not_robot_policy": True,
         "generated_wam_outputs_are_not_raw_capture_evidence": True,
+        "capture_derived_robot_pov_synthesis_used": bool(synthetic_frame_path),
+        "capture_derived_robot_pov_is_support_artifact": True,
+        "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
+        "initial_observation_can_seed_wam_but_is_not_raw_capture_truth": True,
+        "raw_capture_authority_preserved": True,
         "unitree_g1_asset_spawned_in_mujoco_scene": unitree_g1_spawned_in_mujoco,
         "scene_collision_geometry_validated": False,
         "static_usd_aabb_clearance_proxy_passed": (
@@ -2838,6 +3549,8 @@ def build_scene_wam_policy_episode_packet(
         "scene_visual_collision_disabled": bool(
             _mapping(g1_composition.get("claim_boundary")).get("scene_visual_collision_disabled")
         ),
+        "physical_robot_sensor_proof": False,
+        "real_robot_pov_evidence_proven": False,
         "physical_robot_readiness_proven": False,
         "deployment_readiness_proven": False,
         "safety_validation_proven": False,
@@ -2851,7 +3564,7 @@ def build_scene_wam_policy_episode_packet(
         "scene_asset": str(resolved_scene_asset),
         "task_id": task_id,
         "target_object_id": target_object_id,
-        "robot_profile_id": "unitree_g1_sonic",
+        "robot_profile_id": robot_profile_id,
         "selected_candidate_id": "unitree_groot_n17_sonic_policy",
         "initial_policy_observation_path": str(
             resolved_output_dir / "initial_policy_observation.json"
@@ -2866,9 +3579,30 @@ def build_scene_wam_policy_episode_packet(
             resolved_output_dir / "scene_policy_wam_claim_boundary.json"
         ),
         "render_manifest_path": str(resolved_output_dir / "initial_policy_observation_render.json"),
+        "capture_derived_robot_pov_synthesis_manifest_path": str(
+            resolved_output_dir
+            / "capture_derived_robot_pov_synthesis"
+            / _slug(f"{task_id}_{robot_profile_id}", fallback="task_robot_profile")
+            / "capture_derived_robot_pov_synthesis_manifest.json"
+        ),
+        "capture_derived_robot_pov_quality_report_path": robot_pov_synthesis.get(
+            "quality_report_path"
+        ),
+        "capture_derived_robot_pov_contact_sheet_path": robot_pov_synthesis.get(
+            "contact_sheet_path"
+        ),
+        "capture_derived_robot_pov_source_qa_path": robot_pov_synthesis.get("source_qa_path"),
+        "capture_derived_robot_pov_recapture_guidance_path": robot_pov_synthesis.get(
+            "recapture_guidance_path"
+        ),
+        "capture_derived_robot_pov_synthesis_status": robot_pov_synthesis.get("status"),
+        "capture_derived_robot_pov_synthesis_used": bool(synthetic_frame_path),
         "unitree_g1_scene_composition_path": g1_composition_path,
         "unitree_g1_asset_spawned_in_mujoco_scene": unitree_g1_spawned_in_mujoco,
         "initial_policy_observation_frame_path": frame_path,
+        "initial_policy_observation_frame_source": frame_source,
+        "rendered_scene_policy_observation_frame_path": rendered_frame_path,
+        "capture_derived_robot_pov_frame_path": synthetic_frame_path,
         "scene_physics_required_for_wam_loop": False,
         "physics_contact_validated": False,
         "scene_collision_geometry_validated": False,
@@ -2905,6 +3639,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--robot-start-pose")
     parser.add_argument("--video-camera", default="head_pov")
     parser.add_argument("--output-dir")
+    parser.add_argument("--synthesis-site-id")
+    parser.add_argument("--synthesis-storage-root")
+    parser.add_argument("--synthesis-bucket")
+    parser.add_argument("--disable-capture-robot-pov-synthesis", action="store_true")
     args = parser.parse_args(argv)
     packet = build_scene_wam_policy_episode_packet(
         capture_root=args.capture_root,
@@ -2915,6 +3653,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         robot_start_pose=args.robot_start_pose,
         video_camera=args.video_camera,
         output_dir=args.output_dir,
+        synthesis_site_id=args.synthesis_site_id,
+        synthesis_storage_root=args.synthesis_storage_root,
+        synthesis_bucket=args.synthesis_bucket,
+        enable_capture_robot_pov_synthesis=not args.disable_capture_robot_pov_synthesis,
     )
     print(
         json.dumps(

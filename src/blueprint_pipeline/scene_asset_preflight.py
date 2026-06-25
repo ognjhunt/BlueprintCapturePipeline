@@ -1433,8 +1433,15 @@ def _inspect_scene_assets_with_local_dependencies(paths: Sequence[Path]) -> List
 def _frame_from_asset(asset: Mapping[str, Any]) -> Dict[str, Any] | None:
     bounds = _mapping(asset.get("bounds"))
     if bounds.get("min") and bounds.get("max"):
-        low = [float(value) for value in list(bounds["min"])[:3]]
-        high = [float(value) for value in list(bounds["max"])[:3]]
+        low = _finite_float_list(bounds.get("min"))
+        high = _finite_float_list(bounds.get("max"))
+        if low is None or high is None:
+            return None
+        spans = [high[index] - low[index] for index in range(3)]
+        if any(span < 0.0 for span in spans):
+            return None
+        if spans[0] <= 1e-6 or spans[1] <= 1e-6:
+            return None
         return {
             "source_asset": asset.get("path"),
             "source_asset_type": asset.get("asset_type"),
@@ -1448,18 +1455,72 @@ def _frame_from_asset(asset: Mapping[str, Any]) -> Dict[str, Any] | None:
             "confidence": asset.get("confidence") or "low",
             "estimate_method": asset.get("estimate_method") or "asset_bounds",
         }
-    if asset.get("asset_type") == "usd":
-        return {
-            "source_asset": asset.get("path"),
-            "source_asset_type": "usd",
-            "bounds": None,
-            "centroid": [0.0, 0.0, 0.0],
-            "floor_z_estimate": 0.0,
-            "up_axis": asset.get("up_axis") or "Z",
-            "confidence": "low",
-            "estimate_method": "usd_metadata_no_bounds_default_frame",
-        }
     return None
+
+
+def _frame_candidate_rank(asset: Mapping[str, Any], frame: Mapping[str, Any]) -> tuple[float, ...]:
+    bounds = _mapping(frame.get("bounds"))
+    low = _finite_float_list(bounds.get("min"))
+    high = _finite_float_list(bounds.get("max"))
+    spans = (
+        [max(0.0, high[index] - low[index]) for index in range(3)]
+        if low is not None and high is not None
+        else [0.0, 0.0, 0.0]
+    )
+    planar_area = spans[0] * spans[1]
+    collision = _mapping(asset.get("collision_evidence"))
+    real_collider = 1.0 if collision.get("real_collider_proven") else 0.0
+    portable_collider = 1.0 if collision.get("portable_collider_glb_present") else 0.0
+    asset_type = _string(asset.get("asset_type")).lower()
+    type_rank = {
+        "usd": 5.0,
+        "usda": 5.0,
+        "usdc": 5.0,
+        "glb": 4.0,
+        "gltf": 4.0,
+        "obj": 3.0,
+        "ply": 1.0,
+    }.get(asset_type, 0.0)
+    confidence_rank = {
+        "high": 3.0,
+        "medium": 2.0,
+        "low": 1.0,
+    }.get(_string(asset.get("confidence")).lower(), 0.0)
+    return (
+        real_collider,
+        portable_collider,
+        type_rank,
+        min(planar_area, 10_000.0),
+        min(spans[2], 10_000.0),
+        confidence_rank,
+    )
+
+
+def _select_scene_frame_source(assets: Sequence[Mapping[str, Any]]) -> tuple[Dict[str, Any] | None, List[Dict[str, Any]]]:
+    candidates: List[tuple[tuple[float, ...], Dict[str, Any], Mapping[str, Any]]] = []
+    rejected: List[Dict[str, Any]] = []
+    for asset in assets:
+        frame = _frame_from_asset(asset)
+        if frame is None:
+            rejected.append(
+                {
+                    "path": asset.get("path"),
+                    "asset_type": asset.get("asset_type"),
+                    "reason": "missing_or_degenerate_xy_bounds",
+                }
+            )
+            continue
+        candidates.append((_frame_candidate_rank(asset, frame), frame, asset))
+    if not candidates:
+        return None, rejected
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    selected = dict(candidates[0][1])
+    selected["selection_rank"] = list(candidates[0][0])
+    selected["selection_reason"] = "ranked_non_degenerate_local_scene_asset_bounds"
+    selected["selection_policy"] = (
+        "requires finite non-degenerate x/y bounds and prefers collider/simulator assets over thin pointcloud previews"
+    )
+    return selected, rejected
 
 
 def _inventory_from_assets(assets: Sequence[Mapping[str, Any]], *, generated_at: str, context: Any) -> Dict[str, Any]:
@@ -1720,12 +1781,19 @@ def build_scene_asset_preflight(
     generated_at = utc_now_iso()
     discovered_paths = discover_scene_assets(context.capture_root, scene_assets)
     assets = _inspect_scene_assets_with_local_dependencies(discovered_paths)
-    frame_source = next((_frame_from_asset(asset) for asset in assets if _frame_from_asset(asset)), None)
+    frame_source, rejected_frame_sources = _select_scene_frame_source(assets)
     inventory = _inventory_from_assets(assets, generated_at=generated_at, context=context)
     dependency_audit = _dependency_audit_from_assets(
         assets,
         generated_at=generated_at,
         context=context,
+    )
+    usd_assets = [asset for asset in assets if asset.get("asset_type") == "usd"]
+    binary_usd_openusd_handoff = any(
+        asset.get("status") == "openusd_required_for_binary_usd" for asset in usd_assets
+    )
+    owner_system_usd_handoff_ready = bool(
+        binary_usd_openusd_handoff and not dependency_audit["hard_missing_local_file_count"]
     )
     collider_proxy_plan, cpu_scene_proxy_manifest = _collider_proxy_artifacts(
         assets=assets,
@@ -1737,12 +1805,12 @@ def build_scene_asset_preflight(
     blockers: List[str] = []
     if not assets:
         blockers.append("missing_local_scene_asset")
-    if frame_source is None:
+    if frame_source is None and not owner_system_usd_handoff_ready:
         blockers.append("missing_scene_frame_estimate")
     if dependency_audit["hard_missing_local_file_count"]:
         blockers.append("missing_scene_asset_dependencies")
 
-    usd_assets = [asset for asset in assets if asset.get("asset_type") == "usd"]
+    preflight_ready = bool(frame_source or owner_system_usd_handoff_ready)
     portable_collider_present = any(
         _mapping(asset.get("collision_evidence")).get("portable_collider_glb_present")
         or _mapping(asset.get("collision_evidence")).get("real_collider_proven")
@@ -1774,6 +1842,17 @@ def build_scene_asset_preflight(
         "capture_id": context.capture_id,
         "status": "complete" if frame_source else "blocked",
         "frame": frame_source,
+        "frame_candidate_policy": {
+            "requires_non_degenerate_xy_bounds": True,
+            "preferred_sources": [
+                "real_collider_metadata",
+                "portable_collider_glb",
+                "usd_or_simulator_asset_bounds",
+                "other_non_degenerate_local_asset_bounds",
+            ],
+            "rejected_frame_source_count": len(rejected_frame_sources),
+            "rejected_frame_sources": rejected_frame_sources[:20],
+        },
         "coordinate_frame": {
             "up_axis": _mapping(frame_source or {}).get("up_axis") or "Z",
             "units": "meters_estimated",
@@ -1791,9 +1870,11 @@ def build_scene_asset_preflight(
         "generated_at": generated_at,
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
-        "status": "ready_for_episode_setup" if frame_source else "blocked",
+        "status": "ready_for_episode_setup" if preflight_ready else "blocked",
         "scene_asset_inspection_status": inspection["status"],
         "scene_frame_estimate_status": frame_estimate["status"],
+        "binary_usd_openusd_handoff": binary_usd_openusd_handoff,
+        "owner_system_usd_handoff_ready": owner_system_usd_handoff_ready,
         "isaac_usd_import_candidate": any(asset.get("isaac_usd_import_candidate") for asset in usd_assets),
         "isaac_usd_collision_verified": any(asset.get("isaac_usd_collision_verified") for asset in usd_assets),
         "isaac_usd_collision_unverified": any(asset.get("isaac_usd_collision_unverified") for asset in usd_assets),
@@ -1869,7 +1950,7 @@ def build_scene_asset_preflight(
         "generated_at": generated_at,
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
-        "status": "ready_for_episode_setup" if frame_source else "blocked",
+        "status": "ready_for_episode_setup" if preflight_ready else "blocked",
         "asset_count": len(assets),
         "artifact_paths": {
             "scene_asset_inventory": "scene_asset_inventory.json",
@@ -1895,6 +1976,8 @@ def build_scene_asset_preflight(
             "proxy_estimated": proxy_estimated,
             "missing_collider": missing_collider,
             "review_required": True,
+            "binary_usd_openusd_handoff": binary_usd_openusd_handoff,
+            "owner_system_usd_handoff_ready": owner_system_usd_handoff_ready,
             "labels": collider_proxy_plan.get("labels") or [],
         },
         "blockers": list(dict.fromkeys(scorecard["blockers"])),

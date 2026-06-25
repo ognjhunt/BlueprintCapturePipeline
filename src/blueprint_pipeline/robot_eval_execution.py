@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
+import math
 import os
 import shlex
 import shutil
@@ -14,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, resolve_gs_uri_to_path, write_json
+from .robot_initial_observation import build_initial_observation_source_resolution
 
 
 ROBOT_POV_OBSERVATION_SCHEMA_VERSION = "robot_pov_observation_manifest.v1"
@@ -31,6 +34,15 @@ SIM_VS_REAL_CALIBRATION_SCHEMA_VERSION = "sim_vs_real_calibration_report.v1"
 PREDICTION_VS_ACTUAL_DEPLOYMENT_SCHEMA_VERSION = "prediction_vs_actual_deployment_summary.v1"
 REAL_WORLD_VALIDATION_FOLLOWUP_PLAN_SCHEMA_VERSION = "real_world_validation_followup_plan.v1"
 SIMULATOR_COMMAND_ARTIFACTS_SCHEMA_VERSION = "simulator_command_artifacts.v1"
+ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION = "accepted_real_world_anchor.v1"
+ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS = (
+    "scenario_eval_run_id",
+    "policy_id",
+    "task_id",
+    "scenario_variation_instance_id",
+)
+MIN_ACCEPTED_ANCHOR_COUNT_FOR_CALIBRATION = 4
+MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION = 2
 BATCH_TRACE_ARTIFACT_JOB_NAMES = {
     "attempt_trace_jsonl": "simulator_command_batch_attempt_trace.jsonl",
     "contact_stream_jsonl": "simulator_command_batch_contact_stream.jsonl",
@@ -1392,10 +1404,12 @@ def build_robot_pov_observation_bundle(
     scenarios_by_id = _cards_by_id(scenario_cards)
     tasks_by_id = _cards_by_id(task_cards)
     requested = _requested_scenarios(job_request, scenario_cards)
+    scenario_eval_matrix_payload = scenario_eval_matrix or _read_optional_mapping(
+        resolved_job_dir / "scenario_eval_matrix.json"
+    )
     eval_runs = _requested_eval_runs(
         requested=requested,
-        scenario_eval_matrix=scenario_eval_matrix
-        or _read_optional_mapping(resolved_job_dir / "scenario_eval_matrix.json"),
+        scenario_eval_matrix=scenario_eval_matrix_payload,
     )
     robot_profile = _mapping(job_request.get("robot_profile") or job_request.get("robotProfile"))
     robot_profile_id = _string(robot_profile.get("robot_profile_id") or robot_profile.get("id"))
@@ -1592,6 +1606,24 @@ def build_robot_pov_observation_bundle(
         if run_id not in real_robot_pov_covered_scenario_eval_run_ids
     ]
     robot_pov_evidence_proven = bool(observations) and not missing_real_robot_pov_scenario_eval_run_ids
+    initial_observation_resolution = build_initial_observation_source_resolution(
+        capture_root=capture_path,
+        job_dir=resolved_job_dir,
+        job_request=job_request,
+        generated_at=generated_at,
+        scenario_cards=scenario_cards,
+        task_cards=task_cards,
+        scenario_eval_matrix=scenario_eval_matrix_payload,
+        observations=observations,
+    )
+    initial_candidate_set = _mapping(initial_observation_resolution.get("candidate_set"))
+    selected_initial_observation = _mapping(
+        initial_observation_resolution.get("selected_initial_policy_observation")
+    )
+    camera_profile_registry = _mapping(initial_candidate_set.get("camera_profile_registry"))
+    camera_profile_launch_readiness = _mapping(
+        initial_candidate_set.get("camera_profile_launch_readiness")
+    )
     manifest = {
         "schema_version": ROBOT_POV_OBSERVATION_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1619,6 +1651,43 @@ def build_robot_pov_observation_bundle(
         },
         "robot_profile": robot_profile,
         "observations": observations,
+        "initial_observation_source_resolver": {
+            "candidate_set_path": "robot_pov_observation_candidate_set.json",
+            "selected_initial_policy_observation_path": (
+                "selected_initial_policy_observation.json"
+            ),
+            "camera_profile_registry_path": "robot_camera_profile_registry.json",
+            "camera_profile_launch_readiness_path": (
+                "robot_camera_profile_launch_readiness.json"
+            ),
+            "camera_profile_count": camera_profile_registry.get("profile_count"),
+            "camera_profile_launch_readiness_status": camera_profile_launch_readiness.get(
+                "status"
+            ),
+            "camera_profile_launch_ready_profile_count": camera_profile_launch_readiness.get(
+                "launch_ready_profile_count"
+            ),
+            "camera_profile_smoke_only_profile_count": camera_profile_launch_readiness.get(
+                "smoke_only_profile_count"
+            ),
+            "candidate_count": initial_candidate_set.get("candidate_count"),
+            "selected_candidate_id": initial_candidate_set.get("selected_candidate_id"),
+            "selected_source_kind": initial_candidate_set.get("selected_source_kind"),
+            "selected_status": selected_initial_observation.get("status"),
+            "source_qa_path": "initial_policy_observation_source_qa.json",
+            "contact_sheet_path": "initial_policy_observation_contact_sheet.jpg",
+            "recapture_guidance_path": "initial_policy_observation_recapture_guidance.json",
+            "paid_provider_calls_performed": False,
+        },
+        "robot_camera_profile_launch_readiness": {
+            "path": "robot_camera_profile_launch_readiness.json",
+            "status": camera_profile_launch_readiness.get("status"),
+            "launch_mode": camera_profile_launch_readiness.get("launch_mode"),
+            "all_profiles_launch_ready": camera_profile_launch_readiness.get(
+                "all_profiles_launch_ready"
+            ),
+            "blockers": camera_profile_launch_readiness.get("blockers") or [],
+        },
         "robot_pov_generated": bool(observations),
         "generated_robot_pov_support_available": bool(observations),
         "real_robot_pov_manifest_path": _relative_to(
@@ -3343,6 +3412,9 @@ def _predicted_success(record: Mapping[str, Any]) -> bool | None:
     if "predicted_success" in record:
         value = record.get("predicted_success")
         return _boolish(value) if value is not None else None
+    for key in ("success", "task_success", "predicted_task_success"):
+        if key in record and record.get(key) is not None:
+            return _boolish(record.get(key))
     status = _string(record.get("predicted_status") or record.get("prediction_status")).lower()
     if status in {"pass", "passed", "success", "succeeded", "completed"}:
         return True
@@ -3389,21 +3461,489 @@ def _actual_signal_present(record: Mapping[str, Any]) -> bool:
     return bool(_failure_ids(record, "failure_mode_ids", "actual_failures", "actualFailures", "failures"))
 
 
-def _calibration_score(rows: Sequence[Mapping[str, Any]]) -> float | None:
-    scored = [
-        row
-        for row in rows
-        if row.get("predicted_success") is not None and row.get("actual_success") is not None
-        and bool(row.get("exact_prediction_match"))
-    ]
-    if not scored:
-        return None
-    matches = sum(
-        1
-        for row in scored
-        if bool(row.get("predicted_success")) == bool(row.get("actual_success"))
+def _anchor_variation_instance_id(record: Mapping[str, Any]) -> str:
+    return _string(
+        record.get("scenario_variation_instance_id")
+        or record.get("scenarioVariationInstanceId")
+        or record.get("variation_instance_id")
+        or record.get("variationInstanceId")
+        or record.get("variation_id")
+        or record.get("variationId")
     )
-    return round(matches / len(scored), 6)
+
+
+def _anchor_key(record: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        _string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId")),
+        _string(record.get("policy_id") or record.get("policyId")),
+        _string(record.get("task_id") or record.get("taskId")),
+        _anchor_variation_instance_id(record),
+    )
+
+
+def _anchor_key_dict(key: tuple[str, str, str, str]) -> Dict[str, str]:
+    return {
+        "scenario_eval_run_id": key[0],
+        "policy_id": key[1],
+        "task_id": key[2],
+        "scenario_variation_instance_id": key[3],
+    }
+
+
+def _missing_anchor_key_fields(key: tuple[str, str, str, str]) -> List[str]:
+    return [field for field, value in zip(ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS, key) if not value]
+
+
+def _anchor_record_status(record: Mapping[str, Any]) -> str:
+    return _string(
+        record.get("anchor_status")
+        or record.get("anchorStatus")
+        or record.get("validation_status")
+        or record.get("validationStatus")
+        or record.get("review_status")
+        or record.get("reviewStatus")
+    ).lower()
+
+
+def _anchor_record_is_stale(record: Mapping[str, Any]) -> bool:
+    if _boolish(record.get("stale") or record.get("is_stale") or record.get("isStale")):
+        return True
+    return _anchor_record_status(record) in {"stale", "expired", "superseded"}
+
+
+def _prediction_anchor_rows(
+    prediction_ledger: Mapping[str, Any],
+    attempt_trace: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for record in prediction_ledger.get("records", []) or []:
+        if not isinstance(record, Mapping):
+            continue
+        rows.append(
+            {
+                **dict(record),
+                "prediction_source": record.get("source") or "prediction_outcome_ledger",
+            }
+        )
+    for attempt in attempt_trace.get("attempts", []) or []:
+        if not isinstance(attempt, Mapping):
+            continue
+        rows.append(
+            {
+                "task_id": _string(attempt.get("task_id") or attempt.get("taskId")),
+                "scenario_id": _string(attempt.get("scenario_id") or attempt.get("scenarioId")),
+                "scenario_eval_run_id": _string(
+                    attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId")
+                )
+                or None,
+                "scenario_variation_instance_id": _anchor_variation_instance_id(attempt)
+                or None,
+                "variation_name": attempt.get("variation_name") or attempt.get("variationName"),
+                "policy_id": _string(attempt.get("policy_id") or attempt.get("policyId")),
+                "predicted_success": _predicted_success(attempt),
+                "predicted_cycle_time_seconds": _number(
+                    attempt.get("predicted_cycle_time_seconds")
+                    or attempt.get("cycle_time_seconds")
+                    or _mapping(attempt.get("metrics")).get("cycle_time_seconds")
+                ),
+                "failure_mode_ids": attempt.get("failure_mode_ids") or [],
+                "prediction_source": "normalized_attempt_trace",
+            }
+        )
+    return rows
+
+
+def _prediction_anchor_index(
+    prediction_rows: Sequence[Mapping[str, Any]],
+) -> tuple[
+    Dict[tuple[str, str, str, str], Dict[str, Any]],
+    List[str],
+    List[Dict[str, Any]],
+]:
+    index: Dict[tuple[str, str, str, str], Dict[str, Any]] = {}
+    conflicts: Dict[tuple[str, str, str, str], set[bool]] = {}
+    incomplete: List[Dict[str, Any]] = []
+    for row_index, row in enumerate(prediction_rows, start=1):
+        key = _anchor_key(row)
+        missing_fields = _missing_anchor_key_fields(key)
+        record_id = (
+            _string(row.get("record_id") or row.get("attempt_id") or row.get("id"))
+            or f"prediction_row_{row_index:04d}"
+        )
+        predicted = _predicted_success(row)
+        if missing_fields or predicted is None:
+            incomplete.append(
+                {
+                    "record_id": record_id,
+                    "missing_fields": missing_fields
+                    + (["predicted_success"] if predicted is None else []),
+                    "join_key": _anchor_key_dict(key),
+                }
+            )
+            continue
+        conflicts.setdefault(key, set()).add(bool(predicted))
+        index.setdefault(
+            key,
+            {
+                **dict(row),
+                "record_id": record_id,
+                "predicted_success": bool(predicted),
+                "anchor_join_key": _anchor_key_dict(key),
+            },
+        )
+    conflict_ids = [
+        _string(index.get(key, {}).get("record_id")) or "|".join(key)
+        for key, values in conflicts.items()
+        if len(values) > 1
+    ]
+    return index, sorted(conflict_ids), incomplete
+
+
+def _average_ranks(values: Sequence[float], *, descending: bool = False) -> List[float]:
+    indexed = list(enumerate(values))
+    indexed.sort(key=lambda item: item[1], reverse=descending)
+    ranks = [0.0 for _ in values]
+    position = 1
+    cursor = 0
+    while cursor < len(indexed):
+        end = cursor + 1
+        while end < len(indexed) and indexed[end][1] == indexed[cursor][1]:
+            end += 1
+        average_rank = (position + position + (end - cursor) - 1) / 2.0
+        for original_index, _ in indexed[cursor:end]:
+            ranks[original_index] = average_rank
+        position += end - cursor
+        cursor = end
+    return ranks
+
+
+def _pearson(values_a: Sequence[float], values_b: Sequence[float]) -> float | None:
+    if len(values_a) != len(values_b) or len(values_a) < 2:
+        return None
+    mean_a = sum(values_a) / len(values_a)
+    mean_b = sum(values_b) / len(values_b)
+    centered_a = [value - mean_a for value in values_a]
+    centered_b = [value - mean_b for value in values_b]
+    denominator = math.sqrt(sum(value * value for value in centered_a)) * math.sqrt(
+        sum(value * value for value in centered_b)
+    )
+    if denominator == 0.0:
+        return None
+    return sum(a * b for a, b in zip(centered_a, centered_b)) / denominator
+
+
+def _policy_anchor_summaries(
+    accepted_anchors: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Mapping[str, Any]]] = {}
+    for row in accepted_anchors:
+        grouped.setdefault(_string(row.get("policy_id")) or "policy", []).append(row)
+    summaries: List[Dict[str, Any]] = []
+    for policy_id, rows in sorted(grouped.items()):
+        predicted_successes = [bool(row.get("predicted_success")) for row in rows]
+        actual_successes = [bool(row.get("actual_success")) for row in rows]
+        predicted_success_rate = sum(predicted_successes) / len(predicted_successes)
+        actual_success_rate = sum(actual_successes) / len(actual_successes)
+        summaries.append(
+            {
+                "policy_id": policy_id,
+                "accepted_anchor_count": len(rows),
+                "predicted_success_rate": round(predicted_success_rate, 6),
+                "actual_success_rate": round(actual_success_rate, 6),
+                "success_rate_error": round(predicted_success_rate - actual_success_rate, 6),
+                "absolute_success_rate_error": round(
+                    abs(predicted_success_rate - actual_success_rate),
+                    6,
+                ),
+            }
+        )
+    predicted_ranks = _average_ranks(
+        [float(row["predicted_success_rate"]) for row in summaries],
+        descending=True,
+    )
+    actual_ranks = _average_ranks(
+        [float(row["actual_success_rate"]) for row in summaries],
+        descending=True,
+    )
+    for row, predicted_rank, actual_rank in zip(summaries, predicted_ranks, actual_ranks):
+        row["predicted_rank"] = predicted_rank
+        row["actual_rank"] = actual_rank
+        row["rank_violation"] = abs(predicted_rank - actual_rank)
+        row["normalized_rank_violation"] = (
+            row["rank_violation"] / max(1, len(summaries) - 1)
+        )
+    return summaries
+
+
+def _calibration_metrics_from_policy_summaries(
+    summaries: Sequence[Mapping[str, Any]],
+) -> Dict[str, float | None]:
+    if len(summaries) < MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION:
+        return {
+            "spearman_rank_correlation": None,
+            "pearson_success_rate_correlation": None,
+            "mean_maximum_rank_violation": None,
+            "mmrv": None,
+            "maximum_rank_violation": None,
+            "mean_absolute_success_rate_error": None,
+            "sim_vs_real_calibration_score": None,
+        }
+    predicted_rates = [float(row.get("predicted_success_rate") or 0.0) for row in summaries]
+    actual_rates = [float(row.get("actual_success_rate") or 0.0) for row in summaries]
+    predicted_ranks = [float(row.get("predicted_rank") or 0.0) for row in summaries]
+    actual_ranks = [float(row.get("actual_rank") or 0.0) for row in summaries]
+    rank_violations = [float(row.get("normalized_rank_violation") or 0.0) for row in summaries]
+    absolute_errors = [
+        float(row.get("absolute_success_rate_error") or 0.0) for row in summaries
+    ]
+    pearson = _pearson(predicted_rates, actual_rates)
+    spearman = _pearson(predicted_ranks, actual_ranks)
+    mae = sum(absolute_errors) / len(absolute_errors)
+    mmrv = sum(rank_violations) / len(rank_violations)
+    return {
+        "spearman_rank_correlation": round(spearman, 6) if spearman is not None else None,
+        "pearson_success_rate_correlation": round(pearson, 6) if pearson is not None else None,
+        "mean_maximum_rank_violation": round(mmrv, 6),
+        "mmrv": round(mmrv, 6),
+        "maximum_rank_violation": round(max(rank_violations), 6) if rank_violations else None,
+        "mean_absolute_success_rate_error": round(mae, 6),
+        "sim_vs_real_calibration_score": round(max(0.0, 1.0 - mae), 6),
+    }
+
+
+def _percentile(values: Sequence[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return round(ordered[0], 6)
+    position = (len(ordered) - 1) * percentile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return round(ordered[int(position)], 6)
+    fraction = position - lower
+    return round(ordered[lower] * (1 - fraction) + ordered[upper] * fraction, 6)
+
+
+def _bootstrap_confidence_intervals(
+    summaries: Sequence[Mapping[str, Any]],
+) -> Dict[str, Dict[str, float | None]]:
+    if len(summaries) < MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION:
+        return {}
+    metric_samples: Dict[str, List[float]] = {
+        "spearman_rank_correlation": [],
+        "pearson_success_rate_correlation": [],
+        "mean_maximum_rank_violation": [],
+        "mmrv": [],
+        "mean_absolute_success_rate_error": [],
+        "sim_vs_real_calibration_score": [],
+    }
+    summary_list = [dict(row) for row in summaries]
+    sample_indexes = itertools.product(range(len(summary_list)), repeat=len(summary_list))
+    max_samples = 512
+    for sample_count, indexes in enumerate(sample_indexes, start=1):
+        if sample_count > max_samples:
+            break
+        sample_summaries = [dict(summary_list[index]) for index in indexes]
+        predicted_ranks = _average_ranks(
+            [float(row.get("predicted_success_rate") or 0.0) for row in sample_summaries],
+            descending=True,
+        )
+        actual_ranks = _average_ranks(
+            [float(row.get("actual_success_rate") or 0.0) for row in sample_summaries],
+            descending=True,
+        )
+        for row, predicted_rank, actual_rank in zip(
+            sample_summaries,
+            predicted_ranks,
+            actual_ranks,
+        ):
+            row["predicted_rank"] = predicted_rank
+            row["actual_rank"] = actual_rank
+            row["normalized_rank_violation"] = (
+                abs(predicted_rank - actual_rank) / max(1, len(sample_summaries) - 1)
+            )
+        metrics = _calibration_metrics_from_policy_summaries(sample_summaries)
+        for key in metric_samples:
+            value = metrics.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                metric_samples[key].append(float(value))
+    intervals: Dict[str, Dict[str, float | None]] = {}
+    for key, values in metric_samples.items():
+        intervals[key] = {
+            "confidence": 0.95,
+            "lower": _percentile(values, 0.025),
+            "upper": _percentile(values, 0.975),
+            "sample_count": len(values),
+        }
+    return intervals
+
+
+def _accepted_anchor_calibration(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    prediction_rows: Sequence[Mapping[str, Any]],
+    prediction_anchor_index: Mapping[tuple[str, str, str, str], Mapping[str, Any]],
+    prediction_conflict_ids: Sequence[str],
+    prediction_incomplete_rows: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    actual_keys: Dict[tuple[str, str, str, str], List[Mapping[str, Any]]] = {}
+    for row in rows:
+        key = _anchor_key(row)
+        if not _missing_anchor_key_fields(key):
+            actual_keys.setdefault(key, []).append(row)
+    actual_conflict_keys = {
+        key
+        for key, keyed_rows in actual_keys.items()
+        if len({bool(item.get("actual_success")) for item in keyed_rows if item.get("actual_success") is not None})
+        > 1
+    }
+    stale_anchor_row_ids: List[str] = []
+    unmatched_actual_row_ids: List[str] = []
+    accepted_anchors: List[Dict[str, Any]] = []
+    rejected_anchors: List[Dict[str, Any]] = []
+    for row_index, row in enumerate(rows, start=1):
+        key = _anchor_key(row)
+        record_id = _string(row.get("record_id")) or f"deployment_outcome_{row_index:04d}"
+        missing_fields = _missing_anchor_key_fields(key)
+        anchor_blockers: List[str] = []
+        if missing_fields:
+            anchor_blockers.append("missing_anchor_join_key_fields")
+        if row.get("predicted_success") is None:
+            anchor_blockers.append("missing_predicted_success")
+        if row.get("actual_success") is None:
+            anchor_blockers.append("missing_actual_success")
+        if not row.get("owner_evidence_present"):
+            anchor_blockers.append("missing_owner_evidence_or_operator_attestation")
+        if not row.get("actual_result_signal_present"):
+            anchor_blockers.append("missing_actual_result_signal")
+        if _anchor_record_is_stale(row):
+            anchor_blockers.append("stale_anchor_row")
+            stale_anchor_row_ids.append(record_id)
+        if key in actual_conflict_keys:
+            anchor_blockers.append("conflicting_actual_anchor_row")
+        if key not in prediction_anchor_index:
+            anchor_blockers.append("unmatched_actual_row")
+            unmatched_actual_row_ids.append(record_id)
+        if anchor_blockers:
+            rejected_anchors.append(
+                {
+                    "record_id": record_id,
+                    "anchor_acceptance_status": "blocked",
+                    "anchor_blockers": sorted(set(anchor_blockers)),
+                    "anchor_join_key": _anchor_key_dict(key),
+                }
+            )
+            continue
+        accepted_anchors.append(
+            {
+                **dict(row),
+                "record_id": record_id,
+                "anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+                "anchor_acceptance_status": "accepted",
+                "anchor_join_key": _anchor_key_dict(key),
+            }
+        )
+    accepted_keys = {_anchor_key(row) for row in accepted_anchors}
+    complete_prediction_keys = {
+        _anchor_key(row)
+        for row in prediction_rows
+        if not _missing_anchor_key_fields(_anchor_key(row)) and _predicted_success(row) is not None
+    }
+    unmatched_prediction_keys = sorted(complete_prediction_keys - accepted_keys)
+    unmatched_prediction_rows = [
+        _anchor_key_dict(key) for key in unmatched_prediction_keys
+    ]
+    conflicting_anchor_rows = sorted(
+        {
+            *[
+                _string(row.get("record_id")) or "|".join(_anchor_key(row))
+                for key in actual_conflict_keys
+                for row in actual_keys.get(key, [])
+            ],
+            *prediction_conflict_ids,
+        }
+    )
+    blockers: List[str] = []
+    if len(accepted_anchors) < MIN_ACCEPTED_ANCHOR_COUNT_FOR_CALIBRATION:
+        blockers.append("insufficient_anchor_count")
+    if unmatched_prediction_rows:
+        blockers.append("unmatched_prediction_rows")
+    if unmatched_actual_row_ids:
+        blockers.append("unmatched_actual_rows")
+    if stale_anchor_row_ids:
+        blockers.append("stale_anchor_rows")
+    if conflicting_anchor_rows:
+        blockers.append("conflicting_anchor_rows")
+    policy_summaries = _policy_anchor_summaries(accepted_anchors)
+    if len(policy_summaries) < MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION:
+        blockers.append("insufficient_policy_group_count")
+    metrics: Dict[str, Any] = {
+        "spearman_rank_correlation": None,
+        "pearson_success_rate_correlation": None,
+        "mean_maximum_rank_violation": None,
+        "mmrv": None,
+        "maximum_rank_violation": None,
+        "mean_absolute_success_rate_error": None,
+        "sim_vs_real_calibration_score": None,
+    }
+    confidence_intervals: Dict[str, Any] = {}
+    if not blockers:
+        metrics = _calibration_metrics_from_policy_summaries(policy_summaries)
+        confidence_intervals = _bootstrap_confidence_intervals(policy_summaries)
+    status = (
+        "not_measured"
+        if not rows
+        else "completed"
+        if not blockers
+        else "blocked_anchor_quality"
+    )
+    if "insufficient_anchor_count" in blockers and set(blockers).issubset(
+        {"insufficient_anchor_count", "insufficient_policy_group_count"}
+    ):
+        status = "blocked_insufficient_anchor_count" if rows else "not_measured"
+    return {
+        "status": status,
+        "blockers": sorted(set(blockers)),
+        "accepted_anchor_schema": {
+            "schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+            "join_keys": list(ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS),
+            "required_prediction_fields": [
+                *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
+                "predicted_success",
+            ],
+            "required_actual_fields": [
+                *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
+                "actual_success",
+                "owner_evidence_or_operator_attestation",
+            ],
+            "accepted_anchor_status": "accepted",
+            "claim_boundary": (
+                "Accepted anchors are paired prediction/actual records. They are "
+                "inputs for external accuracy calibration, not deployment approval."
+            ),
+        },
+        "accepted_anchor_count": len(accepted_anchors),
+        "minimum_accepted_anchor_count": MIN_ACCEPTED_ANCHOR_COUNT_FOR_CALIBRATION,
+        "policy_group_count": len(policy_summaries),
+        "minimum_policy_group_count": MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION,
+        "accepted_anchors": accepted_anchors,
+        "rejected_anchors": rejected_anchors,
+        "policy_success_rate_rows": policy_summaries,
+        "unmatched_prediction_row_count": len(unmatched_prediction_rows),
+        "unmatched_prediction_rows": unmatched_prediction_rows,
+        "unmatched_actual_row_count": len(set(unmatched_actual_row_ids)),
+        "unmatched_actual_row_ids": sorted(set(unmatched_actual_row_ids)),
+        "stale_anchor_row_count": len(set(stale_anchor_row_ids)),
+        "stale_anchor_row_ids": sorted(set(stale_anchor_row_ids)),
+        "conflicting_anchor_row_count": len(conflicting_anchor_rows),
+        "conflicting_anchor_row_ids": conflicting_anchor_rows,
+        "prediction_incomplete_row_count": len(prediction_incomplete_rows),
+        "prediction_incomplete_rows": list(prediction_incomplete_rows),
+        "confidence_intervals": confidence_intervals,
+        **metrics,
+    }
 
 
 def _attestation_present(value: Any) -> bool:
@@ -3700,6 +4240,12 @@ def build_deployment_validation_bundle(
         },
     )
     predictions = _prediction_index(prediction_ledger, attempt_trace)
+    prediction_rows = _prediction_anchor_rows(prediction_ledger, attempt_trace)
+    (
+        prediction_anchor_index,
+        prediction_conflict_ids,
+        prediction_incomplete_rows,
+    ) = _prediction_anchor_index(prediction_rows)
     rows: List[Dict[str, Any]] = []
     for index, actual in enumerate(actual_records, start=1):
         task_id = _string(actual.get("task_id") or actual.get("taskId"))
@@ -3710,6 +4256,13 @@ def build_deployment_validation_bundle(
         scenario_variation_instance_id = _string(
             actual.get("scenario_variation_instance_id")
             or actual.get("scenarioVariationInstanceId")
+        )
+        policy_id = _string(actual.get("policy_id") or actual.get("policyId"))
+        anchor_key = (
+            scenario_eval_run_id,
+            policy_id,
+            task_id,
+            scenario_variation_instance_id,
         )
         prediction, prediction_match_level = _prediction_for_actual(
             predictions,
@@ -3725,9 +4278,10 @@ def build_deployment_validation_bundle(
             exact_prediction_join_key_present
             and prediction_match_level == "scenario_eval_run_and_variation"
         )
+        anchor_prediction = prediction_anchor_index.get(anchor_key)
         predicted_failures = _failure_ids(prediction, "failure_mode_ids", "predicted_failures")
         actual_failures = _failure_ids(actual, "failure_mode_ids", "actual_failures", "failures")
-        predicted_success = _predicted_success(prediction)
+        predicted_success = _predicted_success(anchor_prediction or prediction)
         actual_success = _actual_success(actual)
         actual_result_signal_present = _actual_signal_present(actual)
         site_modifications = actual.get("site_modifications") or actual.get("siteModifications") or []
@@ -3750,8 +4304,27 @@ def build_deployment_validation_bundle(
             "variation_name": _string(actual.get("variation_name") or actual.get("variationName"))
             or _string(prediction.get("variation_name"))
             or None,
-            "policy_id": _string(actual.get("policy_id") or actual.get("policyId")),
-            "prediction_source": prediction.get("source"),
+            "policy_id": policy_id,
+            "anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+            "anchor_join_key": _anchor_key_dict(anchor_key),
+            "accepted_anchor_join_key_present": not _missing_anchor_key_fields(anchor_key),
+            "strict_anchor_prediction_match": bool(anchor_prediction),
+            "anchor_status": _string(
+                actual.get("anchor_status")
+                or actual.get("anchorStatus")
+                or actual.get("validation_status")
+                or actual.get("validationStatus")
+                or actual.get("review_status")
+                or actual.get("reviewStatus")
+            )
+            or None,
+            "stale": actual.get("stale")
+            if actual.get("stale") is not None
+            else actual.get("is_stale")
+            if actual.get("is_stale") is not None
+            else actual.get("isStale"),
+            "prediction_source": (anchor_prediction or prediction).get("source")
+            or (anchor_prediction or prediction).get("prediction_source"),
             "predicted_success": predicted_success,
             "actual_success": actual_success,
             "actual_result_signal_present": actual_result_signal_present,
@@ -3795,7 +4368,14 @@ def build_deployment_validation_bundle(
         }
         rows.append(row)
 
-    score = _calibration_score(rows)
+    anchor_calibration = _accepted_anchor_calibration(
+        rows=rows,
+        prediction_rows=prediction_rows,
+        prediction_anchor_index=prediction_anchor_index,
+        prediction_conflict_ids=prediction_conflict_ids,
+        prediction_incomplete_rows=prediction_incomplete_rows,
+    )
+    score = anchor_calibration.get("sim_vs_real_calibration_score")
     status = "completed" if rows else "blocked_missing_real_world_outcomes"
     owner_evidence_record_count = sum(1 for row in rows if row.get("owner_evidence_present"))
     missing_owner_evidence_record_ids = [
@@ -3852,15 +4432,22 @@ def build_deployment_validation_bundle(
         outcome_blockers.append("deployment_outcomes_missing_matching_prediction")
     if missing_exact_prediction_join_key_record_ids:
         outcome_blockers.append("deployment_outcomes_missing_exact_prediction_join_keys")
-    calibration_status = (
-        "blocked_unmatched_predictions"
-        if unmatched_actual_record_ids
-        else "blocked_weak_prediction_matches"
-        if weak_prediction_match_record_ids
-        else "completed"
-        if score is not None
-        else status
+    calibration_status = _string(anchor_calibration.get("status")) or (
+        "not_measured" if not rows else "blocked_insufficient_anchor_count"
     )
+    if (
+        calibration_status == "blocked_anchor_quality"
+        and weak_prediction_match_record_ids
+        and exact_prediction_record_count == 0
+        and (
+            (
+                missing_exact_prediction_join_key_record_ids
+                and not missing_owner_evidence_record_ids
+            )
+            or outcome_source == "deployment_outcome_inbox"
+        )
+    ):
+        calibration_status = "blocked_weak_prediction_matches"
     ledger = {
         "schema_version": DEPLOYMENT_OUTCOME_LEDGER_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -3880,6 +4467,8 @@ def build_deployment_validation_bundle(
         "weak_prediction_match_record_ids": weak_prediction_match_record_ids,
         "unmatched_actual_record_count": len(unmatched_actual_record_ids),
         "unmatched_actual_record_ids": unmatched_actual_record_ids,
+        "accepted_anchor_count": anchor_calibration.get("accepted_anchor_count"),
+        "accepted_anchor_blockers": _string_list(anchor_calibration.get("blockers")),
         "prediction_match_counts": prediction_match_counts,
         "real_world_outcome_records_present": real_world_outcome_records_present,
         "owner_evidence_record_count": owner_evidence_record_count,
@@ -3899,6 +4488,7 @@ def build_deployment_validation_bundle(
         "generated_at": generated_at,
         "status": calibration_status,
         "outcome_source": outcome_source,
+        "accepted_anchor_schema": anchor_calibration.get("accepted_anchor_schema"),
         "paired_record_count": len(
             [
                 row
@@ -3907,7 +4497,26 @@ def build_deployment_validation_bundle(
                 and row.get("actual_success") is not None
             ]
         ),
+        "accepted_anchor_count": anchor_calibration.get("accepted_anchor_count"),
+        "minimum_accepted_anchor_count": anchor_calibration.get(
+            "minimum_accepted_anchor_count"
+        ),
+        "policy_group_count": anchor_calibration.get("policy_group_count"),
+        "minimum_policy_group_count": anchor_calibration.get("minimum_policy_group_count"),
         "sim_vs_real_calibration_score": score,
+        "spearman_rank_correlation": anchor_calibration.get("spearman_rank_correlation"),
+        "pearson_success_rate_correlation": anchor_calibration.get(
+            "pearson_success_rate_correlation"
+        ),
+        "mean_maximum_rank_violation": anchor_calibration.get(
+            "mean_maximum_rank_violation"
+        ),
+        "mmrv": anchor_calibration.get("mmrv"),
+        "maximum_rank_violation": anchor_calibration.get("maximum_rank_violation"),
+        "mean_absolute_success_rate_error": anchor_calibration.get(
+            "mean_absolute_success_rate_error"
+        ),
+        "confidence_intervals": anchor_calibration.get("confidence_intervals") or {},
         "matched_prediction_record_count": len(rows) - len(unmatched_actual_record_ids),
         "exact_prediction_record_count": exact_prediction_record_count,
         "missing_exact_prediction_join_key_record_count": len(
@@ -3920,6 +4529,23 @@ def build_deployment_validation_bundle(
         "weak_prediction_match_record_ids": weak_prediction_match_record_ids,
         "unmatched_actual_record_count": len(unmatched_actual_record_ids),
         "unmatched_actual_record_ids": unmatched_actual_record_ids,
+        "accepted_anchors": anchor_calibration.get("accepted_anchors") or [],
+        "rejected_anchors": anchor_calibration.get("rejected_anchors") or [],
+        "policy_success_rate_rows": anchor_calibration.get("policy_success_rate_rows") or [],
+        "unmatched_prediction_row_count": anchor_calibration.get(
+            "unmatched_prediction_row_count"
+        ),
+        "unmatched_prediction_rows": anchor_calibration.get("unmatched_prediction_rows") or [],
+        "stale_anchor_row_count": anchor_calibration.get("stale_anchor_row_count"),
+        "stale_anchor_row_ids": anchor_calibration.get("stale_anchor_row_ids") or [],
+        "conflicting_anchor_row_count": anchor_calibration.get(
+            "conflicting_anchor_row_count"
+        ),
+        "conflicting_anchor_row_ids": anchor_calibration.get(
+            "conflicting_anchor_row_ids"
+        )
+        or [],
+        "blockers": _string_list(anchor_calibration.get("blockers")),
         "prediction_match_counts": prediction_match_counts,
         "missed_failure_count": sum(len(_string_list(row.get("missed_failures"))) for row in rows),
         "false_alarm_failure_count": sum(
@@ -3935,10 +4561,15 @@ def build_deployment_validation_bundle(
         "real_world_outcome_proven": real_world_outcome_proven,
         "robot_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
+        "deployment_accuracy_claim_allowed": bool(score is not None),
+        "external_accuracy_claim_allowed": bool(score is not None),
+        "sim_only_beta_ranking_blocked": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "real_world_outcome_records_present": real_world_outcome_records_present,
             "real_world_outcome_proven": real_world_outcome_proven,
+            "deployment_accuracy_claim_allowed": bool(score is not None),
+            "sim_only_beta_ranking_blocked": False,
         },
     }
     summary = {
@@ -4012,6 +4643,23 @@ def build_deployment_validation_bundle(
             if row.get("site_modifications")
         ],
         "sim_vs_real_calibration_score": score,
+        "accepted_anchor_count": anchor_calibration.get("accepted_anchor_count"),
+        "minimum_accepted_anchor_count": anchor_calibration.get(
+            "minimum_accepted_anchor_count"
+        ),
+        "policy_group_count": anchor_calibration.get("policy_group_count"),
+        "spearman_rank_correlation": anchor_calibration.get("spearman_rank_correlation"),
+        "pearson_success_rate_correlation": anchor_calibration.get(
+            "pearson_success_rate_correlation"
+        ),
+        "mean_maximum_rank_violation": anchor_calibration.get(
+            "mean_maximum_rank_violation"
+        ),
+        "mmrv": anchor_calibration.get("mmrv"),
+        "mean_absolute_success_rate_error": anchor_calibration.get(
+            "mean_absolute_success_rate_error"
+        ),
+        "confidence_intervals": anchor_calibration.get("confidence_intervals") or {},
         "matched_prediction_record_count": len(rows) - len(unmatched_actual_record_ids),
         "exact_prediction_record_count": exact_prediction_record_count,
         "missing_exact_prediction_join_key_record_count": len(
@@ -4024,6 +4672,20 @@ def build_deployment_validation_bundle(
         "weak_prediction_match_record_ids": weak_prediction_match_record_ids,
         "unmatched_actual_record_count": len(unmatched_actual_record_ids),
         "unmatched_actual_record_ids": unmatched_actual_record_ids,
+        "unmatched_prediction_row_count": anchor_calibration.get(
+            "unmatched_prediction_row_count"
+        ),
+        "unmatched_prediction_rows": anchor_calibration.get("unmatched_prediction_rows") or [],
+        "stale_anchor_row_count": anchor_calibration.get("stale_anchor_row_count"),
+        "stale_anchor_row_ids": anchor_calibration.get("stale_anchor_row_ids") or [],
+        "conflicting_anchor_row_count": anchor_calibration.get(
+            "conflicting_anchor_row_count"
+        ),
+        "conflicting_anchor_row_ids": anchor_calibration.get(
+            "conflicting_anchor_row_ids"
+        )
+        or [],
+        "blockers": _string_list(anchor_calibration.get("blockers")),
         "prediction_match_counts": prediction_match_counts,
         "real_world_outcome_records_present": real_world_outcome_records_present,
         "owner_evidence_record_count": owner_evidence_record_count,

@@ -138,22 +138,28 @@ def _write_untrusted_openvla_provider_smoke_job(job_dir: Path) -> Path:
     return job_dir
 
 
-def _write_test_video(path: Path, *, frame_count: int = 6, fps: float = 5.0) -> None:
+def _write_test_video(path: Path, *, frame_count: int = 12, fps: float = 8.0) -> None:
     cv2 = pytest.importorskip("cv2")
     np = pytest.importorskip("numpy")
     path.parent.mkdir(parents=True, exist_ok=True)
+    width = 320
+    height = 256
     writer = cv2.VideoWriter(
         str(path),
         cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
-        (64, 48),
+        (width, height),
     )
-    yy, xx = np.indices((48, 64))
+    yy, xx = np.indices((height, width))
     for index in range(frame_count):
-        frame = np.zeros((48, 64, 3), dtype=np.uint8)
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
         frame[:, :, 0] = (xx * 3 + index * 17) % 255
         frame[:, :, 1] = (yy * 5 + 90 + index * 11) % 255
         frame[:, :, 2] = ((xx + yy) * 2 + 40 + index * 23) % 255
+        for x in range(0, width, 32):
+            cv2.line(frame, (x, 0), (x, height - 1), (255, 255, 255), 1)
+        for y in range(0, height, 32):
+            cv2.line(frame, (0, y), (width - 1, y), (20, 20, 20), 1)
         writer.write(frame)
     writer.release()
 
@@ -1990,6 +1996,42 @@ Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_OUTPUT"]).write_text(json.dumps(paylo
     assert "blocked_generated_rollout_not_visually_useful_for_success_review" in success_labels[
         "blockers"
     ]
+    failure_labels = json.loads(
+        (job_dir / "failure_labels.json").read_text(encoding="utf-8")
+    )
+    assert failure_labels["status"] == "review_required"
+    assert failure_labels["visual_smoke_status"] == "failed_visual_quality_smoke"
+    assert failure_labels["visual_rollout_useful_for_task_success_review"] is False
+    assert failure_labels["review_grade_failure_diagnosis"] is False
+    assert "generated_rollout_later_frames_flat_or_dark" in failure_labels[
+        "visual_review_blockers"
+    ]
+    assert failure_labels["failure_diagnosis_coverage_complete"] is True
+    assert failure_labels["failure_diagnosis_complete"] is False
+    assert "generated_rollout_later_frames_flat_or_dark" in failure_labels[
+        "failure_diagnosis_blockers"
+    ]
+    assert "failure_labels_nonreviewable_failure_hypotheses" in failure_labels[
+        "failure_diagnosis_blockers"
+    ]
+    assert failure_labels["claim_boundary"][
+        "visual_smoke_required_for_review_grade_failure_diagnosis"
+    ] is True
+    assert failure_labels["labels"][0]["review_status"] == (
+        "non_reviewable_failure_hypothesis"
+    )
+    assert failure_labels["labels"][0]["non_reviewable_failure_hypothesis"] is True
+    assert failure_labels["labels"][0]["visual_smoke_status"] == (
+        "failed_visual_quality_smoke"
+    )
+    assert failure_labels["labels"][0][
+        "visual_rollout_useful_for_task_success_review"
+    ] is False
+    assert "generated_rollout_later_frames_flat_or_dark" in failure_labels["labels"][0][
+        "visual_review_blockers"
+    ]
+    assert failure_labels["labels"][0]["review_grade_failure_diagnosis"] is False
+    assert failure_labels["labels"][0]["evidence_refs"]
     consistency_request = json.loads(
         (job_dir / "wam_episode_consistency_request.json").read_text(encoding="utf-8")
     )
@@ -2001,6 +2043,16 @@ Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_OUTPUT"]).write_text(json.dumps(paylo
     assert consistency["external_episode_consistency_scorer_ran"] is False
     assert "blocked_generated_rollout_not_visually_useful_for_success_review" in consistency[
         "blockers"
+    ]
+    scorecard = json.loads(
+        (job_dir / "wam_policy_scorecard.json").read_text(encoding="utf-8")
+    )
+    assert scorecard["status"] == "blocked"
+    assert scorecard["visual_smoke_status"] == "failed_visual_quality_smoke"
+    assert scorecard["visual_rollout_useful_for_task_success_review"] is False
+    assert scorecard["review_grade_policy_ranking"] is False
+    assert "generated_rollout_later_frames_flat_or_dark" in scorecard[
+        "visual_review_blockers"
     ]
 
 
@@ -2093,11 +2145,16 @@ import numpy as np
 
 output = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"])
 video = output.parent / "rollout_1.mp4"
-writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (64, 48))
-for index in range(6):
-    frame = np.zeros((48, 64, 3), dtype=np.uint8)
-    frame[:, :32] = (255, 30 + index * 20, 0)
-    frame[:, 32:] = (0, 180, 220 - index * 10)
+width, height = 320, 256
+writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 8.0, (width, height))
+for index in range(12):
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[:, : width // 2] = (255, 30 + index * 12, 0)
+    frame[:, width // 2 :] = (0, 180, 220 - index * 8)
+    for x in range(0, width, 32):
+        cv2.line(frame, (x, 0), (x, height - 1), (255, 255, 255), 1)
+    for y in range(0, height, 32):
+        cv2.line(frame, (0, y), (width - 1, y), (20, 20, 20), 1)
     writer.write(frame)
 writer.release()
 payload = {
@@ -2253,11 +2310,16 @@ import numpy as np
 
 output = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"])
 video = output.parent / "rollout_1.mp4"
-writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (64, 48))
-for index in range(6):
-    frame = np.zeros((48, 64, 3), dtype=np.uint8)
-    frame[:, :32] = (255, 30 + index * 20, 0)
-    frame[:, 32:] = (0, 180, 220 - index * 10)
+width, height = 320, 256
+writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 8.0, (width, height))
+for index in range(12):
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[:, : width // 2] = (255, 30 + index * 12, 0)
+    frame[:, width // 2 :] = (0, 180, 220 - index * 8)
+    for x in range(0, width, 32):
+        cv2.line(frame, (x, 0), (x, height - 1), (255, 255, 255), 1)
+    for y in range(0, height, 32):
+        cv2.line(frame, (0, y), (width - 1, y), (20, 20, 20), 1)
     writer.write(frame)
 writer.release()
 payload = {
@@ -2632,36 +2694,41 @@ work.mkdir(parents=True, exist_ok=True)
 first_frame = work / "first_frame.png"
 skeleton = work / "blueprint_proxy_skeleton_conditioning.mp4"
 video = work / "oscar_generated_rollout.mp4"
-frame = np.zeros((48, 64, 3), dtype=np.uint8)
-frame[:, :32] = (255, 0, 0)
-frame[:, 32:] = (0, 255, 0)
+width, height = 320, 256
+frame = np.zeros((height, width, 3), dtype=np.uint8)
+frame[:, : width // 2] = (255, 0, 0)
+frame[:, width // 2 :] = (0, 255, 0)
+for x in range(0, width, 32):
+    cv2.line(frame, (x, 0), (x, height - 1), (255, 255, 255), 1)
+for y in range(0, height, 32):
+    cv2.line(frame, (0, y), (width - 1, y), (20, 20, 20), 1)
 cv2.imwrite(str(first_frame), frame)
 for target in (skeleton, video):
-    writer = cv2.VideoWriter(str(target), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (64, 48))
-    for index in range(6):
+    writer = cv2.VideoWriter(str(target), cv2.VideoWriter_fourcc(*"mp4v"), 8.0, (width, height))
+    for index in range(12):
         next_frame = frame.copy()
-        next_frame[:, :32, 1] = (20 + index * 30) % 255
-        next_frame[:, 32:, 2] = (40 + index * 35) % 255
+        next_frame[:, : width // 2, 1] = (20 + index * 18) % 255
+        next_frame[:, width // 2 :, 2] = (40 + index * 16) % 255
         writer.write(next_frame)
     writer.release()
 input_package = {{
     "schema_version": "blueprint_oscar_wam_input_package.v1",
     "status": "completed",
-    "num_frames": 6,
-    "fps": 5.0,
-    "height": 48,
-    "width": 64,
+    "num_frames": 12,
+    "fps": 8.0,
+    "height": height,
+    "width": width,
     "scenario_eval_run_id": "run_1",
     "task_id": "approach_target",
     "spawn_id": "doorway",
-    "first_frame": {{"path": str(first_frame), "height": 48, "width": 64}},
+    "first_frame": {{"path": str(first_frame), "height": height, "width": width}},
     "skeleton_video": {{
         "path": str(skeleton),
-        "frame_count": 6,
-        "fps": 5.0,
-        "height": 48,
-        "width": 64,
-        "action_type_counts": [{{"action_type": "waypoint", "count": 6}}],
+        "frame_count": 12,
+        "fps": 8.0,
+        "height": height,
+        "width": width,
+        "action_type_counts": [{{"action_type": "waypoint", "count": 12}}],
     }},
     "claim_boundary": {{
         "skeleton_conditioning_is_proxy_from_mujoco_trace": True,
@@ -2818,11 +2885,16 @@ import numpy as np
 
 output = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"])
 video = output.parent / "rollout_1.mp4"
-writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (64, 48))
-for index in range(6):
-    frame = np.zeros((48, 64, 3), dtype=np.uint8)
-    frame[:, :32] = (255, 30 + index * 20, 0)
-    frame[:, 32:] = (0, 180, 220 - index * 10)
+width, height = 320, 256
+writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 8.0, (width, height))
+for index in range(12):
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[:, : width // 2] = (255, 30 + index * 12, 0)
+    frame[:, width // 2 :] = (0, 180, 220 - index * 8)
+    for x in range(0, width, 32):
+        cv2.line(frame, (x, 0), (x, height - 1), (255, 255, 255), 1)
+    for y in range(0, height, 32):
+        cv2.line(frame, (0, y), (width - 1, y), (20, 20, 20), 1)
     writer.write(frame)
 writer.release()
 payload = {
@@ -2904,6 +2976,12 @@ Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(pay
     assert labels["status"] == "completed"
     assert labels["label_count"] == 1
     assert labels["labels"][0]["success"] is True
+    assert labels["labels"][0]["visual_smoke_status"] == "passed_visual_quality_smoke"
+    assert (
+        labels["labels"][0]["visual_rollout_useful_for_task_success_review"]
+        is True
+    )
+    assert labels["review_grade_success_labels"] is True
     scorecard = json.loads(
         (tmp_path / "wam_success_label_job" / "wam_policy_scorecard.json").read_text(
             encoding="utf-8"
@@ -2911,6 +2989,8 @@ Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(pay
     )
     assert scorecard["score_source"] == "vlm_judge_generated_video"
     assert scorecard["success_rate"] == 1.0
+    assert scorecard["review_grade_policy_ranking"] is True
+    assert scorecard["visual_rollout_useful_for_task_success_review"] is True
     truth = json.loads(
         (tmp_path / "wam_success_label_job" / "wam_evaluator_truth_boundary.json").read_text(
             encoding="utf-8"
@@ -2982,13 +3062,18 @@ import numpy as np
 
 output = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"])
 video = output.parent / "provider_rollout_1.mp4"
-writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (64, 48))
-yy, xx = np.indices((48, 64))
-for index in range(6):
-    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+width, height = 320, 256
+writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 8.0, (width, height))
+yy, xx = np.indices((height, width))
+for index in range(12):
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
     frame[:, :, 0] = (xx * 3 + index * 17) % 255
     frame[:, :, 1] = (yy * 5 + 90 + index * 11) % 255
     frame[:, :, 2] = ((xx + yy) * 2 + 40 + index * 23) % 255
+    for x in range(0, width, 32):
+        cv2.line(frame, (x, 0), (x, height - 1), (255, 255, 255), 1)
+    for y in range(0, height, 32):
+        cv2.line(frame, (0, y), (width - 1, y), (20, 20, 20), 1)
     writer.write(frame)
 writer.release()
 payload = {

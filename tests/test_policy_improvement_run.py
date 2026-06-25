@@ -318,6 +318,26 @@ def test_policy_improvement_run_offer_accepts_promoted_wam_candidate(
         },
     )
     _write_json(
+        job_dir / "candidate_selection_report.json",
+        {
+            "schema_version": "wam_candidate_selection_report.v1",
+            "status": "clear_winner",
+            "evaluation_substrate": "fixture_wam",
+            "top_policy_id": "site_finetune_policy",
+            "runner_up_policy_id": "baseline_policy",
+            "margin": {"predicted_success_rate": 0.22},
+            "selection": {"ranking_ambiguous": False},
+            "candidate_shortlist": [],
+            "decisive_scenarios": [{"scenario_eval_run_id": "heldout-1"}],
+            "failure_clusters": [{"cluster_id": "failure_cluster_grasp"}],
+            "claim_boundary": {
+                "boundary_statement": "do not use for deployment approval",
+                "do_not_use_for_deployment_approval": True,
+                "deployment_approval_claimed": False,
+            },
+        },
+    )
+    _write_json(
         job_dir / "wam_eval_claim_boundary.json",
         {
             "schema_version": "wam_eval_claim_boundary.v1",
@@ -342,6 +362,23 @@ def test_policy_improvement_run_offer_accepts_promoted_wam_candidate(
     assert result["wam_evaluation_summary"]["status"] == "completed"
     assert result["wam_evaluation_summary"]["evaluation_substrate"] == "fixture_wam"
     assert result["wam_evaluation_summary"]["customer_specific_srcc_claimed"] is False
+    assert result["wam_evaluation_summary"]["candidate_selection_status"] == "clear_winner"
+    assert result["wam_evaluation_summary"]["candidate_selection_top_policy_id"] == (
+        "site_finetune_policy"
+    )
+    assert result["wam_evaluation_summary"]["candidate_selection_runner_up_policy_id"] == (
+        "baseline_policy"
+    )
+    assert result["wam_evaluation_summary"]["candidate_selection_margin"] == {
+        "predicted_success_rate": 0.22
+    }
+    assert result["wam_evaluation_summary"]["ranking_ambiguous"] is False
+    assert result["wam_evaluation_summary"]["decisive_scenario_count"] == 1
+    assert result["wam_evaluation_summary"]["failure_cluster_count"] == 1
+    assert result["wam_evaluation_summary"]["candidate_selection_report_path"] == (
+        "candidate_selection_report.json"
+    )
+    assert "candidate_selection_report" in result["included_artifacts"]
     assert result["claim_boundary"]["simulator_execution_proven"] is False
 
 

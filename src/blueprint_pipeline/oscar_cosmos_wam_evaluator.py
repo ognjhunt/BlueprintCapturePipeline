@@ -24,6 +24,15 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .failure_diagnosis_contract import (
+    FAILURE_LABEL_PROOF_EFFECT,
+    dedupe as _dedupe_refs,
+    evidence_refs as _failure_evidence_refs,
+    failure_root_cause_category as _failure_root_cause_category,
+    frame_or_clip_refs as _failure_frame_or_clip_refs,
+    remediation_candidate as _failure_remediation_candidate,
+    review_status_for_failure_label as _failure_review_status,
+)
 from .model_access_env import model_access_secret_status, normalize_model_access_env
 from .policy_model_runtime_proofs import (
     discover_openvla_provider_smoke_proof,
@@ -2578,6 +2587,8 @@ def _normalize_wam_success_labels(
     command_payload: Mapping[str, Any],
     rollouts: Sequence[Mapping[str, Any]],
     generated_at: str,
+    visual_smoke_status: str,
+    visual_rollout_useful: bool,
 ) -> dict[str, Any]:
     rollout_by_id = {
         _string(row.get("rollout_id")): dict(row)
@@ -2589,6 +2600,8 @@ def _normalize_wam_success_labels(
     payload_status = _string(command_payload.get("status"))
     if payload_status and payload_status not in {"completed", "completed_review_required"}:
         blockers.append("wam_success_label_command_payload_not_completed")
+    if rollouts and not visual_rollout_useful:
+        blockers.append("blocked_generated_rollout_not_visually_useful_for_success_review")
     for item in command_payload.get("labels", []) or []:
         if not isinstance(item, Mapping):
             continue
@@ -2643,6 +2656,13 @@ def _normalize_wam_success_labels(
                 or "wam_success_label_command",
                 "model": _string(item.get("model")) or _string(command_payload.get("model")) or None,
                 "visual_evidence_used": bool(item.get("visual_evidence_used", True)),
+                "visual_smoke_status": visual_smoke_status,
+                "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+                "review_grade_visual_evidence_available": visual_rollout_useful,
+                "authoritative_task_success_label": visual_rollout_useful,
+                "failure_diagnosis_blocked_by_visual_quality": (
+                    success_value is False and not visual_rollout_useful
+                ),
                 "human_review_required": bool(item.get("human_review_required", False)),
                 "human_review_recommended": bool(item.get("human_review_recommended", True)),
                 "proof_effect": "semantic_label_on_generated_video_only",
@@ -2660,6 +2680,10 @@ def _normalize_wam_success_labels(
         "generated_at": generated_at,
         "status": status,
         "wam_success_label_from_generated_video": bool(labels and not blockers),
+        "visual_smoke_status": visual_smoke_status,
+        "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+        "review_grade_visual_evidence_available": visual_rollout_useful,
+        "review_grade_success_labels": bool(labels and not blockers and visual_rollout_useful),
         "label_count": len(labels),
         "labels": labels,
         "provider": _string(command_payload.get("provider")) or None,
@@ -2670,9 +2694,248 @@ def _normalize_wam_success_labels(
         "human_review_recommended": bool(labels),
         "claim_boundary": {
             "success_label_is_from_generated_video_not_physical_robot": True,
+            "success_label_requires_passed_visual_smoke": True,
+            "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
             "success_label_does_not_prove_forward_inverse_consistency": True,
             "raw_credentials_written_to_artifacts": False,
             "secret_hashes_written_to_artifacts": False,
+        },
+    }
+
+
+def _generated_rollout_failure_labels(
+    *,
+    rollouts: Sequence[Mapping[str, Any]],
+    success_labels: Mapping[str, Any],
+    visual_smoke: Mapping[str, Any],
+    visual_rollout_useful: bool,
+    generated_at: str,
+    output_dir: Path,
+    blockers: Sequence[str],
+) -> dict[str, Any]:
+    rollout_by_id = {
+        _string(row.get("rollout_id")): dict(row)
+        for row in rollouts
+        if _string(row.get("rollout_id"))
+    }
+    visual_smoke_status = _string(visual_smoke.get("status"))
+    visual_review_blockers = _dedupe_refs(
+        [
+            *(_string_list(visual_smoke.get("blockers")) if not visual_rollout_useful else []),
+            *(_string_list(blockers) if not visual_rollout_useful else []),
+        ]
+    )
+    rows: list[dict[str, Any]] = []
+    failed_success_labels = [
+        dict(row)
+        for row in success_labels.get("labels", []) or []
+        if isinstance(row, Mapping) and row.get("success") is False
+    ]
+    for index, source_label in enumerate(failed_success_labels, start=1):
+        rollout_id = _string(source_label.get("rollout_id"))
+        source_rollout = rollout_by_id.get(rollout_id, {})
+        failure_mode_ids = _string_list(source_label.get("failure_modes")) or _string_list(
+            source_label.get("failure_mode_ids")
+        ) or ["wam_generated_rollout_task_failure"]
+        frame_refs = _failure_frame_or_clip_refs(source_label) or _failure_frame_or_clip_refs(
+            source_rollout
+        )
+        source_trace_refs = _dedupe_refs(
+            [
+                str(output_dir / "wam_generated_rollout_results.json"),
+                str(output_dir / "wam_success_labels.json"),
+                str(output_dir / "wam_evaluator_trace_binding.json"),
+            ]
+        )
+        evidence_refs = _failure_evidence_refs(
+            source_label,
+            extra_refs=tuple(
+                [
+                    *source_trace_refs,
+                    str(output_dir / "wam_generated_rollout_visual_smoke.json"),
+                    *frame_refs,
+                ]
+            ),
+        )
+        review_status = _failure_review_status(
+            supplied_review_status=source_label.get("review_status"),
+            supplied_status=source_label.get("status"),
+            generated_rollout=True,
+            frame_or_clip_ref_count=len(frame_refs),
+        )
+        root_cause_category = _failure_root_cause_category(
+            failure_mode_ids,
+            failure_reason=_string(source_label.get("rationale")) or None,
+        )
+        rows.append(
+            {
+                "label_id": f"wam_generated_failure_label_{index:04d}",
+                "attempt_id": source_rollout.get("attempt_id"),
+                "rollout_id": rollout_id or source_rollout.get("rollout_id"),
+                "scenario_eval_run_id": source_label.get("scenario_eval_run_id")
+                or source_rollout.get("scenario_eval_run_id"),
+                "scenario_variation_instance_id": source_rollout.get(
+                    "scenario_variation_instance_id"
+                ),
+                "task_id": source_rollout.get("task_id"),
+                "scenario_id": source_rollout.get("scenario_id"),
+                "policy_id": source_label.get("policy_id") or source_rollout.get("policy_id"),
+                "failure_mode_ids": failure_mode_ids,
+                "failure_reason": _string(source_label.get("rationale")) or None,
+                "source": "wam_success_labels",
+                "evidence_refs": evidence_refs,
+                "source_trace_refs": source_trace_refs,
+                "frame_or_clip_refs": frame_refs,
+                "visual_smoke_ref": str(output_dir / "wam_generated_rollout_visual_smoke.json"),
+                "confidence": source_label.get("confidence"),
+                "status": "review_required",
+                "review_status": review_status,
+                "reviewer_acceptance_required": True,
+                "root_cause_category": root_cause_category,
+                "remediation_candidate": _failure_remediation_candidate(
+                    root_cause_category,
+                    failure_mode_ids,
+                ),
+                "unknown_when_evidence_weak": bool(
+                    not frame_refs or review_status == "non_reviewable_failure_hypothesis"
+                ),
+                "non_reviewable_failure_hypothesis": (
+                    review_status == "non_reviewable_failure_hypothesis"
+                ),
+                "visual_smoke_status": visual_smoke_status,
+                "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+                "visual_review_blockers": visual_review_blockers,
+                "review_grade_failure_diagnosis": bool(
+                    visual_rollout_useful
+                    and review_status != "non_reviewable_failure_hypothesis"
+                ),
+                "authoritative_failure_diagnosis": False,
+                "generated_wam_rollout": True,
+                "model_derived_support_artifact": True,
+                "proof_effect": FAILURE_LABEL_PROOF_EFFECT,
+            }
+        )
+    if rollouts and not rows and not visual_rollout_useful:
+        visual_blockers = visual_review_blockers or _string_list(blockers)
+        for index, source_rollout in enumerate(rollouts, start=1):
+            frame_refs = _failure_frame_or_clip_refs(source_rollout)
+            source_trace_refs = _dedupe_refs(
+                [
+                    str(output_dir / "wam_generated_rollout_results.json"),
+                    str(output_dir / "wam_generated_rollout_visual_smoke.json"),
+                    str(output_dir / "wam_evaluator_trace_binding.json"),
+                ]
+            )
+            failure_mode_ids = ["generated_rollout_visual_quality_not_reviewable"]
+            root_cause_category = _failure_root_cause_category(
+                failure_mode_ids,
+                failure_reason=";".join(visual_blockers),
+            )
+            evidence_refs = _failure_evidence_refs(
+                source_rollout,
+                extra_refs=tuple([*source_trace_refs, *frame_refs]),
+            )
+            rows.append(
+                {
+                    "label_id": f"wam_nonreviewable_failure_hypothesis_{index:04d}",
+                    "attempt_id": source_rollout.get("attempt_id"),
+                    "rollout_id": source_rollout.get("rollout_id"),
+                    "scenario_eval_run_id": source_rollout.get("scenario_eval_run_id"),
+                    "scenario_variation_instance_id": source_rollout.get(
+                        "scenario_variation_instance_id"
+                    ),
+                    "task_id": source_rollout.get("task_id"),
+                    "scenario_id": source_rollout.get("scenario_id"),
+                    "policy_id": source_rollout.get("policy_id"),
+                    "failure_mode_ids": failure_mode_ids,
+                    "failure_reason": "generated_rollout_visual_smoke_failed",
+                    "source": "wam_generated_rollout_visual_smoke",
+                    "evidence_refs": evidence_refs,
+                    "source_trace_refs": source_trace_refs,
+                    "frame_or_clip_refs": frame_refs,
+                    "visual_smoke_ref": str(output_dir / "wam_generated_rollout_visual_smoke.json"),
+                    "confidence": None,
+                    "status": "review_required",
+                    "review_status": "non_reviewable_failure_hypothesis",
+                    "reviewer_acceptance_required": True,
+                    "root_cause_category": root_cause_category,
+                    "remediation_candidate": _failure_remediation_candidate(
+                        root_cause_category,
+                        failure_mode_ids,
+                    ),
+                    "unknown_when_evidence_weak": True,
+                    "non_reviewable_failure_hypothesis": True,
+                    "visual_smoke_status": visual_smoke_status,
+                    "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+                    "visual_review_blockers": visual_blockers,
+                    "review_grade_failure_diagnosis": False,
+                    "authoritative_failure_diagnosis": False,
+                    "blockers": visual_blockers,
+                    "generated_wam_rollout": True,
+                    "model_derived_support_artifact": True,
+                    "proof_effect": FAILURE_LABEL_PROOF_EFFECT,
+                }
+            )
+    coverage_complete = all(
+        row.get("failure_mode_ids") and row.get("evidence_refs") and row.get("review_status")
+        for row in rows
+    )
+    nonreviewable_label_ids = [
+        _string(row.get("label_id"))
+        for row in rows
+        if row.get("review_status") == "non_reviewable_failure_hypothesis"
+    ]
+    failure_diagnosis_blockers: list[str] = []
+    if rows and not coverage_complete:
+        failure_diagnosis_blockers.append("failure_diagnosis_coverage_incomplete")
+    if rows and not visual_rollout_useful:
+        failure_diagnosis_blockers.extend(
+            visual_review_blockers or ["generated_rollout_visual_smoke_missing_or_failed"]
+        )
+        failure_diagnosis_blockers.append(
+            "failure_diagnosis_blocked_by_generated_rollout_visual_quality"
+        )
+    if nonreviewable_label_ids:
+        failure_diagnosis_blockers.append("failure_labels_nonreviewable_failure_hypotheses")
+    failure_diagnosis_blockers = _dedupe_refs(failure_diagnosis_blockers)
+    failure_diagnosis_complete = bool(
+        coverage_complete
+        and not nonreviewable_label_ids
+        and (visual_rollout_useful or not rows)
+    )
+    review_grade_failure_diagnosis = bool(
+        rows and failure_diagnosis_complete and visual_rollout_useful
+    )
+    return {
+        "schema_version": "wam_generated_rollout_failure_labels.v1",
+        "generated_at": generated_at,
+        "status": "review_required"
+        if rows
+        else "blocked"
+        if blockers
+        else "no_failures_labeled",
+        "visual_smoke_status": visual_smoke_status,
+        "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+        "visual_review_blockers": visual_review_blockers,
+        "review_grade_failure_diagnosis": review_grade_failure_diagnosis,
+        "authoritative_failure_diagnosis": False,
+        "label_count": len(rows),
+        "failed_attempt_count": len(rows),
+        "failed_run_label_coverage_complete": coverage_complete,
+        "failure_diagnosis_coverage_complete": coverage_complete,
+        "failure_diagnosis_review_complete": not nonreviewable_label_ids,
+        "failure_diagnosis_complete": failure_diagnosis_complete,
+        "failure_diagnosis_blockers": failure_diagnosis_blockers,
+        "nonreviewable_failure_hypothesis_label_ids": nonreviewable_label_ids,
+        "blockers": _dedupe_refs([*blockers, *failure_diagnosis_blockers]),
+        "labels": rows,
+        "claim_boundary": {
+            "failure_labels_are_generated_rollout_support_artifacts": True,
+            "visual_smoke_required_for_review_grade_failure_diagnosis": True,
+            "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+            "review_grade_failure_diagnosis": review_grade_failure_diagnosis,
+            "failure_labels_do_not_prove_physical_robot_readiness": True,
+            "proof_effect": FAILURE_LABEL_PROOF_EFFECT,
         },
     }
 
@@ -4339,6 +4602,8 @@ def run_oscar_cosmos_wam_evaluator(
             command_payload=success_label_command_payload,
             rollouts=rollouts,
             generated_at=generated,
+            visual_smoke_status=visual_smoke_status,
+            visual_rollout_useful=visual_rollout_useful,
         )
         success_label_blockers = _string_list(success_labels.get("blockers"))
     else:
@@ -4347,6 +4612,10 @@ def run_oscar_cosmos_wam_evaluator(
             "generated_at": generated,
             "status": "blocked" if not rollouts or not visual_rollout_useful else "requires_review",
             "wam_success_label_from_generated_video": False,
+            "visual_smoke_status": visual_smoke_status,
+            "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+            "review_grade_visual_evidence_available": visual_rollout_useful,
+            "review_grade_success_labels": False,
             "label_count": 0,
             "labels": [],
             "blockers": success_label_blockers,
@@ -4354,6 +4623,8 @@ def run_oscar_cosmos_wam_evaluator(
             "human_review_required": bool(rollouts and visual_rollout_useful),
             "claim_boundary": {
                 "success_label_is_from_generated_video_not_physical_robot": True,
+                "success_label_requires_passed_visual_smoke": True,
+                "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
                 "success_label_does_not_prove_forward_inverse_consistency": True,
                 "raw_credentials_written_to_artifacts": False,
                 "secret_hashes_written_to_artifacts": False,
@@ -4489,6 +4760,18 @@ def run_oscar_cosmos_wam_evaluator(
     forward_inverse_scorer_ran = bool(consistency.get("external_episode_consistency_scorer_ran"))
 
     write_json(output_dir / "wam_success_labels.json", success_labels)
+    generated_failure_labels = _generated_rollout_failure_labels(
+        rollouts=rollouts,
+        success_labels=success_labels,
+        visual_smoke=visual_smoke,
+        visual_rollout_useful=visual_rollout_useful,
+        generated_at=generated,
+        output_dir=output_dir,
+        blockers=visual_quality_blockers
+        if rollouts and not visual_rollout_useful
+        else success_label_blockers,
+    )
+    write_json(output_dir / "failure_labels.json", generated_failure_labels)
 
     scored_labels = [
         row for row in success_labels.get("labels", []) or [] if isinstance(row, Mapping)
@@ -4507,6 +4790,16 @@ def run_oscar_cosmos_wam_evaluator(
         else "requires_review",
         "policy_count": len({row.get("policy_id") for row in rollouts if row.get("policy_id")}),
         "generated_rollout_count": len(rollouts),
+        "visual_smoke_status": visual_smoke_status,
+        "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+        "visual_review_blockers": visual_quality_blockers,
+        "review_grade_success_labels": bool(success_label_generated and visual_rollout_useful),
+        "review_grade_policy_ranking": bool(success_label_generated and visual_rollout_useful),
+        "review_grade_policy_ranking_status": "completed"
+        if success_label_generated and visual_rollout_useful
+        else "blocked_visual_review_required"
+        if rollouts and not visual_rollout_useful
+        else "requires_review",
         "success_label_count": len(scored_labels),
         "success_count": success_count,
         "failure_count": failure_count,
@@ -4532,6 +4825,8 @@ def run_oscar_cosmos_wam_evaluator(
         ),
         "claim_boundary": {
             "score_source_is_generated_video_judge": success_label_generated,
+            "visual_smoke_required_for_review_grade_policy_ranking": True,
+            "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
             "lightweight_state_proxy_does_not_prove_task_success": True,
             "score_does_not_prove_physical_robot_readiness": True,
             "score_does_not_prove_forward_inverse_consistency": True,
@@ -4732,6 +5027,17 @@ def run_oscar_cosmos_wam_evaluator(
         "why_wam_success_label_not_run": []
         if success_label_generated
         else success_label_blockers,
+        "failure_diagnosis_status": generated_failure_labels.get("status"),
+        "failure_diagnosis_coverage_complete": bool(
+            generated_failure_labels.get("failure_diagnosis_coverage_complete")
+        ),
+        "failure_diagnosis_complete": bool(
+            generated_failure_labels.get("failure_diagnosis_complete")
+        ),
+        "failure_diagnosis_blockers": _string_list(
+            generated_failure_labels.get("failure_diagnosis_blockers")
+        ),
+        "failure_labels": str(output_dir / "failure_labels.json"),
         "forward_inverse_consistency_proven": forward_inverse_consistency_proven,
         "forward_inverse_consistency_blockers": _string_list(consistency.get("blockers")),
         "external_episode_consistency_scorer_blocked_by_visual_quality": bool(
@@ -4810,6 +5116,7 @@ def run_oscar_cosmos_wam_evaluator(
                 "wam_episode_consistency_request",
                 "wam_consistency_checks",
                 "wam_success_labels",
+                "failure_labels",
                 "wam_policy_scorecard",
                 "wam_prediction_outcome_correlation_ledger",
                 "wam_policy_requery_manifest",
@@ -4997,6 +5304,17 @@ def run_oscar_cosmos_wam_evaluator(
         "wam_success_label_judge_configured": success_label_judge_configured,
         "wam_success_label_judge_ran": success_label_judge_ran,
         "wam_success_label_requires_generated_rollout": True,
+        "failure_diagnosis_status": generated_failure_labels.get("status"),
+        "failure_diagnosis_coverage_complete": bool(
+            generated_failure_labels.get("failure_diagnosis_coverage_complete")
+        ),
+        "failure_diagnosis_complete": bool(
+            generated_failure_labels.get("failure_diagnosis_complete")
+        ),
+        "failure_diagnosis_blockers": _string_list(
+            generated_failure_labels.get("failure_diagnosis_blockers")
+        ),
+        "failure_labels": str(output_dir / "failure_labels.json"),
         "generated_rollout_visual_smoke_status": visual_smoke_status,
         "generated_rollout_visually_useful_for_success_review": visual_rollout_useful,
         "single_step_policy_requery_frame_useful": single_step_policy_requery_frame_useful,
@@ -5180,6 +5498,16 @@ def run_oscar_cosmos_wam_evaluator(
         "wam_success_label_from_generated_video": success_label_generated,
         "wam_success_label_judge_configured": success_label_judge_configured,
         "wam_success_label_judge_ran": success_label_judge_ran,
+        "failure_diagnosis_status": generated_failure_labels.get("status"),
+        "failure_diagnosis_coverage_complete": bool(
+            generated_failure_labels.get("failure_diagnosis_coverage_complete")
+        ),
+        "failure_diagnosis_complete": bool(
+            generated_failure_labels.get("failure_diagnosis_complete")
+        ),
+        "failure_diagnosis_blockers": _string_list(
+            generated_failure_labels.get("failure_diagnosis_blockers")
+        ),
         "wam_generated_rollout_visual_smoke_status": visual_smoke_status,
         "generated_rollout_visually_useful_for_success_review": visual_rollout_useful,
         "single_step_policy_requery_frame_useful": single_step_policy_requery_frame_useful,
@@ -5210,6 +5538,7 @@ def run_oscar_cosmos_wam_evaluator(
             ),
             "wam_consistency_checks": str(output_dir / "wam_consistency_checks.json"),
             "wam_success_labels": str(output_dir / "wam_success_labels.json"),
+            "failure_labels": str(output_dir / "failure_labels.json"),
             "wam_policy_scorecard": str(output_dir / "wam_policy_scorecard.json"),
             "wam_prediction_outcome_correlation_ledger": str(
                 output_dir / "wam_prediction_outcome_correlation_ledger.json"

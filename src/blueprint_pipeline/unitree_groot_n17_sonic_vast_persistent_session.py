@@ -38,6 +38,15 @@ from .vast_provider_adapter import (
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
 from .wam_provider_object_store import stage_wam_provider_bundle_object_store
 from .runpod_wam_async_runner import create_runpod_wam_async_run, poll_runpod_wam_async_run
+from .image_model_render_remediation import (
+    ENABLE_ENV as IMAGE_MODEL_RENDER_REMEDIATION_ENABLE_ENV,
+    image_model_render_remediation_enabled,
+    run_image_model_render_remediation,
+)
+from .wam_auxiliary_observation import (
+    build_wam_auxiliary_observation_manifest,
+    summarize_wam_auxiliary_observation_manifest,
+)
 from .wam_generated_video_review import (
     REVIEW_QUALITY_MIN_FPS,
     REVIEW_QUALITY_MIN_HEIGHT,
@@ -65,9 +74,32 @@ PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV = (
 RUNPOD_FULL_LOOP_OVERRIDE_ENV = "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
 OSCAR_WAM_VISUAL_PROFILE_ENV = "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE"
 PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_ENV = "BLUEPRINT_ALLOW_PERSISTENT_WAM_LONG_REVIEW_ROLLOUT"
+PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV = (
+    "BLUEPRINT_PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST"
+)
+PERSISTENT_WAM_SHORT_VISUAL_SANITY_SCHEMA_VERSION = "persistent_wam_short_visual_sanity.v1"
+PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_WIDTH = 320
+PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_HEIGHT = 256
 PERSISTENT_WAM_REVIEW_QUALITY_MAX_UNGATED_LOOP_STEPS_ENV = (
     "BLUEPRINT_PERSISTENT_WAM_REVIEW_QUALITY_MAX_UNGATED_LOOP_STEPS"
 )
+PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_ENV = (
+    "BLUEPRINT_PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_STEPS"
+)
+PERSISTENT_WAM_AUTOREGRESSIVE_DRIFT_BLOCKER_MANIFEST_ENV = (
+    "BLUEPRINT_PERSISTENT_WAM_AUTOREGRESSIVE_DRIFT_BLOCKER_MANIFEST"
+)
+PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_MIN_STEPS = 12
+PERSISTENT_WAM_LONG_REVIEW_QUALITY_GATE_SCHEMA_VERSION = (
+    "persistent_wam_long_review_rollout_quality_gate.v1"
+)
+SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT_ENV = (
+    "BLUEPRINT_ALLOW_SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT"
+)
+SYNTHETIC_FALLBACK_WAM_SOURCE_KINDS = {
+    "synthetic_fallback",
+    "synthetic_gpt_image_2_seed",
+}
 DEFAULT_INNER_POLICY_COMMAND = (
     "python -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
 )
@@ -178,11 +210,337 @@ def _current_wam_visual_profile_settings() -> dict[str, Any]:
     }
 
 
+def _resolve_optional_path(value: Any) -> Path | None:
+    text = _string(value)
+    return Path(text).expanduser().resolve() if text else None
+
+
+def _existing_artifact_path_blocker(
+    payload: Mapping[str, Any],
+    key: str,
+    blocker: str,
+) -> str | None:
+    path = _resolve_optional_path(payload.get(key))
+    if path is None or not path.is_file():
+        return blocker
+    return None
+
+
+def _first_ffprobe_video_stream(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    streams = metadata.get("streams")
+    if not isinstance(streams, Sequence) or isinstance(streams, (str, bytes, bytearray)):
+        return {}
+    for stream in streams:
+        if isinstance(stream, Mapping):
+            return dict(stream)
+    return {}
+
+
+def _intish(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def validate_persistent_wam_short_visual_sanity_manifest(
+    path: str | Path | None,
+    *,
+    policy_observation_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Validate the short review-quality sanity pass required before long WAM rollouts."""
+    manifest_path = _resolve_optional_path(path)
+    blockers: list[str] = []
+    payload: dict[str, Any] = {}
+    if manifest_path is None:
+        blockers.append("short_visual_sanity_manifest_env_missing")
+    elif not manifest_path.is_file():
+        blockers.append("short_visual_sanity_manifest_missing")
+    else:
+        try:
+            payload = _read_json(manifest_path)
+        except Exception as exc:
+            blockers.append(f"short_visual_sanity_manifest_unreadable:{type(exc).__name__}")
+            payload = {}
+
+    if payload:
+        if payload.get("schema_version") != PERSISTENT_WAM_SHORT_VISUAL_SANITY_SCHEMA_VERSION:
+            blockers.append("short_visual_sanity_manifest_schema_mismatch")
+        if payload.get("status") != "passed_short_visual_sanity":
+            blockers.append("short_visual_sanity_status_not_passed")
+        if payload.get("short_visual_sanity_passed") is not True:
+            blockers.append("short_visual_sanity_pass_flag_missing")
+        if payload.get("visual_profile") != "review_quality":
+            blockers.append("short_visual_sanity_not_review_quality_profile")
+        try:
+            requested_transition_count = int(payload.get("requested_transition_count") or 0)
+        except (TypeError, ValueError):
+            requested_transition_count = 0
+        if requested_transition_count not in {1, 2}:
+            blockers.append("short_visual_sanity_transition_count_not_1_or_2")
+        try:
+            live_wam_generation_success_count = int(
+                payload.get("live_wam_generation_success_count") or 0
+            )
+        except (TypeError, ValueError):
+            live_wam_generation_success_count = 0
+        try:
+            learned_wam_model_success_count = int(
+                payload.get("learned_wam_model_success_count") or 0
+            )
+        except (TypeError, ValueError):
+            learned_wam_model_success_count = 0
+        if live_wam_generation_success_count < requested_transition_count:
+            blockers.append("short_visual_sanity_live_wam_transition_count_not_passed")
+        if learned_wam_model_success_count < requested_transition_count:
+            blockers.append("short_visual_sanity_learned_wam_transition_count_not_passed")
+        if payload.get("structural_fallback_used") is True:
+            blockers.append("short_visual_sanity_structural_fallback_cannot_unlock_long_rollout")
+        if (
+            payload.get("source_policy_observation_visual_qa_status")
+            != "passed_visual_quality_gate"
+        ):
+            blockers.append("short_visual_sanity_source_observation_qa_not_passed")
+        if payload.get("wam_rollout_visual_success") is not True:
+            blockers.append("short_visual_sanity_wam_visual_success_not_passed")
+        if payload.get("ffprobe_command_ran") is not True:
+            blockers.append("short_visual_sanity_ffprobe_command_not_ran")
+        ffprobe_returncode = _intish(payload.get("ffprobe_returncode"))
+        if ffprobe_returncode != 0:
+            blockers.append("short_visual_sanity_ffprobe_returncode_not_zero")
+        ffprobe_metadata = _mapping(payload.get("ffprobe_metadata"))
+        if not ffprobe_metadata:
+            blockers.append("short_visual_sanity_ffprobe_metadata_missing")
+        else:
+            stream = _first_ffprobe_video_stream(ffprobe_metadata)
+            width = _intish(stream.get("width")) or 0
+            height = _intish(stream.get("height")) or 0
+            if (
+                width < PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_WIDTH
+                or height < PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_HEIGHT
+            ):
+                blockers.append("short_visual_sanity_review_video_below_minimum_resolution")
+        for key, blocker in (
+            (
+                "source_policy_observation_visual_qa_path",
+                "short_visual_sanity_source_qa_artifact_missing",
+            ),
+            (
+                "wam_rollout_visual_quality_report_path",
+                "short_visual_sanity_quality_report_missing",
+            ),
+            ("wam_rollout_contact_sheet_path", "short_visual_sanity_contact_sheet_missing"),
+            ("video_review_status_path", "short_visual_sanity_video_status_missing"),
+            ("review_video_path", "short_visual_sanity_review_video_missing"),
+        ):
+            artifact_blocker = _existing_artifact_path_blocker(payload, key, blocker)
+            if artifact_blocker:
+                blockers.append(artifact_blocker)
+        if policy_observation_path is not None:
+            expected = Path(policy_observation_path).expanduser().resolve()
+            observed = _resolve_optional_path(payload.get("policy_observation_path"))
+            if observed != expected:
+                blockers.append("short_visual_sanity_policy_observation_mismatch")
+        paid_provider = _mapping(payload.get("paid_provider"))
+        if paid_provider.get("used") is True:
+            if paid_provider.get("continuing_spend_from_this_run") is not False:
+                blockers.append("short_visual_sanity_paid_provider_teardown_not_zero_spend")
+            if paid_provider.get("teardown_status") not in {
+                "completed",
+                "not_required_prelaunch_blocked",
+                "not_required_no_paid_provider",
+            }:
+                blockers.append("short_visual_sanity_paid_provider_teardown_status_not_completed")
+            teardown_path = _resolve_optional_path(paid_provider.get("teardown_manifest_path"))
+            if teardown_path is None or not teardown_path.is_file():
+                blockers.append("short_visual_sanity_paid_provider_teardown_manifest_missing")
+
+    return {
+        "schema_version": "persistent_wam_short_visual_sanity_gate_validation.v1",
+        "status": "passed_short_visual_sanity" if not blockers else "blocked",
+        "manifest_path": str(manifest_path) if manifest_path else None,
+        "blockers": sorted(set(blockers)),
+        "short_visual_sanity_passed": not blockers,
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+
+
+def validate_persistent_wam_autoregressive_drift_blocker(
+    path: str | Path | None,
+) -> dict[str, Any]:
+    """Validate a prior visual report that proves long autoregressive drift."""
+    manifest_path = _resolve_optional_path(path)
+    blockers: list[str] = []
+    payload: dict[str, Any] = {}
+    if manifest_path is None:
+        blockers.append("autoregressive_drift_blocker_manifest_env_missing")
+    elif not manifest_path.is_file():
+        blockers.append("autoregressive_drift_blocker_manifest_missing")
+    else:
+        try:
+            payload = _read_json(manifest_path)
+        except Exception as exc:
+            blockers.append(f"autoregressive_drift_blocker_manifest_unreadable:{type(exc).__name__}")
+            payload = {}
+
+    concrete_drift_blocker = False
+    if payload:
+        report_blockers = {str(item) for item in payload.get("blockers") or [] if str(item)}
+        guard = _mapping(payload.get("autoregressive_chain_guard"))
+        try:
+            generated_frame_count = int(
+                payload.get("generated_frame_count") or guard.get("generated_frame_count") or 0
+            )
+        except (TypeError, ValueError):
+            generated_frame_count = 0
+        concrete_drift_blocker = bool(
+            payload.get("visual_success") is False
+            and generated_frame_count >= 3
+            and (
+                "autoregressive_chain_visual_drift_or_quality_blocked_long_rollout"
+                in report_blockers
+                or guard.get("long_horizon_visual_drift_blocker") is True
+                or guard.get("long_rollout_should_not_be_overclaimed") is True
+            )
+        )
+        if payload.get("visual_success") is not False:
+            blockers.append("autoregressive_drift_blocker_visual_success_not_false")
+        if generated_frame_count < 3:
+            blockers.append("autoregressive_drift_blocker_needs_multi_transition_evidence")
+        if not concrete_drift_blocker:
+            blockers.append("autoregressive_drift_blocker_not_concrete")
+
+    return {
+        "schema_version": "persistent_wam_autoregressive_drift_blocker_validation.v1",
+        "status": "confirmed_autoregressive_drift_blocker"
+        if payload and concrete_drift_blocker and not blockers
+        else "blocked",
+        "manifest_path": str(manifest_path) if manifest_path else None,
+        "concrete_autoregressive_drift_blocker_proven": bool(
+            payload and concrete_drift_blocker and not blockers
+        ),
+        "blockers": sorted(set(blockers)),
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+
+
+def _clean_frame_reanchoring_settings(
+    *,
+    loop_step_count: int,
+    max_unanchored_steps: int,
+) -> dict[str, Any]:
+    interval = _int_env(PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_ENV, 0)
+    enabled = interval > 0
+    blockers: list[str] = []
+    expected_reanchors: list[int] = []
+    if enabled:
+        if interval > max(1, int(max_unanchored_steps)):
+            blockers.append("clean_frame_reanchor_interval_exceeds_short_sanity_horizon")
+        expected_reanchors = [
+            transition_index
+            for transition_index in range(interval, max(1, int(loop_step_count)), interval)
+        ]
+        if not expected_reanchors:
+            blockers.append("clean_frame_reanchor_interval_produces_no_pre_final_reanchor")
+    return {
+        "schema_version": "persistent_wam_clean_frame_reanchoring.v1",
+        "enabled": bool(enabled),
+        "interval_steps": int(interval) if enabled else None,
+        "max_unanchored_autoregressive_steps": int(max_unanchored_steps),
+        "source_frame_kind": "initial_policy_observation_clean_frame",
+        "reanchor_policy": (
+            "reset_policy_observation_frame_after_completed_transition"
+            if enabled
+            else "disabled"
+        ),
+        "expected_reanchor_transition_indices": expected_reanchors,
+        "periodic_clean_frame_reanchoring_proven": bool(enabled and not blockers),
+        "blockers": sorted(set(blockers)),
+    }
+
+
+def _persistent_wam_long_review_rollout_quality_gate(
+    *,
+    settings: Mapping[str, Any],
+    loop_step_count: int,
+) -> dict[str, Any]:
+    max_unanchored_steps = _int_env(
+        PERSISTENT_WAM_REVIEW_QUALITY_MAX_UNGATED_LOOP_STEPS_ENV,
+        3,
+    )
+    reanchoring = _clean_frame_reanchoring_settings(
+        loop_step_count=loop_step_count,
+        max_unanchored_steps=max_unanchored_steps,
+    )
+    required = bool(
+        settings.get("visual_profile") == "review_quality"
+        and int(loop_step_count) >= PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_MIN_STEPS
+    )
+    drift_validation = validate_persistent_wam_autoregressive_drift_blocker(
+        os.getenv(PERSISTENT_WAM_AUTOREGRESSIVE_DRIFT_BLOCKER_MANIFEST_ENV)
+    )
+    blockers: list[str] = []
+    status = "not_required"
+    paid_launch_allowed = True
+    if required:
+        if reanchoring.get("periodic_clean_frame_reanchoring_proven") is True:
+            status = "passed_periodic_clean_frame_reanchoring"
+        elif drift_validation.get("status") == "confirmed_autoregressive_drift_blocker":
+            status = "blocked_autoregressive_drift_confirmed"
+            paid_launch_allowed = False
+            blockers.append(
+                "autoregressive_chain_drift_blocker_present_before_12_step_paid_rollout"
+            )
+        else:
+            status = "blocked_missing_long_rollout_quality_proof"
+            paid_launch_allowed = False
+            blockers.append(
+                "review_quality_12_step_paid_rollout_requires_clean_frame_reanchoring_or_drift_blocker"
+            )
+            blockers.extend(str(item) for item in reanchoring.get("blockers") or [])
+            blockers.extend(str(item) for item in drift_validation.get("blockers") or [])
+
+    return {
+        "schema_version": PERSISTENT_WAM_LONG_REVIEW_QUALITY_GATE_SCHEMA_VERSION,
+        "status": status,
+        "required_before_12_step_paid_review_quality_rollout": required,
+        "visual_profile": settings.get("visual_profile"),
+        "loop_step_count": int(loop_step_count),
+        "min_long_review_rollout_steps": PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_MIN_STEPS,
+        "paid_rollout_launch_allowed": bool(paid_launch_allowed and not blockers),
+        "clean_frame_reanchoring": reanchoring,
+        "drift_blocker_validation": drift_validation,
+        "periodic_clean_frame_reanchoring_proven": bool(
+            reanchoring.get("periodic_clean_frame_reanchoring_proven")
+        ),
+        "concrete_autoregressive_drift_blocker_proven": bool(
+            drift_validation.get("concrete_autoregressive_drift_blocker_proven")
+        ),
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": {
+            "clean_frame_reanchoring_is_quality_control_not_task_success": True,
+            "autoregressive_drift_blocker_prevents_paid_long_rollout": bool(
+                status == "blocked_autoregressive_drift_confirmed"
+            ),
+            "long_rollout_quality_gate_is_not_physical_robot_readiness": True,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "real_world_manipulation_success_proven": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+
+
 def _persistent_wam_visual_profile_blockers(
     *,
     settings: Mapping[str, Any],
     source_visual_qa: Mapping[str, Any],
     loop_step_count: int,
+    policy_observation_path: str | Path | None = None,
 ) -> list[str]:
     blockers: list[str] = []
     if settings.get("visual_profile") != "review_quality":
@@ -198,11 +556,173 @@ def _persistent_wam_visual_profile_blockers(
     if int(settings.get("num_frames") or 0) < REVIEW_QUALITY_MIN_NUM_FRAMES:
         blockers.append("review_quality_profile_num_frames_below_minimum")
     max_ungated_steps = _int_env(PERSISTENT_WAM_REVIEW_QUALITY_MAX_UNGATED_LOOP_STEPS_ENV, 3)
-    if loop_step_count > max_ungated_steps and not _truthy(
-        os.getenv(PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_ENV)
-    ):
-        blockers.append("review_quality_long_rollout_requires_passed_short_visual_sanity")
+    if loop_step_count > max_ungated_steps:
+        validation = validate_persistent_wam_short_visual_sanity_manifest(
+            os.getenv(PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV),
+            policy_observation_path=policy_observation_path,
+        )
+        if validation.get("status") != "passed_short_visual_sanity":
+            blockers.append("review_quality_long_rollout_requires_passed_short_visual_sanity")
+            blockers.extend(str(item) for item in validation.get("blockers") or [])
+            if _truthy(os.getenv(PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_ENV)):
+                blockers.append(
+                    "review_quality_long_rollout_env_override_requires_short_visual_sanity_manifest"
+                )
     return sorted(set(blockers))
+
+
+def _policy_observation_source_kind(observation: Mapping[str, Any]) -> str:
+    visual = _mapping(observation.get("visual_observation"))
+    provenance = _mapping(observation.get("provenance"))
+    source_candidate = _mapping(observation.get("source_candidate"))
+    for value in (
+        observation.get("source_kind"),
+        observation.get("selection_source_kind"),
+        visual.get("source_kind"),
+        provenance.get("source_kind"),
+        source_candidate.get("source_kind"),
+    ):
+        text = _string(value)
+        if text:
+            return text
+    claim_boundary = {
+        **_mapping(visual.get("claim_boundary")),
+        **_mapping(observation.get("claim_boundary")),
+    }
+    if (
+        visual.get("synthetic_fallback") is True
+        or provenance.get("synthetic_fallback") is True
+        or claim_boundary.get("selected_synthetic_fallback") is True
+    ):
+        return "synthetic_fallback"
+    return ""
+
+
+def _policy_observation_truth_value(
+    observation: Mapping[str, Any],
+    *,
+    key: str,
+    default: bool = False,
+) -> bool:
+    visual = _mapping(observation.get("visual_observation"))
+    provenance = _mapping(observation.get("provenance"))
+    claim_boundary = {
+        **_mapping(visual.get("claim_boundary")),
+        **_mapping(observation.get("claim_boundary")),
+    }
+    for container in (claim_boundary, visual, provenance, observation):
+        if key in container:
+            return bool(container.get(key))
+    return default
+
+
+def _synthetic_fallback_wam_launch_gate(
+    *,
+    observation: Mapping[str, Any],
+    original_source_kind: str,
+    visual_profile: str,
+    use_live_wam: bool,
+) -> dict[str, Any]:
+    effective_source_kind = _policy_observation_source_kind(observation)
+    source_kinds = [
+        source_kind
+        for source_kind in (original_source_kind, effective_source_kind)
+        if source_kind
+    ]
+    visual = _mapping(observation.get("visual_observation"))
+    provenance = _mapping(observation.get("provenance"))
+    claim_boundary = {
+        **_mapping(visual.get("claim_boundary")),
+        **_mapping(observation.get("claim_boundary")),
+    }
+    synthetic_fallback_used = bool(
+        any(source_kind in SYNTHETIC_FALLBACK_WAM_SOURCE_KINDS for source_kind in source_kinds)
+        or visual.get("synthetic_fallback") is True
+        or provenance.get("synthetic_fallback") is True
+        or claim_boundary.get("selected_synthetic_fallback") is True
+    )
+    launch_path = bool(use_live_wam or visual_profile == "review_quality")
+    env_enabled = _truthy(os.getenv(SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT_ENV))
+    blockers: list[str] = []
+    if synthetic_fallback_used and launch_path and not env_enabled:
+        blockers.append(
+            "synthetic_fallback_live_or_review_wam_launch_requires_experimental_env"
+        )
+    return {
+        "schema_version": "synthetic_fallback_wam_launch_gate.v1",
+        "synthetic_fallback_initial_observation_used": synthetic_fallback_used,
+        "original_source_kind": original_source_kind or None,
+        "effective_source_kind": effective_source_kind or None,
+        "source_kinds": sorted(set(source_kinds)),
+        "launch_path_requires_gate": launch_path,
+        "use_live_wam": bool(use_live_wam),
+        "visual_profile": visual_profile,
+        "experimental_env": SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT_ENV,
+        "experimental_env_enabled": env_enabled,
+        "capture_truth": False
+        if synthetic_fallback_used
+        else _policy_observation_truth_value(observation, key="capture_truth"),
+        "geometry_truth": False
+        if synthetic_fallback_used
+        else _policy_observation_truth_value(observation, key="geometry_truth"),
+        "collision_truth": False,
+        "provider_success_separate_from_visually_useful_rollout": True,
+        "visually_useful_rollout": False,
+        "visually_useful_rollout_pending_review": True,
+        "blockers": blockers,
+    }
+
+
+def _apply_synthetic_fallback_truth_labels(
+    observation: Mapping[str, Any],
+    gate: Mapping[str, Any],
+) -> dict[str, Any]:
+    labeled = json.loads(json.dumps(dict(observation)))
+    if not gate.get("synthetic_fallback_initial_observation_used"):
+        return labeled
+    visual = _mapping(labeled.get("visual_observation"))
+    visual.update(
+        {
+            "capture_truth": False,
+            "geometry_truth": False,
+            "collision_truth": False,
+            "synthetic_fallback_wam_launch_experiment_env": gate.get("experimental_env"),
+            "synthetic_fallback_wam_launch_experiment_enabled": bool(
+                gate.get("experimental_env_enabled")
+            ),
+        }
+    )
+    labeled["visual_observation"] = visual
+    provenance = _mapping(labeled.get("provenance"))
+    provenance.update(
+        {
+            "capture_truth": False,
+            "geometry_truth": False,
+            "collision_truth": False,
+            "synthetic_fallback_wam_launch_experiment_enabled": bool(
+                gate.get("experimental_env_enabled")
+            ),
+        }
+    )
+    labeled["provenance"] = provenance
+    claim_boundary = _mapping(labeled.get("claim_boundary"))
+    claim_boundary.update(
+        {
+            "synthetic_fallback_initial_observation_used": True,
+            "synthetic_fallback_wam_launch_experiment_env": gate.get("experimental_env"),
+            "synthetic_fallback_wam_launch_experiment_enabled": bool(
+                gate.get("experimental_env_enabled")
+            ),
+            "capture_truth": False,
+            "geometry_truth": False,
+            "collision_truth": False,
+            "provider_success_separate_from_visually_useful_rollout": True,
+            "visually_useful_rollout": False,
+            "visual_rollout_quality_must_be_judged_separately": True,
+        }
+    )
+    labeled["claim_boundary"] = claim_boundary
+    return labeled
 
 
 def _machine_ids_from_env(env_names: Sequence[str]) -> list[int]:
@@ -225,7 +745,9 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _load_policy_observation(path: str | Path) -> dict[str, Any]:
     payload = _read_json(Path(path).expanduser())
-    observation = payload.get("observation") if isinstance(payload.get("observation"), Mapping) else payload
+    observation = (
+        payload.get("observation") if isinstance(payload.get("observation"), Mapping) else payload
+    )
     if not isinstance(observation, Mapping):
         raise ValueError("policy_observation_json_must_contain_object")
     return dict(observation)
@@ -247,13 +769,106 @@ def _camera_frame_path(observation: Mapping[str, Any]) -> Path | None:
     return None
 
 
+def _resolve_local_json_path(value: Any, *, base_dir: Path) -> Path | None:
+    text = _string(value)
+    if not text or "://" in text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path
+
+
+def _load_local_json_ref(value: Any, *, base_dir: Path) -> tuple[Any | None, Path | None]:
+    path = _resolve_local_json_path(value, base_dir=base_dir)
+    if path is None or not path.is_file():
+        return None, path
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), path
+    except (OSError, json.JSONDecodeError):
+        return None, path
+
+
+def _policy_observation_semantic_visual_evidence(
+    observation: Mapping[str, Any],
+    *,
+    base_dir: Path,
+) -> dict[str, Any]:
+    visual = _mapping(observation.get("visual_observation"))
+    eval_ready: Any = observation.get("eval_ready_task_grounding") or visual.get(
+        "eval_ready_task_grounding"
+    )
+    eval_ready_path: Path | None = None
+    for key in (
+        "eval_ready_task_grounding_path",
+        "eval_ready_task_grounding_json_path",
+        "task_grounding_path",
+    ):
+        if isinstance(eval_ready, Mapping):
+            break
+        loaded, path = _load_local_json_ref(
+            observation.get(key) or visual.get(key), base_dir=base_dir
+        )
+        if loaded is not None:
+            eval_ready = loaded
+            eval_ready_path = path
+            break
+    if not isinstance(eval_ready, Mapping):
+        for candidate in (
+            base_dir / "eval_ready_task_grounding.json",
+            base_dir / "simulation_automation" / "eval_ready_task_grounding.json",
+            base_dir.parent / "simulation_automation" / "eval_ready_task_grounding.json",
+        ):
+            loaded, path = _load_local_json_ref(str(candidate), base_dir=base_dir)
+            if isinstance(loaded, Mapping):
+                eval_ready = loaded
+                eval_ready_path = path
+                break
+    object_index: Any = observation.get("object_index") or visual.get("object_index")
+    object_index_path: Path | None = None
+    object_index_path_values = [
+        observation.get("object_index_path"),
+        visual.get("object_index_path"),
+        _mapping(eval_ready).get("object_index", {}).get("path")
+        if isinstance(_mapping(eval_ready).get("object_index"), Mapping)
+        else None,
+    ]
+    for value in object_index_path_values:
+        if isinstance(object_index, (Mapping, list)):
+            break
+        loaded, path = _load_local_json_ref(value, base_dir=base_dir)
+        if loaded is not None:
+            object_index = loaded
+            object_index_path = path
+            break
+    if not isinstance(object_index, (Mapping, list)):
+        for candidate in (
+            base_dir / "object_index.json",
+            base_dir / "raw" / "object_index.json",
+            base_dir.parent / "raw" / "object_index.json",
+        ):
+            loaded, path = _load_local_json_ref(str(candidate), base_dir=base_dir)
+            if loaded is not None:
+                object_index = loaded
+                object_index_path = path
+                break
+    artifact_base_dir = object_index_path.parent if object_index_path else base_dir
+    return {
+        "object_index": object_index if isinstance(object_index, (Mapping, list)) else None,
+        "object_index_path": str(object_index_path) if object_index_path else None,
+        "eval_ready_task_grounding": dict(eval_ready) if isinstance(eval_ready, Mapping) else None,
+        "eval_ready_task_grounding_path": str(eval_ready_path) if eval_ready_path else None,
+        "semantic_artifact_base_dir": str(artifact_base_dir),
+    }
+
+
 def _write_executable(path: Path, text: str) -> None:
     ensure_dir(path.parent)
     path.write_text(text, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-PERSISTENT_SESSION_RUNNER = r'''#!/usr/bin/env python3
+PERSISTENT_SESSION_RUNNER = r"""#!/usr/bin/env python3
 from __future__ import annotations
 
 import json
@@ -708,6 +1323,24 @@ class WamWorker(BaseHTTPRequestHandler):
         step_dir = self.output_dir / "wam_worker_steps" / f"step_{step_index:04d}"
         target_frame = self.output_dir / "generated_next_observations" / f"wam_generated_next_observation_step_{step_index:04d}.jpg"
         step_dir.mkdir(parents=True, exist_ok=True)
+        current_policy_observation = _mapping(payload.get("current_policy_observation"))
+        auxiliary_observation = _mapping(current_policy_observation.get("wam_auxiliary_observation"))
+        auxiliary_manifest_path = _string(
+            current_policy_observation.get("wam_auxiliary_observation_manifest_path")
+        ) or _string(
+            _mapping(current_policy_observation.get("visual_observation")).get(
+                "wam_auxiliary_observation_manifest_path"
+            )
+        )
+        if auxiliary_manifest_path and not auxiliary_observation:
+            candidate_auxiliary_path = Path(auxiliary_manifest_path).expanduser()
+            if candidate_auxiliary_path.is_file():
+                try:
+                    auxiliary_observation = json.loads(
+                        candidate_auxiliary_path.read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    auxiliary_observation = {}
         step_input = {
             "schema_version": "wam_generation_step_input.v1",
             "generated_at": payload.get("generated_at"),
@@ -715,7 +1348,9 @@ class WamWorker(BaseHTTPRequestHandler):
             "wam_evaluator_backend": "persistent_oscar_wam_worker",
             "source_policy_observation_frame_path": str(source_frame),
             "source_policy_action": _mapping(payload.get("source_policy_action")),
-            "current_policy_observation": _mapping(payload.get("current_policy_observation")),
+            "current_policy_observation": current_policy_observation,
+            "wam_auxiliary_observation_manifest_path": auxiliary_manifest_path or None,
+            "auxiliary_observation": auxiliary_observation,
             "requested_output": {
                 "next_observation_frame_path": str(target_frame),
                 "action_conditioned_generation_required": True,
@@ -934,7 +1569,12 @@ class WamWorker(BaseHTTPRequestHandler):
             "claim_boundary": {
                 "wam_is_next_observation_generator_not_robot_policy": True,
                 "generated_observation_is_not_raw_capture": True,
+                "capture_truth": False,
+                "geometry_truth": False,
+                "collision_truth": False,
                 "structural_fallback_is_not_live_wam_model": fallback_used,
+                "provider_success_separate_from_visually_useful_rollout": True,
+                "visually_useful_rollout": False,
                 "physical_robot_readiness_proven": False,
                 "deployment_readiness_proven": False,
                 "safety_validation_proven": False,
@@ -995,8 +1635,40 @@ def main() -> int:
         allow_structural_fallback = bool(session_input.get("allow_structural_wam_fallback"))
         timeout_seconds = float(session_input.get("timeout_seconds") or 3600.0)
         initial_frame = runtime_dir / "initial_policy_frame.png"
+        clean_frame_reanchoring = _mapping(session_input.get("clean_frame_reanchoring"))
+        clean_frame_reanchoring_enabled = bool(clean_frame_reanchoring.get("enabled"))
+        try:
+            clean_frame_reanchor_interval = int(
+                clean_frame_reanchoring.get("interval_steps") or 0
+            )
+        except (TypeError, ValueError):
+            clean_frame_reanchor_interval = 0
         visual = _mapping(observation.get("visual_observation"))
         visual["camera_frame_path"] = str(initial_frame)
+        runtime_auxiliary_observation_manifest = runtime_dir / "wam_auxiliary_observation" / "wam_auxiliary_observation_manifest.json"
+        if runtime_auxiliary_observation_manifest.is_file():
+            try:
+                runtime_auxiliary_payload = json.loads(
+                    runtime_auxiliary_observation_manifest.read_text(encoding="utf-8")
+                )
+                if isinstance(runtime_auxiliary_payload, Mapping):
+                    runtime_auxiliary_payload = dict(runtime_auxiliary_payload)
+                    runtime_auxiliary_payload["manifest_path"] = str(
+                        runtime_auxiliary_observation_manifest
+                    )
+                    runtime_auxiliary_payload["source_image_path"] = str(initial_frame)
+                    runtime_auxiliary_payload["source_image_path_exists"] = initial_frame.is_file()
+                    runtime_auxiliary_payload["runtime_paths_rewritten_for_provider_runtime"] = True
+                    _write_json(runtime_auxiliary_observation_manifest, runtime_auxiliary_payload)
+            except Exception:
+                pass
+            visual["wam_auxiliary_observation_manifest_path"] = str(runtime_auxiliary_observation_manifest)
+            observation["wam_auxiliary_observation_manifest_path"] = str(runtime_auxiliary_observation_manifest)
+            auxiliary_summary = _mapping(observation.get("wam_auxiliary_observation"))
+            if auxiliary_summary:
+                auxiliary_summary["manifest_path"] = str(runtime_auxiliary_observation_manifest)
+                auxiliary_summary["runtime_path_rewritten_for_provider_runtime"] = True
+                observation["wam_auxiliary_observation"] = auxiliary_summary
         observation["visual_observation"] = visual
         observation["camera_frame_path"] = str(initial_frame)
 
@@ -1085,6 +1757,7 @@ def main() -> int:
         current_observation = observation
         current_frame = initial_frame
         current_action: dict[str, Any] = {}
+        clean_frame_reanchor_events: list[dict[str, Any]] = []
         blockers: list[str] = []
         for step_index in range(loop_step_count):
             _phase("policy_infer_started", step_index=step_index)
@@ -1136,10 +1809,29 @@ def main() -> int:
             if wam_response.get("status") != "completed":
                 blockers.extend(wam_response.get("blockers") or ["persistent_wam_infer_blocked"])
                 break
-            next_frame = Path(_string(wam_response.get("generated_next_observation_frame_path"))).expanduser()
+            transition_index = step_index + 1
+            next_frame = Path(
+                _string(wam_response.get("generated_next_observation_frame_path"))
+            ).expanduser()
+            clean_frame_reanchor_applied = bool(
+                clean_frame_reanchoring_enabled
+                and clean_frame_reanchor_interval > 0
+                and transition_index % clean_frame_reanchor_interval == 0
+            )
+            next_policy_frame = initial_frame if clean_frame_reanchor_applied else next_frame
+            if clean_frame_reanchor_applied:
+                clean_frame_reanchor_events.append(
+                    {
+                        "transition_index": transition_index,
+                        "generated_next_observation_frame_path": str(next_frame),
+                        "next_policy_observation_frame_path": str(next_policy_frame),
+                        "source_frame_kind": clean_frame_reanchoring.get("source_frame_kind"),
+                        "interval_steps": clean_frame_reanchor_interval,
+                    }
+                )
             generated_observation = {
                 "schema_version": "wam_generated_next_observation.v1",
-                "generated_observation_index": step_index + 1,
+                "generated_observation_index": transition_index,
                 "observation_source": "persistent_wam_worker_next_observation",
                 "wam_evaluator_backend": wam_response.get("wam_evaluator_backend"),
                 "wam_model_checkpoint_used": bool(wam_response.get("wam_model_checkpoint_used")),
@@ -1147,23 +1839,32 @@ def main() -> int:
                 "live_wam_generation_command_ran": bool(wam_response.get("live_wam_generation_command_ran")),
                 "learned_oscar_or_cosmos_model_ran": bool(wam_response.get("learned_oscar_or_cosmos_model_ran")),
                 "generated_next_observation_frame_path": str(next_frame),
+                "next_policy_observation_frame_path": str(next_policy_frame),
+                "clean_frame_reanchor_applied_for_next_policy_call": clean_frame_reanchor_applied,
                 "visual_observation": {
                     **_mapping(current_observation.get("visual_observation")),
-                    "camera_frame_path": str(next_frame),
+                    "camera_frame_path": str(next_policy_frame),
+                    "wam_generated_next_observation_frame_path": str(next_frame),
                     "wam_generated_observation": True,
+                    "clean_frame_reanchor_applied": clean_frame_reanchor_applied,
+                    "clean_frame_reanchor_source_path": str(initial_frame)
+                    if clean_frame_reanchor_applied
+                    else None,
                     "physical_robot_sensor_proof": False,
                 },
             }
             side_rows.append(
                 {
                     "schema_version": "persistent_policy_wam_side_by_side_trace_row.v1",
-                    "transition_index": step_index + 1,
+                    "transition_index": transition_index,
                     "policy_pov_frame_path": str(current_frame),
                     "policy_action_summary": {
                         "action_type": current_action.get("action_type"),
                         "action_chunk_length": len(current_action.get("action_chunk") or []),
                     },
                     "wam_generated_next_observation_frame_path": str(next_frame),
+                    "next_policy_observation_frame_path": str(next_policy_frame),
+                    "clean_frame_reanchor_applied_for_next_policy_call": clean_frame_reanchor_applied,
                     "wam_evaluator_backend": wam_response.get("wam_evaluator_backend"),
                     "live_wam_generation_command_ran": bool(wam_response.get("live_wam_generation_command_ran")),
                     "learned_oscar_or_cosmos_model_ran": bool(wam_response.get("learned_oscar_or_cosmos_model_ran")),
@@ -1173,10 +1874,10 @@ def main() -> int:
             current_observation = {
                 **current_observation,
                 **generated_observation,
-                "camera_frame_path": str(next_frame),
+                "camera_frame_path": str(next_policy_frame),
                 "visual_observation": generated_observation["visual_observation"],
             }
-            current_frame = next_frame
+            current_frame = next_policy_frame
         repeated_policy_calls = sum(
             1
             for row in policy_calls
@@ -1223,6 +1924,10 @@ def main() -> int:
             "learned_wam_model_success_count": learned_wam_count,
             "policy_observes_wam_generated_next_observation": repeated_policy_calls >= 2 and generated_count >= 1,
             "wam_evaluator_in_control_loop": generated_count >= 1,
+            "clean_frame_reanchoring": clean_frame_reanchoring,
+            "clean_frame_reanchor_event_count": len(clean_frame_reanchor_events),
+            "clean_frame_reanchor_events": clean_frame_reanchor_events,
+            "periodic_clean_frame_reanchoring_used": bool(clean_frame_reanchor_events),
             "unitree_groot_n17_sonic_model_executed": repeated_policy_calls >= 1,
             "unitree_groot_n17_sonic_policy_action_command_ran": repeated_policy_calls >= 1,
             "unitree_policy_action_command_ran": repeated_policy_calls >= 1,
@@ -1239,6 +1944,13 @@ def main() -> int:
                 "persistent_provider_session_is_runtime_proof_not_task_success": True,
                 "wam_is_next_observation_generator_not_robot_policy": True,
                 "generated_observations_are_not_raw_capture": True,
+                "capture_truth": False,
+                "geometry_truth": False,
+                "collision_truth": False,
+                "provider_success": completed,
+                "provider_success_separate_from_visually_useful_rollout": True,
+                "periodic_clean_frame_reanchoring_is_quality_control_not_task_success": True,
+                "visually_useful_rollout": False,
                 "physical_robot_readiness_proven": False,
                 "deployment_readiness_proven": False,
                 "safety_validation_proven": False,
@@ -1289,7 +2001,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-'''
+"""
 
 
 RUN_SCRIPT = """#!/usr/bin/env bash
@@ -1953,35 +2665,229 @@ def build_persistent_session_provider_bundle(
         shutil.rmtree(runtime_dir)
     ensure_dir(runtime_dir)
     observation = _load_policy_observation(policy_observation_path)
-    if task_prompt and not any(observation.get(key) for key in ("task_prompt", "prompt", "task_description")):
+    original_observation_source_kind = _policy_observation_source_kind(observation)
+    if task_prompt and not any(
+        observation.get(key) for key in ("task_prompt", "prompt", "task_description")
+    ):
         observation["task_prompt"] = task_prompt
     frame_path = _camera_frame_path(observation)
     visual_profile_settings = _current_wam_visual_profile_settings()
     visual_profile = str(visual_profile_settings["visual_profile"])
+    semantic_visual_evidence = _policy_observation_semantic_visual_evidence(
+        observation,
+        base_dir=Path(policy_observation_path).expanduser().parent,
+    )
     source_visual_qa = assess_source_policy_observation_visual_qa(
         frame_path,
         generated_at=generated,
         target_object_id=_string(observation.get("target_object_id")) or None,
         task_id=_string(observation.get("task_id")) or None,
+        object_index=semantic_visual_evidence.get("object_index"),
+        eval_ready_task_grounding=semantic_visual_evidence.get("eval_ready_task_grounding"),
+        semantic_artifact_base_dir=semantic_visual_evidence.get("semantic_artifact_base_dir"),
         visual_profile=visual_profile,
         review_quality_required=visual_profile == "review_quality",
     )
+    original_source_visual_qa = dict(source_visual_qa)
+    original_frame_path = frame_path
+    original_source_visual_qa_path: Path | None = None
+    remediation_manifest: dict[str, Any] | None = None
+    remediation_manifest_path: Path | None = None
+    remediation_applied = False
+    if (
+        visual_profile == "review_quality"
+        and source_visual_qa.get("status") != "passed_visual_quality_gate"
+        and image_model_render_remediation_enabled()
+    ):
+        original_source_visual_qa_path = job / "original_source_policy_observation_visual_qa.json"
+        write_json(original_source_visual_qa_path, original_source_visual_qa)
+        remediation_dir = job / "image_model_render_remediation"
+        remediation_manifest = run_image_model_render_remediation(
+            original_frame_path=frame_path,
+            source_visual_qa=source_visual_qa,
+            output_dir=remediation_dir,
+            generated_at=generated,
+            task_id=_string(observation.get("task_id")) or None,
+            target_object_id=_string(observation.get("target_object_id")) or None,
+            object_index=semantic_visual_evidence.get("object_index"),
+            eval_ready_task_grounding=semantic_visual_evidence.get("eval_ready_task_grounding"),
+            semantic_artifact_base_dir=semantic_visual_evidence.get("semantic_artifact_base_dir"),
+            visual_profile=visual_profile,
+            review_quality_required=True,
+        )
+        remediation_manifest_path = remediation_dir / "image_model_render_remediation_manifest.json"
+        enhanced_frame_text = _string(remediation_manifest.get("enhanced_frame_path"))
+        enhanced_qa_path_text = _string(remediation_manifest.get("enhanced_source_visual_qa_path"))
+        if remediation_manifest.get("status") == "completed" and enhanced_frame_text:
+            enhanced_frame_path = Path(enhanced_frame_text).expanduser()
+            if enhanced_frame_path.is_file():
+                frame_path = enhanced_frame_path.resolve()
+                if enhanced_qa_path_text and Path(enhanced_qa_path_text).is_file():
+                    source_visual_qa = _read_json(Path(enhanced_qa_path_text))
+                else:
+                    source_visual_qa = assess_source_policy_observation_visual_qa(
+                        frame_path,
+                        generated_at=generated,
+                        target_object_id=_string(observation.get("target_object_id")) or None,
+                        task_id=_string(observation.get("task_id")) or None,
+                        object_index=semantic_visual_evidence.get("object_index"),
+                        eval_ready_task_grounding=semantic_visual_evidence.get(
+                            "eval_ready_task_grounding"
+                        ),
+                        semantic_artifact_base_dir=semantic_visual_evidence.get(
+                            "semantic_artifact_base_dir"
+                        ),
+                        visual_profile=visual_profile,
+                        review_quality_required=True,
+                    )
+                visual = _mapping(observation.get("visual_observation"))
+                visual["camera_frame_path"] = str(frame_path)
+                visual["image_model_render_remediation_applied"] = True
+                visual["original_3d_render_frame_path"] = (
+                    str(original_frame_path) if original_frame_path else None
+                )
+                visual["image_model_render_remediation_manifest_path"] = str(
+                    remediation_manifest_path
+                )
+                observation["visual_observation"] = visual
+                observation["camera_frame_path"] = str(frame_path)
+                observation["source_kind"] = "image_model_enhanced_3d_render_seed"
+                observation["image_model_render_remediation"] = {
+                    "status": "completed",
+                    "manifest_path": str(remediation_manifest_path),
+                    "original_frame_path": str(original_frame_path)
+                    if original_frame_path
+                    else None,
+                    "enhanced_frame_path": str(frame_path),
+                    "source_visual_qa_before_remediation_path": str(original_source_visual_qa_path),
+                }
+                claim_boundary = _mapping(observation.get("claim_boundary"))
+                claim_boundary.update(
+                    {
+                        "image_model_enhanced_policy_observation_used": True,
+                        "enhanced_policy_observation_is_not_capture_truth": True,
+                        "enhanced_policy_observation_is_not_geometry_truth": True,
+                        "enhanced_policy_observation_is_not_collision_truth": True,
+                        "capture_truth": False,
+                        "geometry_truth": False,
+                        "collision_truth": False,
+                    }
+                )
+                observation["claim_boundary"] = claim_boundary
+                remediation_applied = True
+    synthetic_launch_gate = _synthetic_fallback_wam_launch_gate(
+        observation=observation,
+        original_source_kind=original_observation_source_kind,
+        visual_profile=visual_profile,
+        use_live_wam=use_live_wam,
+    )
+    observation = _apply_synthetic_fallback_truth_labels(observation, synthetic_launch_gate)
     source_visual_qa_path = job / "source_policy_observation_visual_qa.json"
     write_json(source_visual_qa_path, source_visual_qa)
     blockers: list[str] = []
+    blockers.extend(str(item) for item in synthetic_launch_gate.get("blockers") or [])
+    auxiliary_observation_manifest: dict[str, Any] = {}
+    runtime_auxiliary_observation_manifest: dict[str, Any] = {}
+    auxiliary_observation_manifest_path: Path | None = None
+    runtime_auxiliary_observation_manifest_path: Path | None = None
     if frame_path is None:
         blockers.append("blocked_missing_policy_visual_observation_frame")
     else:
         shutil.copy2(frame_path, runtime_dir / "initial_policy_frame.png")
         shutil.copy2(frame_path, runtime_dir / "input_frame.png")
         write_json(runtime_dir / "source_policy_observation_visual_qa.json", source_visual_qa)
-    blockers.extend(
-        _persistent_wam_visual_profile_blockers(
-            settings=visual_profile_settings,
-            source_visual_qa=source_visual_qa,
-            loop_step_count=int(loop_step_count),
+        auxiliary_observation_manifest = build_wam_auxiliary_observation_manifest(
+            output_dir=job / "wam_auxiliary_observation",
+            source_image_path=frame_path,
+            policy_observation=observation,
+            generated_at=generated,
+            source_kind=_string(observation.get("source_kind")) or None,
+            camera_id=_string(_mapping(observation.get("visual_observation")).get("camera_id"))
+            or _string(observation.get("camera_id"))
+            or None,
+            robot_profile_id=_string(observation.get("robot_profile_id")) or None,
+            task_id=_string(observation.get("task_id")) or None,
+            target_object_id=_string(observation.get("target_object_id")) or None,
         )
+        auxiliary_observation_manifest_path = Path(
+            str(auxiliary_observation_manifest["manifest_path"])
+        )
+        runtime_observation = json.loads(json.dumps(observation))
+        runtime_visual = _mapping(runtime_observation.get("visual_observation"))
+        runtime_visual["camera_frame_path"] = str(runtime_dir / "initial_policy_frame.png")
+        runtime_visual["source_image_path"] = str(runtime_dir / "initial_policy_frame.png")
+        runtime_observation["visual_observation"] = runtime_visual
+        runtime_observation["camera_frame_path"] = str(runtime_dir / "initial_policy_frame.png")
+        runtime_auxiliary_observation_manifest = build_wam_auxiliary_observation_manifest(
+            output_dir=runtime_dir / "wam_auxiliary_observation",
+            source_image_path=runtime_dir / "initial_policy_frame.png",
+            policy_observation=runtime_observation,
+            generated_at=generated,
+            source_kind=_string(runtime_observation.get("source_kind")) or None,
+            camera_id=_string(runtime_visual.get("camera_id"))
+            or _string(runtime_observation.get("camera_id"))
+            or None,
+            robot_profile_id=_string(runtime_observation.get("robot_profile_id")) or None,
+            task_id=_string(runtime_observation.get("task_id")) or None,
+            target_object_id=_string(runtime_observation.get("target_object_id")) or None,
+        )
+        runtime_auxiliary_observation_manifest_path = Path(
+            str(runtime_auxiliary_observation_manifest["manifest_path"])
+        )
+        runtime_auxiliary_observation_manifest["manifest_path"] = (
+            "provider_runtime/wam_auxiliary_observation/wam_auxiliary_observation_manifest.json"
+        )
+        runtime_auxiliary_observation_manifest["source_image_path"] = (
+            "provider_runtime/initial_policy_frame.png"
+        )
+        runtime_auxiliary_observation_manifest["source_image_path_exists"] = True
+        runtime_auxiliary_observation_manifest["runtime_paths_rewritten_for_provider_bundle"] = True
+        write_json(
+            runtime_auxiliary_observation_manifest_path,
+            runtime_auxiliary_observation_manifest,
+        )
+        auxiliary_summary = summarize_wam_auxiliary_observation_manifest(
+            runtime_auxiliary_observation_manifest
+        )
+        visual = _mapping(observation.get("visual_observation"))
+        visual["wam_auxiliary_observation_manifest_path"] = str(
+            runtime_auxiliary_observation_manifest_path
+        )
+        observation["visual_observation"] = visual
+        observation["wam_auxiliary_observation_manifest_path"] = str(
+            runtime_auxiliary_observation_manifest_path
+        )
+        observation["wam_auxiliary_observation"] = auxiliary_summary
+    if original_source_visual_qa_path and original_source_visual_qa_path.is_file():
+        shutil.copy2(
+            original_source_visual_qa_path,
+            runtime_dir / "original_source_policy_observation_visual_qa.json",
+        )
+    if remediation_manifest_path and remediation_manifest_path.is_file():
+        runtime_remediation_dir = runtime_dir / "image_model_render_remediation"
+        if runtime_remediation_dir.exists():
+            shutil.rmtree(runtime_remediation_dir)
+        shutil.copytree(remediation_manifest_path.parent, runtime_remediation_dir)
+        if remediation_manifest and remediation_manifest.get("status") != "completed":
+            blockers.extend(
+                str(item)
+                for item in remediation_manifest.get("blockers")
+                or ["image_model_render_remediation_blocked"]
+            )
+    profile_blockers = _persistent_wam_visual_profile_blockers(
+        settings=visual_profile_settings,
+        source_visual_qa=source_visual_qa,
+        loop_step_count=int(loop_step_count),
+        policy_observation_path=policy_observation_path,
     )
+    long_review_quality_gate = _persistent_wam_long_review_rollout_quality_gate(
+        settings=visual_profile_settings,
+        loop_step_count=int(loop_step_count),
+    )
+    long_review_quality_gate_path = job / "long_review_rollout_quality_gate.json"
+    write_json(long_review_quality_gate_path, long_review_quality_gate)
+    blockers.extend(profile_blockers)
+    blockers.extend(str(item) for item in long_review_quality_gate.get("blockers") or [])
     copied = _copy_blueprint_runtime(runtime_dir)
     _write_executable(
         runtime_dir / "unitree_groot_n17_sonic_wam_persistent_session_runner.py",
@@ -2005,12 +2911,81 @@ def build_persistent_session_provider_bundle(
         "timeout_seconds": float(timeout_seconds),
         "visual_profile": visual_profile,
         "wam_visual_profile_settings": visual_profile_settings,
+        "clean_frame_reanchoring": _mapping(
+            long_review_quality_gate.get("clean_frame_reanchoring")
+        ),
+        "long_review_rollout_quality_gate": {
+            "status": long_review_quality_gate.get("status"),
+            "required_before_12_step_paid_review_quality_rollout": long_review_quality_gate.get(
+                "required_before_12_step_paid_review_quality_rollout"
+            ),
+            "periodic_clean_frame_reanchoring_proven": long_review_quality_gate.get(
+                "periodic_clean_frame_reanchoring_proven"
+            ),
+            "concrete_autoregressive_drift_blocker_proven": long_review_quality_gate.get(
+                "concrete_autoregressive_drift_blocker_proven"
+            ),
+            "blockers": list(long_review_quality_gate.get("blockers") or []),
+        },
         "use_live_wam": bool(use_live_wam),
         "allow_structural_wam_fallback": bool(allow_structural_wam_fallback),
+        "synthetic_fallback_wam_launch_gate": synthetic_launch_gate,
         "policy_worker_port": 8765,
         "wam_worker_port": 8766,
+        "image_model_render_remediation": {
+            "enabled_env": IMAGE_MODEL_RENDER_REMEDIATION_ENABLE_ENV,
+            "enabled": image_model_render_remediation_enabled(),
+            "applied": remediation_applied,
+            "status": remediation_manifest.get("status")
+            if remediation_manifest
+            else "not_attempted",
+            "manifest_path": str(remediation_manifest_path) if remediation_manifest_path else None,
+            "original_frame_path": str(original_frame_path) if original_frame_path else None,
+            "effective_frame_path": str(frame_path) if frame_path else None,
+        },
+        "wam_auxiliary_observation": {
+            "status": runtime_auxiliary_observation_manifest.get("status")
+            if runtime_auxiliary_observation_manifest
+            else "not_attempted",
+            "local_manifest_path": str(auxiliary_observation_manifest_path)
+            if auxiliary_observation_manifest_path
+            else None,
+            "runtime_manifest_path": str(runtime_auxiliary_observation_manifest_path)
+            if runtime_auxiliary_observation_manifest_path
+            else None,
+            "modalities_available": _mapping(
+                runtime_auxiliary_observation_manifest.get("modalities_available")
+            ),
+            "claim_boundary": _mapping(
+                runtime_auxiliary_observation_manifest.get("claim_boundary")
+            ),
+        },
         "claim_boundary": {
             "simulator_generated_world_proof_only": True,
+            "capture_truth": False,
+            "geometry_truth": False,
+            "collision_truth": False,
+            "initial_policy_observation_capture_truth": synthetic_launch_gate.get(
+                "capture_truth"
+            ),
+            "initial_policy_observation_geometry_truth": synthetic_launch_gate.get(
+                "geometry_truth"
+            ),
+            "synthetic_fallback_initial_observation_used": synthetic_launch_gate.get(
+                "synthetic_fallback_initial_observation_used"
+            ),
+            "synthetic_fallback_wam_launch_experiment_enabled": synthetic_launch_gate.get(
+                "experimental_env_enabled"
+            ),
+            "provider_success_separate_from_visually_useful_rollout": True,
+            "visually_useful_rollout": False,
+            "image_model_enhanced_policy_observation_used": remediation_applied,
+            "enhanced_policy_observation_is_not_capture_truth": remediation_applied,
+            "enhanced_policy_observation_is_not_geometry_truth": remediation_applied,
+            "enhanced_policy_observation_is_not_collision_truth": remediation_applied,
+            "wam_auxiliary_observation_is_conditioning_support": bool(
+                runtime_auxiliary_observation_manifest
+            ),
             "physical_robot_readiness_proven": False,
             "deployment_readiness_proven": False,
             "safety_validation_proven": False,
@@ -2030,6 +3005,43 @@ def build_persistent_session_provider_bundle(
             "wam_visual_profile_settings": visual_profile_settings,
             "source_policy_observation_visual_qa_path": str(source_visual_qa_path),
             "source_policy_observation_visual_qa_status": source_visual_qa.get("status"),
+            "long_review_rollout_quality_gate_path": str(long_review_quality_gate_path),
+            "long_review_rollout_quality_gate_status": long_review_quality_gate.get("status"),
+            "clean_frame_reanchoring": _mapping(
+                long_review_quality_gate.get("clean_frame_reanchoring")
+            ),
+            "original_initial_frame_path": str(original_frame_path)
+            if original_frame_path
+            else None,
+            "original_source_policy_observation_visual_qa_path": str(original_source_visual_qa_path)
+            if original_source_visual_qa_path
+            else None,
+            "image_model_render_remediation_enabled": image_model_render_remediation_enabled(),
+            "image_model_render_remediation_applied": remediation_applied,
+            "image_model_render_remediation_status": remediation_manifest.get("status")
+            if remediation_manifest
+            else "not_attempted",
+            "image_model_render_remediation_manifest_path": str(remediation_manifest_path)
+            if remediation_manifest_path
+            else None,
+            "synthetic_fallback_wam_launch_gate": synthetic_launch_gate,
+            "wam_auxiliary_observation_manifest_path": str(auxiliary_observation_manifest_path)
+            if auxiliary_observation_manifest_path
+            else None,
+            "runtime_wam_auxiliary_observation_manifest_path": str(
+                runtime_auxiliary_observation_manifest_path
+            )
+            if runtime_auxiliary_observation_manifest_path
+            else None,
+            "wam_auxiliary_observation_modalities_available": _mapping(
+                runtime_auxiliary_observation_manifest.get("modalities_available")
+            ),
+            "semantic_visual_qa_source_paths": {
+                "object_index": semantic_visual_evidence.get("object_index_path"),
+                "eval_ready_task_grounding": semantic_visual_evidence.get(
+                    "eval_ready_task_grounding_path"
+                ),
+            },
             "runtime_entrypoint": "provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh",
             "runpod_wam_carrier_entrypoint": "provider_runtime/run_wam_provider_runtime.sh",
             "runpod_runtime_wrapper": "provider_runtime/run_unitree_groot_n17_sonic_runpod_wrapper.sh",
@@ -2039,6 +3051,27 @@ def build_persistent_session_provider_bundle(
             "blockers": blockers,
             "claim_boundary": {
                 "bundle_build_is_not_model_execution": True,
+                "capture_truth": False,
+                "geometry_truth": False,
+                "collision_truth": False,
+                "initial_policy_observation_capture_truth": synthetic_launch_gate.get(
+                    "capture_truth"
+                ),
+                "initial_policy_observation_geometry_truth": synthetic_launch_gate.get(
+                    "geometry_truth"
+                ),
+                "synthetic_fallback_initial_observation_used": synthetic_launch_gate.get(
+                    "synthetic_fallback_initial_observation_used"
+                ),
+                "synthetic_fallback_wam_launch_experiment_enabled": synthetic_launch_gate.get(
+                    "experimental_env_enabled"
+                ),
+                "provider_success_separate_from_visually_useful_rollout": True,
+                "visually_useful_rollout": False,
+                "image_model_enhanced_policy_observation_used": remediation_applied,
+                "enhanced_policy_observation_is_not_capture_truth": remediation_applied,
+                "enhanced_policy_observation_is_not_geometry_truth": remediation_applied,
+                "enhanced_policy_observation_is_not_collision_truth": remediation_applied,
                 "physical_robot_readiness_proven": False,
                 "deployment_readiness_proven": False,
                 "safety_validation_proven": False,
@@ -2073,10 +3106,34 @@ def build_persistent_session_provider_bundle(
         "runtime_runner": "provider_runtime/unitree_groot_n17_sonic_wam_persistent_session_runner.py",
         "policy_observation_path": str(Path(policy_observation_path).expanduser()),
         "initial_frame_path": str(frame_path) if frame_path else None,
+        "original_initial_frame_path": str(original_frame_path) if original_frame_path else None,
         "visual_profile": visual_profile,
         "wam_visual_profile_settings": visual_profile_settings,
         "source_policy_observation_visual_qa_path": str(source_visual_qa_path),
         "source_policy_observation_visual_qa_status": source_visual_qa.get("status"),
+        "long_review_rollout_quality_gate_path": str(long_review_quality_gate_path),
+        "long_review_rollout_quality_gate_status": long_review_quality_gate.get("status"),
+        "clean_frame_reanchoring": _mapping(
+            long_review_quality_gate.get("clean_frame_reanchoring")
+        ),
+        "original_source_policy_observation_visual_qa_path": str(original_source_visual_qa_path)
+        if original_source_visual_qa_path
+        else None,
+        "image_model_render_remediation_enabled": image_model_render_remediation_enabled(),
+        "image_model_render_remediation_applied": remediation_applied,
+        "image_model_render_remediation_status": remediation_manifest.get("status")
+        if remediation_manifest
+        else "not_attempted",
+        "image_model_render_remediation_manifest_path": str(remediation_manifest_path)
+        if remediation_manifest_path
+        else None,
+        "synthetic_fallback_wam_launch_gate": synthetic_launch_gate,
+        "semantic_visual_qa_source_paths": {
+            "object_index": semantic_visual_evidence.get("object_index_path"),
+            "eval_ready_task_grounding": semantic_visual_evidence.get(
+                "eval_ready_task_grounding_path"
+            ),
+        },
         "loop_step_count": int(loop_step_count),
         "use_live_wam": bool(use_live_wam),
         "allow_structural_wam_fallback": bool(allow_structural_wam_fallback),
@@ -2090,6 +3147,27 @@ def build_persistent_session_provider_bundle(
         "claim_boundary": {
             "bundle_build_is_not_model_execution": True,
             "persistent_session_reuses_provider_instance_after_launch": True,
+            "capture_truth": False,
+            "geometry_truth": False,
+            "collision_truth": False,
+            "initial_policy_observation_capture_truth": synthetic_launch_gate.get(
+                "capture_truth"
+            ),
+            "initial_policy_observation_geometry_truth": synthetic_launch_gate.get(
+                "geometry_truth"
+            ),
+            "synthetic_fallback_initial_observation_used": synthetic_launch_gate.get(
+                "synthetic_fallback_initial_observation_used"
+            ),
+            "synthetic_fallback_wam_launch_experiment_enabled": synthetic_launch_gate.get(
+                "experimental_env_enabled"
+            ),
+            "provider_success_separate_from_visually_useful_rollout": True,
+            "visually_useful_rollout": False,
+            "image_model_enhanced_policy_observation_used": remediation_applied,
+            "enhanced_policy_observation_is_not_capture_truth": remediation_applied,
+            "enhanced_policy_observation_is_not_geometry_truth": remediation_applied,
+            "enhanced_policy_observation_is_not_collision_truth": remediation_applied,
             "physical_robot_readiness_proven": False,
             "deployment_readiness_proven": False,
             "safety_validation_proven": False,
@@ -2100,9 +3178,13 @@ def build_persistent_session_provider_bundle(
 
 
 def _job_dir(root: str | Path | None = None) -> Path:
-    root_path = Path(root).expanduser() if root else Path(
-        _string(os.getenv(PERSISTENT_SESSION_JOB_ROOT_ENV))
-        or Path.cwd() / "unitree_groot_n17_sonic_vast_persistent_session"
+    root_path = (
+        Path(root).expanduser()
+        if root
+        else Path(
+            _string(os.getenv(PERSISTENT_SESSION_JOB_ROOT_ENV))
+            or Path.cwd() / "unitree_groot_n17_sonic_vast_persistent_session"
+        )
     )
     job = root_path / utc_now_iso().replace(":", "").replace("+", "_").replace("-", "")
     ensure_dir(job)
@@ -2317,7 +3399,9 @@ def _write_runpod_live_wam_blocker_classification(
         classified_blocker = "runpod_persistent_session_still_running"
     elif not has_output_zip and last_nonterminal_output:
         if poll_manifest.get("pod_status") == "RUNNING" and poll_manifest.get("teardown_performed"):
-            classified_blocker = "runpod_remote_runtime_still_running_after_heartbeat_until_local_timeout"
+            classified_blocker = (
+                "runpod_remote_runtime_still_running_after_heartbeat_until_local_timeout"
+            )
         elif poll_manifest.get("pod_status") == "not_found" and last_nonterminal_runtime_phase:
             if last_nonterminal_runtime_phase in {
                 "gr00t_model_snapshot_completed",
@@ -2330,12 +3414,12 @@ def _write_runpod_live_wam_blocker_classification(
                 "gr00t_policy_server_process_started",
                 "gr00t_policy_server_waiting_for_listen",
             }:
-                classified_blocker = (
-                    "runpod_pod_disappeared_during_gr00t_policy_server_process_start_after_heartbeat"
-                )
+                classified_blocker = "runpod_pod_disappeared_during_gr00t_policy_server_process_start_after_heartbeat"
             elif last_nonterminal_runtime_phase == "gr00t_uv_sync_started":
                 classified_blocker = "runpod_pod_disappeared_during_gr00t_uv_sync_after_heartbeat"
-            elif last_nonterminal_runtime_phase == "gr00t_system_python_minimal_deps_install_started":
+            elif (
+                last_nonterminal_runtime_phase == "gr00t_system_python_minimal_deps_install_started"
+            ):
                 classified_blocker = (
                     "runpod_pod_disappeared_during_gr00t_system_python_minimal_deps_install"
                     "_after_heartbeat"
@@ -2345,7 +3429,9 @@ def _write_runpod_live_wam_blocker_classification(
                     "runpod_pod_disappeared_during_gr00t_system_python_bootstrap_after_heartbeat"
                 )
             elif last_nonterminal_runtime_phase.startswith(("bootstrap_", "gr00t_")):
-                classified_blocker = "runpod_pod_disappeared_during_policy_server_bootstrap_after_heartbeat"
+                classified_blocker = (
+                    "runpod_pod_disappeared_during_policy_server_bootstrap_after_heartbeat"
+                )
             elif last_nonterminal_runtime_phase == "wam_infer_started":
                 classified_blocker = "runpod_pod_disappeared_during_live_wam_after_heartbeat"
             else:
@@ -2472,7 +3558,8 @@ def _action_summary(action: Mapping[str, Any]) -> dict[str, Any]:
     chunk = action.get("action_chunk")
     return {
         "action_type": action.get("action_type"),
-        "action_chunk_present": isinstance(chunk, Sequence) and not isinstance(chunk, (str, bytes, bytearray)),
+        "action_chunk_present": isinstance(chunk, Sequence)
+        and not isinstance(chunk, (str, bytes, bytearray)),
         "action_chunk_length": len(chunk)
         if isinstance(chunk, Sequence) and not isinstance(chunk, (str, bytes, bytearray))
         else None,
@@ -2497,9 +3584,7 @@ def _write_review_video(
     ensure_dir(review_dir)
     live_rollout_videos = sorted(
         path.resolve()
-        for path in (extraction_dir / "wam_worker_steps").glob(
-            "step_*/oscar_runtime_output/*.mp4"
-        )
+        for path in (extraction_dir / "wam_worker_steps").glob("step_*/oscar_runtime_output/*.mp4")
         if path.is_file()
     )
     live_rollout_videos.extend(
@@ -2716,7 +3801,9 @@ def _postprocess_imported_persistent_session_artifacts(
     vast_result: Mapping[str, Any],
     vast_run_dir: Path,
 ) -> dict[str, Any]:
-    policy_calls = _load_json_rows(sorted((extraction_dir / "policy_calls").glob("policy_call_*.json")))
+    policy_calls = _load_json_rows(
+        sorted((extraction_dir / "policy_calls").glob("policy_call_*.json"))
+    )
     wam_calls = _load_json_rows(sorted((extraction_dir / "wam_calls").glob("wam_call_*.json")))
     trace_rows = _jsonl_rows(extraction_dir / "robot_policy_wam_loop_trace.jsonl")
     side_rows = _jsonl_rows(extraction_dir / "robot_policy_wam_side_by_side_trace.jsonl")
@@ -2763,9 +3850,9 @@ def _postprocess_imported_persistent_session_artifacts(
             "persistent_policy_worker_command_source": _mapping(
                 first_policy.get("worker_response_redacted")
             ).get("persistent_policy_worker_command_source"),
-            "policy_server_bootstrap_status": _mapping(
-                imported.get("policy_server_bootstrap")
-            ).get("status"),
+            "policy_server_bootstrap_status": _mapping(imported.get("policy_server_bootstrap")).get(
+                "status"
+            ),
             "provider_instance_reused_for_policy_and_wam_loop": bool(
                 imported.get("provider_instance_reused_for_policy_and_wam_loop")
             ),
@@ -2841,12 +3928,16 @@ def _postprocess_imported_persistent_session_artifacts(
             "generated_at": generated_at,
             "status": imported.get("status"),
             "policy_observation_path": str(Path(policy_observation_path).expanduser()),
-            "persistent_provider_session_used": bool(imported.get("persistent_provider_session_used")),
+            "persistent_provider_session_used": bool(
+                imported.get("persistent_provider_session_used")
+            ),
             "provider_instance_reused_for_policy_and_wam_loop": bool(
                 imported.get("provider_instance_reused_for_policy_and_wam_loop")
             ),
             "repeated_policy_calls_count": int(imported.get("repeated_policy_calls_count") or 0),
-            "generated_next_observation_count": int(imported.get("generated_next_observation_count") or 0),
+            "generated_next_observation_count": int(
+                imported.get("generated_next_observation_count") or 0
+            ),
             "policy_observes_wam_generated_next_observation": bool(
                 imported.get("policy_observes_wam_generated_next_observation")
             ),
@@ -2931,8 +4022,13 @@ def _postprocess_imported_persistent_session_artifacts(
         "schema_version": "persistent_policy_wam_claim_boundary.v1",
         "generated_at": generated_at,
         "simulator_generated_world_proof_only": True,
+        "capture_truth": False,
+        "geometry_truth": False,
+        "collision_truth": False,
         "structural_loop_proof_completed": imported.get("status") == "completed",
         "success_proof_completed": success_proven,
+        "provider_success": imported.get("status") == "completed",
+        "provider_success_separate_from_visually_useful_rollout": True,
         "live_wam_generation_success": live_wam_count > 0,
         "learned_wam_model_success": learned_wam_count > 0,
         "visually_useful_rollout": bool(visual_quality_report.get("visual_success")),
@@ -2940,7 +4036,8 @@ def _postprocess_imported_persistent_session_artifacts(
         "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
         "valid_mp4_or_provider_completed_is_not_visual_success": True,
         "wam_rollout_visual_quality_report": str(job / "wam_rollout_visual_quality_report.json"),
-        "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": structural_wam_count > 0,
+        "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": structural_wam_count
+        > 0,
         "frame_copy_placeholder_until_live_wam_model_configured": structural_wam_count > 0,
         "wam_evaluator_is_not_robot_policy": True,
         "provider_output_replay_used": False,
@@ -2969,8 +4066,9 @@ def _postprocess_imported_persistent_session_artifacts(
         if not visual_quality_report.get("visual_success"):
             labels.append("wam_rollout_visual_quality_failed")
         visual_blockers = {str(item) for item in visual_quality_report.get("blockers") or []}
-        if "source_policy_observation_visual_qa_failed_for_review_quality" in visual_blockers or any(
-            item.startswith("source_policy_observation_") for item in visual_blockers
+        if (
+            "source_policy_observation_visual_qa_failed_for_review_quality" in visual_blockers
+            or any(item.startswith("source_policy_observation_") for item in visual_blockers)
         ):
             labels.append("source_policy_observation_visual_qa_failed")
         if "autoregressive_chain_visual_drift_or_quality_blocked_long_rollout" in visual_blockers:
@@ -2989,14 +4087,20 @@ def _postprocess_imported_persistent_session_artifacts(
         "schema_version": "persistent_session_postprocess_artifacts.v1",
         "generated_at": generated_at,
         "status": "completed",
-        "policy_action_model_command_discovery": str(job / "policy_action_model_command_discovery.json"),
-        "policy_action_model_command_execution": str(job / "policy_action_model_command_execution.json"),
+        "policy_action_model_command_discovery": str(
+            job / "policy_action_model_command_discovery.json"
+        ),
+        "policy_action_model_command_execution": str(
+            job / "policy_action_model_command_execution.json"
+        ),
         "policy_action_model_command_output": str(job / "policy_action_model_command_output.json"),
         "wam_generation_command_discovery": str(job / "wam_generation_command_discovery.json"),
         "wam_generation_command_execution": str(job / "wam_generation_command_execution.json"),
         "wam_generation_command_output": str(job / "wam_generation_command_output.json"),
         "robot_policy_wam_loop_manifest": str(job / "robot_policy_wam_loop_manifest.json"),
-        "manipulation_success_evaluator_results": str(job / "manipulation_success_evaluator_results.json"),
+        "manipulation_success_evaluator_results": str(
+            job / "manipulation_success_evaluator_results.json"
+        ),
         "video_review_status": str(job / "video_review_status.json"),
         "review_video_path": _mapping(video_status).get("review_video_path"),
         "source_policy_observation_visual_qa": str(
@@ -3009,8 +4113,12 @@ def _postprocess_imported_persistent_session_artifacts(
         "wam_rollout_frame_stats": str(job / "wam_rollout_frame_stats.jsonl"),
         "wam_rollout_visual_success": bool(visual_quality_report.get("visual_success")),
         "claim_boundary": str(job / "claim_boundary.json"),
-        "failure_labels": str(job / "failure_labels.json") if (job / "failure_labels.json").is_file() else None,
-        "vast_provider_adapter_result_path": str(vast_run_dir / "vast_provider_adapter_result.json"),
+        "failure_labels": str(job / "failure_labels.json")
+        if (job / "failure_labels.json").is_file()
+        else None,
+        "vast_provider_adapter_result_path": str(
+            vast_run_dir / "vast_provider_adapter_result.json"
+        ),
         "estimated_cost_usd": vast_result.get("estimated_cost_usd"),
         "raw_credentials_written_to_artifacts": False,
     }
@@ -3034,7 +4142,9 @@ def run_persistent_session(
         if allow_structural_wam_fallback is None
         else bool(allow_structural_wam_fallback)
     )
-    inner_policy_command = _string(os.getenv(INNER_POLICY_COMMAND_ENV)) or DEFAULT_INNER_POLICY_COMMAND
+    inner_policy_command = (
+        _string(os.getenv(INNER_POLICY_COMMAND_ENV)) or DEFAULT_INNER_POLICY_COMMAND
+    )
     previous_policy_command = os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND")
     previous_persistent_inner_policy_command = os.environ.get(
         PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV
@@ -3059,7 +4169,11 @@ def run_persistent_session(
                 generated_at=generated_at,
                 job_dir=job,
                 blockers=bundle.get("blockers") or ["persistent_session_provider_bundle_blocked"],
-                details={"bundle_manifest_path": str(job / "provider_bundle" / "persistent_session_provider_bundle_manifest.json")},
+                details={
+                    "bundle_manifest_path": str(
+                        job / "provider_bundle" / "persistent_session_provider_bundle_manifest.json"
+                    )
+                },
             )
             write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
             return output, 2
@@ -3067,23 +4181,37 @@ def run_persistent_session(
         staging = stage_wam_provider_bundle_object_store(
             job_dir=job / "object_store_staging",
             bundle_path=bundle_path,
-            key_prefix=_string(os.getenv(OBJECT_STORE_KEY_PREFIX_ENV)) or DEFAULT_OBJECT_STORE_KEY_PREFIX,
-            expiration_seconds=_int_env("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIGNED_URL_SECONDS", 21600),
+            key_prefix=_string(os.getenv(OBJECT_STORE_KEY_PREFIX_ENV))
+            or DEFAULT_OBJECT_STORE_KEY_PREFIX,
+            expiration_seconds=_int_env(
+                "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIGNED_URL_SECONDS", 21600
+            ),
             generated_at=generated_at,
         )
         if staging.get("status") != "completed":
             output = _blocked_payload(
                 generated_at=generated_at,
                 job_dir=job,
-                blockers=staging.get("blockers") or ["persistent_session_object_store_staging_blocked"],
-                details={"object_store_staging_manifest_path": str(job / "object_store_staging" / "wam_provider_object_store_staging_manifest.json")},
+                blockers=staging.get("blockers")
+                or ["persistent_session_object_store_staging_blocked"],
+                details={
+                    "object_store_staging_manifest_path": str(
+                        job
+                        / "object_store_staging"
+                        / "wam_provider_object_store_staging_manifest.json"
+                    )
+                },
             )
             write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
             return output, 2
         staging_dir = job / "object_store_staging"
         bundle_url = (staging_dir / "provider_bundle_url.txt").read_text(encoding="utf-8").strip()
-        output_put_url = (staging_dir / "provider_output_put_url.txt").read_text(encoding="utf-8").strip()
-        output_get_url = (staging_dir / "provider_output_get_url.txt").read_text(encoding="utf-8").strip()
+        output_put_url = (
+            (staging_dir / "provider_output_put_url.txt").read_text(encoding="utf-8").strip()
+        )
+        output_get_url = (
+            (staging_dir / "provider_output_get_url.txt").read_text(encoding="utf-8").strip()
+        )
         excluded_machine_ids = _machine_ids_from_env(EXCLUDED_MACHINE_ID_ENVS)
         allowed_machine_ids = _machine_ids_from_env(ALLOWED_MACHINE_ID_ENVS)
         machine_avoidlist_path = job / "vast_machine_avoidlist.json"
@@ -3099,18 +4227,28 @@ def run_persistent_session(
                 },
             )
 
-        def run_remote_attempt(run_dir: Path, attempt_allowed_machine_ids: Sequence[int]) -> tuple[dict[str, Any], Path]:
+        def run_remote_attempt(
+            run_dir: Path, attempt_allowed_machine_ids: Sequence[int]
+        ) -> tuple[dict[str, Any], Path]:
             output_zip = run_dir / "vast_provider_runtime_output.zip"
             result = run_vast_provider_adapter(
                 job_dir=run_dir,
                 mode="live-startup-probe",
                 allow_vast_api_call=_truthy(os.getenv("BLUEPRINT_ALLOW_VAST_API_CALLS")),
                 allow_instance_launch=_truthy(os.getenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")),
-                max_hourly_rate=_float_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MAX_HOURLY_RATE", 0.60),
-                target_spend_usd=_float_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_TARGET_SPEND_USD", 3.0),
+                max_hourly_rate=_float_env(
+                    "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MAX_HOURLY_RATE", 0.60
+                ),
+                target_spend_usd=_float_env(
+                    "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_TARGET_SPEND_USD", 3.0
+                ),
                 hard_cap_usd=_float_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_HARD_CAP_USD", 3.0),
-                max_live_minutes=_int_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MAX_LIVE_MINUTES", 55),
-                session_max_live_minutes=_int_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_SESSION_MAX_LIVE_MINUTES", 420),
+                max_live_minutes=_int_env(
+                    "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MAX_LIVE_MINUTES", 55
+                ),
+                session_max_live_minutes=_int_env(
+                    "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_SESSION_MAX_LIVE_MINUTES", 420
+                ),
                 public_image=(
                     _string(os.getenv(PERSISTENT_SESSION_PUBLIC_IMAGE_ENV))
                     or _string(os.getenv("BLUEPRINT_VAST_WAM_PUBLIC_IMAGE"))
@@ -3128,9 +4266,15 @@ def run_persistent_session(
                 vast_launch_mode=_string(os.getenv(VAST_LAUNCH_MODE_ENV)) or "ssh_direct",
                 ngc_image_login_mode=os.getenv(VAST_IMAGE_LOGIN_MODE_ENV),
                 disk_gb=_int_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_DISK_GB", 120),
-                min_gpu_ram_mb=_int_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MIN_GPU_RAM_MB", 48000),
-                poll_interval_seconds=_int_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_POLL_SECONDS", 15),
-                startup_timeout_seconds=_int_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_STARTUP_TIMEOUT_SECONDS", 1800),
+                min_gpu_ram_mb=_int_env(
+                    "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MIN_GPU_RAM_MB", 48000
+                ),
+                poll_interval_seconds=_int_env(
+                    "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_POLL_SECONDS", 15
+                ),
+                startup_timeout_seconds=_int_env(
+                    "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_STARTUP_TIMEOUT_SECONDS", 1800
+                ),
                 machine_avoidlist_path=machine_avoidlist_path,
                 allowed_machine_ids=attempt_allowed_machine_ids,
                 verify_staging_urls=True,
@@ -3155,12 +4299,19 @@ def run_persistent_session(
             output = _blocked_payload(
                 generated_at=generated_at,
                 job_dir=job,
-                blockers=vast_result.get("blockers") or ["persistent_session_vast_provider_blocked"],
+                blockers=vast_result.get("blockers")
+                or ["persistent_session_vast_provider_blocked"],
                 details={
-                    "vast_provider_adapter_result_path": str(effective_run_dir / "vast_provider_adapter_result.json"),
-                    "vast_teardown_manifest_path": str(effective_run_dir / "vast_teardown_manifest.json"),
+                    "vast_provider_adapter_result_path": str(
+                        effective_run_dir / "vast_provider_adapter_result.json"
+                    ),
+                    "vast_teardown_manifest_path": str(
+                        effective_run_dir / "vast_teardown_manifest.json"
+                    ),
                     "fallback_vast_provider_adapter_result_path": str(
-                        job / "vast_persistent_session_run_unpinned_fallback" / "vast_provider_adapter_result.json"
+                        job
+                        / "vast_persistent_session_run_unpinned_fallback"
+                        / "vast_provider_adapter_result.json"
                     )
                     if fallback_result is not None
                     else None,
@@ -3172,7 +4323,9 @@ def run_persistent_session(
         ensure_dir(extraction_dir)
         with zipfile.ZipFile(output_zip) as archive:
             archive.extractall(extraction_dir)
-        imported_path = extraction_dir / "unitree_groot_n17_sonic_wam_persistent_session_output.json"
+        imported_path = (
+            extraction_dir / "unitree_groot_n17_sonic_wam_persistent_session_output.json"
+        )
         if not imported_path.is_file():
             imported_path = extraction_dir / "unitree_groot_n17_sonic_policy_provider_output.json"
         imported = _read_json(imported_path) if imported_path.is_file() else {}
@@ -3193,25 +4346,45 @@ def run_persistent_session(
             "policy_id": POLICY_ID,
             "selected_candidate_id": POLICY_ID,
             "job_dir": str(job),
-            "persistent_provider_session_used": bool(imported.get("persistent_provider_session_used")),
+            "persistent_provider_session_used": bool(
+                imported.get("persistent_provider_session_used")
+            ),
             "provider_instance_reused_for_policy_and_wam_loop": bool(
                 imported.get("provider_instance_reused_for_policy_and_wam_loop")
             ),
             "repeated_policy_calls_count": int(imported.get("repeated_policy_calls_count") or 0),
-            "generated_next_observation_count": int(imported.get("generated_next_observation_count") or 0),
-            "live_wam_generation_success_count": int(imported.get("live_wam_generation_success_count") or 0),
-            "learned_wam_model_success_count": int(imported.get("learned_wam_model_success_count") or 0),
-            "unitree_groot_n17_sonic_model_executed": bool(imported.get("unitree_groot_n17_sonic_model_executed")),
+            "generated_next_observation_count": int(
+                imported.get("generated_next_observation_count") or 0
+            ),
+            "live_wam_generation_success_count": int(
+                imported.get("live_wam_generation_success_count") or 0
+            ),
+            "learned_wam_model_success_count": int(
+                imported.get("learned_wam_model_success_count") or 0
+            ),
+            "unitree_groot_n17_sonic_model_executed": bool(
+                imported.get("unitree_groot_n17_sonic_model_executed")
+            ),
             "unitree_groot_n17_sonic_policy_action_command_ran": bool(
                 imported.get("unitree_groot_n17_sonic_policy_action_command_ran")
             ),
-            "unitree_policy_action_command_ran": bool(imported.get("unitree_policy_action_command_ran")),
-            "policy_action_model_command_ran": bool(imported.get("policy_action_model_command_ran")),
+            "unitree_policy_action_command_ran": bool(
+                imported.get("unitree_policy_action_command_ran")
+            ),
+            "policy_action_model_command_ran": bool(
+                imported.get("policy_action_model_command_ran")
+            ),
             "provider_output_replay_used": bool(imported.get("provider_output_replay_used")),
-            "blockers": [] if completed else imported.get("blockers") or ["persistent_session_provider_output_blocked"],
+            "blockers": []
+            if completed
+            else imported.get("blockers") or ["persistent_session_provider_output_blocked"],
             "imported_provider_output_dir": str(extraction_dir),
-            "imported_provider_output_path": str(imported_path) if imported_path.is_file() else None,
-            "vast_provider_adapter_result_path": str(effective_run_dir / "vast_provider_adapter_result.json"),
+            "imported_provider_output_path": str(imported_path)
+            if imported_path.is_file()
+            else None,
+            "vast_provider_adapter_result_path": str(
+                effective_run_dir / "vast_provider_adapter_result.json"
+            ),
             "vast_teardown_manifest_path": str(effective_run_dir / "vast_teardown_manifest.json"),
             "estimated_cost_usd": vast_result.get("estimated_cost_usd"),
             "postprocess_artifacts": postprocess,
@@ -3225,14 +4398,29 @@ def run_persistent_session(
             ),
             "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
             "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
+            "clean_frame_reanchoring": _mapping(imported.get("clean_frame_reanchoring")),
+            "clean_frame_reanchor_event_count": int(
+                imported.get("clean_frame_reanchor_event_count") or 0
+            ),
+            "periodic_clean_frame_reanchoring_used": bool(
+                imported.get("periodic_clean_frame_reanchoring_used")
+            ),
             "manipulation_success_evaluator_results_path": postprocess.get(
                 "manipulation_success_evaluator_results"
             ),
             "claim_boundary_path": postprocess.get("claim_boundary"),
             "claim_boundary": {
                 "simulator_generated_world_proof_only": True,
+                "capture_truth": False,
+                "geometry_truth": False,
+                "collision_truth": False,
                 "persistent_provider_session_is_runtime_proof_not_task_success": True,
                 "valid_mp4_or_provider_completed_is_not_visual_success": True,
+                "provider_success": completed,
+                "provider_success_separate_from_visually_useful_rollout": True,
+                "periodic_clean_frame_reanchoring_used": bool(
+                    imported.get("periodic_clean_frame_reanchoring_used")
+                ),
                 "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
                 "visually_useful_rollout": bool(postprocess.get("wam_rollout_visual_success")),
                 "physical_robot_readiness_proven": False,
@@ -3281,7 +4469,9 @@ def run_persistent_session_runpod(
         if allow_structural_wam_fallback is None
         else bool(allow_structural_wam_fallback)
     )
-    inner_policy_command = _string(os.getenv(INNER_POLICY_COMMAND_ENV)) or DEFAULT_INNER_POLICY_COMMAND
+    inner_policy_command = (
+        _string(os.getenv(INNER_POLICY_COMMAND_ENV)) or DEFAULT_INNER_POLICY_COMMAND
+    )
     previous_policy_command = os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND")
     previous_persistent_inner_policy_command = os.environ.get(
         PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV
@@ -3295,8 +4485,7 @@ def run_persistent_session_runpod(
     os.environ[PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV] = inner_policy_command
     os.environ[INNER_POLICY_COMMAND_ENV] = inner_policy_command
     runpod_provider_bundle_kind = (
-        _string(os.getenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_PROVIDER_BUNDLE_KIND"))
-        or "wam"
+        _string(os.getenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_PROVIDER_BUNDLE_KIND")) or "wam"
     )
     if runpod_provider_bundle_kind == "wam":
         os.environ["BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC"] = "true"
@@ -3330,8 +4519,7 @@ def run_persistent_session_runpod(
             output = _blocked_payload(
                 generated_at=generated_at,
                 job_dir=job,
-                blockers=bundle.get("blockers")
-                or ["persistent_session_provider_bundle_blocked"],
+                blockers=bundle.get("blockers") or ["persistent_session_provider_bundle_blocked"],
                 details={
                     "bundle_manifest_path": str(
                         job / "provider_bundle" / "persistent_session_provider_bundle_manifest.json"
@@ -3361,7 +4549,9 @@ def run_persistent_session_runpod(
                 or ["persistent_session_object_store_staging_blocked"],
                 details={
                     "object_store_staging_manifest_path": str(
-                        job / "object_store_staging" / "wam_provider_object_store_staging_manifest.json"
+                        job
+                        / "object_store_staging"
+                        / "wam_provider_object_store_staging_manifest.json"
                     ),
                     "provider": "runpod",
                 },
@@ -3430,9 +4620,7 @@ def run_persistent_session_runpod(
                 "provider_command_status": poll_manifest.get("provider_command_status"),
                 "pod_status": poll_manifest.get("pod_status"),
                 "output_zip_present": bool(poll_manifest.get("output_zip_present")),
-                "nonterminal_running_output": bool(
-                    poll_manifest.get("nonterminal_running_output")
-                ),
+                "nonterminal_running_output": bool(poll_manifest.get("nonterminal_running_output")),
                 "remote_runtime_running_without_terminal_output": bool(
                     poll_manifest.get("remote_runtime_running_without_terminal_output")
                 ),
@@ -3484,7 +4672,9 @@ def run_persistent_session_runpod(
         ensure_dir(extraction_dir)
         with zipfile.ZipFile(output_zip) as archive:
             archive.extractall(extraction_dir)
-        imported_path = extraction_dir / "unitree_groot_n17_sonic_wam_persistent_session_output.json"
+        imported_path = (
+            extraction_dir / "unitree_groot_n17_sonic_wam_persistent_session_output.json"
+        )
         if not imported_path.is_file():
             imported_path = extraction_dir / "unitree_groot_n17_sonic_policy_provider_output.json"
         imported = _read_json(imported_path) if imported_path.is_file() else {}
@@ -3517,27 +4707,49 @@ def run_persistent_session_runpod(
             "policy_id": POLICY_ID,
             "selected_candidate_id": POLICY_ID,
             "job_dir": str(job),
-            "persistent_provider_session_used": bool(imported.get("persistent_provider_session_used")),
+            "persistent_provider_session_used": bool(
+                imported.get("persistent_provider_session_used")
+            ),
             "provider_instance_reused_for_policy_and_wam_loop": bool(
                 imported.get("provider_instance_reused_for_policy_and_wam_loop")
             ),
             "repeated_policy_calls_count": int(imported.get("repeated_policy_calls_count") or 0),
-            "generated_next_observation_count": int(imported.get("generated_next_observation_count") or 0),
-            "live_wam_generation_success_count": int(imported.get("live_wam_generation_success_count") or 0),
-            "learned_wam_model_success_count": int(imported.get("learned_wam_model_success_count") or 0),
-            "unitree_groot_n17_sonic_model_executed": bool(imported.get("unitree_groot_n17_sonic_model_executed")),
+            "generated_next_observation_count": int(
+                imported.get("generated_next_observation_count") or 0
+            ),
+            "live_wam_generation_success_count": int(
+                imported.get("live_wam_generation_success_count") or 0
+            ),
+            "learned_wam_model_success_count": int(
+                imported.get("learned_wam_model_success_count") or 0
+            ),
+            "unitree_groot_n17_sonic_model_executed": bool(
+                imported.get("unitree_groot_n17_sonic_model_executed")
+            ),
             "unitree_groot_n17_sonic_policy_action_command_ran": bool(
                 imported.get("unitree_groot_n17_sonic_policy_action_command_ran")
             ),
-            "unitree_policy_action_command_ran": bool(imported.get("unitree_policy_action_command_ran")),
-            "policy_action_model_command_ran": bool(imported.get("policy_action_model_command_ran")),
+            "unitree_policy_action_command_ran": bool(
+                imported.get("unitree_policy_action_command_ran")
+            ),
+            "policy_action_model_command_ran": bool(
+                imported.get("policy_action_model_command_ran")
+            ),
             "provider_output_replay_used": bool(imported.get("provider_output_replay_used")),
-            "blockers": [] if completed else imported.get("blockers") or ["persistent_session_provider_output_blocked"],
+            "blockers": []
+            if completed
+            else imported.get("blockers") or ["persistent_session_provider_output_blocked"],
             "imported_provider_output_dir": str(extraction_dir),
-            "imported_provider_output_path": str(imported_path) if imported_path.is_file() else None,
-            "runpod_create_manifest_path": str(runpod_dir / "runpod_wam_async_create_manifest.json"),
+            "imported_provider_output_path": str(imported_path)
+            if imported_path.is_file()
+            else None,
+            "runpod_create_manifest_path": str(
+                runpod_dir / "runpod_wam_async_create_manifest.json"
+            ),
             "runpod_poll_manifest_path": str(runpod_dir / "runpod_wam_async_poll_manifest.json"),
-            "runpod_teardown_manifest_path": str(runpod_dir / "runpod_wam_async_delete_manifest.json"),
+            "runpod_teardown_manifest_path": str(
+                runpod_dir / "runpod_wam_async_delete_manifest.json"
+            ),
             "provider_runtime_output_zip_path": str(output_zip),
             "runpod_live_wam_blocker_classification_path": str(
                 job / "runpod_live_wam_blocker_classification.json"
@@ -3559,14 +4771,29 @@ def run_persistent_session_runpod(
             ),
             "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
             "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
+            "clean_frame_reanchoring": _mapping(imported.get("clean_frame_reanchoring")),
+            "clean_frame_reanchor_event_count": int(
+                imported.get("clean_frame_reanchor_event_count") or 0
+            ),
+            "periodic_clean_frame_reanchoring_used": bool(
+                imported.get("periodic_clean_frame_reanchoring_used")
+            ),
             "manipulation_success_evaluator_results_path": postprocess.get(
                 "manipulation_success_evaluator_results"
             ),
             "claim_boundary_path": postprocess.get("claim_boundary"),
             "claim_boundary": {
                 "simulator_generated_world_proof_only": True,
+                "capture_truth": False,
+                "geometry_truth": False,
+                "collision_truth": False,
                 "persistent_provider_session_is_runtime_proof_not_task_success": True,
                 "valid_mp4_or_provider_completed_is_not_visual_success": True,
+                "provider_success": completed,
+                "provider_success_separate_from_visually_useful_rollout": True,
+                "periodic_clean_frame_reanchoring_used": bool(
+                    imported.get("periodic_clean_frame_reanchoring_used")
+                ),
                 "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
                 "visually_useful_rollout": bool(postprocess.get("wam_rollout_visual_success")),
                 "physical_robot_readiness_proven": False,
@@ -3597,9 +4824,9 @@ def run_persistent_session_runpod(
         if previous_wam_carrier_unitree is None:
             os.environ.pop("BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC", None)
         else:
-            os.environ[
-                "BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC"
-            ] = previous_wam_carrier_unitree
+            os.environ["BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC"] = (
+                previous_wam_carrier_unitree
+            )
         for key, previous in previous_wam_default_env.items():
             if previous is None:
                 os.environ.pop(key, None)

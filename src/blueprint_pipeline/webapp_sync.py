@@ -264,6 +264,20 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "blocked_requirement_ids": _string_list(
                 robot_team_grade_eval_closure.get("blocked_requirement_ids")
             ),
+            "all_blocked_requirement_ids": _string_list(
+                robot_team_grade_eval_closure.get("all_blocked_requirement_ids")
+            ),
+            "sim_only_beta_blocked_requirement_ids": _string_list(
+                robot_team_grade_eval_closure.get("sim_only_beta_blocked_requirement_ids")
+            ),
+            "robot_team_grade_blocked_requirement_ids": _string_list(
+                robot_team_grade_eval_closure.get("robot_team_grade_blocked_requirement_ids")
+            ),
+            "deployment_readiness_blocked_requirement_ids": _string_list(
+                robot_team_grade_eval_closure.get(
+                    "deployment_readiness_blocked_requirement_ids"
+                )
+            ),
             "closure_manifest_path": robot_team_grade_eval_closure.get(
                 "closure_manifest_path"
             ),
@@ -296,6 +310,8 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
                 "normalized_attempt_trace",
                 "failure_labels",
                 "robot_pov_observation_manifest",
+                "robot_pov_observation_candidate_set",
+                "selected_initial_policy_observation",
                 "robot_pov_frame_sequence_manifest",
                 "policy_package_manifest",
                 "policy_execution_manifest",
