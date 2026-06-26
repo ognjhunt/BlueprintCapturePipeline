@@ -226,8 +226,8 @@ def _claim_boundary(
         ),
         "unitree_g1_dexterous_manipulation_proven": False,
         "single_action_is_not_episode_success": True,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
     }
 
 

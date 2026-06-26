@@ -33,9 +33,9 @@ partial or asymmetric evaluator run cannot look like a fair policy comparison.
 If the top two policies tie or land inside `ranking_confidence.tie_band`, the
 scorecard may keep the evaluator-ranked rows but must set an ambiguous status
 such as `completed_ambiguous_ranking` and leave `top_policy_id` empty. It must
-not be rewritten as deployment readiness, physical robot readiness, safety
-approval, or a general external completion claim. MMRV, Spearman, Pearson, and
-success-rate error belong to calibration against accepted real-world anchor
+not be rewritten as a broader completion claim. The ranking claim is limited to
+generated-world policy-evaluation rank fidelity when measured. MMRV, Spearman,
+Pearson, and success-rate error belong to calibration against accepted anchor
 rollouts; they remain `not_measured` until those anchors exist and are not
 proven by WAM execution alone.
 
@@ -52,12 +52,12 @@ When enough accepted anchors exist, `sim_vs_real_calibration_report.json`
 computes Spearman rank correlation, Pearson success-rate correlation, MMRV
 (`mean_maximum_rank_violation`), mean absolute success-rate error, and
 confidence intervals. Until then, or when anchor quality fails, the report must
-block deployment/external accuracy claims with explicit blockers:
+block external accuracy claims with explicit blockers:
 `insufficient_anchor_count`, `unmatched_prediction_rows`,
 `unmatched_actual_rows`, `stale_anchor_rows`, and
 `conflicting_anchor_rows`. These blockers do not invalidate sim-only beta
-ranking or evaluator-bounded policy comparison, but they do block deployment
-readiness, customer-specific SRCC/Pearson claims, and public external-accuracy
+ ranking or evaluator-bounded policy comparison, but they do block
+customer-specific SRCC/Pearson claims and public external-accuracy
 claims.
 
 Some older artifact names and schema fields, including
@@ -69,7 +69,7 @@ and `wam_eval_claim_boundary.json`.
 
 Forward/inverse consistency is a reliability signal for generated episodes. It
 can help decide whether to stop or distrust an evaluator rollout, but it is not
-itself a task-success label, deployment approval, or real-world outcome.
+itself a task-success label or policy-ranking outcome.
 
 ## Robot Policy Versus WAM
 
@@ -145,7 +145,7 @@ and action, simulated-proprioception, and projected-skeleton conditioning
 metadata, then allows a fresh Unitree policy command to be re-queried on those
 generated observations. Its artifacts must remain labeled as default local
 support output; they do not prove a live learned OSCAR/Cosmos checkpoint,
-physical sensor feedback, success scoring, or deployment readiness.
+external sensor feedback, success scoring, or generated-world rank fidelity.
 
 ## WAM-Derived Perception And Observation Harness
 
@@ -334,8 +334,8 @@ exists; calibration metadata does not turn WAM pixels into sensor measurements.
 The review-acceptance path is explicit. A low-confidence step can unblock
 generated-rollout success scoring only when a review acceptance payload marks
 the step accepted for success scoring and includes a reviewer plus evidence
-refs. This does not unblock policy requery, real-world success, safety
-validation, or physical-robot readiness.
+refs. Policy requery and ranking claims still follow the policy adapter and
+generated-world rank fidelity gate.
 
 Validation metrics are measured only against supplied labeled validation rows
 from real/capture-backed clips or accepted anchors. The validation report can
@@ -350,9 +350,9 @@ Critical claim boundaries:
 - Inferred depth is not sensor depth.
 - SAM/object masks or fixture boxes are not physical truth.
 - Mask overlap, proximity, or contact likelihood is not stable grasp/contact proof.
-- Generated rollout success, generated-video labels, and harness outputs do not
-  prove deployment approval, safety validation, physical robot readiness, or
-  real-world success.
+- Generated rollout success, generated-video labels, and harness outputs are
+  support artifacts; ranking claims require a scoped generated-world
+  policy-evaluation rank-fidelity gate.
 - WAM/harness outputs remain support artifacts for Task Evaluation Runs and
   Post-Training Data Packages grounded in capture truth.
 
@@ -361,8 +361,9 @@ frames through the depth-splat synthesis path. For each task and robot profile,
 the packet writes source QA, a coverage/quality report, a contact sheet, and
 recapture guidance when no candidate clears the quality gate. A passing
 depth-splat candidate can seed the initial WAM observation, but it remains a
-synthetic/model-derived support artifact. It is not raw capture truth, physical
-robot POV evidence, deployment approval, or safety validation.
+synthetic/model-derived support artifact. It is not raw capture truth or
+ranking evidence until the relevant generated-world policy-evaluation
+rank-fidelity gate passes.
 
 Synthetic fallback observations and synthetic 2D seeds are not allowed to unlock
 live or review-quality WAM launch paths unless
@@ -599,8 +600,9 @@ success and failure labels, safety/contact gates, and claim boundaries.
 ## Claim Boundaries
 
 Generated WAM rollouts are model-derived support artifacts. They are not raw
-capture evidence, real robot rollouts, deployment approval, safety approval, or
-public-readiness proof.
+capture evidence. Ranking claims require the scoped generated-world
+policy-evaluation rank-fidelity gate, reported with MMRV, Spearman, and
+Pearson when measured.
 
 SC3-Eval-style and OSCAR/Cosmos-style results are credible research signals, but
 they do not prove high SRCC for arbitrary customer hardware, policies, sites, or

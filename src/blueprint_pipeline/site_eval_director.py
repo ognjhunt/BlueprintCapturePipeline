@@ -103,10 +103,10 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "payments_touched": False,
     "deployments_performed": False,
     "simulator_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "robot_policy_execution_proven": False,
     "physics_contact_validated": False,
-    "safety_validated": False,
+    "non_ranking_operational_claim_validated": False,
     "training_completed": False,
     "public_claim_upgrade_allowed": False,
     "disallowed_claims": [
@@ -116,7 +116,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
         "physics_contact_validated",
         "robot_policy_execution_passed",
         "training_completed",
-        "safety_validated",
+        "non_ranking_operational_claim_validated",
         "public_deployment_ready",
     ],
     "proof_upgrade_requires": [
@@ -880,10 +880,10 @@ def _write_blocked_outputs(
         "schema_version": SITE_EVAL_DIRECTOR_PROOF_BOUNDARY_SCHEMA_VERSION,
         **common_blocked,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "robot_policy_execution_proven": False,
         "physics_contact_validated": False,
-        "safety_validated": False,
+        "non_ranking_operational_claim_validated": False,
         "training_completed": False,
         "public_claim_upgrade_allowed": False,
     }
@@ -907,7 +907,7 @@ def _write_blocked_outputs(
         "payments_touched": False,
         "deployments_performed": False,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
     }
     write_json(automation_dir / "scenario_execution_plan.json", scenario_plan)
@@ -1044,7 +1044,7 @@ def _failure_labels(
                 if label_status in {"success", "automatic"}
                 else label_status,
                 "review_required": label_status == "review_required",
-                "claim_boundary": "failure_label_is_attempt_local_not_deployment_readiness",
+                "claim_boundary": "failure_label_is_attempt_local_not_evaluation_readiness",
             }
         )
     return {
@@ -1464,7 +1464,7 @@ def _scenario_execution_plan(
                 ],
                 "simulator_execution_requested": False,
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "proof_owner": "deterministic_site_eval_director",
                 "source_artifacts": dict(source_artifacts),
                 "claim_boundary": "scenario_execution_plan_is_review_scope_not_simulator_or_robot_result",
@@ -1532,7 +1532,7 @@ def _task_simulation_requests(
                 },
                 "execution_requested": False,
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "blockers": blockers,
                 "claim_boundary": "task_simulation_request_is_manifest_only_not_execution",
             }
@@ -1591,7 +1591,7 @@ def _scenario_simulator_matrix(
                         execution.get("simulator_execution_proven")
                     ),
                     "site_eval_director_simulator_execution_proven": False,
-                    "robot_readiness_proven": False,
+                    "rank_fidelity_result_proven": False,
                     "claim_boundary": "matrix_is_planning_only_not_simulator_execution",
                 }
             )
@@ -1709,10 +1709,10 @@ def _proof_boundary(
         "capture_id": context.capture_id,
         "status": "review_ready",
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "robot_policy_execution_proven": False,
         "physics_contact_validated": False,
-        "safety_validated": False,
+        "non_ranking_operational_claim_validated": False,
         "training_completed": False,
         "public_claim_upgrade_allowed": False,
         "source_proof_summary": {
@@ -1725,8 +1725,8 @@ def _proof_boundary(
             "simulation_automation_simulator_execution_proven": bool(
                 simulator_execution_manifest.get("simulator_execution_proven")
             ),
-            "simulation_automation_robot_readiness_proven": bool(
-                simulator_execution_manifest.get("robot_readiness_proven")
+            "simulation_automation_rank_fidelity_result_proven": bool(
+                simulator_execution_manifest.get("rank_fidelity_result_proven")
             ),
         },
         "remaining_required_evidence": list(CLAIM_BOUNDARY["proof_upgrade_requires"]),
@@ -2022,7 +2022,7 @@ def build_site_eval_director(
         "payments_touched": False,
         "deployments_performed": False,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "fixture_runner_executed": bool(normalized_trace.get("fixture_runner_executed")),
         "real_robot_or_owner_system_evidence_blocked": real_evidence_blocked is not None,

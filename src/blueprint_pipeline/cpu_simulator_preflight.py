@@ -36,10 +36,10 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "gpu_simulator_execution_proven": False,
     "owner_system_simulator_execution_proven": False,
     "simulator_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "robot_policy_execution_proven": False,
     "physics_contact_validated": False,
-    "safety_validated": False,
+    "non_ranking_operational_claim_validated": False,
     "public_claim_upgrade_allowed": False,
     "allowed_phrase": "local CPU preflight smoke",
     "disallowed_claims": [
@@ -48,7 +48,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
         "deployment_ready",
         "policy_success",
         "physics_contact_validated",
-        "safety_validated",
+        "non_ranking_operational_claim_validated",
     ],
 }
 
@@ -334,7 +334,7 @@ def _build_spawn_pose_validation(automation_dir: Path, *, generated_at: str, sce
             "spawn_outside_known_or_proxy_geometry_where_available",
         ],
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     manifest["deterministic_fingerprint"] = _sha_payload(
@@ -480,7 +480,7 @@ def _blocked_backend_result(
         "local_cpu_smoke_ran": False,
         "local_cpu_smoke_completed": False,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
@@ -525,7 +525,7 @@ def _run_pybullet_smoke(
                 "local_cpu_smoke_ran": True,
                 "local_cpu_smoke_completed": True,
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "claim_boundary": dict(CLAIM_BOUNDARY),
             }
         finally:
@@ -542,7 +542,7 @@ def _run_pybullet_smoke(
             "local_cpu_smoke_ran": True,
             "local_cpu_smoke_completed": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
 
@@ -568,7 +568,7 @@ def _run_mujoco_smoke(*, mjcf_path: Path, steps: int, generated_at: str) -> Dict
             "local_cpu_smoke_ran": True,
             "local_cpu_smoke_completed": True,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
     except Exception as exc:  # pragma: no cover - optional dependency path
@@ -583,7 +583,7 @@ def _run_mujoco_smoke(*, mjcf_path: Path, steps: int, generated_at: str) -> Dict
             "local_cpu_smoke_ran": True,
             "local_cpu_smoke_completed": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
 
@@ -767,7 +767,7 @@ def build_cpu_simulator_preflight(
         "local_cpu_smoke_ran": any(result.get("local_cpu_smoke_ran") for result in backend_results.values()),
         "local_cpu_smoke_completed": bool(completed) and not failed,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     scene_preflight = _read_optional_mapping(automation_dir / "scene_asset_preflight.json")
@@ -843,9 +843,9 @@ def build_cpu_simulator_preflight(
         "owner_gpu_simulator_execution_required": True,
         "owner_gpu_simulator_execution_proven": False,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "physics_contact_validated": False,
-        "safety_validated": False,
+        "non_ranking_operational_claim_validated": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     pre_gpu_summary = {
@@ -909,7 +909,7 @@ def build_cpu_simulator_preflight(
             "Run with `BLUEPRINT_ALLOW_CPU_SIMULATOR_PREFLIGHT=true "
             "blueprint-run-cpu-simulator-preflight --capture-root <capture-root> "
             "--allow-cpu-simulator-preflight`.\n"
-            "A passing local CPU smoke does not prove robot readiness, safety, contact, "
+            "A passing local CPU smoke does not prove generated-world rank fidelity, safety, contact, "
             "policy success, or owner-system simulator execution.\n"
         ),
     )

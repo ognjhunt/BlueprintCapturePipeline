@@ -43,7 +43,7 @@ def _local_gate_report(path: Path) -> None:
             "robot_team_grade_closure": {
                 "sim_only_beta_core_complete": True,
                 "robot_team_grade_evaluation_complete": False,
-                "deployment_readiness_complete": False,
+                "evaluation_readiness_complete": False,
             },
         },
     )
@@ -95,7 +95,7 @@ def _forwarding_report(
                 "no_pipeline_mutation_requested": True,
                 "no_gpu_allocated": True,
                 "no_simulator_execution_proven": True,
-                "no_robot_readiness_proven": True,
+                "no_rank_fidelity_result_proven": True,
                 "no_public_claim_upgrade_allowed": True,
             },
         },
@@ -123,7 +123,7 @@ def _route_proof(path: Path, capture_root: Path) -> None:
                 "simulator_execution_proven": False,
                 "robot_policy_execution_proven": False,
                 "real_robot_pov_evidence_proven": False,
-                "safety_validated": False,
+                "non_ranking_operational_claim_validated": False,
                 "customer_delivery_readiness_proven": False,
                 "public_claim_upgrade_allowed": False,
             },

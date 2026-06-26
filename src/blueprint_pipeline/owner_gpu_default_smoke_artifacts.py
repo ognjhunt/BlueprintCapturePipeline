@@ -104,7 +104,7 @@ def write_default_smoke_artifacts(
             "default_sim_policy_execution_proven": True,
             "live_robot_policy_execution_proven": False,
             "real_robot_pov_evidence_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -122,7 +122,7 @@ def write_default_smoke_artifacts(
         "claim_boundary": {
             "simulator_robot_pov_evidence_proven": True,
             "real_robot_pov_evidence_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -182,7 +182,7 @@ def write_default_smoke_artifacts(
             "default_sim_policy_execution_proven": True,
             "simulator_robot_pov_evidence_proven": True,
             "real_robot_pov_evidence_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
         },
     }
 

@@ -4,7 +4,7 @@ This command creates a synthetic Arena-style fixture under an output directory,
 runs the real ``blueprint-ingest-arena-results`` CLI path against it, audits the
 package artifacts, and writes a compact proof-boundary summary. It is local-only:
 it does not run Isaac Lab-Arena, upload storage, call vision models, or prove
-robot readiness.
+generated-world rank fidelity.
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ def _write_capture_fixture(capture_root: Path) -> None:
         {
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )

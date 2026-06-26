@@ -27,7 +27,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "simulator_execution_proven": False,
     "live_provider_execution_proven": False,
     "model_downloads_performed": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "disallowed_claims": [
         "simulator_execution_completed",
         "robot_policy_ready",
@@ -36,7 +36,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
         "provider_native_world_model_ready",
         "live_runtime_ready",
     ],
-    "robot_readiness_requires": [
+    "rank_fidelity_requires": [
         "real simulator load trace",
         "simulator action logs",
         "physics/contact validation logs",

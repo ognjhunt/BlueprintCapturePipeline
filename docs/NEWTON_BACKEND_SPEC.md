@@ -36,8 +36,8 @@ but only when all execution gates are explicitly opened:
 - `--simulator-command newton=<command>`
 
 The lane also records that local review artifacts do not prove simulator
-execution, physics/contact validity, policy success, safety validation, training
-completion, or public deployment readiness. Newton implementation must preserve
+execution, physics/contact validity, policy success, off-scope validation, training
+completion, or public generated-world rank fidelity. Newton implementation must preserve
 that proof boundary.
 
 ## Why Newton May Be Better Physics
@@ -78,8 +78,8 @@ Newton is worth implementing when the job needs one or more of these capabilitie
 
 - Do not make Newton the default backend for every robot-eval job.
 - Do not remove or weaken MuJoCo-first CPU/low-cost smoke paths.
-- Do not mark `robot_readiness_proven`, `physics_contact_validated`,
-  `safety_validated`, or `public_claim_upgrade_allowed` true from Newton command
+- Do not mark `rank_fidelity_result_proven`, `physics_contact_validated`,
+  `non_ranking_operational_claim_validated`, or `public_claim_upgrade_allowed` true from Newton command
   success alone.
 - Do not rewrite raw capture truth, generated scene evidence, or robot-owned
   assets to make Newton outputs appear more authoritative than source captures.
@@ -214,16 +214,16 @@ Newton artifacts must default to:
   "newton_execution_proven": false,
   "physics_contact_validated": false,
   "robot_policy_execution_proven": false,
-  "robot_readiness_proven": false,
-  "safety_validated": false,
+  "rank_fidelity_result_proven": false,
+  "non_ranking_operational_claim_validated": false,
   "public_claim_upgrade_allowed": false,
   "real_robot_contact_proven": false
 }
 ```
 
 Only deterministic accepted artifacts may upgrade simulator-specific booleans,
-and even accepted Newton execution must not automatically upgrade robot readiness,
-safety, public claims, or real-robot readiness.
+and even accepted Newton execution must not automatically upgrade generated-world rank fidelity,
+safety, public claims, or generated-world rank fidelity.
 
 ## Provider and Packaging Requirements
 
@@ -250,7 +250,7 @@ Minimum test coverage:
 4. Missing Newton dependencies write blocked manifests, not false success.
 5. Accepted Newton command output can prove `newton_execution_proven` only inside
    simulator-execution proof boundaries.
-6. Newton proof validation rejects attempts to set robot readiness, safety, public
+6. Newton proof validation rejects attempts to set generated-world rank fidelity, safety, public
    claim upgrade, or real-robot contact proof directly.
 7. Provider input setup emits `BLUEPRINT_NEWTON_EVAL_WORKER_IMAGE_REF` and Newton
    Docker instructions for `--simulator newton`.

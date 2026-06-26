@@ -3,7 +3,7 @@
 The adapter is intentionally separate from the RunPod adapter. It can build a
 dry-run request plan and, behind explicit gates, run a bounded Vast instance
 startup probe that records heartbeat, GPU sanity, optional Isaac smoke, and
-teardown artifacts without promoting any of those into robot-readiness proof.
+teardown artifacts without promoting any of those into rank-fidelity proof.
 """
 
 from __future__ import annotations
@@ -987,7 +987,7 @@ def _runtime_discovery(
         "vastai_cli_probe": _vastai_version(),
         "proof_boundary": (
             "Runtime discovery only records current Vast API/CLI surfaces. It does not "
-            "prove provider allocation, GPU visibility, Isaac execution, or robot readiness."
+            "prove provider allocation, GPU visibility, Isaac execution, or generated-world rank fidelity."
         ),
     }
     write_json(job_dir / "vast_runtime_discovery.json", discovery)
@@ -1083,7 +1083,7 @@ def _provider_plan(
         "raw_secret_values_recorded": False,
         "proof_boundary": (
             "This plan authorizes a bounded Vast startup probe only. Heartbeat, GPU "
-            "sanity, and Isaac smoke do not prove physical robot readiness, deployment "
+            "sanity, and Isaac smoke do not prove generated-world rank fidelity, deployment "
             "readiness, official G1 policy execution, or real WAM/VLA execution."
         ),
     }
@@ -1098,12 +1098,12 @@ def _truth_boundaries() -> dict[str, Any]:
         "collider_source_if_used": "metadata_derived_collider_proxy_required",
         "splat_visuals_if_used": "splat_rendered_visual_evidence_synchronized_with_isaac_state",
         "real_wam_vla_runtime_proven": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "dexterous_hand_policy_proven": False,
         "controller_grade_execution_proven": False,
         "official_policy_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
     }
 

@@ -232,7 +232,7 @@ def _mujoco_gate(path: Path, payload: Mapping[str, Any] | None) -> dict[str, Any
         claim_boundary=(
             "Proves simulator-side Unitree G1 scene load, spawn, default smoke-policy "
             "execution, and simulator POV frames. It does not prove balanced humanoid "
-            "walking, training-grade policy rollouts, or physical robot readiness."
+            "walking, training-grade policy rollouts, or generated-world rank fidelity."
         ),
         details={
             "simulator_backend": payload.get("simulator_backend"),
@@ -371,7 +371,7 @@ def _handoff_gate(path: Path, payload: Mapping[str, Any] | None) -> dict[str, An
         claim_boundary=(
             "Proves a simulator-only robot-team handoff dataset with qpos/qvel, actuator, "
             "contact, policy-observation, simulated robot POV, and high-quality video "
-            "streams. It does not prove physical robot readiness or real robot POV."
+            "streams. It does not prove generated-world rank fidelity or real robot POV."
         ),
         details={
             "robot_team_handoff_dataset_status": payload.get("robot_team_handoff_dataset_status"),
@@ -454,7 +454,7 @@ def _webapp_gate(path: Path, payload: Mapping[str, Any] | None) -> dict[str, Any
         blockers=blockers,
         claim_boundary=(
             "Proves the customer-facing request path can stage a simulator job request. "
-            "It does not claim physical robot readiness."
+            "It does not claim generated-world rank fidelity."
         ),
         details={
             "http_status": webapp_route.get("http_status"),
@@ -548,9 +548,9 @@ def build_simulator_beta_readiness(
         if gates[gate_id].get("proven") is not True
     ]
     out_of_scope = {
-        "physical_robot_readiness": "out_of_scope_for_simulator_beta",
+        "generated_world_rank_fidelity": "out_of_scope_for_simulator_beta",
         "real_robot_pov": "out_of_scope_for_simulator_beta",
-        "physical_safety_validation": "out_of_scope_for_simulator_beta",
+        "physical_non_ranking_operational_claim": "out_of_scope_for_simulator_beta",
         "physical_robot_team_policy_acceptance": "out_of_scope_for_simulator_beta",
     }
     status = "ready_for_simulator_beta" if not blocking_gate_ids else "blocked_simulator_beta"
@@ -589,9 +589,9 @@ def build_simulator_beta_readiness(
         "out_of_scope_gates": out_of_scope,
         "claim_boundary": {
             "simulator_beta_only": True,
-            "physical_robot_readiness_claimed": False,
+            "generated_world_rank_fidelity_claimed": False,
             "real_robot_pov_claimed": False,
-            "physical_safety_validation_claimed": False,
+            "physical_non_ranking_operational_claim_claimed": False,
             "customer_can_request_simulator_job": gates[
                 "customer_website_to_pipeline_request"
             ].get("proven")

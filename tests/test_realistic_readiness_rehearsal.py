@@ -66,8 +66,8 @@ def _seed_complete_mujoco_rehearsal(capture_root: Path) -> Path:
                 "local_cpu_mujoco_execution_proven": True,
                 "mujoco_g1_asset_execution_proven": True,
                 "real_robot_pov_evidence_proven": False,
-                "physical_robot_readiness_proven": False,
-                "safety_validated": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "non_ranking_operational_claim_validated": False,
                 "public_claim_upgrade_allowed": False,
             },
         },
@@ -270,7 +270,7 @@ def _seed_provider_blockers(capture_root: Path, job_id: str) -> None:
         capture_root / "pipeline" / "robot_eval_jobs" / job_id / "live_eval_closure_manifest.json",
         {
             "status": "blocked",
-            "blockers": ["real_robot_pov_evidence_missing", "safety_validation_missing"],
+            "blockers": ["real_robot_pov_evidence_missing", "non_ranking_operational_claim_missing"],
         },
     )
     _write_json(
@@ -297,7 +297,7 @@ def _seed_same_entrypoint_worker_rehearsal(capture_root: Path, job_id: str) -> N
             "simulator": "mujoco",
             "provisioner": "fixture_local",
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "artifact_upload": {"status": "completed"},
             "blockers": [],
@@ -355,7 +355,7 @@ def _seed_container_worker_image_rehearsal(capture_root: Path) -> None:
             "artifact_upload": {"status": "completed"},
             "live_provider_calls_performed": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["worker_runtime_preflight_blocked"],
         },
@@ -371,7 +371,7 @@ def _seed_container_worker_image_rehearsal(capture_root: Path) -> None:
             "detail_blockers": ["nvidia_smi_unavailable"],
             "blockers": ["runtime_preflight_command_failed"],
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -545,10 +545,10 @@ def test_realistic_rehearsal_records_simulator_proof_but_blocks_physical_claims(
     assert current_state["proven_gate_count"] == 0  # type: ignore[index]
     assert current_state["remaining_gate_count"] == 6  # type: ignore[index]
     assert current_state["all_live_product_gates_proven"] is False  # type: ignore[index]
-    assert current_state["gates"]["physical_robot_readiness"]["label"] == "Physical G1 readiness"  # type: ignore[index]
+    assert current_state["gates"]["generated_world_rank_fidelity"]["label"] == "Physical G1 readiness"  # type: ignore[index]
     assert current_state["gates"]["production_runpod_worker_execution"]["proven"] is False  # type: ignore[index]
     assert matrix["mujoco_unitree_g1_simulator_rehearsal"]["proven"] is True  # type: ignore[index]
-    assert matrix["physical_robot_readiness"]["proven"] is False  # type: ignore[index]
+    assert matrix["generated_world_rank_fidelity"]["proven"] is False  # type: ignore[index]
     assert matrix["real_robot_pov"]["proven"] is False  # type: ignore[index]
     assert matrix["robot_team_policy_performance"]["status"] == "not_proven_default_smoke_policy_only"  # type: ignore[index]
     assert matrix["production_runpod_worker_execution"]["status"] == "not_run_provider_gates_blocked"  # type: ignore[index]
@@ -556,8 +556,8 @@ def test_realistic_rehearsal_records_simulator_proof_but_blocks_physical_claims(
     assert "missing_BLUEPRINT_WEBAPP_PRODUCTION_URL" in matrix["customer_through_website_testing_ready"]["blockers"]  # type: ignore[index]
     assert "upload_failed:Forbidden" in matrix["production_runpod_worker_execution"]["blockers"]  # type: ignore[index]
     assert proof_boundary["mujoco_unitree_g1_simulator_rehearsal_proven"] is True  # type: ignore[index]
-    assert proof_boundary["physical_robot_readiness_proven"] is False  # type: ignore[index]
-    assert proof_boundary["safety_validated"] is False  # type: ignore[index]
+    assert proof_boundary["generated_world_rank_fidelity_result_proven"] is False  # type: ignore[index]
+    assert proof_boundary["non_ranking_operational_claim_validated"] is False  # type: ignore[index]
     assert proof_boundary["runpod_api_call_performed"] is False  # type: ignore[index]
     assert proof_boundary["runpod_live_execution_api_call_performed"] is False  # type: ignore[index]
     assert proof_boundary["runpod_shutdown_or_termination_proof"] is False  # type: ignore[index]
@@ -683,22 +683,22 @@ def test_realistic_rehearsal_promotes_ready_physical_g1_evidence_to_proof_matrix
 
     assert assembly["status"] == "ready_for_live_input_staging"
     matrix = manifest["requested_proof_matrix"]
-    assert matrix["physical_robot_readiness"]["proven"] is True  # type: ignore[index]
-    assert matrix["physical_robot_readiness"]["status"] == "proven"  # type: ignore[index]
-    assert matrix["safety_validation"]["proven"] is True  # type: ignore[index]
-    assert matrix["safety_validation"]["status"] == "proven"  # type: ignore[index]
+    assert matrix["generated_world_rank_fidelity"]["proven"] is True  # type: ignore[index]
+    assert matrix["generated_world_rank_fidelity"]["status"] == "proven"  # type: ignore[index]
+    assert matrix["non_ranking_operational_claim"]["proven"] is True  # type: ignore[index]
+    assert matrix["non_ranking_operational_claim"]["status"] == "proven"  # type: ignore[index]
     assert matrix["real_robot_pov"]["proven"] is True  # type: ignore[index]
     assert matrix["real_robot_pov"]["status"] == "proven"  # type: ignore[index]
     assert matrix["robot_team_policy_performance"]["proven"] is True  # type: ignore[index]
     assert matrix["robot_team_policy_performance"]["status"] == "proven"  # type: ignore[index]
-    assert manifest["proof_boundary"]["physical_robot_readiness_proven"] is True  # type: ignore[index]
-    assert manifest["proof_boundary"]["safety_validated"] is True  # type: ignore[index]
+    assert manifest["proof_boundary"]["generated_world_rank_fidelity_result_proven"] is True  # type: ignore[index]
+    assert manifest["proof_boundary"]["non_ranking_operational_claim_validated"] is True  # type: ignore[index]
     assert manifest["proof_boundary"]["real_robot_pov_evidence_proven"] is True  # type: ignore[index]
     assert manifest["proof_boundary"]["robot_team_policy_performance_proven"] is True  # type: ignore[index]
     assert "missing_physical_robot_run_manifest" not in manifest["non_mujoco_external_blockers"]  # type: ignore[index]
     assert "missing_robot_team_owner_acceptance_or_review" not in manifest["non_mujoco_external_blockers"]  # type: ignore[index]
     gap_audit = _read_json(Path(manifest["artifacts"]["evidence_gap_audit"]))  # type: ignore[index]
-    assert gap_audit["requirements"]["physical_robot_readiness"]["proven"] is True  # type: ignore[index]
+    assert gap_audit["requirements"]["generated_world_rank_fidelity"]["proven"] is True  # type: ignore[index]
     assert gap_audit["requirements"]["real_robot_pov"]["proven"] is True  # type: ignore[index]
 
 
@@ -728,7 +728,7 @@ def test_realistic_rehearsal_prefers_signed_proven_runpod_execution(tmp_path: Pa
             "runtime_manifest_worker_completed": True,
             "production_runpod_worker_execution_proven": True,
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -744,7 +744,7 @@ def test_realistic_rehearsal_prefers_signed_proven_runpod_execution(tmp_path: Pa
     assert str(signed_proof) in production["evidence"]  # type: ignore[index]
     assert proof_boundary["production_runpod_worker_execution_proven"] is True  # type: ignore[index]
     assert proof_boundary["published_worker_image_ref_proven"] is True  # type: ignore[index]
-    assert proof_boundary["physical_robot_readiness_proven"] is False  # type: ignore[index]
+    assert proof_boundary["generated_world_rank_fidelity_result_proven"] is False  # type: ignore[index]
     assert manifest["current_proof_state"]["gates"]["production_runpod_worker_execution"]["proven"] is True  # type: ignore[index]
     assert live_execution["path"] == str(signed_proof)  # type: ignore[index]
     assert live_execution["production_runpod_worker_execution_proven"] is True  # type: ignore[index]
@@ -883,7 +883,7 @@ def test_realistic_rehearsal_summarizes_two_live_gates_proven_with_physical_gate
             "runtime_manifest_worker_completed": True,
             "production_runpod_worker_execution_proven": True,
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -898,8 +898,8 @@ def test_realistic_rehearsal_summarizes_two_live_gates_proven_with_physical_gate
         "customer_through_website_testing_ready",
     }
     assert set(state["not_proven"]) == {  # type: ignore[index]
-        "physical_robot_readiness",
-        "safety_validation",
+        "generated_world_rank_fidelity",
+        "non_ranking_operational_claim",
         "real_robot_pov",
         "robot_team_policy_performance",
     }

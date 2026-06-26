@@ -139,7 +139,7 @@ def test_g1_setup_writes_unitree_default_artifacts_without_secrets(tmp_path: Pat
     assert "rpa_" not in assemble_script
     assert "rpa_" not in stage_script
     assert "rpa_" not in runpod_script
-    assert manifest["proof_boundary"]["physical_robot_readiness_proven"] is False  # type: ignore[index]
+    assert manifest["proof_boundary"]["generated_world_rank_fidelity_result_proven"] is False  # type: ignore[index]
 
 
 def test_g1_setup_cli_writes_manifest(tmp_path: Path) -> None:

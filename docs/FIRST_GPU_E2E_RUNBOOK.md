@@ -16,7 +16,7 @@ BlueprintCapture raw bundle
 ```
 
 The first successful GPU pass proves only the accepted simulator command and its
-evidence artifacts. It does not prove robot readiness, safety/contact validity,
+evidence artifacts. It does not prove generated-world rank fidelity, safety/contact validity,
 live policy success, customer delivery, or public-claim upgrades.
 
 ## Runtime Choice
@@ -103,7 +103,7 @@ This manifest separates `ready_for_capture_staging` from
 `ready_for_worldlabs_first_clip`. It checks local file existence, supported
 video suffix, size, and ffprobe duration metadata when available. It does not
 prove privacy clearance, scene geometry, WebApp upstream truth, simulator
-execution, or robot readiness.
+execution, or generated-world rank fidelity.
 
 When the sample preflight is ready, stage it into the supported capture-tree
 layout:
@@ -462,7 +462,7 @@ export ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT="$CAPTURE_ROOT/pipeline/w
 That report may satisfy the Pipeline readiness audit's forwarding-config
 evidence when it is ready, redacted, covers `$WEBAPP_SITE_SLUG`, and has no
 blockers. It still does not submit a request, stage WebApp inputs, allocate a
-GPU, run Isaac/MuJoCo, or prove robot readiness.
+GPU, run Isaac/MuJoCo, or prove generated-world rank fidelity.
 
 On the Pipeline host, run the authenticated intake service:
 
@@ -699,7 +699,7 @@ blueprint-run-simulation-automation \
 
 That proves only that the owner command ran and returned the required simulator
 evidence, default `walk_to_target` smoke-policy trace, and simulator POV evidence.
-Real robot POV, robot-team policy quality, contact/safety validation, and robot
+Real robot POV, robot-team policy quality, contact/off-scope validation, and robot
 readiness remain false.
 
 The generated packet also includes `live_policy_execution_contract.md`. Use it to
@@ -808,7 +808,7 @@ artifact-output URI, worker image ref, provider name, job id, timeout, idle
 timeout, and watchdog TTL through environment variables. It records
 `gpu_provider_launcher_result.json` plus stdout/stderr logs, but stores no raw
 command or provider secret values and does not prove GPU allocation, simulator
-execution, or robot readiness without provider/runtime evidence.
+execution, or generated-world rank fidelity without provider/runtime evidence.
 
 For RunPod, use the repo-owned adapter as the provider command. Start with the
 dry-run request-shape proof:
@@ -858,7 +858,7 @@ contract, no-secret policy, concrete idle timeout, concrete external watchdog
 TTL, cost ledger, and proof ceilings. For Isaac, the runtime-preflight contract includes NVIDIA
 inventory, driver, Vulkan/RTX, headless launch, blank-scene load, and test-frame
 checks before scene work. A local rehearsal can pass this audit while still
-blocking live WebApp truth, simulator execution, or robot-readiness proof.
+blocking live WebApp truth, simulator execution, or rank-fidelity proof.
 
 The closure should still block unless robot-team policy execution beyond the
 default smoke policy, real robot POV, deployment outcomes, signed delivery,
@@ -883,7 +883,7 @@ blueprint-audit-live-robot-eval-closure \
 
 The first GPU milestone is achieved only when the selected simulator result is
 `completed`, the owner GPU proof schema validates, stdout/stderr/exit code are
-present, and the proof boundary still refuses robot-readiness upgrades.
+present, and the proof boundary still refuses rank-fidelity upgrades.
 
 Stop and fix before continuing if any of these are true:
 
@@ -894,7 +894,7 @@ Stop and fix before continuing if any of these are true:
 - proof files are missing or not referenced by the artifact manifest
 - simulator result says completed but closure audit still reports missing
   simulator evidence
-- any public or internal proof boundary upgrades robot readiness from GPU smoke
+- any public or internal proof boundary upgrades generated-world rank fidelity from GPU smoke
   alone
 
 ## Expected First-Run Failures

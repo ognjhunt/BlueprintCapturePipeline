@@ -376,7 +376,7 @@ def build_deployment_parity_proof(
             "pipeline_intake_health_ready": pipeline_intake_health_ready,
             "git_parity_proven": git_parity_proven,
             "simulator_execution_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

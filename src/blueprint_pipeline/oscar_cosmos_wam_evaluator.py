@@ -495,7 +495,7 @@ def _source_unitree_controller_proof(
         "claim_boundary": {
             "unitree_locomotion_policy_is_mujoco_simulator_only": True,
             "unitree_locomotion_policy_is_not_vla_manipulation_policy": True,
-            "unitree_locomotion_policy_does_not_prove_physical_robot_readiness": True,
+            "unitree_locomotion_policy_does_not_prove_generated_world_rank_fidelity": True,
             "unitree_hand_or_dexterous_manipulation_policy_not_proven": (
                 not unitree_hand_manipulation_policy_used
             ),
@@ -1302,7 +1302,7 @@ def build_policy_model_endpoint_readiness_manifest(
             "endpoint_creation_is_not_model_execution_proof": True,
             "real_model_endpoint_requires_command_checkpoint_and_provenance": True,
             "reference_adapter_is_not_real_wam_vla": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "raw_credentials_written_to_artifacts": False,
         },
     }
@@ -1552,7 +1552,7 @@ def build_policy_model_endpoint_creation_plan(
                 "does_not_prove": [
                     "task success",
                     "forward/inverse consistency",
-                    "physical robot readiness",
+                    "generated-world rank fidelity",
                 ],
             },
             {
@@ -1568,7 +1568,7 @@ def build_policy_model_endpoint_creation_plan(
                     "policy and WAM can exchange observations/actions through Blueprint contracts"
                 ],
                 "does_not_prove": [
-                    "physical robot readiness",
+                    "generated-world rank fidelity",
                     "task success without reviewable video and judge output",
                 ],
                 "blockers": closed_loop_blockers,
@@ -1861,8 +1861,8 @@ def _skipped_openvla_provider_smoke_proof(reason: str) -> dict[str, Any]:
         "model_execution_scope": None,
         "endpoint_closed_loop_policy_proven": False,
         "unitree_g1_dexterous_manipulation_proven": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
         "blockers": [reason],
@@ -2242,7 +2242,7 @@ def _build_manipulation_loop_readiness_manifest(
             "g1_robot_policy_selection_contract": "unitree_native_policy_required_for_g1_claims",
             "unitree_locomotion_policy_is_not_dexterous_manipulation": True,
             "simulated_contact_dynamics_do_not_prove_vla_manipulation": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "raw_credentials_written_to_artifacts": False,
         },
     }
@@ -2666,9 +2666,9 @@ def _normalize_wam_success_labels(
                 "human_review_required": bool(item.get("human_review_required", False)),
                 "human_review_recommended": bool(item.get("human_review_recommended", True)),
                 "proof_effect": "semantic_label_on_generated_video_only",
-                "robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-                "physical_robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
                 "safety_or_contact_validation_proven": False,
                 "srcc_or_policy_ranking_proven": False,
                 "public_claim_upgrade_allowed": False,
@@ -2934,7 +2934,7 @@ def _generated_rollout_failure_labels(
             "visual_smoke_required_for_review_grade_failure_diagnosis": True,
             "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
             "review_grade_failure_diagnosis": review_grade_failure_diagnosis,
-            "failure_labels_do_not_prove_physical_robot_readiness": True,
+            "failure_labels_do_not_prove_generated_world_rank_fidelity": True,
             "proof_effect": FAILURE_LABEL_PROOF_EFFECT,
         },
     }
@@ -3100,8 +3100,8 @@ def _normalize_wam_episode_consistency(
                 "model": _string(item.get("model")) or _string(command_payload.get("model")) or None,
                 "proof_effect": "external_episode_consistency_label_on_generated_video_and_trace_context",
                 "task_success_proven": False,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
                 "safety_or_contact_validation_proven": False,
                 "srcc_or_policy_ranking_proven": False,
                 "public_claim_upgrade_allowed": False,
@@ -3165,8 +3165,8 @@ def _normalize_wam_episode_consistency(
             "forward_inverse_consistency_is_external_episode_label_not_wam_execution": True,
             "forward_inverse_consistency_does_not_prove_task_success": True,
             "forward_inverse_consistency_does_not_prove_visual_rollout_useful_for_success_review": True,
-            "forward_inverse_consistency_does_not_prove_physical_robot_readiness": True,
-            "forward_inverse_consistency_does_not_prove_deployment_readiness": True,
+            "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity": True,
+            "forward_inverse_consistency_does_not_prove_evaluation_readiness": True,
             "forward_inverse_consistency_does_not_prove_safety_or_srcc": True,
             "raw_credentials_written_to_artifacts": False,
             "secret_hashes_written_to_artifacts": False,
@@ -3261,8 +3261,8 @@ def _unscored_wam_episode_consistency(
             "forward_inverse_consistency_is_external_episode_label_not_wam_execution": True,
             "forward_inverse_consistency_does_not_prove_task_success": True,
             "forward_inverse_consistency_does_not_prove_visual_rollout_useful_for_success_review": True,
-            "forward_inverse_consistency_does_not_prove_physical_robot_readiness": True,
-            "forward_inverse_consistency_does_not_prove_deployment_readiness": True,
+            "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity": True,
+            "forward_inverse_consistency_does_not_prove_evaluation_readiness": True,
             "forward_inverse_consistency_does_not_prove_safety_or_srcc": True,
             "raw_credentials_written_to_artifacts": False,
             "secret_hashes_written_to_artifacts": False,
@@ -3908,7 +3908,7 @@ def _run_wam_policy_requery(
             "openvla_policy_used": openvla_policy_used,
             "provider_output_replay_used": provider_replay_used,
             "provider_replay_is_not_fresh_policy_observation": bool(provider_replay_used),
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
 
@@ -4558,7 +4558,7 @@ def run_oscar_cosmos_wam_evaluator(
         },
         "claim_boundary": {
             "judge_input_is_generated_video_not_raw_robot_evidence": True,
-            "judge_success_label_does_not_prove_physical_robot_readiness": True,
+            "judge_success_label_does_not_prove_generated_world_rank_fidelity": True,
             "judge_success_label_does_not_prove_forward_inverse_consistency": True,
             "raw_credentials_written_to_artifacts": False,
         },
@@ -4687,7 +4687,7 @@ def run_oscar_cosmos_wam_evaluator(
             "scorer_is_separate_from_wam_execution_and_evaluator": True,
             "scorer_input_is_generated_video_and_trace_context_not_physical_robot": True,
             "consistency_label_does_not_prove_task_success": True,
-            "consistency_label_does_not_prove_physical_robot_readiness": True,
+            "consistency_label_does_not_prove_generated_world_rank_fidelity": True,
             "raw_credentials_written_to_artifacts": False,
         },
     }
@@ -4828,7 +4828,7 @@ def run_oscar_cosmos_wam_evaluator(
             "visual_smoke_required_for_review_grade_policy_ranking": True,
             "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
             "lightweight_state_proxy_does_not_prove_task_success": True,
-            "score_does_not_prove_physical_robot_readiness": True,
+            "score_does_not_prove_generated_world_rank_fidelity": True,
             "score_does_not_prove_forward_inverse_consistency": True,
         },
     }
@@ -5330,8 +5330,8 @@ def run_oscar_cosmos_wam_evaluator(
         "fixture_policy_used_as_wam_model": False,
         "generated_outputs_are_raw_capture_evidence": False,
         "wam_rollout_is_robot_policy": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "official_unitree_controller_proven": bool(
             unitree_controller_proof.get("official_unitree_controller_proven")
         ),

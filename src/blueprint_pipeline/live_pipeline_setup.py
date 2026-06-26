@@ -75,7 +75,7 @@ CONTROL_PLANE_NOT_PROOF = {
     "runner_role": "optional_always_on_control_plane",
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "notes": [
         "A CPU droplet can schedule jobs, host manifests, sync repos, and run watchdogs.",
         "It is not GPU/Arena execution proof unless owner-system simulator logs and artifacts are ingested.",
@@ -570,7 +570,7 @@ def build_live_pipeline_setup_manifest(
                 arena_results=arena_result_artifacts,
                 claim_boundary=dict(CONTROL_PLANE_NOT_PROOF),
                 proof_boundary=(
-                    "completed command or supplied result artifacts are still not robot readiness "
+                    "completed command or supplied result artifacts are still not generated-world rank fidelity "
                     "without accepted owner evidence"
                 ),
             ),

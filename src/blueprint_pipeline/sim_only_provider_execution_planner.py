@@ -446,7 +446,7 @@ def _runtime_manifest(
             runpod_proof.get("production_runpod_worker_execution_proven") is True
         ),
         "simulator_execution_proven": bool(runpod_proof.get("simulator_execution_proven") is True),
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "shutdown_or_termination_proof": bool(
             runpod_proof.get("shutdown_or_termination_proof") is True
@@ -630,8 +630,8 @@ def build_sim_only_provider_execution_layer(
             "robot": "unitree_g1",
             "simulator_backend": simulator,
             "task": "walk_to_target",
-            "physical_robot_readiness": "out_of_scope_for_simulator_beta",
-            "physical_safety_validation": "out_of_scope_for_simulator_beta",
+            "generated_world_rank_fidelity": "out_of_scope_for_simulator_beta",
+            "physical_non_ranking_operational_claim": "out_of_scope_for_simulator_beta",
             "physical_policy_acceptance": "out_of_scope_for_simulator_beta",
         },
         "cheapest_sufficient_path": {
@@ -667,8 +667,8 @@ def build_sim_only_provider_execution_layer(
         "secret_values_in_artifact": False,
         "claim_boundary": {
             "simulator_beta_success_evaluated_by_sim_only_gate": True,
-            "physical_robot_readiness_claimed": False,
-            "robot_readiness_proven": False,
+            "generated_world_rank_fidelity_claimed": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
         "blockers": _string_list(preflight.get("blockers")),

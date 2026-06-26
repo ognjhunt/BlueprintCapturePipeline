@@ -108,8 +108,8 @@ def _write_valid_provider_bundle(path: Path) -> None:
             "from isaacsim import SimulationApp\n"
             "controller_grade_execution_proven = False\n"
             "official_policy_execution_proven = False\n"
-            "physical_robot_readiness_proven = False\n"
-            "deployment_readiness_proven = False\n",
+            "generated_world_rank_fidelity_result_proven = False\n"
+            "generated_world_policy_evaluation_scope_proven = False\n",
         )
         for name in (
             "provider_runtime/isaac_provider_eval_manifest.json",

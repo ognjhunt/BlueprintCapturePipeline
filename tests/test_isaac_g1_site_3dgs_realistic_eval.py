@@ -112,8 +112,8 @@ def test_realistic_isaac_lane_writes_fail_closed_artifacts(tmp_path: Path) -> No
     assert trace["attempts"][0]["status"] == "blocked"
     assert summary["attempted_episode_count"] == 1
     assert summary["blocked_episode_count"] == 1
-    assert summary["physical_robot_readiness_proven"] is False
-    assert summary["deployment_readiness_proven"] is False
+    assert summary["generated_world_rank_fidelity_result_proven"] is False
+    assert summary["generated_world_policy_evaluation_scope_proven"] is False
     assert visual_boundary["direct_splat_collision_claimed"] is False
     assert visual_boundary["colliders_are_metadata_derived_proxy"] is True
     assert controller["controller_grade_execution_proven"] is False

@@ -359,7 +359,7 @@ def _base_result(
         "raw_api_key_stored": False,
         "signed_url_values_in_artifact": False,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "request_summary": _request_summary(request),
         "cost_control_policy": _cost_control_policy(request),

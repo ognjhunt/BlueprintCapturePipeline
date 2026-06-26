@@ -27,8 +27,8 @@ CLAIM_BOUNDARY = {
     "robot_policy_execution_performed": False,
     "balanced_locomotion_controller_integrated": False,
     "real_world_outcome_proven": False,
-    "robot_readiness_proven": False,
-    "safety_validation_proven": False,
+    "rank_fidelity_result_proven": False,
+    "non_ranking_operational_claim_proven": False,
     "public_claim_upgrade_allowed": False,
 }
 

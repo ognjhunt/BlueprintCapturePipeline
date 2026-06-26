@@ -191,7 +191,7 @@ def test_owner_gpu_proof_runner_writes_validated_proof(tmp_path: Path) -> None:
     assert proof["exit_code"] == 0
     assert proof["robot_asset"]["name"] == "Unitree G1"
     assert proof["robot_asset"]["uri_or_path"] == "Robots/Unitree/G1/g1.usd"
-    assert proof["robot_readiness_proven"] is False
+    assert proof["rank_fidelity_result_proven"] is False
     assert validation["owner_gpu_simulator_execution_proven"] is True
     assert validation["isaac_sim_execution_proven"] is True
     assert validation["isaac_robot_asset_execution_proven"] is True
@@ -199,7 +199,7 @@ def test_owner_gpu_proof_runner_writes_validated_proof(tmp_path: Path) -> None:
     assert validation["owner_gpu_default_policy_execution_proven"] is True
     assert validation["owner_gpu_sim_robot_pov_evidence_proven"] is True
     assert validation["real_robot_pov_evidence_proven"] is False
-    assert validation["robot_readiness_proven"] is False
+    assert validation["rank_fidelity_result_proven"] is False
     assert "owner command completed" in (
         capture_root
         / "pipeline"
@@ -278,7 +278,7 @@ def test_owner_gpu_proof_runner_output_is_ingested_by_simulation_automation(
     assert gpu_handoff["claim_boundary"]["owner_gpu_simulator_execution_proven"] is True
     assert gpu_handoff["claim_boundary"]["owner_gpu_default_policy_execution_proven"] is True
     assert gpu_handoff["claim_boundary"]["owner_gpu_sim_robot_pov_evidence_proven"] is True
-    assert gpu_handoff["claim_boundary"]["robot_readiness_proven"] is False
+    assert gpu_handoff["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert "simulator_execution_completed" not in gpu_handoff["claim_boundary"]["disallowed_claims"]
     assert "robot_ready" in gpu_handoff["claim_boundary"]["disallowed_claims"]
     assert "simulator load trace" not in gpu_handoff["claim_boundary"]["proof_upgrade_requires"]
@@ -294,14 +294,14 @@ def test_owner_gpu_proof_runner_output_is_ingested_by_simulation_automation(
     assert run_manifest["simulators_run"] is True
     assert "simulator_execution_completed" not in run_manifest["claim_boundary"]["disallowed_claims"]
     assert proof_boundary["real_robot_pov_evidence_proven"] is False
-    assert proof_boundary["robot_readiness_proven"] is False
+    assert proof_boundary["rank_fidelity_result_proven"] is False
     assert run_manifest["owner_gpu_simulator_execution_proven"] is True
     assert run_manifest["isaac_sim_execution_proven"] is True
     assert run_manifest["isaac_robot_asset_execution_proven"] is True
     assert run_manifest["owner_gpu_default_policy_execution_proven"] is True
     assert run_manifest["owner_gpu_sim_robot_pov_evidence_proven"] is True
-    assert run_manifest["robot_readiness_proven"] is False
-    assert automation_result["claim_boundary"]["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
+    assert automation_result["claim_boundary"]["rank_fidelity_result_proven"] is False
 
 
 def test_owner_gpu_proof_runner_blocks_when_owner_command_omits_traces(tmp_path: Path) -> None:

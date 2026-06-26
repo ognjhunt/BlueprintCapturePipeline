@@ -86,10 +86,10 @@ def image_model_render_remediation_claim_boundary() -> dict[str, Any]:
         "original_3d_render_preserved_for_audit": True,
         "enhanced_frame_is_not_scene_state_authority": True,
         "enhanced_frame_is_not_geometry_or_collision_proof": True,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
-        "real_world_manipulation_success_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
+        "accepted_anchor_manipulation_success_proven": False,
         "raw_secret_values_recorded": False,
     }
 

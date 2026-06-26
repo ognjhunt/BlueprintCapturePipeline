@@ -74,8 +74,8 @@ def _write_provider_output_zip(path: Path, *, include_runtime_result: bool = Fal
                         "learned_wam_model_ran": True,
                         "truth_boundary": {
                             "generated_video_is_model_output": True,
-                            "physical_robot_readiness_proven": False,
-                            "deployment_readiness_proven": False,
+                            "generated_world_rank_fidelity_result_proven": False,
+                            "generated_world_policy_evaluation_scope_proven": False,
                         },
                     }
                 ),
@@ -2844,7 +2844,7 @@ Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_OUTPUT"]).write_text(json.dumps(paylo
         "forward_inverse_consistency_does_not_prove_task_success"
     ] is True
     assert consistency["claim_boundary"][
-        "forward_inverse_consistency_does_not_prove_physical_robot_readiness"
+        "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity"
     ] is True
     checks = {row["check_id"]: row for row in consistency["checks"]}
     assert checks["forward_dynamics_consistency"]["status"] == "passed"

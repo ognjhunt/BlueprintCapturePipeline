@@ -233,7 +233,7 @@ def _base_result(
         "actual_gpu_time_record_present": False,
         "secret_values_in_artifact": False,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "provider_context": _provider_context(request),
     }
@@ -331,7 +331,7 @@ def run_gpu_provider_launcher(
     This function never calls provider APIs directly. It validates the prepared
     dry-run provider request, requires an env gate plus a CLI gate for live
     providers, executes only the supplied command argv, and writes a result
-    artifact that cannot upgrade simulator or robot-readiness proof.
+    artifact that cannot upgrade simulator or rank-fidelity proof.
     """
 
     request_path = Path(provider_launch_request_path).resolve()

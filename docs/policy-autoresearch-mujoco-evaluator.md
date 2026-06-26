@@ -26,7 +26,7 @@ Proof boundary:
 - Proves candidate route/control execution in local MuJoCo when the emitted
   attempts include `metrics.simulator_execution_performed=true`.
 - Does not prove balanced humanoid locomotion, robot-team policy execution,
-  physical robot readiness, safety validation, real-world outcome, or public
+  generated-world rank fidelity, off-scope validation, policy-ranking outcome, or public
   claim upgrade.
 - Promotion still requires heldout task success and zero normalized
   safety/contact events against the frozen verifier.

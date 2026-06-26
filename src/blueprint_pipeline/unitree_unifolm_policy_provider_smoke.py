@@ -3,7 +3,7 @@
 This is the Unitree-native counterpart to the OpenVLA provider smoke. It proves
 only that a Unitree UnifoLM VLA/WMA command produced a Blueprint-compatible
 policy action from a Blueprint observation packet. It does not prove episode
-success, dexterous manipulation, deployment readiness, or physical-robot
+success, dexterous manipulation, generated-world rank fidelity, or physical-robot
 readiness.
 """
 
@@ -132,8 +132,8 @@ def main() -> int:
             "adapter_response": response,
             "endpoint_closed_loop_policy_proven": False,
             "unitree_g1_dexterous_manipulation_proven": False,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
             "raw_credentials_written_to_artifacts": False,
             "secret_hashes_written_to_artifacts": False,
             "blockers": [] if completed else list(response.get("blockers", []) or ["unitree_unifolm_provider_smoke_blocked"]),
@@ -299,7 +299,7 @@ def build_unitree_unifolm_policy_provider_bundle(
             "provider_bundle_is_not_model_execution": True,
             "unitree_unifolm_policy_action_command_ran": False,
             "unitree_g1_dexterous_manipulation_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
@@ -374,8 +374,8 @@ def import_unitree_unifolm_provider_output(
         "truth_boundary": {
             "provider_output_import_is_not_closed_loop_endpoint_control": True,
             "unitree_g1_dexterous_manipulation_proven": False,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
@@ -452,7 +452,7 @@ def run_unitree_unifolm_policy_provider_smoke(
         "truth_boundary": {
             "dry_run_is_not_model_execution": True,
             "unitree_g1_dexterous_manipulation_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,

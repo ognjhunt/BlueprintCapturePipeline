@@ -122,7 +122,7 @@ runner can provide:
 - Lucky Engine version, SDK version, host OS, hardware, and launch command.
 - Clear robot asset identity, including whether Unitree G1/Go2 came from the
   Content Vault, a bundled pack, or an owner-supplied asset.
-- A proof boundary that keeps robot readiness, safety/contact validation, and
+- A proof boundary that keeps generated-world rank fidelity, safety/contact validation, and
   public-claim upgrades false unless separately proven.
 
 ## Next Practical Test

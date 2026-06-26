@@ -145,10 +145,10 @@ def _manifest_payload(
             "capture_contributor_payout_eligible"
         ],
         "customer_publication_allowed": False,
-        "physical_robot_readiness_claim_allowed": False,
+        "generated_world_rank_fidelity_claim_allowed": False,
         "proof_boundary": (
             "Owner approval on a staged sample scopes simulator/world-model smoke work only; "
-            "it does not prove unrestricted licensing, customer publication, or physical robot readiness."
+            "it does not prove unrestricted licensing, customer publication, or generated-world rank fidelity."
         ),
     }
     return {
@@ -250,7 +250,7 @@ def _write_local_webapp_rehearsal_request(
             "webapp_forwarding_proven": False,
             "webapp_request_submitted_by_webapp": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -290,7 +290,7 @@ def _write_local_webapp_rehearsal_request(
             "real_webapp_forwarding_proven": False,
             "webapp_request_submitted_by_webapp": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -620,7 +620,7 @@ def stage_first_gpu_sample_video(
             "simulation_automation_artifacts_written": bool(run_simulation_automation),
             "simulator_execution_performed": False,
             "gpu_provisioning_performed": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

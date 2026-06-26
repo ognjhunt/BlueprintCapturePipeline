@@ -86,9 +86,9 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "vision_model_labeling_performed": False,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "physics_contact_validated": False,
-    "safety_validated": False,
+    "non_ranking_operational_claim_validated": False,
     "public_claim_upgrade_allowed": False,
     "proof_upgrade_requires": [
         "owner-system Arena execution logs and artifact manifests",
@@ -627,7 +627,7 @@ def _normalize_attempts(
         "result_ingested": bool(attempts),
         "simulator_execution_proven": False,
         "robot_policy_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -698,7 +698,7 @@ def _build_failure_labels(attempt_trace: Mapping[str, Any], generated_at: str) -
         "status": "review_required" if labels else "no_failures_labeled",
         "label_count": len(labels),
         "labels": labels,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -1306,7 +1306,7 @@ def _build_customer_handoff_report(
         "known_limits": [
             "Arena artifacts are ingested from local result files; this module did not run Isaac Lab-Arena.",
             "Failure and vision labels remain review-required unless accepted by a human or owner proof.",
-            "Robot readiness, safety, and contact validation remain false.",
+            "generated-world rank fidelity, safety, and contact validation remain false.",
         ],
         "package_inventory": {
             "normalized_attempt_trace": "normalized_attempt_trace.json",
@@ -1350,7 +1350,7 @@ def _customer_report_markdown(report: Mapping[str, Any]) -> str:
         "## Package Inventory\n\n"
         f"{inventory}\n\n"
         "## Proof Boundary\n\n"
-        "This report does not prove robot readiness, safety validation, policy success, "
+        "This report does not prove generated-world rank fidelity, off-scope validation, policy success, "
         "or public claim upgrade eligibility.\n"
     )
 
@@ -1940,7 +1940,7 @@ def build_arena_result_ingest(
         ),
         "simulator_execution_proven": False,
         "robot_policy_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }

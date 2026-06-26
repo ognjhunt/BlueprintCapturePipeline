@@ -891,7 +891,7 @@ def _plan_occupancy_grid_route(
         "planner_boundary": (
             "A deterministic 2D occupancy-grid route is planned from generated MuJoCo "
             "collision proxies, then converted to velocity commands for the official G1 "
-            "policy. This is simulated support evidence, not physical robot readiness."
+            "policy. This is simulated support evidence, not generated-world rank fidelity."
         ),
     }
 
@@ -1658,7 +1658,7 @@ def _robot_pov_manifest(
             "simulated_robot_pov": True,
             "real_robot_pov": False,
             "physical_sensor_data": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
 
@@ -2408,7 +2408,7 @@ def build_official_g1_policy_handoff(
             "official_policy_command_stream_integrated": navigation_active,
             "continuous_contact_checks": True,
             "continuous_clearance_checks": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "real_world_safety_contact_validation_proven": False,
             "public_claim_upgrade_allowed": False,
         },
@@ -2531,7 +2531,7 @@ def build_official_g1_policy_handoff(
         "policy_source_snapshot": snapshot_manifest,
         "proof_boundary": {
             "simulator_official_policy_trace": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "real_robot_pov": False,
             "public_claim_upgrade_allowed": False,
         },
@@ -2683,7 +2683,7 @@ def build_official_g1_policy_handoff(
         "navigation_runtime_clearance_violation_count": navigation_clearance_violation_count,
         "navigation_route_distance_m": navigation_plan.get("route_distance_m"),
         "navigation_waypoint_count": len(navigation_waypoints),
-        "physical_robot_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
         "real_robot_pov": False,
         "real_robot_pov_evidence_proven": False,
         "real_world_safety_contact_validation_proven": False,
@@ -2785,7 +2785,7 @@ def build_official_g1_policy_handoff(
             "simulated_mujoco_navigation": navigation_active,
             "continuous_contact_checks": True,
             "continuous_clearance_checks": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "real_robot_pov": False,
             "physical_sensor_data": False,
             "real_world_safety_contact_validation_proven": False,
@@ -2922,7 +2922,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "training_grade_policy_rollout_proven"
                 )
                 is True,
-                "physical_robot_readiness_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
                 "real_robot_pov": False,
                 "physical_sensor_data": False,
                 "public_claim_upgrade_allowed": False,

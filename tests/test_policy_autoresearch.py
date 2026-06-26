@@ -161,7 +161,7 @@ def test_policy_autoresearch_promotes_perfect_heldout_candidate_and_writes_artif
     assert result["verifier_manifest"]["reviewed_examples_payload"]["examples"][0][
         "label"
     ] == "failure"
-    assert package["robot_readiness_proven"] is False
+    assert package["rank_fidelity_result_proven"] is False
     assert package["public_claim_upgrade_allowed"] is False
     assert result["budget_ledger"]["usage"]["candidate_evaluations"] >= 1
     assert any(
@@ -450,7 +450,7 @@ for run in matrix["runs"]:
             "evaluation_substrate": substrate,
             "generated_wam_rollout": True,
             "simulator_execution_performed": False,
-            "robot_readiness_proven": False
+            "rank_fidelity_result_proven": False
         }
     })
 json.dump({"evaluation_substrate": substrate, "attempts": attempts}, open(output, "w"))
@@ -738,7 +738,7 @@ def test_owner_gpu_policy_evaluator_requires_owner_proof_and_scores_attempt_trac
     assert payload["policy_attempt_trace_present"] is True
     assert payload["attempts"][0]["task_success"] is True
     assert payload["attempts"][0]["metrics"]["simulator_execution_performed"] is True
-    assert payload["attempts"][0]["claim_boundary"]["robot_readiness_proven"] is False
+    assert payload["attempts"][0]["claim_boundary"]["rank_fidelity_result_proven"] is False
 
 
 def test_owner_gpu_policy_evaluator_does_not_score_success_without_attempt_trace(
@@ -1000,4 +1000,4 @@ def test_mujoco_policy_evaluator_executes_candidate_route_matrix(tmp_path: Path)
     assert payload["attempts"][0]["task_success"] is True
     assert payload["attempts"][0]["metrics"]["simulator_execution_performed"] is True
     assert payload["attempts"][0]["metrics"]["contact_event_count"] == 0
-    assert payload["attempts"][0]["claim_boundary"]["robot_readiness_proven"] is False
+    assert payload["attempts"][0]["claim_boundary"]["rank_fidelity_result_proven"] is False

@@ -3,7 +3,7 @@
 The canary proves only that the selected container image starts on Vast, sees a
 GPU, downloads a Blueprint provider bundle, runs the canary entrypoint, and
 uploads provider output. It does not load GR00T, run policy inference, or prove
-robot readiness.
+generated-world rank fidelity.
 """
 
 from __future__ import annotations
@@ -132,9 +132,9 @@ payload = {
         "canary_is_not_policy_inference": True,
         "canary_is_not_model_execution": True,
         "unitree_g1_dexterous_manipulation_proven": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
     },
     "raw_credentials_written_to_artifacts": False,
     "secret_hashes_written_to_artifacts": False,
@@ -212,9 +212,9 @@ def build_unitree_groot_n17_sonic_vast_image_canary_bundle(
             "task_id": "vast_image_canary",
             "truth_boundary": {
                 "canary_is_not_policy_inference": True,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-                "safety_validation_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
+                "non_ranking_operational_claim_proven": False,
             },
         },
     )
@@ -245,9 +245,9 @@ def build_unitree_groot_n17_sonic_vast_image_canary_bundle(
             "provider_bundle_is_not_model_execution": True,
             "unitree_groot_n17_sonic_policy_action_command_ran": False,
             "unitree_g1_dexterous_manipulation_proven": False,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
@@ -560,10 +560,10 @@ def run_unitree_groot_n17_sonic_vast_image_canary(
             "canary_is_not_policy_inference": True,
             "canary_is_not_model_execution": True,
             "custom_image_startup_proof_only": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
-            "real_world_manipulation_success_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
+            "accepted_anchor_manipulation_success_proven": False,
         },
         "raw_secret_values_recorded": False,
     }

@@ -15,8 +15,8 @@ This keeps three claims separate:
 - An external episode-consistency scorer judged whether the generated video is
   forward/inverse consistent with the action/trace context.
 
-None of these are raw capture evidence, physical robot readiness, deployment
-readiness, safety approval, SRCC proof, or real-world validation.
+None of these are raw capture evidence, generated-world rank fidelity, deployment
+readiness, off-scope approval, SRCC proof, or real-world validation.
 
 ## Artifacts
 
@@ -132,5 +132,5 @@ credentials or secret hashes into artifacts.
 - Visual smoke only decides whether a generated rollout is reviewable enough to
   send to the external scorer.
 - A passing consistency label is an episode-level support label, not task
-  success, physical robot readiness, deployment readiness, SRCC proof, or safety
+  success, generated-world rank fidelity, generated-world rank fidelity, SRCC proof, or safety
   approval.

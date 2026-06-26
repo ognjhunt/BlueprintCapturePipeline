@@ -271,7 +271,7 @@ def _write_robot_eval_cards(
             "simulator_execution_proven": False,
             "physics_contact_validation_proven": False,
             "robot_policy_execution_proven": False,
-            "safety_validation_proven": False,
+            "non_ranking_operational_claim_proven": False,
             "real_pilot_outcome_proven": False,
             "generated_scenarios_are_real_world_proof": False,
         },
@@ -930,7 +930,7 @@ def _webapp_execution_request() -> dict[str, object]:
             "proof_boundaries": {
                 "webapp_request_selects_policy_not_execution": True,
                 "mujoco_proof_does_not_clear_isaac_sim_gate": True,
-                "simulator_policy_does_not_prove_robot_readiness": True,
+                "simulator_policy_does_not_prove_rank_fidelity": True,
             },
             "isaac_gpu_constraint": "rtx_rt_core_required_no_a100_h100",
         },
@@ -1186,7 +1186,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert robot_eval_report["requirement_coverage"]["schema_version"] == (
         "live_robot_eval_requirement_coverage.v1"
     )
-    assert robot_eval_report["proof_boundary"]["robot_readiness_proven"] is False
+    assert robot_eval_report["proof_boundary"]["rank_fidelity_result_proven"] is False
     assert "report_generated" in robot_eval_report["neutral_eval_harness_flow"]
     assert "# Robot Eval Report" in (job_dir / "robot_eval_report.md").read_text(encoding="utf-8")
     assert trace["attempt_count"] == scenario_eval_matrix["scenario_eval_run_count"]
@@ -1232,7 +1232,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     )
     assert startup_audit["architecture_compliant"] is True
     assert startup_audit["proof_boundary"]["simulator_execution_proven"] is False
-    assert startup_audit["proof_boundary"]["robot_readiness_proven"] is False
+    assert startup_audit["proof_boundary"]["rank_fidelity_result_proven"] is False
     assert startup_audit["proof_boundary"]["public_claim_upgrade_allowed"] is False
     assert run_manifest["scenario_eval_matrix_status"] == "completed"
     assert (
@@ -1255,7 +1255,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "live_simulator_execution:live_simulator_execution_not_proven"
         in run_manifest["live_eval_closure_blockers"]
     )
-    assert proof_boundary["robot_readiness_proven"] is False
+    assert proof_boundary["rank_fidelity_result_proven"] is False
     assert proof_boundary["robot_policy_execution_proven"] is False
     assert proof_boundary["public_claim_upgrade_allowed"] is False
     assert proof_boundary["fixture_only_proof"] is True
@@ -1289,7 +1289,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert data_package_export["export_policy"]["deployment_outcome_intake_included"] is True
     assert data_package_export["export_policy"]["live_eval_closure_included"] is True
     assert data_package_export["export_policy"]["robot_eval_report_included"] is True
-    assert data_package_export["claim_boundary"]["robot_readiness_proven"] is False
+    assert data_package_export["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert live_closure["status"] == "local_artifacts_ready_live_external_blocked"
     assert live_closure["repo_local_artifacts_ready"] is True
     assert live_closure["live_external_ready"] is False
@@ -1520,13 +1520,13 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
     evidence_root = tmp_path / "owner-evidence"
     methodology = evidence_root / "methodology.md"
     contact_validation = evidence_root / "contact_validation.json"
-    safety_validation = evidence_root / "safety_validation.json"
+    non_ranking_operational_claim = evidence_root / "non_ranking_operational_claim.json"
     review_evidence = evidence_root / "review_acceptance.json"
     rights_clearance = evidence_root / "rights_clearance.json"
     for path, payload in (
         (methodology, "accepted safety/contact methodology\n"),
         (contact_validation, json.dumps({"status": "validated", "contact_clear": True})),
-        (safety_validation, json.dumps({"status": "validated", "safety_validated": True})),
+        (non_ranking_operational_claim, json.dumps({"status": "validated", "non_ranking_operational_claim_validated": True})),
         (review_evidence, json.dumps({"status": "accepted", "reviewer": "owner-reviewer"})),
         (rights_clearance, json.dumps({"status": "accepted", "external_use_allowed": True})),
     ):
@@ -1593,11 +1593,11 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
             },
             "safety_contact_physics": {
                 "physics_contact_validated": True,
-                "safety_validated": True,
-                "robot_readiness_proven": True,
+                "non_ranking_operational_claim_validated": True,
+                "rank_fidelity_result_proven": True,
                 "methodology_uri_or_path": str(methodology),
                 "contact_validation_uri_or_path": str(contact_validation),
-                "safety_validation_uri_or_path": str(safety_validation),
+                "non_ranking_operational_claim_uri_or_path": str(non_ranking_operational_claim),
                 "operator_attestation": {
                     "attested_by": "safety-owner",
                     "attestation": "Owner accepted contact, physics, and safety evidence.",
@@ -1638,10 +1638,10 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
     assert proof_boundary["status"] == "live_end_to_end_verified"
     assert proof_boundary["simulator_execution_proven"] is True
     assert proof_boundary["robot_policy_execution_proven"] is True
-    assert proof_boundary["robot_readiness_proven"] is True
+    assert proof_boundary["rank_fidelity_result_proven"] is True
     assert proof_boundary["public_claim_upgrade_allowed"] is True
     assert run_manifest["live_end_to_end_verified"] is True
-    assert run_manifest["robot_readiness_proven"] is True
+    assert run_manifest["rank_fidelity_result_proven"] is True
     assert run_manifest["public_claim_upgrade_allowed"] is True
     assert data_package_export["included_artifacts"]["live_eval_closure_manifest"] == (
         "live_eval_closure_manifest.json"
@@ -2578,11 +2578,11 @@ def test_live_robot_eval_closure_blocks_missing_local_safety_contact_refs(
             "schema_version": "live_robot_eval_closure_evidence.v1",
             "safety_contact_physics": {
                 "physics_contact_validated": True,
-                "safety_validated": True,
-                "robot_readiness_proven": True,
+                "non_ranking_operational_claim_validated": True,
+                "rank_fidelity_result_proven": True,
                 "methodology_uri_or_path": str(refs_dir / "missing-methodology.md"),
                 "contact_validation_uri_or_path": str(refs_dir / "missing-contact.json"),
-                "safety_validation_uri_or_path": str(refs_dir / "missing-safety.json"),
+                "non_ranking_operational_claim_uri_or_path": str(refs_dir / "missing-safety.json"),
                 "operator_attestation": {
                     "attested_by": "safety-owner",
                     "attestation": "Owner accepted contact, physics, and safety evidence.",
@@ -2602,7 +2602,7 @@ def test_live_robot_eval_closure_blocks_missing_local_safety_contact_refs(
     assert gate["evidence"]["missing_local_ref_keys"] == [
         "contact_validation_uri_or_path",
         "methodology_uri_or_path",
-        "safety_validation_uri_or_path",
+        "non_ranking_operational_claim_uri_or_path",
     ]
 
 
@@ -2971,7 +2971,7 @@ def test_live_robot_eval_closure_blocks_unlinked_robot_eval_report_stub(
             },
             "live_eval_closure": {"status": "pending_live_eval_closure"},
             "requirement_coverage": {"schema_version": "live_robot_eval_requirement_coverage.v1"},
-            "proof_boundary": {"robot_readiness_proven": False},
+            "proof_boundary": {"rank_fidelity_result_proven": False},
             "artifact_paths": {
                 "scenario_eval_matrix": "missing-scenario-eval-matrix.json",
                 "evaluation_result": "missing-evaluation-result.json",
@@ -5337,7 +5337,7 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
         "ready_for_inbox_processing"
     )
     assert validation_gate["evidence"]["followup_request_queue_request_count"] == 1
-    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
 
 
 def test_robot_eval_job_runs_default_walk_to_target_policy_without_team_package(
@@ -6093,7 +6093,7 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     assert trace["attempts"][0]["engine"] == "pybullet"
     assert prediction["records"][0]["predicted_success"] is True
     assert proof_boundary["simulator_execution_proven"] is True
-    assert proof_boundary["robot_readiness_proven"] is False
+    assert proof_boundary["rank_fidelity_result_proven"] is False
     assert package["included_artifacts"]["simulator_command_artifacts_manifest"] == (
         "simulator_command_artifacts_manifest.json"
     )
@@ -6111,7 +6111,7 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     )
     assert package["export_policy"]["simulator_provider_adapter_included"] is True
     assert run_manifest["simulator_execution_proven"] is True
-    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
     assert run_manifest["webapp_robot_eval_status_projection_status"] == (
         "simulator_command_completed"
     )
@@ -6124,7 +6124,7 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
         "blocked_robot_team_grade_requirements"
     )
     assert run_manifest["robot_team_grade_evaluation_complete"] is False
-    assert run_manifest["deployment_readiness_complete"] is False
+    assert run_manifest["evaluation_readiness_complete"] is False
     assert run_manifest["artifacts"]["webapp_robot_eval_status_projection"] == (
         "webapp_robot_eval_status_projection.json"
     )
@@ -6136,7 +6136,7 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     )
     assert webapp_projection["scenario_batch"]["scenario_eval_run_coverage_complete"] is True
     assert webapp_projection["proof_boundary"]["simulator_execution_proven"] is True
-    assert webapp_projection["proof_boundary"]["robot_readiness_proven"] is False
+    assert webapp_projection["proof_boundary"]["rank_fidelity_result_proven"] is False
     assert webapp_projection["proof_boundary"]["public_claim_upgrade_allowed"] is False
     assert webapp_projection["artifact_paths"]["webapp_robot_eval_status_projection"] == (
         "webapp_robot_eval_status_projection.json"
@@ -6160,10 +6160,10 @@ def test_robot_eval_job_normalizes_command_backed_simulator_output(
     assert robot_team_closure["primary_proof_target"] == (
         "policy_comparison_within_configured_evaluator"
     )
-    assert robot_team_closure["claim_boundary"]["policy_ranking_is_not_deployment_readiness"] is True
+    assert robot_team_closure["claim_boundary"]["policy_ranking_is_not_evaluation_readiness"] is True
     assert robot_team_closure["evaluator_bounded_policy_comparison_complete"] is False
     assert robot_team_closure["robot_team_grade_evaluation_complete"] is False
-    assert robot_team_closure["deployment_readiness_complete"] is False
+    assert robot_team_closure["evaluation_readiness_complete"] is False
     assert "task_success_metrics" in robot_team_closure["blocked_requirement_ids"]
     assert "digital_twin_fidelity_qa" in robot_team_closure["blocked_requirement_ids"]
     assert "full_trace_package" in robot_team_closure["blocked_requirement_ids"]
@@ -6301,13 +6301,13 @@ def test_robot_eval_job_runs_packaged_mujoco_g1_simulator_command(
     )
     assert eval_result["status"] == "completed"
     assert proof_boundary["simulator_execution_proven"] is True
-    assert proof_boundary["robot_readiness_proven"] is False
+    assert proof_boundary["rank_fidelity_result_proven"] is False
     assert run_manifest["simulator_execution_proven"] is True
     assert run_manifest["sim_only_beta_core_complete"] is False
     assert robot_team_closure["sim_only_beta_core_complete"] is False
     assert "full_trace_package" in robot_team_closure["blocked_requirement_ids"]
     assert robot_team_closure["robot_team_grade_evaluation_complete"] is False
-    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
 
 
 def test_robot_eval_job_ingests_real_robot_pov_and_action_logs_separate_from_generated_support(
@@ -6361,7 +6361,7 @@ def test_robot_eval_job_ingests_real_robot_pov_and_action_logs_separate_from_gen
     assert storyboard["local_robot_pov_render_generated"] is True
     assert storyboard["robot_pov_evidence_proven"] is False
     assert run_manifest["robot_pov_evidence_proven"] is True
-    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
 
 
 def test_robot_eval_job_request_inbox_runs_webapp_job_request_automatically(
@@ -6605,7 +6605,7 @@ def test_robot_eval_job_policy_manifest_includes_adapter_smoke_contracts(
         assert interface_contract["reproducible_replay"][
             "exact_scenario_eval_run_id_coverage_required"
         ] is True
-        assert contract["proof_boundary"]["robot_readiness_proven"] is False
+        assert contract["proof_boundary"]["rank_fidelity_result_proven"] is False
     assert (
         policy_manifest["modalities"]["policy_api_endpoint"]["adapter_smoke_contract"][
             "smoke_runner"
@@ -7342,7 +7342,7 @@ def test_robot_team_grade_closure_accepts_explicitly_blocked_scenario_runs(
         policy_manifest={"interface_contract": {"reproducible_replay_required": True}},
         policy_execution_manifest={},
         evaluation_result={},
-        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        proof_boundary={"public_claim_upgrade_allowed": False, "rank_fidelity_result_proven": False},
         live_closure={},
         remote_cloud_closure={},
         webapp_status_projection={},
@@ -7420,13 +7420,13 @@ def test_robot_team_grade_closure_blocks_policy_missing_required_run(
                 "ood_blockers": [],
             },
             "comparison_contract": {
-                "deployment_readiness_claimed": False,
+                "evaluation_readiness_claimed": False,
                 "external_deployment_grade_claimed": False,
             },
             "claim_boundary": {
                 "policy_ranking_is_evaluator_bounded": True,
-                "policy_ranking_is_not_deployment_readiness": True,
-                "robot_readiness_proven": False,
+                "policy_ranking_is_not_evaluation_readiness": True,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         },
@@ -7447,7 +7447,7 @@ def test_robot_team_grade_closure_blocks_policy_missing_required_run(
         policy_manifest={"interface_contract": {"reproducible_replay_required": True}},
         policy_execution_manifest={},
         evaluation_result={},
-        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        proof_boundary={"public_claim_upgrade_allowed": False, "rank_fidelity_result_proven": False},
         live_closure={},
         remote_cloud_closure={},
         webapp_status_projection={},
@@ -7533,15 +7533,15 @@ def test_robot_team_grade_closure_blocks_nonreviewable_policy_ranking(
                 "ood_blockers": [],
             },
             "comparison_contract": {
-                "deployment_readiness_claimed": False,
+                "evaluation_readiness_claimed": False,
                 "external_deployment_grade_claimed": False,
                 "review_grade_policy_ranking_requires_passed_visual_smoke": True,
             },
             "claim_boundary": {
                 "policy_ranking_is_evaluator_bounded": True,
-                "policy_ranking_is_not_deployment_readiness": True,
+                "policy_ranking_is_not_evaluation_readiness": True,
                 "visual_smoke_required_for_review_grade_policy_ranking": True,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         },
@@ -7562,7 +7562,7 @@ def test_robot_team_grade_closure_blocks_nonreviewable_policy_ranking(
         policy_manifest={"interface_contract": {"reproducible_replay_required": True}},
         policy_execution_manifest={},
         evaluation_result={},
-        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        proof_boundary={"public_claim_upgrade_allowed": False, "rank_fidelity_result_proven": False},
         live_closure={},
         remote_cloud_closure={},
         webapp_status_projection={},
@@ -7752,13 +7752,13 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
                 },
             },
             "comparison_contract": {
-                "deployment_readiness_claimed": False,
+                "evaluation_readiness_claimed": False,
                 "external_deployment_grade_claimed": False,
             },
             "claim_boundary": {
                 "policy_ranking_is_evaluator_bounded": True,
-                "policy_ranking_is_not_deployment_readiness": True,
-                "robot_readiness_proven": False,
+                "policy_ranking_is_not_evaluation_readiness": True,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         },
@@ -7767,7 +7767,7 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
         job_dir / "wam_eval_claim_boundary.json",
         {
             "policy_ranking_is_evaluator_bounded": True,
-            "policy_ranking_is_not_deployment_readiness": True,
+            "policy_ranking_is_not_evaluation_readiness": True,
             "customer_specific_srcc_claimed": False,
         },
     )
@@ -7809,7 +7809,7 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
         policy_manifest={"status": "blocked"},
         policy_execution_manifest={},
         evaluation_result=evaluation_result,
-        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        proof_boundary={"public_claim_upgrade_allowed": False, "rank_fidelity_result_proven": False},
         live_closure={},
         remote_cloud_closure={},
         webapp_status_projection={
@@ -7823,14 +7823,14 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
     assert closure["sim_only_beta_core_complete"] is True
     assert closure["evaluator_bounded_policy_comparison_complete"] is True
     assert closure["robot_team_grade_evaluation_complete"] is False
-    assert closure["deployment_readiness_complete"] is False
+    assert closure["evaluation_readiness_complete"] is False
     assert closure["policy_comparison_summary"]["policy_ranking_is_evaluator_bounded"] is True
     assert "digital_twin_fidelity_qa" in closure["blocked_requirement_ids"]
     assert "robot_team_policy_interface" in closure["blocked_requirement_ids"]
     assert "sim_vs_real_calibration_path" not in closure["blocked_requirement_ids"]
     assert "sim_vs_real_calibration_path" in closure["all_blocked_requirement_ids"]
     assert "sim_vs_real_calibration_path" in closure[
-        "deployment_readiness_blocked_requirement_ids"
+        "evaluation_readiness_blocked_requirement_ids"
     ]
     assert "sim_vs_real_calibration_path" not in closure[
         "robot_team_grade_blocked_requirement_ids"
@@ -7886,7 +7886,7 @@ def test_robot_team_grade_closure_blocks_weak_explicit_scenario_block_records(
         policy_manifest={"interface_contract": {"reproducible_replay_required": True}},
         policy_execution_manifest={},
         evaluation_result={},
-        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        proof_boundary={"public_claim_upgrade_allowed": False, "rank_fidelity_result_proven": False},
         live_closure={},
         remote_cloud_closure={},
         webapp_status_projection={},
@@ -8027,7 +8027,7 @@ def test_robot_team_grade_closure_blocks_incomplete_trace_stream_coverage(
                 "unsafe_proximity": {"event_count": 0},
             }
         },
-        proof_boundary={"public_claim_upgrade_allowed": False, "robot_readiness_proven": False},
+        proof_boundary={"public_claim_upgrade_allowed": False, "rank_fidelity_result_proven": False},
         live_closure={},
         remote_cloud_closure={},
         webapp_status_projection={},
@@ -9223,7 +9223,7 @@ def test_robot_eval_worker_runtime_manifest_propagates_command_simulator_proof(
     assert runtime["status"] == "completed"
     assert worker_manifest["job_status"] == "simulator_command_completed"
     assert worker_manifest["simulator_execution_proven"] is True
-    assert worker_manifest["robot_readiness_proven"] is False
+    assert worker_manifest["rank_fidelity_result_proven"] is False
     assert worker_manifest["public_claim_upgrade_allowed"] is False
 
 
@@ -9340,7 +9340,7 @@ def test_robot_eval_worker_runs_sim_only_command_when_full_job_scope_blocks(
     assert worker_manifest["simulator_service_status"] == "completed"
     assert worker_manifest["evaluation_status"] == "completed"
     assert worker_manifest["simulator_execution_proven"] is True
-    assert worker_manifest["robot_readiness_proven"] is False
+    assert worker_manifest["rank_fidelity_result_proven"] is False
     assert worker_manifest["public_claim_upgrade_allowed"] is False
     assert worker_manifest["provider_runtime_simulator_command_result"]["status"] == "completed"
 
@@ -10121,7 +10121,7 @@ def test_robot_eval_job_fixture_failure_records_failed_attempt_without_overclaim
     assert evaluation["status"] == "completed_with_failures"
     assert trace["attempts"][0]["success"] is False
     assert labels["labels"][0]["failure_mode_ids"] == ["failure_navigation_blocked"]
-    assert proof_boundary["robot_readiness_proven"] is False
+    assert proof_boundary["rank_fidelity_result_proven"] is False
 
 
 def test_robot_eval_job_generated_scenarios_stay_review_required_until_accepted(
@@ -10238,7 +10238,7 @@ def test_isaac_lab_arena_simulator_surfaces_packet_and_blocks_without_env_gate(
     assert arena_packet["backend"] == "isaac_lab_arena"
     assert arena_packet["simulator_execution_proven"] is False
     assert run_manifest["simulator_execution_proven"] is False
-    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
 
 
 def test_command_simulator_blocks_without_cli_gate(tmp_path: Path, monkeypatch) -> None:
@@ -10475,7 +10475,7 @@ def test_agents_sdk_robot_eval_live_operator_logs_decisions_without_proof_upgrad
     )
     assert agents_plan["proof_effect"]["direct_proof_booleans_set_true"] == []
     assert run_manifest["agent_operator_mode"] == "live_operator"
-    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
 
 
 def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
@@ -10550,7 +10550,7 @@ def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
     assert surface["status"] == "fixture_evaluation_completed"
     assert surface["public_claim_upgrade_allowed"] is False
     assert surface["simulator_execution_proven"] is False
-    assert surface["robot_readiness_proven"] is False
+    assert surface["rank_fidelity_result_proven"] is False
     assert surface["artifacts"]["robot_eval_job_job-surfaced_run_manifest"] == (
         "../robot_eval_jobs/job-surfaced/job_run_manifest.json"
     )
@@ -10828,7 +10828,7 @@ def test_isaac_lab_arena_results_feed_eval_package_and_delivery(
     assert eval_result["status"] == "completed_with_failures"
     assert run_manifest["arena_result_ingest_status"] == "completed"
     assert run_manifest["simulator_execution_proven"] is False
-    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
 
     assert schedule["scenario_count"] == 500
     assert schedule["shard_count"] == 4
@@ -10913,11 +10913,11 @@ def test_robot_eval_job_can_run_fixture_wam_evaluation_substrate(tmp_path: Path)
         "policy_comparison_within_configured_evaluator"
     )
     assert claim_boundary["policy_ranking_is_evaluator_bounded"] is True
-    assert claim_boundary["policy_ranking_is_not_deployment_readiness"] is True
+    assert claim_boundary["policy_ranking_is_not_evaluation_readiness"] is True
     assert claim_boundary["customer_specific_srcc_claimed"] is False
-    assert claim_boundary["passing_wam_heldout_eval_is_not_deployment_approval"] is True
+    assert claim_boundary["passing_wam_heldout_eval_is_not_rank_fidelity_result"] is True
     assert followup["minimum_validation_requirements"]["paired_real_outcome_records_required"] is True
-    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
     assert run_manifest["public_claim_upgrade_allowed"] is False
 
 
@@ -10969,7 +10969,7 @@ def test_robot_eval_job_candidate_selection_handoff_is_artifact_indexed(
     )
     assert (job_dir / "candidate_selection_report.md").is_file()
     assert report["status"] in {"clear_winner", "ambiguous_candidate_shortlist"}
-    assert report["claim_boundary"]["do_not_use_for_deployment_approval"] is True
+    assert report["claim_boundary"]["do_not_use_as_rank_fidelity_result"] is True
     assert handoff["candidate_selection_report_path"] == "candidate_selection_report.json"
 
 
@@ -11081,5 +11081,5 @@ def test_robot_eval_job_can_run_fake_cosmos_wam_provider_adapter(
     ]
     assert scorecard["single_best_policy_claimed"] is False
     assert claim_boundary["live_provider_calls_performed"] is True
-    assert claim_boundary["robot_readiness_proven"] is False
+    assert claim_boundary["rank_fidelity_result_proven"] is False
     assert run_manifest["public_claim_upgrade_allowed"] is False

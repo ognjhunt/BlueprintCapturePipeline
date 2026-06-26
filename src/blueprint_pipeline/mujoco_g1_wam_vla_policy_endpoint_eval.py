@@ -997,7 +997,7 @@ def build_policy_model_candidate_matrix(*, generated_at: str) -> dict[str, Any]:
                 ),
                 "claim_boundary": (
                     "separate LeRobot sim-eval provider; not official RL Gym locomotion "
-                    "and not physical robot readiness"
+                    "and not generated-world rank fidelity"
                 ),
             },
             {
@@ -1080,9 +1080,9 @@ def build_policy_model_candidate_matrix(*, generated_at: str) -> dict[str, Any]:
                     "checkpoint_presence_is_not_endpoint_execution": True,
                     "groot_n17_does_not_replace_unitree_rl_gym_locomotion_proof": True,
                     "requires_policy_server_action_wrapper_and_sim2sim_execution": True,
-                    "physical_robot_readiness_proven": False,
-                    "deployment_readiness_proven": False,
-                    "safety_validation_proven": False,
+                    "generated_world_rank_fidelity_result_proven": False,
+                    "generated_world_policy_evaluation_scope_proven": False,
+                    "non_ranking_operational_claim_proven": False,
                 },
             },
             {
@@ -1125,8 +1125,8 @@ def build_policy_model_truth_boundary(*, generated_at: str) -> dict[str, Any]:
         "unitree_g1_controller_proven_by_this_lane": False,
         "isaac_proof": False,
         "splat_ply_spz_proof": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "raw_tokens_written_to_artifacts": False,
         "raw_token_hashes_written_to_artifacts": False,
     }
@@ -1302,7 +1302,7 @@ def discover_realistic_navigation_policy(*, generated_at: str) -> dict[str, Any]
             "official_unitree_controller_proof_requires_controller_grade_stack": True,
             "unitree_rl_gym_root_discovery_is_not_endpoint_task_control": True,
             "online_source_discovery_is_not_controller_execution_proof": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
 
@@ -1753,9 +1753,9 @@ def _write_blocked_policy_action_model_command_output(
             "blocked_output_is_not_model_proof": True,
             "policy_action_command_is_model_contract_probe_not_wam_rollout": True,
             "policy_action_command_does_not_prove_task_success": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
@@ -2074,7 +2074,7 @@ def _scene_packet_policy_action_model_input(
                     == "scene_packet_contract_probe_zero_state"
                 ),
                 "task_specific_finetuning_required_for_admission": False,
-                "policy_action_command_does_not_prove_physical_robot_readiness": True,
+                "policy_action_command_does_not_prove_generated_world_rank_fidelity": True,
             },
         }
     return None
@@ -2185,7 +2185,7 @@ def _sample_policy_action_model_input(
             "unitree_g1_sonic_state_is_simulated_observation": True,
             "unitree_g1_sonic_state_is_contract_probe": unitree_g1_sonic_state_is_contract_probe,
             "unitree_g1_sonic_state_derived_from_mujoco_qpos": not unitree_g1_sonic_state_is_contract_probe,
-            "policy_action_command_does_not_prove_physical_robot_readiness": True,
+            "policy_action_command_does_not_prove_generated_world_rank_fidelity": True,
         },
     }
 
@@ -2351,9 +2351,9 @@ def run_policy_action_model_command_contract(
             "blockers": sorted(set(blockers)),
             "claim_boundary": {
                 "policy_action_command_is_model_contract_probe_not_wam_rollout": True,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-                "safety_validation_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
+                "non_ranking_operational_claim_proven": False,
             },
         }
         write_json(job_dir / "policy_action_model_command_execution.json", result)
@@ -2519,8 +2519,8 @@ def run_policy_action_model_command_contract(
             "provider_output_replay_is_not_fresh_per_request_model_inference": (
                 provider_output_replay_used
             ),
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
     write_json(job_dir / "policy_action_model_command_execution.json", result)
@@ -2909,9 +2909,9 @@ def discover_wam_generation_command(*, generated_at: str) -> dict[str, Any]:
         "claim_boundary": {
             "wam_generation_command_is_world_model_or_evaluator_not_robot_policy": True,
             "provider_credentials_not_written_to_artifacts": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
     }
 
@@ -3924,9 +3924,9 @@ def _write_wam_generation_command_artifacts(
             "secret_hashes_written_to_artifacts": False,
             "claim_boundary": {
                 "wam_generation_command_is_not_robot_policy": True,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-                "safety_validation_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
+                "non_ranking_operational_claim_proven": False,
             },
         },
     )
@@ -3971,9 +3971,9 @@ def _write_wam_generation_command_artifacts(
                 ),
                 "default_local_outputs_are_support_evidence_only": bool(default_success_count),
                 "learned_wam_checkpoint_invoked": bool(live_success_count),
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-                "safety_validation_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
+                "non_ranking_operational_claim_proven": False,
             },
         },
     )
@@ -4167,7 +4167,7 @@ def _write_robot_policy_wam_side_by_side_trace(
                     "side_by_side_trace_is_structural_debug_artifact": True,
                     "wam_generated_observation_is_not_raw_capture": True,
                     "physical_robot_sensor_proof": False,
-                    "physical_robot_readiness_proven": False,
+                    "generated_world_rank_fidelity_result_proven": False,
                 },
             }
         )
@@ -4194,9 +4194,9 @@ def _write_robot_policy_wam_side_by_side_trace(
         "claim_boundary": {
             "side_by_side_trace_is_not_task_success": True,
             "simulator_only": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
     }
     write_json(manifest_path, manifest)
@@ -4320,10 +4320,10 @@ def run_robot_policy_wam_closed_loop_attempt(
             if policy_action_model_command_execution.get("policy_action_model_command_ran")
             else 0,
             "generated_next_observation_count": 0,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
-            "real_world_manipulation_success_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
+            "accepted_anchor_manipulation_success_proven": False,
             "blockers": sorted(set(blockers)),
             "trace_path": str(trace_path),
             "generated_next_observation_trace": str(generated_observation_trace_path),
@@ -4394,8 +4394,8 @@ def run_robot_policy_wam_closed_loop_attempt(
                 "simulator_only": True,
                 "closed_loop_requires_repeated_unitree_manipulation_policy_calls": True,
                 "wam_generated_observations_are_model_or_evaluator_outputs_not_raw_capture": True,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
             },
         }
         write_json(loop_dir / "robot_policy_wam_closed_loop_attempt.json", manifest)
@@ -4731,10 +4731,10 @@ def run_robot_policy_wam_closed_loop_attempt(
         "default_local_wam_generator_used": bool(default_wam_generation_success_count),
         "learned_oscar_or_cosmos_model_ran": bool(live_wam_generation_success_count),
         "structural_wam_generation_count": structural_wam_generation_count,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
-        "real_world_manipulation_success_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
+        "accepted_anchor_manipulation_success_proven": False,
         "policy_call_trace_path": str(trace_path),
         "generated_next_observation_trace": str(generated_observation_trace_path),
         "wam_derived_observation_manifest": harness_summary["artifact_paths"].get(
@@ -4826,9 +4826,9 @@ def run_robot_policy_wam_closed_loop_attempt(
             "provider_output_replay_is_not_fresh_per_observation_policy_execution": (
                 replay_action_responses > 0
             ),
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
     }
     write_json(loop_dir / "robot_policy_wam_closed_loop_attempt.json", manifest)
@@ -4989,7 +4989,7 @@ def discover_unitree_manipulation_policy(*, generated_at: str) -> dict[str, Any]
             "lower_body_locomotion_policy_does_not_prove_hand_manipulation": True,
             "contact_trace_proxy_is_not_dexterous_vla_manipulation": True,
             "isaaclab_or_lerobot_candidate_discovery_is_not_execution_proof": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
 
@@ -5096,7 +5096,7 @@ def _run_official_unitree_controller_sidecar(
         else ["blocked_official_unitree_controller_sidecar_not_proven"],
         "claim_boundary": {
             "sidecar_execution_is_not_endpoint_task_control": True,
-            "sidecar_execution_is_not_physical_robot_readiness": True,
+            "sidecar_execution_is_not_generated_world_rank_fidelity": True,
             "task_conditioned_controller_bridge_required": True,
         },
     }
@@ -5355,7 +5355,7 @@ def _run_unitree_controller_replay_from_endpoint_actions(
         "claim_boundary": {
             "endpoint_action_replay_is_not_same_scene_task_control": True,
             "same_scene_controller_backend_still_required": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
 
@@ -5426,7 +5426,7 @@ def build_unitree_controller_bridge_manifest(
         "blockers": blockers,
         "claim_boundary": {
             "command_binding_is_not_same_scene_controller_execution": not same_scene_integrated,
-            "controller_sidecar_or_replay_is_not_physical_robot_readiness": True,
+            "controller_sidecar_or_replay_is_not_generated_world_rank_fidelity": True,
             "freejoint_proxy_is_not_realistic_navigation_policy": not same_scene_integrated,
         },
     }
@@ -5463,7 +5463,7 @@ def build_policy_endpoint_server_manifest(
         "health_probe": dict(health_probe),
         "claim_boundary": {
             "server_reachable_is_not_policy_quality_proof": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
 
@@ -5632,8 +5632,8 @@ def build_policy_endpoint_runtime_manifest(
             "openvla_is_not_selected_as_g1_robot_policy": True,
             "wam_rollout_is_not_selected_as_g1_robot_policy": True,
             "mujoco_evidence_is_simulator_only": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
 
@@ -7333,7 +7333,7 @@ def _same_scene_unitree_controller_manifest(
         "balanced_walking_controller_proven": False,
         "blockers": list(blockers),
         "claim_boundary": {
-            "same_scene_controller_loaded_is_not_physical_robot_readiness": True,
+            "same_scene_controller_loaded_is_not_generated_world_rank_fidelity": True,
             "balanced_walking_requires_no_fall_rollout_evidence": True,
             "lower_body_policy_does_not_prove_dexterous_hand_vla": True,
         },
@@ -8118,8 +8118,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "simulator_only": True,
             "real_wam_vla_claim_requires_endpoint_response": True,
             "reference_fixture_policy_is_not_real_wam_vla": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
             "official_policy_execution_proven": False,
             "isaac_runtime_proven_by_this_lane": False,
         },
@@ -8240,8 +8240,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 )
             ),
             "blockers": ["mujoco_import_failed"],
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         }
         write_json(job_dir / "mujoco_g1_wam_vla_policy_endpoint_eval_summary.json", summary)
         return summary
@@ -8421,10 +8421,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "blockers": ["skipped_unitree_groot_n17_sonic_policy_action_command_not_completed"],
         "claim_boundary": {
             "simulator_only": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
-            "real_world_manipulation_success_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
+            "accepted_anchor_manipulation_success_proven": False,
         },
     }
     if policy_action_model_command_execution.get(
@@ -9302,8 +9302,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                     ),
                     "real_wam_vla_policy_proven": False,
                     "real_wam_vla_policy_requires_model_provenance": True,
-                    "physical_robot_readiness_proven": False,
-                    "deployment_readiness_proven": False,
+                    "generated_world_rank_fidelity_result_proven": False,
+                    "generated_world_policy_evaluation_scope_proven": False,
                     "official_policy_execution_proven": selected_controller_backend
                     == "unitree_rl_gym",
                     "same_scene_unitree_controller_backend_used": selected_controller_backend
@@ -9401,7 +9401,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "claim_boundary": {
                 "command_stream_binding_is_not_controller_execution": True,
                 "same_scene_controller_backend_still_required": True,
-                "physical_robot_readiness_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
             },
         },
     )
@@ -9690,8 +9690,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             ),
             "claim_boundary": {
                 "simulator_only_mujoco": True,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
             },
         },
     )
@@ -9712,8 +9712,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 "review_required": True,
                 "claim_boundary": {
                     "backend_blocker_label_not_task_success_score": True,
-                    "physical_robot_readiness_proven": False,
-                    "deployment_readiness_proven": False,
+                    "generated_world_rank_fidelity_result_proven": False,
+                    "generated_world_policy_evaluation_scope_proven": False,
                 },
             }
         )
@@ -9734,8 +9734,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 "claim_boundary": {
                     "backend_blocker_label_not_task_success_score": True,
                     "wam_evaluator_is_not_robot_policy": True,
-                    "physical_robot_readiness_proven": False,
-                    "deployment_readiness_proven": False,
+                    "generated_world_rank_fidelity_result_proven": False,
+                    "generated_world_policy_evaluation_scope_proven": False,
                 },
             }
         )
@@ -10170,7 +10170,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                     unitree_groot_n17_sonic_action_chunk_consumed_by_sim2sim
                 ),
                 "real_vla_model_ran": unitree_endpoint_fresh_policy_action_command_ran,
-                "physical_robot_readiness_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
             },
             "blockers": manipulation_blockers,
         },
@@ -10223,7 +10223,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "unitree_g1_manipulation_policy_discovery": str(
                 job_dir / "unitree_g1_manipulation_policy_discovery.json"
             ),
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "blockers": manipulation_blockers,
         },
     )
@@ -10298,7 +10298,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "wam_evaluator_trace_scored": True,
             "simulator_only": True,
             "real_world_outcome_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     )
     generated_video_review_validations = [
@@ -10695,7 +10695,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 unitree_generated_rollout_review_completed
             ),
             "visual_smoke_is_not_forward_inverse_consistency": True,
-            "simulator_only_not_physical_robot_readiness": True,
+            "simulator_only_not_generated_world_rank_fidelity": True,
             "not_openvla_or_cosmos_execution": True,
             "not_dexterous_manipulation_policy_proof": True,
         },
@@ -10719,10 +10719,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "blockers": list(unitree_generated_rollout_review_manifest.get("blockers", [])),
             "claim_boundary": {
                 "video_review_is_not_task_success_proof": True,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-                "safety_validation_proven": False,
-                "real_world_manipulation_success_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
+                "non_ranking_operational_claim_proven": False,
+                "accepted_anchor_manipulation_success_proven": False,
             },
         },
     )
@@ -10846,16 +10846,16 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "blockers": sorted(set(final_success_blockers)),
         "claim_boundary": {
             "simulator_only": True,
-            "structured_contact_trace_is_not_real_world_success": True,
+            "structured_contact_trace_is_not_accepted_anchor_success": True,
             "success_not_proven_without_unitree_manipulation_action_command": True,
             "success_not_proven_without_policy_chunk_integrated_contact_rollout": True,
             "provider_output_replay_is_not_fresh_per_observation_policy_execution": (
                 unitree_endpoint_provider_output_replay_used
             ),
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
-            "real_world_manipulation_success_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
+            "accepted_anchor_manipulation_success_proven": False,
         },
     }
     if scene_task_success_field:
@@ -10919,10 +10919,10 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "object_or_tote_correctly_placed": bool(
                 final_success_policy_chunk_integrated_into_contact_rollout
             ),
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
-            "real_world_manipulation_success_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
+            "accepted_anchor_manipulation_success_proven": False,
             "not_claimed_as_openvla_oscar_cosmos_policy_proof": True,
             "blockers": final_success_judge["blockers"],
         },
@@ -11124,8 +11124,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "truth_boundary": (
             "This run proves local MuJoCo execution and, only when the loop-attempt status is "
             "completed, repeated Unitree-specific policy calls over evaluator-generated next "
-            "observations. It does not prove physical robot readiness, deployment approval, "
-            "safety validation, or real-world manipulation success."
+            "observations. Ranking proof requires the scoped generated-world "
+            "policy-evaluation rank-fidelity gate."
         ),
     }
     write_json(job_dir / "robot_policy_wam_loop_manifest.json", robot_policy_wam_loop_manifest)
@@ -11234,16 +11234,16 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                 "command_xyz"
             ),
             "freejoint_proxy_used": final_freejoint_proxy_used,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
             "blockers": same_scene_controller_manifest.get("blockers", [])
             if same_scene_integrated
             else same_scene_controller_manifest.get("blockers", [])
             or navigation_discovery.get("blockers", []),
             "proof_boundary": (
                 "same-scene Unitree RL Gym policy execution in MuJoCo is still simulator-only "
-                "and does not prove physical robot readiness, safety validation, or dexterous VLA manipulation"
+                "and needs the generated-world policy-evaluation rank-fidelity gate before ranking claims"
             )
             if same_scene_integrated
             else "simulator policy endpoint plumbing and MuJoCo trace lane, not official Unitree locomotion proof",
@@ -11524,8 +11524,8 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "pass_fail_by_spawn": _counts_by_key(attempts, "spawn_id"),
         "isaac_runtime_available": False,
         "realistic_splat_visual_rendered": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "artifact_paths": {
             "policy_endpoint_discovery": str(job_dir / "policy_endpoint_discovery.json"),
             "policy_endpoint_runtime_manifest": str(

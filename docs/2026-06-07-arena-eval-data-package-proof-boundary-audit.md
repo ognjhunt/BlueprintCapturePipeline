@@ -20,8 +20,8 @@ The lane intentionally does not claim:
 - simulator execution proof from this process
 - robot policy execution proof
 - physics/contact validation
-- safety validation
-- robot readiness
+- off-scope validation
+- generated-world rank fidelity
 - public claim upgrade eligibility
 
 ## Artifact Assertions

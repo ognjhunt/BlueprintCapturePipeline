@@ -161,7 +161,7 @@ def test_simready_assets_emit_framework_review_packet(tmp_path: Path) -> None:
     assert manifest["object_count"] == 1
     assert manifest["task_count"] == 1
     assert manifest["claim_boundary"]["simulator_execution_proven"] is False
-    assert manifest["claim_boundary"]["robot_readiness_proven"] is False
+    assert manifest["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert site_reference["status"] == "available"
     assert (sim_root / "isaac_sim" / "site_scene.usda").read_text(encoding="utf-8").startswith("#usda 1.0")
     assert "<mujoco" in (sim_root / "mujoco" / "site_scene.xml").read_text(encoding="utf-8")
@@ -201,7 +201,7 @@ def test_simready_assets_keep_fallback_geometry_review_only(tmp_path: Path) -> N
     assert validation["overall_status"] == "degraded"
     assert "fallback_geometry_review_only" in validation["warnings"]
     assert validation["claim_boundary"]["simulator_execution_proven"] is False
-    assert validation["claim_boundary"]["robot_readiness_proven"] is False
+    assert validation["claim_boundary"]["rank_fidelity_result_proven"] is False
 
 
 def test_simready_normalizers_cover_defaults_and_bad_shapes() -> None:

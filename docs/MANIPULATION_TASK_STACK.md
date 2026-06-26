@@ -145,7 +145,7 @@ The MuJoCo tote proof command loads a Blueprint G1 manipulation proxy model with
 - torso, pelvis, arm, foot, and hand geometry for review and collision context
 
 This is a G1-named MuJoCo manipulation proxy for evaluator proof. It is not an
-official Unitree dexterous-hand asset and not a physical robot readiness claim.
+official Unitree dexterous-hand asset and not a generated-world rank fidelity claim.
 
 The Lucky adapter separately verifies the official public challenge assets:
 
@@ -189,7 +189,7 @@ and placement. It currently keeps these stronger claims false:
 - official Lucky pick/place physics validated
 - Blueprint tote task validated by Lucky assets
 - robot-team policy quality proven
-- physical robot readiness
+- generated-world rank fidelity
 
 Those require a richer official G1 hand/controller run, a Lucky walker/reacher
 run that produces object/contact/lift/place evidence, or a team endpoint

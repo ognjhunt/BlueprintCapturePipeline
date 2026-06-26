@@ -10,7 +10,7 @@
   depth-splat candidate passes. Passing synthesized/splatted frames can seed the
   WAM initial-observation lane, but remain explicitly labeled as support
   artifacts, not raw capture truth, physical robot POV evidence, safety
-  validation, or deployment approval.
+  validation, or generated-world rank-fidelity result.
 - Clarified WAM/substrate evaluation as evaluator-bounded policy comparison:
   policy ranking scorecards can compare policy A/B/C inside the configured
   evaluator, while MMRV/Pearson/Spearman require real-world anchors and do not
@@ -34,7 +34,7 @@
   `src/blueprint_pipeline/unitree_groot_n17_sonic_vast_policy_command.py`, and
   `deploy/docker/robot_eval_worker/unitree_groot_sonic_vast/Dockerfile`. These
   are provider/runtime scaffolds for Task Evaluation Run support, not physical
-  robot readiness, safety validation, deployment approval, or public claim proof.
+  generated-world rank fidelity, off-scope validation, generated-world rank-fidelity result, or public claim proof.
 - Extended the MuJoCo Unitree policy/WAM loop with a local OSCAR-style support
   backend for no-live-provider runs. The generated next-observation frames,
   short MP4 segments, and Unitree re-query attempts are loop/debug evidence only
@@ -67,7 +67,7 @@
 
 - Contract changes: provider-worker manifests now distinguish endpoint
   discovery from allocation, runtime readiness, teardown, cost control,
-  simulator execution, safety, deployment, and robot-readiness proof.
+  simulator execution, safety, deployment, and rank-fidelity proof.
 - Runtime behavior changes: repeated WAM/policy loops should use the
   provider-worker adapter/session path when a ready worker URL is available;
   one-shot provider launchers remain inappropriate for repeated inference loops.
@@ -79,7 +79,7 @@
   and policy-command artifacts are startup/runtime support artifacts unless they
   are paired with accepted provider execution outputs and downstream eval
   evidence. They do not supersede raw capture/provenance evidence and do not
-  prove physical robot readiness, deployment readiness, safety validation, or
+  prove generated-world rank fidelity, generated-world rank fidelity, off-scope validation, or
   real-world manipulation success.
 
 ## 2026-06-23
@@ -92,7 +92,7 @@
   export, bbox proxies for oversized meshes, and blank/uniform frame rejection
   before an observation is treated as useful review evidence. This is visual
   scene/render support only; it does not validate physics contact, safety, or
-  physical robot readiness.
+  generated-world rank fidelity.
 - Committed eval-ready task grounding for WAM policy loops through
   `src/blueprint_pipeline/eval_ready_task_grounding.py` and the
   `blueprint-build-eval-ready-task-grounding` CLI. The new artifacts identify
@@ -100,11 +100,11 @@
   lightweight handle-state proxies for learned rollout requests while keeping
   those outputs downstream of raw capture/provenance truth.
 - Extended OSCAR/Cosmos WAM evaluation to consume eval-ready grounding,
-  projected skeleton traces, and optional real-world outcome ledgers, then write
+  projected skeleton traces, and optional policy-ranking outcome ledgers, then write
   `wam_prediction_outcome_correlation_ledger.json`. The correlation ledger is an
   audit/support artifact; generated rollouts, VLM labels, calibration gates, and
   handle proxies still do not prove physical contact, torque, task success,
-  deployment approval, or real-world readiness.
+  generated-world rank-fidelity result, or generated-world rank fidelity.
 
 ### Employee-Facing
 
@@ -139,7 +139,7 @@
 - Proof boundary: eval-ready grounding, projected skeleton traces, generated
   visual MJCFs, and prediction/outcome correlation records are support layers.
   They do not supersede raw capture/provenance evidence and do not prove live
-  provider execution, public readiness, safety validation, physical robot
+  provider execution, public readiness, off-scope validation, physical robot
   readiness, or real-world manipulation success without separate accepted proof.
 - Uncommitted caveat: local Unitree GR00T/SONIC Vast/provider packaging work
   touches `src/blueprint_pipeline/vast_provider_adapter.py`,
@@ -159,8 +159,8 @@
   adapters, and the MuJoCo endpoint evaluation path. The buyer-facing meaning is
   narrower than "robot ready": Unitree action-command plumbing, endpoint smoke
   results, and simulator-only MuJoCo artifacts can support Task Evaluation Run
-  review, but they do not prove physical robot readiness, deployment approval,
-  safety validation, or task success without separate accepted evidence.
+  review, but they do not prove generated-world rank fidelity, generated-world rank-fidelity result,
+  off-scope validation, or task success without separate accepted evidence.
 - Committed a clearer WAM proof boundary: generated WAM rollouts and generated
   video success labels are support evidence, while forward/inverse episode
   consistency now requires a separate scorer output before it can be summarized
@@ -267,7 +267,7 @@
   `src/blueprint_pipeline/wam_generated_video_success_label_gemini.py`, and
   `src/blueprint_pipeline/wam_episode_consistency_label_gemini.py`.
 - Proof boundary: June 21 work does not by itself prove live provider runtime
-  success, public deployment readiness, safety validation, physical robot
+  success, public generated-world rank fidelity, off-scope validation, physical robot
   readiness, or customer-specific sim-to-real correlation. Generated videos,
   VLM labels, endpoint probes, and owner-hosted connector outputs remain support
   evidence unless paired with accepted runtime and real-world validation proof.
@@ -317,7 +317,7 @@
 - Proof boundary: the MuJoCo lane is simulator-only; the 3DGS/MuJoCo preview is review/support
   media; the Isaac lane can write blocked attempts when runtime prerequisites are missing; and
   generated WAM/OSCAR outputs are downstream support artifacts. None of these prove physical
-  robot readiness, safety approval, public readiness, provider runtime success, or customer
+  generated-world rank fidelity, off-scope approval, public readiness, provider runtime success, or customer
   sim-to-real correlation without paired runtime and real-world validation evidence.
 - Validation caveat: the June 20 work is still uncommitted in this checkout. Treat it as local
   changelog-worthy state, not a merged release.
@@ -364,10 +364,10 @@
   and `blueprint-run-major-capability-scenarios`.
 - Proof boundary: WAM heldout success, generated rollout labels, ranking scorecards, and
   major-capability scenario reports are support artifacts only. They do not prove physical
-  robot readiness, public readiness, safety approval, or customer-specific sim-to-real
+  generated-world rank fidelity, public readiness, off-scope approval, or customer-specific sim-to-real
   correlation without paired real-world validation evidence.
 - Launch/readiness caveat: no June 19 commit by itself proves live provider runtime success,
-  public deployment parity, or real-robot deployment approval.
+  public deployment parity, or real-robot generated-world rank-fidelity result.
 - Uncommitted local carryover: `src/blueprint_pipeline/object_geometry_stage.py`,
   `tests/test_qualification_alpha.py`, and `tests/test_robot_eval_job_orchestrator.py` had
   late-June-19 local edits around PNG helper behavior and test coverage/restructuring.

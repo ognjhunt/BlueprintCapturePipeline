@@ -47,7 +47,7 @@ qualification -> evaluation_prep -> simulation_automation
 - Added provider-preview QA and production handoff readiness manifests as local proof surfaces.
 - Added final-walkthrough lineage enforcement before World Labs provider-ready
   status can pass in production.
-- Added owner GPU proof ingestion as evidence validation, not as robot-readiness
+- Added owner GPU proof ingestion as evidence validation, not as rank-fidelity
   proof.
 - Added Post-Training Data Package export and site/capture batch registry
   command surfaces for production handoff tracking.
@@ -92,16 +92,16 @@ They are not part of the active default process. Delete them only in a separate 
 
 Local CPU smoke can be displayed only as local CPU preflight. It must not be
 treated as accepted simulator execution, physics/contact validation, safety
-proof, policy success, robot readiness, deployment readiness, or training proof.
+proof, policy success, generated-world rank fidelity, generated-world rank fidelity, or training proof.
 
 `provider_preview_qa_manifest.json` and
 `production_handoff_readiness_manifest.json` are local proof summaries. A
 `ready_except_owner_gpu_simulator_execution` handoff status still leaves
-simulator execution, policy success, contact validation, safety validation, and
-robot readiness false until owner-system evidence is supplied.
+simulator execution, policy success, contact validation, off-scope validation, and
+generated-world rank fidelity false until owner-system evidence is supplied.
 Arena result ingest can make a job evaluation complete from supplied local Arena
 result artifacts, but it does not prove that this process ran the simulator and
-does not upgrade robot readiness, policy success, contact/safety validation, or
+does not upgrade generated-world rank fidelity, policy success, contact/off-scope validation, or
 public claims. Vision labeling, storage upload/signed URLs, and live Agents
 SDK/Codex SDK operators remain blocked without explicit CLI and environment
 gates; fake operators prove only local operator-control code paths.

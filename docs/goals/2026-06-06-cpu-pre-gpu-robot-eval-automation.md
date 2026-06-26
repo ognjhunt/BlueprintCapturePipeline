@@ -59,10 +59,10 @@ Do not claim any of the following without owner-system proof:
 
 - GPU simulator execution
 - accepted simulator execution completed
-- robot readiness or deployment readiness
+- generated-world rank fidelity or generated-world rank fidelity
 - policy success
 - physics/contact validation
-- safety validation
+- off-scope validation
 - training completion
 
 Optional local CPU smoke is labeled only as local CPU preflight. Missing
@@ -116,4 +116,4 @@ remains authoritative.
 collider/proxy labels, task/spawn proposals, owner GPU handoff readiness,
 episode summaries, preflight blockers, and proof boundaries only as advisory
 dataset/setup status. It must not present those fields as robot-ready,
-deployment-ready, safety-validated, simulator-completed, or policy-passed proof.
+rank-fidelity-scored, safety-validated, simulator-completed, or policy-passed proof.

@@ -664,10 +664,10 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
         "pybullet/site_scene.urdf"
     )
     assert simready_validation["claim_boundary"]["simulator_execution_proven"] is False
-    assert simready_validation["claim_boundary"]["robot_readiness_proven"] is False
+    assert simready_validation["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert summary["marble_sim_asset_lane_status"] == "review_ready_with_conversion_required"
     assert marble_bridge["evaluation_prep_summary"]["isaac_visual_conversion_required"] is True
-    assert marble_validation["claim_boundary"]["robot_readiness_proven"] is False
+    assert marble_validation["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert evaluation["marble_sim_assets"]["status"] == "review_ready_with_conversion_required"
     assert summary["robot_eval_dataset_status"] in {
         "capture_grounded_review_ready",
@@ -693,11 +693,11 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
         evaluation["site_package_manifest"]["artifacts"]["recorded_trace_eval_report_uri"]
         == "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/robot_eval_dataset/recorded_trace_eval_report.json"
     )
-    assert robot_eval_manifest["claim_boundary"]["robot_readiness_proven"] is False
+    assert robot_eval_manifest["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert robot_eval_manifest["claim_boundary"]["simulator_execution_proven"] is False
     assert robot_eval_site_card["schema_version"] == "real_site_robot_eval_site_card.v0.1"
     assert robot_eval_proof_boundaries["robot_policy_execution_proven"] is False
-    assert robot_eval_proof_boundaries["safety_validation_proven"] is False
+    assert robot_eval_proof_boundaries["non_ranking_operational_claim_proven"] is False
     assert evaluation["robot_eval_dataset"]["manifest_path"].endswith(
         "/robot_eval_dataset/robot_eval_dataset_manifest.json"
     )

@@ -234,7 +234,7 @@ def test_reference_loading_and_webapp_helpers_cover_edge_paths(
                 "schema_version": "wrong-schema",
                 "job_id": "job-1",
             },
-            "owner_robot_readiness_evidence": {
+            "owner_rank_fidelity_evidence": {
                 "schema_version": lrec.LIVE_ROBOT_EVAL_EVIDENCE_SCHEMA_VERSION,
                 "job_id": "other-job",
             },
@@ -425,7 +425,7 @@ def test_owner_evidence_gates_cover_reference_failure_branches(tmp_path: Path) -
         job_dir=job_dir,
     )
     assert "physics_contact_validation_not_proven" in safety_gate["blockers"]
-    assert "safety_validation_not_proven" in safety_gate["blockers"]
+    assert "non_ranking_operational_claim_not_proven" in safety_gate["blockers"]
     assert "safety_contact_physics_operator_attestation_missing" in safety_gate["blockers"]
     assert "safety_contact_physics_evidence_refs_invalid_or_placeholder" in safety_gate["blockers"]
 

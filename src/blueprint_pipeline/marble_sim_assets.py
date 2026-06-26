@@ -27,7 +27,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "isaac_sim_execution_proven": False,
     "mujoco_execution_proven": False,
     "pybullet_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "physics_contact_validated": False,
     "remote_asset_downloads_performed": False,
     "live_worldlabs_call_performed": False,
@@ -40,7 +40,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
         "articulated_interaction_ready",
         "policy_execution_passed",
     ],
-    "robot_readiness_requires": [
+    "rank_fidelity_requires": [
         "simulator load traces",
         "action logs",
         "physics/contact validation logs",
@@ -507,7 +507,7 @@ def _validation_payload(asset_manifest: Mapping[str, Any]) -> Dict[str, Any]:
         "isaac_visual_conversion_required": needs_conversion,
         "mujoco_direct_load_proven": False,
         "pybullet_direct_load_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
@@ -720,7 +720,7 @@ def build_marble_sim_assets(
             "isaac_visual_conversion_required": bool(
                 validation.get("isaac_visual_conversion_required")
             ),
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
         },
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }

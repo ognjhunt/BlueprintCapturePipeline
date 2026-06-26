@@ -59,7 +59,7 @@ The MuJoCo path still cannot prove:
   `site_submission_id`, `request_id`, `buyer_request_id`, and `capture_job_id`
 - robot-team policy quality beyond the default smoke policy
 - physical robot POV
-- physical deployment readiness
+- physical generated-world rank fidelity
 - safety/contact validity
 - signed customer delivery
 - public claim upgrades
@@ -80,7 +80,7 @@ The correct next live-product order is:
 
 ## Stop Rule
 
-If any generated artifact claims robot readiness, physical robot evidence, live
+If any generated artifact claims generated-world rank fidelity, generated-world policy-evaluation evidence, live
 forwarding, or customer delivery from only local MuJoCo or owner-runtime MuJoCo
 evidence, treat the artifact as invalid and fix the proof boundary before
 continuing.

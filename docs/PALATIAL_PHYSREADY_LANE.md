@@ -12,7 +12,7 @@ microwave, tote, bin, door handle, cabinet, drawer, cart, or appliance control
 that matter for contact-rich robot evaluation tasks.
 
 The lane keeps Palatial behind a replaceable provider contract. Palatial outputs
-are model-derived support assets, not raw capture truth and not robot-readiness
+are model-derived support assets, not raw capture truth and not rank-fidelity
 proof.
 
 ## Default Behavior
@@ -168,4 +168,4 @@ Blocked claims unless owner-system proof exists:
 
 Promotion into a Task Evaluation Run requires local checksums, rights/license
 review, unit/scale sanity checks, collision/articulation metadata inspection,
-and owner-system simulator proof before any robot-readiness claim.
+and owner-system simulator proof before any rank-fidelity claim.

@@ -741,8 +741,8 @@ def build_unitree_lerobot_g1_sim_command(
         "claim_boundary": {
             "command_build_is_not_execution_proof": True,
             "send_real_robot": config.send_real_robot,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
 
@@ -919,8 +919,8 @@ def _truth_boundary(
         "unifolm_wma_used": bool(proven and family == "unifolm_wma"),
         "freejoint_proxy_used": False,
         "physical_robot_command_attempted": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "not_configured_reason": not_configured_reason,
         "missing_requirements": missing,
         "safety_blocks": safety,
@@ -941,8 +941,8 @@ def _truth_boundary(
             "lerobot_vla_execution_requires_successful_sim_eval_subprocess": True,
             "generic_openvla_is_not_g1_control_without_explicit_adapter": True,
             "wam_world_model_used_only_when_invoked": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
 
@@ -960,8 +960,8 @@ def _handoff_manifest(
 ) -> dict[str, Any]:
     claims_proven: list[str] = []
     claims_not_proven = [
-        "physical_robot_readiness",
-        "deployment_readiness",
+        "generated_world_rank_fidelity",
+        "evaluation_readiness",
         "official_unitree_rl_gym_locomotion",
         "openvla_g1_control",
         "wam_world_model_control",
@@ -1193,8 +1193,8 @@ def run_unitree_lerobot_g1_policy_eval(
         "missing_requirements": truth["missing_requirements"],
         "safety_blocks": truth["safety_blocks"],
         "runtime_error_summary": truth["runtime_error_summary"],
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
     }
     write_json(job_dir / "unitree_lerobot_g1_policy_runtime_summary.json", summary)
     return summary
@@ -1743,8 +1743,8 @@ def build_unitree_policy_stack_installation_audit(
             "selected_locomotion_provider_is_not_whole_stack_installation": True,
             "whole_stack_requires_unitree_manipulation_runtime_and_action_command": True,
             "stack_installation_is_not_task_success_or_physical_readiness": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
@@ -1810,8 +1810,8 @@ def _build_policy_provider_registry_payload(
             "unitree_hand_policy_requires_manipulation_runtime_and_action_command": True,
             "openvla_is_not_default_g1_robot_policy": True,
             "wam_is_not_g1_robot_policy": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
 

@@ -186,7 +186,7 @@ def build_first_gpu_candidate_audit(
             "webapp_requests_submitted": False,
             "simulator_execution_performed": False,
             "gpu_provisioning_performed": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

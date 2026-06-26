@@ -195,7 +195,7 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
         "triggered_by_no_real_world_anchors"
     ] is False
     assert scorecard["comparison_contract"]["comparison_scope"] == "configured_evaluator_only"
-    assert scorecard["comparison_contract"]["deployment_readiness_claimed"] is False
+    assert scorecard["comparison_contract"]["evaluation_readiness_claimed"] is False
     assert failure_labels["fixture_evaluator_only"] is True
     assert failure_labels["review_grade_failure_diagnosis"] is False
     assert "fixture_evaluator_only_no_review_grade_visual_evidence" in failure_labels[
@@ -208,10 +208,10 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
         "policy_comparison_within_configured_evaluator"
     )
     assert claim_boundary["policy_ranking_is_evaluator_bounded"] is True
-    assert claim_boundary["policy_ranking_is_not_deployment_readiness"] is True
+    assert claim_boundary["policy_ranking_is_not_evaluation_readiness"] is True
     assert claim_boundary["live_provider_calls_performed"] is False
     assert claim_boundary["customer_specific_srcc_claimed"] is False
-    assert claim_boundary["passing_wam_heldout_eval_is_not_deployment_approval"] is True
+    assert claim_boundary["passing_wam_heldout_eval_is_not_rank_fidelity_result"] is True
     assert srcc_plan["status"] == "requires_real_world_rollout_anchors"
     assert srcc_plan["customer_specific_srcc_claimed"] is False
     assert anchor_manifest["deployment_outcome_ledger_path"] == "deployment_outcome_ledger.json"
@@ -320,14 +320,14 @@ def test_candidate_selection_report_clear_winner_decisive_failure_handoff(
     ] is True
     assert report["real_world_validation_followup_request"]["usable_anchor_count"] == 0
     assert report["claim_boundary"]["boundary_statement"] == (
-        "do not use for deployment approval"
+        "do not use for generated-world rank-fidelity result"
     )
-    assert report["claim_boundary"]["do_not_use_for_deployment_approval"] is True
-    assert report["claim_boundary"]["deployment_approval_claimed"] is False
+    assert report["claim_boundary"]["do_not_use_as_rank_fidelity_result"] is True
+    assert report["claim_boundary"]["rank_fidelity_result_claimed"] is False
     markdown_lower = markdown.lower()
-    assert "do not use for deployment approval" in markdown_lower
+    assert "do not use for generated-world rank-fidelity result" in markdown_lower
     assert "ready for deployment" not in markdown_lower
-    assert "deployment ready" not in markdown_lower
+    assert "policy-ranking ready" not in markdown_lower
     assert "approved for deployment" not in markdown_lower
     assert "will work irl" not in markdown_lower
     assert handoff["candidate_selection_report_path"] == "candidate_selection_report.json"

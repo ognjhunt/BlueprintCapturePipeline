@@ -419,7 +419,7 @@ def _g1_model_manifest(
             "manipulation_capable_g1_model_exposed": True,
             "full_official_unitree_g1_asset_claimed": False,
             "dexterous_hand_model_claimed": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
 
@@ -984,7 +984,7 @@ def run_mujoco_manipulation_physics(
             "full_unitree_g1_dexterous_hand_policy_proven": False,
             "official_lucky_walker_reacher_policy_assets_executed": False,
             "team_policy_endpoint_execution_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
         "render_frames_requested": bool(render_frames),

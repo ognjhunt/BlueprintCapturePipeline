@@ -498,7 +498,7 @@ def test_provider_preview_qa_uses_webapp_route_proof_ids_without_live_claim(
                 "pipeline_intake_staged_request_proven": True,
                 "production_live_webapp_forwarding_proven": False,
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         },

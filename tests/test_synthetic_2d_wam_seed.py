@@ -97,7 +97,7 @@ def test_build_synthetic_2d_wam_seed_job_writes_policy_and_truth_boundary(
     boundary = _read(job_dir / "claim_boundary.json")
     assert boundary["visual_seed_for_wam_experiment"] is True
     assert "geometry_truth" in boundary["forbidden_claims"]
-    assert boundary["physical_robot_readiness_proven"] is False
+    assert boundary["generated_world_rank_fidelity_result_proven"] is False
 
 
 def test_build_synthetic_2d_wam_seed_blocks_low_resolution_selection(

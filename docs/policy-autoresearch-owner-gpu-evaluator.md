@@ -10,7 +10,7 @@ The adapter is proof-bounded:
 - it validates the owner GPU proof manifest with the existing Pipeline verifier;
 - it still requires a per-scenario policy attempt trace before task success can
   count toward promotion;
-- it never upgrades physical robot readiness, real-world outcome proof, safety
+- it never upgrades generated-world rank fidelity, policy-ranking outcome proof, safety
   validation, or public claims.
 
 Use it from policy autoresearch with an engine-specific command:

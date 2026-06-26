@@ -215,10 +215,10 @@ def _claim_boundary(
             provider_output_replay_used
         ),
         "unitree_g1_dexterous_manipulation_proven": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
-        "real_world_manipulation_success_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
+        "accepted_anchor_manipulation_success_proven": False,
     }
 
 

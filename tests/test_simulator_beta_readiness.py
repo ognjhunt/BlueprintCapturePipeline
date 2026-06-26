@@ -214,7 +214,7 @@ def test_simulator_beta_readiness_marks_physical_gates_out_of_scope(tmp_path: Pa
     assert manifest["status"] == "ready_for_simulator_beta"
     assert manifest["ready_for_simulator_beta"] is True
     assert manifest["blocking_gate_ids"] == []
-    assert manifest["out_of_scope_gates"]["physical_robot_readiness"] == (
+    assert manifest["out_of_scope_gates"]["generated_world_rank_fidelity"] == (
         "out_of_scope_for_simulator_beta"
     )
     gates = manifest["gates"]
@@ -223,7 +223,7 @@ def test_simulator_beta_readiness_marks_physical_gates_out_of_scope(tmp_path: Pa
     assert gates["production_runpod_worker_execution"]["proven"] is True
     assert gates["customer_website_to_pipeline_request"]["proven"] is True
     assert gates["official_policy_robot_team_handoff_dataset"]["proven"] is True
-    assert manifest["claim_boundary"]["physical_robot_readiness_claimed"] is False
+    assert manifest["claim_boundary"]["generated_world_rank_fidelity_claimed"] is False
     assert manifest["claim_boundary"]["walking_motion_proven"] is True
     assert manifest["claim_boundary"]["training_grade_policy_rollout_proven"] is True
     assert manifest["data_gate_ids"] == []

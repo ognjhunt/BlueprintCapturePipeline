@@ -262,8 +262,8 @@ def _claim_boundary(
         "generic_openvla_action_vector_is_not_unitree_hand_control": True,
         "blueprint_action_decoder_is_conservative_task_mapping": True,
         "unitree_g1_dexterous_manipulation_proven": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
     }
 
 

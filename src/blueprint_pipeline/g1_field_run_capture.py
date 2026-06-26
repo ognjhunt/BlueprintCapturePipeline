@@ -394,10 +394,10 @@ def _safety_review_checklist(context: Mapping[str, Any], paths: Mapping[str, str
             "operator_estop",
         ],
         "proof_boundary": {
-            "checklist_is_not_safety_validation": True,
+            "checklist_is_not_non_ranking_operational_claim": True,
             "requires_human_safety_review": True,
             "requires_physical_contact_or_hardware_logs": True,
-            "safety_validated": False,
+            "non_ranking_operational_claim_validated": False,
         },
     }
 
@@ -759,7 +759,7 @@ def main() -> int:
                     "events": [],
                     "max_contact_force_n": max_tau_est,
                     "proxy_metric": "max_abs_motor_tau_est",
-                    "claim_boundary": "DDS torque estimate is a review input, not standalone safety validation.",
+                    "claim_boundary": "DDS torque estimate is a review input, not standalone off-scope validation.",
                     "captured_at_utc": utc_now(),
                 },
                 indent=2,

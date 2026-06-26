@@ -1298,7 +1298,7 @@ payload = dict(
         simulator_execution_performed=False,
         gpu_provisioning_performed=False,
         robot_policy_execution_proven=False,
-        robot_readiness_proven=False,
+        rank_fidelity_result_proven=False,
         public_claim_upgrade_allowed=False,
     ),
 )
@@ -1468,7 +1468,7 @@ payload = {{
         "webapp_requests_submitted": False,
         "live_forwarding_performed": False,
         "simulator_execution_performed": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
     }},
 }}
@@ -1638,7 +1638,7 @@ if forwarding_preflight_path_text:
             "no_pipeline_mutation_requested",
             "no_gpu_allocated",
             "no_simulator_execution_proven",
-            "no_robot_readiness_proven",
+            "no_rank_fidelity_result_proven",
             "no_public_claim_upgrade_allowed",
         ):
             if proof_boundary.get(field) is not True:
@@ -1813,7 +1813,7 @@ payload = {
         "live_forwarding_performed": False,
         "simulator_execution_performed": False,
         "gpu_provisioning_performed": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
     },
 }
@@ -1990,7 +1990,7 @@ def _gpu_provider_bootstrap_manifest(
             "gpu_provisioning_performed": False,
             "simulator_execution_performed": False,
             "robot_policy_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -2124,7 +2124,7 @@ def _simulator_path_details(framework: str) -> Dict[str, Any]:
                 "Isaac Sim rich-scene rendering proof",
                 "real robot POV evidence",
                 "balanced humanoid locomotion policy quality",
-                "physics/contact/safety validation",
+                "physics/contact/off-scope validation",
             ],
         },
         "pybullet": {
@@ -2226,7 +2226,7 @@ def _simulator_path_matrix_manifest(
                 "owner simulator command execution",
                 "scene load trace",
                 "spawn pose trace",
-                "physics contact or safety validation",
+                "physics contact or off-scope validation",
             ],
         },
         "first_gpu_recommendation": {
@@ -2260,7 +2260,7 @@ def _simulator_path_matrix_manifest(
             "simulator_execution_performed": False,
             "gpu_provisioning_performed": False,
             "nvidia_nim_used_as_simulator": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -2309,7 +2309,7 @@ def _simulator_path_matrix_markdown(payload: Mapping[str, Any]) -> str:
         lines.extend(["```", ""])
     lines.extend(
         [
-            "This matrix does not run simulators, provision GPUs, invoke NIM, or prove robot readiness.",
+            "This matrix does not run simulators, provision GPUs, invoke NIM, or prove generated-world rank fidelity.",
             "",
         ]
     )
@@ -2418,7 +2418,7 @@ def _gpu_vm_runtime_preflight_plan_manifest(
             "gpu_provisioning_performed": False,
             "simulator_execution_performed": False,
             "owner_simulator_command_executed": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
         "related_artifacts": {
@@ -2457,7 +2457,7 @@ def _gpu_vm_runtime_preflight_plan_markdown(payload: Mapping[str, Any]) -> str:
         lines.extend(["```", ""])
     lines.extend(
         [
-            "This preflight checks the GPU VM environment and file sync only. It does not run the owner simulator command, provision GPUs, or prove robot readiness.",
+            "This preflight checks the GPU VM environment and file sync only. It does not run the owner simulator command, provision GPUs, or prove generated-world rank fidelity.",
             "",
         ]
     )
@@ -2522,7 +2522,7 @@ def _webapp_upstream_blocker_details(blockers: Sequence[str]) -> list[Dict[str, 
                 "accepted_evidence_sources": list(WEBAPP_UPSTREAM_EVIDENCE_SOURCES),
                 "proof_boundary": (
                     "required upstream identity only; does not prove live forwarding, "
-                    "simulator execution, or robot readiness"
+                    "simulator execution, or generated-world rank fidelity"
                 ),
             }
         )
@@ -2619,7 +2619,7 @@ def _blocker_resolution_actions(categories: Sequence[Mapping[str, Any]]) -> list
             "proof_boundary": (
                 "Clearing this action only satisfies the named first-GPU packet gate; it "
                 "does not submit WebApp requests, call providers, provision GPUs, run "
-                "simulators, or prove robot readiness."
+                "simulators, or prove generated-world rank fidelity."
             ),
         }
         actions.append(action)
@@ -3294,13 +3294,13 @@ def _first_gpu_launch_order_manifest(
         or [step["step_id"] for step in steps if step["status"] == "blocked"][:1]
     )
     forbidden_actions = (
-        ["do_not_claim_owner_gpu_or_robot_readiness"]
+        ["do_not_claim_owner_gpu_or_rank_fidelity"]
         if gpu_execution_allowed
         else [
             "do_not_run_gpu_vm_commands",
             "do_not_claim_webapp_live_forwarding",
             "do_not_claim_scene_asset_ready",
-            "do_not_claim_owner_gpu_or_robot_readiness",
+            "do_not_claim_owner_gpu_or_rank_fidelity",
         ]
     )
     return {
@@ -3325,7 +3325,7 @@ def _first_gpu_launch_order_manifest(
             "files_copied": False,
             "gpu_provisioning_performed": False,
             "simulator_execution_performed": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -3370,7 +3370,7 @@ def _launch_order_markdown(payload: Mapping[str, Any]) -> str:
         lines.extend(f"- `{item}`" for item in forbidden)
         lines.append("")
     lines.append(
-        "This launch order does not submit WebApp requests, call providers, copy files, provision GPUs, run simulators, or prove robot readiness."
+        "This launch order does not submit WebApp requests, call providers, copy files, provision GPUs, run simulators, or prove generated-world rank fidelity."
     )
     lines.append("")
     return "\n".join(lines)
@@ -3468,7 +3468,7 @@ def _gpu_vm_sync_manifest(
         "post_sync_verification": [
             "Verify every file with exists=true and sha256 in this manifest still matches on the GPU VM.",
             "Do not run the owner simulator until scene asset and spawn blockers are cleared.",
-            "Do not treat this sync manifest as simulator execution or robot readiness proof.",
+            "Do not treat this sync manifest as simulator execution or generated-world rank fidelity proof.",
         ],
         "claim_boundary": {
             "artifact_purpose": "first_gpu_vm_sync_manifest",
@@ -3476,7 +3476,7 @@ def _gpu_vm_sync_manifest(
             "live_provider_calls_performed": False,
             "gpu_provisioning_performed": False,
             "simulator_execution_performed": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -3515,7 +3515,7 @@ def _gpu_vm_sync_markdown(payload: Mapping[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "This manifest does not copy files, provision GPUs, run simulators, or prove robot readiness.",
+            "This manifest does not copy files, provision GPUs, run simulators, or prove generated-world rank fidelity.",
             "",
         ]
     )
@@ -3699,7 +3699,7 @@ def _scene_asset_acquisition_manifest(
             "proof_boundary": (
                 "Provider submission readiness only means the source video is ready for "
                 "World Labs scene generation. It does not call providers, download assets, "
-                "run simulators, provision GPUs, or prove robot readiness."
+                "run simulators, provision GPUs, or prove generated-world rank fidelity."
             ),
         },
         "provider_preview": {
@@ -3754,7 +3754,7 @@ def _scene_asset_acquisition_manifest(
             "scene_asset_attached": bool(existing_candidates),
             "simulator_execution_performed": False,
             "gpu_provisioning_performed": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -3829,7 +3829,7 @@ def _scene_asset_acquisition_markdown(payload: Mapping[str, Any]) -> str:
         [
             "```",
             "",
-            "This plan does not call providers, download assets, run simulators, provision GPUs, or prove robot readiness.",
+            "This plan does not call providers, download assets, run simulators, provision GPUs, or prove generated-world rank fidelity.",
             "",
         ]
     )
@@ -4075,7 +4075,7 @@ def _webapp_handoff_manifest(
             "webapp_request_staged_observed": bool(staged.get("ready")),
             "simulator_execution_performed": False,
             "gpu_provisioning_performed": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -4142,7 +4142,7 @@ def _webapp_handoff_markdown(payload: Mapping[str, Any]) -> str:
         lines.extend(["```bash", str(command), "```", ""])
     lines.extend(
         [
-            "This packet does not submit WebApp requests, perform live forwarding, run simulators, provision GPUs, or prove robot readiness.",
+            "This packet does not submit WebApp requests, perform live forwarding, run simulators, provision GPUs, or prove generated-world rank fidelity.",
             "",
         ]
     )
@@ -4165,7 +4165,7 @@ bindings. The script loads the staged World Labs GLB as converted OBJ support,
 loads the real MuJoCo Menagerie Unitree G1 MJCF and mesh assets, runs the default
 kinematic walk-to-target smoke, captures MuJoCo renderer frames, and writes the
 trace files named above. It still does not create physical robot POV,
-robot-team policy proof, contact/safety proof, or deployment readiness.
+robot-team policy proof, contact/safety proof, or generated-world rank fidelity.
 """
     else:
         selected_smoke = """For Isaac Sim packets, the run packet also includes a concrete smoke command:
@@ -4243,7 +4243,7 @@ Minimum trace shape:
 ```
 
 The wrapper can accept simulator execution, default smoke-policy execution, and simulator POV
-evidence from this command. That still does not prove real robot POV, robot readiness,
+evidence from this command. That still does not prove real robot POV, generated-world rank fidelity,
 safety, physics contact validity, robot-team policy quality, or public claim upgrades.
 For `{simulator}`, launch-level selected-asset proof requires the wrapper robot asset
 and spawn trace robot asset to match. A procedural humanoid proxy can be recorded as
@@ -4337,7 +4337,7 @@ the first controlled run, but it is still not proof of robot-team policy quality
 
 Policy package intake alone is not proof. It only stages robot-team references for
 the later gated execution bundle. Generated/default smoke policy artifacts are also
-not proof of robot-team policy quality or physical deployment readiness.
+not proof of robot-team policy quality or physical generated-world rank fidelity.
 """
 
 
@@ -4415,7 +4415,7 @@ def _default_test_robot_eval_job_request_template(
             "default_test_policy_execution_requested": True,
             "robot_team_policy_execution_requested": False,
             "real_robot_pov_required_separately": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -4455,7 +4455,7 @@ def _real_robot_pov_manifest_template() -> Dict[str, Any]:
             "template_only": True,
             "real_robot_pov_evidence_required": True,
             "generated_or_simulator_pov_not_accepted": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

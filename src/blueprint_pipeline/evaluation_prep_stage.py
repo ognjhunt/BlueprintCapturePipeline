@@ -1007,9 +1007,9 @@ def simulation_automation_evaluation_prep_surface(
             proof_boundary.get("simulator_execution_proven")
             or run_manifest.get("simulator_execution_proven")
         ),
-        "robot_readiness_proven": bool(
-            proof_boundary.get("robot_readiness_proven")
-            or run_manifest.get("robot_readiness_proven")
+        "rank_fidelity_result_proven": bool(
+            proof_boundary.get("rank_fidelity_result_proven")
+            or run_manifest.get("rank_fidelity_result_proven")
         ),
         "public_claim_upgrade_allowed": bool(
             proof_boundary.get("public_claim_upgrade_allowed")
@@ -1075,9 +1075,9 @@ def palatial_physready_evaluation_prep_surface(
             validation.get("simulator_execution_proven")
             or run_manifest.get("simulator_execution_proven")
         ),
-        "robot_readiness_proven": bool(
-            validation.get("robot_readiness_proven")
-            or run_manifest.get("robot_readiness_proven")
+        "rank_fidelity_result_proven": bool(
+            validation.get("rank_fidelity_result_proven")
+            or run_manifest.get("rank_fidelity_result_proven")
         ),
         "public_claim_upgrade_allowed": bool(
             validation.get("public_claim_upgrade_allowed")
@@ -1169,9 +1169,9 @@ def site_eval_director_evaluation_prep_surface(
             proof_boundary.get("simulator_execution_proven")
             or run_manifest.get("simulator_execution_proven")
         ),
-        "robot_readiness_proven": bool(
-            proof_boundary.get("robot_readiness_proven")
-            or run_manifest.get("robot_readiness_proven")
+        "rank_fidelity_result_proven": bool(
+            proof_boundary.get("rank_fidelity_result_proven")
+            or run_manifest.get("rank_fidelity_result_proven")
         ),
         "public_claim_upgrade_allowed": bool(
             proof_boundary.get("public_claim_upgrade_allowed")
@@ -1292,9 +1292,9 @@ def robot_eval_job_evaluation_prep_surface(
                         proof_boundary.get("simulator_execution_proven")
                         or run_manifest.get("simulator_execution_proven")
                     ),
-                    "robot_readiness_proven": bool(
-                        proof_boundary.get("robot_readiness_proven")
-                        or run_manifest.get("robot_readiness_proven")
+                    "rank_fidelity_result_proven": bool(
+                        proof_boundary.get("rank_fidelity_result_proven")
+                        or run_manifest.get("rank_fidelity_result_proven")
                     ),
                     "live_end_to_end_verified": bool(
                         proof_boundary.get("live_end_to_end_verified")
@@ -1419,8 +1419,8 @@ def robot_eval_job_evaluation_prep_surface(
         "simulator_execution_proven": any(
             bool(job.get("simulator_execution_proven")) for job in jobs
         ),
-        "robot_readiness_proven": any(
-            bool(job.get("robot_readiness_proven")) for job in jobs
+        "rank_fidelity_result_proven": any(
+            bool(job.get("rank_fidelity_result_proven")) for job in jobs
         ),
         "public_claim_upgrade_allowed": any(
             bool(job.get("public_claim_upgrade_allowed")) for job in jobs
@@ -4216,23 +4216,23 @@ def run_evaluation_prep_stage(
         "simulation_automation_simulator_execution_proven": simulation_automation_surface.get(
             "simulator_execution_proven"
         ),
-        "simulation_automation_robot_readiness_proven": simulation_automation_surface.get(
-            "robot_readiness_proven"
+        "simulation_automation_rank_fidelity_result_proven": simulation_automation_surface.get(
+            "rank_fidelity_result_proven"
         ),
         "site_eval_director_status": site_eval_director_surface.get("status"),
         "site_eval_director_simulator_execution_proven": site_eval_director_surface.get(
             "simulator_execution_proven"
         ),
-        "site_eval_director_robot_readiness_proven": site_eval_director_surface.get(
-            "robot_readiness_proven"
+        "site_eval_director_rank_fidelity_result_proven": site_eval_director_surface.get(
+            "rank_fidelity_result_proven"
         ),
         "robot_eval_job_status": robot_eval_job_surface.get("status"),
         "robot_eval_job_count": robot_eval_job_surface.get("job_count"),
         "robot_eval_job_simulator_execution_proven": robot_eval_job_surface.get(
             "simulator_execution_proven"
         ),
-        "robot_eval_job_robot_readiness_proven": robot_eval_job_surface.get(
-            "robot_readiness_proven"
+        "robot_eval_job_rank_fidelity_result_proven": robot_eval_job_surface.get(
+            "rank_fidelity_result_proven"
         ),
         "export_bundle_status": launchable_export_bundle.get("status"),
         "site_world_status": site_world_health.get("status"),

@@ -93,7 +93,7 @@ def _default_smoke_policy(
             "default_policy_execution_contract": True,
             "robot_team_policy_quality_proven": False,
             "real_robot_pov_evidence_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -320,7 +320,7 @@ def run_owner_gpu_proof(
             operator_id=operator_id,
             statement=operator_attestation,
         ),
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "robot_policy_execution_proven": False,
         "owner_gpu_default_policy_execution_proven": False,
         "owner_gpu_sim_robot_pov_evidence_proven": False,
@@ -328,7 +328,7 @@ def run_owner_gpu_proof(
         "isaac_sim_execution_proven": False,
         "real_robot_pov_evidence_proven": False,
         "physics_contact_validated": False,
-        "safety_validated": False,
+        "non_ranking_operational_claim_validated": False,
         "public_claim_upgrade_allowed": False,
     }
     write_json(proof_path, proof)

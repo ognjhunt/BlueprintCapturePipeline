@@ -172,7 +172,7 @@ def test_runpod_live_execution_proof_combines_runtime_manifest_for_production_pr
             "simulator_service_status": "completed",
             "evaluation_status": "completed",
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "signed_put_runtime_manifest_upload": {"status": "completed"},
         },
@@ -223,7 +223,7 @@ def test_runpod_live_execution_proof_combines_runtime_manifest_for_production_pr
     assert result["shutdown_or_termination_proof"] is True
     assert result["production_runpod_worker_execution_proven"] is True
     assert result["simulator_execution_proven"] is True
-    assert result["robot_readiness_proven"] is False
+    assert result["rank_fidelity_result_proven"] is False
     assert result["public_claim_upgrade_allowed"] is False
     assert "secret-runpod-key" not in persisted
 

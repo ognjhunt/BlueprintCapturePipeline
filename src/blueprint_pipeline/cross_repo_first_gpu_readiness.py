@@ -156,7 +156,7 @@ def _phase(name: str, checks: Mapping[str, Mapping[str, Any]]) -> Dict[str, Any]
         "proof_boundary": (
             f"{name} audits source and artifact contracts only; it does not prove a live "
             "capture, WebApp request, simulator run, GPU provisioning, policy execution, "
-            "safety, or robot readiness."
+            "safety, or generated-world rank fidelity."
         ),
     }
 
@@ -472,7 +472,7 @@ def _runtime_capture_phase(
         "warnings": readiness.get("warnings") or [],
         "proof_boundary": (
             "This wraps the authoritative first-GPU readiness audit. Passing it means ready "
-            "for an owner GPU attempt, not that owner GPU proof or robot readiness exists."
+            "for an owner GPU attempt, not that owner GPU proof or generated-world rank fidelity exists."
         ),
     }
 
@@ -501,7 +501,7 @@ def _run_packet_phase(*, capture_root: str | Path | None) -> Dict[str, Any]:
             "proof_boundary": (
                 "Run-packet launch consistency is checked only after a concrete capture root "
                 "is supplied; this phase does not generate packets, copy files, provision "
-                "GPUs, run simulators, or prove robot readiness."
+                "GPUs, run simulators, or prove generated-world rank fidelity."
             ),
         }
 
@@ -949,7 +949,7 @@ def _run_packet_phase(*, capture_root: str | Path | None) -> Dict[str, Any]:
             "manifest, VM runtime preflight plan, and blocker-resolution actions. "
             "Passing it means the operator packet no longer forbids the owner GPU "
             "attempt; it does not copy files, provision GPUs, run simulators, or "
-            "prove robot readiness."
+            "prove generated-world rank fidelity."
         ),
     }
 
@@ -964,7 +964,7 @@ def _remediation_for_blocker(blocker: str) -> Dict[str, Any]:
         "can_be_rehearsed_locally": True,
         "proof_boundary": (
             "Clearing this blocker only satisfies the named audit gate; it does not prove "
-            "owner GPU simulator execution or robot readiness."
+            "owner GPU simulator execution or generated-world rank fidelity."
         ),
     }
     if "missing_capture_root_for_runtime_first_gpu_readiness" in blocker:
@@ -1479,7 +1479,7 @@ def _build_gpu_spend_decision(
             "do_not_run_gpu_vm_commands",
             "do_not_claim_webapp_live_forwarding",
             "do_not_claim_scene_asset_or_gpu_handoff_ready",
-            "do_not_claim_owner_gpu_or_robot_readiness",
+            "do_not_claim_owner_gpu_or_rank_fidelity",
         ]
     return {
         "status": status,
@@ -1512,7 +1512,7 @@ def _build_gpu_spend_decision(
             "artifact_purpose": "first_gpu_gpu_spend_decision",
             "gpu_provisioning_performed": False,
             "simulator_execution_performed": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -2205,7 +2205,7 @@ def _build_first_gpu_external_input_packet(
             "sim_robot_pov_evidence_proven": False,
             "robot_policy_execution_proven": False,
             "real_robot_pov_evidence_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -2225,7 +2225,7 @@ def _first_gpu_external_input_packet_markdown(packet: Mapping[str, Any]) -> str:
         f"- Missing input count: `{packet.get('missing_input_count')}`",
         f"- Next missing category: `{packet.get('next_missing_category_id')}`",
         "",
-        "This packet names required external inputs only. It does not collect secrets, submit WebApp requests, call providers, provision GPUs, run simulators, or prove robot readiness.",
+        "This packet names required external inputs only. It does not collect secrets, submit WebApp requests, call providers, provision GPUs, run simulators, or prove generated-world rank fidelity.",
         "",
     ]
     secret_handling = (
@@ -2572,7 +2572,7 @@ def build_cross_repo_first_gpu_readiness(
             "sim_robot_pov_evidence_proven": False,
             "robot_policy_execution_proven": False,
             "real_robot_pov_evidence_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

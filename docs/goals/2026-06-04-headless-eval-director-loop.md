@@ -75,8 +75,8 @@ They do not prove:
 - physics/contact validity
 - robot policy execution
 - real robot trial success
-- safety validation
+- off-scope validation
 - Cosmos generation or training completion
-- public deployment readiness
+- public generated-world rank fidelity
 
 Those upgrades require owner-system simulator traces or pilot logs, rights/privacy clearance, accepted methodology, and explicit execution gates.

@@ -4,7 +4,7 @@
 
 This audit covers the Capture app, Capture bridge, Pipeline, WebApp robot-eval request path, first-GPU run-packet path, and post-GPU closure boundary before attempting a paid owner-GPU run.
 
-No live provider call, WebApp mutation, GPU provisioning, simulator execution, or robot-readiness claim was made during this audit.
+No live provider call, WebApp mutation, GPU provisioning, simulator execution, or rank-fidelity claim was made during this audit.
 
 ## Current Decision
 
@@ -62,7 +62,7 @@ that report through `--webapp-forwarding-preflight` or
 `ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT` as URL/token/capture-root
 configuration evidence. This removes the need to copy the forwarding token into
 Pipeline audit output, but it still does not prove a submitted WebApp request,
-staged WebApp intake, GPU provisioning, simulator execution, or robot readiness.
+staged WebApp intake, GPU provisioning, simulator execution, or generated-world rank fidelity.
 
 ## Green Areas
 
@@ -234,12 +234,12 @@ It still will not prove:
 - safety/contact/physics readiness
 - human review acceptance
 - signed customer delivery
-- robot readiness
+- generated-world rank fidelity
 - public claim upgrade
 
 After GPU proof exists, run the live robot-eval closure audit and keep real robot POV,
 real-world validation, calibration, safety/contact, review acceptance, delivery, and
-robot-readiness as separate gates.
+rank-fidelity as separate gates.
 
 The regenerated first-GPU packet now includes
 `real_robot_pov_manifest.template.json`. This makes the required physical POV
@@ -336,7 +336,7 @@ The gate completed the Capture bridge cloud tests and reached the Xcode simulato
 5. Regenerate the WebApp handoff packet and first-GPU run packet for the selected simulator/provisioner/owner command.
 6. Rerun `blueprint-audit-first-gpu-cross-repo-readiness` until `gpu_rental_recommended_now=true`.
 7. Only then allocate the GPU VM, run VM preflight, verify `nvidia-smi`, sync the packet, and set `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true` for the intentional owner command.
-8. Save `gpu_owner_system_proof.json`, rerun the cross-repo audit, then run closure/readiness audits before making any robot-readiness or delivery claim.
+8. Save `gpu_owner_system_proof.json`, rerun the cross-repo audit, then run closure/readiness audits before making any rank-fidelity or delivery claim.
 
 ## Stop Rules
 
@@ -345,4 +345,4 @@ The gate completed the Capture bridge cloud tests and reached the Xcode simulato
 - Do not set `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true` during local audit or packet generation.
 - Do not claim WebApp live forwarding until a real forwarded request and staged Pipeline intake artifact exist.
 - Do not claim scene asset or GPU handoff readiness from generated support artifacts alone; keep raw capture and packet evidence primary.
-- Do not claim robot readiness from the first GPU smoke.
+- Do not claim generated-world rank fidelity from the first GPU smoke.

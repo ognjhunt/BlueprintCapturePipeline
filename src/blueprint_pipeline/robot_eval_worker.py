@@ -297,7 +297,7 @@ def _write_worker_runtime_preflight(
             "execution_performed": False,
             "secret_values_in_artifact": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         }
@@ -317,7 +317,7 @@ def _write_worker_runtime_preflight(
             "execution_performed": False,
             "secret_values_in_artifact": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["missing_simulator_execution_gate_for_runtime_preflight"],
         }
@@ -338,7 +338,7 @@ def _write_worker_runtime_preflight(
             "execution_performed": False,
             "secret_values_in_artifact": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["missing_runtime_preflight_command"],
         }
@@ -361,7 +361,7 @@ def _write_worker_runtime_preflight(
             "secret_values_in_artifact": False,
             "command_parse_error": str(exc),
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["invalid_runtime_preflight_command"],
         }
@@ -419,7 +419,7 @@ def _write_worker_runtime_preflight(
             "secret_values_in_artifact": False,
             **redaction_summary,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [] if success else ["runtime_preflight_command_failed"],
         }
@@ -439,7 +439,7 @@ def _write_worker_runtime_preflight(
             "secret_values_in_artifact": False,
             **redaction_summary,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["missing_runtime_preflight_command_dependency"],
         }
@@ -463,7 +463,7 @@ def _write_worker_runtime_preflight(
             "secret_values_in_artifact": False,
             **redaction_summary,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["runtime_preflight_command_timeout"],
         }
@@ -1318,7 +1318,7 @@ def _blocked_runtime_manifest(
         "blockers": list(blockers),
         "live_provider_calls_performed": False,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
     }
     runtime_manifest.update(dict(context or {}))
@@ -1712,7 +1712,7 @@ def run_robot_eval_worker(
                     "runtime_preflight_contract": runtime_preflight_contract,
                     "runtime_preflight_contract_blockers": runtime_preflight_blockers,
                     "simulator_execution_proven": False,
-                    "robot_readiness_proven": False,
+                    "rank_fidelity_result_proven": False,
                 },
             )
     runtime_preflight = _write_worker_runtime_preflight(
@@ -1748,7 +1748,7 @@ def run_robot_eval_worker(
                 "runtime_preflight_status": runtime_preflight.get("status"),
                 "runtime_preflight_blockers": runtime_preflight_blockers,
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
             },
         )
         return _attach_worker_failure_artifact_upload(
@@ -1832,7 +1832,7 @@ def run_robot_eval_worker(
     job_blockers = _string_list(job_result.get("blockers"))
     job_missing_inputs = _string_list(job_result.get("missing_inputs"))
     simulator_execution_proven = bool(job_result.get("simulator_execution_proven"))
-    robot_readiness_proven = bool(job_result.get("robot_readiness_proven"))
+    rank_fidelity_result_proven = bool(job_result.get("rank_fidelity_result_proven"))
     public_claim_upgrade_allowed = bool(job_result.get("public_claim_upgrade_allowed"))
     scenario_eval_matrix_status = job_result.get("scenario_eval_matrix_status")
     simulator_service_status = job_result.get("simulator_service_status")
@@ -1903,7 +1903,7 @@ def run_robot_eval_worker(
                 )
                 evaluation_status = "completed"
                 public_claim_upgrade_allowed = False
-                robot_readiness_proven = False
+                rank_fidelity_result_proven = False
     if worker_blockers:
         status = "blocked"
     elif job_status == "blocked":
@@ -1959,7 +1959,7 @@ def run_robot_eval_worker(
         "blockers": worker_blockers,
         "live_provider_calls_performed": False,
         "simulator_execution_proven": simulator_execution_proven,
-        "robot_readiness_proven": robot_readiness_proven,
+        "rank_fidelity_result_proven": rank_fidelity_result_proven,
         "public_claim_upgrade_allowed": public_claim_upgrade_allowed,
     }
     runtime_manifest_path = worker_dir / "worker_runtime_manifest.json"

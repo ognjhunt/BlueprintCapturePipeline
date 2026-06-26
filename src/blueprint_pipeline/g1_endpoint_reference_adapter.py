@@ -200,7 +200,7 @@ def adapter_manifest() -> dict[str, Any]:
             "heuristic_endpoint_reference_only": True,
             "not_real_wam_vla": True,
             "not_official_unitree_controller": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
 

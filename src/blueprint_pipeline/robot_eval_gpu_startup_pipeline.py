@@ -1,7 +1,7 @@
 """Managed GPU startup policy for website-origin robot-eval jobs.
 
 The plan produced here is deterministic policy plumbing. It does not launch a
-provider, allocate a GPU, or upgrade simulator artifacts into robot readiness.
+provider, allocate a GPU, or upgrade simulator artifacts into generated-world rank fidelity.
 """
 
 from __future__ import annotations
@@ -38,9 +38,9 @@ MARKETPLACE_PROVIDER_TIERS = {
 }
 CLAIM_BOUNDARY = {
     "simulator_proof_only": True,
-    "physical_robot_readiness_proven": False,
-    "deployment_readiness_proven": False,
-    "safety_validation_proven": False,
+    "generated_world_rank_fidelity_result_proven": False,
+    "generated_world_policy_evaluation_scope_proven": False,
+    "non_ranking_operational_claim_proven": False,
     "public_claim_upgrade_allowed": False,
 }
 
@@ -247,9 +247,9 @@ def _provider_worker_session_policy(
             "session_policy_is_not_provider_execution_proof": True,
             "worker_readyz_artifact_required_before_customer_eval": True,
             "remote_provider_shutdown_not_proven_by_plan": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
             "raw_secret_values_recorded": False,
         },
     }

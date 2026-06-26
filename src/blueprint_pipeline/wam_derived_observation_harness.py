@@ -1357,7 +1357,7 @@ def _review_acceptance_for_step(
         "blockers": blockers,
         "claim_boundary": {
             "review_acceptance_only_allows_generated_rollout_scoring_support": True,
-            "review_acceptance_is_not_physical_robot_or_safety_validation": True,
+            "review_acceptance_is_not_physical_robot_or_non_ranking_operational_claim": True,
         },
     }
 
@@ -1713,7 +1713,7 @@ def build_wam_derived_observation_step(
         "claim_boundary_summary": (
             "Harness outputs are derived support artifacts from generated media. They can "
             "guide diagnostics or policy requery gating, but they are not real sensors, "
-            "contact proof, deployment approval, safety validation, or real-world success."
+            "contact proof, or rank fidelity by themselves."
         ),
     }
     return {
@@ -1914,12 +1914,12 @@ def _claim_boundary() -> dict[str, Any]:
         "inferred_depth_is_not_sensor_depth": True,
         "object_masks_are_not_physical_truth": True,
         "mask_overlap_is_not_stable_grasp_or_contact_proof": True,
-        "generated_rollout_success_is_not_deployment_approval": True,
-        "generated_video_labels_are_not_safety_validation": True,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
-        "real_world_success_proven": False,
+        "generated_rollout_success_is_not_rank_fidelity_result": True,
+        "generated_video_labels_are_not_non_ranking_operational_claim": True,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
+        "accepted_anchor_success_proven": False,
         "task_evaluation_run_and_post_training_data_package_support_artifact": True,
         "raw_capture_evidence_remains_authoritative": True,
     }
@@ -2104,7 +2104,7 @@ def _build_validation_report(
         "claim_boundary": {
             **_claim_boundary(),
             "validation_metrics_require_labeled_capture_or_real_anchor_rows": True,
-            "validation_metrics_do_not_prove_deployment_readiness": True,
+            "validation_metrics_do_not_prove_evaluation_readiness": True,
         },
     }
 
@@ -2194,8 +2194,7 @@ def _review_report_markdown(
             "## Claim Boundary",
             "",
             "Harness outputs are derived support artifacts from generated media. They are not "
-            "real sensors, physical contact proof, safety validation, deployment approval, "
-            "physical robot readiness, or real-world success.",
+            "real sensors, physical contact proof, or rank fidelity by themselves.",
             "",
         ]
     )

@@ -401,7 +401,7 @@ export BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true
 export BLUEPRINT_MUJOCO_G1_MODEL_ROOT=/path/to/mujoco_menagerie/unitree_g1
 ```
 
-With this profile, uploads without explicit requested outputs default into `qualification`, `evaluation_prep`, and `simulation_automation`; auto-staged `robot_eval_job_request.v1` work uses the MuJoCo runtime profile; and the control plane can drain accepted WebApp-style job requests into the packaged `blueprint_pipeline.mujoco_g1_simulator_command`. `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION` remains an explicit gate, and a MuJoCo G1 asset root or `BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS=true` is required before the packaged command is configured. This proves only sim-only beta execution when the job artifacts contain trace, metric, visual media, and scenario-run coverage evidence. It does not prove physical robot readiness, deployment readiness, or external robot-team closure. WAM/substrate outputs, when requested, add evaluator-bounded policy comparison only.
+With this profile, uploads without explicit requested outputs default into `qualification`, `evaluation_prep`, and `simulation_automation`; auto-staged `robot_eval_job_request.v1` work uses the MuJoCo runtime profile; and the control plane can drain accepted WebApp-style job requests into the packaged `blueprint_pipeline.mujoco_g1_simulator_command`. `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION` remains an explicit gate, and a MuJoCo G1 asset root or `BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS=true` is required before the packaged command is configured. This proves only sim-only beta execution when the job artifacts contain trace, metric, visual media, and scenario-run coverage evidence. It does not prove generated-world rank fidelity, generated-world rank fidelity, or external robot-team closure. WAM/substrate outputs, when requested, add evaluator-bounded policy comparison only.
 
 Local sim-only beta gate:
 
@@ -412,7 +412,7 @@ python scripts/run_sim_only_beta_local_gate.py \
   --mujoco-g1-root /absolute/path/to/mujoco_menagerie/unitree_g1
 ```
 
-This starts the real local Pipeline intake service with a synthetic token, runs WebApp forwarding preflight with the read-only intake probe, posts a WebApp-built `robot_eval_job_request.v1` through the WebApp route, processes the staged Pipeline inbox, runs the packaged MuJoCo sim-only command, and writes `pipeline/live_pipeline_control_plane/sim_only_beta_local_gate/sim_only_beta_local_gate_report.json`. The report must be `status=passed` before claiming local post-upload autonomy. The report remains local proof only; production forwarding, deployment parity, remote cloud execution, and physical robot readiness require separate evidence.
+This starts the real local Pipeline intake service with a synthetic token, runs WebApp forwarding preflight with the read-only intake probe, posts a WebApp-built `robot_eval_job_request.v1` through the WebApp route, processes the staged Pipeline inbox, runs the packaged MuJoCo sim-only command, and writes `pipeline/live_pipeline_control_plane/sim_only_beta_local_gate/sim_only_beta_local_gate_report.json`. The report must be `status=passed` before claiming local post-upload autonomy. The report remains local proof only; production forwarding, deployment parity, remote cloud execution, and generated-world rank fidelity require separate evidence.
 
 Sim-only beta release gate:
 
@@ -432,7 +432,7 @@ python scripts/run_sim_only_beta_release_gate.py \
   --production-deployment-proof /absolute/path/to/sim_only_beta_production_deployment_proof.json
 ```
 
-The deployment/parity proof checks WebApp `/health/ready`, Pipeline intake `/health`, authenticated intake-audit reachability when the intake is routed under `/api/live-pipeline/*`, clean `HEAD == origin/main` repo parity, and deployed commit equality when commit values are supplied. A route-forwarding proof can supply the WebApp URL and forwarding endpoint URL when those fields are present, but deployed commits and the live intake token still come from deployment/runtime configuration. The release gate reads the local sim-only gate report and WebApp forwarding preflight report, then requires a current production route-forwarding proof for the same capture root plus deployment/parity proof before writing `pipeline/live_pipeline_control_plane/sim_only_beta_release_gate_report.json`. The report must be `status=passed` before claiming beta release readiness. Physical robot readiness and remote-cloud provider execution stay out of scope for this sim-only gate.
+The deployment/parity proof checks WebApp `/health/ready`, Pipeline intake `/health`, authenticated intake-audit reachability when the intake is routed under `/api/live-pipeline/*`, clean `HEAD == origin/main` repo parity, and deployed commit equality when commit values are supplied. A route-forwarding proof can supply the WebApp URL and forwarding endpoint URL when those fields are present, but deployed commits and the live intake token still come from deployment/runtime configuration. The release gate reads the local sim-only gate report and WebApp forwarding preflight report, then requires a current production route-forwarding proof for the same capture root plus deployment/parity proof before writing `pipeline/live_pipeline_control_plane/sim_only_beta_release_gate_report.json`. The report must be `status=passed` before claiming beta release readiness. generated-world rank fidelity and remote-cloud provider execution stay out of scope for this sim-only gate.
 
 Live Arena/package setup audit:
 
@@ -605,7 +605,7 @@ That command writes `pipeline/production_handoff_readiness_manifest.json`.
 `ready_except_owner_gpu_simulator_execution` means the repo-local handoff packet
 is complete, production WebApp upstream-link truth is present, and the only
 remaining unproven step is owner-system simulator execution. It still does not
-prove robot readiness.
+prove generated-world rank fidelity.
 
 For temporary internal demos, `BLUEPRINT_ALLOW_RAW_WORLDLABS_BYPASS=true` allows the World Labs preview path to fall back to the raw walkthrough video when privacy processing is unavailable. The bypass path is intentionally labeled as non-production and unredacted, and the input video is auto-trimmed/compressed to World Labs upload limits before submission.
 
@@ -635,7 +635,7 @@ For the current sample-video to owner-GPU proof path, use
 [`docs/FIRST_GPU_E2E_RUNBOOK.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/FIRST_GPU_E2E_RUNBOOK.md).
 It sequences local capture preflight, current pipeline lanes, WebApp forwarding,
 owner GPU simulator command execution, proof ingestion, and closure audits
-without promoting CPU or simulator smoke artifacts into robot-readiness proof.
+without promoting CPU or simulator smoke artifacts into rank-fidelity proof.
 Before staging a loose local video, run
 `blueprint-audit-first-gpu-sample-video` to check file existence, suffix, size,
 and duration suitability for the first World Labs clip. The staging command can
@@ -776,7 +776,7 @@ Legacy local staging lanes can still be requested explicitly through
 `retrieval_index`, `frame_alignment`, `synthesis_coverage_validation`, or
 `cosmos_single_capture_smoke` when `--run-qualification` is set. These lanes
 still honor geometry/provider truth and will not promote fallback geometry into
-live `video_to_world`, simulator, or robot-readiness proof.
+live `video_to_world`, simulator, or rank-fidelity proof.
 
 Object index build:
 
@@ -803,7 +803,7 @@ PYTHONPATH=src python -m blueprint_pipeline.simready_assets \
 The simready asset lane is documented in
 [`docs/SIMREADY_ASSET_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SIMREADY_ASSET_LANE.md).
 It writes review artifacts only; it does not run Isaac Sim, MuJoCo, PyBullet,
-live providers, model downloads, or robot-readiness trials.
+live providers, model downloads, or rank-fidelity trials.
 Evaluation prep surfaces existing SimReady artifacts but does not auto-build
 them unless `BLUEPRINT_ALLOW_LEGACY_SIMREADY_EVAL_PREP=true` is set.
 
@@ -844,7 +844,7 @@ in
 [`docs/MARBLE_SIM_ASSET_HANDOFF.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/MARBLE_SIM_ASSET_HANDOFF.md).
 It reads persisted World Labs manifests and emits Isaac Sim, MuJoCo, and
 PyBullet review packets without downloading remote assets, calling World Labs,
-running simulators, or claiming robot readiness.
+running simulators, or claiming generated-world rank fidelity.
 Evaluation prep surfaces existing Marble bridge artifacts but does not
 auto-build them unless `BLUEPRINT_ALLOW_LEGACY_MARBLE_EVAL_PREP=true` is set.
 
@@ -859,7 +859,7 @@ This downloads already-generated Marble asset URLs, by default only the
 collider GLB needed for CPU/pre-GPU handoff, into `pipeline/worldlabs_assets/`
 and writes `pipeline/worldlabs_export_manifest.json` with checksums and source
 URLs. It does not start a new World Labs generation, run simulators, or prove
-robot readiness.
+generated-world rank fidelity.
 
 Fail-closed simulation automation plan:
 
@@ -872,7 +872,7 @@ The simulation automation lane is documented in
 [`docs/SIMULATION_AUTOMATION_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SIMULATION_AUTOMATION_LANE.md).
 It writes local orchestration manifests only, including an optional
 `isaac_lab_arena` Arena Pack review packet. It does not run simulators, download
-assets, start training, call providers, or prove robot readiness unless explicit
+assets, start training, call providers, or prove generated-world rank fidelity unless explicit
 per-run approvals and dependencies are present.
 Agents SDK and Codex SDK paths are gated live-operator surfaces: when SDK,
 credential, CLI, and environment gates are present, agents may inspect
@@ -927,7 +927,7 @@ blueprint-run-robot-eval-job \
 That writes local WAM rollout, fixture vision-label, normalized attempt,
 failure-label, policy-ranking scorecard, claim-boundary, and real-world
 validation follow-up artifacts. It performs no live provider calls and does not
-prove physical robot readiness, deployment approval, safety approval, public
+prove generated-world rank fidelity, generated-world rank-fidelity result, off-scope approval, public
 readiness, or customer-specific SRCC.
 
 The intended WAM/substrate proof target is narrow: compare policy A against
@@ -949,7 +949,7 @@ lightweight articulated-object proxy check, and writes
 `wam_prediction_outcome_correlation_ledger.json`. These files ground and audit
 the learned rollout, but they stay support artifacts: calibration gates,
 projected skeletons, VLM labels, and handle proxies do not prove physical
-contact, torque, safety, deployment approval, or real-world task success.
+contact, torque, safety, generated-world rank-fidelity result, or real-world task success.
 
 The MuJoCo Unitree policy/WAM closed-loop helper now has a default local
 OSCAR-style support backend for the no-live-provider case. If no gated
@@ -1027,8 +1027,8 @@ cache, and YOLO pose cache. It does not bake Docker, DigitalOcean, Hugging Face,
 or object-store tokens. SAM3 weights are expected at `/models/sam3/sam3.pt`
 through a mount or provider-side model fetch, and the manifest records
 `bakes_sam3_weights=false`. The image build, push, or healthcheck still does not
-prove perception accuracy, sensor depth, physical contact, safety validation, or
-physical robot readiness.
+prove perception accuracy, sensor depth, physical contact, off-scope validation, or
+generated-world rank fidelity.
 
 To test the real-provider lane without weakening those boundaries, run:
 
@@ -1089,7 +1089,7 @@ GR00T/SONIC until a separate simulator proof actually runs the GR00T/SONIC
 command and emits action chunks. The current third-party GR00T/SONIC proof can
 emit 3120-value action chunks, consume them through a simulator-only MuJoCo
 bridge, and re-query the policy through a WAM loop; it still does not prove an
-official/trusted checkpoint, physical readiness, deployment approval, safety
+official/trusted checkpoint, generated-world rank fidelity, generated-world rank-fidelity result, safety
 validation, or correctly placed-object task success.
 
 Do not use OpenVLA, OSCAR, Cosmos, fixture WAM, or generated WAM rollouts as the
@@ -1205,7 +1205,7 @@ must set `BLUEPRINT_PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST` to a passed
 short-sanity manifest for the same policy observation; the legacy
 `BLUEPRINT_ALLOW_PERSISTENT_WAM_LONG_REVIEW_ROLLOUT` flag alone is not enough to
 unlock the long run. These artifacts prove only reviewability of model-derived
-support media, not task success, safety, deployment readiness, physical robot
+support media, not task success, safety, generated-world rank fidelity, physical robot
 readiness, or raw capture truth.
 
 Synthetic fallback initial observations and synthetic 2D WAM seeds are blocked
@@ -1355,7 +1355,7 @@ That command receives non-secret context such as
 limits. The launcher writes `gpu_provider_launcher_result.json` plus
 `gpu_provider_launcher.stdout.log` and `.stderr.log`, stores no raw command or
 secret values, redacts known secret env values from captured stdout/stderr logs,
-and does not upgrade simulator, allocation, or robot-readiness proof by itself.
+and does not upgrade simulator, allocation, or rank-fidelity proof by itself.
 For RunPod, the repo-owned adapter command is
 `blueprint-run-runpod-provider-adapter`. It defaults to `--mode dry-run` and
 writes `runpod_provider_adapter_result.json` with the serverless `/run` and
@@ -1363,7 +1363,7 @@ GraphQL on-demand Pod request shapes but no API call. Live modes
 `--mode serverless-run` and `--mode on-demand-pod` require
 `BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true`, `RUNPOD_API_KEY`, and
 `--allow-runpod-api-call`; they still only submit/allocate provider work and do
-not prove simulator execution, robot readiness, safety, or public claim
+not prove simulator execution, generated-world rank fidelity, safety, or public claim
 upgrades. The adapter also records a `cost_control_policy`: serverless `/run`
 payloads can set per-request `executionTimeout`, `ttl`, and `lowPriority`, but
 RunPod active workers, max workers, and idle timeout are endpoint-level settings
@@ -1451,7 +1451,7 @@ blocked before the loop runs. It writes `policy_autoresearch_report.json`,
 `followup_real_world_validation_request.json` under
 `policy_autoresearch/`. The candidate package is a Task Evaluation Run support
 artifact only: it does not upgrade simulator execution, live policy execution,
-physical robot readiness, safety validation, or public claims without separate
+generated-world rank fidelity, off-scope validation, or public claims without separate
 accepted owner-system evidence.
 
 When `--evaluator-command` is supplied, the command is called for each candidate
@@ -1536,16 +1536,16 @@ Package export, policy-autoresearch candidate package, heldout result, staged
 readiness ladder, WebApp-safe summary projection, and proof boundary. It can say
 the run is ready for baseline evaluation, failure diagnosis, post-training
 package build, policy-autoresearch, candidate promotion, or customer review. It
-cannot turn sim heldout success into deployment approval: sealed audit scenarios
-must remain outside training, and robot readiness, physical safety validation,
-real-world outcome, and public claim upgrades remain false until separately
+cannot turn sim heldout success into generated-world rank-fidelity result: sealed audit scenarios
+must remain outside training, and generated-world rank fidelity, physical off-scope validation,
+policy-ranking outcome, and public claim upgrades remain false until separately
 proven by accepted live evidence.
 
 When `--arena-results-dir` points at existing Isaac Lab-Arena rollout artifacts,
 the job ingests those local results into normalized traces, labels, clips,
 metrics, reports, delivery manifests, rerun queues, and a Post-Training Data
 Package. That proves package code paths and result ingestion only; simulator
-execution, robot policy success, contact/safety validation, and robot readiness
+execution, robot policy success, contact/off-scope validation, and generated-world rank fidelity
 remain false unless separate accepted owner evidence exists.
 
 Real deployment or pilot actuals can be supplied inline on the job request,
@@ -1604,7 +1604,7 @@ recorded/reference replay with trace actions is still coverage evidence, not
 live policy proof.
 Report-generation closure requires `robot_eval_report.json` and `.md` plus
 linked core job artifacts whose statuses, counts, scorecard fields, policy
-status, real-world outcome status, predicted-vs-actual status, and proof booleans
+status, policy-ranking outcome status, predicted-vs-actual status, and proof booleans
 match the report. A section-complete report stub is not enough.
 The simulator-engine plugin gate requires every supported engine in
 `simulator_engine_plugin_registry.json` to have a ready adapter contract and
@@ -1624,7 +1624,7 @@ owner/operator attestation or a non-placeholder evidence reference; a bare
 `accepted=true` or OK status cannot upgrade the gate.
 Only a
 `live_end_to_end_verified` closure can upgrade
-`robot_readiness_proven` or `public_claim_upgrade_allowed` in `proof_boundary.json`.
+`rank_fidelity_result_proven` or `public_claim_upgrade_allowed` in `proof_boundary.json`.
 Owner closure evidence can be supplied inline on the job request, by job-request
 URI, directly in the job directory, globally under
 `pipeline/robot_eval_inputs/live_eval_closure_evidence.json`, or in the
@@ -1727,7 +1727,7 @@ proof by itself.
 Use `--arena-results-dir` or `BLUEPRINT_ARENA_RESULTS_DIR` when an owner system
 has already produced Isaac Lab-Arena result artifacts. That path can be ready
 for result ingest without opening the simulator-execution gate; it still does
-not prove simulator execution or robot readiness by itself.
+not prove simulator execution or generated-world rank fidelity by itself.
 
 Post-Training Data Package export and archive:
 

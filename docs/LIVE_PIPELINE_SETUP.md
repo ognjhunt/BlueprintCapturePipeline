@@ -35,7 +35,7 @@ It checks:
 owner-supplied result-ingest path. A directory with JSON result artifacts can
 make the Arena section `ready_for_result_ingest` without opening
 `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION`. That does not prove simulator execution,
-robot policy execution, contact, safety, or robot readiness; it only means the
+robot policy execution, contact, safety, or generated-world rank fidelity; it only means the
 pipeline has result artifacts it can ingest and audit.
 The live closure audit also checks
 `simulation_automation/simulator_engine_plugin_registry.json`; every supported
@@ -102,7 +102,7 @@ BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES=false
 Do not enable `BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES=true` for customer beta
 closure evidence; sim-only beta core closure still requires visual media
 coverage, trace package coverage, attempt metrics, and scenario-run coverage.
-This profile does not prove physical robot readiness, deployment readiness, live
+This profile does not prove generated-world rank fidelity, generated-world rank fidelity, live
 customer delivery, or external robot-team closure. WAM/substrate artifacts add
 only evaluator-bounded policy comparison unless paired real-world validation
 anchors are accepted separately.
@@ -128,7 +128,7 @@ That packet is the machine-readable handoff for the remaining external inputs:
 
 The example `robot_eval_job_request.v1` inside the packet uses placeholders
 only. The packet is a request/contract artifact and does not prove simulator
-execution, robot policy execution, contact, safety, or robot readiness.
+execution, robot policy execution, contact, safety, or generated-world rank fidelity.
 Follow-up queues are also request-contract artifacts: processing them creates a
 new deterministic rerun job, but real-world validation still requires fresh
 owner-supplied actuals and closure evidence.
@@ -276,7 +276,7 @@ BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND="blueprint-label-rollout-vision-openai
 ```
 
 Model-derived labels are support evidence only. They do not prove contact,
-safety, policy execution, or robot readiness until accepted through review or
+safety, policy execution, or generated-world rank fidelity until accepted through review or
 owner-system proof.
 
 ## Delivery Command Boundary
@@ -314,8 +314,8 @@ It is not by itself:
 - GPU provisioning proof
 - robot policy execution proof
 - physics/contact validation
-- safety validation
-- robot readiness proof
+- off-scope validation
+- generated-world rank fidelity proof
 
 Those claims require owner-system simulator logs, accepted artifacts, and the
 normal proof-boundary audit. Job-level closure is recorded in
@@ -381,8 +381,8 @@ blueprint-intake-live-pipeline-inputs \
 
 The intake command copies validated evidence to
 `pipeline/robot_eval_inputs/<job_id>/live_eval_closure_evidence.json`. This is a
-closure-audit input only; it does not set `robot_readiness_proven`,
-`safety_validated`, or `public_claim_upgrade_allowed`.
+closure-audit input only; it does not set `rank_fidelity_result_proven`,
+`non_ranking_operational_claim_validated`, or `public_claim_upgrade_allowed`.
 
 When the authenticated intake service is running, the same handoffs can be
 submitted without shell access through:

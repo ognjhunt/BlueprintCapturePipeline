@@ -57,8 +57,8 @@ def _truth_boundaries() -> dict[str, Any]:
     return {
         "wam_vla_runtime_proven": False,
         "action_conditioned_video_rollout_generated": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "official_policy_execution_proven": False,
         "controller_grade_execution_proven": False,
     }

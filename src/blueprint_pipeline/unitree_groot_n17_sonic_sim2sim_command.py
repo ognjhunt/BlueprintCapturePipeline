@@ -447,10 +447,10 @@ def _claim_boundary() -> dict[str, Any]:
         "official_groot_wholebodycontrol_sim2sim_used": False,
         "official_sonic_wbc_mapping_proven": False,
         "not_physical_robot_command": True,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
-        "real_world_manipulation_success_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
+        "accepted_anchor_manipulation_success_proven": False,
     }
 
 
@@ -813,10 +813,10 @@ def run_unitree_groot_n17_sonic_sim2sim(
                     policy_chunk_integrated_contact_rollout_success
                 ),
                 "official_groot_wholebodycontrol_sim2sim_used": False,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-                "safety_validation_proven": False,
-                "real_world_manipulation_success_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
+                "non_ranking_operational_claim_proven": False,
+                "accepted_anchor_manipulation_success_proven": False,
                 "claim_boundary": _claim_boundary(),
                 "blockers": payload["blockers"],
             },

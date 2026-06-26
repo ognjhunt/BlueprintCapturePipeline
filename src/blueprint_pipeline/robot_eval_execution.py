@@ -74,8 +74,8 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "robot_policy_execution_proven": False,
     "simulator_execution_proven": False,
     "real_world_outcome_proven": False,
-    "robot_readiness_proven": False,
-    "safety_validated": False,
+    "rank_fidelity_result_proven": False,
+    "non_ranking_operational_claim_validated": False,
     "public_claim_upgrade_allowed": False,
 }
 
@@ -274,7 +274,7 @@ def default_test_policy_package_from_request(job_request: Mapping[str, Any]) -> 
                     "robot_team_policy_execution_proven": False,
                     "simulator_physics_execution_proven": False,
                     "grasp_physics_validated": False,
-                    "physical_robot_readiness_proven": False,
+                    "generated_world_rank_fidelity_result_proven": False,
                     "public_claim_upgrade_allowed": False,
                 },
             }
@@ -307,7 +307,7 @@ def default_test_policy_package_from_request(job_request: Mapping[str, Any]) -> 
                 "default_test_policy_execution_contract": True,
                 "robot_team_policy_execution_proven": False,
                 "robot_team_policy_quality_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         }
@@ -1244,7 +1244,7 @@ def build_scenario_eval_matrix(
         "simulator_rollout_required_for_each_run": True,
         "simulator_execution_proven": False,
         "robot_policy_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -1893,7 +1893,7 @@ def _normalize_policy_attempts(
                 "metrics": _mapping(raw.get("metrics")),
                 "artifact_paths": _mapping(raw.get("artifact_paths") or raw.get("artifactPaths")),
                 "generated_at": generated_at,
-                "claim_boundary": "policy_submission_trace_not_robot_readiness_proof",
+                "claim_boundary": "policy_submission_trace_not_rank_fidelity_proof",
             }
         )
     return attempts
@@ -2130,7 +2130,7 @@ def _default_test_policy_execution_payload(
                 "robot_team_policy_quality_proven": False,
                 "simulator_physics_execution_proven": False,
                 "grasp_physics_validated": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         }
@@ -2199,7 +2199,7 @@ def _default_test_policy_execution_payload(
             "default_test_policy_execution_proven": bool(attempts),
             "robot_team_policy_execution_proven": False,
             "robot_team_policy_quality_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -2404,7 +2404,7 @@ def build_policy_execution_bundle(
         "robot_policy_execution_proven": execution_proven,
         "default_test_policy_execution_proven": default_test_execution_proven,
         "robot_team_policy_execution_proven": robot_team_policy_execution_proven,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
@@ -2431,7 +2431,7 @@ def build_policy_execution_bundle(
         "robot_policy_execution_proven": execution_proven,
         "default_test_policy_execution_proven": default_test_execution_proven,
         "robot_team_policy_execution_proven": robot_team_policy_execution_proven,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
@@ -2802,7 +2802,7 @@ def build_simulator_command_artifacts(
         "result_ingested": bool(attempts),
         "simulator_execution_proven": bool(attempts),
         "robot_policy_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -2896,7 +2896,7 @@ def build_simulator_command_artifacts(
             "task_outcome": task_outcome,
             "evidence_refs": evidence_refs,
             "review_status": "available_for_human_audit_not_required_for_sim_only_metric",
-            "proof_effect": "sim_only_metric_input_not_real_robot_readiness",
+            "proof_effect": "sim_only_metric_input_not_real_rank_fidelity",
         }
 
     labels = {
@@ -3921,7 +3921,7 @@ def _accepted_anchor_calibration(
             "accepted_anchor_status": "accepted",
             "claim_boundary": (
                 "Accepted anchors are paired prediction/actual records. They are "
-                "inputs for external accuracy calibration, not deployment approval."
+                "inputs for external accuracy calibration, not generated-world rank-fidelity result."
             ),
         },
         "accepted_anchor_count": len(accepted_anchors),
@@ -4559,7 +4559,7 @@ def build_deployment_validation_bundle(
         "missing_owner_evidence_record_ids": missing_owner_evidence_record_ids,
         "missing_actual_result_signal_record_ids": missing_actual_signal_record_ids,
         "real_world_outcome_proven": real_world_outcome_proven,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "deployment_accuracy_claim_allowed": bool(score is not None),
         "external_accuracy_claim_allowed": bool(score is not None),

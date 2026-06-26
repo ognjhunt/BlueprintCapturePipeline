@@ -126,9 +126,9 @@ def test_sim2sim_consumes_real_action_chunk_into_mujoco_joint_trace(
             encoding="utf-8"
         )
     )
-    assert truth["physical_robot_readiness_proven"] is False
-    assert truth["deployment_readiness_proven"] is False
-    assert truth["safety_validation_proven"] is False
+    assert truth["generated_world_rank_fidelity_result_proven"] is False
+    assert truth["generated_world_policy_evaluation_scope_proven"] is False
+    assert truth["non_ranking_operational_claim_proven"] is False
 
 
 def test_sim2sim_initializes_scene_object_freejoint_and_records_contact_metrics(
@@ -191,7 +191,7 @@ def test_sim2sim_initializes_scene_object_freejoint_and_records_contact_metrics(
     assert truth["object_freejoint_initialized"] is True
     assert "minimum_nearest_hand_object_distance" in truth
     assert "object_horizontal_displacement_m" in truth
-    assert truth["physical_robot_readiness_proven"] is False
+    assert truth["generated_world_rank_fidelity_result_proven"] is False
 
 
 def test_sim2sim_blocks_without_policy_output(tmp_path: Path) -> None:

@@ -185,7 +185,7 @@ def test_provider_launcher_executes_operator_command_with_redacted_artifact(
     assert result["live_provider_calls_performed_by_launcher_module"] is False
     assert result["provider_allocation_proven"] is False
     assert result["simulator_execution_proven"] is False
-    assert result["robot_readiness_proven"] is False
+    assert result["rank_fidelity_result_proven"] is False
     assert result["public_claim_upgrade_allowed"] is False
     assert result["secret_values_in_artifact"] is False
     assert result["stdout_stderr_secret_redaction_enabled"] is True

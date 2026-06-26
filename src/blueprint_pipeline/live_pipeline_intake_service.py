@@ -384,7 +384,7 @@ def _capture_handoff_to_webapp_request(
             "capture_handoff_driven_request": True,
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -580,7 +580,7 @@ def _redacted_real_robot_pov_response(
             "intake_performs_robot_execution": False,
             "intake_sets_proof_booleans": False,
             "robot_pov_evidence_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -769,7 +769,7 @@ def create_app() -> FastAPI:
             "proof_boundary": {
                 "service_is_intake_only": True,
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
             },
         }
 
@@ -868,7 +868,7 @@ def create_app() -> FastAPI:
                         "intake_performs_robot_execution": False,
                         "intake_sets_proof_booleans": False,
                         "simulator_execution_proven": False,
-                        "robot_readiness_proven": False,
+                        "rank_fidelity_result_proven": False,
                         "public_claim_upgrade_allowed": False,
                     },
                 },

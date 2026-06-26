@@ -482,9 +482,9 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
         "needs_high_level_skill_trace_ref",
         "needs_teleop_demo_ref",
         "needs_sim_controller_plugin_ref",
-        "review_only_no_robot_readiness",
+        "review_only_no_rank_fidelity",
     ]
-    assert manifest["claim_boundary"]["robot_readiness_proven"] is False
+    assert manifest["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert manifest["claim_boundary"]["simulator_execution_proven"] is False
     assert manifest["site_card_count"] == 1
     assert manifest["task_card_count"] == 1
@@ -524,7 +524,7 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     assert manifest["webapp_sync_boundary"]["must_not_display_as"] == [
         "robot_ready",
         "deployment_ready",
-        "safety_validated",
+        "non_ranking_operational_claim_validated",
         "simulator_completed",
         "actual_outcome_proven",
     ]
@@ -536,7 +536,7 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     assert site_card["geometry"]["object_index"]["object_count"] == 1
     assert site_card["geometry"]["object_index"]["physics_coverage_complete"] is True
     assert site_card["safety_constraints"]["claim_boundary"] == (
-        "safety_constraints_are_review_inputs_not_safety_validation"
+        "safety_constraints_are_review_inputs_not_non_ranking_operational_claim"
     )
     assert task_cards["task_card_count"] == 1
     assert task_cards["cards"][0]["ontology_task_id"] == "place_object_into_bin"
@@ -592,7 +592,7 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     assert proof_boundaries["simulator_execution_proven"] is False
     assert proof_boundaries["physics_contact_validation_proven"] is False
     assert proof_boundaries["robot_policy_execution_proven"] is False
-    assert proof_boundaries["safety_validation_proven"] is False
+    assert proof_boundaries["non_ranking_operational_claim_proven"] is False
     assert proof_boundaries["rights_cleared_external_licensing_proven"] is False
     assert proof_boundaries["real_pilot_outcome_proven"] is False
     assert proof_boundaries["robot_team_test_submission_refs_present"] is False
@@ -626,7 +626,7 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     ]
     assert robot_team_submission_modalities["blocked_claim_upgrades"] == [
         "ready_to_deploy_claim",
-        "safety_validated_claim",
+        "non_ranking_operational_claim_validated_claim",
         "simulator_completed_claim",
         "robot_trial_passed_claim",
         "policy_execution_passed_claim",
@@ -760,7 +760,7 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     assert threshold["thresholds"]["max_collision_event_count"] == 0
     assert task_thresholds["threshold_policy"]["buyer_override_allowed"] is True
     assert threshold["claim_boundary"] == (
-        "thresholds_are_eval_gates_not_robot_readiness_or_safety_validation"
+        "thresholds_are_eval_gates_not_rank_fidelity_or_non_ranking_operational_claim"
     )
     assert publication_readiness["schema_version"] == (
         "real_site_robot_eval_publication_readiness.v1"
@@ -781,9 +781,9 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
         "needs_high_level_skill_trace_ref",
         "needs_teleop_demo_ref",
         "needs_sim_controller_plugin_ref",
-        "review_only_no_robot_readiness",
+        "review_only_no_rank_fidelity",
     ]
-    assert publication_readiness["claim_boundary"]["robot_readiness_proven"] is False
+    assert publication_readiness["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert "No live provider jobs" in methodology
 
 

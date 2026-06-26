@@ -97,9 +97,9 @@ def test_groot_n17_sonic_runtime_blocks_without_local_configuration(
     )
     assert f"blocked_missing_{runtime.SONIC_CHECKPOINT_ENV}" in audit["blockers"]
     assert Path(summary["official_launcher_preflight_path"]).is_file()
-    assert truth["physical_robot_readiness_proven"] is False
-    assert truth["deployment_readiness_proven"] is False
-    assert truth["safety_validation_proven"] is False
+    assert truth["generated_world_rank_fidelity_result_proven"] is False
+    assert truth["generated_world_policy_evaluation_scope_proven"] is False
+    assert truth["non_ranking_operational_claim_proven"] is False
 
 
 def test_groot_n17_sonic_runtime_configured_with_roots_and_checkpoints(
@@ -270,7 +270,7 @@ def test_official_sonic_sim2sim_probe_blocks_missing_inference_venv(
     assert audit["official_groot_wholebodycontrol_sim2sim_used"] is False
     assert audit["official_sonic_wbc_mapping_proven"] is False
     assert audit["physical_robot_launcher_intentionally_not_run"] is True
-    assert audit["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert audit["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
 
 
 def test_official_sonic_sim2sim_probe_configures_with_required_venvs(
@@ -396,5 +396,5 @@ def test_official_sonic_launcher_preflight_records_assets_and_runtime_blockers(
             "run_official_sonic_wbc_launcher_sim_only"
         ]
     )
-    assert preflight["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert preflight["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
     assert preflight["raw_credentials_written_to_artifacts"] is False

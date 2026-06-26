@@ -72,16 +72,16 @@ CLAIM_BOUNDARY: dict[str, Any] = {
     "source_code_required_by_default": False,
     "development_scenarios_may_be_used_for_training": True,
     "sealed_audit_scenarios_must_not_be_used_for_training": True,
-    "sim_heldout_success_is_not_deployment_approval": True,
-    "wam_heldout_success_is_not_deployment_approval": True,
+    "sim_heldout_success_is_not_rank_fidelity_result": True,
+    "wam_heldout_success_is_not_rank_fidelity_result": True,
     "generated_wam_rollouts_are_model_derived_support_artifacts": True,
     "customer_specific_srcc_requires_real_world_validation_rollouts": True,
     "customer_specific_srcc_claimed": False,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
     "real_world_outcome_proven": False,
-    "robot_readiness_proven": False,
-    "safety_validation_proven": False,
+    "rank_fidelity_result_proven": False,
+    "non_ranking_operational_claim_proven": False,
     "public_claim_upgrade_allowed": False,
 }
 
@@ -324,7 +324,7 @@ def _policy_autoresearch_summary(
             "policy_candidate_package",
         ),
         "simulator_execution_proven": candidate.get("simulator_execution_proven") is True,
-        "robot_readiness_proven": candidate.get("robot_readiness_proven") is True,
+        "rank_fidelity_result_proven": candidate.get("rank_fidelity_result_proven") is True,
         "public_claim_upgrade_allowed": candidate.get("public_claim_upgrade_allowed") is True,
     }
 
@@ -457,7 +457,7 @@ def _private_hardware_integration_plan(
             "customer_hosted_connector_outputs_are_owner_evidence": True,
             "customer_hosted_connector_does_not_export_blueprint_raw_scene_ip": True,
             "robot_model_or_urdf_presence_alone_is_not_hardware_readiness": True,
-            "physical_robot_readiness_requires_accepted_real_robot_evidence": True,
+            "generated_world_rank_fidelity_requires_accepted_real_robot_evidence": True,
             "blueprint_scene_packet_is_not_unbounded_site_asset_delivery": True,
         },
         "execution_status": "ready_for_contract_review"
@@ -796,8 +796,8 @@ def _markdown_brief(manifest: Mapping[str, Any]) -> str:
         "",
         "## Boundary",
         "",
-        f"- Sim heldout success is deployment approval: `{not boundary.get('sim_heldout_success_is_not_deployment_approval', True)}`",
-        f"- Robot readiness proven: `{boundary.get('robot_readiness_proven')}`",
+        f"- Sim heldout success is generated-world rank-fidelity result: `{not boundary.get('sim_heldout_success_is_not_rank_fidelity_result', True)}`",
+        f"- generated-world rank fidelity proven: `{boundary.get('rank_fidelity_result_proven')}`",
         f"- Public claim upgrade allowed: `{boundary.get('public_claim_upgrade_allowed')}`",
     ]
     blockers = manifest.get("blockers")
@@ -974,8 +974,8 @@ def build_policy_improvement_run_offer(
     boundary["robot_policy_execution_proven"] = bool(
         candidate_package.get("robot_policy_execution_proven") is True
     )
-    boundary["robot_readiness_proven"] = bool(
-        candidate_package.get("robot_readiness_proven") is True
+    boundary["rank_fidelity_result_proven"] = bool(
+        candidate_package.get("rank_fidelity_result_proven") is True
     )
     boundary["public_claim_upgrade_allowed"] = bool(
         candidate_package.get("public_claim_upgrade_allowed") is True
@@ -1006,7 +1006,7 @@ def build_policy_improvement_run_offer(
             "not_sold_as": [
                 "foundation-model ownership",
                 "unbounded raw scene or scoring-harness export",
-                "deployment approval",
+                "generated-world rank-fidelity result",
                 "physical safety certification",
                 "guaranteed site production readiness",
             ],
@@ -1082,7 +1082,7 @@ def build_policy_improvement_run_offer(
             "customer_specific_srcc_claimed": False,
             "claim_boundary": {
                 "generated_wam_rollouts_are_model_derived_support_artifacts": True,
-                "passing_wam_heldout_eval_is_not_deployment_approval": True,
+                "passing_wam_heldout_eval_is_not_rank_fidelity_result": True,
                 "customer_specific_srcc_requires_real_world_validation_rollouts": True,
             },
         },

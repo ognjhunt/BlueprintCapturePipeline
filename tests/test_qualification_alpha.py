@@ -731,7 +731,7 @@ def test_qualification_fail_closed_omits_buyer_safe_media(monkeypatch, tmp_path:
     assert sync_calls
     assert "privacy_processed_video_uri" not in sync_calls[0]["artifacts"]
     assert "world_model_video_uri" not in sync_calls[0]["artifacts"]
-    assert sync_calls[0]["deployment_readiness"]["privacy_processing"]["status"] == "failed_closed"
+    assert sync_calls[0]["evaluation_readiness"]["privacy_processing"]["status"] == "failed_closed"
 
 
 def test_qualification_allows_labeled_raw_worldlabs_bypass(monkeypatch, tmp_path: Path) -> None:
@@ -835,8 +835,8 @@ def test_qualification_allows_labeled_raw_worldlabs_bypass(monkeypatch, tmp_path
     assert "rights_provenance_review_blocked_raw_bypass" in adapter_input["warnings"]
     assert descriptor["metadata"]["worldlabs_input_labeling"]["raw_video_bypass_used"] is True
     assert sync_calls
-    assert sync_calls[0]["deployment_readiness"]["provider_preview_labeling"]["non_production"] is True
-    assert sync_calls[0]["deployment_readiness"]["provider_preview_labeling"]["unredacted_input"] is True
+    assert sync_calls[0]["evaluation_readiness"]["provider_preview_labeling"]["non_production"] is True
+    assert sync_calls[0]["evaluation_readiness"]["provider_preview_labeling"]["unredacted_input"] is True
 
 
 def test_qualification_ingests_geometry_summary_as_advisory(monkeypatch, tmp_path: Path) -> None:
@@ -883,7 +883,7 @@ def test_qualification_ingests_geometry_summary_as_advisory(monkeypatch, tmp_pat
     assert completion["geometry_summary"].endswith("/geometry/geometry_summary.json")
     assert sync_calls
     assert sync_calls[0]["artifacts"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
-    assert sync_calls[0]["deployment_readiness"]["advisory_geometry"]["status"] == "completed"
+    assert sync_calls[0]["evaluation_readiness"]["advisory_geometry"]["status"] == "completed"
 
 
 def test_resolve_requested_lanes_demotes_bridge_default_scene_memory(tmp_path: Path) -> None:

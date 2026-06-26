@@ -127,7 +127,7 @@ For the overall workflow:
 
 - Infer pass/fail on unsupported geometry. If the measurement does not exist, the status is `unverifiable`, never `pass`.
 - Invent measurements. No "approximately 2 meters" unless an actual measurement exists.
-- Convert bounded evidence into deployment approval. "Within reach envelope based on measured geometry" is not "safe to deploy."
+- Convert bounded evidence into generated-world rank-fidelity result. "Within reach envelope based on measured geometry" is not "safe to deploy."
 - Use marketing claims from platform specs as evidence of field capability.
 - Assume worst-case or best-case without stating which and why.
 - Write capability statements that are not traceable to specific evidence + specific platform constraints.

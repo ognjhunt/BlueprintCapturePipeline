@@ -274,7 +274,7 @@ def _route_proof_gate(
         "simulator_execution_proven",
         "robot_policy_execution_proven",
         "real_robot_pov_evidence_proven",
-        "safety_validated",
+        "non_ranking_operational_claim_validated",
         "customer_delivery_readiness_proven",
         "public_claim_upgrade_allowed",
     ):
@@ -379,7 +379,7 @@ def build_release_gate_report(
             "production_forwarding_checked": True,
             "production_route_forwarding_checked": True,
             "production_deployment_parity_checked": True,
-            "physical_robot_readiness_required_for_this_gate": False,
+            "generated_world_rank_fidelity_required_for_this_gate": False,
             "remote_cloud_provider_execution_required_for_this_gate": False,
             "public_claim_upgrade_allowed": False,
         },

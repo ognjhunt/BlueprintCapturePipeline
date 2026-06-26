@@ -48,7 +48,7 @@ does not prove:
 - real WebApp upstream truth for the active capture
 - Isaac Lab-Arena owner-system execution
 - robot policy execution
-- contact, safety, or robot readiness
+- contact, safety, or generated-world rank fidelity
 - cloud storage delivery entitlement
 
 The remaining external blockers are still `webapp_upstream_truth` and

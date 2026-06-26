@@ -32,10 +32,10 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "gpu_required": False,
     "simulators_run": False,
     "simulator_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "robot_policy_execution_proven": False,
     "physics_contact_validated": False,
-    "safety_validated": False,
+    "non_ranking_operational_claim_validated": False,
     "public_claim_upgrade_allowed": False,
 }
 
@@ -783,7 +783,7 @@ def build_episode_specs(
                         "reset_conditions": [
                             "reset_robot_to_spawn_pose",
                             "reset_dynamic_objects_to_capture_observed_or_review_state",
-                            "do_not_claim_contact_or_safety_validation_without_owner_logs",
+                            "do_not_claim_contact_or_non_ranking_operational_claim_without_owner_logs",
                         ],
                         "allowed_motion_region": motion_region,
                         "collision_check_required": True,
@@ -815,9 +815,9 @@ def build_episode_specs(
                         "missing_proof_labels": missing,
                         "proof_booleans": {
                             "simulator_execution_proven": False,
-                            "robot_readiness_proven": False,
+                            "rank_fidelity_result_proven": False,
                             "physics_contact_validated": False,
-                            "safety_validated": False,
+                            "non_ranking_operational_claim_validated": False,
                         },
                     }
                 )
@@ -862,7 +862,7 @@ def build_episode_specs(
                 "robot_ready",
                 "deployment_ready",
                 "simulator_completed",
-                "safety_validated",
+                "non_ranking_operational_claim_validated",
             ],
         },
         "claim_boundary": dict(CLAIM_BOUNDARY),

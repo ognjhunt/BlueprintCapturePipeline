@@ -1138,7 +1138,7 @@ def _run_camera_video_smoke(
             "These videos prove only that the Isaac runtime could render/capture "
             "static six-camera smoke outputs and package MP4s. They do not prove "
             "controller-grade rollout, official policy execution, contact dynamics, "
-            "physical readiness, deployment readiness, or WAM/VLA runtime."
+            "generated-world rank fidelity, generated-world rank fidelity, or WAM/VLA runtime."
         ),
         "raw_secret_values_recorded": False,
     }
@@ -1177,8 +1177,8 @@ def main() -> int:
         "manipulation_contact_dynamics_validated": False,
         "realistic_splat_visual_rendered": False,
         "wam_vla_runtime_proven": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "blockers": [],
         "warnings": [],
     }
@@ -1397,8 +1397,8 @@ payload = {
     "manipulation_contact_dynamics_validated": False,
     "realistic_splat_visual_rendered": False,
     "wam_vla_runtime_proven": False,
-    "physical_robot_readiness_proven": False,
-    "deployment_readiness_proven": False,
+    "generated_world_rank_fidelity_result_proven": False,
+    "generated_world_policy_evaluation_scope_proven": False,
     "blockers": [f"isaac_runner_process_exited_without_runtime_result:{runner_rc}"],
     "warnings": ["provider_entrypoint_shell_fallback_wrote_result_after_runner_exit"],
     "phase_log_may_contain_last_successful_phase": True,
@@ -1424,8 +1424,8 @@ PY
   "manipulation_contact_dynamics_validated": false,
   "realistic_splat_visual_rendered": false,
   "wam_vla_runtime_proven": false,
-  "physical_robot_readiness_proven": false,
-  "deployment_readiness_proven": false,
+  "generated_world_rank_fidelity_result_proven": false,
+  "generated_world_policy_evaluation_scope_proven": false,
   "blockers": ["$blocker"],
   "warnings": ["provider_entrypoint_shell_fallback_wrote_result_after_runner_exit"],
   "phase_log_may_contain_last_successful_phase": true,
@@ -1617,8 +1617,8 @@ def _write_provider_runtime_bundle(
             "real_controller_required_for_controller_grade_proof": True,
             "splat_rendering_requires_runtime_renderer_or_compositor": True,
             "metadata_colliders_are_not_direct_splat_collision": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
         "copied_assets": copied_assets,
     }
@@ -1719,7 +1719,7 @@ def _run_local_provider_command_diagnostic(
         "isaac_runtime_available": False,
         "isaac_runtime_execution_proven": False,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "raw_secret_values_recorded": False,
         "blockers": [],
     }
@@ -1822,8 +1822,8 @@ def _run_local_provider_command_diagnostic(
                 "This local diagnostic proves the provider bundle can be unzipped and "
                 "the provider entrypoint can run far enough to write runtime output. It "
                 "does not prove Isaac Sim scene loading, G1 controller execution, video "
-                "rendering, contact dynamics, WAM/VLA runtime, physical readiness, or "
-                "deployment readiness."
+                "rendering, contact dynamics, WAM/VLA runtime, generated-world rank fidelity, or "
+                "generated-world rank fidelity."
             ),
         }
     )
@@ -1952,8 +1952,8 @@ def _write_provider_bundle_readiness_manifest(
         for phrase in (
             "controller_grade_execution_proven",
             "official_policy_execution_proven",
-            "physical_robot_readiness_proven",
-            "deployment_readiness_proven",
+            "generated_world_rank_fidelity_result_proven",
+            "generated_world_policy_evaluation_scope_proven",
         )
     )
     if not entrypoint_has_crash_fallback:
@@ -2053,8 +2053,8 @@ def _write_provider_bundle_readiness_manifest(
             "realistic_video_smoke_proven": False,
             "official_policy_execution_proven": False,
             "controller_grade_execution_proven": False,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
         "raw_secret_values_recorded": False,
     }
@@ -2214,8 +2214,8 @@ def _build_gpu_provider_launch_request(
             "provider_request_is_not_provider_execution": True,
             "provider_allocation_proven": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
 
@@ -2435,7 +2435,7 @@ def _attempts_for_matrix(
                 "navigation_success": False,
                 "visual_inspection_evidence": False,
                 "object_contact_or_displacement_validated": False,
-                "route_safety_validated": False,
+                "route_non_ranking_operational_claim_validated": False,
                 "collision_contact_scored": False,
                 "blocked_failure_preserved": True,
             },
@@ -2647,8 +2647,8 @@ def _build_summary(
         "blocked_episode_count": blocked_count,
         "scenario_eval_run_coverage_complete": len(attempts) == matrix_count and matrix_count > 0,
         "attempt_count_matches_matrix_count": len(attempts) == matrix_count,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "pass_fail_blocked_by_task": _counts_by_key(attempts, "task_id"),
         "pass_fail_blocked_by_spawn": _counts_by_key(attempts, "spawn_id"),
     }
@@ -2686,8 +2686,8 @@ def _local_validation_report(
         "collision_dynamics_validated",
         "manipulation_contact_dynamics_validated",
         "wam_vla_runtime_proven",
-        "physical_robot_readiness_proven",
-        "deployment_readiness_proven",
+        "generated_world_rank_fidelity_result_proven",
+        "generated_world_policy_evaluation_scope_proven",
     ]
     proof_flags_honest = all(summary.get(flag) is False for flag in false_required_flags)
     mp4_paths = sorted((job_dir / "realistic_videos").glob("*.mp4"))
@@ -2755,8 +2755,8 @@ def _local_validation_report(
         "proof_boundary": (
             "Local validation checks artifact consistency and fail-closed proof flags. It "
             "does not prove Isaac runtime execution, rendered MP4 output, controller-grade "
-            "G1 locomotion, contact dynamics, WAM/VLA runtime, physical robot readiness, "
-            "or deployment readiness."
+            "G1 locomotion, contact dynamics, WAM/VLA runtime, generated-world rank fidelity, "
+            "or generated-world rank fidelity."
         ),
     }
 

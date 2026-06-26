@@ -694,7 +694,7 @@ def run_external_backend_from_env() -> int:
             "sam3_masks_are_not_physical_truth": True,
             "estimated_depth_is_not_sensor_depth": True,
             "pose_estimates_are_not_physical_pose_truth": True,
-            "deployment_approval_or_safety_validation_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
     }
     write_json(output_path, payload)
@@ -932,8 +932,8 @@ def run_probe(
             "perception_accuracy_validated": validation_report.get("status") == "completed"
             and validation_contract_available
             and backend_completed,
-            "deployment_approval_or_safety_validation_proven": False,
-            "physical_robot_readiness_proven": False,
+            "non_ranking_operational_claim_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
         "selected_generated_frame_path": str(selected_frame),
         "target_prompts": cleaned_target_prompts,
@@ -953,7 +953,7 @@ def run_probe(
             "sam3_masks_are_not_physical_truth": True,
             "inferred_depth_is_not_sensor_depth": True,
             "contact_likelihood_is_not_physical_contact_proof": True,
-            "generated_rollout_or_harness_outputs_do_not_prove_real_world_success": True,
+            "generated_rollout_or_harness_outputs_do_not_prove_accepted_anchor_success": True,
         },
     }
     manifest_path = output_dir / "wam_real_provider_validation_proof_manifest.json"

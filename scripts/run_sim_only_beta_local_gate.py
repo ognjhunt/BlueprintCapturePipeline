@@ -5,7 +5,7 @@ The gate uses a synthetic local intake token, starts the real Pipeline intake
 HTTP service, routes a WebApp-built robot-eval request into it, lets the live
 control plane consume the staged inbox, and verifies the resulting MuJoCo
 sim-only closure artifacts. It is intentionally local: it does not prove
-production deployment, cloud provider execution, physical robot readiness, or
+production deployment, cloud provider execution, generated-world rank fidelity, or
 customer delivery.
 """
 
@@ -310,7 +310,7 @@ def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[
             "robot_team_grade_evaluation_complete": robot_team_closure.get(
                 "robot_team_grade_evaluation_complete"
             ),
-            "deployment_readiness_complete": robot_team_closure.get("deployment_readiness_complete"),
+            "evaluation_readiness_complete": robot_team_closure.get("evaluation_readiness_complete"),
             "blocked_requirement_ids": robot_team_closure.get("blocked_requirement_ids"),
         },
         "proof_boundary": {
@@ -321,7 +321,7 @@ def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[
             "production_live_webapp_forwarding_proven": False,
             "production_deployment_proven": False,
             "remote_cloud_provider_execution_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

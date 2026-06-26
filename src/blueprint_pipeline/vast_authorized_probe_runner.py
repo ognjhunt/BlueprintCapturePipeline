@@ -181,8 +181,8 @@ def _truth_boundaries() -> dict[str, Any]:
         "video_smoke_proven": False,
         "official_policy_execution_proven": False,
         "controller_grade_execution_proven": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "dexterous_hand_policy_proven": False,
         "wam_vla_runtime_proven": False,
     }

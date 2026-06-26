@@ -75,7 +75,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "generated_assets_are_model_derived_support": True,
     "simulator_execution_proven": False,
     "physics_contact_validated": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "public_claim_upgrade_allowed": False,
     "disallowed_claims": [
         "palatial_asset_is_raw_capture_truth",
@@ -90,7 +90,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
         "local export checksums",
         "unit/scale sanity checks",
         "collision and articulation metadata inspection",
-        "owner-system simulator load trace before robot-readiness claims",
+        "owner-system simulator load trace before rank-fidelity claims",
     ],
 }
 
@@ -985,7 +985,7 @@ def _validate_materialized_assets(materialization: Mapping[str, Any]) -> Dict[st
         "real_collider_metadata_present": real_collision,
         "physics_contact_validated": False,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 

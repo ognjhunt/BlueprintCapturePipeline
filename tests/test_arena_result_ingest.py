@@ -53,7 +53,7 @@ def _capture_root(tmp_path: Path) -> Path:
         },
     )
     _write_json(robot_eval / "eval_cards.json", {"cards": [{"scenario_id": "scenario-1"}]})
-    _write_json(robot_eval / "proof_boundaries.json", {"robot_readiness_proven": False})
+    _write_json(robot_eval / "proof_boundaries.json", {"rank_fidelity_result_proven": False})
     return capture_root
 
 
@@ -152,7 +152,7 @@ def test_arena_package_audit_blocks_illegal_proof_upgrade(tmp_path: Path) -> Non
         shard_size=100,
     )
     evaluation_result = _read_json(output_dir / "arena_result_ingest_run_manifest.json")
-    evaluation_result["robot_readiness_proven"] = True
+    evaluation_result["rank_fidelity_result_proven"] = True
     _write_json(output_dir / "arena_result_ingest_run_manifest.json", evaluation_result)
 
     audit = build_arena_package_proof_boundary_audit(
@@ -162,7 +162,7 @@ def test_arena_package_audit_blocks_illegal_proof_upgrade(tmp_path: Path) -> Non
     )
 
     assert audit["status"] == "blocked"
-    assert "proof_boundary_violation:arena_result_ingest_run_manifest.json:robot_readiness_proven" in audit[
+    assert "proof_boundary_violation:arena_result_ingest_run_manifest.json:rank_fidelity_result_proven" in audit[
         "blockers"
     ]
 
@@ -182,9 +182,9 @@ def test_arena_package_audit_allows_live_closure_backed_proof_upgrade(tmp_path: 
         "live_end_to_end_verified": True,
         "simulator_execution_proven": True,
         "robot_policy_execution_proven": True,
-        "robot_readiness_proven": True,
+        "rank_fidelity_result_proven": True,
         "physics_contact_validated": True,
-        "safety_validated": True,
+        "non_ranking_operational_claim_validated": True,
         "public_claim_upgrade_allowed": True,
     }
     _write_json(
@@ -200,7 +200,7 @@ def test_arena_package_audit_allows_live_closure_backed_proof_upgrade(tmp_path: 
     for name, payload in {
         "job_request.json": {"schema_version": "robot_eval_job_request.v1"},
         "simulator_service_result.json": {"simulator_execution_proven": True},
-        "evaluation_result.json": {"robot_readiness_proven": True},
+        "evaluation_result.json": {"rank_fidelity_result_proven": True},
         "proof_boundary.json": dict(closure_boundary),
         "job_run_manifest.json": dict(closure_boundary),
     }.items():
@@ -275,7 +275,7 @@ def test_arena_result_ingest_consumes_review_required_vision_command_output(
     assert vision["labels"][0]["vision_label_id"] == "vision-command-1"
     assert vision["labels"][0]["status"] == "review_required"
     assert vision["labels"][0]["label_source"] == "fake-command"
-    assert vision["claim_boundary"]["robot_readiness_proven"] is False
+    assert vision["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert vision["claim_boundary"]["vision_model_labeling_performed"] is True
 
 

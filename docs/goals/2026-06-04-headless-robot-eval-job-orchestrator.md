@@ -92,9 +92,9 @@ They do not prove:
 - robot policy execution
 - real robot trial success
 - physics/contact validity
-- safety validation
+- off-scope validation
 - Cosmos generation or training completion
-- public deployment readiness
+- public generated-world rank fidelity
 
 Those upgrades require explicit environment and CLI gates plus owner-system
 result manifests, checkpoint artifacts where relevant, rights/privacy clearance,

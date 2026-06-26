@@ -241,9 +241,9 @@ def _blocked_payload(
             "provider_worker_command_adapter_does_not_allocate_provider": True,
             "provider_worker_command_adapter_does_not_prove_provider_teardown": True,
             "readyz_required_before_infer": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
     }
 
@@ -398,10 +398,10 @@ def run_provider_worker_policy_command(
         "claim_boundary": {
             "provider_worker_command_adapter_does_not_allocate_provider": True,
             "provider_worker_command_adapter_does_not_prove_provider_teardown": True,
-            "provider_worker_response_is_not_physical_robot_readiness": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "provider_worker_response_is_not_generated_world_rank_fidelity": True,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
     }
     for key in (

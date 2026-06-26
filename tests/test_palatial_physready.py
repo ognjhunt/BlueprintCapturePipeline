@@ -261,7 +261,7 @@ def test_palatial_physready_materializes_provider_response_for_local_review(
     assert Path(materialization["exports"][0]["local_path"]).is_file()
     assert validation["status"] == "prepared_for_review"
     assert validation["simulator_execution_proven"] is False
-    assert validation["robot_readiness_proven"] is False
+    assert validation["rank_fidelity_result_proven"] is False
 
 
 def test_evaluation_prep_surfaces_existing_palatial_artifacts(tmp_path: Path) -> None:
@@ -283,7 +283,7 @@ def test_evaluation_prep_surfaces_existing_palatial_artifacts(tmp_path: Path) ->
 
     assert surface["status"] == "ready_for_manual_or_live_submission"
     assert surface["live_provider_calls_performed"] is False
-    assert surface["robot_readiness_proven"] is False
+    assert surface["rank_fidelity_result_proven"] is False
     assert surface["public_claim_upgrade_allowed"] is False
     assert surface["artifacts"]["palatial_physready_run_manifest"].endswith(
         "../palatial_physready/palatial_physready_run_manifest.json"

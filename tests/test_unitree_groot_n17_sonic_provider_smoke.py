@@ -88,7 +88,7 @@ def test_groot_n17_sonic_provider_bundle_contains_runtime_contract(tmp_path: Pat
         manifest["truth_boundary"]["unitree_groot_n17_sonic_policy_action_command_ran"]
         is False
     )
-    assert manifest["truth_boundary"]["physical_robot_readiness_proven"] is False
+    assert manifest["truth_boundary"]["generated_world_rank_fidelity_result_proven"] is False
 
 
 def test_groot_provider_bundle_preserves_scene_policy_observation(tmp_path: Path) -> None:
@@ -162,7 +162,7 @@ def test_import_groot_n17_sonic_provider_output_completed(tmp_path: Path) -> Non
     assert imported["unitree_groot_n17_sonic_model_executed"] is True
     assert imported["unitree_groot_n17_sonic_policy_action_command_ran"] is True
     assert imported["action"]["action_type"] == "unitree_g1_sonic_action_chunk"
-    assert imported["truth_boundary"]["physical_robot_readiness_proven"] is False
+    assert imported["truth_boundary"]["generated_world_rank_fidelity_result_proven"] is False
     assert (
         imported["truth_boundary"]["provider_output_import_is_not_fresh_local_policy_execution"]
         is True

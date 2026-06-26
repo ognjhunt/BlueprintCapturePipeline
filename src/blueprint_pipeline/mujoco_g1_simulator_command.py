@@ -1331,7 +1331,7 @@ def _attempt_task_outcome(
         },
         "proof_boundary": (
             "Task outcome is computed from deterministic MuJoCo preview state, contact "
-            "probes, and route traces. It is not physical robot deployment readiness."
+            "probes, and route traces. It is not physical policy ranking."
         ),
     }
 
@@ -2395,7 +2395,7 @@ def _visual_object_physics_coverage(
         "boundary": (
             "Component proxy coverage proves each named visible component has a "
             "corresponding conservative physics proxy or reference-floor collider. It "
-            "does not prove exact mesh collision fidelity or real-world safety."
+            "does not prove exact mesh collision fidelity or rank fidelity."
         ),
     }
 
@@ -2531,7 +2531,7 @@ def _build_digital_twin_fidelity_qa(
                     "Full scene mesh collision proves visual/physics alignment most "
                     "directly. Component proxy coverage can prove each visible object has "
                     "a conservative matching physics body, but it remains a simulator QA "
-                    "claim rather than deployment readiness."
+                    "claim rather than generated-world rank fidelity."
                 ),
             },
         },
@@ -2607,7 +2607,7 @@ def _build_digital_twin_fidelity_qa(
         },
         "claim_boundary": (
             "This audit checks simulator digital-twin fidelity evidence. It does not "
-            "upgrade physical robot readiness, customer safety validation, or real-world "
+            "upgrade generated-world rank fidelity, customer off-scope validation, or real-world "
             "deployment claims."
         ),
     }
@@ -2721,7 +2721,7 @@ def _write_mujoco_batch_trace_package(
             "task_outcome": task_outcome,
             "evidence_refs": evidence_refs,
             "review_status": "available_for_human_audit_not_required_for_sim_only_metric",
-            "proof_effect": "sim_only_metric_input_not_real_robot_readiness",
+            "proof_effect": "sim_only_metric_input_not_real_rank_fidelity",
         }
 
     def _visual_review_for_attempt(attempt: Mapping[str, Any]) -> dict[str, Any]:
@@ -2916,8 +2916,8 @@ def _write_mujoco_batch_trace_package(
         "records": visual_review_records,
         "claim_boundary": (
             "Visual review ledger accepts simulator success/failure decisions from "
-            "criteria and media refs. It does not claim policy quality, safety validation, "
-            "or physical robot readiness."
+            "criteria and media refs. It does not claim policy quality, off-scope validation, "
+            "or generated-world rank fidelity."
         ),
     }
     metrics = {
@@ -3021,7 +3021,7 @@ def _write_mujoco_batch_trace_package(
         },
         "claim_boundary": (
             "Trace package is simulator evidence and closure input. It does not prove "
-            "physical robot readiness or robot-team policy quality."
+            "generated-world rank fidelity or robot-team policy quality."
         ),
     }
     write_json(manifest_path, manifest)
@@ -4268,8 +4268,8 @@ def run_mujoco_g1_simulator_command(
         "walking_motion_proven": False,
         "walking_style_preview_animation_rendered": bool(preview_joint_addresses),
         "training_grade_policy_rollout_proven": False,
-        "physical_robot_readiness_proven": False,
-        "safety_validated": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "non_ranking_operational_claim_validated": False,
         "contact_dynamics_validated": collision_dynamics_validated,
         "collision_geometry_loaded": collision_summary["collision_geometry_loaded"],
         "scene_collision_mesh_geom_enabled": collision_summary[

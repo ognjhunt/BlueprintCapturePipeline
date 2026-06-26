@@ -95,7 +95,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "simulator_execution_proven": False,
     "isaac_sim_execution_proven": False,
     "isaac_robot_asset_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "training_proof_available": False,
     "robot_policy_execution_proven": False,
     "physics_contact_validated": False,
@@ -665,10 +665,10 @@ OWNER_GPU_REQUIRED_FIELDS = (
 OWNER_GPU_FORBIDDEN_TRUE_FIELDS = (
     "isaac_robot_asset_execution_proven",
     "isaac_sim_execution_proven",
-    "robot_readiness_proven",
+    "rank_fidelity_result_proven",
     "robot_policy_execution_proven",
     "physics_contact_validated",
-    "safety_validated",
+    "non_ranking_operational_claim_validated",
     "public_claim_upgrade_allowed",
 )
 
@@ -862,7 +862,7 @@ def validate_owner_gpu_system_proof(
             "owner_gpu_simulator_execution_proven": False,
             "scene_loaded_in_owner_simulator": False,
             "spawn_pose_loaded": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
         if output_path:
@@ -1095,8 +1095,8 @@ def validate_owner_gpu_system_proof(
         "real_robot_pov_evidence_proven": False,
         "robot_policy_execution_proven": False,
         "physics_contact_validated": False,
-        "safety_validated": False,
-        "robot_readiness_proven": False,
+        "non_ranking_operational_claim_validated": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
@@ -1190,7 +1190,7 @@ def _build_plan(
                 "physics_collision_review_ready": bool(
                     marble_validation.get("physics_collision_review_ready")
                 ),
-                "robot_readiness_proven": bool(marble_validation.get("robot_readiness_proven")),
+                "rank_fidelity_result_proven": bool(marble_validation.get("rank_fidelity_result_proven")),
             },
             "simready": {
                 "scene_status": _string(simready_scene.get("status")) or None,
@@ -1200,8 +1200,8 @@ def _build_plan(
                         "simulator_execution_proven"
                     )
                 ),
-                "robot_readiness_proven": bool(
-                    _mapping(simready_validation.get("claim_boundary")).get("robot_readiness_proven")
+                "rank_fidelity_result_proven": bool(
+                    _mapping(simready_validation.get("claim_boundary")).get("rank_fidelity_result_proven")
                 ),
             },
             "cpu_preflight": {
@@ -1673,9 +1673,9 @@ def _arena_episode_bindings(
                 "missing_proof_labels": _string_list(missing),
                 "proof_booleans": {
                     "simulator_execution_proven": False,
-                    "robot_readiness_proven": False,
+                    "rank_fidelity_result_proven": False,
                     "physics_contact_validated": False,
-                    "safety_validated": False,
+                    "non_ranking_operational_claim_validated": False,
                 },
             }
         )
@@ -1835,9 +1835,9 @@ def _build_arena_environment_packet(
         },
         "blockers": blockers,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "physics_contact_validated": False,
-        "safety_validated": False,
+        "non_ranking_operational_claim_validated": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -1957,7 +1957,7 @@ def _build_world_model_engine_plugins(
                 "world_model_uncertainty_scored": False,
                 "simulator_execution_proven": False,
                 "robot_policy_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
             },
         }
     return plugins
@@ -2176,7 +2176,7 @@ def _blocked_simulator_result(
         "exit_code": None,
         "artifact_paths": [],
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
@@ -2232,7 +2232,7 @@ def _run_simulator_command(
         "exit_code": completed.returncode,
         "artifact_paths": [str(stdout_path), str(stderr_path)],
         "simulator_execution_proven": status == "completed",
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "simulators_run": True,
@@ -2356,7 +2356,7 @@ def _build_simulator_execution_manifest(
         "simulator_result_paths": result_paths,
         "simulators_run": any(item.get("status") in {"completed", "failed"} for item in results),
         "simulator_execution_proven": any_completed,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "simulators_run": any(item.get("status") in {"completed", "failed"} for item in results),
@@ -2497,7 +2497,7 @@ def _proof_aware_claim_boundary(
             owner_gpu_sim_robot_pov_evidence_proven
         ),
         "real_robot_pov_evidence_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "robot_policy_execution_proven": False,
         "physics_contact_validated": False,
         "safety_contact_proof_available": False,
@@ -2575,7 +2575,7 @@ def _proof_boundary(
         "default_sim_policy_execution_proven": default_policy_proven,
         "owner_gpu_sim_robot_pov_evidence_proven": sim_robot_pov_proven,
         "real_robot_pov_evidence_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "robot_policy_execution_proven": False,
         "physics_contact_validated": False,
         "safety_contact_proof_available": False,
@@ -2770,7 +2770,7 @@ def _gpu_owner_system_proof_schema(*, generated_at: str, scene_id: str, capture_
                 "aligned physical robot action log",
                 "owner attestation for the real robot run",
             ],
-            "robot_readiness_proven": [
+            "rank_fidelity_result_proven": [
                 "accepted robot policy/action logs",
                 "buyer/operator-approved methodology",
                 "actual evaluation result manifest",
@@ -2779,7 +2779,7 @@ def _gpu_owner_system_proof_schema(*, generated_at: str, scene_id: str, capture_
                 "contact validation logs",
                 "collider methodology review",
             ],
-            "safety_validated": [
+            "non_ranking_operational_claim_validated": [
                 "safety methodology",
                 "operator safety signoff",
             ],
@@ -2807,7 +2807,7 @@ def _append_blocker_detail(
         "source_artifact": source_artifact,
         "severity": severity,
         "required_input": required_input,
-        "proof_boundary": "required input only; does not prove simulator execution or robot readiness",
+        "proof_boundary": "required input only; does not prove simulator execution or generated-world rank fidelity",
     }
     if safe_next_command:
         detail["safe_next_command"] = safe_next_command
@@ -2991,7 +2991,7 @@ def _gpu_run_checklist_text(packet: Mapping[str, Any]) -> str:
             "- Simulator stdout, stderr, exit code, and load trace are captured.",
             "- The default walk-to-target smoke policy writes an execution trace.",
             "- Simulator robot POV evidence is captured as video or frame evidence.",
-            "- Contact, safety, real robot POV, and robot-readiness claims remain false without their own logs.",
+            "- Contact, safety, real robot POV, and rank-fidelity claims remain false without their own logs.",
             "",
             "## Recommended First Command",
             "```bash",
@@ -3006,7 +3006,7 @@ def _gpu_run_checklist_text(packet: Mapping[str, Any]) -> str:
             "",
             "## Fail Criteria",
             "- Missing dependency, missing asset reference, nonzero exit, timeout, empty load trace, or no owner attestation.",
-            "- Any attempt to mark robot readiness, safety, or contact proof from CPU-only artifacts.",
+            "- Any attempt to mark generated-world rank fidelity, safety, or contact proof from CPU-only artifacts.",
             "",
         ]
     )
@@ -3122,7 +3122,7 @@ def _build_gpu_handoff_artifacts(
         "default_sim_policy_execution_proven": default_policy_proven,
         "owner_gpu_sim_robot_pov_evidence_proven": sim_robot_pov_proven,
         "real_robot_pov_evidence_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "isaac_sim_execution_proven": isaac_sim_proven,
         "isaac_robot_asset_execution_proven": isaac_robot_asset_proven,
         "mujoco_g1_asset_execution_proven": mujoco_g1_asset_proven,
@@ -3184,7 +3184,7 @@ def _build_gpu_handoff_artifacts(
             if arena_packet
             else 0,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
         },
         "command_templates": command_templates,
         "environment_gates": {
@@ -3249,7 +3249,7 @@ def _build_gpu_handoff_artifacts(
         "required_input": "Run the selected simulator backend on an owner GPU system and provide the proof schema outputs.",
         "safe_proof_command": command_templates.get("isaac_sim"),
         "retry_condition": "Retry after owner-system proof artifacts are written and synced.",
-        "disallowed_workaround": "Do not mark simulator, robot readiness, contact, policy, or safety proof from CPU-only artifacts.",
+        "disallowed_workaround": "Do not mark simulator, generated-world rank fidelity, contact, policy, or safety proof from CPU-only artifacts.",
         "pre_gpu_blocker_details": blocker_details,
         "next_artifacts": packet["output_artifacts_expected"],
         "claim_boundary": handoff_claim_boundary,
@@ -3573,7 +3573,7 @@ def build_simulation_automation(
         "payments_touched": False,
         "deployments_performed": False,
         "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": run_claim_boundary,
     }

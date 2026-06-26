@@ -228,9 +228,9 @@ def build_provider_worker_contract(
             "contract_artifact_is_not_provider_execution_proof": True,
             "worker_readyz_required_before_customer_eval": True,
             "shutdown_response_is_not_cost_proof_without_provider_teardown_artifact": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
             "raw_secret_values_recorded": False,
         },
     }

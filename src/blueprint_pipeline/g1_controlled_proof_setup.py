@@ -275,8 +275,8 @@ def _owner_attestation_template(role: str) -> dict[str, Any]:
 def _proof_boundary() -> dict[str, bool]:
     return {
         "template_is_not_proof": True,
-        "physical_robot_readiness_proven": False,
-        "safety_validated": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "non_ranking_operational_claim_validated": False,
         "real_robot_pov_evidence_proven": False,
         "robot_team_policy_performance_proven": False,
         "production_runpod_worker_execution_proven": False,
@@ -381,9 +381,9 @@ def _real_robot_pov_manifest(context: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _safety_validation_package(context: Mapping[str, Any]) -> dict[str, Any]:
+def _non_ranking_operational_claim_package(context: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": "reviewed_safety_validation_package.v1",
+        "schema_version": "reviewed_non_ranking_operational_claim_package.v1",
         "status": "template_external_safety_review_required",
         "job_id": context["job_id"],
         "robot_make_model": DEFAULT_ROBOT_MAKE_MODEL,
@@ -507,8 +507,8 @@ def _official_g1_policy_candidate(context: Mapping[str, Any]) -> dict[str, Any]:
         "proof_boundary": {
             "candidate_selection_is_not_policy_performance": True,
             "robot_team_policy_performance_proven": False,
-            "physical_robot_readiness_proven": False,
-            "safety_validated": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "non_ranking_operational_claim_validated": False,
             "real_robot_pov_evidence_proven": False,
             "public_claim_upgrade_allowed": False,
         },
@@ -533,9 +533,9 @@ def _live_closure_evidence(context: Mapping[str, Any]) -> dict[str, Any]:
         },
         "safety_contact_physics": {
             "physics_contact_validated": False,
-            "safety_validated": False,
-            "robot_readiness_proven": False,
-            "safety_validation_uri_or_path": "<reviewed-safety-validation-package-uri>",
+            "non_ranking_operational_claim_validated": False,
+            "rank_fidelity_result_proven": False,
+            "non_ranking_operational_claim_uri_or_path": "<reviewed-safety-validation-package-uri>",
             "contact_validation_uri_or_path": "<contact-validation-report-uri>",
             "operator_attestation": _owner_attestation_template("safety_reviewer"),
         },
@@ -785,7 +785,7 @@ def _readme(context: Mapping[str, Any], paths: Mapping[str, str]) -> str:
 
 Status: external operator evidence required.
 
-This packet makes Unitree G1 the default robot for the live-product robot-eval proof path. It does not prove physical readiness by itself.
+This packet makes Unitree G1 the default robot for the live-product robot-eval proof path. It does not prove generated-world rank fidelity by itself.
 
 ## Order
 
@@ -799,7 +799,7 @@ This packet makes Unitree G1 the default robot for the live-product robot-eval p
 ## Boundaries
 
 - Simulator POV is not real robot POV.
-- A config that names Unitree G1 is not physical robot readiness.
+- A config that names Unitree G1 is not generated-world rank fidelity.
 - The default smoke policy is not robot-team policy performance.
 - Dry-run RunPod adapter output is not production provider execution.
 - Local WebApp route proof is not production customer-through-website proof.
@@ -844,8 +844,8 @@ def build_g1_controlled_proof_setup(
         "physical_robot_run_manifest": output_root / "physical_robot_run_manifest.template.json",
         "deployment_outcome_manifest": output_root / "deployment_outcome_manifest.template.json",
         "real_robot_pov_manifest": output_root / "real_robot_pov_manifest.template.json",
-        "reviewed_safety_validation_package": output_root
-        / "reviewed_safety_validation_package.template.json",
+        "reviewed_non_ranking_operational_claim_package": output_root
+        / "reviewed_non_ranking_operational_claim_package.template.json",
         "official_g1_policy_candidate": output_root
         / "official_unitree_g1_policy_candidate.json",
         "robot_team_policy_package": output_root
@@ -869,7 +869,7 @@ def build_g1_controlled_proof_setup(
     write_json(artifacts["physical_robot_run_manifest"], _physical_robot_run_manifest(context))
     write_json(artifacts["deployment_outcome_manifest"], _deployment_outcome_manifest(context))
     write_json(artifacts["real_robot_pov_manifest"], _real_robot_pov_manifest(context))
-    write_json(artifacts["reviewed_safety_validation_package"], _safety_validation_package(context))
+    write_json(artifacts["reviewed_non_ranking_operational_claim_package"], _non_ranking_operational_claim_package(context))
     write_json(artifacts["official_g1_policy_candidate"], _official_g1_policy_candidate(context))
     write_json(artifacts["robot_team_policy_package"], _policy_package(context))
     write_json(artifacts["live_closure_evidence"], _live_closure_evidence(context))
@@ -922,8 +922,8 @@ def build_g1_controlled_proof_setup(
         "job_context": context,
         "field_run_capture_kit": field_run_kit,
         "required_to_prove": {
-            "physical_robot_readiness": str(artifacts["physical_robot_run_manifest"]),
-            "safety_validation": str(artifacts["reviewed_safety_validation_package"]),
+            "generated_world_rank_fidelity": str(artifacts["physical_robot_run_manifest"]),
+            "non_ranking_operational_claim": str(artifacts["reviewed_non_ranking_operational_claim_package"]),
             "real_robot_pov": str(artifacts["real_robot_pov_manifest"]),
             "robot_team_policy_performance": str(artifacts["robot_team_policy_package"]),
             "production_runpod_worker_execution": str(artifacts["runpod_low_cost_launch_plan"]),

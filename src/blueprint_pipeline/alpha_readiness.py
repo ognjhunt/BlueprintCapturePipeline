@@ -1135,7 +1135,7 @@ def sync_webapp_evaluation_prep(
         }.items()
         if value
     }
-    deployment_readiness = {
+    evaluation_readiness = {
         "capture_source": descriptor.capture_source,
         "capture_modality": descriptor.capture_modality,
         "device_alpha_profile_status": alpha_summary.get("device_alpha_profile", {}).get("status"),
@@ -1198,7 +1198,7 @@ def sync_webapp_evaluation_prep(
             authoritative_state_update=True,
             artifacts={str(key): value for key, value in artifacts.items() if value},
             derived_assets=derived_assets,
-            deployment_readiness=deployment_readiness,
+            evaluation_readiness=evaluation_readiness,
         )
     except (WebappSyncError, ValueError) as exc:
         result = {

@@ -1,4 +1,4 @@
-"""Build a fail-closed proof matrix for realistic robot-readiness rehearsal runs."""
+"""Build a fail-closed proof matrix for realistic rank-fidelity rehearsal runs."""
 
 from __future__ import annotations
 
@@ -18,28 +18,28 @@ DEFAULT_LOCAL_MUJOCO_RELATIVE = (
 )
 DEFAULT_ROBOT_PROOF_TARGET = "physical Unitree G1 controlled run"
 LIVE_PRODUCT_PROOF_GATES = (
-    "physical_robot_readiness",
-    "safety_validation",
+    "generated_world_rank_fidelity",
+    "non_ranking_operational_claim",
     "real_robot_pov",
     "robot_team_policy_performance",
     "production_runpod_worker_execution",
     "customer_through_website_testing_ready",
 )
 PROOF_GATE_LABELS = {
-    "physical_robot_readiness": "Physical G1 readiness",
-    "safety_validation": "Safety validation",
+    "generated_world_rank_fidelity": "Physical G1 readiness",
+    "non_ranking_operational_claim": "Off-scope validation",
     "real_robot_pov": "Real robot POV",
     "robot_team_policy_performance": "Robot-team policy performance",
     "production_runpod_worker_execution": "Production RunPod worker execution",
     "customer_through_website_testing_ready": "Customer-through-website readiness",
 }
 EXTERNAL_INPUTS_BY_PROOF_GATE = {
-    "physical_robot_readiness": [
+    "generated_world_rank_fidelity": [
         "real Unitree G1 run package for the same job/request",
         "operator and hardware-owner attestation",
         "physical robot action logs and outcome ledger",
     ],
-    "safety_validation": [
+    "non_ranking_operational_claim": [
         "reviewed safety/contact/threshold evidence",
         "accepted safety thresholds and stop conditions",
         "real-world or controlled-test safety outcome record",
@@ -433,8 +433,8 @@ def _container_rehearsal_summary(
             "provider_fetchable_image_proven": False,
             "production_runpod_execution_proven": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
-            "safety_validated": False,
+            "rank_fidelity_result_proven": False,
+            "non_ranking_operational_claim_validated": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -611,8 +611,8 @@ def _controlled_proof_setup_summary(
         else {},
         "proof_boundary": {
             "setup_packet_is_not_proof": True,
-            "physical_robot_readiness_proven": False,
-            "safety_validated": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "non_ranking_operational_claim_validated": False,
             "real_robot_pov_evidence_proven": False,
             "robot_team_policy_performance_proven": False,
             "production_runpod_worker_execution_proven": False,
@@ -683,7 +683,7 @@ def _external_input_requirements(
             "input_id": "physical_robot_run_package",
             "schema_version": "physical_robot_run_package.v1",
             "status": "missing",
-            "unblocks": ["physical_robot_readiness"],
+            "unblocks": ["generated_world_rank_fidelity"],
             "required_fields": [
                 "job_id",
                 "robot_make_model",
@@ -705,7 +705,7 @@ def _external_input_requirements(
                 "operator/hardware-owner attestation",
                 "deployment or controlled-test outcome ledger",
             ],
-            "claim_boundary": "Required before physical_robot_readiness_proven may become true.",
+            "claim_boundary": "Required before generated_world_rank_fidelity_result_proven may become true.",
         },
         {
             "input_id": "real_robot_pov_manifest",
@@ -732,10 +732,10 @@ def _external_input_requirements(
             "claim_boundary": "Simulator POV frames cannot satisfy this input.",
         },
         {
-            "input_id": "reviewed_safety_validation_package",
-            "schema_version": "reviewed_safety_validation_package.v1",
+            "input_id": "reviewed_non_ranking_operational_claim_package",
+            "schema_version": "reviewed_non_ranking_operational_claim_package.v1",
             "status": "missing",
-            "unblocks": ["safety_validation"],
+            "unblocks": ["non_ranking_operational_claim"],
             "required_fields": [
                 "job_id",
                 "robot_id",
@@ -755,7 +755,7 @@ def _external_input_requirements(
                 "threshold and stop-condition record",
                 "review decision or signoff",
             ],
-            "claim_boundary": "Rendered or kinematic simulation artifacts are review inputs, not safety validation.",
+            "claim_boundary": "Rendered or kinematic simulation artifacts are review inputs, not off-scope validation.",
         },
         {
             "input_id": "robot_team_policy_package",
@@ -870,8 +870,8 @@ def _external_input_requirements(
         "satisfied_inputs": satisfied_records,
         "claim_boundary": {
             "external_input_packet_is_not_proof": True,
-            "physical_robot_readiness_proven": False,
-            "safety_validated": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "non_ranking_operational_claim_validated": False,
             "real_robot_pov_evidence_proven": False,
             "robot_team_policy_performance_proven": False,
             "production_runpod_worker_execution_proven": False,
@@ -1088,7 +1088,7 @@ def build_realistic_readiness_rehearsal(
         ]
         policy_status = "not_proven_default_smoke_policy_only"
 
-    physical_g1_ready, physical_g1_evidence, physical_g1_blockers = _ready_g1_assembly_artifacts(
+    rank_fidelity_g1_ready, physical_g1_evidence, physical_g1_blockers = _ready_g1_assembly_artifacts(
         assembly_manifest=g1_evidence_assembly_manifest,
         assembly_path=g1_evidence_assembly_path,
         artifact_keys=[
@@ -1097,10 +1097,10 @@ def build_realistic_readiness_rehearsal(
             "live_closure_evidence",
         ],
     )
-    safety_g1_ready, safety_g1_evidence, safety_g1_blockers = _ready_g1_assembly_artifacts(
+    operational_claim_g1_ready, safety_g1_evidence, safety_g1_blockers = _ready_g1_assembly_artifacts(
         assembly_manifest=g1_evidence_assembly_manifest,
         assembly_path=g1_evidence_assembly_path,
-        artifact_keys=["reviewed_safety_validation_package", "live_closure_evidence"],
+        artifact_keys=["reviewed_non_ranking_operational_claim_package", "live_closure_evidence"],
     )
     real_pov_g1_ready, real_pov_g1_evidence, real_pov_g1_blockers = (
         _ready_g1_assembly_artifacts(
@@ -1138,15 +1138,15 @@ def build_realistic_readiness_rehearsal(
             ],
             claim_boundary=(
                 "Simulator-side rehearsal only; proves MuJoCo/Unitree G1 artifact execution "
-                "when complete, not physical robot readiness."
+                "when complete, not generated-world rank fidelity."
             ),
         ),
-        "physical_robot_readiness": _proof_item(
-            proven=physical_g1_ready,
-            status="proven" if physical_g1_ready else "not_proven_missing_physical_robot_run",
+        "generated_world_rank_fidelity": _proof_item(
+            proven=rank_fidelity_g1_ready,
+            status="proven" if rank_fidelity_g1_ready else "not_proven_missing_physical_robot_run",
             evidence=physical_g1_evidence if physical_g1_evidence else mujoco_evidence,
             blockers=[]
-            if physical_g1_ready
+            if rank_fidelity_g1_ready
             else [
                 "missing_physical_robot_run_manifest",
                 "missing_hardware_operator_attestation",
@@ -1157,21 +1157,21 @@ def build_realistic_readiness_rehearsal(
                 "physical Unitree G1 or target robot run identifier",
                 "operator/hardware owner attestation",
                 "robot action logs from the physical run",
-                "real-world outcome ledger tied to the same job/request",
+                "policy-ranking outcome ledger tied to the same job/request",
             ],
-            claim_boundary="Simulation output cannot prove physical robot readiness.",
+            claim_boundary="Simulation output cannot prove generated-world rank fidelity.",
         ),
-        "safety_validation": _proof_item(
-            proven=safety_g1_ready,
+        "non_ranking_operational_claim": _proof_item(
+            proven=operational_claim_g1_ready,
             status="proven"
-            if safety_g1_ready
+            if operational_claim_g1_ready
             else "not_proven_missing_safety_contact_physics_evidence",
             evidence=safety_g1_evidence if safety_g1_evidence else mujoco_evidence,
             blockers=[]
-            if safety_g1_ready
+            if operational_claim_g1_ready
             else [
                 "missing_reviewed_safety_case",
-                "missing_physical_robot_safety_validation_record",
+                "missing_physical_robot_non_ranking_operational_claim_record",
                 "missing_contact_dynamics_validation_logs",
                 "missing_owner_accepted_safety_thresholds",
                 *(safety_g1_blockers if include_g1_assembly_blockers else []),
@@ -1182,7 +1182,7 @@ def build_realistic_readiness_rehearsal(
                 "operator-approved safety thresholds and stop conditions",
                 "real-world or controlled-test safety outcome record",
             ],
-            claim_boundary="Rendered frames and kinematic simulation are not safety validation.",
+            claim_boundary="Rendered frames and kinematic simulation are not off-scope validation.",
         ),
         "real_robot_pov": _proof_item(
             proven=real_pov_g1_ready,
@@ -1245,7 +1245,7 @@ def build_realistic_readiness_rehearsal(
             claim_boundary=(
                 "Production RunPod worker execution requires a submitted RunPod pod, clean "
                 "worker runtime manifest, and shutdown proof; it still does not prove physical "
-                "robot readiness."
+                "generated-world rank fidelity."
             ),
         ),
         "customer_through_website_testing_ready": _webapp_route_proof_item(
@@ -1360,8 +1360,8 @@ def build_realistic_readiness_rehearsal(
         ),
         "container_worker_image_is_local_only": bool(container_runtime_manifest),
         "published_worker_image_ref_proven": published_worker_image_ref_proven,
-        "physical_robot_readiness_proven": physical_g1_ready,
-        "safety_validated": safety_g1_ready,
+        "generated_world_rank_fidelity_result_proven": rank_fidelity_g1_ready,
+        "non_ranking_operational_claim_validated": operational_claim_g1_ready,
         "real_robot_pov_evidence_proven": real_pov_g1_ready,
         "robot_team_policy_performance_proven": policy_g1_ready,
         "production_runpod_worker_execution_proven": production_runpod_worker_execution_proven,
@@ -1539,7 +1539,7 @@ def build_realistic_readiness_rehearsal(
             "performed": worker_rehearsal_performed,
             "claim_boundary": (
                 "Local same-entrypoint worker rehearsal exercises the worker code path only; "
-                "it is not production RunPod execution and does not prove robot readiness."
+                "it is not production RunPod execution and does not prove generated-world rank fidelity."
             ),
             "runtime_manifest": str(worker_runtime_manifest_path),
             "job_status": worker_runtime_manifest.get("job_status") if worker_runtime_manifest else None,
@@ -1669,7 +1669,7 @@ def build_realistic_readiness_rehearsal(
         "capture_root": str(root),
         "claim_boundary": {
             "audit_is_not_proof_by_itself": True,
-            "simulator_outputs_do_not_prove_physical_robot_readiness": True,
+            "simulator_outputs_do_not_prove_generated_world_rank_fidelity": True,
             "simulator_pov_frames_do_not_prove_real_robot_pov": True,
             "default_smoke_policy_is_not_robot_team_policy": True,
             "local_or_container_worker_rehearsal_is_not_production_runpod_execution": True,
@@ -1686,13 +1686,13 @@ def build_realistic_readiness_rehearsal(
                 external_blocker=False,
                 claim_boundary="Proves only MuJoCo/Unitree G1 simulator execution for this sample.",
             ),
-            "physical_robot_readiness": _proof_status(
-                proven=physical_g1_ready,
+            "generated_world_rank_fidelity": _proof_status(
+                proven=rank_fidelity_g1_ready,
                 proof_class="external_hardware",
                 evidence=physical_g1_evidence,
-                blockers=_as_list(requested_proof_matrix["physical_robot_readiness"]["blockers"]),
+                blockers=_as_list(requested_proof_matrix["generated_world_rank_fidelity"]["blockers"]),
                 missing_inputs=[]
-                if physical_g1_ready
+                if rank_fidelity_g1_ready
                 else [
                     "physical_robot_run_manifest",
                     "hardware_operator_attestation",
@@ -1700,16 +1700,16 @@ def build_realistic_readiness_rehearsal(
                     "real_world_outcome_ledger",
                 ],
                 mujoco_blocker=False,
-                external_blocker=not physical_g1_ready,
+                external_blocker=not rank_fidelity_g1_ready,
                 claim_boundary="Requires a physical robot run; MuJoCo cannot prove this claim.",
             ),
-            "safety_validation": _proof_status(
-                proven=safety_g1_ready,
+            "non_ranking_operational_claim": _proof_status(
+                proven=operational_claim_g1_ready,
                 proof_class="external_safety_review",
                 evidence=safety_g1_evidence,
-                blockers=_as_list(requested_proof_matrix["safety_validation"]["blockers"]),
+                blockers=_as_list(requested_proof_matrix["non_ranking_operational_claim"]["blockers"]),
                 missing_inputs=[]
-                if safety_g1_ready
+                if operational_claim_g1_ready
                 else [
                     "reviewed_safety_case",
                     "contact_or_collision_logs",
@@ -1717,8 +1717,8 @@ def build_realistic_readiness_rehearsal(
                     "review_decision_or_operator_signoff",
                 ],
                 mujoco_blocker=False,
-                external_blocker=not safety_g1_ready,
-                claim_boundary="Requires reviewed safety/contact evidence; rendered frames are not safety validation.",
+                external_blocker=not operational_claim_g1_ready,
+                claim_boundary="Requires reviewed safety/contact evidence; rendered frames are not off-scope validation.",
             ),
             "real_robot_pov": _proof_status(
                 proven=real_pov_g1_ready,
@@ -1784,7 +1784,7 @@ def build_realistic_readiness_rehearsal(
                 external_blocker=not production_runpod_worker_execution_proven,
                 claim_boundary=(
                     "Production RunPod proof establishes worker execution only; it does not "
-                    "prove physical robot readiness."
+                    "prove generated-world rank fidelity."
                     if production_runpod_worker_execution_proven
                     else "Local container worker evidence does not prove production RunPod execution."
                 ),

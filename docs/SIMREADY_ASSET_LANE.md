@@ -10,7 +10,7 @@ The simready asset lane converts existing capture-derived package evidence into
 explicit simulator-review artifacts for Isaac Sim, MuJoCo, and PyBullet.
 
 It does not run simulators, call live providers, download model checkpoints,
-download robot assets, or claim robot readiness.
+download robot assets, or claim generated-world rank fidelity.
 
 World Labs / Marble-specific SPZ, PLY, collider mesh GLB, and semantics
 metadata handoff is handled by the sibling
@@ -79,7 +79,7 @@ Blocked claims unless owner-system proof exists:
 - A real robot or accepted simulator trial passed.
 - A live provider/runtime/model backend generated or validated the result.
 
-Robot readiness requires real simulator load traces, action logs, physics/contact
+generated-world rank fidelity requires real simulator load traces, action logs, physics/contact
 validation logs, robot-team-owned robot assets, and accepted simulator or robot
 trial evidence.
 
@@ -103,7 +103,7 @@ Both commands are local artifact writers. The package no longer installs a
 top-level `blueprint-build-simready-assets` console script because this is a
 legacy advisory path outside the current Capture App -> World Labs -> CPU
 preflight -> simulation-manifest flow. They should not be treated as live
-provider, simulator-execution, or robot-readiness proof.
+provider, simulator-execution, or rank-fidelity proof.
 
 ## Review Notes
 

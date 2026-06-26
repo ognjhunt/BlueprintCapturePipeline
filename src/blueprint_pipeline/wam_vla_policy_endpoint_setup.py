@@ -295,8 +295,8 @@ def build_wam_vla_policy_endpoint_setup(
         "claim_boundary": {
             "endpoint_running_is_not_policy_quality_proof": True,
             "model_response_must_control_mujoco_actions_successfully": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
 
@@ -483,8 +483,8 @@ def build_wam_vla_policy_endpoint_setup(
         "mujoco_evidence_is_simulator_only": True,
         "isaac_proof": False,
         "splat_ply_spz_proof": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "official_unitree_controller_proven_by_reference_adapter": False,
     }
 

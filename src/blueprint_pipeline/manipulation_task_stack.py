@@ -36,7 +36,7 @@ CLAIM_BOUNDARY = {
     "grasp_physics_validated": False,
     "carry_physics_validated": False,
     "robot_team_policy_quality_proven": False,
-    "physical_robot_readiness_proven": False,
+    "generated_world_rank_fidelity_result_proven": False,
     "public_claim_upgrade_allowed": False,
 }
 
@@ -971,7 +971,7 @@ def build_manipulation_task_stack(
             "grasp_physics_validated": physics_output.get("grasp_physics_validated") is True,
             "carry_physics_validated": physics_output.get("carry_physics_validated") is True,
             "robot_team_policy_quality_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

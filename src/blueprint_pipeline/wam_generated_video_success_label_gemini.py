@@ -253,9 +253,9 @@ def _gemini_label_one(
         "keyframe_evidence_used": bool(keyframe_path and keyframe_path.is_file()),
         "human_review_required": False,
         "human_review_recommended": True,
-        "robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "physical_robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
         "safety_or_contact_validation_proven": False,
         "srcc_or_policy_ranking_proven": False,
         "public_claim_upgrade_allowed": False,
@@ -361,7 +361,7 @@ def build_gemini_wam_success_labels(
         "claim_boundary": {
             "success_label_is_from_generated_video_not_physical_robot": True,
             "success_label_does_not_prove_forward_inverse_consistency": True,
-            "deployment_readiness_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
     write_json(resolved_output, manifest)

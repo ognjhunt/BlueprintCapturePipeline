@@ -27,7 +27,7 @@ REQUIRED_EVIDENCE_FILES = {
     "robot_state_log": ("robot_state_log.jsonl", "robot_state_log.json"),
     "command_log": ("command_log.jsonl", "command_log.json"),
     "contact_collision_log": ("contact_collision_log.json", "contact_collision_log.jsonl"),
-    "hardware_validation": ("hardware_validation.json", "safety_validation.json"),
+    "hardware_validation": ("hardware_validation.json", "non_ranking_operational_claim.json"),
     "policy_execution_trace": ("policy_execution_trace.jsonl", "policy_execution_trace.json"),
     "policy_metrics": ("policy_metrics.json",),
     "robot_team_review": ("robot_team_review.json", "policy_owner_review.json"),
@@ -389,8 +389,8 @@ def _evidence_content_blockers(
 def _proof_boundary() -> dict[str, bool]:
     return {
         "assembly_is_metadata_only": True,
-        "physical_robot_readiness_proven": False,
-        "safety_validated": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "non_ranking_operational_claim_validated": False,
         "real_robot_pov_evidence_proven": False,
         "robot_team_policy_performance_proven": False,
         "production_runpod_worker_execution_proven": False,
@@ -573,7 +573,7 @@ def assemble_g1_controlled_run_evidence(
     write_json(pov_path, real_robot_pov)
 
     safety_package = {
-        "schema_version": "reviewed_safety_validation_package.v1",
+        "schema_version": "reviewed_non_ranking_operational_claim_package.v1",
         "status": "ready_for_live_input_staging" if ready else "blocked_missing_evidence",
         "job_id": job_id_value,
         "robot_make_model": DEFAULT_ROBOT_MAKE_MODEL,
@@ -600,7 +600,7 @@ def assemble_g1_controlled_run_evidence(
         "blockers": blockers,
         "proof_boundary": _proof_boundary(),
     }
-    safety_path = output_root / "reviewed_safety_validation_package.json"
+    safety_path = output_root / "reviewed_non_ranking_operational_claim_package.json"
     write_json(safety_path, safety_package)
 
     policy_package = {
@@ -650,9 +650,9 @@ def assemble_g1_controlled_run_evidence(
         },
         "safety_contact_physics": {
             "physics_contact_validated": ready,
-            "safety_validated": ready,
-            "robot_readiness_proven": ready,
-            "safety_validation_uri_or_path": str(safety_path),
+            "non_ranking_operational_claim_validated": ready,
+            "rank_fidelity_result_proven": ready,
+            "non_ranking_operational_claim_uri_or_path": str(safety_path),
             "contact_validation_uri_or_path": path_uri("contact_collision_log"),
             "operator_attestation": safety_attestation,
         },
@@ -739,7 +739,7 @@ blueprint-intake-live-pipeline-inputs \\
             "physical_robot_run_manifest": str(physical_path),
             "deployment_outcome_manifest": str(deployment_path),
             "real_robot_pov_manifest": str(pov_path),
-            "reviewed_safety_validation_package": str(safety_path),
+            "reviewed_non_ranking_operational_claim_package": str(safety_path),
             "robot_team_policy_package": str(policy_path),
             "live_closure_evidence": str(closure_path),
             "stage_script": str(stage_script),

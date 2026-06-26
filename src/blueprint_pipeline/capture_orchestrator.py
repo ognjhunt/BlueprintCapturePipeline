@@ -1258,7 +1258,7 @@ def _auto_stage_robot_eval_job_request(
                 "source_type": "blueprint_default_baseline_trace",
                 "confidence_coverage_note": (
                     "Auto-staged baseline for harness automation; not a robot-team "
-                    "policy claim and not deployment approval."
+                    "policy claim and not generated-world rank-fidelity result."
                 ),
             }
         },
@@ -1308,10 +1308,10 @@ def _auto_stage_robot_eval_job_request(
         },
         "proof_boundary": {
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "robot_policy_execution_proven": False,
             "physics_contact_validated": False,
-            "safety_validated": False,
+            "non_ranking_operational_claim_validated": False,
             "public_claim_upgrade_allowed": False,
         },
     }

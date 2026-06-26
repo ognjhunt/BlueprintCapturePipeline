@@ -341,7 +341,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "agents_may_not_set_proof_booleans_directly": True,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "public_claim_upgrade_allowed": False,
 }
 
@@ -1952,7 +1952,7 @@ def _load_live_evidence(
     for key in (
         "live_eval_closure_evidence",
         "liveEvalClosureEvidence",
-        "owner_robot_readiness_evidence",
+        "owner_rank_fidelity_evidence",
         "ownerRobotReadinessEvidence",
     ):
         value = job_request.get(key)
@@ -1963,7 +1963,7 @@ def _load_live_evidence(
         "liveEvalClosureEvidenceUri",
         "owner_evidence_manifest_uri",
         "ownerEvidenceManifestUri",
-        "robot_readiness_proof_uri",
+        "rank_fidelity_proof_uri",
         "robotReadinessProofUri",
     ):
         payload = _load_reference_mapping(job_request.get(key), capture_root=capture_root, job_dir=job_dir)
@@ -1971,7 +1971,7 @@ def _load_live_evidence(
             consume_payload(payload, f"job_request_ref:{key}")
     for path in (
         job_dir / "live_eval_closure_evidence.json",
-        job_dir / "owner_robot_readiness_evidence.json",
+        job_dir / "owner_rank_fidelity_evidence.json",
         capture_root
         / "pipeline"
         / "robot_eval_inputs"
@@ -1981,9 +1981,9 @@ def _load_live_evidence(
         / "pipeline"
         / "robot_eval_inputs"
         / job_id
-        / "owner_robot_readiness_evidence.json",
+        / "owner_rank_fidelity_evidence.json",
         capture_root / "pipeline" / "robot_eval_inputs" / "live_eval_closure_evidence.json",
-        capture_root / "pipeline" / "robot_eval_inputs" / "owner_robot_readiness_evidence.json",
+        capture_root / "pipeline" / "robot_eval_inputs" / "owner_rank_fidelity_evidence.json",
     ):
         payload = _read_optional_mapping(path)
         if payload:
@@ -2630,9 +2630,9 @@ def _safety_contact_physics_gate(
     physics_contact_validated = _boolish(
         _field(section, "physics_contact_validated", "physicsContactValidated")
     )
-    safety_validated = _boolish(_field(section, "safety_validated", "safetyValidated"))
-    robot_readiness_proven = _boolish(
-        _field(section, "robot_readiness_proven", "robotReadinessProven")
+    non_ranking_operational_claim_validated = _boolish(_field(section, "non_ranking_operational_claim_validated", "safetyValidated"))
+    rank_fidelity_result_proven = _boolish(
+        _field(section, "rank_fidelity_result_proven", "robotReadinessProven")
     )
     attestation_present = _attestation_ok(
         _field(
@@ -2651,8 +2651,8 @@ def _safety_contact_physics_gate(
                 "contact_validation_uri_or_path",
                 "contactValidationUriOrPath",
             ),
-            "safety_validation_uri_or_path": (
-                "safety_validation_uri_or_path",
+            "non_ranking_operational_claim_uri_or_path": (
+                "non_ranking_operational_claim_uri_or_path",
                 "safetyValidationUriOrPath",
             ),
         },
@@ -2664,9 +2664,9 @@ def _safety_contact_physics_gate(
         blockers.append("safety_contact_physics_evidence_missing")
     if section and not physics_contact_validated:
         blockers.append("physics_contact_validation_not_proven")
-    if section and not safety_validated:
-        blockers.append("safety_validation_not_proven")
-    if section and robot_readiness_proven and not attestation_present:
+    if section and not non_ranking_operational_claim_validated:
+        blockers.append("non_ranking_operational_claim_not_proven")
+    if section and rank_fidelity_result_proven and not attestation_present:
         blockers.append("safety_contact_physics_operator_attestation_missing")
     if ref_audit["missing_local_ref_keys"]:
         blockers.append("safety_contact_physics_local_evidence_refs_missing")
@@ -2678,8 +2678,8 @@ def _safety_contact_physics_gate(
         blockers=blockers,
         evidence={
             "physics_contact_validated": physics_contact_validated,
-            "safety_validated": safety_validated,
-            "robot_readiness_proven": robot_readiness_proven,
+            "non_ranking_operational_claim_validated": non_ranking_operational_claim_validated,
+            "rank_fidelity_result_proven": rank_fidelity_result_proven,
             "operator_attestation_present": attestation_present,
             **ref_audit,
         },
@@ -2695,7 +2695,7 @@ def _real_robot_pov_evidence_gate(
     manifest = _read_optional_mapping(manifest_path)
     safety_section = _evidence_section(evidence, "safety_contact_physics", "safetyContactPhysics")
     owner_readiness_attested = bool(
-        _boolish(_field(safety_section, "robot_readiness_proven", "robotReadinessProven"))
+        _boolish(_field(safety_section, "rank_fidelity_result_proven", "robotReadinessProven"))
         and _attestation_ok(
             _field(
                 safety_section,
@@ -3876,7 +3876,7 @@ def _report_referenced_artifact_audit(
         for field in (
             "simulator_execution_proven",
             "robot_policy_execution_proven",
-            "robot_readiness_proven",
+            "rank_fidelity_result_proven",
             "public_claim_upgrade_allowed",
         ):
             _add_mismatch(
@@ -4337,7 +4337,7 @@ def build_live_robot_eval_closure_manifest(
         "live_end_to_end_verified": all_ready,
         "simulator_execution_proven": bool(gates["live_simulator_execution"]["passed"]),
         "robot_policy_execution_proven": bool(gates["live_policy_execution"]["passed"]),
-        "robot_readiness_proven": all_ready,
+        "rank_fidelity_result_proven": all_ready,
         "public_claim_upgrade_allowed": all_ready and bool(gates["rights_privacy_scope"]["passed"]),
     }
     robot_team_beta_readiness = _robot_team_beta_readiness_summary(

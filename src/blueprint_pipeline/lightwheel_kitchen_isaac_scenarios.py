@@ -1026,7 +1026,7 @@ def main() -> int:
             "proof_boundary": {
                 "isaac_scene_load_attempted": True,
                 "unitree_g1_navigation_proven": False,
-                "physical_robot_readiness_proven": False
+                "generated_world_rank_fidelity_result_proven": False
             },
         })
         return 0 if not blockers else 2
@@ -1863,7 +1863,7 @@ def main() -> int:
                     "isaac_scene_load_attempted": True,
                     "official_isaac_unitree_g1_usd_attempted": True,
                     "unitree_g1_navigation_proven": False,
-                    "physical_robot_readiness_proven": False,
+                    "generated_world_rank_fidelity_result_proven": False,
                 },
             },
         )
@@ -2675,7 +2675,7 @@ def _write_provider_packet(
             "robot_pov_videos_generated": False,
             "target_reaching_gates_passed": False,
             "collision_fall_gates_passed": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "customer_delivery_readiness_proven": False,
         },
         "raw_secret_values_recorded": False,
@@ -2868,7 +2868,7 @@ def _write_blocked_execution_outputs(
             "unitree_g1_navigation_proven": False,
             "target_reaching_gates_passed": False,
             "collision_fall_gates_passed": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "real_robot_pov": False,
             "customer_delivery_readiness_proven": False,
         },
@@ -2982,7 +2982,7 @@ def build_lightwheel_kitchen_isaac_scenarios(
             "isaac_sim_execution_proven": False,
             "unitree_g1_spawned_in_lightwheel_kitchen": False,
             "navigation_policy_success_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
     _safe_write_json(scenario_manifest_path, scenario_manifest)
@@ -3093,7 +3093,7 @@ def build_lightwheel_kitchen_isaac_scenarios(
             "isaac_sim_execution_proven": False,
             "isaac_lab_execution_proven": False,
             "simulated_unitree_g1_navigation_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "real_robot_pov": False,
             "customer_delivery_readiness_proven": False,
         },

@@ -180,7 +180,7 @@ def _stub_sync(monkeypatch, sync_calls: list[dict[str, object]]) -> None:  # typ
             "attempts": 1,
             "response": {"ok": True},
             "attachment_payload": kwargs,
-            "deployment_readiness": kwargs.get("deployment_readiness"),
+            "evaluation_readiness": kwargs.get("evaluation_readiness"),
         }
 
     monkeypatch.setattr("blueprint_pipeline.qualification.sync_webapp_pipeline_attachment", _sync)
@@ -494,7 +494,7 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
     assert sync_result["status"] == "succeeded"
     assert sync_result["latest_stage"] == "evaluation_prep"
     assert (
-        sync_result["syncs"]["evaluation_prep"]["attachment_payload"]["deployment_readiness"]["proof_path_status"]["event_statuses"][0][
+        sync_result["syncs"]["evaluation_prep"]["attachment_payload"]["evaluation_readiness"]["proof_path_status"]["event_statuses"][0][
             "event_name"
         ]
         == "proof_pack_delivered"
@@ -518,13 +518,13 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
     assert sync_calls[1]["artifacts"]["hosted_review_readiness_uri"].endswith(
         "/evaluation_prep/hosted_review_readiness.json"
     )
-    assert [event["event_name"] for event in sync_calls[1]["deployment_readiness"]["proof_path_events"]] == [
+    assert [event["event_name"] for event in sync_calls[1]["evaluation_readiness"]["proof_path_events"]] == [
         "proof_pack_delivered",
         "hosted_review_started",
         "hosted_review_follow_up_sent",
         "human_commercial_handoff_started",
     ]
-    assert [event["status"] for event in sync_calls[1]["deployment_readiness"]["proof_path_events"]] == [
+    assert [event["status"] for event in sync_calls[1]["evaluation_readiness"]["proof_path_events"]] == [
         "verified",
         "pending",
         "pending",
@@ -533,8 +533,8 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
     assert sync_calls[1]["artifacts"]["rights_provenance_review_uri"].endswith(
         "/rights_provenance_review.json"
     )
-    assert sync_calls[1]["deployment_readiness"]["site_package_manifest"]["status"] in {"ready", "blocked"}
-    assert sync_calls[1]["deployment_readiness"]["proof_pack_manifest"]["status"] in {"ready", "blocked"}
+    assert sync_calls[1]["evaluation_readiness"]["site_package_manifest"]["status"] in {"ready", "blocked"}
+    assert sync_calls[1]["evaluation_readiness"]["proof_pack_manifest"]["status"] in {"ready", "blocked"}
 
 
 def test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready(monkeypatch, tmp_path: Path) -> None:

@@ -124,7 +124,7 @@ def _startup_job_dir(tmp_path: Path) -> Path:
             "status": "blocked",
             "claim_boundary": {
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         },
@@ -311,7 +311,7 @@ def test_robot_eval_startup_architecture_audit_accepts_earned_simulator_executio
             "simulator_service_status": "completed",
             "claim_boundary": {
                 "simulator_execution_proven": True,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         }
@@ -323,7 +323,7 @@ def test_robot_eval_startup_architecture_audit_accepts_earned_simulator_executio
     assert result["status"] == "passed"
     assert "proof:no_unearned_claim_upgrades" not in result["blockers"]
     assert result["proof_boundary"]["simulator_execution_proven"] is True
-    assert result["proof_boundary"]["robot_readiness_proven"] is False
+    assert result["proof_boundary"]["rank_fidelity_result_proven"] is False
     assert result["proof_boundary"]["public_claim_upgrade_allowed"] is False
 
 
@@ -622,7 +622,7 @@ def test_robot_eval_startup_architecture_audit_blocks_missing_worker_runtime_pre
             "runtime_preflight_required_before_scene_load": True,
             "runtime_preflight_status": "passed",
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -647,7 +647,7 @@ def test_robot_eval_startup_architecture_audit_accepts_worker_runtime_preflight_
             "runtime_preflight_required_before_scene_load": True,
             "runtime_preflight_status": "passed",
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -659,7 +659,7 @@ def test_robot_eval_startup_architecture_audit_accepts_worker_runtime_preflight_
             "status": "passed",
             "secret_values_in_artifact": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },
@@ -695,7 +695,7 @@ def test_robot_eval_startup_architecture_audit_accepts_provider_launcher_result(
             "stdout_path": str(job_dir / "gpu_provider_launcher.stdout.log"),
             "stderr_path": str(job_dir / "gpu_provider_launcher.stderr.log"),
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -721,7 +721,7 @@ def test_robot_eval_startup_architecture_audit_blocks_bad_worker_runtime_preflig
             "runtime_preflight_required_before_scene_load": True,
             "runtime_preflight_status": "passed",
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -739,7 +739,7 @@ def test_robot_eval_startup_architecture_audit_blocks_bad_worker_runtime_preflig
                 "raw_command_stored": True,
             },
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },
@@ -768,7 +768,7 @@ def test_robot_eval_startup_architecture_audit_blocks_bad_provider_launcher_resu
             "raw_command": "provider-cli --token super-secret",
             "command": {"shell": True, "raw_command_stored": True},
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -798,7 +798,7 @@ def test_robot_eval_startup_architecture_audit_accepts_runpod_adapter_result(
             "raw_api_key_stored": False,
             "cost_control_policy": RUNPOD_COST_CONTROL_POLICY,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -827,7 +827,7 @@ def test_robot_eval_startup_architecture_audit_blocks_runpod_adapter_missing_cos
             "secret_values_in_artifact": False,
             "raw_api_key_stored": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -863,7 +863,7 @@ def test_robot_eval_startup_architecture_audit_blocks_bad_runpod_adapter_result(
                 },
             },
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -1003,7 +1003,7 @@ def test_robot_eval_startup_architecture_audit_uses_proof_boundary_and_warnings(
     run_manifest.pop("claim_boundary")
     run_manifest["proof_boundary"] = {
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
     }
     _write_json(job_dir / "job_run_manifest.json", run_manifest)

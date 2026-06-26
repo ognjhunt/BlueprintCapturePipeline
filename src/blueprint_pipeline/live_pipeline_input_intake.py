@@ -1383,7 +1383,7 @@ def _write_staged_inputs(
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
             "policy_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -1684,7 +1684,7 @@ def build_live_pipeline_input_intake(
             "robot_policy_execution_proven": False,
             "robot_pov_evidence_proven": False,
             "real_world_outcome_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

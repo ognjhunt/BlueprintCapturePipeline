@@ -47,8 +47,8 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "gpu_provisioning_performed": False,
     "robot_policy_execution_proven": False,
     "physics_contact_validated": False,
-    "safety_validated": False,
-    "robot_readiness_proven": False,
+    "non_ranking_operational_claim_validated": False,
+    "rank_fidelity_result_proven": False,
     "public_claim_upgrade_allowed": False,
 }
 
@@ -473,7 +473,7 @@ def _webapp_forwarding_preflight_stage(
         "no_pipeline_mutation_requested",
         "no_gpu_allocated",
         "no_simulator_execution_proven",
-        "no_robot_readiness_proven",
+        "no_rank_fidelity_result_proven",
         "no_public_claim_upgrade_allowed",
     )
     for field in required_boundaries:
@@ -503,7 +503,7 @@ def _webapp_forwarding_preflight_stage(
         "proof_boundary": (
             "WebApp forwarding preflight proves configuration and optional intake-audit "
             "reachability only; it does not submit a job, allocate GPU workers, run a "
-            "simulator, or prove robot readiness."
+            "simulator, or prove generated-world rank fidelity."
         ),
     }
 
@@ -790,8 +790,8 @@ def _pipeline_handoff_stage(capture_root: Path) -> Dict[str, Any]:
     if gpu_handoff:
         if gpu_handoff.get("status") != "ready_for_owner_gpu_preflight_handoff":
             blockers.append("gpu_handoff_packet_not_ready")
-        if bool(gpu_handoff.get("robot_readiness_proven")):
-            blockers.append("gpu_handoff_illegally_marks_robot_readiness")
+        if bool(gpu_handoff.get("rank_fidelity_result_proven")):
+            blockers.append("gpu_handoff_illegally_marks_rank_fidelity")
         if bool(gpu_handoff.get("public_claim_upgrade_allowed")):
             blockers.append("gpu_handoff_illegally_allows_public_claim_upgrade")
         for blocker in _string_list(gpu_handoff.get("blockers")):

@@ -129,7 +129,7 @@ def test_sync_payload_projects_robot_eval_status_without_provider_details(monkey
                 "status": "blocked_robot_team_grade_requirements",
                 "sim_only_beta_core_complete": True,
                 "robot_team_grade_evaluation_complete": False,
-                "deployment_readiness_complete": False,
+                "evaluation_readiness_complete": False,
                 "blocked_requirement_ids": [
                     "remote_cloud_execution_path",
                 ],
@@ -140,7 +140,7 @@ def test_sync_payload_projects_robot_eval_status_without_provider_details(monkey
                 "robot_team_grade_blocked_requirement_ids": [
                     "remote_cloud_execution_path",
                 ],
-                "deployment_readiness_blocked_requirement_ids": [
+                "evaluation_readiness_blocked_requirement_ids": [
                     "remote_cloud_execution_path",
                     "sim_vs_real_calibration_path",
                 ],
@@ -152,8 +152,8 @@ def test_sync_payload_projects_robot_eval_status_without_provider_details(monkey
                 "robot_policy_execution_proven": False,
                 "real_world_outcome_proven": False,
                 "physics_contact_validated": False,
-                "safety_validated": False,
-                "robot_readiness_proven": False,
+                "non_ranking_operational_claim_validated": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
             "artifact_paths": {
@@ -216,7 +216,7 @@ def test_sync_payload_projects_robot_eval_status_without_provider_details(monkey
         "sim_vs_real_calibration_path",
     ]
     assert projection["robot_team_grade_eval_closure"][
-        "deployment_readiness_blocked_requirement_ids"
+        "evaluation_readiness_blocked_requirement_ids"
     ] == ["remote_cloud_execution_path", "sim_vs_real_calibration_path"]
     assert "private_requirement_notes" not in projection["robot_team_grade_eval_closure"]
     assert projection["proof_boundary"]["public_claim_upgrade_allowed"] is False
@@ -245,13 +245,13 @@ def test_projection_accepts_string_guardrails_and_null_projection(monkeypatch) -
         robot_eval_status_projection={
             "job_id": "job-1",
             "buyer_display_guardrails": {
-                "must_not_display_as": "robot_readiness",
+                "must_not_display_as": "rank_fidelity",
             },
         },
     )
     assert result["attachment_payload"]["robot_eval_status_projection"][
         "buyer_display_guardrails"
-    ]["must_not_display_as"] == ["robot_readiness"]
+    ]["must_not_display_as"] == ["rank_fidelity"]
 
     without_projection = sync_webapp_pipeline_attachment(
         **_minimal_payload(),

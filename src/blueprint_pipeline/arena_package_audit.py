@@ -66,9 +66,9 @@ JOB_ARTIFACTS = (
 FORBIDDEN_PROOF_TRUE_FIELDS = (
     "simulator_execution_proven",
     "robot_policy_execution_proven",
-    "robot_readiness_proven",
+    "rank_fidelity_result_proven",
     "physics_contact_validated",
-    "safety_validated",
+    "non_ranking_operational_claim_validated",
     "public_claim_upgrade_allowed",
 )
 
@@ -77,9 +77,9 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "repo_local_only": True,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "physics_contact_validated": False,
-    "safety_validated": False,
+    "non_ranking_operational_claim_validated": False,
     "public_claim_upgrade_allowed": False,
 }
 

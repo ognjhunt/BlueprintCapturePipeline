@@ -132,7 +132,7 @@ Implemented:
   segments, and `wam_generated_next_observations.jsonl` with projected skeleton
   conditioning, then re-queries the selected Unitree policy on those generated
   observations. This proves simulator-only policy/WAM loop plumbing, not learned
-  OSCAR/Cosmos model execution or physical robot readiness.
+  OSCAR/Cosmos model execution or generated-world rank fidelity.
 
 ## Latest Proof Snapshot: 2026-06-22
 
@@ -239,7 +239,7 @@ endpoint response may set `unitree_endpoint_hand_policy_output_observed=true`,
 but it must also set `unitree_endpoint_provider_output_replay_used=true` and
 must keep `unitree_endpoint_hand_policy_used=false`. Even a fresh action-command
 proof remains separate from task success, dexterous grasp success, WAM
-closed-loop proof, deployment readiness, physical robot readiness, and safety
+closed-loop proof, generated-world rank fidelity, generated-world rank fidelity, and safety
 validation.
 
 When `BLUEPRINT_UNITREE_LEROBOT_ROOT` exists and `eval_g1_sim.py` is present,
@@ -275,7 +275,7 @@ Not yet proven:
   `unitree_policy_action_command_ran=true`, and a 3120-value SONIC action chunk
   with `left_hand_joints`, `right_hand_joints`, and `motion_token` fields.
   This is still a simulator-only third-party checkpoint proof, not official
-  deployment readiness or task success. A later bounded RTX 3090 Ti provider
+  generated-world rank fidelity or task success. A later bounded RTX 3090 Ti provider
   run authenticated to `nvidia/Cosmos-Reason2-2B`, loaded the same third-party
   GR00T/SONIC checkpoint, produced a fresh 3120-value action chunk, consumed it
   through Blueprint's simulator-only MuJoCo Sim2Sim bridge as 40 x 78D SONIC
@@ -420,7 +420,7 @@ not a `UNITREE_G1_SONIC` manipulation checkpoint. The third-party
 `LucaFrat/groot-bs16/checkpoint-4000` checkpoint has run through the Blueprint
 action-command contract, simulator-only SONIC action consumption, and WAM loop
 in simulator-only mode. Do not promote that to trusted Unitree deployment proof,
-physical readiness, or task success until a trusted checkpoint and a
+generated-world rank fidelity, or task success until a trusted checkpoint and a
 policy-chunk-integrated successful contact/manipulation rollout are proven.
 
 ## Unitree LeRobot G1 Sim-Eval Provider
@@ -501,7 +501,7 @@ The command builder prefers `eval_g1_sim.py` under these local layouts:
 It detects `eval_g1.py` paths for reporting, but the Blueprint provider does not
 select a real-robot script by default. Any path that would send real robot
 commands is blocked unless `BLUEPRINT_UNITREE_ALLOW_REAL_ROBOT_COMMANDS=true`;
-physical robot readiness and deployment readiness remain false.
+generated-world rank fidelity and generated-world rank fidelity remain false.
 
 `BLUEPRINT_UNITREE_ALLOW_DOWNLOADS=false` is the default. Tests use fake local
 roots and scripts and must not download Hugging Face models, datasets, videos,
@@ -778,7 +778,7 @@ The current repo has adapter contracts, a default local action/skeleton
 conditioned support generator, and fail-closed manifests for this loop. It must
 continue to block rather than fake success when a runnable Unitree hand-policy
 command or checkpoint is missing. A default local WAM completion is not a live
-learned OSCAR/Cosmos completion, deployment readiness, safety validation, or
+learned OSCAR/Cosmos completion, generated-world rank fidelity, off-scope validation, or
 physical robot task proof.
 
 The WAM-derived harness can recommend early termination when generated media is
@@ -807,5 +807,5 @@ For a sim-only architecture proof of the provider path, run
 generated frame and optional SAM3/depth/pose configuration. That proves the
 generated-frame -> provider -> harness -> adapter -> gated-requery artifact
 path, but it does not change the default Unitree policy interface or prove
-perception accuracy, deployment readiness, safety validation, physical-robot
+perception accuracy, generated-world rank fidelity, off-scope validation, physical-robot
 readiness, or real-world task success.

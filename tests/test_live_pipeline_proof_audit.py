@@ -63,11 +63,11 @@ def _live_closure_evidence(path: Path, *, job_id: str = "closure-job-1") -> Path
             },
             "safety_contact_physics": {
                 "physics_contact_validated": True,
-                "safety_validated": True,
-                "robot_readiness_proven": True,
+                "non_ranking_operational_claim_validated": True,
+                "rank_fidelity_result_proven": True,
                 "methodology_uri_or_path": "owner://methodology",
                 "contact_validation_uri_or_path": "owner://contact",
-                "safety_validation_uri_or_path": "owner://safety",
+                "non_ranking_operational_claim_uri_or_path": "owner://safety",
                 "operator_attestation": {
                     "attested_by": "safety-owner",
                     "attestation": "Owner accepted contact, physics, and safety evidence.",
@@ -147,9 +147,9 @@ def test_live_pipeline_proof_audit_private_helpers_cover_malformed_shapes(
     assert _required_input_ids({"required_inputs": "not-a-list"}) == []
     assert _enablement_input_ids({"enablement_inputs": "not-a-list"}) == []
     assert _proof_violations(
-        {"robot_readiness_proven": True},
+        {"rank_fidelity_result_proven": True},
         artifact_name="manifest",
-    )[0]["field"] == "robot_readiness_proven"
+    )[0]["field"] == "rank_fidelity_result_proven"
     assert _audit_status(internal_blockers=[], required_input_ids=[], require_live_ready=False) == (
         "passed_live_ready_inputs_present"
     )
@@ -364,14 +364,14 @@ def test_live_pipeline_proof_audit_fails_on_proof_overclaim(
     )
     packet_path = tmp_path / "control" / "live_pipeline_external_input_packet.json"
     packet = json.loads(packet_path.read_text(encoding="utf-8"))
-    packet["proof_boundary"]["robot_readiness_proven"] = True
+    packet["proof_boundary"]["rank_fidelity_result_proven"] = True
     packet_path.write_text(json.dumps(packet, indent=2), encoding="utf-8")
 
     audit = build_live_pipeline_proof_audit(manifest_path=output_path)
 
     assert audit["status"] == "failed"
     assert "forbidden_proof_boundary_upgrade" in audit["internal_blockers"]
-    assert audit["proof_violations"][0]["field"] == "proof_boundary.robot_readiness_proven"
+    assert audit["proof_violations"][0]["field"] == "proof_boundary.rank_fidelity_result_proven"
 
 
 def test_live_pipeline_proof_audit_requires_resumable_blocker_packets(

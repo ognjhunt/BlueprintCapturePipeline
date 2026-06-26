@@ -102,7 +102,7 @@ def _runtime_manifest_proof(runtime_manifest: Mapping[str, Any]) -> dict[str, An
         and runtime_manifest.get("simulator_service_status") == "completed"
         and runtime_manifest.get("evaluation_status") == "completed"
         and runtime_manifest.get("simulator_execution_proven") is True
-        and runtime_manifest.get("robot_readiness_proven") is False
+        and runtime_manifest.get("rank_fidelity_result_proven") is False
         and runtime_manifest.get("public_claim_upgrade_allowed") is False
         and signed_put_completed
     )
@@ -120,8 +120,8 @@ def _runtime_manifest_proof(runtime_manifest: Mapping[str, Any]) -> dict[str, An
         "runtime_manifest_simulator_execution_proven": (
             runtime_manifest.get("simulator_execution_proven") is True
         ),
-        "runtime_manifest_robot_readiness_proven": (
-            runtime_manifest.get("robot_readiness_proven") is True
+        "runtime_manifest_rank_fidelity_result_proven": (
+            runtime_manifest.get("rank_fidelity_result_proven") is True
         ),
         "runtime_manifest_public_claim_upgrade_allowed": (
             runtime_manifest.get("public_claim_upgrade_allowed") is True
@@ -248,7 +248,7 @@ def collect_runpod_live_execution_proof(
         "shutdown_or_termination_proof": False,
         "production_runpod_worker_execution_proven": False,
         "simulator_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         **runtime_proof,
         **api_key_meta,
@@ -353,7 +353,7 @@ def collect_runpod_live_execution_proof(
                     production_worker_execution_proven
                     and result.get("runtime_manifest_simulator_execution_proven") is True
                 ),
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             }
         )

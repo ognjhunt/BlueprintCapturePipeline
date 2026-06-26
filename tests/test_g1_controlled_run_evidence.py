@@ -202,7 +202,7 @@ def test_g1_evidence_assembly_blocks_missing_files(tmp_path: Path) -> None:
     assert manifest["status"] == "blocked_missing_evidence"
     assert "missing_evidence_file:robot_camera_video" in manifest["blockers"]
     assert Path(manifest["artifacts"]["real_robot_pov_manifest"]).is_file()  # type: ignore[index]
-    assert manifest["proof_boundary"]["physical_robot_readiness_proven"] is False  # type: ignore[index]
+    assert manifest["proof_boundary"]["generated_world_rank_fidelity_result_proven"] is False  # type: ignore[index]
 
 
 def test_g1_evidence_assembly_blocks_review_required_content(tmp_path: Path) -> None:

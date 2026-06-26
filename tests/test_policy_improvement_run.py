@@ -44,7 +44,7 @@ def _capture_root(tmp_path: Path) -> Path:
     )
     _write_json(robot_eval / "eval_cards.json", {"cards": [{"scenario_id": "blocked-aisle"}]})
     _write_json(robot_eval / "rights_packet.json", {"status": "review_required"})
-    _write_json(robot_eval / "proof_boundaries.json", {"robot_readiness_proven": False})
+    _write_json(robot_eval / "proof_boundaries.json", {"rank_fidelity_result_proven": False})
     return capture_root
 
 
@@ -162,7 +162,7 @@ def _complete_job_dir(capture_root: Path) -> Path:
             "artifact_kind": "adapter",
             "frozen_verifier_sha256": "abc123",
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -240,7 +240,7 @@ def test_policy_improvement_run_offer_binds_eval_post_training_and_candidate_art
         "full_scoring_harness_shared": False,
     }
     assert result["claim_boundary"]["simulator_execution_proven"] is True
-    assert result["claim_boundary"]["robot_readiness_proven"] is False
+    assert result["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert result["claim_boundary"]["public_claim_upgrade_allowed"] is False
     assert result["claim_boundary"][
         "blueprint_full_scoring_harness_exported_to_customer_by_default"
@@ -255,7 +255,7 @@ def test_policy_improvement_run_offer_binds_eval_post_training_and_candidate_art
     assert persisted["status"] == result["status"]
     assert "Policy Improvement Run" in brief
     assert "Private Hardware / IP Controls" in brief
-    assert "deployment approval" in brief
+    assert "generated-world rank-fidelity result" in brief
     assert _read_json(job_dir / "policy_improvement_run" / "private_hardware_integration_plan.json")[
         "integration_mode"
     ] == "customer_hosted_sealed_eval_capsule"
@@ -331,9 +331,9 @@ def test_policy_improvement_run_offer_accepts_promoted_wam_candidate(
             "decisive_scenarios": [{"scenario_eval_run_id": "heldout-1"}],
             "failure_clusters": [{"cluster_id": "failure_cluster_grasp"}],
             "claim_boundary": {
-                "boundary_statement": "do not use for deployment approval",
-                "do_not_use_for_deployment_approval": True,
-                "deployment_approval_claimed": False,
+                "boundary_statement": "do not use for generated-world rank-fidelity result",
+                "do_not_use_as_rank_fidelity_result": True,
+                "rank_fidelity_result_claimed": False,
             },
         },
     )

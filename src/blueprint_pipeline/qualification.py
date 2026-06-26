@@ -5205,7 +5205,7 @@ def run_qualification_pipeline(
             "agent_review_bundle_uri": f"gs://{bucket}/{pipeline_prefix}/agent_review_bundle.json",
             "agent_readiness_memo_uri": f"gs://{bucket}/{pipeline_prefix}/agent_readiness_memo.md",
         })
-        webapp_deployment_readiness = {
+        webapp_evaluation_readiness = {
             "qualification_state": qualification_state,
             "opportunity_state": opportunity_state,
             "alpha_scoring_status": capture_fidelity_review.get("status"),
@@ -5280,7 +5280,7 @@ def run_qualification_pipeline(
                 authoritative_state_update=True,
                 artifacts=webapp_sync_artifacts,
                 derived_assets=_scene_memory_derived_assets(scene_memory_artifacts),
-                deployment_readiness=webapp_deployment_readiness,
+                evaluation_readiness=webapp_evaluation_readiness,
             )
         except (WebappSyncError, ValueError) as exc:
             webapp_sync_result = {

@@ -126,7 +126,7 @@ The default IP posture is least privilege: no raw capture bundle, no full
 resolution scene mesh by default, no full scoring harness, no sealed audit seeds,
 signed expiring artifact URLs, and request-bound/watermarked packets. Customer
 hosted connector output is owner evidence. It does not by itself prove physical
-readiness, safety validation, customer-specific SRCC, or deployment approval.
+readiness, off-scope validation, customer-specific SRCC, or generated-world rank-fidelity result.
 
 Run a WAM/substrate policy-autoresearch loop:
 
@@ -146,7 +146,7 @@ provider auth plus `BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER=true` first.
 Autoresearch can then call substrate-specific evaluator commands with
 `--evaluator-command-by-engine cosmos3_wam="..."` or
 `--evaluator-command-by-engine oscar_wam="..."`; those commands still write only
-support evidence and do not turn a WAM heldout pass into deployment approval.
+support evidence and do not turn a WAM heldout pass into generated-world rank-fidelity result.
 
 Run the MuJoCo cross-check/fallback policy-autoresearch loop:
 
@@ -200,9 +200,9 @@ python -m pytest tests/test_policy_improvement_run.py tests/test_policy_autorese
   pools.
 - Never let the policy-improvement agent mutate final scoring, success
   thresholds, sealed seeds, or proof boundaries.
-- Never claim simulator heldout success is physical deployment approval.
+- Never claim simulator heldout success is physical generated-world rank-fidelity result.
 - Never claim WAM heldout success, generated rollout labels, or a policy
-  ranking scorecard is real-world deployment approval.
+  ranking scorecard is real-world generated-world rank-fidelity result.
 - Never claim customer-specific SRCC without paired real-world validation
   rollouts for that customer's hardware/policy/task family.
 - Never require source access for the baseline commercial offer.

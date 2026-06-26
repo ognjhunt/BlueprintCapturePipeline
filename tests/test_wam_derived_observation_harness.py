@@ -578,7 +578,7 @@ def test_sim_provider_e2e_fixture_mode_runs_multistep_harness_and_adapter(
     assert manifest["perception_accuracy_validated"] is False
     assert manifest["claim_boundary"]["generated_frames_are_not_capture_truth"] is True
     assert manifest["claim_boundaries"]["generated_frames_are_not_capture_truth"] is True
-    assert manifest["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert manifest["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
     assert Path(manifest["trace_path"]).is_file()
     assert Path(manifest["manifest_path"]).is_file()
     assert Path(
@@ -644,7 +644,7 @@ def test_real_provider_validation_probe_fails_closed_without_real_provider_input
     assert manifest["claim_boundary"]["inferred_depth_is_not_sensor_depth"] is True
     assert (
         manifest["claim_boundary"][
-            "generated_rollout_or_harness_outputs_do_not_prove_real_world_success"
+            "generated_rollout_or_harness_outputs_do_not_prove_accepted_anchor_success"
         ]
         is True
     )

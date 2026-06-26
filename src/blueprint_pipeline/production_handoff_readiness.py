@@ -27,7 +27,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "remote_asset_downloads_performed_by_this_validator": False,
     "owner_gpu_simulator_execution_proven": False,
     "simulator_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "public_claim_upgrade_allowed": False,
 }
 
@@ -241,16 +241,16 @@ def build_production_handoff_readiness(
     else:
         if bool(arena_packet.get("simulator_execution_proven")):
             blockers.append("arena_packet_illegally_marks_simulator_execution")
-        if bool(arena_packet.get("robot_readiness_proven")):
-            blockers.append("arena_packet_illegally_marks_robot_readiness")
+        if bool(arena_packet.get("rank_fidelity_result_proven")):
+            blockers.append("arena_packet_illegally_marks_rank_fidelity")
 
     if not gpu_handoff:
         blockers.append("gpu_handoff_packet_missing")
     else:
         if gpu_handoff.get("status") != "ready_for_owner_gpu_preflight_handoff":
             blockers.append("gpu_handoff_packet_not_ready")
-        if bool(gpu_handoff.get("robot_readiness_proven")):
-            blockers.append("gpu_handoff_illegally_marks_robot_readiness")
+        if bool(gpu_handoff.get("rank_fidelity_result_proven")):
+            blockers.append("gpu_handoff_illegally_marks_rank_fidelity")
         handoff_blockers = _string_list(gpu_handoff.get("blockers"))
         if owner_gpu_proven or generic_owner_gpu_proven:
             for blocker in handoff_blockers:
@@ -347,7 +347,7 @@ def build_production_handoff_readiness(
             "mujoco_g1_asset_spawned": bool(owner_gpu_proof.get("mujoco_g1_asset_spawned")),
             "mujoco_unitree_g1_execution_proven": mujoco_unitree_g1_execution_proven,
             "selected_simulator_execution_proven": selected_simulator_execution_proven,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
         },
         "artifacts": {
             "provider_preview_qa": _artifact(pipeline_dir / "provider_preview_qa_manifest.json"),

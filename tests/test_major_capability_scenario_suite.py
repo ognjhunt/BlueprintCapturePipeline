@@ -158,7 +158,7 @@ def _seed_major_capability_artifacts(capture_root: Path, *, job_id: str) -> None
             "simulator_execution_proven": True,
             "robot_policy_execution_proven": True,
             "real_world_outcome_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -200,7 +200,7 @@ def _seed_major_capability_artifacts(capture_root: Path, *, job_id: str) -> None
             "claim_boundary": {
                 "post_training_package_exported": True,
                 "training_completed": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         },
@@ -255,7 +255,7 @@ def _seed_major_capability_artifacts(capture_root: Path, *, job_id: str) -> None
         {
             "world_model_support_assets_generated": True,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -284,7 +284,7 @@ def _seed_major_capability_artifacts(capture_root: Path, *, job_id: str) -> None
             "heldout_eval": {"success_rate": 0.95, "safety_contact_failures": 0},
             "proof_boundary": {
                 "simulator_execution_proven": True,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             },
         },

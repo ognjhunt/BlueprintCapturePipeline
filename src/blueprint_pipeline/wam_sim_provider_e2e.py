@@ -403,9 +403,9 @@ def run_sim_provider_e2e(args: argparse.Namespace) -> dict[str, Any]:
         "sam3_masks_are_not_physical_truth": True,
         "contact_likelihood_is_not_physical_contact_proof": True,
         "perception_accuracy_against_truth_labels_proven": False,
-        "deployment_approval_or_safety_validation_proven": False,
-        "physical_robot_readiness_proven": False,
-        "real_world_success_proven": False,
+        "non_ranking_operational_claim_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "accepted_anchor_success_proven": False,
     }
     manifest = {
         "schema_version": SIM_E2E_MANIFEST_SCHEMA_VERSION,

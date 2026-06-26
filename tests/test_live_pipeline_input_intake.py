@@ -148,11 +148,11 @@ def _live_closure_evidence(path: Path, *, job_id: str = "webapp-job-1") -> Path:
             },
             "safety_contact_physics": {
                 "physics_contact_validated": True,
-                "safety_validated": True,
-                "robot_readiness_proven": True,
+                "non_ranking_operational_claim_validated": True,
+                "rank_fidelity_result_proven": True,
                 "methodology_uri_or_path": "owner://methodology",
                 "contact_validation_uri_or_path": "owner://contact",
-                "safety_validation_uri_or_path": "owner://safety",
+                "non_ranking_operational_claim_uri_or_path": "owner://safety",
                 "operator_attestation": {
                     "attested_by": "safety-owner",
                     "attestation": "Owner accepted contact, physics, and safety evidence.",

@@ -23,7 +23,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "export_files_written": True,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "training_completed": False,
     "public_claim_upgrade_allowed": False,
 }

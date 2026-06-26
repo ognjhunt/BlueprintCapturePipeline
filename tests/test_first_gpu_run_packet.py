@@ -58,7 +58,7 @@ def _write_gpu_vm_runtime_preflight_result(packet_dir: Path) -> None:
             "sync_manifest": {"status": "ready"},
             "claim_boundary": {
                 "simulator_execution_performed": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
             },
         },
     )
@@ -126,7 +126,7 @@ def _write_gpu_handoff_artifacts(capture_root: Path) -> None:
             "ready_for_owner_gpu_preflight": True,
             "owner_gpu_simulator_execution_proven": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["owner_gpu_simulator_execution_not_run"],
         },
@@ -158,7 +158,7 @@ def _write_blocked_gpu_handoff_with_details(capture_root: Path) -> None:
             "source_artifact": "scene_asset_preflight.json",
             "severity": "hard_pre_gpu_blocker",
             "required_input": "Provide a local materialized scene asset.",
-            "proof_boundary": "required input only; does not prove simulator execution or robot readiness",
+            "proof_boundary": "required input only; does not prove simulator execution or generated-world rank fidelity",
             "safe_next_command": "blueprint-run-simulation-automation --capture-root <capture-root>",
         },
         {
@@ -166,7 +166,7 @@ def _write_blocked_gpu_handoff_with_details(capture_root: Path) -> None:
             "source_artifact": "scene_frame_estimate.json",
             "severity": "hard_pre_gpu_blocker",
             "required_input": "Generate finite scene bounds before GPU execution.",
-            "proof_boundary": "required input only; does not prove simulator execution or robot readiness",
+            "proof_boundary": "required input only; does not prove simulator execution or generated-world rank fidelity",
             "safe_next_command": "blueprint-run-simulation-automation --capture-root <capture-root>",
         },
         {
@@ -174,7 +174,7 @@ def _write_blocked_gpu_handoff_with_details(capture_root: Path) -> None:
             "source_artifact": "scene_asset_preflight.json",
             "severity": "review_or_backend_selection_blocker",
             "required_input": "Review collision assets if contact confidence is required.",
-            "proof_boundary": "required input only; does not prove simulator execution or robot readiness",
+            "proof_boundary": "required input only; does not prove simulator execution or generated-world rank fidelity",
         },
     ]
     _write_json(
@@ -185,7 +185,7 @@ def _write_blocked_gpu_handoff_with_details(capture_root: Path) -> None:
             "ready_for_owner_gpu_preflight": False,
             "owner_gpu_simulator_execution_proven": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["owner_gpu_simulator_execution_not_run", "spawn_validation_blocked"],
             "hard_preflight_blockers": [
@@ -311,7 +311,7 @@ def _write_webapp_forwarding_preflight_report(path: Path, *, site_slug: str = "s
                 "no_pipeline_mutation_requested": True,
                 "no_gpu_allocated": True,
                 "no_simulator_execution_proven": True,
-                "no_robot_readiness_proven": True,
+                "no_rank_fidelity_result_proven": True,
                 "no_public_claim_upgrade_allowed": True,
             },
         },
@@ -590,7 +590,7 @@ def test_first_gpu_run_packet_writes_command_and_env_files(tmp_path: Path, monke
         gpu_vm_runtime_preflight_plan["claim_boundary"]["owner_simulator_command_executed"]
         is False
     )
-    assert gpu_vm_runtime_preflight_plan["claim_boundary"]["robot_readiness_proven"] is False
+    assert gpu_vm_runtime_preflight_plan["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert "GPU VM Runtime Preflight" in gpu_vm_runtime_preflight_markdown
     assert simulator_path_matrix["schema_version"] == (
         FIRST_GPU_SIMULATOR_PATH_MATRIX_SCHEMA_VERSION
@@ -608,7 +608,7 @@ def test_first_gpu_run_packet_writes_command_and_env_files(tmp_path: Path, monke
     assert paths["pybullet"]["can_run_without_gpu_preflight"] is True
     assert paths["isaac_lab_arena"]["recommended_first_gpu_smoke"] is False
     assert simulator_path_matrix["claim_boundary"]["nvidia_nim_used_as_simulator"] is False
-    assert simulator_path_matrix["claim_boundary"]["robot_readiness_proven"] is False
+    assert simulator_path_matrix["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert "Simulator Path Matrix" in simulator_path_matrix_markdown
     assert "NVIDIA NIM Boundary" in simulator_path_matrix_markdown
     assert launch_order["schema_version"] == FIRST_GPU_LAUNCH_ORDER_SCHEMA_VERSION
@@ -625,7 +625,7 @@ def test_first_gpu_run_packet_writes_command_and_env_files(tmp_path: Path, monke
     for step in launch_steps.values():
         assert len(step["blockers"]) == len(set(step["blockers"]))
     assert launch_order["claim_boundary"]["simulator_execution_performed"] is False
-    assert launch_order["claim_boundary"]["robot_readiness_proven"] is False
+    assert launch_order["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert "First GPU Launch Order" in launch_order_markdown
     assert "BLUEPRINT_SCENE_LOAD_TRACE" in owner_contract
     assert "BLUEPRINT_DEFAULT_SMOKE_POLICY" in owner_contract
@@ -703,7 +703,7 @@ def test_first_gpu_run_packet_writes_command_and_env_files(tmp_path: Path, monke
     assert provider_bootstrap_manifest["owner_command_location"] == "remote"
     assert provider_bootstrap_manifest["claim_boundary"]["gpu_provisioning_performed"] is False
     assert blocker_resolution["schema_version"] == FIRST_GPU_BLOCKER_RESOLUTION_SCHEMA_VERSION
-    assert blocker_resolution["claim_boundary"]["robot_readiness_proven"] is False
+    assert blocker_resolution["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert blocker_resolution["action_count"] == len(blocker_resolution["actions"])
     assert blocker_resolution["action_count"] >= 1
     assert blocker_resolution["blocked_action_count"] >= 1
@@ -751,12 +751,12 @@ def test_first_gpu_run_packet_writes_command_and_env_files(tmp_path: Path, monke
     assert webapp_handoff["verification"]["script"]["stages_request"] is False
     assert webapp_handoff["claim_boundary"]["webapp_request_submitted_by_this_packet"] is False
     assert webapp_handoff["claim_boundary"]["live_forwarding_performed_by_this_packet"] is False
-    assert webapp_handoff["claim_boundary"]["robot_readiness_proven"] is False
+    assert webapp_handoff["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert "real-secret-token" not in json.dumps(webapp_handoff)
     assert "WebApp Handoff Packet" in webapp_handoff_markdown
     assert "real-secret-token" not in webapp_handoff_markdown
     assert packet["provider_guidance"]["nvidia_nim_boundary"]["primary_for_first_smoke"] is False
-    assert packet["claim_boundary"]["robot_readiness_proven"] is False
+    assert packet["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert vm_sync_manifest["schema_version"] == FIRST_GPU_VM_SYNC_SCHEMA_VERSION
     assert vm_sync_manifest["claim_boundary"]["files_copied"] is False
     assert vm_sync_manifest["claim_boundary"]["simulator_execution_performed"] is False
@@ -1376,7 +1376,7 @@ def test_first_gpu_blocker_resolution_includes_pre_gpu_blocker_details(
         "portable_collider_glb_missing",
     }
     assert all(
-        item["proof_boundary"].endswith("does not prove simulator execution or robot readiness")
+        item["proof_boundary"].endswith("does not prove simulator execution or generated-world rank fidelity")
         for item in scene_details + handoff_details
     )
     assert "Blocker details:" in blocker_resolution_markdown
@@ -1446,10 +1446,10 @@ def test_first_gpu_launch_order_allows_owner_gpu_command_before_closure_proof(
     assert "post_gpu_readiness_audit" not in launch_order["blocked_step_ids"]
     assert launch_order["next_action_step_ids"] == ["owner_gpu_simulator_proof"]
     assert launch_order["forbidden_actions_until_ready"] == [
-        "do_not_claim_owner_gpu_or_robot_readiness",
+        "do_not_claim_owner_gpu_or_rank_fidelity",
     ]
     assert launch_order["claim_boundary"]["simulator_execution_performed"] is False
-    assert launch_order["claim_boundary"]["robot_readiness_proven"] is False
+    assert launch_order["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert blocker_resolution["action_count"] == 0
     assert blocker_resolution["blocked_action_count"] == 0
     assert blocker_resolution["actions"] == []

@@ -27,7 +27,7 @@ LIVE_PIPELINE_PROOF_AUDIT_SCHEMA_VERSION = "blueprint_live_pipeline_proof_audit.
 FORBIDDEN_TRUE_FIELDS = (
     "simulator_execution_proven",
     "robot_policy_execution_proven",
-    "robot_readiness_proven",
+    "rank_fidelity_result_proven",
     "physics_contact_validated",
     "training_completed",
     "public_claim_upgrade_allowed",
@@ -264,7 +264,7 @@ def _goal_requirement_audit(
         },
         "storage_delivery": {
             "status": "ready" if delivery_ready else "enablement_missing_or_not_configured",
-            "proof_boundary": "delivery artifacts do not prove robot readiness",
+            "proof_boundary": "delivery artifacts do not prove generated-world rank fidelity",
         },
         "live_agents_operator": {
             "status": "ready" if live_agents_ready else "enablement_missing_or_not_configured",
@@ -550,7 +550,7 @@ def build_live_pipeline_proof_audit(
             "audit_performs_live_actions": False,
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

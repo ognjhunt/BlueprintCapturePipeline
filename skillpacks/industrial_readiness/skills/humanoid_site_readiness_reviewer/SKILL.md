@@ -84,7 +84,7 @@ Group findings into these site-level concern areas:
 
 Every site readiness review must include an explicit statement of what this assessment does and does not represent:
 
-> This assessment evaluates whether the capture evidence is sufficient and whether identifiable blockers exist for humanoid deployment qualification in [zone]. It does NOT constitute deployment approval, safety certification, or regulatory compliance. Human review by [owner] is required before any deployment decision. EHS/safety review is required for all shared-space and non-routine operation findings. OEM/integrator evaluation is required for platform-specific capability validation.
+> This assessment evaluates whether the capture evidence is sufficient and whether identifiable blockers exist for humanoid deployment qualification in [zone]. It does NOT constitute generated-world rank-fidelity result, safety certification, or regulatory compliance. Human review by [owner] is required before any deployment decision. EHS/safety review is required for all shared-space and non-routine operation findings. OEM/integrator evaluation is required for platform-specific capability validation.
 
 ### 4. Produce actionable summary
 

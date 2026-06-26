@@ -86,7 +86,7 @@ def _write_worldlabs_and_marble_artifacts(capture_root: Path) -> None:
             "evaluation_prep_summary": {
                 "collider_mesh_available": True,
                 "metric_alignment_ready": True,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
             },
         },
     )
@@ -97,7 +97,7 @@ def _write_worldlabs_and_marble_artifacts(capture_root: Path) -> None:
             "overall_status": "review_ready_with_conversion_required",
             "physics_collision_review_ready": True,
             "isaac_visual_conversion_required": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
         },
     )
     _write_json(
@@ -112,7 +112,7 @@ def _write_worldlabs_and_marble_artifacts(capture_root: Path) -> None:
             },
             "claim_boundary": {
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
             },
         },
     )
@@ -123,7 +123,7 @@ def _write_worldlabs_and_marble_artifacts(capture_root: Path) -> None:
             "overall_status": "prepared_for_review",
             "claim_boundary": {
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
             },
         },
     )
@@ -214,7 +214,7 @@ def _write_robot_eval_cards(capture_root: Path) -> None:
         {
             "schema_version": "real_site_robot_eval_proof_boundaries.v0.1",
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
         },
     )
 
@@ -402,7 +402,7 @@ def test_owner_gpu_proof_ingestion_validates_required_artifacts_without_robot_cl
     assert proof_manifest["isaac_sim_execution_proven"] is True
     assert proof_manifest["isaac_robot_asset_execution_proven"] is True
     assert proof_manifest["real_robot_pov_evidence_proven"] is False
-    assert proof_manifest["robot_readiness_proven"] is False
+    assert proof_manifest["rank_fidelity_result_proven"] is False
     assert gpu_handoff["owner_gpu_simulator_execution_proven"] is True
     assert gpu_handoff["owner_gpu_default_policy_execution_proven"] is True
     assert gpu_handoff["owner_gpu_sim_robot_pov_evidence_proven"] is True
@@ -412,7 +412,7 @@ def test_owner_gpu_proof_ingestion_validates_required_artifacts_without_robot_cl
     assert gpu_handoff["claim_boundary"]["owner_gpu_simulator_execution_proven"] is True
     assert gpu_handoff["claim_boundary"]["owner_gpu_default_policy_execution_proven"] is True
     assert gpu_handoff["claim_boundary"]["owner_gpu_sim_robot_pov_evidence_proven"] is True
-    assert gpu_handoff["claim_boundary"]["robot_readiness_proven"] is False
+    assert gpu_handoff["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert "simulator_execution_completed" not in gpu_handoff["claim_boundary"]["disallowed_claims"]
     assert "robot_ready" in gpu_handoff["claim_boundary"]["disallowed_claims"]
     assert "simulator load trace" not in gpu_handoff["claim_boundary"]["proof_upgrade_requires"]
@@ -423,7 +423,7 @@ def test_owner_gpu_proof_ingestion_validates_required_artifacts_without_robot_cl
     assert proof_boundary["isaac_robot_asset_execution_proven"] is True
     assert proof_boundary["owner_gpu_default_policy_execution_proven"] is True
     assert proof_boundary["owner_gpu_sim_robot_pov_evidence_proven"] is True
-    assert proof_boundary["robot_readiness_proven"] is False
+    assert proof_boundary["rank_fidelity_result_proven"] is False
     assert "simulator_execution_completed" not in proof_boundary["claim_boundary"]["disallowed_claims"]
     assert "robot-team policy/action logs beyond the default smoke policy" in proof_boundary["claim_boundary"]["proof_upgrade_requires"]
     assert run_manifest["owner_gpu_simulator_execution_proven"] is True
@@ -433,7 +433,7 @@ def test_owner_gpu_proof_ingestion_validates_required_artifacts_without_robot_cl
     assert run_manifest["owner_gpu_default_policy_execution_proven"] is True
     assert run_manifest["owner_gpu_sim_robot_pov_evidence_proven"] is True
     assert "simulator_execution_completed" not in run_manifest["claim_boundary"]["disallowed_claims"]
-    assert result["claim_boundary"]["robot_readiness_proven"] is False
+    assert result["claim_boundary"]["rank_fidelity_result_proven"] is False
 
 
 def test_simulation_automation_surfaces_local_mujoco_g1_without_isaac_claim(
@@ -572,7 +572,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
         assert smoke_contract["smoke_output_acceptance"][
             "normalized_attempt_trace_required"
         ] is True
-        assert smoke_contract["proof_boundary"]["robot_readiness_proven"] is False
+        assert smoke_contract["proof_boundary"]["rank_fidelity_result_proven"] is False
         assert plugin["inputs"]["scenario_variation_instances"] == (
             "scenario_variation_instances.json"
         )
@@ -591,7 +591,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
             "/world_model_uncertainty.json"
         )
         assert plugin["proof_boundary"]["world_model_support_assets_generated"] is False
-        assert plugin["proof_boundary"]["robot_readiness_proven"] is False
+        assert plugin["proof_boundary"]["rank_fidelity_result_proven"] is False
     assert {
         record["framework"]: record["status"]
         for record in simulator_execution["simulator_results"]
@@ -610,7 +610,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     assert training["reason"] == "approval_required"
     assert training["runner"] == "blueprint_pipeline.synthesis.cosmos_lora_training.run_cosmos_lora_training"
     assert proof_boundary["simulator_execution_proven"] is False
-    assert proof_boundary["robot_readiness_proven"] is False
+    assert proof_boundary["rank_fidelity_result_proven"] is False
     assert proof_boundary["training_proof"]["training_completed"] is False
     assert proof_boundary["public_claim_upgrade_allowed"] is False
     assert arena_packet["schema_version"] == "arena_environment_packet.v1"
@@ -628,7 +628,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
         "IsaacLabArenaEnvironment"
     )
     assert arena_packet["simulator_execution_proven"] is False
-    assert arena_packet["robot_readiness_proven"] is False
+    assert arena_packet["rank_fidelity_result_proven"] is False
     assert "owner_gpu_simulator_execution_not_run" in arena_packet["blockers"]
     assert gpu_handoff["owner_gpu_simulator_execution_proven"] is False
     assert "owner_gpu_simulator_execution_not_run" in gpu_handoff["blockers"]
@@ -640,7 +640,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
         "owner_gpu_simulator_execution_not_run"
     )
     assert all(
-        detail["proof_boundary"].endswith("does not prove simulator execution or robot readiness")
+        detail["proof_boundary"].endswith("does not prove simulator execution or generated-world rank fidelity")
         for detail in gpu_handoff["pre_gpu_blocker_details"]
     )
     assert "owner_system_id" in proof_schema["required_fields"]
@@ -845,7 +845,7 @@ def test_simulation_live_sdk_operators_log_commands_without_proof_mutation(
     ]
     assert agents_ledger["proof_effect"]["direct_proof_booleans_set_true"] == []
     assert run_manifest["agent_operator_mode"] == "live_operator"
-    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
 
     build_simulation_automation(
         capture_root=capture_root,
@@ -893,7 +893,7 @@ def test_evaluation_prep_surfaces_simulation_automation_artifacts_without_overcl
 
     assert surface["status"] == "blocked"
     assert surface["simulator_execution_proven"] is False
-    assert surface["robot_readiness_proven"] is False
+    assert surface["rank_fidelity_result_proven"] is False
     expected_artifacts = {
         "simulation_automation_plan": "../simulation_automation/simulation_automation_plan.json",
         "simulation_automation_run_manifest": "../simulation_automation/simulation_automation_run_manifest.json",

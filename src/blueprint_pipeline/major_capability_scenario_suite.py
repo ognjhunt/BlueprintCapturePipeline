@@ -30,7 +30,7 @@ _SCENARIOS: list[dict[str, Any]] = [
             "Raw capture evidence exists and carries workflow success criteria.",
             "Robot-eval dataset cards exist for site, task, scenario, and eval layers.",
             "Rights and proof-boundary artifacts preserve raw capture truth.",
-            "No downstream artifact upgrades public or robot-readiness claims.",
+            "No downstream artifact upgrades public or rank-fidelity claims.",
         ],
         "criteria": [
             {
@@ -124,7 +124,7 @@ _SCENARIOS: list[dict[str, Any]] = [
             "A job request and scenario matrix exist for the same job.",
             "Execution attempts and failure labels are recorded.",
             "Policy execution evidence is present.",
-            "Proof boundaries permit simulator proof without implying robot readiness.",
+            "Proof boundaries permit simulator proof without implying generated-world rank fidelity.",
         ],
         "criteria": [
             {
@@ -176,11 +176,11 @@ _SCENARIOS: list[dict[str, Any]] = [
                 "expected": True,
             },
             {
-                "criterion_id": "task_eval_robot_readiness_boundary",
-                "description": "Task Evaluation Run does not imply robot readiness.",
+                "criterion_id": "task_eval_rank_fidelity_boundary",
+                "description": "Task Evaluation Run does not imply generated-world rank fidelity.",
                 "artifact": "pipeline/robot_eval_jobs/{job_id}/proof_boundary.json",
                 "check": "json_field_equals",
-                "field": "robot_readiness_proven",
+                "field": "rank_fidelity_result_proven",
                 "expected": False,
             },
             {
@@ -206,7 +206,7 @@ _SCENARIOS: list[dict[str, Any]] = [
             "Dataset, rights, index, checksum, and export manifests exist.",
             "The export contains at least one episode.",
             "The package remains a data package and does not claim training completion.",
-            "The package does not imply robot readiness or public launch readiness.",
+            "The package does not imply generated-world rank fidelity or public launch readiness.",
         ],
         "criteria": [
             {
@@ -275,14 +275,14 @@ _SCENARIOS: list[dict[str, Any]] = [
                 "expected": False,
             },
             {
-                "criterion_id": "package_robot_readiness_boundary",
-                "description": "Data package does not imply robot readiness.",
+                "criterion_id": "package_rank_fidelity_boundary",
+                "description": "Data package does not imply generated-world rank fidelity.",
                 "artifact": (
                     "pipeline/robot_eval_jobs/{job_id}/"
                     "post_training_data_package_export_manifest.json"
                 ),
                 "check": "json_field_equals",
-                "field": "claim_boundary.robot_readiness_proven",
+                "field": "claim_boundary.rank_fidelity_result_proven",
                 "expected": False,
             },
             {
@@ -416,10 +416,10 @@ _SCENARIOS: list[dict[str, Any]] = [
             },
             {
                 "criterion_id": "support_assets_robot_boundary",
-                "description": "Support assets do not imply robot readiness.",
+                "description": "Support assets do not imply generated-world rank fidelity.",
                 "artifact": "pipeline/simulation_automation/proof_boundary.json",
                 "check": "json_field_equals",
-                "field": "robot_readiness_proven",
+                "field": "rank_fidelity_result_proven",
                 "expected": False,
             },
             {
@@ -495,13 +495,13 @@ _SCENARIOS: list[dict[str, Any]] = [
             },
             {
                 "criterion_id": "policy_autoresearch_robot_boundary",
-                "description": "Policy autoresearch does not prove robot readiness.",
+                "description": "Policy autoresearch does not prove generated-world rank fidelity.",
                 "artifact": (
                     "pipeline/robot_eval_jobs/{job_id}/policy_autoresearch/"
                     "policy_autoresearch_report.json"
                 ),
                 "check": "json_field_equals",
-                "field": "proof_boundary.robot_readiness_proven",
+                "field": "proof_boundary.rank_fidelity_result_proven",
                 "expected": False,
             },
             {
@@ -853,7 +853,7 @@ def build_major_capability_scenario_suite(
         "claim_boundary": {
             "scenario_suite_is_artifact_contract_evidence": True,
             "scenario_suite_is_not_live_provider_or_robot_execution": True,
-            "simulator_support_does_not_prove_physical_robot_readiness": True,
+            "simulator_support_does_not_prove_generated_world_rank_fidelity": True,
             "public_claim_upgrade_allowed": False,
         },
     }

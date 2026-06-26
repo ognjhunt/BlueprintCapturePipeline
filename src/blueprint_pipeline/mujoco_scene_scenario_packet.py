@@ -40,10 +40,10 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "conversion_performed": False,
     "simulators_run": False,
     "simulator_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "robot_policy_execution_proven": False,
     "physics_contact_validated": False,
-    "safety_validated": False,
+    "non_ranking_operational_claim_validated": False,
     "public_claim_upgrade_allowed": False,
 }
 
@@ -1444,7 +1444,7 @@ def _scenario_eval_matrix(
         },
         "simulator_execution_proven": False,
         "robot_policy_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }

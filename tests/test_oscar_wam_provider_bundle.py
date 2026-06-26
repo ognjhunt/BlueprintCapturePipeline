@@ -856,7 +856,7 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
     assert input_package["skeleton_video"]["visual_signal"]["auxiliary_target_bbox_used"] is True
     assert input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is True
     assert input_package["claim_boundary"]["auxiliary_observation_manifest_packaged"] is True
-    assert input_package["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert input_package["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
     runtime_rollout = _read_json(
         tmp_path
         / "step-bundle-job"

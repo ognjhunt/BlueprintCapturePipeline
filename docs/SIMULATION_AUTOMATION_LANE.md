@@ -136,7 +136,7 @@ pipeline/simulation_automation/
 
 Evaluation prep surfaces these artifacts when they already exist. It does not
 run this lane automatically and does not turn these artifacts into simulator,
-training, or robot-readiness proof.
+training, or rank-fidelity proof.
 
 The headless robot-eval job orchestrator writes per-job artifacts under:
 
@@ -195,7 +195,7 @@ pipeline/robot_eval_jobs/<job_id>/
 ```
 
 Evaluation prep surfaces these job artifacts as advisory URIs when they already
-exist. It does not use them to upgrade simulator, training, robot-readiness, or
+exist. It does not use them to upgrade simulator, training, rank-fidelity, or
 public proof fields.
 
 When `blueprint-run-robot-eval-job` is run with `--simulator isaac_lab_arena`
@@ -203,7 +203,7 @@ or `--arena-results-dir`, the job also runs the Arena result ingest/package
 lane. Existing rollout artifacts can feed `evaluation_result.json` through
 `normalized_attempt_trace.json` and `failure_labels.json`, while
 `simulator_execution_proven`, `robot_policy_execution_proven`,
-`robot_readiness_proven`, safety/contact proof, and public-claim upgrades remain
+`rank_fidelity_result_proven`, safety/contact proof, and public-claim upgrades remain
 false unless accepted owner evidence separately proves those claims.
 
 ## CPU Pre-GPU Lane
@@ -393,7 +393,7 @@ The fixture runner may execute locally from
 the local loop can normalize attempts, label outcomes, calculate calibration
 deltas, aggregate breakage records, and write deterministic artifacts. It does
 not prove Isaac Sim, MuJoCo, PyBullet, Newton, Cosmos training, real robot
-policy execution, safety validation, or public deployment readiness.
+policy execution, off-scope validation, or public generated-world rank fidelity.
 
 If required robot-eval card inputs are missing, the command writes blocked
 manifests with `schema_version`, `status=blocked`, `blockers`,
@@ -429,7 +429,7 @@ Agents can choose next deterministic commands, inspect manifests/logs, trigger
 allowed deterministic reruns, request provisioning, summarize blockers, and
 route human review.
 Agents cannot override rights/privacy blockers, mark simulator/training proof
-complete without result/checkpoint manifests, mark robot readiness proven, spend
+complete without result/checkpoint manifests, mark generated-world rank fidelity proven, spend
 money, call live providers, or upgrade public claims.
 
 ## Execution Gates
@@ -441,7 +441,7 @@ Default behavior is local-only planning:
 - `simulators_run=false`
 - `gpu_training_run=false`
 - `simulator_execution_proven=false`
-- `robot_readiness_proven=false`
+- `rank_fidelity_result_proven=false`
 - `public_claim_upgrade_allowed=false`
 
 Real simulator execution requires both:
@@ -507,14 +507,14 @@ Local review artifacts include simready, Marble handoff, robot-eval dataset, and
 simulation automation manifests. They can support planning and review only.
 
 They do not prove simulator execution, physics/contact validity, robot policy
-success, safety validation, training completion, or public deployment readiness.
+success, off-scope validation, training completion, or public generated-world rank fidelity.
 
 ### Simulator Execution Proof
 
 Simulator execution proof requires a successful owner proof package with command,
 stdout, stderr, exit code, scene load trace, spawn trace, action/policy trace,
 artifact manifest, pass/fail criteria, and owner attestation from the owner
-simulator. The validator rejects proof packages that try to mark robot readiness,
+simulator. The validator rejects proof packages that try to mark generated-world rank fidelity,
 policy success, safety, public claim upgrades, or real robot contact as proven.
 
 The lane supports request/result records for Isaac Sim, MuJoCo, PyBullet, and
@@ -538,9 +538,9 @@ Safety/contact proof requires explicit physics/contact validation logs and
 review methodology accepted by the operator or buyer. Collider meshes and local
 proxy scenes are only review inputs.
 
-### Public Deployment Readiness
+### Public Generated-World Rank Fidelity
 
-Public deployment readiness requires the complete proof chain above plus
+Public generated-world rank fidelity requires the complete proof chain above plus
 rights/privacy clearance and buyer-approved methodology. This lane must not
 upgrade public claims by itself.
 
@@ -644,7 +644,7 @@ blueprint-ingest-arena-results \
 
 The OpenAI hook writes `rollout_vision_labels.command.json`. Ingest consumes
 those labels as review-required support evidence; they do not prove contact,
-safety, policy execution, or robot readiness.
+safety, policy execution, or generated-world rank fidelity.
 
 Optional local delivery hook:
 
@@ -697,7 +697,7 @@ This preflight reports whether the local machine has the live gates, command
 hooks, owner-supplied Arena result directories, Codex CLI, SDK modules, package
 audit, and WebApp upstream IDs required for a live run. It may treat a 24/7
 droplet as a control-plane target, but not as simulator, contact, safety, or
-robot-readiness proof. `--arena-results-dir` or `BLUEPRINT_ARENA_RESULTS_DIR`
+rank-fidelity proof. `--arena-results-dir` or `BLUEPRINT_ARENA_RESULTS_DIR`
 can make the Arena section ready for result ingest without opening the
 simulator-execution gate; that is still not execution proof. ChatGPT Pro/Codex
 OAuth can be used through an authenticated `codex` CLI only when

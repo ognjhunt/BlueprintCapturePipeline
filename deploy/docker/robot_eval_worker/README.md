@@ -30,7 +30,7 @@ provider adapter command from `BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND` or
 `--provider-launch-command`. The launcher records
 `gpu_provider_launcher_result.json` and stdout/stderr logs, does not store the
 raw command or provider secret values, and does not prove simulator execution or
-robot readiness.
+generated-world rank fidelity.
 For RunPod, point the provider adapter command at
 `blueprint-run-runpod-provider-adapter`. It defaults to a dry-run
 `runpod_provider_adapter_result.json` request-shape artifact and requires

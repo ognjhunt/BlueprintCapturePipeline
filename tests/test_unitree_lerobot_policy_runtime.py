@@ -100,8 +100,8 @@ def test_unitree_lerobot_probe_not_configured_reports_missing_requirements(
     )
     assert truth["unitree_lerobot_runtime_configured"] is False
     assert truth["unitree_lerobot_sim_inference_proven"] is False
-    assert truth["physical_robot_readiness_proven"] is False
-    assert truth["deployment_readiness_proven"] is False
+    assert truth["generated_world_rank_fidelity_result_proven"] is False
+    assert truth["generated_world_policy_evaluation_scope_proven"] is False
 
 
 def test_unitree_lerobot_root_configured_but_script_missing_fails_cleanly(
@@ -279,7 +279,7 @@ def test_unitree_lerobot_fake_sim_eval_success_writes_truth_and_handoff(
     assert truth["vla_policy_used"] is True
     assert truth["unitree_hand_manipulation_policy_used"] is True
     assert truth["physical_robot_command_attempted"] is False
-    assert truth["physical_robot_readiness_proven"] is False
+    assert truth["generated_world_rank_fidelity_result_proven"] is False
     assert handoff["return_code"] == 0
     assert handoff["command"]
     assert handoff["videos"]

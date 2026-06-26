@@ -236,10 +236,10 @@ def test_scene_wam_policy_episode_packet_blocks_without_real_renderer(
     assert result["status"] == "blocked"
     assert result["scene_physics_required_for_wam_loop"] is False
     assert result["physics_contact_validated"] is False
-    assert result["physical_robot_readiness_proven"] is False
-    assert result["deployment_readiness_proven"] is False
-    assert result["safety_validation_proven"] is False
-    assert result["real_world_manipulation_success_proven"] is False
+    assert result["generated_world_rank_fidelity_result_proven"] is False
+    assert result["generated_world_policy_evaluation_scope_proven"] is False
+    assert result["non_ranking_operational_claim_proven"] is False
+    assert result["accepted_anchor_manipulation_success_proven"] is False
     assert (output_dir / "scene_wam_policy_episode_packet.json").is_file()
     assert (output_dir / "initial_policy_observation.json").is_file()
     assert (output_dir / "scene_episode_task_manifest.json").is_file()
@@ -273,7 +273,7 @@ def test_scene_wam_policy_episode_packet_blocks_without_real_renderer(
     assert observation["visual_observation"]["blank_or_placeholder_image_used"] is False
     assert observation["visual_observation"]["synthesized_or_splatted_outputs_are_not_raw_capture_truth"] is True
     assert observation["capture_derived_robot_pov_synthesis"]["status"] == "blocked"
-    assert observation["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert observation["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
     assert observation["claim_boundary"]["synthesized_or_splatted_outputs_are_not_raw_capture_truth"] is True
     guidance = json.loads(recapture_guidance.read_text(encoding="utf-8"))
     qa = json.loads(source_qa.read_text(encoding="utf-8"))
@@ -316,10 +316,10 @@ def test_scene_wam_policy_episode_packet_ready_with_rendered_frame(
     )
 
     assert result["status"] == "ready_for_policy_wam_loop"
-    assert result["physical_robot_readiness_proven"] is False
-    assert result["deployment_readiness_proven"] is False
-    assert result["safety_validation_proven"] is False
-    assert result["real_world_manipulation_success_proven"] is False
+    assert result["generated_world_rank_fidelity_result_proven"] is False
+    assert result["generated_world_policy_evaluation_scope_proven"] is False
+    assert result["non_ranking_operational_claim_proven"] is False
+    assert result["accepted_anchor_manipulation_success_proven"] is False
     output_dir = Path(result["initial_policy_observation_path"]).parent
     observation = json.loads(
         (output_dir / "initial_policy_observation.json").read_text(encoding="utf-8")
@@ -330,9 +330,9 @@ def test_scene_wam_policy_episode_packet_ready_with_rendered_frame(
     claim_boundary = json.loads(
         (output_dir / "scene_policy_wam_claim_boundary.json").read_text(encoding="utf-8")
     )
-    assert claim_boundary["physical_robot_readiness_proven"] is False
-    assert claim_boundary["deployment_readiness_proven"] is False
-    assert claim_boundary["safety_validation_proven"] is False
+    assert claim_boundary["generated_world_rank_fidelity_result_proven"] is False
+    assert claim_boundary["generated_world_policy_evaluation_scope_proven"] is False
+    assert claim_boundary["non_ranking_operational_claim_proven"] is False
 
 
 def test_capture_derived_robot_pov_synthesis_selects_depth_splat_candidate(

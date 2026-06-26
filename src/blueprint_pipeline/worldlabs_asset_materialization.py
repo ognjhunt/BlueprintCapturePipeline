@@ -2,7 +2,7 @@
 
 This module downloads remote assets that already appear in persisted World Labs
 world manifests. It does not call World Labs generation APIs, run simulators, or
-upgrade robot-readiness proof.
+upgrade rank-fidelity proof.
 """
 
 from __future__ import annotations
@@ -30,16 +30,16 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "simulators_run": False,
     "simulator_execution_proven": False,
     "owner_gpu_simulator_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "physics_contact_validated": False,
-    "safety_validated": False,
+    "non_ranking_operational_claim_validated": False,
     "public_claim_upgrade_allowed": False,
     "disallowed_claims": [
         "simulator_execution_completed",
         "robot_ready",
         "deployment_ready",
         "physics_contact_validated",
-        "safety_validated",
+        "non_ranking_operational_claim_validated",
     ],
 }
 

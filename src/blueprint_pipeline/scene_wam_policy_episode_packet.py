@@ -3,7 +3,7 @@
 The packet is a setup artifact for simulator/generated-world loops. It can
 prepare a robot/head-POV policy observation from a local USD scene when OpenUSD
 rendering is available, but it never upgrades physics, safety, deployment, or
-physical-robot readiness claims.
+generated-world rank fidelity claims.
 """
 
 from __future__ import annotations
@@ -1011,9 +1011,9 @@ def _resolve_robot_start_pose(
             "scenario_metadata_is_execution_proof": False,
             "real_collision_geometry_validated": False,
             "physics_contact_validated": False,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
         "blockers": [] if selected.get("accepted") else ["blocked_no_clear_robot_spawn_pose"],
     }
@@ -1637,7 +1637,7 @@ def _robot_pov_recapture_guidance(
             "target_visible_from_robot_start_area": True,
         },
         "claim_boundary": {
-            "recapture_guidance_does_not_claim_robot_readiness": True,
+            "recapture_guidance_does_not_claim_rank_fidelity": True,
             "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
             "raw_capture_authority_preserved": True,
         },
@@ -1862,7 +1862,7 @@ def _build_capture_derived_robot_pov_synthesis(
             "raw_capture_authority_preserved": True,
             "physical_robot_sensor_proof": False,
             "real_robot_pov_evidence_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
     write_json(profile_dir / "capture_derived_robot_pov_source_qa.json", source_qa)
@@ -2471,10 +2471,10 @@ def _compose_scene_with_unitree_g1_mjcf(
                 ),
                 "physics_contact_validated": False,
                 "physical_robot_sensor_proof": False,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-                "safety_validation_proven": False,
-                "real_world_manipulation_success_proven": False,
+                "generated_world_rank_fidelity_result_proven": False,
+                "generated_world_policy_evaluation_scope_proven": False,
+                "non_ranking_operational_claim_proven": False,
+                "accepted_anchor_manipulation_success_proven": False,
             },
         }
         write_json(manifest_path, manifest)
@@ -3454,10 +3454,10 @@ def build_scene_wam_policy_episode_packet(
             "blank_or_placeholder_image_used": False,
             "physical_robot_sensor_proof": False,
             "real_robot_pov_evidence_proven": False,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
-            "real_world_manipulation_success_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
+            "accepted_anchor_manipulation_success_proven": False,
         },
     }
     task_manifest = {
@@ -3551,10 +3551,10 @@ def build_scene_wam_policy_episode_packet(
         ),
         "physical_robot_sensor_proof": False,
         "real_robot_pov_evidence_proven": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
-        "real_world_manipulation_success_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
+        "accepted_anchor_manipulation_success_proven": False,
     }
     packet = {
         "schema_version": SCHEMA_VERSION,
@@ -3606,10 +3606,10 @@ def build_scene_wam_policy_episode_packet(
         "scene_physics_required_for_wam_loop": False,
         "physics_contact_validated": False,
         "scene_collision_geometry_validated": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
-        "real_world_manipulation_success_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
+        "accepted_anchor_manipulation_success_proven": False,
         "static_usd_aabb_clearance_proxy_passed": (
             _mapping(robot_placement.get("selected_clearance_check")).get("status") == "passed"
         ),

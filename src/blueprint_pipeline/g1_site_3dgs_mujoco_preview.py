@@ -2514,7 +2514,7 @@ def _write_job_artifacts(
             "This package proves local MuJoCo MJCF proxy scene loading, real Unitree G1 MJCF "
             "asset spawning, deterministic task/spawn coverage, video export, and threshold "
             "scoring for a kinematic/reference preview. It does not prove live WAM/VLA, "
-            "official Unitree controller execution, physical robot readiness, or deployment readiness."
+            "official Unitree controller execution, generated-world rank fidelity, or generated-world rank fidelity."
         ),
     }
     webapp_preview = {
@@ -2524,7 +2524,7 @@ def _write_job_artifacts(
         "title": "Unitree G1 simulated policy-evaluation preview for 3DGS classroom assets",
         "proof_boundary_copy": (
             "Simulated policy-evaluation preview/sample episode output from a MuJoCo-compatible "
-            "proxy scene. SPZ/PLY are inspect-site visual assets, not collision proof or real-world success."
+            "proxy scene. SPZ/PLY are inspect-site visual assets, not collision proof or rank fidelity."
         ),
         "scene_visual_assets": scene_asset_inspection.get("assets"),
         "mujoco_collision_scene_source": proof_flags.get("mujoco_collision_scene_source"),
@@ -2849,8 +2849,8 @@ def run_g1_site_3dgs_mujoco_preview(
         "wam_vla_runtime_proven": False,
         "wam_evaluator_trace_scored": True,
         "collision_dynamics_validated": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
     }
     artifact_payloads = _write_job_artifacts(
         job_dir=job_dir,

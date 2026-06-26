@@ -363,7 +363,7 @@ def _blocked(output_path: Path, blockers: list[str], **fields: Any) -> int:
             "openvla_model_executed": False,
             "generic_openvla_action_vector_is_not_unitree_hand_control": True,
             "unitree_g1_dexterous_manipulation_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
         **fields,
     }
@@ -577,8 +577,8 @@ def main() -> int:
             "generic_openvla_action_vector_is_not_unitree_hand_control": True,
             "blueprint_action_decoder_is_conservative_task_mapping": True,
             "unitree_g1_dexterous_manipulation_proven": False,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
     _write_json(output_path, result)
@@ -682,7 +682,7 @@ def build_openvla_policy_provider_bundle(
             "openvla_provider_smoke_only": True,
             "generic_openvla_action_vector_is_not_unitree_hand_control": True,
             "unitree_g1_dexterous_manipulation_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
@@ -786,7 +786,7 @@ def import_openvla_provider_output(
             "openvla_model_executed": bool(extracted_policy_output.get("openvla_model_executed")),
             "openvla_policy_provider_smoke_only": True,
             "unitree_g1_dexterous_manipulation_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
     write_json(output_path, payload)
@@ -962,7 +962,7 @@ def run_openvla_policy_provider_smoke(
             "openvla_model_executed": bool(imported.get("openvla_model_executed")),
             "generic_openvla_action_vector_is_not_unitree_hand_control": True,
             "unitree_g1_dexterous_manipulation_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
     write_json(resolved_job_dir / "openvla_policy_provider_smoke_summary.json", summary)

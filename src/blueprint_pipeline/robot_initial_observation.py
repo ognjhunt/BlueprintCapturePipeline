@@ -210,9 +210,9 @@ def _source_claim_boundary() -> dict[str, Any]:
         "robot_policy_execution_proven": False,
         "simulator_execution_proven": False,
         "physical_robot_sensor_proof": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
         "public_claim_upgrade_allowed": False,
     }
 
@@ -597,7 +597,7 @@ def _normalize_profile(profile: Mapping[str, Any], *, fallback: str, source: str
             ),
             "launch_mode_blocks_without_owner_calibration": not launch_ready,
         },
-        "claim_boundary": "robot_camera_profile_defines_eval_input_contract_not_robot_readiness",
+        "claim_boundary": "robot_camera_profile_defines_eval_input_contract_not_rank_fidelity",
     }
 
 
@@ -701,7 +701,7 @@ def build_robot_camera_profile_launch_readiness(
             "owner_provided_camera_calibration_required_for_launch": True,
             "defaults_can_only_support_smoke_artifacts": True,
             "launch_ready_does_not_prove_robot_policy_execution": True,
-            "launch_ready_does_not_prove_physical_robot_readiness": True,
+            "launch_ready_does_not_prove_generated_world_rank_fidelity": True,
         },
     }
 
@@ -1900,7 +1900,7 @@ def _recapture_guidance(
         "status": "not_required" if not blockers else "recapture_required",
         "blockers": blockers,
         "recommended_actions": actions,
-        "recapture_guidance_does_not_claim_robot_readiness": True,
+        "recapture_guidance_does_not_claim_rank_fidelity": True,
         "claim_boundary": _source_claim_boundary(),
     }
 

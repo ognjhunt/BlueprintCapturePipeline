@@ -233,11 +233,11 @@ The dataset manifest uses these machine-readable statuses:
 - `needs_teleop_demo_ref`
 - `needs_sim_controller_plugin_ref`
 - `blocked_rights_privacy`
-- `review_only_no_robot_readiness`
+- `review_only_no_rank_fidelity`
 
 `capture_grounded_ready` means task/scenario records can be assembled from local
 capture/package artifacts. It does not mean the robot is ready, the simulator
-ran, or the site is operationally deployment-ready.
+ran, or the site is operationally rank-fidelity-scored.
 
 ## v0.1 Card Families
 
@@ -256,7 +256,7 @@ ran, or the site is operationally deployment-ready.
 - `annotation_backlog.json`: missing robot POV, human demo, action logs, actual
   outcomes, rights/privacy, collider, and operator-review annotations.
 - `proof_boundaries.json`: fail-closed booleans for simulator execution,
-  physics/contact validation, robot policy execution, safety validation,
+  physics/contact validation, robot policy execution, off-scope validation,
   external licensing, real pilot outcomes, and generated-scenario proof.
 - `rights_packet.json` and `rights_ledger.json`: raw confidential data,
   derived/de-identified environment, synthetic variant, robot-eval, commercial
@@ -379,8 +379,8 @@ or an operator/owner attestation.
 
 WebApp must not use these artifacts alone to claim:
 
-- robot-ready or deployment-ready status
-- safety validation
+- robot-ready or rank-fidelity-scored status
+- off-scope validation
 - simulator execution completed
 - local CPU preflight smoke as accepted simulator execution
 - actual robot trial passed

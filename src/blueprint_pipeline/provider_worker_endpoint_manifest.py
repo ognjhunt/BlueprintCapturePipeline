@@ -168,9 +168,9 @@ def build_provider_worker_endpoint_manifest(
             "endpoint_manifest_is_not_worker_ready_proof": True,
             "readyz_probe_required_before_customer_eval": True,
             "shutdown_response_is_not_provider_teardown_or_cost_proof": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
     }
 

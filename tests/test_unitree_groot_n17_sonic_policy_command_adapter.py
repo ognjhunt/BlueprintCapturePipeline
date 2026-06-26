@@ -37,9 +37,9 @@ def test_groot_n17_sonic_adapter_blocks_without_command_checkpoint_or_frame(
         in response["blockers"]
     )
     assert "blocked_missing_policy_visual_observation_frame" in response["blockers"]
-    assert response["claim_boundary"]["physical_robot_readiness_proven"] is False
-    assert response["claim_boundary"]["deployment_readiness_proven"] is False
-    assert response["claim_boundary"]["safety_validation_proven"] is False
+    assert response["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
+    assert response["claim_boundary"]["generated_world_policy_evaluation_scope_proven"] is False
+    assert response["claim_boundary"]["non_ranking_operational_claim_proven"] is False
 
 
 def test_groot_n17_sonic_adapter_runs_command_and_normalizes_action_chunk(

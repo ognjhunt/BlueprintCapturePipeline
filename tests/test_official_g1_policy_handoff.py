@@ -925,7 +925,7 @@ def test_policy_math_mujoco_stream_video_and_cli_helpers(
             "high_quality_video_status": "blocked",
             "artifacts": {"a": "b"},
             "blockers": ["video"],
-            "proof_boundary": {"physical_robot_readiness_proven": False},
+            "proof_boundary": {"generated_world_rank_fidelity_result_proven": False},
         }
 
     simulator_output = tmp_path / "simulator_output.json"

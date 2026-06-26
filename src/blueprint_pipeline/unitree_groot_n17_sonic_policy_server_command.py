@@ -337,10 +337,10 @@ def _blocked_payload(
             "simulator_only": True,
             "policy_server_command_is_open_loop_action_probe": True,
             "policy_server_command_is_not_model_proof_when_blocked": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
-            "real_world_manipulation_success_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
+            "accepted_anchor_manipulation_success_proven": False,
         },
     }
     if error_type:
@@ -528,10 +528,10 @@ def run_policy_server_command(
             "simulated_or_contract_probe_state_can_be_used_for_attempt": True,
             "simulated_or_contract_probe_state_does_not_prove_real_robot_state": True,
             "gr00t_sonic_action_command_is_single_step_not_task_success": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
-            "real_world_manipulation_success_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
+            "accepted_anchor_manipulation_success_proven": False,
         },
     }
     return result, 0

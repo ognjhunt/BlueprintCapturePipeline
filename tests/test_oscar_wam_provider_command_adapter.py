@@ -95,8 +95,8 @@ def _write_provider_zip(
                     "learned_wam_model_ran": True,
                     "truth_boundary": {
                         "generated_video_is_model_output": True,
-                        "physical_robot_readiness_proven": False,
-                        "deployment_readiness_proven": False,
+                        "generated_world_rank_fidelity_result_proven": False,
+                        "generated_world_policy_evaluation_scope_proven": False,
                     },
                 }
             )

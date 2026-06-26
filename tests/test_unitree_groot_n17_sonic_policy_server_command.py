@@ -81,8 +81,8 @@ def test_policy_server_command_builds_sonic_observation_and_normalizes_action(
     ]
     assert len(response["action"]["action_chunk"]) == 16
     assert response["policy_server_info_redacted"]["server_secret_token"] == "<redacted>"
-    assert response["claim_boundary"]["physical_robot_readiness_proven"] is False
-    assert response["claim_boundary"]["deployment_readiness_proven"] is False
+    assert response["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
+    assert response["claim_boundary"]["generated_world_policy_evaluation_scope_proven"] is False
 
     groot_observation = _FakePolicyClient.last_observation
     assert groot_observation["video"]["ego_view"].shape == (1, 1, 3, 4, 3)

@@ -963,7 +963,7 @@ def run_preview_provider(
                     "claim_boundary": {
                         "artifact_purpose": "worldlabs_remote_asset_materialization_for_pre_gpu_handoff",
                         "simulator_execution_proven": False,
-                        "robot_readiness_proven": False,
+                        "rank_fidelity_result_proven": False,
                     },
                 }
 
@@ -1002,7 +1002,7 @@ def run_preview_provider(
                     "claim_boundary": {
                         "artifact_purpose": "marble_sim_asset_review_packaging_only",
                         "simulator_execution_proven": False,
-                        "robot_readiness_proven": False,
+                        "rank_fidelity_result_proven": False,
                     },
                 }
 

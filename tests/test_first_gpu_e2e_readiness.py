@@ -98,7 +98,7 @@ def _write_gpu_handoff_artifacts(capture_root: Path) -> None:
             "ready_for_owner_gpu_preflight": True,
             "owner_gpu_simulator_execution_proven": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["owner_gpu_simulator_execution_not_run"],
         },
@@ -236,7 +236,7 @@ def _write_webapp_forwarding_preflight_report(
                 "no_pipeline_mutation_requested": True,
                 "no_gpu_allocated": True,
                 "no_simulator_execution_proven": True,
-                "no_robot_readiness_proven": True,
+                "no_rank_fidelity_result_proven": True,
                 "no_public_claim_upgrade_allowed": True,
             },
         },
@@ -1095,7 +1095,7 @@ def test_first_gpu_readiness_pipeline_handoff_rejects_illegal_claim_upgrade(
     )
     payload = json.loads(handoff_path.read_text(encoding="utf-8"))
     payload["status"] = "blocked"
-    payload["robot_readiness_proven"] = True
+    payload["rank_fidelity_result_proven"] = True
     payload["public_claim_upgrade_allowed"] = True
     payload["blockers"] = [
         "owner_gpu_simulator_execution_not_run",
@@ -1106,7 +1106,7 @@ def test_first_gpu_readiness_pipeline_handoff_rejects_illegal_claim_upgrade(
     stage = _pipeline_handoff_stage(capture_root)
 
     assert "gpu_handoff_packet_not_ready" in stage["blockers"]
-    assert "gpu_handoff_illegally_marks_robot_readiness" in stage["blockers"]
+    assert "gpu_handoff_illegally_marks_rank_fidelity" in stage["blockers"]
     assert "gpu_handoff_illegally_allows_public_claim_upgrade" in stage["blockers"]
     assert "operator_gpu_driver_missing" in stage["blockers"]
 

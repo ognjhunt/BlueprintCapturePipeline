@@ -170,7 +170,7 @@ For every factual claim in the report, include the source artifact and field in 
 ## Do not
 
 - Invent physical facts. Every measurement, count, and status must come from an artifact.
-- State legal or safety approval conclusions. "This site is safe for humanoid deployment" is never written.
+- State legal or off-scope approval conclusions. "This site is safe for humanoid deployment" is never written.
 - Omit required human actions when evidence is incomplete. Incomplete evidence = more required actions, not fewer.
 - Use promotional or optimistic language. "Exciting opportunity" or "promising results" have no place in a readiness report.
 - Bury bad news. Hard blockers and high-severity findings go at the top, not in an appendix.

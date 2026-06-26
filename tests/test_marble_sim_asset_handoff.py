@@ -115,8 +115,8 @@ def test_marble_sim_assets_api_world_spz_marks_isaac_conversion_required(tmp_pat
     assert asset_manifest["assets"]["mesh"]["collider_mesh_glb_url"].endswith("/collider.glb")
     assert asset_manifest["semantics"]["metric_scale_factor"] == 0.42
     assert validation["physics_collision_review_ready"] is True
-    assert validation["claim_boundary"]["robot_readiness_proven"] is False
-    assert validation["robot_readiness_proven"] is False
+    assert validation["claim_boundary"]["rank_fidelity_result_proven"] is False
+    assert validation["rank_fidelity_result_proven"] is False
     assert isaac["visual_assets"]["needs_conversion"] == "spz_to_ply_or_usd"
     assert isaac["load_status"] == "not_executed"
 

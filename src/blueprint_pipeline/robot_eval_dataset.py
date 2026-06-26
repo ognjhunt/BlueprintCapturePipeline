@@ -2,7 +2,7 @@
 
 This module writes deterministic dataset/workflow artifacts for robot task
 evaluation without calling providers, running simulators, downloading models, or
-claiming deployment readiness.
+claiming generated-world rank fidelity.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ FAIL_CLOSED_STATUSES = [
     "needs_teleop_demo_ref",
     "needs_sim_controller_plugin_ref",
     "blocked_rights_privacy",
-    "review_only_no_robot_readiness",
+    "review_only_no_rank_fidelity",
 ]
 
 ROBOT_TEAM_TEST_MODALITY_REQUIREMENTS: List[Dict[str, Any]] = [
@@ -469,9 +469,9 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "payments_touched": False,
     "deployments_performed": False,
     "simulator_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "deployment_outcome_proven": False,
-    "safety_validated": False,
+    "non_ranking_operational_claim_validated": False,
     "public_claim_upgrade_allowed": False,
     "allowed_display": [
         "advisory robot-evaluation dataset contract",
@@ -483,7 +483,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "disallowed_claims": [
         "robot_ready",
         "deployment_ready",
-        "safety_validated",
+        "non_ranking_operational_claim_validated",
         "simulator_execution_completed",
         "robot_trial_passed",
         "policy_execution_passed",
@@ -1353,7 +1353,7 @@ def _task_anchor_from_simulation_automation(pipeline_dir: Path) -> Dict[str, Any
 
     These proposals are capture-grounded review inputs. They are sufficient to
     define a simulator eval scope, but they do not prove task acceptance,
-    simulator execution, robot policy performance, or deployment readiness.
+    simulator execution, robot policy performance, or generated-world rank fidelity.
     """
 
     proposal_manifest = _read_optional_mapping(
@@ -1406,7 +1406,7 @@ def _task_anchor_from_simulation_automation(pipeline_dir: Path) -> Dict[str, Any
         "status": "compiled_review_required",
         "source_artifact": "pipeline/simulation_automation/task_anchor_proposal_manifest.json",
         "tasks": tasks,
-        "claim_boundary": "simulation_automation_task_proposals_do_not_prove_robot_readiness",
+        "claim_boundary": "simulation_automation_task_proposals_do_not_prove_rank_fidelity",
     }
 
 
@@ -1444,7 +1444,7 @@ def _default_unitree_g1_robot_profile() -> Dict[str, Any]:
         "embodiment_type": "humanoid",
         "action_space": {},
         "source": "blueprint_default_robot_profile",
-        "claim_boundary": "default_robot_profile_is_eval_scope_not_physical_robot_readiness",
+        "claim_boundary": "default_robot_profile_is_eval_scope_not_generated_world_rank_fidelity",
     }
 
 
@@ -1909,14 +1909,14 @@ def _robot_team_submission_modalities(
                     if _string(item.get("missing_evidence_status")) in missing_statuses
                     else "reference_present_requires_owner_system_review"
                 ),
-                "claim_boundary": "submission_reference_only_no_policy_execution_or_robot_readiness_claim",
+                "claim_boundary": "submission_reference_only_no_policy_execution_or_rank_fidelity_claim",
             }
             for item in ROBOT_TEAM_TEST_MODALITY_REQUIREMENTS
         ],
         "missing_evidence_statuses": missing_statuses,
         "blocked_claim_upgrades": [
             "ready_to_deploy_claim",
-            "safety_validated_claim",
+            "non_ranking_operational_claim_validated_claim",
             "simulator_completed_claim",
             "robot_trial_passed_claim",
             "policy_execution_passed_claim",
@@ -2048,7 +2048,7 @@ def _scoring_methodology(*, generated_at: str) -> Dict[str, Any]:
         "proof_boundary": {
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
-            "safety_validated": False,
+            "non_ranking_operational_claim_validated": False,
             "public_claim_upgrade_allowed": False,
         },
         "claim_boundary": dict(CLAIM_BOUNDARY),
@@ -2106,10 +2106,10 @@ def _task_thresholds(
                     "buyer_override_or_acceptance_if_claiming_stronger_gate",
                     "owner_system_action_traces",
                     "actual_outcome_manifest",
-                    "safety_validation_evidence",
+                    "non_ranking_operational_claim_evidence",
                 ],
                 "claim_boundary": (
-                    "thresholds_are_eval_gates_not_robot_readiness_or_safety_validation"
+                    "thresholds_are_eval_gates_not_rank_fidelity_or_non_ranking_operational_claim"
                 ),
             }
         )
@@ -2236,7 +2236,7 @@ def _publication_readiness(
             "must_not_display_as": [
                 "robot_ready",
                 "deployment_ready",
-                "safety_validated",
+                "non_ranking_operational_claim_validated",
                 "simulator_completed",
             ],
         },
@@ -2435,7 +2435,7 @@ def _recorded_trace_eval_report(
             "provider_credentials_required": False,
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
-            "safety_validated": False,
+            "non_ranking_operational_claim_validated": False,
             "public_claim_upgrade_allowed": False,
         },
         "claim_boundary": dict(CLAIM_BOUNDARY),
@@ -2973,7 +2973,7 @@ def _site_card(
             "pinch_points": metadata.get("pinch_points") or "needs_site_operator_review",
             "no_go_areas": metadata.get("no_go_areas") or "needs_site_operator_review",
             "label_source": "protected_regions_manifest_or_site_metadata",
-            "claim_boundary": "safety_constraints_are_review_inputs_not_safety_validation",
+            "claim_boundary": "safety_constraints_are_review_inputs_not_non_ranking_operational_claim",
         },
         "robot_metadata": {
             "traversable_routes": metadata.get("traversable_routes") or _task_zone_cards(tasks),
@@ -3257,7 +3257,7 @@ def _eval_cards(*, ledger: Mapping[str, Any], generated_at: str) -> Dict[str, An
                 "blocked_upgrades": [
                     "simulator_execution_completed",
                     "robot_policy_execution_proven",
-                    "safety_validation_proven",
+                    "non_ranking_operational_claim_proven",
                     "real_pilot_outcome_proven",
                 ],
             }
@@ -3398,7 +3398,7 @@ def _proof_boundaries(
         "simulator_execution_proven": False,
         "physics_contact_validation_proven": False,
         "robot_policy_execution_proven": False,
-        "safety_validation_proven": False,
+        "non_ranking_operational_claim_proven": False,
         "rights_cleared_external_licensing_proven": False,
         "real_pilot_outcome_proven": bool(actual_outcome_input.get("real_pilot_outcome_proven"))
         and bool(actual_outcome_input.get("owner_system_proof_uri")),
@@ -3417,7 +3417,7 @@ def _proof_boundaries(
             if not action_log_input
             else "action_policy_eval_claim_requires_owner_system_validation",
             "external_licensing_claim",
-            "safety_validated_claim",
+            "non_ranking_operational_claim_validated_claim",
             "ready_to_deploy_claim",
             *list(collider_backend_blockers),
         ],
@@ -3575,7 +3575,7 @@ def _rights_records(
         {
             "rights_scope": "robot_eval_rights",
             "allowed_uses": ["task_scenario_eval_dataset_review"],
-            "disallowed_uses": ["robot_readiness_claim_without_owner_system_proof"],
+            "disallowed_uses": ["rank_fidelity_claim_without_owner_system_proof"],
         },
         {
             "rights_scope": "commercial_licensing",
@@ -3710,7 +3710,7 @@ def _dataset_statuses(
     statuses.extend(_robot_team_submission_modality_statuses(robot_team_submission_input))
     if bool(rights_privacy.get("blocked")):
         statuses.append("blocked_rights_privacy")
-    statuses.append("review_only_no_robot_readiness")
+    statuses.append("review_only_no_rank_fidelity")
     return [status for status in FAIL_CLOSED_STATUSES if status in set(statuses)]
 
 
@@ -3760,7 +3760,7 @@ def _methodology_summary(
             "",
             "## Blocked Claim Boundary",
             "",
-            "This artifact does not prove simulator execution, robot readiness, safety validation, "
+            "This artifact does not prove simulator execution, generated-world rank fidelity, off-scope validation, "
             "provider execution, or deployment outcomes.",
             "",
         ]
@@ -4125,7 +4125,7 @@ def build_real_site_robot_eval_dataset(
             "must_not_display_as": [
                 "robot_ready",
                 "deployment_ready",
-                "safety_validated",
+                "non_ranking_operational_claim_validated",
                 "simulator_completed",
                 "actual_outcome_proven",
             ],

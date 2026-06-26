@@ -1482,7 +1482,7 @@ Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload
     assert blocked_output["action_payload_present"] is False
     assert blocked_output["unitree_policy_action_command_ran"] is False
     assert blocked_output["unitree_groot_n17_sonic_policy_action_command_ran"] is False
-    assert blocked_output["claim_boundary"]["safety_validation_proven"] is False
+    assert blocked_output["claim_boundary"]["non_ranking_operational_claim_proven"] is False
     discovery = result["discovery"]
     assert discovery["selection_policy"] == "unitree_specific_policy_candidates_only"
     assert discovery["selected_candidate_id"] is None
@@ -2655,12 +2655,12 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
     )
     assert final_success_judge["answer"] == "not_proven"
     assert final_success_judge["object_or_tote_correctly_placed"] is False
-    assert final_success_judge["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert final_success_judge["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
     claim_boundary = json.loads(
         (tmp_path / "job" / "claim_boundary.json").read_text(encoding="utf-8")
     )
     assert claim_boundary["groot_n17_sonic_is_candidate_not_proven_unless_action_command_runs"]
-    assert claim_boundary["physical_robot_readiness_proven"] is False
+    assert claim_boundary["generated_world_rank_fidelity_result_proven"] is False
     controller_truth = json.loads(
         (tmp_path / "job" / "controller_truth_boundary.json").read_text(encoding="utf-8")
     )

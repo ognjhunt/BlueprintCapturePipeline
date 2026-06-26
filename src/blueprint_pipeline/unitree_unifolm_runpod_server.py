@@ -442,7 +442,7 @@ def launch_unitree_unifolm_runpod_server(
         "truth_boundary": {
             "pod_created_is_not_model_loaded": True,
             "server_url_must_answer_act_before_policy_proof": True,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "raw_secret_values_recorded": False,
         },
         "raw_secret_values_recorded": False,

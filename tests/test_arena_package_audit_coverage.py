@@ -123,7 +123,7 @@ def test_arena_package_audit_blocks_bad_package_and_proof_boundary_violations(tm
     _write_json(package_dir / "arena_eval_schedule.json", {"scenario_count": 3, "shard_count": 0})
     _write_json(package_dir / "normalized_attempt_trace.json", {"attempt_count": 2})
     _write_json(package_dir / "clips_manifest.json", {"clip_count": 1})
-    _write_json(package_dir / "policy_adapter_manifest.json", {"robot_readiness_proven": True, "claim_boundary": {"safety_validated": True}})
+    _write_json(package_dir / "policy_adapter_manifest.json", {"rank_fidelity_result_proven": True, "claim_boundary": {"non_ranking_operational_claim_validated": True}})
     _write_json(package_dir / "signed_access_manifest.json", {"status": "blocked", "blockers": ["missing_command", "missing_command"]})
     _write_json(package_dir / "live_operator_ledger.json", {"status": "blocked", "blockers": "missing_agents_sdk"})
     (package_dir / "arena_eval_metrics.json").write_text("{bad-json", encoding="utf-8")
@@ -144,8 +144,8 @@ def test_arena_package_audit_blocks_bad_package_and_proof_boundary_violations(tm
         "local_delivery_bundle_not_ready",
         "review_resolution_status_unexpected",
         "rerun_plan_status_unexpected",
-        "proof_boundary_violation:policy_adapter_manifest.json:robot_readiness_proven",
-        "proof_boundary_violation:policy_adapter_manifest.json:claim_boundary.safety_validated",
+        "proof_boundary_violation:policy_adapter_manifest.json:rank_fidelity_result_proven",
+        "proof_boundary_violation:policy_adapter_manifest.json:claim_boundary.non_ranking_operational_claim_validated",
     }
     assert expected_blockers.issubset(set(result["blockers"]))
     assert result["status"] == "blocked"
@@ -182,10 +182,10 @@ def test_arena_package_audit_allows_live_closure_proven_fields(tmp_path: Path) -
         {
             "status": "live_end_to_end_verified",
             "live_end_to_end_verified": True,
-            "proof_boundary": {"safety_validated": True},
+            "proof_boundary": {"non_ranking_operational_claim_validated": True},
         },
     )
-    _write_json(package_dir / "proof.json", {"claim_boundary": {"safety_validated": True}})
-    _write_json(package_dir / "proof_top.json", {"safety_validated": True})
+    _write_json(package_dir / "proof.json", {"claim_boundary": {"non_ranking_operational_claim_validated": True}})
+    _write_json(package_dir / "proof_top.json", {"non_ranking_operational_claim_validated": True})
 
     assert audit._proof_field_violations(package_dir, ["proof.json", "proof_top.json"]) == []

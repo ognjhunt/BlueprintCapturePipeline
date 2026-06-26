@@ -3,7 +3,7 @@
 The command consumes ``wam_episode_consistency_request.json`` and writes
 ``wam_episode_consistency.command.json``. Labels are external judgments over a
 generated video plus trace context; they do not run the WAM and do not upgrade
-task success, safety, deployment, SRCC, or physical-robot readiness claims.
+task success, safety, deployment, SRCC, or generated-world rank fidelity claims.
 """
 
 from __future__ import annotations
@@ -138,7 +138,7 @@ def _gemini_score_one(
             "You are an external evaluator, not the WAM. Judge whether a generated "
             "world-model rollout is forward/inverse consistent with the provided "
             "task prompt and trace summary. Return compact JSON only. Do not judge "
-            "physical robot readiness or deployment safety."
+            "generated-world rank fidelity or deployment safety."
         ),
         "required_json": {
             "forward_consistent": "boolean or null",
@@ -197,8 +197,8 @@ def _gemini_score_one(
         "visual_evidence_used": True,
         "action_trace_evidence_used": True,
         "task_success_proven": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
         "safety_or_contact_validation_proven": False,
         "srcc_or_policy_ranking_proven": False,
         "public_claim_upgrade_allowed": False,
@@ -296,7 +296,7 @@ def build_gemini_wam_episode_consistency_labels(
             "consistency_label_is_external_to_wam_and_evaluator": True,
             "consistency_label_is_from_generated_video_and_trace_context": True,
             "consistency_label_does_not_prove_task_success": True,
-            "deployment_readiness_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
         },
     }
     write_json(resolved_output, manifest)

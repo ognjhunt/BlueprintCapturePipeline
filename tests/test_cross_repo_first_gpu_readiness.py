@@ -47,7 +47,7 @@ def _write_gpu_vm_runtime_preflight_result(capture_root: Path) -> None:
             "sync_manifest": {"status": "ready"},
             "claim_boundary": {
                 "simulator_execution_performed": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
             },
         },
     )
@@ -327,7 +327,7 @@ def _write_gpu_handoff_artifacts(capture_root: Path) -> None:
             "ready_for_owner_gpu_preflight": True,
             "owner_gpu_simulator_execution_proven": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["owner_gpu_simulator_execution_not_run"],
         },
@@ -453,7 +453,7 @@ def _write_webapp_forwarding_preflight_report(path: Path, *, site_slug: str = "s
                 "no_pipeline_mutation_requested": True,
                 "no_gpu_allocated": True,
                 "no_simulator_execution_proven": True,
-                "no_robot_readiness_proven": True,
+                "no_rank_fidelity_result_proven": True,
                 "no_public_claim_upgrade_allowed": True,
             },
         },

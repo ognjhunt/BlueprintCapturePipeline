@@ -164,7 +164,7 @@ def _write_robot_eval_cards(
             "simulator_execution_proven": False,
             "physics_contact_validation_proven": False,
             "robot_policy_execution_proven": False,
-            "safety_validation_proven": False,
+            "non_ranking_operational_claim_proven": False,
             "real_pilot_outcome_proven": False,
             "generated_scenarios_are_real_world_proof": False,
         },
@@ -239,7 +239,7 @@ def _write_existing_simulation_sources(capture_root: Path) -> None:
             "schema_version": "marble_asset_validation.v1",
             "overall_status": "review_ready_with_conversion_required",
             "physics_collision_review_ready": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
         },
     )
     _write_json(
@@ -249,7 +249,7 @@ def _write_existing_simulation_sources(capture_root: Path) -> None:
             "status": "prepared_for_review",
             "claim_boundary": {
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
             },
         },
     )
@@ -260,7 +260,7 @@ def _write_existing_simulation_sources(capture_root: Path) -> None:
             "overall_status": "prepared_for_review",
             "claim_boundary": {
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
             },
         },
     )
@@ -288,7 +288,7 @@ def _write_existing_simulation_sources(capture_root: Path) -> None:
             "overall_status": "blocked",
             "simulators_run": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
         },
     )
     _write_json(
@@ -298,7 +298,7 @@ def _write_existing_simulation_sources(capture_root: Path) -> None:
             "status": "blocked",
             "simulators_run": False,
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     )
@@ -348,7 +348,7 @@ def test_site_eval_director_builds_card_to_scenario_manifests(tmp_path: Path) ->
         "newton": "blocked",
     }
     assert queue["status"] == "review_required"
-    assert proof_boundary["robot_readiness_proven"] is False
+    assert proof_boundary["rank_fidelity_result_proven"] is False
     assert proof_boundary["simulator_execution_proven"] is False
     assert proof_boundary["public_claim_upgrade_allowed"] is False
 
@@ -378,7 +378,7 @@ def test_site_eval_director_writes_blocked_manifests_when_robot_eval_cards_missi
         "robot_eval_proof_boundaries",
     }.issubset(set(blocked["missing_inputs"]))
     assert blocked["attempted_commands"] == ["build_site_eval_director"]
-    assert blocked["claim_boundary"]["robot_readiness_proven"] is False
+    assert blocked["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert run_manifest["status"] == "blocked"
     assert plan["status"] == "blocked"
     assert proof_boundary["status"] == "blocked"
@@ -536,7 +536,7 @@ def test_evaluation_prep_surfaces_site_eval_director_artifacts_without_overclaim
 
     assert surface["status"] == "review_ready"
     assert surface["simulator_execution_proven"] is False
-    assert surface["robot_readiness_proven"] is False
+    assert surface["rank_fidelity_result_proven"] is False
     assert surface["public_claim_upgrade_allowed"] is False
     assert surface["artifacts"]["site_eval_director_run_manifest"] == (
         "../simulation_automation/site_eval_director_run_manifest.json"
@@ -577,7 +577,7 @@ def test_site_eval_director_fixture_success_runs_headless_loop_without_claim_upg
     assert result["status"] == "fixture_loop_completed"
     assert run_manifest["fixture_runner_executed"] is True
     assert run_manifest["simulator_execution_proven"] is False
-    assert run_manifest["robot_readiness_proven"] is False
+    assert run_manifest["rank_fidelity_result_proven"] is False
     assert run_manifest["public_claim_upgrade_allowed"] is False
     assert trace["status"] == "completed"
     assert trace["attempts"][0]["success"] is True

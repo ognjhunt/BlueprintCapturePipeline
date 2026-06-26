@@ -68,17 +68,17 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "gpu_required": False,
     "simulators_run": False,
     "simulator_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "robot_policy_execution_proven": False,
     "physics_contact_validated": False,
-    "safety_validated": False,
+    "non_ranking_operational_claim_validated": False,
     "public_claim_upgrade_allowed": False,
     "disallowed_claims": [
         "simulator_execution_completed",
         "robot_ready",
         "deployment_ready",
         "physics_contact_validated",
-        "safety_validated",
+        "non_ranking_operational_claim_validated",
     ],
 }
 
@@ -1861,7 +1861,7 @@ def build_scene_asset_preflight(
         "blockers": [] if frame_source else ["missing_scene_bounds_or_usd_frame"],
         "limitations": [
             "Frame estimates are CPU-derived review inputs.",
-            "They do not prove collision/contact behavior or robot readiness.",
+            "They do not prove collision/contact behavior or generated-world rank fidelity.",
         ],
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -1906,9 +1906,9 @@ def build_scene_asset_preflight(
         "collider_backend_labels": collider_proxy_plan.get("labels") or [],
         "proof_booleans": {
             "simulator_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "physics_contact_validated": False,
-            "safety_validated": False,
+            "non_ranking_operational_claim_validated": False,
         },
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }

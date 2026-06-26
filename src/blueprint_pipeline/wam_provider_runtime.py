@@ -232,7 +232,7 @@ def policy_interface_binding(
         "claim_boundary": {
             "binding_is_interface_contract_not_policy_execution_proof": True,
             "robot_policy_execution_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
         },
     }
 
@@ -339,7 +339,7 @@ def normalize_provider_rollouts(
             **_mapping(rollout.get("claim_boundary")),
             "model_derived_support_artifact": True,
             "raw_capture_evidence": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         }
         rollouts.append(rollout)

@@ -494,7 +494,7 @@ def test_initial_observation_resolver_fails_closed_without_required_capture_inpu
     assert selected["claim_boundary"]["capture_truth"] is False
     assert selected["claim_boundary"]["geometry_truth"] is False
     assert selected["claim_boundary"]["visually_useful_rollout"] is False
-    assert selected["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert selected["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
     assert "capture_frame_index_missing" in selected["blockers"]
     assert "depth_map_missing" in selected["blockers"]
     assert "camera_pose_missing" in selected["blockers"]

@@ -497,7 +497,7 @@ def run_lucky_g1_reference_adapter(
             "official_lucky_pick_place_physics_validated": False,
             "blueprint_tote_task_validated_by_lucky_assets": False,
             "blueprint_proxy_tote_physics_claimed_by_this_adapter": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
         },
         "blockers": []
         if policy_assets_executed

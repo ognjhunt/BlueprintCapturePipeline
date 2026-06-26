@@ -103,8 +103,8 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
     must_not_display_as = _string_list(buyer_display_guardrails.get("must_not_display_as"))
     if not must_not_display_as:
         must_not_display_as = [
-            "physical_robot_readiness",
-            "deployment_readiness",
+            "generated_world_rank_fidelity",
+            "evaluation_readiness",
             "policy_quality_certification",
         ]
     return {
@@ -258,8 +258,8 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "robot_team_grade_evaluation_complete": bool(
                 robot_team_grade_eval_closure.get("robot_team_grade_evaluation_complete")
             ),
-            "deployment_readiness_complete": bool(
-                robot_team_grade_eval_closure.get("deployment_readiness_complete")
+            "evaluation_readiness_complete": bool(
+                robot_team_grade_eval_closure.get("evaluation_readiness_complete")
             ),
             "blocked_requirement_ids": _string_list(
                 robot_team_grade_eval_closure.get("blocked_requirement_ids")
@@ -273,9 +273,9 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "robot_team_grade_blocked_requirement_ids": _string_list(
                 robot_team_grade_eval_closure.get("robot_team_grade_blocked_requirement_ids")
             ),
-            "deployment_readiness_blocked_requirement_ids": _string_list(
+            "evaluation_readiness_blocked_requirement_ids": _string_list(
                 robot_team_grade_eval_closure.get(
-                    "deployment_readiness_blocked_requirement_ids"
+                    "evaluation_readiness_blocked_requirement_ids"
                 )
             ),
             "closure_manifest_path": robot_team_grade_eval_closure.get(
@@ -293,8 +293,8 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
                 proof_boundary.get("real_world_outcome_proven")
             ),
             "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
-            "safety_validated": bool(proof_boundary.get("safety_validated")),
-            "robot_readiness_proven": bool(proof_boundary.get("robot_readiness_proven")),
+            "non_ranking_operational_claim_validated": bool(proof_boundary.get("non_ranking_operational_claim_validated")),
+            "rank_fidelity_result_proven": bool(proof_boundary.get("rank_fidelity_result_proven")),
             "public_claim_upgrade_allowed": bool(
                 proof_boundary.get("public_claim_upgrade_allowed")
             ),
@@ -495,7 +495,7 @@ def build_webapp_pipeline_attachment_payload(
     opportunity_state: object,
     artifacts: Mapping[str, Any],
     derived_assets: Optional[Mapping[str, Any]] = None,
-    deployment_readiness: Optional[Mapping[str, Any]] = None,
+    evaluation_readiness: Optional[Mapping[str, Any]] = None,
     robot_eval_status_projection: Optional[Mapping[str, Any]] = None,
     authoritative_state_update: bool = False,
 ) -> Dict[str, Any]:
@@ -520,9 +520,9 @@ def build_webapp_pipeline_attachment_payload(
             if isinstance(derived_assets, Mapping)
             else {}
         ),
-        "deployment_readiness": (
-            {str(key): value for key, value in deployment_readiness.items()}
-            if isinstance(deployment_readiness, Mapping)
+        "evaluation_readiness": (
+            {str(key): value for key, value in evaluation_readiness.items()}
+            if isinstance(evaluation_readiness, Mapping)
             else None
         ),
         "robot_eval_status_projection": safe_robot_eval_projection or None,
@@ -545,7 +545,7 @@ def sync_webapp_pipeline_attachment(
     opportunity_state: object,
     artifacts: Mapping[str, Any],
     derived_assets: Optional[Mapping[str, Any]] = None,
-    deployment_readiness: Optional[Mapping[str, Any]] = None,
+    evaluation_readiness: Optional[Mapping[str, Any]] = None,
     robot_eval_status_projection: Optional[Mapping[str, Any]] = None,
     authoritative_state_update: bool = False,
 ) -> Dict[str, Any]:
@@ -567,7 +567,7 @@ def sync_webapp_pipeline_attachment(
         opportunity_state=opportunity_state,
         artifacts=artifacts,
         derived_assets=derived_assets,
-        deployment_readiness=deployment_readiness,
+        evaluation_readiness=evaluation_readiness,
         robot_eval_status_projection=robot_eval_status_projection,
         authoritative_state_update=authoritative_state_update,
     )
@@ -601,9 +601,9 @@ def sync_webapp_pipeline_attachment(
                 "reason": "missing_upstream_pipeline_records",
                 "blocker": "missing_upstream_pipeline_records",
             },
-            "deployment_readiness": (
-                {str(key): value for key, value in deployment_readiness.items()}
-                if isinstance(deployment_readiness, Mapping)
+            "evaluation_readiness": (
+                {str(key): value for key, value in evaluation_readiness.items()}
+                if isinstance(evaluation_readiness, Mapping)
                 else None
             ),
         }
@@ -621,9 +621,9 @@ def sync_webapp_pipeline_attachment(
                 "reason": "sync_not_configured",
                 "blocker": "sync_not_configured" if buyer_access_required() else None,
             },
-            "deployment_readiness": (
-                {str(key): value for key, value in deployment_readiness.items()}
-                if isinstance(deployment_readiness, Mapping)
+            "evaluation_readiness": (
+                {str(key): value for key, value in evaluation_readiness.items()}
+                if isinstance(evaluation_readiness, Mapping)
                 else None
             ),
         }
@@ -669,9 +669,9 @@ def sync_webapp_pipeline_attachment(
                     "artifact_uri_checksums": payload["artifact_uri_checksums"],
                     "buyer_access_check": buyer_access_check,
                     "attachment_payload": payload,
-                    "deployment_readiness": (
-                        {str(key): value for key, value in deployment_readiness.items()}
-                        if isinstance(deployment_readiness, Mapping)
+                    "evaluation_readiness": (
+                        {str(key): value for key, value in evaluation_readiness.items()}
+                        if isinstance(evaluation_readiness, Mapping)
                         else None
                     ),
                 }
@@ -694,9 +694,9 @@ def sync_webapp_pipeline_attachment(
             "blocker": "sync_failed" if buyer_access_required() else None,
         },
         "attachment_payload": payload,
-        "deployment_readiness": (
-            {str(key): value for key, value in deployment_readiness.items()}
-            if isinstance(deployment_readiness, Mapping)
+        "evaluation_readiness": (
+            {str(key): value for key, value in evaluation_readiness.items()}
+            if isinstance(evaluation_readiness, Mapping)
             else None
         ),
     }

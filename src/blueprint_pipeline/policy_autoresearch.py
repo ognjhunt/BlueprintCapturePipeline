@@ -71,12 +71,12 @@ CLAIM_BOUNDARY: dict[str, Any] = {
     "generated_wam_rollouts_are_model_derived_support_artifacts": True,
     "customer_specific_srcc_claimed": False,
     "customer_specific_srcc_requires_real_world_validation_rollouts": True,
-    "passing_wam_heldout_eval_is_not_deployment_approval": True,
+    "passing_wam_heldout_eval_is_not_rank_fidelity_result": True,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
     "real_world_outcome_proven": False,
-    "robot_readiness_proven": False,
-    "safety_validation_proven": False,
+    "rank_fidelity_result_proven": False,
+    "non_ranking_operational_claim_proven": False,
     "public_claim_upgrade_allowed": False,
 }
 
@@ -561,7 +561,7 @@ def _attempt_for_run(
             },
         },
         "generated_at": generated_at,
-        "claim_boundary": "sim_only_policy_autoresearch_attempt_not_robot_readiness_proof",
+        "claim_boundary": "sim_only_policy_autoresearch_attempt_not_rank_fidelity_proof",
     }
 
 
@@ -738,7 +738,7 @@ def _normalize_external_attempts(
                 "initial_failure_mode_ids": _string_list(raw.get("initial_failure_mode_ids")),
                 "generated_at": generated_at,
                 "claim_boundary": raw.get("claim_boundary")
-                or "external_policy_autoresearch_eval_output_not_robot_readiness_proof",
+                or "external_policy_autoresearch_eval_output_not_rank_fidelity_proof",
             }
         )
     return normalized
@@ -1170,7 +1170,7 @@ def _blocked_artifacts(
         "generated_at": generated_at,
         "status": "blocked",
         "blockers": blockers,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -1803,7 +1803,7 @@ def run_policy_autoresearch(
             wam_substrate_requested
         ),
         "customer_specific_srcc_claimed": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
@@ -1884,7 +1884,7 @@ def run_policy_autoresearch(
         "baseline_heldout_eval_result": "baseline_heldout_eval_result.json",
             "budget_ledger": ARTIFACT_PATHS["budget_ledger"],
         },
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),

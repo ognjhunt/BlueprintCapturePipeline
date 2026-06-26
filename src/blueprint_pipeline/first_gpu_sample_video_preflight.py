@@ -211,7 +211,7 @@ def _audit_video(
         },
         "proof_boundary": (
             "Source-video preflight checks file suitability only. It does not prove privacy "
-            "clearance, scene geometry, WebApp upstream truth, simulator execution, or robot readiness."
+            "clearance, scene geometry, WebApp upstream truth, simulator execution, or generated-world rank fidelity."
         ),
     }
 
@@ -266,7 +266,7 @@ def build_first_gpu_sample_video_preflight(
             "webapp_requests_submitted": False,
             "simulator_execution_performed": False,
             "gpu_provisioning_performed": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

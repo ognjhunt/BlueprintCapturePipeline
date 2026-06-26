@@ -258,7 +258,7 @@ def test_production_handoff_readiness_is_ready_except_owner_gpu(tmp_path: Path) 
     assert result["proof_summary"]["worldlabs_generation_manifested"] is True
     assert result["proof_summary"]["cpu_preflight_ready_for_owner_gpu"] is True
     assert result["proof_summary"]["arena_environment_packet_manifested"] is True
-    assert result["proof_summary"]["robot_readiness_proven"] is False
+    assert result["proof_summary"]["rank_fidelity_result_proven"] is False
     assert result["artifacts"]["arena_environment_packet"]["exists"] is True
     assert manifest["status"] == result["status"]
 
@@ -279,7 +279,7 @@ def test_production_handoff_readiness_accepts_post_owner_gpu_proof(
             "ready_for_owner_gpu_preflight": True,
             "owner_gpu_simulator_execution_proven": True,
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },
@@ -291,7 +291,7 @@ def test_production_handoff_readiness_accepts_post_owner_gpu_proof(
             "status": "accepted",
             "owner_gpu_simulator_execution_proven": True,
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },
@@ -338,7 +338,7 @@ def test_production_handoff_readiness_blocks_isaac_packet_with_generic_owner_pro
             "ready_for_owner_gpu_preflight": True,
             "owner_gpu_simulator_execution_proven": True,
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },
@@ -354,7 +354,7 @@ def test_production_handoff_readiness_blocks_isaac_packet_with_generic_owner_pro
             "isaac_sim_execution_proven": False,
             "isaac_robot_asset_execution_proven": False,
             "unitree_g1_asset_spawned": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },
@@ -403,7 +403,7 @@ def test_production_handoff_readiness_accepts_mujoco_packet_with_mujoco_g1_proof
             "ready_for_owner_gpu_preflight": True,
             "owner_gpu_simulator_execution_proven": True,
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },
@@ -421,7 +421,7 @@ def test_production_handoff_readiness_accepts_mujoco_packet_with_mujoco_g1_proof
             "isaac_sim_execution_proven": False,
             "isaac_robot_asset_execution_proven": False,
             "unitree_g1_asset_spawned": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },
@@ -447,7 +447,7 @@ def test_production_handoff_readiness_accepts_mujoco_packet_with_mujoco_g1_proof
     assert result["claim_boundary"]["owner_gpu_simulator_execution_proven"] is True
     assert result["claim_boundary"]["mujoco_g1_asset_execution_proven"] is True
     assert result["claim_boundary"]["mujoco_g1_asset_spawned"] is True
-    assert result["claim_boundary"]["robot_readiness_proven"] is False
+    assert result["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert "isaac_sim_unitree_g1_execution_not_proven" not in result["blockers"]
     assert "mujoco_g1_execution_not_proven" not in result["blockers"]
 
@@ -475,7 +475,7 @@ def test_production_handoff_readiness_blocks_mujoco_packet_without_mujoco_g1_pro
             "ready_for_owner_gpu_preflight": True,
             "owner_gpu_simulator_execution_proven": True,
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },
@@ -490,7 +490,7 @@ def test_production_handoff_readiness_blocks_mujoco_packet_without_mujoco_g1_pro
             "simulator_backend": "mujoco",
             "mujoco_g1_asset_execution_proven": False,
             "mujoco_g1_asset_spawned": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },
@@ -614,13 +614,13 @@ def test_production_handoff_readiness_reports_malformed_artifacts(
     _write_json(automation_dir / "cpu_preflight_manifest.json", {"ready_for_owner_gpu_preflight": False})
     _write_json(
         automation_dir / "arena_environment_packet.json",
-        {"simulator_execution_proven": True, "robot_readiness_proven": True},
+        {"simulator_execution_proven": True, "rank_fidelity_result_proven": True},
     )
     _write_json(
         automation_dir / "gpu_handoff_packet.json",
         {
             "status": "not_ready",
-            "robot_readiness_proven": True,
+            "rank_fidelity_result_proven": True,
             "blockers": ["custom_blocker"],
         },
     )
@@ -639,9 +639,9 @@ def test_production_handoff_readiness_reports_malformed_artifacts(
     assert "scene_asset_inventory_empty" in result["blockers"]
     assert "cpu_preflight_not_ready_for_owner_gpu" in result["blockers"]
     assert "arena_packet_illegally_marks_simulator_execution" in result["blockers"]
-    assert "arena_packet_illegally_marks_robot_readiness" in result["blockers"]
+    assert "arena_packet_illegally_marks_rank_fidelity" in result["blockers"]
     assert "gpu_handoff_packet_not_ready" in result["blockers"]
-    assert "gpu_handoff_illegally_marks_robot_readiness" in result["blockers"]
+    assert "gpu_handoff_illegally_marks_rank_fidelity" in result["blockers"]
     assert "custom_blocker" in result["blockers"]
     assert "gpu_handoff_missing_owner_gpu_blocker" in result["blockers"]
     assert "owner_gpu_blocked_manifest_wrong_blocker" in result["blockers"]
@@ -676,7 +676,7 @@ def test_production_handoff_readiness_preserves_post_proof_handoff_blockers(
             "ready_for_owner_gpu_preflight": True,
             "owner_gpu_simulator_execution_proven": True,
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": ["post_proof_blocker"],
         },
@@ -688,7 +688,7 @@ def test_production_handoff_readiness_preserves_post_proof_handoff_blockers(
             "status": "accepted",
             "owner_gpu_simulator_execution_proven": True,
             "simulator_execution_proven": True,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
             "blockers": [],
         },

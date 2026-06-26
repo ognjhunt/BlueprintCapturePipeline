@@ -173,7 +173,7 @@ def _write_required_robot_eval_dataset_inputs(capture_root: Path) -> None:
                 "schema_version": "real_site_robot_eval_proof_boundaries.v0.1",
                 "simulator_execution_proven": False,
                 "robot_policy_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
             }
         ),

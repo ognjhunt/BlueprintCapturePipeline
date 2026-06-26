@@ -293,10 +293,10 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "payments_touched": False,
     "deployments_performed": False,
     "simulator_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "robot_policy_execution_proven": False,
     "physics_contact_validated": False,
-    "safety_validated": False,
+    "non_ranking_operational_claim_validated": False,
     "training_completed": False,
     "public_claim_upgrade_allowed": False,
     "disallowed_claims": [
@@ -306,7 +306,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
         "physics_contact_validated",
         "robot_policy_execution_passed",
         "training_completed",
-        "safety_validated",
+        "non_ranking_operational_claim_validated",
         "public_deployment_ready",
     ],
     "proof_upgrade_requires": [
@@ -490,7 +490,7 @@ class AgentsSdkRobotEvalJobAdapter:
                 ],
                 "prohibited_actions": [
                     "override_rights_privacy_blockers",
-                    "mark_robot_readiness_proven",
+                    "mark_rank_fidelity_result_proven",
                     "mark_simulator_proof_complete_without_result_manifest",
                     "mark_training_proof_complete_without_checkpoint_manifest",
                     "spend_money_without_explicit_gates",
@@ -735,7 +735,7 @@ def resolve_simulator_selection_policy(
             "mujoco_proof_does_not_clear_isaac_sim_gate": True,
             "isaac_sim_proof_does_not_clear_real_robot_or_safety_gate": True,
             "simulator_execution_proven_by_this_policy": False,
-            "robot_readiness_proven_by_this_policy": False,
+            "rank_fidelity_result_proven_by_this_policy": False,
         },
     }
 
@@ -863,7 +863,7 @@ def _build_real_world_validation_followup_request_queue(
                     "parent_job_id": parent_job_id,
                     "source_followup_action_id": action_id,
                     "source_plan_path": "real_world_validation_followup_plan.json",
-                    "claim_boundary": "followup_request_is_rerun_input_not_robot_readiness_proof",
+                    "claim_boundary": "followup_request_is_rerun_input_not_rank_fidelity_proof",
                 },
             },
             "external_input_sources": {
@@ -874,7 +874,7 @@ def _build_real_world_validation_followup_request_queue(
             },
             "claim_boundary": {
                 **_mapping(base_request.get("claim_boundary")),
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "public_claim_upgrade_allowed": False,
                 "followup_request_is_not_deployment_outcome_proof": True,
             },
@@ -1197,7 +1197,7 @@ def _policy_package_manifest(
             ),
             "adapter_smoke_contract": _policy_adapter_smoke_contract(modality),
             "claim_boundary": (
-                "reference_present_only_not_policy_execution_or_robot_readiness_proof"
+                "reference_present_only_not_policy_execution_or_rank_fidelity_proof"
             ),
         }
     if not selected_modalities:
@@ -1224,7 +1224,7 @@ def _policy_package_manifest(
         },
         "downloads_performed": False,
         "policy_execution_proven": False,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     return manifest, missing_inputs, missing_statuses
@@ -3835,7 +3835,7 @@ def _write_simulator_provider_adapter_manifest(
         },
         "owner_system_review_required": simulator != "fixture",
         "simulator_execution_proven": status == "completed" and simulator != "fixture",
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -4985,7 +4985,7 @@ def _evaluation_result(
         "calibration_report_path": "calibration_report.json",
         "breakage_library_path": "breakage_library.json",
         "standard_policy_scorecard": _standard_policy_scorecard(attempts_for_scorecard),
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -5028,7 +5028,7 @@ def _robot_eval_report_markdown(report: Mapping[str, Any]) -> str:
             "",
             "## Proof Boundary",
             "",
-            "This report summarizes the eval harness output. It does not upgrade robot readiness, safety, simulator execution, policy execution, or deployment claims beyond the referenced proof-boundary and live-closure artifacts.",
+            "This report summarizes the eval harness output. It does not upgrade generated-world rank fidelity, safety, simulator execution, policy execution, or deployment claims beyond the referenced proof-boundary and live-closure artifacts.",
             "",
         ]
     )
@@ -5173,8 +5173,8 @@ def _write_robot_eval_report(
             ),
             "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
             "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
-            "safety_validated": bool(proof_boundary.get("safety_validated")),
-            "robot_readiness_proven": bool(proof_boundary.get("robot_readiness_proven")),
+            "non_ranking_operational_claim_validated": bool(proof_boundary.get("non_ranking_operational_claim_validated")),
+            "rank_fidelity_result_proven": bool(proof_boundary.get("rank_fidelity_result_proven")),
             "public_claim_upgrade_allowed": bool(
                 proof_boundary.get("public_claim_upgrade_allowed")
             ),
@@ -5265,14 +5265,14 @@ def _proof_boundary(
         "simulators_run": bool(simulator_result.get("simulators_run")),
         "gpu_training_run": bool(training_result.get("gpu_training_run")),
         "simulator_execution_proven": simulator_proven,
-        "robot_readiness_proven": False,
+        "rank_fidelity_result_proven": False,
         "robot_policy_execution_proven": policy_execution_proven,
         "real_world_outcome_records_present": real_world_outcome_records_present,
         "owner_evidence_record_count": owner_evidence_record_count,
         "missing_owner_evidence_record_ids": missing_owner_evidence_record_ids,
         "real_world_outcome_proven": real_world_outcome_proven,
         "physics_contact_validated": False,
-        "safety_validated": False,
+        "non_ranking_operational_claim_validated": False,
         "training_completed": training_completed,
         "public_claim_upgrade_allowed": False,
         "remaining_required_evidence": remaining,
@@ -5307,8 +5307,8 @@ def _apply_live_closure_to_proof_boundary(
             "robot_policy_execution_proven",
             "real_world_outcome_proven",
             "physics_contact_validated",
-            "safety_validated",
-            "robot_readiness_proven",
+            "non_ranking_operational_claim_validated",
+            "rank_fidelity_result_proven",
             "public_claim_upgrade_allowed",
         ):
             updated[field] = bool(closure_boundary.get(field))
@@ -5322,8 +5322,8 @@ def _apply_live_closure_to_proof_boundary(
         "robot_policy_execution_proven": bool(updated.get("robot_policy_execution_proven")),
         "real_world_outcome_proven": bool(updated.get("real_world_outcome_proven")),
         "physics_contact_validated": bool(updated.get("physics_contact_validated")),
-        "safety_validated": bool(updated.get("safety_validated")),
-        "robot_readiness_proven": bool(updated.get("robot_readiness_proven")),
+        "non_ranking_operational_claim_validated": bool(updated.get("non_ranking_operational_claim_validated")),
+        "rank_fidelity_result_proven": bool(updated.get("rank_fidelity_result_proven")),
         "public_claim_upgrade_allowed": bool(updated.get("public_claim_upgrade_allowed")),
     }
     return updated
@@ -5729,7 +5729,7 @@ def _webapp_robot_eval_status_projection(
     if not supported_modalities:
         supported_modalities = list(POLICY_MODALITY_ORDER)
     proof_public_claim = bool(proof_boundary.get("public_claim_upgrade_allowed"))
-    robot_readiness_proven = bool(proof_boundary.get("robot_readiness_proven"))
+    rank_fidelity_result_proven = bool(proof_boundary.get("rank_fidelity_result_proven"))
     machine_trace_complete = bool(
         batch_closure.get("machine_trace_package_complete")
         or simulator_result.get("machine_trace_package_complete")
@@ -5889,7 +5889,7 @@ def _webapp_robot_eval_status_projection(
             "robot_team_grade_package_complete": robot_team_package_complete,
             "post_training_data_package_status": data_package_export.get("status"),
             "no_readiness_claim_upgrade_without_evidence": not proof_public_claim
-            or robot_readiness_proven,
+            or rank_fidelity_result_proven,
         },
         "remote_cloud_execution": {
             "status": remote_cloud_closure.get("status") or "not_available",
@@ -5918,8 +5918,8 @@ def _webapp_robot_eval_status_projection(
             "robot_team_grade_evaluation_complete": bool(
                 robot_team_grade_closure.get("robot_team_grade_evaluation_complete")
             ),
-            "deployment_readiness_complete": bool(
-                robot_team_grade_closure.get("deployment_readiness_complete")
+            "evaluation_readiness_complete": bool(
+                robot_team_grade_closure.get("evaluation_readiness_complete")
             ),
             "blocked_requirement_ids": _string_list(
                 robot_team_grade_closure.get("blocked_requirement_ids")
@@ -5933,8 +5933,8 @@ def _webapp_robot_eval_status_projection(
             "robot_team_grade_blocked_requirement_ids": _string_list(
                 robot_team_grade_closure.get("robot_team_grade_blocked_requirement_ids")
             ),
-            "deployment_readiness_blocked_requirement_ids": _string_list(
-                robot_team_grade_closure.get("deployment_readiness_blocked_requirement_ids")
+            "evaluation_readiness_blocked_requirement_ids": _string_list(
+                robot_team_grade_closure.get("evaluation_readiness_blocked_requirement_ids")
             ),
             "closure_manifest_path": artifact_paths.get(
                 "robot_team_grade_eval_closure_manifest"
@@ -5947,8 +5947,8 @@ def _webapp_robot_eval_status_projection(
             ),
             "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
             "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
-            "safety_validated": bool(proof_boundary.get("safety_validated")),
-            "robot_readiness_proven": robot_readiness_proven,
+            "non_ranking_operational_claim_validated": bool(proof_boundary.get("non_ranking_operational_claim_validated")),
+            "rank_fidelity_result_proven": rank_fidelity_result_proven,
             "public_claim_upgrade_allowed": proof_public_claim,
         },
         "artifact_paths": {
@@ -5979,8 +5979,8 @@ def _webapp_robot_eval_status_projection(
         },
         "buyer_display_guardrails": {
             "must_not_display_as": [
-                "physical_robot_readiness",
-                "deployment_readiness",
+                "generated_world_rank_fidelity",
+                "evaluation_readiness",
                 "policy_quality_certification",
             ],
             "provider_commands_exposed": False,
@@ -6119,10 +6119,10 @@ def _robot_team_grade_eval_closure_manifest(
     policy_comparison_contract = _mapping(policy_ranking_scorecard.get("comparison_contract"))
     policy_comparison_non_overclaiming_boundary = bool(
         policy_comparison_boundary.get("policy_ranking_is_evaluator_bounded") is True
-        and policy_comparison_boundary.get("policy_ranking_is_not_deployment_readiness") is True
-        and policy_comparison_boundary.get("robot_readiness_proven") is False
+        and policy_comparison_boundary.get("policy_ranking_is_not_evaluation_readiness") is True
+        and policy_comparison_boundary.get("rank_fidelity_result_proven") is False
         and policy_comparison_boundary.get("public_claim_upgrade_allowed") is False
-        and policy_comparison_contract.get("deployment_readiness_claimed") is False
+        and policy_comparison_contract.get("evaluation_readiness_claimed") is False
         and policy_comparison_contract.get("external_deployment_grade_claimed") is False
     )
     policy_comparison_symmetric_coverage = bool(
@@ -6240,7 +6240,7 @@ def _robot_team_grade_eval_closure_manifest(
     )
     no_claim_upgrade = (
         not bool(proof_boundary.get("public_claim_upgrade_allowed"))
-        and not bool(proof_boundary.get("robot_readiness_proven"))
+        and not bool(proof_boundary.get("rank_fidelity_result_proven"))
     )
 
     def requirement(
@@ -6252,7 +6252,7 @@ def _robot_team_grade_eval_closure_manifest(
         evidence_paths: Sequence[str] = (),
         sim_only_beta_required: bool = True,
         robot_team_grade_required: bool = True,
-        deployment_readiness_required: bool = True,
+        evaluation_readiness_required: bool = True,
         notes: Sequence[str] = (),
     ) -> Dict[str, Any]:
         deduped_blockers = _dedupe(blockers)
@@ -6263,7 +6263,7 @@ def _robot_team_grade_eval_closure_manifest(
             "passed": bool(passed),
             "sim_only_beta_required": bool(sim_only_beta_required),
             "robot_team_grade_required": bool(robot_team_grade_required),
-            "deployment_readiness_required": bool(deployment_readiness_required),
+            "evaluation_readiness_required": bool(evaluation_readiness_required),
             "blockers": deduped_blockers,
             "evidence_paths": [path for path in evidence_paths if path],
             "notes": [note for note in notes if note],
@@ -6774,7 +6774,7 @@ def _robot_team_grade_eval_closure_manifest(
             ],
             sim_only_beta_required=False,
             robot_team_grade_required=False,
-            deployment_readiness_required=False,
+            evaluation_readiness_required=False,
         ),
         requirement(
             "sim_vs_real_calibration_path",
@@ -6785,13 +6785,13 @@ def _robot_team_grade_eval_closure_manifest(
             evidence_paths=[artifact_paths.get("sim_vs_real_calibration_report")],
             sim_only_beta_required=False,
             robot_team_grade_required=False,
-            deployment_readiness_required=True,
+            evaluation_readiness_required=True,
         ),
     ]
     sim_only_required = [item for item in requirements if item["sim_only_beta_required"]]
     robot_team_required = [item for item in requirements if item["robot_team_grade_required"]]
     deployment_required = [
-        item for item in requirements if item["deployment_readiness_required"]
+        item for item in requirements if item["evaluation_readiness_required"]
     ]
     all_blocked_requirement_ids = [
         item["requirement_id"] for item in requirements if not item["passed"]
@@ -6806,7 +6806,7 @@ def _robot_team_grade_eval_closure_manifest(
         for item in robot_team_required
         if not item["passed"]
     ]
-    deployment_readiness_blocked_requirement_ids = [
+    evaluation_readiness_blocked_requirement_ids = [
         item["requirement_id"]
         for item in deployment_required
         if not item["passed"]
@@ -6827,14 +6827,14 @@ def _robot_team_grade_eval_closure_manifest(
         "all_blocked_requirement_ids": all_blocked_requirement_ids,
         "sim_only_beta_blocked_requirement_ids": sim_only_beta_blocked_requirement_ids,
         "robot_team_grade_blocked_requirement_ids": robot_team_grade_blocked_requirement_ids,
-        "deployment_readiness_blocked_requirement_ids": (
-            deployment_readiness_blocked_requirement_ids
+        "evaluation_readiness_blocked_requirement_ids": (
+            evaluation_readiness_blocked_requirement_ids
         ),
         "sim_only_beta_core_complete": all(item["passed"] for item in sim_only_required),
         "robot_team_grade_evaluation_complete": all(
             item["passed"] for item in robot_team_required
         ),
-        "deployment_readiness_complete": all(item["passed"] for item in deployment_required),
+        "evaluation_readiness_complete": all(item["passed"] for item in deployment_required),
         "primary_proof_target": "policy_comparison_within_configured_evaluator",
         "evaluator_bounded_policy_comparison_complete": evaluator_policy_comparison_complete,
         "policy_comparison_summary": {
@@ -6949,18 +6949,18 @@ def _robot_team_grade_eval_closure_manifest(
             "evaluator_bounded_policy_comparison_single_best_policy_claimed": bool(
                 policy_ranking_scorecard.get("single_best_policy_claimed")
             ),
-            "policy_ranking_is_not_deployment_readiness": True,
+            "policy_ranking_is_not_evaluation_readiness": True,
             "traditional_sim_is_optional_cross_check_for_wam_eval": True,
             "spearman_pearson_mmrv_status": "not_measured_until_real_anchors_exist",
             "sim_only_beta_core_complete": all(item["passed"] for item in sim_only_required),
             "robot_team_grade_evaluation_complete": all(
                 item["passed"] for item in robot_team_required
             ),
-            "deployment_readiness_complete": all(
+            "evaluation_readiness_complete": all(
                 item["passed"] for item in deployment_required
             ),
             "public_claim_upgrade_allowed": False,
-            "physical_robot_readiness_claimed": False,
+            "generated_world_rank_fidelity_claimed": False,
         },
     }
 
@@ -7431,11 +7431,11 @@ def build_robot_eval_job(
                 "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
                 "primary_proof_target": "policy_comparison_within_configured_evaluator",
                 "policy_ranking_is_evaluator_bounded": True,
-                "policy_ranking_is_not_deployment_readiness": True,
+                "policy_ranking_is_not_evaluation_readiness": True,
                 "traditional_sim_is_optional_cross_check_for_wam_eval": True,
                 "generated_wam_rollouts_are_model_derived_support_artifacts": True,
                 "customer_specific_srcc_claimed": False,
-                "passing_wam_eval_is_not_deployment_approval": True,
+                "passing_wam_eval_is_not_rank_fidelity_result": True,
             },
         }
     _write_job_json(job_dir, "evaluation_result.json", eval_result)
@@ -7492,21 +7492,21 @@ def build_robot_eval_job(
             "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
             "primary_proof_target": "policy_comparison_within_configured_evaluator",
             "policy_ranking_is_evaluator_bounded": True,
-            "policy_ranking_is_not_deployment_readiness": True,
+            "policy_ranking_is_not_evaluation_readiness": True,
             "traditional_sim_is_optional_cross_check_for_wam_eval": True,
             "generated_wam_rollouts_are_model_derived_support_artifacts": True,
             "customer_specific_srcc_claimed": False,
-            "passing_wam_eval_is_not_deployment_approval": True,
+            "passing_wam_eval_is_not_rank_fidelity_result": True,
             "claim_boundary": {
                 **_mapping(proof_boundary.get("claim_boundary")),
                 "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
                 "primary_proof_target": "policy_comparison_within_configured_evaluator",
                 "policy_ranking_is_evaluator_bounded": True,
-                "policy_ranking_is_not_deployment_readiness": True,
+                "policy_ranking_is_not_evaluation_readiness": True,
                 "traditional_sim_is_optional_cross_check_for_wam_eval": True,
                 "generated_wam_rollouts_are_model_derived_support_artifacts": True,
                 "customer_specific_srcc_claimed": False,
-                "passing_wam_eval_is_not_deployment_approval": True,
+                "passing_wam_eval_is_not_rank_fidelity_result": True,
             },
         }
     _write_job_json(job_dir, "proof_boundary.json", proof_boundary)
@@ -7827,8 +7827,8 @@ def build_robot_eval_job(
         "sim_only_beta_core_complete": bool(
             robot_team_grade_closure.get("sim_only_beta_core_complete")
         ),
-        "deployment_readiness_complete": bool(
-            robot_team_grade_closure.get("deployment_readiness_complete")
+        "evaluation_readiness_complete": bool(
+            robot_team_grade_closure.get("evaluation_readiness_complete")
         ),
         "gpu_provisioning_status": gpu_result.get("status"),
         "simulator_service_status": sim_result.get("status"),
@@ -7991,8 +7991,8 @@ def build_robot_eval_job(
         ),
         "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
         "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
-        "safety_validated": bool(proof_boundary.get("safety_validated")),
-        "robot_readiness_proven": bool(proof_boundary.get("robot_readiness_proven")),
+        "non_ranking_operational_claim_validated": bool(proof_boundary.get("non_ranking_operational_claim_validated")),
+        "rank_fidelity_result_proven": bool(proof_boundary.get("rank_fidelity_result_proven")),
         "public_claim_upgrade_allowed": bool(proof_boundary.get("public_claim_upgrade_allowed")),
         "live_eval_closure_blockers": _string_list(live_closure.get("blockers")),
         "claim_boundary": {
@@ -8008,8 +8008,8 @@ def build_robot_eval_job(
             ),
             "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
             "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
-            "safety_validated": bool(proof_boundary.get("safety_validated")),
-            "robot_readiness_proven": bool(proof_boundary.get("robot_readiness_proven")),
+            "non_ranking_operational_claim_validated": bool(proof_boundary.get("non_ranking_operational_claim_validated")),
+            "rank_fidelity_result_proven": bool(proof_boundary.get("rank_fidelity_result_proven")),
             "public_claim_upgrade_allowed": bool(
                 proof_boundary.get("public_claim_upgrade_allowed")
             ),
@@ -8098,7 +8098,7 @@ def build_robot_eval_job(
         run_manifest["claim_boundary"] = {
             **_mapping(run_manifest.get("claim_boundary")),
             "simulator_beta_success_evaluated_by_sim_only_gate": True,
-            "physical_robot_readiness_claimed": False,
+            "generated_world_rank_fidelity_claimed": False,
         }
     run_manifest["artifacts"] = _artifact_paths(job_dir)
     _write_job_json(job_dir, "job_run_manifest.json", run_manifest)

@@ -119,7 +119,7 @@ def build_fixture_vision_success_labels(
                     "visual_smoke_required_for_review_grade_success_label": True,
                     "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
                     "review_grade_success_label": False,
-                    "robot_readiness_proven": False,
+                    "rank_fidelity_result_proven": False,
                     "public_claim_upgrade_allowed": False,
                 },
             }
@@ -181,7 +181,7 @@ def build_fixture_vision_success_labels(
             "review_grade_success_labels": False,
             "live_vlm_or_human_review_proven": False,
             "customer_specific_srcc_claimed": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }

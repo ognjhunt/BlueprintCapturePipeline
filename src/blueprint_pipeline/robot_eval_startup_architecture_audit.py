@@ -447,7 +447,7 @@ def _startup_artifact_checks(
                 passed=_string(worker_runtime_manifest.get("runtime_preflight_status"))
                 == _string(worker_runtime_preflight.get("status"))
                 and worker_runtime_preflight.get("simulator_execution_proven") is False
-                and worker_runtime_preflight.get("robot_readiness_proven") is False
+                and worker_runtime_preflight.get("rank_fidelity_result_proven") is False
                 and worker_runtime_preflight.get("public_claim_upgrade_allowed") is False,
                 message="Worker runtime preflight artifact matches the runtime manifest and cannot upgrade proof",
                 evidence={
@@ -458,8 +458,8 @@ def _startup_artifact_checks(
                     "simulator_execution_proven": worker_runtime_preflight.get(
                         "simulator_execution_proven"
                     ),
-                    "robot_readiness_proven": worker_runtime_preflight.get(
-                        "robot_readiness_proven"
+                    "rank_fidelity_result_proven": worker_runtime_preflight.get(
+                        "rank_fidelity_result_proven"
                     ),
                     "public_claim_upgrade_allowed": worker_runtime_preflight.get(
                         "public_claim_upgrade_allowed"
@@ -517,10 +517,10 @@ def _startup_artifact_checks(
             check_id="provider_launcher:no_secret_or_proof_upgrade",
             passed=provider_launcher_result.get("secret_values_in_artifact") is False
             and provider_launcher_result.get("simulator_execution_proven") is False
-            and provider_launcher_result.get("robot_readiness_proven") is False
+            and provider_launcher_result.get("rank_fidelity_result_proven") is False
             and provider_launcher_result.get("public_claim_upgrade_allowed") is False
             and "raw_command" not in provider_launcher_result,
-            message="Provider launcher result stores no secrets and cannot upgrade simulator, robot-readiness, or public proof",
+            message="Provider launcher result stores no secrets and cannot upgrade simulator, rank-fidelity, or public proof",
             evidence={
                 "status": provider_launcher_result.get("status"),
                 "execution_performed": provider_launcher_result.get(
@@ -535,8 +535,8 @@ def _startup_artifact_checks(
                 "simulator_execution_proven": provider_launcher_result.get(
                     "simulator_execution_proven"
                 ),
-                "robot_readiness_proven": provider_launcher_result.get(
-                    "robot_readiness_proven"
+                "rank_fidelity_result_proven": provider_launcher_result.get(
+                    "rank_fidelity_result_proven"
                 ),
                 "public_claim_upgrade_allowed": provider_launcher_result.get(
                     "public_claim_upgrade_allowed"
@@ -589,9 +589,9 @@ def _startup_artifact_checks(
             passed=runpod_adapter_result.get("secret_values_in_artifact") is False
             and runpod_adapter_result.get("raw_api_key_stored") is False
             and runpod_adapter_result.get("simulator_execution_proven") is False
-            and runpod_adapter_result.get("robot_readiness_proven") is False
+            and runpod_adapter_result.get("rank_fidelity_result_proven") is False
             and runpod_adapter_result.get("public_claim_upgrade_allowed") is False,
-            message="RunPod adapter result stores no API keys and cannot upgrade simulator, robot-readiness, or public proof",
+            message="RunPod adapter result stores no API keys and cannot upgrade simulator, rank-fidelity, or public proof",
             evidence={
                 "status": runpod_adapter_result.get("status"),
                 "mode": runpod_adapter_result.get("mode"),
@@ -606,8 +606,8 @@ def _startup_artifact_checks(
                 "simulator_execution_proven": runpod_adapter_result.get(
                     "simulator_execution_proven"
                 ),
-                "robot_readiness_proven": runpod_adapter_result.get(
-                    "robot_readiness_proven"
+                "rank_fidelity_result_proven": runpod_adapter_result.get(
+                    "rank_fidelity_result_proven"
                 ),
                 "public_claim_upgrade_allowed": runpod_adapter_result.get(
                     "public_claim_upgrade_allowed"
@@ -1270,15 +1270,15 @@ def _startup_artifact_checks(
             _bool(claim_boundary, ("simulator_execution_proven",)) is False
             or simulator_execution_earned
         )
-        and _bool(claim_boundary, ("robot_readiness_proven",)) is False
+        and _bool(claim_boundary, ("rank_fidelity_result_proven",)) is False
         and _bool(claim_boundary, ("public_claim_upgrade_allowed",)) is False,
-        message="Startup path does not upgrade unearned simulator, robot readiness, or public claims",
+        message="Startup path does not upgrade unearned simulator, generated-world rank fidelity, or public claims",
         evidence={
             "simulator_execution_proven": claim_boundary.get("simulator_execution_proven"),
             "simulator_execution_earned": simulator_execution_earned,
             "job_status": run_manifest.get("status"),
             "simulator_service_status": run_manifest.get("simulator_service_status"),
-            "robot_readiness_proven": claim_boundary.get("robot_readiness_proven"),
+            "rank_fidelity_result_proven": claim_boundary.get("rank_fidelity_result_proven"),
             "public_claim_upgrade_allowed": claim_boundary.get(
                 "public_claim_upgrade_allowed"
             ),
@@ -1372,7 +1372,7 @@ def build_robot_eval_startup_architecture_audit(
             "simulator_execution_performed_by_audit": False,
             "startup_architecture_compliant": not blockers,
             "simulator_execution_proven": simulator_execution_earned and not blockers,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
         "output_path": str(output),

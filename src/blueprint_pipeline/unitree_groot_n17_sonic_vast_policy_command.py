@@ -183,10 +183,10 @@ def _blocked_payload(
         "provider_output_replay_used": False,
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
-        "real_world_manipulation_success_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
+        "accepted_anchor_manipulation_success_proven": False,
     }
 
 
@@ -421,10 +421,10 @@ def run_vast_policy_command(payload: Mapping[str, Any]) -> tuple[dict[str, Any],
         "estimated_cost_usd": vast_result.get("estimated_cost_usd"),
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
-        "physical_robot_readiness_proven": False,
-        "deployment_readiness_proven": False,
-        "safety_validation_proven": False,
-        "real_world_manipulation_success_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "non_ranking_operational_claim_proven": False,
+        "accepted_anchor_manipulation_success_proven": False,
     }
     write_json(job_dir / "unitree_groot_n17_sonic_vast_policy_command_output.json", output)
     return output, 0 if completed else 2

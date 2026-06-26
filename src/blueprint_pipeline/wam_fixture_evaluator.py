@@ -457,7 +457,7 @@ def _rollout_for_run(
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
             "real_world_outcome_proven": False,
-            "robot_readiness_proven": False,
+            "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -582,7 +582,7 @@ def _normalized_attempt_trace(
                     ),
                     "simulator_execution_proven": False,
                     "robot_policy_execution_proven": False,
-                    "robot_readiness_proven": False,
+                    "rank_fidelity_result_proven": False,
                 },
             }
         )
@@ -1262,7 +1262,7 @@ def _policy_scorecard(
                 "mean_absolute_success_rate_error",
             ],
             "traditional_sim_cross_check_optional": True,
-            "deployment_readiness_claimed": False,
+            "evaluation_readiness_claimed": False,
             "external_deployment_grade_claimed": False,
             "single_best_policy_claim_requires_margin_above_tie_band": True,
             "review_grade_policy_ranking_requires_passed_visual_smoke": True,
@@ -1896,10 +1896,10 @@ def _candidate_selection_report(
     usable_anchor_count = int(_number(anchor_manifest.get("usable_anchor_count"), 0) or 0)
     claim_boundary = {
         **_claim_boundary(substrate=substrate, generated_at=generated_at),
-        "boundary_statement": "do not use for deployment approval",
-        "do_not_use_for_deployment_approval": True,
-        "deployment_approval_claimed": False,
-        "real_world_success_claimed": False,
+        "boundary_statement": "do not use for generated-world rank-fidelity result",
+        "do_not_use_as_rank_fidelity_result": True,
+        "rank_fidelity_result_claimed": False,
+        "accepted_anchor_success_claimed": False,
         "best_policy_statement_scope": "configured_evaluator_only",
     }
     return {
@@ -1977,7 +1977,7 @@ def _candidate_selection_markdown(report: Mapping[str, Any]) -> str:
         f"Predicted success-rate margin: `{margin.get('predicted_success_rate')}`",
         f"Tie or ambiguity status: `{report.get('tie_or_ambiguity_status')}`",
         "",
-        "Boundary: do not use for deployment approval.",
+        "Boundary: do not use for generated-world rank-fidelity result.",
         "",
     ]
     if shortlist:
@@ -2055,7 +2055,7 @@ def _customer_handoff_markdown(report: Mapping[str, Any]) -> str:
             (
                 "This ranks policies inside the configured evaluator. Generated rollouts "
                 "and fixture labels are support artifacts; they do not prove real-world "
-                "success, deployment approval, robot safety, or customer-specific SRCC."
+                "success, generated-world rank-fidelity result, robot safety, or customer-specific SRCC."
             ),
             "",
         ]
@@ -2109,7 +2109,7 @@ def _customer_handoff_report(
         },
         "reader_boundary": (
             "Generated WAM rollouts are model-derived support artifacts, not raw truth or "
-            "deployment approval. Fixture-only labels and rankings are not review-grade "
+            "generated-world rank-fidelity result. Fixture-only labels and rankings are not review-grade "
             "task-success evidence unless an explicit visual smoke artifact says the "
             "rollout is useful for task-success review."
         ),

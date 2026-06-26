@@ -246,9 +246,9 @@ def build_unitree_g1_policy_execution(
             "policy_metrics_tied_to_scenario_variation": metrics["status"] == "completed",
             "robot_team_owner_acceptance_or_review_proven": False,
             "robot_team_policy_performance_proven": False,
-            "physical_robot_readiness_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "real_robot_pov_evidence_proven": False,
-            "safety_validated": False,
+            "non_ranking_operational_claim_validated": False,
             "public_claim_upgrade_allowed": False,
         },
         "blockers": []

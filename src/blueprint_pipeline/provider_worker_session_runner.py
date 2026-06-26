@@ -210,9 +210,9 @@ def run_provider_worker_session(
             "session_runner_does_not_allocate_provider": True,
             "shutdown_acknowledged_is_not_provider_teardown_or_cost_proof": True,
             "provider_adapter_teardown_artifact_required": True,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-            "safety_validation_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
         },
     }
     write_json(output / "provider_worker_session_run.json", manifest)

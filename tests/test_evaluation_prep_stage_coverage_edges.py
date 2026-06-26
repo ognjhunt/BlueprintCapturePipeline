@@ -640,7 +640,7 @@ def test_run_stage_covers_existing_manifest_marble_bridge_cosmos_and_degradation
                 "artifacts": {},
                 "artifact_uris": {},
                 "simulator_execution_proven": False,
-                "robot_readiness_proven": False,
+                "rank_fidelity_result_proven": False,
                 "job_count": 0,
                 "model_derived_support_assets_present": False,
                 "live_provider_calls_performed": False,

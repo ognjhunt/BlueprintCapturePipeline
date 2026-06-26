@@ -11,7 +11,7 @@ manifest into local simulator-review packets for Isaac Sim, MuJoCo, and
 PyBullet.
 
 It does not call World Labs, run Isaac Sim, run MuJoCo, run PyBullet, convert
-SPZ/PLY/USD files, or claim robot readiness. Remote asset downloads live in the
+SPZ/PLY/USD files, or claim generated-world rank fidelity. Remote asset downloads live in the
 separate World Labs materialization lane described below.
 
 ## Inputs
@@ -136,7 +136,7 @@ Blocked claims unless owner-system proof exists:
 - A real robot or accepted simulator trial passed.
 - Articulated doors, drawers, fixtures, or tools are interaction-ready.
 
-Robot readiness requires simulator load traces, action logs,
+generated-world rank fidelity requires simulator load traces, action logs,
 physics/contact validation logs, robot-team-owned robot assets, and accepted
 simulator or real-robot trial evidence.
 

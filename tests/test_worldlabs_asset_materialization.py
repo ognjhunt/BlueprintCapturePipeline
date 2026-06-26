@@ -126,7 +126,7 @@ def test_materialize_worldlabs_assets_downloads_collider_and_writes_export_manif
     assert manifest["skipped_candidates"][0]["kind"] == "splat_spz"
     assert export_manifest["output_collider_mesh_path"].endswith("/worldlabs_collider.glb")
     assert export_manifest["remote_collider_mesh_glb_url"].endswith("/collider.glb")
-    assert export_manifest["claim_boundary"]["robot_readiness_proven"] is False
+    assert export_manifest["claim_boundary"]["rank_fidelity_result_proven"] is False
 
     handoff = build_marble_sim_assets(capture_root=capture_root)
     marble_asset = json.loads(

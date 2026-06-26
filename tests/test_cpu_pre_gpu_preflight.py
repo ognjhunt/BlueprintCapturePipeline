@@ -492,7 +492,7 @@ def test_episode_spec_and_cpu_preflight_emit_review_required_optional_dependency
         "python -m pip install pybullet"
     )
     assert manifest["simulator_execution_proven"] is False
-    assert manifest["robot_readiness_proven"] is False
+    assert manifest["rank_fidelity_result_proven"] is False
 
     build_simulation_automation(
         capture_root=capture_root,

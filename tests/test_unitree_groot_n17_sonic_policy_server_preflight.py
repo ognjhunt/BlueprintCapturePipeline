@@ -223,4 +223,4 @@ def test_policy_server_preflight_ready_with_local_checkpoint_cuda_and_sim2sim(
     assert report["n17_checkpoint"]["reference_kind"] == "local_path"
     assert report["server_imports"]["torch_cuda_available"] is True
     assert report["unitree_policy_action_command_ran"] is False
-    assert report["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert report["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False

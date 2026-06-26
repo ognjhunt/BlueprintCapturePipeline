@@ -39,7 +39,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "hosted_session_proven": False,
     "simulator_execution_proven": False,
     "owner_gpu_simulator_execution_proven": False,
-    "robot_readiness_proven": False,
+    "rank_fidelity_result_proven": False,
     "public_claim_upgrade_allowed": False,
 }
 
