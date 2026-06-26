@@ -19,6 +19,17 @@ on those generated frames. It sets `default_local_wam_generator_used=true` and
 `learned_oscar_or_cosmos_model_ran=false`; live learned WAM model execution still
 requires the explicit gated OSCAR/Cosmos command path.
 
+After each generated next-observation, the loop runs the WAM-derived
+perception/observation harness before policy requery. The harness derives
+support masks/boxes, tracks, relative depth, pose, contact likelihood,
+reviewability, and uncertainty from generated media, combines them with
+evaluator-controlled action history, nominal robot state, projected skeletons,
+controller limits, and camera calibration when available, then adapts the next
+policy input to the selected policy's declared observation schema. Current
+Unitree policy commands are treated as RGB plus nominal-state consumers by
+default, so harness masks/depth/contact fields are withheld from the policy and
+remain diagnostics unless a future policy explicitly declares support.
+
 ## Current Policy Roles
 
 - `unitree_g1_policy`: realistic G1 locomotion/control candidate, such as
@@ -756,6 +767,8 @@ The intended closed-loop shape is:
 scene + G1 observation
   -> Unitree-specific policy endpoint emits action chunk
   -> WAM/evaluator predicts or scores next world observation
+  -> WAM-derived perception harness emits derived support observations and checks
+  -> policy observation adapter withholds unsupported masks/depth/contact fields
   -> policy re-observes a useful generated next observation
   -> repeat until task end
   -> separate VLM/human scorer labels success from generated or executed video
@@ -767,3 +780,32 @@ continue to block rather than fake success when a runnable Unitree hand-policy
 command or checkpoint is missing. A default local WAM completion is not a live
 learned OSCAR/Cosmos completion, deployment readiness, safety validation, or
 physical robot task proof.
+
+The WAM-derived harness can recommend early termination when generated media is
+too weak for reliable policy requery, target identity is lost, the target is
+offscreen, relative depth jumps, or the action trace no longer matches visual
+motion. That recommendation blocks success scoring unless an explicit review
+path accepts the artifact. Harness outputs are derived observations, not real
+sensors; inferred depth is not sensor depth, object masks are not physical truth,
+and contact likelihood is not physical contact proof.
+
+The default Unitree loop keeps the policy interface RGB plus declared nominal
+state. Optional perception backends such as SAM-style segmentation, tracking, or
+depth commands can be enabled only through
+`BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_KIND`,
+`BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_COMMAND`, and
+`BLUEPRINT_ALLOW_WAM_PERCEPTION_HARNESS_EXTERNAL_BACKEND=true`; if the gate or
+command is missing, the backend result is blocked and the fixture/object-index
+path remains the local default. Even when a real backend runs, the policy
+receives masks/depth/contact fields only if its declared observation schema
+supports them. Otherwise those fields are limited to diagnostics, validation
+metrics, false-success reduction analysis, review reports, and
+early-termination/scoring gates.
+
+For a sim-only architecture proof of the provider path, run
+`python -m blueprint_pipeline.wam_sim_provider_e2e --provider-mode real` with a
+generated frame and optional SAM3/depth/pose configuration. That proves the
+generated-frame -> provider -> harness -> adapter -> gated-requery artifact
+path, but it does not change the default Unitree policy interface or prove
+perception accuracy, deployment readiness, safety validation, physical-robot
+readiness, or real-world task success.

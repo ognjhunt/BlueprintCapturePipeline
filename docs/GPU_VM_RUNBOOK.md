@@ -63,6 +63,38 @@ SAM3 is optional. If it is not installed or `SAM3_WEIGHTS_PATH` does not point t
 
 `install_colmap_cuda.sh` is not part of this narrowed path and is not required for the supported GPU VM bootstrap.
 
+## Reusable WAM Perception Harness Image
+
+For provider/harness runs, prefer a versioned image over reinstalling SAM3,
+Depth Anything, YOLO pose, `transformers`, and `ultralytics` on every GPU:
+
+```bash
+blueprint-build-wam-perception-harness-gpu-image \
+  --image-ref docker.io/nijelhunt/blueprint-wam-perception-harness:20260626-cu126
+```
+
+The generated build context writes:
+
+- `Dockerfile.wam-perception-harness-gpu`
+- `build_image.sh`
+- `push_image.sh`
+- `run_image_healthcheck.sh`
+- `prepare_model_mounts.sh`
+- `wam_perception_harness_gpu_image_manifest.json`
+
+The image bakes the Blueprint WAM-derived harness code, real-provider probe,
+sim-provider E2E runner, CUDA PyTorch, `transformers`, `ultralytics`, Depth
+Anything V2 cache, and YOLO pose cache. It keeps SAM3 weights external by
+default: mount or fetch them to `/models/sam3/sam3.pt` and set
+`SAM3_WEIGHTS_PATH` only to that path. Registry, Hugging Face, DigitalOcean, and
+object-store credentials must come from local secret files or provider-native
+secrets; they must not be baked into the image or written into artifacts.
+
+The image healthcheck verifies imports and a fixture-mode harness loop. It is a
+runtime-readiness check only; it does not prove provider accuracy, sensor depth,
+physical contact, safety validation, deployment readiness, or physical robot
+readiness.
+
 ## Environment variables
 
 Required for downstream site-world runtime handoff:

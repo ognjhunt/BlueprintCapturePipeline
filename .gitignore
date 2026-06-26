@@ -51,6 +51,7 @@ htmlcov/
 .tox/
 .nox/
 yolov8s-worldv2.pt
+yolo11n-pose.pt
 
 # Mypy
 .mypy_cache/

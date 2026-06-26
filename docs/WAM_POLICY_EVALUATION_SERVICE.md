@@ -147,6 +147,215 @@ generated observations. Its artifacts must remain labeled as default local
 support output; they do not prove a live learned OSCAR/Cosmos checkpoint,
 physical sensor feedback, success scoring, or deployment readiness.
 
+## WAM-Derived Perception And Observation Harness
+
+The closed-loop evaluator supplies whatever the selected policy declares it can
+consume at each step. The WAM does not have to natively generate every
+modality. The supported architecture is:
+
+```text
+policy action
+  -> WAM/default generator emits next RGB/video/multiview observation
+  -> WAM-derived perception harness derives support observations from generated media
+  -> harness joins evaluator-controlled nominal state and calibration when available
+  -> policy observation adapter passes only declared policy-interface fields
+  -> diagnostics/scoring artifacts consume the harness outputs with proof boundaries
+  -> loop repeats, or terminates early when reliability is too low
+```
+
+The reusable local harness writes these artifacts under the WAM loop/eval
+directory:
+
+- `wam_derived_observation_bundle.json`
+- `wam_derived_observation_manifest.json`
+- `wam_perception_harness_checks.json`
+- `wam_policy_observation_adapter_report.json`
+- `wam_derived_observation_steps.jsonl`
+- `wam_perception_backend_request.json` and
+  `wam_perception_backend_result.json` when an external backend is explicitly
+  enabled
+- `wam_perception_harness_validation_report.json`
+- `wam_false_success_reduction_metrics.json`
+- `wam_perception_harness_review_report.md`
+
+The first implementation is deterministic and fixture-backed. It can use
+existing `object_index` and `eval_ready_task_grounding` records for object
+labels, boxes, masks, crops, and target prompts, then estimate derived masks or
+boxes, tracks, relative depth, 2D pose, contact likelihood, visual cue status,
+reviewability, and uncertainty. If a real detector/depth backend is added later
+it must sit behind the same artifact contract and record its backend kind,
+command/env gate, status, blockers, and whether a real model actually ran.
+External perception backends are opt-in through:
+
+```bash
+BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_KIND=sam3 \
+BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_COMMAND="your-backend-command" \
+BLUEPRINT_ALLOW_WAM_PERCEPTION_HARNESS_EXTERNAL_BACKEND=true
+```
+
+The harness passes the request/output paths through
+`BLUEPRINT_WAM_PERCEPTION_BACKEND_INPUT`,
+`BLUEPRINT_WAM_PERCEPTION_BACKEND_OUTPUT`, and
+`BLUEPRINT_WAM_PERCEPTION_BACKEND_JOB_DIR`. If the env gate or command is
+missing, the backend result is blocked and the fixture/object-index path remains
+the only local deterministic path. Secrets must be provided through the backend
+process environment or local secret files; raw credentials are not required in
+Pipeline artifacts.
+
+For a sim-only end-to-end provider/harness proof, use:
+
+```bash
+python -m blueprint_pipeline.wam_sim_provider_e2e \
+  --provider-mode real \
+  --generated-frame <gpt-image2-or-wam-generated-frame.jpg> \
+  --target-prompt "robot arm" \
+  --sam3-weights <sam3.pt> \
+  --depth-provider v2 \
+  --pose-model yolo11n-pose.pt
+```
+
+If `--generated-frame` is omitted, the runner first looks for an existing
+generated WAM/GPT-image frame under `robot_eval_jobs/`; if none exists it writes
+a local synthetic AI-style start frame. It then creates generated next-frame
+steps, runs the WAM-derived harness on each step, adapts the observation back to
+the declared policy schema, and writes `wam_sim_provider_e2e_manifest.json`,
+`wam_sim_provider_e2e_trace.jsonl`, generated step frames, and the normal
+`wam_derived_observation_harness/` artifact family. This proves the sim
+architecture path only. The manifest keeps
+`perception_accuracy_validated=false` and records that generated frames are not
+capture truth, inferred depth is not sensor depth, SAM3 masks are not physical
+truth, contact likelihood is not physical contact proof, and no deployment,
+safety, physical-readiness, or real-world-success claim is proven.
+
+Depth providers are replaceable. The default local smoke path uses the
+Transformers Depth Anything V2 small model because it is lightweight enough for
+repo-local provider proof. Depth Anything 3 can be selected for stronger
+simulation geometry experiments with:
+
+```bash
+BLUEPRINT_WAM_DEPTH_PROVIDER_KIND=da3 \
+BLUEPRINT_ALLOW_WAM_AUTO_DA3_PROVIDER=true \
+BLUEPRINT_WAM_DA3_MODEL_ID=depth-anything/DA3-BASE \
+python -m blueprint_pipeline.wam_sim_provider_e2e --provider-mode real --depth-provider da3
+```
+
+DA3 is optional and fail-closed. If the `depth_anything_3` package or selected
+weights are unavailable, the backend records `da3_depth_provider_package_missing`
+or the concrete provider error instead of falling back silently or implying that
+metric sensor depth exists. Use `depth-anything/DA3METRIC-LARGE` only when the
+runtime, license posture, and calibration needs fit the lane; generated-pixel
+metric-looking estimates still remain support artifacts unless tied to a real
+calibrated depth source.
+
+For reusable GPU runs, build a dedicated WAM perception harness image context:
+
+```bash
+blueprint-build-wam-perception-harness-gpu-image \
+  --image-ref docker.io/nijelhunt/blueprint-wam-perception-harness:20260626-cu126
+```
+
+The context writes `Dockerfile.wam-perception-harness-gpu`, build/push scripts,
+`run_image_healthcheck.sh`, `prepare_model_mounts.sh`, and
+`wam_perception_harness_gpu_image_manifest.json`. The Dockerfile bakes the
+Blueprint harness code, CUDA PyTorch, `transformers`, `ultralytics`, Depth
+Anything V2 model cache, YOLO pose cache, the real-provider probe, and the
+sim-provider E2E runner. It does not bake raw Docker, DigitalOcean, object-store,
+or Hugging Face credentials. SAM3 weights are not baked by default and are
+expected at `/models/sam3/sam3.pt` through a mounted model directory or a
+provider-side secret-gated fetch. This prevents per-run Python dependency
+reinstalls while keeping model weights and credentials explicit.
+
+For a one-command proof probe of the real-provider lane, use:
+
+```bash
+python -m blueprint_pipeline.wam_real_provider_validation_probe run \
+  --generated-frame <wam-generated-frame.jpg> \
+  --validation-set <capture-backed-validation-rows.json>
+```
+
+The probe writes
+`robot_eval_jobs/wam_real_provider_validation_probe_<timestamp>/wam_real_provider_validation_proof_manifest.json`
+and the normal `wam_derived_observation_harness/` artifact family. It records
+whether SAM3 weights are present through `SAM3_WEIGHTS_PATH` or
+`BLUEPRINT_SAM3_WEIGHTS_PATH`, whether depth and pose provider commands are
+configured through `BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND` and
+`BLUEPRINT_WAM_POSE_PROVIDER_COMMAND`, and whether labeled validation rows were
+supplied. If any required real-provider or validation input is missing, the
+manifest status is `blocked`, the harness recommends early termination, policy
+requery and success scoring are blocked, and validation/perception accuracy
+metrics stay `not_measured`.
+
+The validation set path must contain real/capture-backed labeled rows, not only
+fixture expectations. At least one row must carry an accepted truth flag such as
+`capture_backed=true`, `capture_truth=true`, `real_labeled_validation=true`, or
+`accepted_real_world_anchor=true`; at least one validation label such as
+`actual_success`, `capture_success`, `expected_target_visible`,
+`expected_contact`, or `expected_object_id`; and a provenance reference such as
+`source_capture_path`, `source_artifact_path`, `source_video_path`,
+`source_frame_path`, `source_label_path`, `evidence_path`, or
+`operator_attestation_path`. Files that exist but do not meet that row contract
+still produce a blocked proof manifest.
+
+Authoritative/evaluator-controlled channels stay separate from pixel-inferred
+channels. Action command/history, gripper command, nominal joint state,
+nominal/FK end-effector state, projected robot skeleton refs, action-conditioning
+metadata, controller limits, and capture/sim camera calibration are labeled as
+evaluator-controlled or nominal when present. Object masks, object IDs/tracks,
+estimated depth, estimated object pose, visual gripper-object relation, contact
+likelihood, success/failure visual cues, reviewability, and uncertainty are
+labeled as derived from WAM-generated media.
+
+The policy adapter is fail-closed against the declared policy observation
+schema. RGB-only policies receive only the generated RGB/frame fields and any
+declared nominal state fields; masks, depth, pose, contact likelihood, and
+uncertainty stay available to diagnostics, scoring gates, and early termination
+reports. Policies that declare RGB-D, mask, state, contact-likelihood, or
+uncertainty support receive only those declared enriched fields, and
+`wam_policy_observation_adapter_report.json` records requested, supplied, and
+withheld fields.
+
+Harness reliability checks can recommend early termination when a generated
+frame is missing, too dark/flat, the target is offscreen, object identity is
+lost, relative depth jumps unrealistically, or the action/robot trace no longer
+matches the visual observation. Early termination blocks policy requery and
+success scoring unless an explicit review path later accepts the artifact.
+When multiple generated views are supplied, `multiview_consistent` records view
+count, readable-view count, per-view frame quality, blockers, and confidence.
+Single-view rollouts remain explicitly `not_evaluated` for multiview rather
+than implying cross-view proof.
+
+When camera calibration and calibration-quality metadata are available from
+capture or sim artifacts, the harness can use them for calibrated projection
+support such as metric-depth estimates from generated pixels and 3D camera-frame
+pose estimates. Those fields still record `metric_depth_truth=false` and
+`physical_pose_truth=false` unless a separate real calibrated depth/pose source
+exists; calibration metadata does not turn WAM pixels into sensor measurements.
+
+The review-acceptance path is explicit. A low-confidence step can unblock
+generated-rollout success scoring only when a review acceptance payload marks
+the step accepted for success scoring and includes a reviewer plus evidence
+refs. This does not unblock policy requery, real-world success, safety
+validation, or physical-robot readiness.
+
+Validation metrics are measured only against supplied labeled validation rows
+from real/capture-backed clips or accepted anchors. The validation report can
+measure object-id accuracy, target-visibility accuracy, contact-likelihood
+accuracy, and false-success reduction versus plain generated-video scoring. If
+no validation set is supplied, these metrics remain blocked/not measured; the
+fixture harness contract alone does not prove an accuracy gain.
+
+Critical claim boundaries:
+
+- Harness outputs are derived observations, not real sensors.
+- Inferred depth is not sensor depth.
+- SAM/object masks or fixture boxes are not physical truth.
+- Mask overlap, proximity, or contact likelihood is not stable grasp/contact proof.
+- Generated rollout success, generated-video labels, and harness outputs do not
+  prove deployment approval, safety validation, physical robot readiness, or
+  real-world success.
+- WAM/harness outputs remain support artifacts for Task Evaluation Runs and
+  Post-Training Data Packages grounded in capture truth.
+
 Scene WAM episode packets can also prepare capture-derived robot POV seed
 frames through the depth-splat synthesis path. For each task and robot profile,
 the packet writes source QA, a coverage/quality report, a contact sheet, and
@@ -261,6 +470,21 @@ When WAM evaluation is requested, the job writes:
 - `wam_episode_consistency_request.json`
 - `wam_episode_consistency.command.json` when an external scorer command runs
 - `wam_consistency_checks.json`
+- `wam_derived_observation_bundle.json` when the derived observation harness runs
+- `wam_derived_observation_manifest.json` when the derived observation harness runs
+- `wam_perception_harness_checks.json` when the derived observation harness runs
+- `wam_policy_observation_adapter_report.json` when the derived observation harness runs
+- `wam_derived_observation_steps.jsonl` when the derived observation harness runs
+- `wam_perception_backend_request.json` when an optional external perception
+  backend is explicitly enabled
+- `wam_perception_backend_result.json` when an optional external perception
+  backend is explicitly enabled
+- `wam_perception_harness_validation_report.json` when the derived observation
+  harness writes validation metrics or records that validation labels are absent
+- `wam_false_success_reduction_metrics.json` when labeled validation rows allow
+  comparison against plain generated-video false-success labels
+- `wam_perception_harness_review_report.md` when the derived observation harness
+  writes its reader-facing reliability and claim-boundary report
 - `normalized_attempt_trace.json`
 - `failure_labels.json`
 - `prediction_outcome_ledger.json`

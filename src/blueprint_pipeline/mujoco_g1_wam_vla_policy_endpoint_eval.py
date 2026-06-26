@@ -73,6 +73,13 @@ from .wam_generated_video_review import (
     validate_generated_mp4_for_review,
     visual_smoke_generated_rollouts_for_review,
 )
+from .wam_derived_observation_harness import (
+    EXTERNAL_BACKEND_COMMAND_ENV,
+    EXTERNAL_BACKEND_ENV_GATE,
+    run_wam_derived_observation_harness_step,
+    summarize_wam_derived_observation_artifacts,
+    write_wam_derived_observation_artifacts,
+)
 from .wam_auxiliary_observation import (
     build_wam_auxiliary_observation_manifest,
     summarize_wam_auxiliary_observation_manifest,
@@ -2737,6 +2744,59 @@ def _initial_policy_action_loop_observation(
     }
 
 
+def _declared_policy_observation_schema_for_wam_loop(
+    selected_candidate_id: str | None,
+) -> dict[str, Any]:
+    """Return the observation fields the current policy loop is allowed to receive."""
+
+    return {
+        "schema_version": "wam_policy_observation_adapter_declared_schema.v1",
+        "policy_id": selected_candidate_id,
+        "schema_id": OBSERVATION_SCHEMA_ID,
+        "modalities": ["rgb", "nominal_state"],
+        "fields": [
+            "schema_version",
+            "camera_frame_path",
+            "visual_observation",
+            "task_id",
+            "task_prompt",
+            "target_object_id",
+            "state",
+            "proprioception",
+            "unitree_g1_sonic_state",
+            "base_pose",
+            "base_velocity",
+            "contact_state",
+            "route_task_state",
+            "object_state",
+            "allowed_action_schema",
+            "safety_limits",
+        ],
+        "supports_depth": False,
+        "supports_masks": False,
+        "supports_state": True,
+        "claim_boundary": {
+            "policy_schema_does_not_request_harness_masks_or_depth_by_default": True,
+            "harness_outputs_available_for_diagnostics_and_gating": True,
+        },
+    }
+
+
+def _wam_perception_harness_backend_config() -> dict[str, Any]:
+    backend_kind = os.getenv("BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_KIND", "").strip()
+    backend_command = os.getenv(EXTERNAL_BACKEND_COMMAND_ENV, "").strip()
+    if not backend_kind and backend_command:
+        backend_kind = "external_command"
+    return {
+        "backend_kind": backend_kind or "fixture",
+        "backend_command": backend_command or None,
+        "allow_external_backend": None,
+        "env_gate": EXTERNAL_BACKEND_ENV_GATE,
+        "command_env": EXTERNAL_BACKEND_COMMAND_ENV,
+        "configured_for_external_backend": bool(backend_kind or backend_command),
+    }
+
+
 WAM_GENERATION_COMMAND_GATE_ENV = "BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER"
 WAM_GENERATION_COMMAND_CANDIDATES = (
     {
@@ -4177,12 +4237,15 @@ def run_robot_policy_wam_closed_loop_attempt(
     loop_dir = job_dir / "robot_policy_wam_closed_loop"
     generated_dir = loop_dir / "generated_next_observations"
     policy_call_dir = loop_dir / "policy_calls"
+    harness_dir = loop_dir / "wam_derived_observation_harness"
     ensure_dir(generated_dir)
     ensure_dir(policy_call_dir)
+    ensure_dir(harness_dir)
     trace_path = loop_dir / "robot_policy_wam_loop_trace.jsonl"
     generated_observation_trace_path = loop_dir / "wam_generated_next_observations.jsonl"
     wam_generation_discovery = discover_wam_generation_command(generated_at=generated_at)
     write_json(loop_dir / "wam_generation_command_discovery.json", wam_generation_discovery)
+    harness_backend_config = _wam_perception_harness_backend_config()
     blockers: list[str] = []
     if selected is None:
         blockers.extend(
@@ -4203,6 +4266,13 @@ def run_robot_policy_wam_closed_loop_attempt(
     if not initial_action:
         blockers.append("blocked_initial_unitree_policy_action_missing")
     if blockers:
+        harness_artifacts = write_wam_derived_observation_artifacts(
+            output_dir=harness_dir,
+            generated_at=generated_at,
+            steps=[],
+            adapter_reports=[],
+        )
+        harness_summary = summarize_wam_derived_observation_artifacts(harness_artifacts)
         _write_wam_generation_command_artifacts(
             loop_dir=loop_dir,
             generated_at=generated_at,
@@ -4257,6 +4327,46 @@ def run_robot_policy_wam_closed_loop_attempt(
             "blockers": sorted(set(blockers)),
             "trace_path": str(trace_path),
             "generated_next_observation_trace": str(generated_observation_trace_path),
+            "wam_derived_observation_manifest": harness_summary["artifact_paths"].get(
+                "wam_derived_observation_manifest"
+            ),
+            "wam_derived_observation_bundle": harness_summary["artifact_paths"].get(
+                "wam_derived_observation_bundle"
+            ),
+            "wam_perception_harness_checks": harness_summary["artifact_paths"].get(
+                "wam_perception_harness_checks"
+            ),
+            "wam_policy_observation_adapter_report": harness_summary["artifact_paths"].get(
+                "wam_policy_observation_adapter_report"
+            ),
+            "wam_perception_harness_validation_report": harness_summary["artifact_paths"].get(
+                "wam_perception_harness_validation_report"
+            ),
+            "wam_false_success_reduction_metrics": harness_summary["artifact_paths"].get(
+                "wam_false_success_reduction_metrics"
+            ),
+            "wam_perception_harness_review_report": harness_summary["artifact_paths"].get(
+                "wam_perception_harness_review_report"
+            ),
+            "wam_derived_observation_step_count": harness_summary.get("step_count"),
+            "wam_derived_observation_early_termination_recommended": (
+                harness_summary.get("early_termination_recommended")
+            ),
+            "wam_perception_harness_validation_status": harness_summary.get(
+                "validation_status"
+            ),
+            "wam_false_success_reduction_status": harness_summary.get(
+                "false_success_reduction_status"
+            ),
+            "wam_perception_harness_backend_config": {
+                "backend_kind": harness_backend_config.get("backend_kind"),
+                "env_gate": harness_backend_config.get("env_gate"),
+                "command_env": harness_backend_config.get("command_env"),
+                "configured_for_external_backend": harness_backend_config.get(
+                    "configured_for_external_backend"
+                ),
+                "raw_credentials_written_to_artifacts": False,
+            },
             "wam_generation_command_discovery": str(
                 loop_dir / "wam_generation_command_discovery.json"
             ),
@@ -4362,9 +4472,15 @@ def run_robot_policy_wam_closed_loop_attempt(
         policy_calls[0]["policy_observation_frame_path"] = str(source_frame)
     wam_execution_steps: list[dict[str, Any]] = []
     wam_output_steps: list[dict[str, Any]] = []
+    derived_observation_steps: list[dict[str, Any]] = []
+    policy_adapter_reports: list[dict[str, Any]] = []
+    harness_artifacts: dict[str, Any] | None = None
     structural_wam_generation_count = 0
     live_wam_generation_success_count = 0
     default_wam_generation_success_count = 0
+    declared_policy_observation_schema = _declared_policy_observation_schema_for_wam_loop(
+        selected_candidate_id
+    )
     for step_index in range(1, max_calls):
         if source_frame is None or not source_frame.is_file():
             blockers.append("blocked_wam_loop_source_policy_frame_missing")
@@ -4414,14 +4530,85 @@ def run_robot_policy_wam_closed_loop_attempt(
                 break
             default_wam_generation_success_count += 1
         generated_observations.append(generated_observation)
+        harness_result = run_wam_derived_observation_harness_step(
+            output_dir=harness_dir,
+            generated_at=generated_at,
+            step_index=step_index,
+            source_generated_frame_path=generated_frame,
+            source_generated_video_path=generated_observation.get(
+                "generated_next_observation_video_path"
+            ),
+            source_wam_rollout_id=f"wam_policy_loop_step_{step_index:04d}",
+            transition_id=f"policy_wam_transition_{step_index:04d}",
+            source_policy_action=current_action,
+            action_history=[
+                _mapping(row.get("action_payload_redacted"))
+                for row in policy_calls
+                if _mapping(row.get("action_payload_redacted"))
+            ],
+            current_policy_observation=current_observation,
+            skeleton_conditioning=_mapping(generated_observation.get("skeleton_conditioning")),
+            controller_limits=_mapping(current_observation.get("safety_limits")),
+            previous_steps=derived_observation_steps,
+            previous_adapter_reports=policy_adapter_reports,
+            backend_kind=str(harness_backend_config["backend_kind"]),
+            backend_command=harness_backend_config.get("backend_command"),
+            allow_external_backend=harness_backend_config.get("allow_external_backend"),
+            policy_id=selected_candidate_id,
+            declared_policy_observation_schema=declared_policy_observation_schema,
+        )
+        harness_artifacts = harness_result
+        derived_observation_steps.append(dict(harness_result["step_record"]))
+        policy_adapter_reports.append(dict(harness_result["policy_adapter_report"]))
+        harness_summary = summarize_wam_derived_observation_artifacts(harness_result)
+        generated_observation["wam_derived_observation"] = {
+            "manifest_path": harness_summary["artifact_paths"].get(
+                "wam_derived_observation_manifest"
+            ),
+            "bundle_path": harness_summary["artifact_paths"].get(
+                "wam_derived_observation_bundle"
+            ),
+            "checks_path": harness_summary["artifact_paths"].get(
+                "wam_perception_harness_checks"
+            ),
+            "adapter_report_path": harness_summary["artifact_paths"].get(
+                "wam_policy_observation_adapter_report"
+            ),
+            "validation_report_path": harness_summary["artifact_paths"].get(
+                "wam_perception_harness_validation_report"
+            ),
+            "review_report_path": harness_summary["artifact_paths"].get(
+                "wam_perception_harness_review_report"
+            ),
+            "step_index": step_index,
+            "status": harness_result["step_record"].get("status"),
+            "overall_confidence": _mapping(
+                harness_result["step_record"].get("uncertainty")
+            ).get("overall_confidence"),
+            "early_termination_recommended": _mapping(
+                harness_result["step_record"].get("uncertainty")
+            ).get("early_termination_recommended"),
+            "policy_adapter_safe_for_policy_requery": _mapping(
+                harness_result["policy_adapter_report"]
+            ).get("safe_for_policy_requery"),
+        }
+        if generated_observations:
+            generated_observations[-1] = generated_observation
+        if _mapping(harness_result["step_record"].get("uncertainty")).get(
+            "early_termination_recommended"
+        ):
+            blockers.extend(
+                str(item)
+                for item in harness_result["step_record"].get("blockers", [])
+                if str(item)
+            )
+            if not harness_result["step_record"].get("blockers"):
+                blockers.append("blocked_wam_derived_observation_reliability_too_low")
+            break
         packet = {
             **base_packet,
             "generated_at": generated_at,
-            "observation": {
-                **current_observation,
-                **generated_observation,
-                "camera_frame_path": str(generated_frame),
-            },
+            "observation": dict(harness_result["adapted_policy_observation"]),
         }
         result = _execute_policy_action_model_candidate(
             job_dir=job_dir,
@@ -4498,6 +4685,14 @@ def run_robot_policy_wam_closed_loop_attempt(
         policy_calls=policy_calls,
         generated_observations=generated_observations,
     )
+    if harness_artifacts is None:
+        harness_artifacts = write_wam_derived_observation_artifacts(
+            output_dir=harness_dir,
+            generated_at=generated_at,
+            steps=derived_observation_steps,
+            adapter_reports=policy_adapter_reports,
+        )
+    harness_summary = summarize_wam_derived_observation_artifacts(harness_artifacts)
     manifest = {
         "schema_version": "robot_policy_wam_closed_loop_attempt.v1",
         "generated_at": generated_at,
@@ -4542,6 +4737,58 @@ def run_robot_policy_wam_closed_loop_attempt(
         "real_world_manipulation_success_proven": False,
         "policy_call_trace_path": str(trace_path),
         "generated_next_observation_trace": str(generated_observation_trace_path),
+        "wam_derived_observation_manifest": harness_summary["artifact_paths"].get(
+            "wam_derived_observation_manifest"
+        ),
+        "wam_derived_observation_bundle": harness_summary["artifact_paths"].get(
+            "wam_derived_observation_bundle"
+        ),
+        "wam_perception_harness_checks": harness_summary["artifact_paths"].get(
+            "wam_perception_harness_checks"
+        ),
+        "wam_policy_observation_adapter_report": harness_summary["artifact_paths"].get(
+            "wam_policy_observation_adapter_report"
+        ),
+        "wam_perception_harness_validation_report": harness_summary["artifact_paths"].get(
+            "wam_perception_harness_validation_report"
+        ),
+        "wam_false_success_reduction_metrics": harness_summary["artifact_paths"].get(
+            "wam_false_success_reduction_metrics"
+        ),
+        "wam_perception_harness_review_report": harness_summary["artifact_paths"].get(
+            "wam_perception_harness_review_report"
+        ),
+        "wam_derived_observation_steps": harness_summary["artifact_paths"].get(
+            "wam_derived_observation_steps"
+        ),
+        "wam_derived_observation_step_count": harness_summary.get("step_count"),
+        "wam_derived_observation_early_termination_recommended": (
+            harness_summary.get("early_termination_recommended")
+        ),
+        "wam_derived_observation_success_scoring_blocked": harness_summary.get(
+            "success_scoring_blocked"
+        ),
+        "wam_policy_observation_adapter_safe_for_policy_requery": harness_summary.get(
+            "policy_adapter_safe_for_policy_requery"
+        ),
+        "wam_perception_harness_backend_config": {
+            "backend_kind": harness_backend_config.get("backend_kind"),
+            "env_gate": harness_backend_config.get("env_gate"),
+            "command_env": harness_backend_config.get("command_env"),
+            "configured_for_external_backend": harness_backend_config.get(
+                "configured_for_external_backend"
+            ),
+            "raw_credentials_written_to_artifacts": False,
+        },
+        "wam_perception_harness_validation_status": harness_summary.get(
+            "validation_status"
+        ),
+        "wam_false_success_reduction_status": harness_summary.get(
+            "false_success_reduction_status"
+        ),
+        "wam_false_success_reduction_rate": harness_summary.get(
+            "false_success_reduction_rate"
+        ),
         "wam_generation_command_discovery": str(loop_dir / "wam_generation_command_discovery.json"),
         "wam_generation_command_execution": str(loop_dir / "wam_generation_command_execution.json"),
         "wam_generation_command_output": str(loop_dir / "wam_generation_command_output.json"),
@@ -4559,6 +4806,10 @@ def run_robot_policy_wam_closed_loop_attempt(
             "wam_is_next_observation_generator_not_robot_policy": True,
             "unitree_policy_is_robot_policy": True,
             "generated_observations_are_not_raw_capture": True,
+            "wam_derived_observations_are_not_real_sensors": True,
+            "wam_derived_depth_is_not_sensor_depth": True,
+            "wam_derived_masks_are_not_physical_truth": True,
+            "wam_derived_contact_likelihood_is_not_physical_contact_proof": True,
             "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": (
                 structural_wam_generation_count > 0
             ),

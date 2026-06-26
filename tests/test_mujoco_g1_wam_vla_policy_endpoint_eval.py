@@ -36,6 +36,9 @@ _WAM_RUNTIME_ENV_VARS = (
     "BLUEPRINT_COSMOS_WAM_PROVIDER_COMMAND",
     "BLUEPRINT_COSMOS_WAM_CHECKPOINT",
     "BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER",
+    "BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_KIND",
+    "BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_COMMAND",
+    "BLUEPRINT_ALLOW_WAM_PERCEPTION_HARNESS_EXTERNAL_BACKEND",
 )
 
 
@@ -76,6 +79,31 @@ Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"]).write_text(json.dumps(payload),
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT", str(checkpoint))
     monkeypatch.setenv(lane.WAM_GENERATION_COMMAND_GATE_ENV, "true")
     return command
+
+
+def test_wam_perception_harness_backend_config_uses_env_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_env(monkeypatch, _WAM_RUNTIME_ENV_VARS)
+    assert lane._wam_perception_harness_backend_config() == {
+        "backend_kind": "fixture",
+        "backend_command": None,
+        "allow_external_backend": None,
+        "env_gate": "BLUEPRINT_ALLOW_WAM_PERCEPTION_HARNESS_EXTERNAL_BACKEND",
+        "command_env": "BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_COMMAND",
+        "configured_for_external_backend": False,
+    }
+
+    monkeypatch.setenv("BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_KIND", "sam3")
+    monkeypatch.setenv(
+        "BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_COMMAND",
+        "python run_backend.py --token $HF_TOKEN",
+    )
+
+    config = lane._wam_perception_harness_backend_config()
+    assert config["backend_kind"] == "sam3"
+    assert config["backend_command"] == "python run_backend.py --token $HF_TOKEN"
+    assert config["configured_for_external_backend"] is True
 
 
 def test_wam_vla_policy_endpoint_discovery_matrix_and_file_helpers(
@@ -963,6 +991,31 @@ Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload
     generated_video = Path(generated_rows[0]["generated_next_observation_video_path"])
     assert generated_video.is_file()
     assert generated_video.stat().st_size > 0
+    assert "wam_derived_observation" in generated_rows[0]
+    assert Path(loop["wam_derived_observation_manifest"]).is_file()
+    assert Path(loop["wam_derived_observation_bundle"]).is_file()
+    assert Path(loop["wam_perception_harness_checks"]).is_file()
+    assert Path(loop["wam_policy_observation_adapter_report"]).is_file()
+    assert Path(loop["wam_perception_harness_validation_report"]).is_file()
+    assert Path(loop["wam_false_success_reduction_metrics"]).is_file()
+    assert Path(loop["wam_perception_harness_review_report"]).is_file()
+    assert loop["wam_derived_observation_step_count"] == 2
+    assert loop["wam_derived_observation_early_termination_recommended"] is False
+    assert loop["wam_perception_harness_backend_config"]["backend_kind"] == "fixture"
+    assert (
+        loop["wam_perception_harness_backend_config"]["raw_credentials_written_to_artifacts"]
+        is False
+    )
+    assert loop["wam_perception_harness_validation_status"] == "blocked_no_validation_set"
+    adapter_report = json.loads(
+        Path(loop["wam_policy_observation_adapter_report"]).read_text(encoding="utf-8")
+    )
+    latest_adapter = adapter_report["latest_policy_adapter_report"]
+    assert "objects" in latest_adapter["fields_withheld_due_to_contract"]
+    assert "depth_estimates" in latest_adapter["fields_withheld_due_to_contract"]
+    assert "objects" not in latest_adapter["adapted_policy_observation"]
+    harness_checks = json.loads(Path(loop["wam_perception_harness_checks"]).read_text(encoding="utf-8"))
+    assert harness_checks["forward_inverse_consistency_proven"] is False
 
     command_execution = json.loads(
         (job_dir / "robot_policy_wam_closed_loop" / "wam_generation_command_execution.json")

@@ -204,6 +204,29 @@ Artifact families and advisory downstream outputs:
   episode-consistency scorer command runs
 - `robot_eval_jobs/<job_id>/wam_consistency_checks.json` when WAM/substrate
   evaluation is requested
+- `robot_eval_jobs/<job_id>/robot_policy_wam_closed_loop/wam_derived_observation_harness/wam_derived_observation_bundle.json`
+  when the WAM-derived perception/observation harness runs
+- `robot_eval_jobs/<job_id>/robot_policy_wam_closed_loop/wam_derived_observation_harness/wam_derived_observation_manifest.json`
+  when the WAM-derived perception/observation harness runs
+- `robot_eval_jobs/<job_id>/robot_policy_wam_closed_loop/wam_derived_observation_harness/wam_perception_harness_checks.json`
+  when the WAM-derived perception/observation harness runs
+- `robot_eval_jobs/<job_id>/robot_policy_wam_closed_loop/wam_derived_observation_harness/wam_policy_observation_adapter_report.json`
+  when the WAM-derived perception/observation harness runs
+- `robot_eval_jobs/<job_id>/robot_policy_wam_closed_loop/wam_derived_observation_harness/wam_derived_observation_steps.jsonl`
+  when the WAM-derived perception/observation harness runs
+- `robot_eval_jobs/<job_id>/robot_policy_wam_closed_loop/wam_derived_observation_harness/wam_perception_backend_request.json`
+  when an optional external perception harness backend is explicitly enabled
+- `robot_eval_jobs/<job_id>/robot_policy_wam_closed_loop/wam_derived_observation_harness/wam_perception_backend_result.json`
+  when an optional external perception harness backend is explicitly enabled
+- `robot_eval_jobs/<job_id>/robot_policy_wam_closed_loop/wam_derived_observation_harness/wam_perception_harness_validation_report.json`
+  when the WAM-derived harness writes validation metrics or records that
+  validation labels were not supplied
+- `robot_eval_jobs/<job_id>/robot_policy_wam_closed_loop/wam_derived_observation_harness/wam_false_success_reduction_metrics.json`
+  when the WAM-derived harness compares plain generated-video false-success
+  labels against harness-gated scoring on supplied validation rows
+- `robot_eval_jobs/<job_id>/robot_policy_wam_closed_loop/wam_derived_observation_harness/wam_perception_harness_review_report.md`
+  when the WAM-derived harness writes the reader-facing reliability, adapter,
+  validation, and claim-boundary report
 - `robot_eval_jobs/<job_id>/eval_ready_task_grounding.json` when WAM/substrate
   evaluation consumes eval-ready task grounding
 - `robot_eval_jobs/<job_id>/camera_calibration_quality_gate.json` when
@@ -938,6 +961,101 @@ the selected Unitree policy on those generated frames. Those artifacts are label
 `default_local_wam_generator_used=true` and
 `learned_oscar_or_cosmos_model_ran=false`; they are useful loop evidence, not a
 claim that a learned OSCAR/Cosmos checkpoint or physical robot sensor loop ran.
+The loop also writes the WAM-derived perception/observation harness artifact
+family under `robot_policy_wam_closed_loop/wam_derived_observation_harness/`.
+The harness derives support masks/boxes, tracks, relative depth, pose, contact
+likelihood, reviewability, uncertainty, and adapter reports from generated media
+plus evaluator-controlled state. It passes only declared policy fields back to
+the policy and keeps masks, depth, contact likelihood, and uncertainty as
+diagnostic/scoring-gate support unless the policy declares those fields.
+Optional detector/depth/tracking backends are configured through
+`BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_KIND`,
+`BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_COMMAND`, and
+`BLUEPRINT_ALLOW_WAM_PERCEPTION_HARNESS_EXTERNAL_BACKEND=true`; otherwise the
+fixture backend runs and external backends fail closed. When labeled
+capture-backed validation rows are supplied to the harness API, it writes
+validation metrics and false-success reduction metrics comparing plain generated
+video labels against harness-gated scoring. Without those rows, those metrics
+remain explicitly blocked/not measured. The markdown review report summarizes
+per-step confidence, withheld policy fields, validation status, and claim
+boundaries for customer or operator review.
+Inferred depth is not sensor depth, masks are not physical truth, and contact
+likelihood is not physical contact proof.
+
+To run the sim-only provider/harness loop proof, use:
+
+```bash
+python -m blueprint_pipeline.wam_sim_provider_e2e \
+  --provider-mode real \
+  --generated-frame <gpt-image2-or-wam-generated-frame.jpg> \
+  --target-prompt "robot arm" \
+  --sam3-weights <sam3.pt> \
+  --depth-provider v2 \
+  --pose-model yolo11n-pose.pt
+```
+
+This runner proves the architecture path only: generated frame in, SAM3/depth/
+pose providers through the replaceable backend path, harness artifacts out,
+policy adapter field gating, and claim-bounded scoring/requery status. It also
+works with `--provider-mode fixture` for deterministic tests. If no
+`--generated-frame` is supplied, it discovers an existing generated frame under
+`robot_eval_jobs/` or writes a local synthetic AI-style start frame. The manifest
+keeps `perception_accuracy_validated=false`; labeled validation rows are not
+required for this sim-only proof.
+
+The default depth provider for this smoke path is Transformers Depth Anything
+V2 small. Depth Anything 3 is optional and selectable with
+`--depth-provider da3`, `BLUEPRINT_ALLOW_WAM_AUTO_DA3_PROVIDER=true`, and
+`BLUEPRINT_WAM_DA3_MODEL_ID` such as `depth-anything/DA3-BASE`. Missing DA3
+runtime or weights block that provider path explicitly; generated-pixel depth is
+still not sensor depth.
+
+To avoid reinstalling the harness provider stack on every new GPU run, generate
+a reusable WAM perception harness image context:
+
+```bash
+blueprint-build-wam-perception-harness-gpu-image \
+  --image-ref docker.io/nijelhunt/blueprint-wam-perception-harness:20260626-cu126
+```
+
+The generated context writes `Dockerfile.wam-perception-harness-gpu`,
+`build_image.sh`, `push_image.sh`, `run_image_healthcheck.sh`,
+`prepare_model_mounts.sh`, and
+`wam_perception_harness_gpu_image_manifest.json`. The image bakes Blueprint
+harness code, PyTorch/CUDA, `transformers`, `ultralytics`, Depth Anything V2
+cache, and YOLO pose cache. It does not bake Docker, DigitalOcean, Hugging Face,
+or object-store tokens. SAM3 weights are expected at `/models/sam3/sam3.pt`
+through a mount or provider-side model fetch, and the manifest records
+`bakes_sam3_weights=false`. The image build, push, or healthcheck still does not
+prove perception accuracy, sensor depth, physical contact, safety validation, or
+physical robot readiness.
+
+To test the real-provider lane without weakening those boundaries, run:
+
+```bash
+python -m blueprint_pipeline.wam_real_provider_validation_probe run \
+  --generated-frame <wam-generated-frame.jpg> \
+  --validation-set <capture-backed-validation-rows.json>
+```
+
+The probe writes `wam_real_provider_validation_proof_manifest.json` plus the
+normal harness artifact family under
+`robot_eval_jobs/wam_real_provider_validation_probe_<timestamp>/`. It checks for
+SAM3 weights (`SAM3_WEIGHTS_PATH` or `BLUEPRINT_SAM3_WEIGHTS_PATH`), optional
+depth and pose commands (`BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND`,
+`BLUEPRINT_WAM_POSE_PROVIDER_COMMAND`), and labeled validation rows. Missing
+providers or labels produce a blocked manifest, recommend early termination,
+block policy requery/success scoring, and leave perception accuracy
+`not_measured`; that blocked result is the correct behavior until real provider
+outputs and labeled validation data are present.
+
+The validation set is treated as real only when rows are capture-backed or
+accepted real-world anchors, include an actual label such as `actual_success`,
+`capture_success`, `expected_target_visible`, `expected_contact`, or
+`expected_object_id`, and carry a source reference such as `source_capture_path`,
+`source_artifact_path`, `source_video_path`, `source_frame_path`,
+`source_label_path`, `evidence_path`, or `operator_attestation_path`. Fixture
+rows can test the contract, but they do not satisfy the real-provider proof.
 
 Forward/inverse episode consistency is a separate scorer layer, not a property
 claimed by WAM execution or by the evaluator itself. The OSCAR/Cosmos WAM
