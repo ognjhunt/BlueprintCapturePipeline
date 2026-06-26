@@ -165,6 +165,18 @@ def _attempt_trace_path(output_path: Path) -> Path:
     return output_path.parent / "owner_gpu_policy_attempt_trace.json"
 
 
+def _engine_specific_proof_proven(
+    *,
+    simulator_engine: str,
+    proof_result: Mapping[str, Any],
+    validation: Mapping[str, Any],
+) -> bool:
+    generic_proof = bool(proof_result.get("owner_gpu_simulator_execution_proven"))
+    if _safe_id(simulator_engine) != "isaac_sim":
+        return generic_proof
+    return generic_proof and bool(validation.get("isaac_sim_execution_proven"))
+
+
 def _normalize_owner_attempts(
     *,
     runs: Sequence[Mapping[str, Any]],
@@ -176,7 +188,12 @@ def _normalize_owner_attempts(
     validation: Mapping[str, Any],
     generated_at: str,
 ) -> list[dict[str, Any]]:
-    proof_proven = bool(proof_result.get("owner_gpu_simulator_execution_proven"))
+    generic_proof_proven = bool(proof_result.get("owner_gpu_simulator_execution_proven"))
+    proof_proven = _engine_specific_proof_proven(
+        simulator_engine=simulator_engine,
+        proof_result=proof_result,
+        validation=validation,
+    )
     observed_by_run_id = {
         _string(attempt.get("scenario_eval_run_id")): attempt
         for attempt in observed_attempts
@@ -193,6 +210,8 @@ def _normalize_owner_attempts(
             modes = ["owner_gpu_policy_attempt_trace_missing"]
         if not proof_proven:
             modes = sorted(set([*modes, "owner_gpu_simulator_execution_not_proven"]))
+            if _safe_id(simulator_engine) == "isaac_sim":
+                modes = sorted(set([*modes, "isaac_simulator_execution_not_proven"]))
         success = proof_proven and bool(observed) and _task_success(observed)
         if not success and not modes:
             modes = ["policy_task_not_successful"]
@@ -200,6 +219,7 @@ def _normalize_owner_attempts(
             **_mapping(observed.get("metrics")),
             "simulator_execution_performed": proof_proven,
             "owner_gpu_simulator_execution_proven": proof_proven,
+            "generic_owner_gpu_simulator_execution_proven": generic_proof_proven,
             "isaac_sim_execution_proven": bool(validation.get("isaac_sim_execution_proven")),
             "owner_gpu_default_policy_execution_proven": bool(
                 validation.get("owner_gpu_default_policy_execution_proven")
@@ -248,6 +268,7 @@ def _normalize_owner_attempts(
                     **CLAIM_BOUNDARY,
                     "simulator_execution_performed": proof_proven,
                     "owner_gpu_simulator_execution_proven": proof_proven,
+                    "generic_owner_gpu_simulator_execution_proven": generic_proof_proven,
                     "isaac_sim_execution_proven": bool(
                         validation.get("isaac_sim_execution_proven")
                     ),
@@ -326,7 +347,12 @@ def run_owner_gpu_policy_evaluator(
         validation=validation,
         generated_at=generated,
     )
-    proof_proven = bool(proof_result.get("owner_gpu_simulator_execution_proven"))
+    generic_proof_proven = bool(proof_result.get("owner_gpu_simulator_execution_proven"))
+    proof_proven = _engine_specific_proof_proven(
+        simulator_engine=simulator_engine,
+        proof_result=proof_result,
+        validation=validation,
+    )
     task_trace_present = bool(observed_attempts)
     status = (
         "completed"
@@ -347,6 +373,7 @@ def run_owner_gpu_policy_evaluator(
         ),
         "policy_id": _string(recipe.get("candidate_id") or recipe.get("policy_id")),
         "owner_gpu_simulator_execution_proven": proof_proven,
+        "generic_owner_gpu_simulator_execution_proven": generic_proof_proven,
         "isaac_sim_execution_proven": bool(validation.get("isaac_sim_execution_proven")),
         "policy_attempt_trace_path": str(trace_path),
         "policy_attempt_trace_present": task_trace_present,
@@ -357,6 +384,7 @@ def run_owner_gpu_policy_evaluator(
             **CLAIM_BOUNDARY,
             "simulator_execution_performed": proof_proven,
             "owner_gpu_simulator_execution_proven": proof_proven,
+            "generic_owner_gpu_simulator_execution_proven": generic_proof_proven,
             "isaac_sim_execution_proven": bool(validation.get("isaac_sim_execution_proven")),
         },
     }

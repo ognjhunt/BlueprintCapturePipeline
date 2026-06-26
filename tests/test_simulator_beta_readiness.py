@@ -10,6 +10,7 @@ from blueprint_pipeline.simulator_beta_readiness import (
     _frame_evidence,
     _handoff_gate,
     _image_nonblank,
+    _isaac_gate,
     _mujoco_gate,
     _official_policy_gate,
     _runpod_gate,
@@ -204,6 +205,80 @@ def _seed_ready_simulator_beta(capture_root: Path, *, include_handoff: bool = Tr
     )
 
 
+def _seed_ready_isaac_simulator_output(capture_root: Path) -> Path:
+    isaac_dir = (
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "isaac_g1_simulator_command"
+    )
+    video_path = isaac_dir / "realistic_videos" / "episode-1__head_pov.mp4"
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    video_path.write_bytes(b"mp4-placeholder")
+    artifact_paths = {
+        "normalized_attempt_trace.json": isaac_dir / "normalized_attempt_trace.json",
+        "failure_labels.json": isaac_dir / "failure_labels.json",
+        "realistic_video_manifest.json": isaac_dir / "realistic_video_manifest.json",
+        "g1_locomotion_trace.jsonl": isaac_dir / "g1_locomotion_trace.jsonl",
+        "collision_contact_report.json": isaac_dir / "collision_contact_report.json",
+        "batch_closure_manifest": isaac_dir / "isaac_batch_closure_manifest.json",
+        "job_run_manifest.json": isaac_dir / "job_run_manifest.json",
+        "artifact_manifest": isaac_dir / "artifact_manifest.json",
+    }
+    for key, path in artifact_paths.items():
+        if path.suffix == ".jsonl":
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"status":"completed"}\n', encoding="utf-8")
+        else:
+            _write_json(path, {"status": "complete", "artifact": key})
+    video_manifest = {
+        "status": "completed",
+        "video_count": 1,
+        "expected_video_count": 1,
+        "videos": [
+            {
+                "episode_id": "episode-1",
+                "camera_id": "head_pov",
+                "path": str(video_path),
+                "status": "completed",
+            }
+        ],
+    }
+    batch_closure = {
+        "status": "completed_with_robot_team_grade_blockers",
+        "machine_trace_package_complete": True,
+        "robot_team_grade_package_complete": False,
+    }
+    artifact_manifest = {
+        "status": "complete",
+        "files": {},
+    }
+    _write_json(artifact_paths["realistic_video_manifest.json"], video_manifest)
+    _write_json(artifact_paths["batch_closure_manifest"], batch_closure)
+    _write_json(artifact_paths["artifact_manifest"], artifact_manifest)
+    output_path = isaac_dir / "isaac_g1_simulator_output.json"
+    _write_json(
+        output_path,
+        {
+            "status": "completed",
+            "simulator_backend": "isaac_sim",
+            "simulator_version": "6.0.0",
+            "simulator_execution_proven": True,
+            "isaac_sim_execution_proven": True,
+            "unitree_g1_asset_spawned": True,
+            "scenario_eval_run_count": 1,
+            "attempt_count": 1,
+            "attempt_count_matches_matrix_count": True,
+            "scenario_eval_run_coverage_complete": True,
+            "realistic_video_manifest": video_manifest,
+            "batch_closure_manifest": batch_closure,
+            "artifact_manifest": artifact_manifest,
+            "artifact_paths": {key: str(path) for key, path in artifact_paths.items()},
+        },
+    )
+    return output_path
+
+
 def test_simulator_beta_readiness_marks_physical_gates_out_of_scope(tmp_path: Path) -> None:
     capture_root = tmp_path / "capture"
     _seed_ready_simulator_beta(capture_root)
@@ -229,6 +304,31 @@ def test_simulator_beta_readiness_marks_physical_gates_out_of_scope(tmp_path: Pa
     assert manifest["data_gate_ids"] == []
     persisted = _read_json(Path(manifest["artifacts"]["manifest"]))
     assert persisted["ready_for_simulator_beta"] is True
+
+
+def test_isaac_proof_package_can_satisfy_simulator_beta_without_mujoco(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    _seed_ready_simulator_beta(capture_root)
+    _seed_ready_isaac_simulator_output(capture_root)
+    (
+        capture_root
+        / "pipeline"
+        / "sim_only_beta_rehearsal"
+        / "mujoco_g1_command"
+        / "mujoco_g1_simulator_output.json"
+    ).unlink()
+
+    manifest = build_simulator_beta_readiness(capture_root=capture_root)
+
+    assert manifest["status"] == "ready_for_simulator_beta"
+    assert manifest["blocking_gate_ids"] == []
+    assert manifest["default_robot"]["simulator_backend"] == "isaac_sim"
+    assert manifest["gates"]["site_capture_mujoco_g1_run"]["proven"] is False
+    assert manifest["gates"]["site_capture_isaac_g1_run"]["proven"] is True
+    assert manifest["gates"]["site_capture_simulator_g1_run"]["proven"] is True
+    assert manifest["claim_boundary"]["mujoco_proof_counted_as_isaac_proof"] is False
 
 
 def test_simulator_beta_readiness_defers_to_release_gate_when_present(

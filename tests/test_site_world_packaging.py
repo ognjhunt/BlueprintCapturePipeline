@@ -910,6 +910,26 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     assert hosted_runtime_manifest["primary_runtime_backend"] == "site_world_runtime"
     assert hosted_runtime_manifest["canonical_world_model"]["primary_asset_path"] == ""
     assert hosted_runtime_manifest["capture_orientation"]["display_orientation"] == "portrait"
+    assert hosted_runtime_manifest["simulator_execution_proven"] is False
+    assert hosted_runtime_manifest["rank_fidelity_result_proven"] is False
+    assert hosted_runtime_manifest["deployment_approval_proven"] is False
+    assert hosted_runtime_manifest["safety_validation_proven"] is False
+    assert hosted_runtime_manifest["physical_readiness_proven"] is False
+    assert hosted_runtime_manifest["physical_robot_readiness_proven"] is False
+    assert hosted_runtime_manifest["public_claim_upgrade_allowed"] is False
+    assert hosted_runtime_manifest["claim_boundary"]["schema_version"] == (
+        "hosted_session_runtime_claim_boundary.v1"
+    )
+    assert hosted_runtime_manifest["claim_boundary"]["hosted_session_artifacts_only"] is True
+    assert hosted_runtime_manifest["claim_boundary"]["simulator_execution_proven"] is False
+    assert hosted_runtime_manifest["claim_boundary"]["rank_fidelity_result_proven"] is False
+    assert hosted_runtime_manifest["claim_boundary"]["deployment_approval_proven"] is False
+    assert hosted_runtime_manifest["claim_boundary"]["safety_validation_proven"] is False
+    assert hosted_runtime_manifest["claim_boundary"]["physical_readiness_proven"] is False
+    assert hosted_runtime_manifest["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert hosted_runtime_manifest["proof_boundary"]["simulator_execution_proven"] is False
+    assert "rank_fidelity_result" in hosted_runtime_manifest["claim_boundary"]["disallowed_claims"]
+    assert "deployment_approval_claim" in hosted_runtime_manifest["claim_boundary"]["blocked_claim_upgrades"]
 
 
 def test_materialization_capture_orientation_precedence(monkeypatch, tmp_path: Path) -> None:

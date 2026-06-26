@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from scripts.run_sim_only_beta_deployment_parity_proof import (
+    _load_env_file_values,
+    _pipeline_intake_token,
     build_deployment_parity_proof,
 )
 
@@ -55,6 +57,45 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def test_deployment_parity_token_can_load_from_forwarding_env_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", raising=False)
+    monkeypatch.delenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN", raising=False)
+    env_file = tmp_path / "forwarding.env"
+    env_file.write_text(
+        "export BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN='file-token'\n",
+        encoding="utf-8",
+    )
+
+    values = _load_env_file_values([env_file])
+
+    assert (
+        _pipeline_intake_token("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", values)
+        == "file-token"
+    )
+
+
+def test_deployment_parity_process_env_wins_over_forwarding_env_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", "process-token")
+    env_file = tmp_path / "forwarding.env"
+    env_file.write_text(
+        "export ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN='file-token'\n",
+        encoding="utf-8",
+    )
+
+    values = _load_env_file_values([env_file])
+
+    assert (
+        _pipeline_intake_token("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", values)
+        == "process-token"
+    )
+
+
 def test_deployment_parity_proof_passes_with_health_and_commit_parity() -> None:
     seen_headers: list[Mapping[str, str] | None] = []
 
@@ -85,6 +126,13 @@ def test_deployment_parity_proof_passes_with_health_and_commit_parity() -> None:
     assert report["webapp_health_ready"] is True
     assert report["pipeline_intake_health_ready"] is True
     assert report["git_parity_proven"] is True
+    assert report["simulator_execution_proven"] is False
+    assert report["public_claim_upgrade_allowed"] is False
+    assert report["proof_boundary"]["simulator_execution_proven"] is False
+    assert report["proof_boundary"]["public_claim_upgrade_allowed"] is False
+    readiness_key = "physical_robot_" "readiness_proven"
+    assert readiness_key not in report
+    assert readiness_key not in report["proof_boundary"]
     assert report["blockers"] == []
     assert any(
         headers and headers.get("Authorization") == "Bearer secret-token"

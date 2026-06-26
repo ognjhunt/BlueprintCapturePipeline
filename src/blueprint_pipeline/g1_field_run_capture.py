@@ -19,6 +19,23 @@ from .g1_controlled_proof_setup import (
 
 
 G1_FIELD_RUN_CAPTURE_KIT_SCHEMA_VERSION = "g1_field_run_capture_kit.v1"
+CONTROLLED_FIELD_ANCHOR_REQUEST_SCHEMA_VERSION = "controlled_field_anchor_request_packet.v1"
+ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION = "accepted_real_world_anchor.v1"
+CONTROLLED_ANCHOR_JOIN_KEYS = (
+    "scenario_eval_run_id",
+    "policy_id",
+    "task_id",
+    "scenario_variation_instance_id",
+)
+OWNER_EVIDENCE_CLAIM_REQUIREMENTS = (
+    "robot_camera_video",
+    "action_log",
+    "timestamp_alignment",
+    "hardware_validation",
+    "contact_collision_log",
+    "policy_metrics",
+    "robot_team_review",
+)
 
 
 def _string(value: Any) -> str:
@@ -180,12 +197,21 @@ def _field_run_config(
     webapp_route_prefill: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     job_id = _string(context.get("job_id")) or "robot-eval-job-id"
+    task_id = _string(context.get("task_id"))
+    scenario_id = _string(context.get("scenario_id"))
+    scenario_eval_run_id = _string(context.get("scenario_eval_run_id"))
+    scenario_variation_id = _string(context.get("scenario_variation_instance_id"))
     webapp = dict(webapp_route_prefill or {})
     return {
         "schema_version": "g1_field_run_capture_config.v1",
         "job_id": job_id,
         "job_context": _bound_job_context(context),
         "run_id": f"unitree-g1-controlled-run-{_safe_id(job_id, 'job')}",
+        "policy_id": DEFAULT_POLICY_ID,
+        "task_id": task_id,
+        "scenario_id": scenario_id,
+        "scenario_eval_run_id": scenario_eval_run_id,
+        "scenario_variation_instance_id": scenario_variation_id,
         "robot_make_model": DEFAULT_ROBOT_MAKE_MODEL,
         "robot_profile_id": DEFAULT_ROBOT_PROFILE_ID,
         "robot_ip": "192.168.123.164",
@@ -284,6 +310,74 @@ def _field_run_config(
                 "required_fixture_marker": "synthetic_fixture_not_physical_robot_pov",
             },
         },
+        "operator_site_checklist": {
+            "controlled_area_verified": False,
+            "floor_clear_for_g1_walk": False,
+            "bystander_exclusion_zone_marked": False,
+            "emergency_stop_operator_present": True,
+            "site_or_lab_location_id": "<controlled-test-site-or-lab-id>",
+        },
+        "allowed_task_set": [
+            {
+                "task_id": task_id,
+                "scenario_id": scenario_id,
+                "scenario_eval_run_id": scenario_eval_run_id,
+                "scenario_variation_instance_id": scenario_variation_id,
+                "policy_id": DEFAULT_POLICY_ID,
+                "allowed": True,
+            }
+        ],
+        "exclusion_and_abort_criteria": {
+            "excluded_task_ids": ["<any-task-not-listed-in-allowed_task_set>"],
+            "abort_conditions": [
+                "loss_of_comms",
+                "unexpected_human_entry",
+                "fall_detected",
+                "contact_force_exceeds_threshold",
+                "operator_estop",
+            ],
+            "loose_or_inferred_anchor_matches_allowed": False,
+        },
+        "robot_calibration_refs": {
+            "robot_state_log": "robot_state_log.jsonl",
+            "hardware_validation": "hardware_validation.json",
+            "contact_collision_log": "contact_collision_log.json",
+        },
+        "camera_calibration_refs": {
+            "robot_camera_video": "robot_camera_video.mp4",
+            "timestamp_alignment": "timestamp_alignment.json",
+            "camera_mount_or_sensor_ids": ["<g1-head-or-body-camera-id>"],
+        },
+        "actual_outcome": {
+            "actual_status": "operator_review_required",
+            "actual_success": False,
+            "failure_mode_ids": [],
+            "cycle_time_seconds": None,
+            "intervention_count": None,
+        },
+        "reviewer_decision": {
+            "safety_review_decision": "not_reviewed",
+            "policy_review_decision": "not_reviewed",
+            "accepted_for_calibration": False,
+        },
+        "owner_evidence_refs": {
+            "robot_camera_video": "robot_camera_video.mp4",
+            "action_log": "action_log.jsonl",
+            "timestamp_alignment": "timestamp_alignment.json",
+        },
+        "required_owner_evidence_before_physical_claim": list(
+            OWNER_EVIDENCE_CLAIM_REQUIREMENTS
+        ),
+        "attestation_requirements": {
+            "operator_attestation_signed": False,
+            "hardware_owner_attestation_signed": False,
+            "safety_reviewer_attestation_signed": False,
+            "robot_team_review_attestation_signed": False,
+            "claim_boundary": (
+                "Non-empty IDs or statements do not count as signed attestations. "
+                "The signed booleans and signed_at timestamps must be filled after review."
+            ),
+        },
         "accepted_safety_thresholds": {
             "max_speed_mps": "<reviewed-threshold>",
             "min_human_clearance_m": "<reviewed-threshold>",
@@ -326,6 +420,14 @@ def _field_run_config(
         "production_forward_url": webapp.get("production_forward_url", "<production-forward-url>"),
         "webapp_response_status_code": webapp.get("webapp_response_status_code", "<202>"),
         "sync_status": webapp.get("sync_status", "not_proven"),
+        "operator_attestation_signed": False,
+        "operator_attestation_signed_at_utc": "<operator-attestation-signed-at>",
+        "hardware_owner_attestation_signed": False,
+        "hardware_owner_attestation_signed_at_utc": "<hardware-owner-attestation-signed-at>",
+        "safety_reviewer_attestation_signed": False,
+        "safety_reviewer_attestation_signed_at_utc": "<safety-reviewer-attestation-signed-at>",
+        "robot_team_review_attestation_signed": False,
+        "robot_team_review_attestation_signed_at_utc": "<robot-team-review-attestation-signed-at>",
     }
 
 
@@ -398,6 +500,114 @@ def _safety_review_checklist(context: Mapping[str, Any], paths: Mapping[str, str
             "requires_human_safety_review": True,
             "requires_physical_contact_or_hardware_logs": True,
             "non_ranking_operational_claim_validated": False,
+        },
+    }
+
+
+def _controlled_field_anchor_request_packet(
+    context: Mapping[str, Any],
+    paths: Mapping[str, str],
+) -> dict[str, Any]:
+    join_key = {
+        "scenario_eval_run_id": _string(context.get("scenario_eval_run_id")),
+        "policy_id": DEFAULT_POLICY_ID,
+        "task_id": _string(context.get("task_id")),
+        "scenario_variation_instance_id": _string(
+            context.get("scenario_variation_instance_id")
+        ),
+    }
+    return {
+        "schema_version": CONTROLLED_FIELD_ANCHOR_REQUEST_SCHEMA_VERSION,
+        "status": "not_requested_for_sim_only",
+        "job_id": context["job_id"],
+        "job_context": _bound_job_context(context),
+        "accepted_anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+        "required_exact_join_keys": list(CONTROLLED_ANCHOR_JOIN_KEYS),
+        "anchor_join_key": join_key,
+        "loose_or_inferred_matches_allowed_for_calibration": False,
+        "operator_site_checklist": {
+            "controlled_area_verified": False,
+            "floor_clear_for_g1_walk": False,
+            "bystander_exclusion_zone_marked": False,
+            "emergency_stop_operator_present": True,
+            "site_or_lab_location_id": "<controlled-test-site-or-lab-id>",
+        },
+        "allowed_task_set": [
+            {
+                "task_id": join_key["task_id"],
+                "scenario_id": _string(context.get("scenario_id")),
+                "scenario_eval_run_id": join_key["scenario_eval_run_id"],
+                "scenario_variation_instance_id": join_key[
+                    "scenario_variation_instance_id"
+                ],
+                "policy_id": DEFAULT_POLICY_ID,
+                "allowed": True,
+            }
+        ],
+        "exclusion_and_abort_criteria": {
+            "excluded_task_ids": ["<any-task-not-listed-in-allowed_task_set>"],
+            "abort_conditions": [
+                "loss_of_comms",
+                "unexpected_human_entry",
+                "fall_detected",
+                "contact_force_exceeds_threshold",
+                "operator_estop",
+            ],
+            "loose_or_inferred_anchor_matches_allowed": False,
+        },
+        "robot_calibration_refs": {
+            "robot_state_log": "robot_state_log.jsonl",
+            "hardware_validation": "hardware_validation.json",
+            "contact_collision_log": "contact_collision_log.json",
+        },
+        "camera_calibration_refs": {
+            "robot_camera_video": "robot_camera_video.mp4",
+            "timestamp_alignment": "timestamp_alignment.json",
+            "camera_mount_or_sensor_ids": ["<g1-head-or-body-camera-id>"],
+        },
+        "actual_outcome": {
+            "actual_status": "<passed|failed|aborted>",
+            "actual_success": "<true|false>",
+            "cycle_time_seconds": "<measured-cycle-time>",
+            "intervention_count": "<operator-intervention-count>",
+        },
+        "reviewer_decision": {
+            "safety_review_decision": "not_reviewed",
+            "policy_review_decision": "not_reviewed",
+            "accepted_for_calibration": False,
+        },
+        "owner_evidence": {
+            "required": True,
+            "evidence_dir": paths["evidence_dir"],
+            "required_files": [
+                "robot_camera_video.mp4",
+                "timestamp_alignment.json",
+                "action_log.jsonl",
+                "robot_state_log.jsonl",
+                "command_log.jsonl",
+                "contact_collision_log.json",
+            ],
+            "operator_attestation_required": True,
+            "hardware_owner_attestation_required": True,
+        },
+        "timestamps": {
+            "start_time_utc": "<timestamp>",
+            "end_time_utc": "<timestamp>",
+        },
+        "artifact_provenance": {
+            "field_run_config": paths["config"],
+            "real_robot_pov_capture_contract": paths["real_robot_pov_capture_contract"],
+            "safety_review_checklist": paths["safety_review_checklist"],
+        },
+        "blockers": [],
+        "proof_boundary": {
+            "request_packet_is_not_physical_robot_proof": True,
+            "accepted_anchors_can_calibrate_evaluator_ranking_against_supplied_outcomes": False,
+            "broad_deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "future_real_world_success_proven": False,
+            "sim_only_beta_ranking_blocked": False,
+            "physical_evidence_not_requested_for_sim_only": True,
         },
     }
 
@@ -569,6 +779,11 @@ if not input_path.exists():
         "schema_version": "g1_controlled_run_inputs.v1",
         "job_id": "{context['job_id']}",
         "run_id": config.get("run_id"),
+        "policy_id": config.get("policy_id"),
+        "task_id": config.get("task_id"),
+        "scenario_id": config.get("scenario_id"),
+        "scenario_eval_run_id": config.get("scenario_eval_run_id"),
+        "scenario_variation_instance_id": config.get("scenario_variation_instance_id"),
         "robot_serial_or_fleet_id": config.get("robot_serial_or_fleet_id"),
         "site_or_lab_location_id": config.get("site_or_lab_location_id"),
         "operator_id": config.get("operator_id"),
@@ -579,10 +794,28 @@ if not input_path.exists():
         "end_time_utc": now,
         "actual_status": "operator_review_required",
         "actual_success": False,
+        "actual_outcome": config.get("actual_outcome", {{
+            "actual_status": "operator_review_required",
+            "actual_success": False,
+            "failure_mode_ids": [],
+            "cycle_time_seconds": None,
+            "intervention_count": None,
+        }}),
         "cycle_time_seconds": None,
         "intervention_count": None,
+        "operator_site_checklist": config.get("operator_site_checklist", {{}}),
+        "allowed_task_set": config.get("allowed_task_set", []),
+        "exclusion_and_abort_criteria": config.get("exclusion_and_abort_criteria", {{}}),
+        "robot_calibration_refs": config.get("robot_calibration_refs", {{}}),
+        "camera_calibration_refs": config.get("camera_calibration_refs", {{}}),
         "accepted_safety_thresholds": config.get("accepted_safety_thresholds", {{}}),
         "review_decision": "not_reviewed",
+        "reviewer_decision": config.get("reviewer_decision", {{
+            "safety_review_decision": "not_reviewed",
+            "policy_review_decision": "not_reviewed",
+            "accepted_for_calibration": False,
+        }}),
+        "owner_evidence_refs": config.get("owner_evidence_refs", {{}}),
         "storage_upload_performed": False,
         "entitlement_verified": False,
         "signed_customer_delivery_url": config.get("signed_customer_delivery_url"),
@@ -595,9 +828,17 @@ if not input_path.exists():
         "sync_status": config.get("sync_status", "not_proven"),
         "camera_mount_or_sensor_ids": config.get("camera", {{}}).get("camera_mount_or_sensor_ids", []),
         "operator_statement": "Operator must sign after reviewing physical G1 evidence files.",
+        "operator_attestation_signed": False,
+        "operator_attestation_signed_at_utc": "<operator-attestation-signed-at>",
         "hardware_owner_statement": "Hardware owner must sign after confirming the G1 identity and run.",
+        "hardware_owner_attestation_signed": False,
+        "hardware_owner_attestation_signed_at_utc": "<hardware-owner-attestation-signed-at>",
         "safety_reviewer_statement": "Safety reviewer must sign after accepting thresholds and logs.",
+        "safety_reviewer_attestation_signed": False,
+        "safety_reviewer_attestation_signed_at_utc": "<safety-reviewer-attestation-signed-at>",
         "robot_team_review_statement": "Robot team reviewer must accept the non-default G1 policy package.",
+        "robot_team_review_attestation_signed": False,
+        "robot_team_review_attestation_signed_at_utc": "<robot-team-review-attestation-signed-at>",
     }}, indent=2, sort_keys=True), encoding="utf-8")
 PY
 
@@ -802,7 +1043,7 @@ It is intentionally fail-closed:
 
 ## Run
 
-1. Review `{paths['real_robot_pov_capture_contract']}` and `{paths['safety_review_checklist']}`.
+1. Review `{paths['controlled_field_anchor_request_packet']}`, `{paths['real_robot_pov_capture_contract']}` and `{paths['safety_review_checklist']}`.
 2. Fill `{paths['config']}` with robot ID, lab/site ID, operator IDs, safety thresholds, and reviewed policy source commit.
 3. Export `BLUEPRINT_G1_CAMERA_SOURCE`, `BLUEPRINT_G1_POLICY_COMMAND`,
    `BLUEPRINT_G1_ACTION_LOG_COMMAND`, `BLUEPRINT_G1_STATE_COMMAND`, and
@@ -857,6 +1098,9 @@ def build_g1_field_run_capture_kit(
         "dds_logger_script": str(output_root / "record_g1_dds_logs.py"),
         "readme": str(output_root / "README.md"),
         "evidence_manifest": str(output_root / "expected_evidence_files.json"),
+        "controlled_field_anchor_request_packet": str(
+            output_root / "controlled_field_anchor_request_packet.json"
+        ),
         "real_robot_pov_capture_contract": str(output_root / "real_robot_pov_capture_contract.json"),
         "safety_review_checklist": str(output_root / "safety_review_checklist.json"),
         "evidence_dir": str(evidence_dir),
@@ -871,6 +1115,15 @@ def build_g1_field_run_capture_kit(
             "schema_version": "g1_field_run_expected_evidence_files.v1",
             "status": "operator_capture_required",
             "canonical_evidence_dir": str(evidence_dir),
+            "required_exact_join_keys": list(CONTROLLED_ANCHOR_JOIN_KEYS),
+            "expected_anchor_join_key": {
+                "scenario_eval_run_id": _string(context.get("scenario_eval_run_id")),
+                "policy_id": DEFAULT_POLICY_ID,
+                "task_id": _string(context.get("task_id")),
+                "scenario_variation_instance_id": _string(
+                    context.get("scenario_variation_instance_id")
+                ),
+            },
             "required_files": [
                 "robot_camera_video.mp4",
                 "timestamp_alignment.json",
@@ -884,6 +1137,22 @@ def build_g1_field_run_capture_kit(
                 "robot_team_review.json",
                 "g1_controlled_run_inputs.json",
             ],
+            "required_owner_evidence_before_physical_claim": list(
+                OWNER_EVIDENCE_CLAIM_REQUIREMENTS
+            ),
+            "required_signed_attestations_before_physical_claim": [
+                "operator_attestation_signed",
+                "hardware_owner_attestation_signed",
+                "safety_reviewer_attestation_signed",
+                "robot_team_review_attestation_signed",
+            ],
+            "physical_claim_gate": {
+                "templates_are_not_evidence": True,
+                "exact_join_keys_required": True,
+                "owner_evidence_required": True,
+                "unsigned_attestations_fail_closed": True,
+                "sim_only_policy_comparison_blocked_by_missing_physical_evidence": False,
+            },
             "required_live_commands": [
                 "BLUEPRINT_G1_CAMERA_SOURCE",
                 "BLUEPRINT_G1_POLICY_COMMAND",
@@ -892,10 +1161,17 @@ def build_g1_field_run_capture_kit(
                 "BLUEPRINT_G1_CONTACT_COLLISION_COMMAND",
             ],
             "contracts": {
+                "controlled_field_anchor_request_packet": paths[
+                    "controlled_field_anchor_request_packet"
+                ],
                 "real_robot_pov_capture_contract": paths["real_robot_pov_capture_contract"],
                 "safety_review_checklist": paths["safety_review_checklist"],
             },
         },
+    )
+    write_json(
+        Path(paths["controlled_field_anchor_request_packet"]),
+        _controlled_field_anchor_request_packet(context, paths),
     )
     write_json(
         Path(paths["real_robot_pov_capture_contract"]),

@@ -395,6 +395,53 @@ def _default_robot_profiles() -> List[Dict[str, Any]]:
     ]
 
 
+def _hosted_session_runtime_claim_boundary() -> Dict[str, Any]:
+    return {
+        "schema_version": "hosted_session_runtime_claim_boundary.v1",
+        "artifact_purpose": "hosted_session_runtime_contract_only",
+        "hosted_session_artifacts_only": True,
+        "live_provider_jobs_called": False,
+        "simulators_run": False,
+        "deployments_performed": False,
+        "simulator_execution_proven": False,
+        "rank_fidelity_result_proven": False,
+        "deployment_approval_proven": False,
+        "safety_validation_proven": False,
+        "physical_readiness_proven": False,
+        "physical_robot_readiness_proven": False,
+        "public_claim_upgrade_allowed": False,
+        "allowed_display": [
+            "hosted review runtime contract",
+            "available runtime backend catalog",
+            "task and scenario review catalogs",
+            "export defaults for reviewer sessions",
+        ],
+        "disallowed_claims": [
+            "simulator_execution_completed",
+            "rank_fidelity_result",
+            "deployment_approval",
+            "safety_validation",
+            "physical_readiness",
+            "robot_ready",
+        ],
+        "blocked_claim_upgrades": [
+            "simulator_execution_completed_claim",
+            "rank_fidelity_result_claim",
+            "deployment_approval_claim",
+            "safety_validation_claim",
+            "physical_readiness_claim",
+            "robot_ready_claim",
+        ],
+        "proof_upgrade_requires": [
+            "owner-system simulator execution trace",
+            "accepted policy-ranking methodology with heldout or real anchors",
+            "buyer or operator deployment approval record",
+            "safety validation evidence for the exact robot, site, and task",
+            "physical robot trial or owner-attested readiness evidence",
+        ],
+    }
+
+
 def _load_task_run_entries(capture_root: Path) -> List[Dict[str, Any]]:
     pipeline_dir = capture_root / "pipeline"
     manifest = _read_optional_json_any(pipeline_dir / "task_run_manifest.json")
@@ -3007,6 +3054,12 @@ def _build_hosted_session_runtime_manifest(
     if available_backends and not launchable_backends:
         blockers.append("no_launchable_stage1_backend")
 
+    claim_boundary = _hosted_session_runtime_claim_boundary()
+    proof_boundary = {
+        **claim_boundary,
+        "artifact_purpose": "hosted_session_runtime_proof_boundary",
+    }
+
     return {
         "schema_version": "v1",
         "scene_id": context.scene_id,
@@ -3080,6 +3133,15 @@ def _build_hosted_session_runtime_manifest(
         "supports_step_rollout": runtime_capabilities["supports_step_rollout"],
         "supports_batch_rollout": runtime_capabilities["supports_batch_rollout"],
         "supports_camera_views": runtime_capabilities["supports_camera_views"],
+        "simulator_execution_proven": False,
+        "rank_fidelity_result_proven": False,
+        "deployment_approval_proven": False,
+        "safety_validation_proven": False,
+        "physical_readiness_proven": False,
+        "physical_robot_readiness_proven": False,
+        "public_claim_upgrade_allowed": False,
+        "claim_boundary": claim_boundary,
+        "proof_boundary": proof_boundary,
         "grounding_status": canonical_runtime_status.get("grounding_status"),
         "ungrounded_reason": canonical_runtime_status.get("ungrounded_reason"),
         "empty_index_cause": canonical_runtime_status.get("empty_index_cause"),

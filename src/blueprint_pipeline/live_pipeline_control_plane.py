@@ -360,30 +360,10 @@ def _control_plane_next_inputs_needed(
             "Provide a real owner-system Isaac Lab-Arena command or result directory before "
             "claiming simulator execution."
         )
-    if not real_robot_pov_ready:
-        next_inputs.append(
-            "Provide real robot POV evidence with exact run/variation keys, camera video, "
-            "action logs, timestamp alignment, and owner evidence."
-        )
     if not live_closure_evidence_ready:
         next_inputs.append(
             "Provide live closure evidence for the job, including package delivery/access, "
             "rights/privacy, and WebApp lineage."
-        )
-    if not deployment_outcomes_ready:
-        next_inputs.append(
-            "Provide deployment outcome records with task/scenario IDs and actual result "
-            "signals for real-world validation."
-        )
-    elif not deployment_prediction_match_keys_ready:
-        next_inputs.append(
-            "Provide deployment outcome exact prediction join keys: scenario_eval_run_id and "
-            "scenario_variation_instance_id."
-        )
-    elif not deployment_owner_evidence_ready:
-        next_inputs.append(
-            "Provide owner evidence for each deployment outcome record before claiming "
-            "real-world validation closure."
         )
     if not policy_package_ready:
         next_inputs.append(
@@ -818,6 +798,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
             "real_robot_pov_path": None,
         }
     blockers: List[str] = []
+    diagnostic_blockers: List[str] = []
     if payload.get("schema_version") != LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION:
         blockers.append("staged_inputs_schema_mismatch")
     configured_capture_root = _string(payload.get("configured_capture_root")) or None
@@ -870,7 +851,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
         blockers.append("staged_live_closure_evidence_missing")
         closure_ready = False
     if deployment_outcomes_path and not Path(deployment_outcomes_path).is_file():
-        blockers.append("staged_deployment_outcomes_missing")
+        diagnostic_blockers.append("staged_deployment_outcomes_missing")
         outcomes_ready = False
         outcomes_records_ready = False
         outcomes_owner_evidence_ready = False
@@ -878,7 +859,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
         blockers.append("staged_policy_package_missing")
         policy_ready = False
     if real_robot_pov_path and not Path(real_robot_pov_path).is_file():
-        blockers.append("staged_real_robot_pov_missing")
+        diagnostic_blockers.append("staged_real_robot_pov_missing")
         real_pov_ready = False
     status = (
         "ready"
@@ -969,6 +950,7 @@ def _load_staged_inputs(path: Path, *, capture_root: Path | None) -> Dict[str, A
             real_pov.get("missing_evidence_record_ids") or []
         ),
         "blockers": blockers,
+        "diagnostic_blockers": diagnostic_blockers,
         "proof_boundary": "staged inputs are pointers to validated inputs, not proof claims",
     }
 
@@ -1093,96 +1075,6 @@ BLOCKER_PACKET_TEMPLATES: Dict[str, Dict[str, str]] = {
         "disallowed_workaround": (
             "Do not use placeholder policy endpoints, missing Docker digests, or unsupported "
             "modalities to satisfy policy execution input readiness."
-        ),
-    },
-    "real_robot_pov_evidence": {
-        "owner": "Robot team",
-        "required_input": (
-            "Real robot POV evidence for exact scenario run/variation keys, including camera "
-            "video, action logs, timestamp alignment, and owner evidence."
-        ),
-        "safe_proof_command": (
-            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
-            "--real-robot-pov <real_robot_pov_manifest.json> --stage-real-robot-pov --overwrite"
-        ),
-        "retry_condition": (
-            "Re-run after real_robot_pov_manifest.v1 contains exact run/variation keys and "
-            "camera/action owner evidence."
-        ),
-        "resume_target": (
-            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
-            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
-        ),
-        "disallowed_workaround": (
-            "Do not use generated simulator POV, storyboards, or local support media as real "
-            "robot POV evidence."
-        ),
-    },
-    "real_world_deployment_outcomes": {
-        "owner": "Robot team deployment operator",
-        "required_input": (
-            "Deployment outcome records with task/scenario IDs and actual result signals from "
-            "a real robot-team deployment or pilot."
-        ),
-        "safe_proof_command": (
-            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
-            "--deployment-outcomes <deployment_outcome_manifest.json> "
-            "--stage-deployment-outcomes --overwrite"
-        ),
-        "retry_condition": (
-            "Re-run after deployment_outcome_manifest.v1 records exist for the job."
-        ),
-        "resume_target": (
-            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
-            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
-        ),
-        "disallowed_workaround": (
-            "Do not infer actual deployment outcomes from simulator predictions or local "
-            "evaluation rows."
-        ),
-    },
-    "predicted_vs_actual_exact_match_keys": {
-        "owner": "Robot team deployment operator",
-        "required_input": (
-            "Exact deployment outcome join keys for predicted-vs-actual calibration."
-        ),
-        "safe_proof_command": (
-            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
-            "--deployment-outcomes <deployment_outcome_manifest.json> "
-            "--stage-deployment-outcomes --overwrite"
-        ),
-        "retry_condition": (
-            "Re-run after every deployment outcome record includes scenario_eval_run_id and "
-            "scenario_variation_instance_id."
-        ),
-        "resume_target": (
-            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
-            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
-        ),
-        "disallowed_workaround": (
-            "Do not calibrate predicted-vs-actual outcomes from task/scenario names alone."
-        ),
-    },
-    "real_world_deployment_outcome_owner_evidence": {
-        "owner": "Robot team deployment operator",
-        "required_input": (
-            "Owner evidence references or attestations for each deployment outcome record."
-        ),
-        "safe_proof_command": (
-            "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
-            "--deployment-outcomes <deployment_outcome_manifest.json> "
-            "--stage-deployment-outcomes --overwrite"
-        ),
-        "retry_condition": (
-            "Re-run after every deployment outcome has evidence_refs, owner_evidence_refs, "
-            "owner_evidence_uri, or an operator attestation."
-        ),
-        "resume_target": (
-            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
-            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
-        ),
-        "disallowed_workaround": (
-            "Do not treat un-attested result rows as owner deployment evidence."
         ),
     },
     "rollout_vision_labeling": {
@@ -1356,14 +1248,6 @@ def _build_external_input_packet(
         "webapp_upstream_truth",
     ) or bool(webapp_inbox_truth.get("ready"))
     live_closure_evidence_ready = bool(staged_inputs.get("live_closure_evidence_ready"))
-    real_robot_pov_ready = bool(staged_inputs.get("real_robot_pov_ready"))
-    deployment_outcomes_ready = bool(staged_inputs.get("deployment_outcomes_ready"))
-    deployment_prediction_match_keys_ready = bool(
-        staged_inputs.get("deployment_outcomes_prediction_match_keys_ready")
-    )
-    deployment_owner_evidence_ready = bool(
-        staged_inputs.get("deployment_outcomes_owner_evidence_ready")
-    )
     policy_package_ready = bool(staged_inputs.get("policy_package_ready")) or bool(
         webapp_inbox_truth.get("accepted_policy_package_request_count")
     )
@@ -1423,52 +1307,6 @@ def _build_external_input_packet(
                 ),
             }
         )
-    if not real_robot_pov_ready:
-        required_inputs.append(
-            {
-                "id": "real_robot_pov_evidence",
-                "title": "Real robot POV and action evidence",
-                "status": _string(staged_inputs.get("status")) or "not_staged",
-                "accepted_paths": [
-                    {
-                        "kind": "global_real_robot_pov_manifest",
-                        "target": (
-                            "<capture_root>/pipeline/robot_eval_inputs/"
-                            "real_robot_pov_manifest.json"
-                        ),
-                        "required_artifacts": ["real_robot_pov_manifest.v1"],
-                    }
-                ],
-                "required_record_fields": [
-                    "task_id",
-                    "scenario_id",
-                    "scenario_eval_run_id",
-                    "scenario_variation_instance_id",
-                    "robot_camera_video_uri",
-                    "action_log_uri",
-                    "timestamp_alignment",
-                    "owner_evidence_refs",
-                ],
-                "staged_inputs": {
-                    "status": staged_inputs.get("status"),
-                    "real_robot_pov_path": staged_inputs.get("real_robot_pov_path"),
-                    "real_robot_pov_record_count": staged_inputs.get(
-                        "real_robot_pov_record_count"
-                    ),
-                    "missing_exact_key_record_ids": staged_inputs.get(
-                        "real_robot_pov_missing_exact_key_record_ids"
-                    ),
-                    "missing_evidence_record_ids": staged_inputs.get(
-                        "real_robot_pov_missing_evidence_record_ids"
-                    ),
-                    "blockers": staged_inputs.get("blockers", []),
-                },
-                "proof_boundary": (
-                    "Generated robot POV or simulator camera media does not satisfy real robot "
-                    "POV evidence; this input must come from owner robot camera/action logs."
-                ),
-            }
-        )
     if not live_closure_evidence_ready:
         required_inputs.append(
             {
@@ -1504,95 +1342,6 @@ def _build_external_input_packet(
                 "proof_boundary": (
                     "Closure evidence is an input to live_eval_closure_manifest.json; it does "
                     "not upgrade proof until the job-level closure audit passes."
-                ),
-            }
-        )
-    if not deployment_outcomes_ready:
-        required_inputs.append(
-            {
-                "id": "real_world_deployment_outcomes",
-                "title": "Real-world deployment outcome records",
-                "status": _string(staged_inputs.get("status")) or "not_staged",
-                "accepted_paths": [
-                    {
-                        "kind": "job_specific_deployment_outcome_inbox",
-                        "target": (
-                            "<capture_root>/pipeline/robot_eval_inputs/<job_id>/"
-                            "deployment_outcomes/inbox/*.json"
-                        ),
-                        "required_artifacts": ["deployment_outcome_manifest.v1"],
-                    }
-                ],
-                "required_record_fields": [
-                    "task_id",
-                    "scenario_id",
-                    "actual_success or actual_result",
-                ],
-                "staged_inputs": {
-                    "status": staged_inputs.get("status"),
-                    "deployment_outcomes_path": staged_inputs.get(
-                        "deployment_outcomes_path"
-                    ),
-                    "deployment_outcome_record_count": staged_inputs.get(
-                        "deployment_outcome_record_count"
-                    ),
-                    "blockers": staged_inputs.get("blockers", []),
-                },
-                "proof_boundary": (
-                    "Deployment outcomes must be owner-supplied actual result records; "
-                    "simulator predictions cannot satisfy this input."
-                ),
-            }
-        )
-    elif not deployment_prediction_match_keys_ready:
-        required_inputs.append(
-            {
-                "id": "predicted_vs_actual_exact_match_keys",
-                "title": "Exact prediction-to-actual join keys",
-                "status": _string(staged_inputs.get("status")) or "not_staged",
-                "required_record_fields": [
-                    "scenario_eval_run_id",
-                    "scenario_variation_instance_id",
-                ],
-                "current_blockers": ["deployment_outcomes_missing_exact_prediction_join_keys"],
-                "staged_inputs": {
-                    "deployment_outcomes_path": staged_inputs.get(
-                        "deployment_outcomes_path"
-                    ),
-                    "missing_prediction_match_key_record_ids": staged_inputs.get(
-                        "deployment_outcome_missing_prediction_match_key_record_ids"
-                    ),
-                },
-                "proof_boundary": (
-                    "Task/scenario names are insufficient for predicted-vs-actual calibration; "
-                    "exact run and variation keys are required."
-                ),
-            }
-        )
-    elif not deployment_owner_evidence_ready:
-        required_inputs.append(
-            {
-                "id": "real_world_deployment_outcome_owner_evidence",
-                "title": "Owner evidence for deployment outcomes",
-                "status": _string(staged_inputs.get("status")) or "not_staged",
-                "required_record_fields": [
-                    "evidence_refs",
-                    "owner_evidence_refs",
-                    "owner_evidence_uri",
-                    "operator_attestation",
-                ],
-                "current_blockers": ["deployment_outcomes_missing_owner_evidence"],
-                "staged_inputs": {
-                    "deployment_outcomes_path": staged_inputs.get(
-                        "deployment_outcomes_path"
-                    ),
-                    "missing_owner_evidence_record_ids": staged_inputs.get(
-                        "deployment_outcome_missing_owner_evidence_record_ids"
-                    ),
-                },
-                "proof_boundary": (
-                    "Outcome rows without owner evidence remain actual-result inputs only and "
-                    "do not close real-world validation."
                 ),
             }
         )
@@ -1947,6 +1696,7 @@ def run_live_pipeline_control_plane(
     allow_live_agent_operator: bool | None = None,
     provisioner: str | None = None,
     simulator: str | None = None,
+    evaluation_substrate: str | None = None,
     allow_gpu_provisioning: bool | None = None,
     allow_simulator_execution: bool | None = None,
     allowed_simulators: Sequence[str] = (),
@@ -2178,6 +1928,7 @@ def run_live_pipeline_control_plane(
                     ),
                     provisioner=resolved_provisioner,
                     simulator=resolved_simulator,
+                    evaluation_substrate=evaluation_substrate,
                     allow_gpu_provisioning=gpu_allowed,
                     allow_simulator_execution=simulator_execution_allowed,
                     allowed_simulators=effective_allowed_simulators,
@@ -2388,6 +2139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-live-agent-operator", action="store_true", default=None)
     parser.add_argument("--provisioner", default=None)
     parser.add_argument("--simulator", default=None)
+    parser.add_argument("--evaluation-substrate", default=None)
     parser.add_argument("--allow-gpu-provisioning", action="store_true", default=None)
     parser.add_argument("--allow-simulator-execution", action="store_true", default=None)
     parser.add_argument("--allow-simulator", action="append", default=[])
@@ -2429,6 +2181,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_live_agent_operator=args.allow_live_agent_operator,
         provisioner=args.provisioner,
         simulator=args.simulator,
+        evaluation_substrate=args.evaluation_substrate,
         allow_gpu_provisioning=args.allow_gpu_provisioning,
         allow_simulator_execution=args.allow_simulator_execution,
         allowed_simulators=args.allow_simulator,

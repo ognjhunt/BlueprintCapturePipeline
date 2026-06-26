@@ -22,6 +22,7 @@ from blueprint_pipeline.robot_eval_execution import (
 from blueprint_pipeline.robot_eval_job_orchestrator import (
     AgentsSdkRobotEvalJobAdapter,
     FakeRobotEvalJobAgentAdapter,
+    _build_scheduler_decision,
     _remote_cloud_execution_closure_manifest,
     _robot_team_grade_eval_closure_manifest,
     build_robot_eval_job,
@@ -501,6 +502,160 @@ def test_scenario_eval_matrix_expands_requested_route_to_500_deterministic_runs(
     assert repeat_matrix["runs"][-1] == last_run
 
 
+def test_scenario_eval_matrix_expands_policy_candidates_over_same_base_runs(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_policy_reference_variation_instances(capture_root)
+    request = _full_job_request(capture_root)
+    request["policy_comparison_mode"] = True
+    request["policy_candidates"] = [
+        {"policy_id": "baseline_policy"},
+        {"policy_id": "site_finetune_policy"},
+    ]
+
+    matrix = build_scenario_eval_matrix(
+        capture_root=capture_root,
+        job_dir=capture_root / "pipeline" / "robot_eval_jobs" / "job-policy-matrix",
+        job_request=request,
+        generated_at="2026-06-14T00:00:00Z",
+    )
+
+    base_ids = matrix["policy_comparison_base_scenario_eval_run_ids"]
+    runs = matrix["runs"]
+    assert matrix["status"] == "completed"
+    assert matrix["policy_comparison_mode"] is True
+    assert matrix["policy_comparison_candidate_count"] == 2
+    assert matrix["policy_comparison_base_scenario_eval_run_count"] == len(
+        POLICY_REFERENCE_VARIATION_NAMES
+    )
+    assert matrix["scenario_eval_run_count"] == len(base_ids) * 2
+    assert len({run["scenario_eval_run_id"] for run in runs}) == len(runs)
+    for policy_id in ("baseline_policy", "site_finetune_policy"):
+        assert {
+            run["base_scenario_eval_run_id"]
+            for run in runs
+            if run.get("policy_id") == policy_id
+        } == set(base_ids)
+    assert all(run["policy_comparison_candidate_run"] is True for run in runs)
+    assert matrix["policy_comparison_same_observation_action_protocol_required"] is True
+
+
+def test_robot_eval_job_writes_simulator_policy_ranking_scorecard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_policy_reference_variation_instances(capture_root)
+    request = _full_job_request(capture_root)
+    request["policy_comparison_mode"] = True
+    request["requested_scenario_eval_runs"] = [{"variation_name": "lighting_variation"}]
+    request["policy_candidates"] = [
+        {"policy_id": "baseline_policy"},
+        {"policy_id": "site_finetune_policy"},
+    ]
+    request_path = tmp_path / "job-request-policy-comparison.json"
+    _write_json(request_path, request)
+    simulator_script = tmp_path / "fake_mujoco_policy_comparison.py"
+    simulator_script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "from pathlib import Path",
+                "matrix = json.loads(Path(os.environ['BLUEPRINT_SCENARIO_EVAL_MATRIX']).read_text())",
+                "attempts = []",
+                "for index, run in enumerate(matrix['runs'], start=1):",
+                "    policy_id = run.get('policy_id') or 'policy'",
+                "    success = policy_id == 'baseline_policy'",
+                "    attempts.append({",
+                "        'attempt_id': f'attempt-{index:04d}',",
+                "        'scenario_eval_run_id': run['scenario_eval_run_id'],",
+                "        'policy_id': policy_id,",
+                "        'task_id': run.get('task_id'),",
+                "        'scenario_id': run.get('scenario_id'),",
+                "        'status': 'passed' if success else 'failed_task_criteria',",
+                "        'success': success,",
+                "        'task_success': success,",
+                "        'metrics': {",
+                "            'cycle_time_seconds': 1.0,",
+                "            'intervention_count': 0,",
+                "            'unsafe_proximity_event_count': 0,",
+                "            'collision_risk_event_count': 0,",
+                "            'object_drop_count': 0,",
+                "            'wrong_object_count': 0,",
+                "            'timeout_count': 0,",
+                "            'task_success': success,",
+                "        },",
+                "    })",
+                "payload = {",
+                "    'status': 'completed',",
+                "    'attempts': attempts,",
+                "    'required_scenario_eval_run_ids': [run['scenario_eval_run_id'] for run in matrix['runs']],",
+                "}",
+                "Path(os.environ['BLUEPRINT_SIMULATOR_OUTPUT']).write_text(json.dumps(payload), encoding='utf-8')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-policy-comparison-mujoco",
+        provisioner="fixture_local",
+        simulator="mujoco",
+        allow_simulator_execution=True,
+        allowed_simulators=("mujoco",),
+        simulator_commands={"mujoco": f"{sys.executable} {simulator_script}"},
+    )
+
+    job_dir = Path(result["job_dir"])
+    matrix = _read_json(job_dir / "scenario_eval_matrix.json")
+    trace = _read_json(job_dir / "normalized_attempt_trace.json")
+    scorecard = _read_json(job_dir / "policy_ranking_scorecard.json")
+    candidate_report = _read_json(job_dir / "candidate_selection_report.json")
+    claim_boundary = _read_json(job_dir / "wam_eval_claim_boundary.json")
+    closure = _read_json(job_dir / "robot_team_grade_eval_closure_manifest.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+
+    assert matrix["policy_comparison_mode"] is True
+    assert matrix["policy_comparison_candidate_count"] == 2
+    assert matrix["policy_comparison_base_scenario_eval_run_count"] == 1
+    assert matrix["scenario_eval_run_count"] == 2
+    assert trace["attempt_count"] == 2
+    assert scorecard["schema_version"] == "policy_ranking_scorecard.v1"
+    assert scorecard["status"] == "completed_low_confidence_ranking"
+    assert scorecard["policy_count"] == 2
+    assert scorecard["required_scenario_eval_run_ids"] == (
+        matrix["policy_comparison_base_scenario_eval_run_ids"]
+    )
+    assert scorecard["coverage_complete"] is True
+    assert scorecard["score_ranges_valid"] is True
+    assert scorecard["evaluator_top_policy_id"] == "baseline_policy"
+    assert scorecard["top_policy_id"] is None
+    assert scorecard["single_best_policy_claimed"] is False
+    assert scorecard["simulator_evaluator_only"] is True
+    assert scorecard["comparison_contract"]["same_observation_protocol"] is True
+    assert scorecard["comparison_contract"]["same_action_protocol"] is True
+    assert "visual_media_coverage_manifest_missing" in scorecard["visual_review_blockers"]
+    assert candidate_report["evaluator_top_policy_id"] == "baseline_policy"
+    assert candidate_report["claim_boundary"]["do_not_use_as_rank_fidelity_result"] is True
+    assert claim_boundary["policy_ranking_is_evaluator_bounded"] is True
+    assert closure["policy_comparison_summary"]["coverage_complete"] is True
+    assert closure["policy_comparison_summary"]["symmetric_policy_coverage"] is True
+    assert closure["policy_comparison_summary"]["simulator_evaluator_only"] is True
+    assert closure["policy_comparison_summary"]["explicit_evaluator_only"] is True
+    assert closure["policy_comparison_summary"]["review_grade_policy_ranking"] is False
+    assert closure["evaluator_bounded_policy_comparison_complete"] is True
+    assert run_manifest["policy_ranking_scorecard_path"] == "policy_ranking_scorecard.json"
+    assert run_manifest["artifacts"]["policy_ranking_scorecard"] == (
+        "policy_ranking_scorecard.json"
+    )
+
+
 def test_minimal_webapp_request_gets_beta_enrichment_without_overwriting_source(
     tmp_path: Path,
 ) -> None:
@@ -618,6 +773,10 @@ POLICY_REFERENCE_VARIATION_NAMES = [
     "wrong_object_nearby",
     "narrow_approach_angle",
 ]
+POLICY_REFERENCE_POLICY_IDS = [
+    "blueprint_default_walk_to_target_smoke_policy",
+    "blueprint_conservative_clearance_walk_to_target_policy",
+]
 
 
 def _variation_detail_fields(variation_name: str) -> dict[str, object]:
@@ -669,6 +828,14 @@ def _scenario_eval_run_id(variation_name: str, index: int) -> str:
     return (
         f"place_return_in_bin_scenario_place_return_in_bin_mobile_{variation_name}_run_{index:04d}"
     )
+
+
+def _policy_reference_scenario_eval_run_id(
+    variation_name: str,
+    index: int,
+    policy_id: str,
+) -> str:
+    return f"{_scenario_eval_run_id(variation_name, index)}__policy_{policy_id}"
 
 
 def _scenario_variation_instance_id(variation_name: str) -> str:
@@ -844,7 +1011,14 @@ def _anchor_actual(
         "scenario_id": scenario_id,
         "scenario_variation_instance_id": variation_id,
         "actual_success": actual_success,
+        "review_status": "accepted",
         "evidence_refs": {"pilot_log": f"owner://pilot/{record_id}"},
+        "operator_attestation": {
+            "status": "signed",
+            "attested_by": "robot-team-ops",
+            "statement": f"Accepted real-world anchor evidence for {record_id}.",
+            "signed_at_utc": "2026-06-25T12:00:00Z",
+        },
         **extra,
     }
 
@@ -1222,7 +1396,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         == (scenario_eval_matrix["scenario_eval_run_count"])
     )
     assert policy_execution["robot_policy_execution_proven"] is False
-    assert deployment["status"] == "blocked_missing_real_world_outcomes"
+    assert deployment["status"] == "not_requested"
     assert run_manifest["state"] == "completed"
     assert run_manifest["startup_architecture_audit_status"] == "passed"
     assert run_manifest["startup_architecture_audit_path"] == "startup_architecture_audit.json"
@@ -1462,7 +1636,7 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
                 "      'scenario_variation_instance_id': run.get('scenario_variation_instance_id'),",
                 "      'variation_name': run.get('variation_name'),",
                 "      'task_id': run['task_id'],",
-                "      'policy_id': 'policy-live-command' if index % 2 else 'policy-live-alt-command',",
+                "      'policy_id': run.get('policy_id') or run.get('policyId'),",
                 "      'status': 'completed',",
                 "      'success': True,",
                 "      'metrics': {'cycle_time_seconds': 11.25, 'intervention_count': 0},",
@@ -1497,15 +1671,19 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
                 "    observations = json.load(f)['observations']",
                 "attempts = []",
                 "for index, obs in enumerate(observations, start=1):",
+                "    scenario_eval_run_id = obs.get('scenario_eval_run_id')",
+                "    policy_id = obs.get('policy_id') or obs.get('policyId')",
+                "    if not policy_id and scenario_eval_run_id and '__policy_' in scenario_eval_run_id:",
+                "        policy_id = scenario_eval_run_id.rsplit('__policy_', 1)[1]",
                 "    attempts.append({",
                 "      'attempt_id': f'policy-attempt-{index}',",
                 "      'observation_id': obs['observation_id'],",
                 "      'scenario_id': obs['scenario_id'],",
-                "      'scenario_eval_run_id': obs.get('scenario_eval_run_id'),",
+                "      'scenario_eval_run_id': scenario_eval_run_id,",
                 "      'scenario_variation_instance_id': obs.get('scenario_variation_instance_id'),",
                 "      'variation_name': obs.get('variation_name'),",
                 "      'task_id': obs['task_id'],",
-                "      'policy_id': 'policy-live-command' if index % 2 else 'policy-live-alt-command',",
+                "      'policy_id': policy_id,",
                 "      'status': 'completed',",
                 "      'success': True,",
                 "      'actions': [{'t': 0.0, 'action': 'pick'}, {'t': 1.0, 'action': 'place'}]",
@@ -1539,23 +1717,33 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
     request["actual_outcomes"] = {
         "records": [
             {
-                "outcome_id": f"pilot-live-{index}",
+                "outcome_id": f"pilot-live-{index}-{policy_index}",
                 "task_id": "place_return_in_bin",
                 "scenario_id": "scenario_place_return_in_bin_mobile",
-                "scenario_eval_run_id": _scenario_eval_run_id(variation_name, index),
+                "scenario_eval_run_id": _policy_reference_scenario_eval_run_id(
+                    variation_name,
+                    index,
+                    policy_id,
+                ),
                 "scenario_variation_instance_id": _scenario_variation_instance_id(
                     variation_name
                 ),
-                "policy_id": "policy-live-command"
-                if index % 2
-                else "policy-live-alt-command",
+                "policy_id": policy_id,
                 "actual_success": True,
                 "cycle_time_seconds": 11.5,
                 "intervention_count": 0,
                 "failure_mode_ids": [],
-                "evidence_refs": {"pilot_log": f"owner://pilot/live-{index}"},
+                "review_status": "accepted",
+                "evidence_refs": {"pilot_log": f"owner://pilot/live-{index}-{policy_index}"},
+                "operator_attestation": {
+                    "status": "signed",
+                    "attested_by": "robot-team-ops",
+                    "statement": f"Accepted live calibration anchor for {variation_name}.",
+                    "signed_at_utc": "2026-06-25T12:00:00Z",
+                },
             }
             for index, variation_name in enumerate(POLICY_REFERENCE_VARIATION_NAMES, start=1)
+            for policy_index, policy_id in enumerate(POLICY_REFERENCE_POLICY_IDS, start=1)
         ]
     }
     staged_closure_evidence_path = (
@@ -1635,9 +1823,16 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
     assert str(staged_closure_evidence_path) in live_closure["evidence_sources"]
     assert live_closure["blockers"] == []
     assert all(gate["passed"] for gate in live_closure["gates"].values())
+    assert live_closure["gates"]["review_acceptance"]["proof_boolean"] is True
+    assert live_closure["gates"]["signed_delivery_access"]["proof_boolean"] is True
+    assert live_closure["gates"]["rights_privacy_scope"]["proof_boolean"] is True
+    assert live_closure["gates"]["predicted_vs_actual_calibration"]["proof_boolean"] is True
     assert proof_boundary["status"] == "live_end_to_end_verified"
     assert proof_boundary["simulator_execution_proven"] is True
     assert proof_boundary["robot_policy_execution_proven"] is True
+    assert proof_boundary["review_acceptance_proven"] is True
+    assert proof_boundary["signed_delivery_access_proven"] is True
+    assert proof_boundary["delivery_access_is_deployment_approval"] is False
     assert proof_boundary["rank_fidelity_result_proven"] is True
     assert proof_boundary["public_claim_upgrade_allowed"] is True
     assert run_manifest["live_end_to_end_verified"] is True
@@ -1848,14 +2043,78 @@ def test_live_robot_eval_closure_accepts_matching_webapp_route_forwarding_proof_
     ]["zero_active_pods_now"] is True
     assert beta_checks["robot_pov_policy_evidence"]["passed"] is False
     assert (
-        "real_robot_pov_evidence:real_robot_pov_evidence_not_proven"
+        "live_policy_execution:live_policy_execution_not_proven"
         in beta_checks["robot_pov_policy_evidence"]["blockers"]
     )
-    assert beta_checks["deployment_outcome_joins"]["passed"] is False
+    assert beta_checks["deployment_outcome_joins"]["passed"] is True
+    assert beta_checks["deployment_outcome_joins"]["blockers"] == []
     assert (
         "deployment_outcome_intake_manifest_missing"
-        in beta_checks["deployment_outcome_joins"]["blockers"]
+        in beta_checks["deployment_outcome_joins"]["evidence"]["diagnostic_blockers"]
     )
+
+
+def test_live_robot_eval_closure_accepts_verified_webapp_owner_system_request_id(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "webapp-owner-system-job"
+    request = _full_job_request(capture_root)
+    request["buyer_request_id"] = "buyer-request-prod-001"
+    site_package = request["site_package"]
+    assert isinstance(site_package, dict)
+    site_package.update(
+        {
+            "site_submission_id": "site-submission-prod-001",
+            "capture_job_id": "capture-job-prod-001",
+            "capture_id": "capture-1",
+            "buyer_request_id": "buyer-request-prod-001",
+            "capture_root": str(capture_root),
+        }
+    )
+    request["owner_system"] = {
+        "name": "Blueprint-WebApp",
+        "request_id": "request-prod-owner-system-001",
+        "buyer_request_id": "buyer-request-prod-001",
+        "site_submission_id": "site-submission-prod-001",
+        "capture_job_id": "capture-job-prod-001",
+        "capture_id": "capture-1",
+    }
+    request["source"] = {
+        "system": "Blueprint-WebApp",
+        "route": "/api/robot-eval/job-requests",
+        "selection_state": {
+            "buyer_request_id": "buyer-request-prod-001",
+            "site_submission_id": "site-submission-prod-001",
+            "capture_job_id": "capture-job-prod-001",
+            "capture_id": "capture-1",
+        },
+    }
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    gate = manifest["gates"]["webapp_upstream_truth"]
+    assert gate["passed"] is True
+    assert gate["blockers"] == []
+    assert gate["evidence"]["ids"] == {
+        "site_submission_id": "site-submission-prod-001",
+        "request_id": "request-prod-owner-system-001",
+        "buyer_request_id": "buyer-request-prod-001",
+        "capture_job_id": "capture-job-prod-001",
+    }
+    assert gate["evidence"]["id_sources"]["request_id"] == "job_request.owner_system"
+    assert gate["evidence"]["grounded_sources_by_field"]["request_id"] == [
+        "job_request.owner_system"
+    ]
+    beta_checks = {
+        check["check_id"]: check
+        for check in manifest["robot_team_beta_readiness"]["checks"]
+    }
+    assert beta_checks["production_or_staging_webapp_request_ids"]["passed"] is True
 
 
 def test_live_robot_eval_closure_beta_accepts_schema_valid_deployment_join_artifacts(
@@ -1868,7 +2127,7 @@ def test_live_robot_eval_closure_beta_accepts_schema_valid_deployment_join_artif
         job_dir / "deployment_outcome_intake_manifest.json",
         {
             "schema_version": "deployment_outcome_intake_manifest.v1",
-            "status": "blocked_missing_real_world_outcomes",
+            "status": "not_requested",
             "record_count": 0,
             "blockers": [],
         },
@@ -1877,18 +2136,18 @@ def test_live_robot_eval_closure_beta_accepts_schema_valid_deployment_join_artif
         job_dir / "deployment_outcome_ledger.json",
         {
             "schema_version": "deployment_outcome_ledger.v1",
-            "status": "blocked_missing_real_world_outcomes",
+            "status": "not_requested",
             "record_count": 0,
             "matched_prediction_record_count": 0,
             "exact_prediction_record_count": 0,
-            "blockers": ["missing_real_world_outcome_records"],
+            "blockers": [],
         },
     )
     _write_json(
         job_dir / "prediction_vs_actual_deployment_summary.json",
         {
             "schema_version": "prediction_vs_actual_deployment_summary.v1",
-            "status": "blocked_missing_real_world_outcomes",
+            "status": "not_measured",
             "matched_prediction_record_count": 0,
             "exact_prediction_record_count": 0,
         },
@@ -1897,7 +2156,7 @@ def test_live_robot_eval_closure_beta_accepts_schema_valid_deployment_join_artif
         job_dir / "sim_vs_real_calibration_report.json",
         {
             "schema_version": "sim_vs_real_calibration_report.v1",
-            "status": "blocked_missing_real_world_outcomes",
+            "status": "not_measured",
             "matched_prediction_record_count": 0,
             "exact_prediction_record_count": 0,
         },
@@ -1918,10 +2177,10 @@ def test_live_robot_eval_closure_beta_accepts_schema_valid_deployment_join_artif
     assert deployment_check["blockers"] == []
     assert deployment_check["evidence"]["real_world_outcome_record_count"] == 0
     assert deployment_check["evidence"]["prediction_summary_status"] == (
-        "blocked_missing_real_world_outcomes"
+        "not_measured"
     )
     assert deployment_check["evidence"]["calibration_report_status"] == (
-        "blocked_missing_real_world_outcomes"
+        "not_measured"
     )
 
 
@@ -2429,6 +2688,7 @@ def test_live_robot_eval_closure_accepts_camel_case_owner_attestations(
             "schema_version": "live_robot_eval_closure_evidence.v1",
             "reviewAcceptance": {
                 "accepted": True,
+                "reviewerId": "owner-reviewer",
                 "operatorAttestation": {
                     "attestedBy": "owner-reviewer",
                     "acceptedClaimBoundary": "Owner accepted review evidence.",
@@ -2499,6 +2759,74 @@ def test_live_robot_eval_closure_blocks_signed_delivery_without_operator_attesta
     assert gate["passed"] is False
     assert "signed_delivery_operator_attestation_missing" in gate["blockers"]
     assert gate["evidence"]["operator_attestation_present"] is False
+
+
+def test_live_robot_eval_closure_blocks_signed_delivery_without_signed_url(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-delivery-no-signed-url"
+    _write_json(
+        job_dir / "live_eval_closure_evidence.json",
+        {
+            "schema_version": "live_robot_eval_closure_evidence.v1",
+            "delivery": {
+                "storage_upload_performed": True,
+                "signed_urls": [],
+                "entitlement_verified": True,
+                "operator_attestation": {
+                    "attested_by": "delivery-owner",
+                    "attestation": "Uploaded package, but signed access was not created.",
+                },
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["signed_delivery_access"]
+    assert gate["passed"] is False
+    assert "signed_delivery_access_not_proven" in gate["blockers"]
+    assert "signed_delivery_operator_attestation_missing" not in gate["blockers"]
+    assert gate["evidence"]["storage_upload_performed"] is True
+    assert gate["evidence"]["storage_upload_alone_proves_signed_access"] is False
+
+
+def test_live_robot_eval_closure_blocks_review_acceptance_without_reviewer(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-review-no-reviewer"
+    review_evidence = tmp_path / "review_acceptance.json"
+    review_evidence.write_text('{"status":"accepted"}\n', encoding="utf-8")
+    _write_json(
+        job_dir / "live_eval_closure_evidence.json",
+        {
+            "schema_version": "live_robot_eval_closure_evidence.v1",
+            "review_acceptance": {
+                "accepted": True,
+                "evidence_uri_or_path": str(review_evidence),
+                "operator_attestation": {
+                    "attested_by": "review-owner",
+                    "attestation": "Accepted review but omitted reviewer identity.",
+                },
+            },
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["review_acceptance"]
+    assert gate["passed"] is False
+    assert "review_acceptance_reviewer_missing" in gate["blockers"]
+    assert "review_acceptance_owner_evidence_missing" not in gate["blockers"]
+    assert gate["evidence"]["reviewer_present"] is False
 
 
 def test_live_robot_eval_closure_blocks_mismatched_job_evidence(
@@ -2597,8 +2925,13 @@ def test_live_robot_eval_closure_blocks_missing_local_safety_contact_refs(
     )
 
     gate = manifest["gates"]["safety_contact_physics_readiness"]
-    assert gate["passed"] is False
-    assert "safety_contact_physics_local_evidence_refs_missing" in gate["blockers"]
+    assert gate["passed"] is True
+    assert gate["proof_boolean"] is False
+    assert gate["blockers"] == []
+    assert (
+        "safety_contact_physics_local_evidence_refs_missing"
+        in gate["evidence"]["diagnostic_blockers"]
+    )
     assert gate["evidence"]["missing_local_ref_keys"] == [
         "contact_validation_uri_or_path",
         "methodology_uri_or_path",
@@ -4229,6 +4562,63 @@ def test_live_robot_eval_closure_accepts_reviewed_failure_label_with_evidence_re
     assert gate["evidence"]["failure_diagnosis_complete"] is True
 
 
+def test_live_robot_eval_closure_accepts_sim_only_deterministic_failure_label(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-sim-only-failure-label"
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "status": "completed",
+            "attempts": [
+                {
+                    "attempt_id": "mujoco-attempt-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "success": False,
+                    "failure_mode_ids": ["failure_target_not_reached"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "failure_labels.json",
+        {
+            "status": "review_required",
+            "label_count": 1,
+            "labels": [
+                {
+                    "label_id": "label_mujoco_attempt_1",
+                    "attempt_id": "mujoco-attempt-1",
+                    "scenario_eval_run_id": "scenario-run-1",
+                    "failure_mode_ids": ["failure_target_not_reached"],
+                    "evidence_refs": [
+                        {"kind": "scene_trace", "path": "scene_load_trace.json"},
+                        {"kind": "policy_trace", "path": "policy_execution_trace.json"},
+                    ],
+                    "review_status": (
+                        "available_for_human_audit_not_required_for_sim_only_metric"
+                    ),
+                    "status": "deterministically_labeled_failure",
+                    "proof_effect": "sim_only_metric_input_not_real_rank_fidelity",
+                }
+            ],
+        },
+    )
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    gate = manifest["gates"]["failure_labels"]
+    assert gate["passed"] is True
+    assert gate["blockers"] == []
+    assert gate["evidence"]["labels_not_accepted_or_reviewable"] == []
+    assert gate["evidence"]["failure_diagnosis_coverage_complete"] is True
+    assert gate["evidence"]["failure_diagnosis_complete"] is True
+
+
 def test_live_robot_eval_closure_nonreviewable_generated_failure_records_blocker(
     tmp_path: Path,
 ) -> None:
@@ -4848,7 +5238,12 @@ def test_real_world_calibration_no_anchors_leaves_not_measured(tmp_path: Path) -
     assert calibration["status"] == "not_measured"
     assert calibration["sim_vs_real_calibration_score"] is None
     assert calibration["accepted_anchor_count"] == 0
-    assert "insufficient_anchor_count" in calibration["blockers"]
+    assert calibration["diagnostic_blockers"] == [
+        "insufficient_anchor_count",
+        "insufficient_policy_group_count",
+        "unmatched_prediction_rows",
+    ]
+    assert calibration["unmatched_prediction_row_count"] == 1
     assert calibration["accepted_anchor_schema"]["join_keys"] == [
         "scenario_eval_run_id",
         "policy_id",
@@ -4888,10 +5283,230 @@ def test_real_world_calibration_insufficient_anchors_block_accuracy_claim(
     assert calibration["spearman_rank_correlation"] is None
     assert calibration["pearson_success_rate_correlation"] is None
     assert calibration["deployment_accuracy_claim_allowed"] is False
-    assert "insufficient_anchor_count" in calibration["blockers"]
+    assert "insufficient_anchor_count" in calibration["diagnostic_blockers"]
 
 
-def test_real_world_calibration_matched_anchors_compute_metrics(
+def test_real_world_calibration_blocks_missing_reviewer_acceptance(
+    tmp_path: Path,
+) -> None:
+    prediction = _anchor_prediction(
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        predicted_success=True,
+    )
+    actual = _anchor_actual(
+        record_id="anchor-a-1",
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        actual_success=True,
+        review_status="not_reviewed",
+    )
+
+    bundle = _build_anchor_calibration_bundle(
+        tmp_path,
+        predictions=[prediction],
+        actuals=[actual],
+        job_id="job-review-not-accepted-real-world-calibration-anchor",
+    )
+    calibration = bundle["calibration_report"]
+
+    assert calibration["status"] == "blocked_anchor_quality"
+    assert calibration["accepted_anchor_count"] == 0
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert "insufficient_anchor_count" in calibration["diagnostic_blockers"]
+    assert calibration["rejected_anchors"][0]["anchor_blockers"] == [
+        "anchor_review_not_accepted"
+    ]
+
+
+def test_real_world_calibration_rejects_one_policy_only_anchors(
+    tmp_path: Path,
+) -> None:
+    predictions = [
+        _anchor_prediction(
+            policy_id="policy-a",
+            run_id=f"run-a-{index}",
+            variation_id=f"variation-a-{index}",
+            predicted_success=index % 2 == 0,
+        )
+        for index in range(1, 5)
+    ]
+    actuals = [
+        _anchor_actual(
+            record_id=f"anchor-a-{index}",
+            policy_id="policy-a",
+            run_id=f"run-a-{index}",
+            variation_id=f"variation-a-{index}",
+            actual_success=index % 2 == 0,
+        )
+        for index in range(1, 5)
+    ]
+
+    bundle = _build_anchor_calibration_bundle(
+        tmp_path,
+        predictions=predictions,
+        actuals=actuals,
+        job_id="job-one-policy-real-world-calibration-anchors",
+    )
+    calibration = bundle["calibration_report"]
+
+    assert calibration["status"] == "blocked_anchor_quality"
+    assert calibration["accepted_anchor_count"] == 4
+    assert calibration["policy_group_count"] == 1
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["spearman_rank_correlation"] is None
+    assert calibration["pearson_success_rate_correlation"] is None
+    assert calibration["mmrv"] is None
+    assert calibration["diagnostic_blockers"] == ["insufficient_policy_group_count"]
+
+
+def test_real_world_calibration_rejects_mismatched_exact_join_keys(
+    tmp_path: Path,
+) -> None:
+    prediction = _anchor_prediction(
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        predicted_success=True,
+    )
+    actual = _anchor_actual(
+        record_id="anchor-a-mismatched",
+        policy_id="policy-a",
+        run_id="run-a-mismatched",
+        variation_id="variation-a-mismatched",
+        actual_success=True,
+    )
+
+    bundle = _build_anchor_calibration_bundle(
+        tmp_path,
+        predictions=[prediction],
+        actuals=[actual],
+        job_id="job-mismatched-real-world-calibration-anchor",
+    )
+    calibration = bundle["calibration_report"]
+
+    assert calibration["status"] == "blocked_anchor_quality"
+    assert calibration["accepted_anchor_count"] == 0
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert "unmatched_actual_rows" in calibration["diagnostic_blockers"]
+    assert "unmatched_prediction_rows" in calibration["diagnostic_blockers"]
+    assert calibration["rejected_anchors"][0]["anchor_blockers"] == [
+        "missing_predicted_success",
+        "unmatched_actual_row",
+    ]
+
+
+def test_real_world_calibration_rejects_loose_or_inferred_join_matches(
+    tmp_path: Path,
+) -> None:
+    prediction = _anchor_prediction(
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        predicted_success=True,
+    )
+    actual = _anchor_actual(
+        record_id="anchor-a-run-only",
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="",
+        actual_success=True,
+    )
+
+    bundle = _build_anchor_calibration_bundle(
+        tmp_path,
+        predictions=[prediction],
+        actuals=[actual],
+        job_id="job-loose-real-world-calibration-anchor",
+    )
+    calibration = bundle["calibration_report"]
+
+    assert calibration["status"] == "blocked_weak_prediction_matches"
+    assert calibration["accepted_anchor_count"] == 0
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["weak_prediction_match_record_ids"] == ["anchor-a-run-only"]
+    assert calibration["rejected_anchors"][0]["anchor_blockers"] == [
+        "loose_or_inferred_anchor_match_rejected",
+        "missing_anchor_join_key_fields",
+        "unmatched_actual_row",
+    ]
+
+
+def test_real_world_calibration_rejects_unsigned_anchors(
+    tmp_path: Path,
+) -> None:
+    prediction = _anchor_prediction(
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        predicted_success=True,
+    )
+    actual = _anchor_actual(
+        record_id="anchor-a-unsigned",
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        actual_success=True,
+        operator_attestation={
+            "status": "not_signed",
+            "attested_by": "robot-team-ops",
+            "statement": "Draft operator statement was not signed.",
+        },
+    )
+
+    bundle = _build_anchor_calibration_bundle(
+        tmp_path,
+        predictions=[prediction],
+        actuals=[actual],
+        job_id="job-unsigned-real-world-calibration-anchor",
+    )
+    calibration = bundle["calibration_report"]
+
+    assert calibration["status"] == "blocked_anchor_quality"
+    assert calibration["accepted_anchor_count"] == 0
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["rejected_anchors"][0]["anchor_blockers"] == [
+        "owner_or_operator_attestation_not_signed"
+    ]
+
+
+def test_real_world_calibration_rejects_requested_physical_evidence_absence(
+    tmp_path: Path,
+) -> None:
+    prediction = _anchor_prediction(
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        predicted_success=True,
+    )
+    actual = _anchor_actual(
+        record_id="anchor-a-missing-physical-evidence",
+        policy_id="policy-a",
+        run_id="run-a-1",
+        variation_id="variation-a-1",
+        actual_success=True,
+        physical_evidence_required=True,
+    )
+
+    bundle = _build_anchor_calibration_bundle(
+        tmp_path,
+        predictions=[prediction],
+        actuals=[actual],
+        job_id="job-missing-physical-real-world-calibration-anchor",
+    )
+    calibration = bundle["calibration_report"]
+
+    assert calibration["status"] == "blocked_anchor_quality"
+    assert calibration["accepted_anchor_count"] == 0
+    assert calibration["sim_vs_real_calibration_score"] is None
+    assert calibration["rejected_anchors"][0]["anchor_blockers"] == [
+        "missing_required_physical_evidence"
+    ]
+
+
+def test_real_world_calibration_accepted_multi_policy_anchors_compute_metrics(
     tmp_path: Path,
 ) -> None:
     predictions = [
@@ -5039,10 +5654,10 @@ def test_real_world_calibration_unmatched_stale_and_conflicting_anchors_block(
 
     assert calibration["status"] == "blocked_anchor_quality"
     assert calibration["sim_vs_real_calibration_score"] is None
-    assert "unmatched_prediction_rows" in calibration["blockers"]
-    assert "unmatched_actual_rows" in calibration["blockers"]
-    assert "stale_anchor_rows" in calibration["blockers"]
-    assert "conflicting_anchor_rows" in calibration["blockers"]
+    assert "unmatched_prediction_rows" in calibration["diagnostic_blockers"]
+    assert "unmatched_actual_rows" in calibration["diagnostic_blockers"]
+    assert "stale_anchor_rows" in calibration["diagnostic_blockers"]
+    assert "conflicting_anchor_rows" in calibration["diagnostic_blockers"]
     assert calibration["stale_anchor_row_ids"] == ["anchor-stale"]
     assert set(calibration["conflicting_anchor_row_ids"]) == {
         "anchor-conflict-a",
@@ -5149,7 +5764,16 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
         "blocked_check_ids"
     ]
     assert beta_checks["robot_pov_policy_evidence"]["passed"] is False
-    assert "real_robot_pov_evidence:real_robot_pov_evidence_not_proven" in beta_checks[
+    assert "simulator_robot_pov_reference_policy_evidence_not_complete" in beta_checks[
+        "robot_pov_policy_evidence"
+    ]["blockers"]
+    assert beta_checks["robot_pov_policy_evidence"]["evidence"]["satisfied_by"] == (
+        "not_satisfied"
+    )
+    assert beta_checks["robot_pov_policy_evidence"]["evidence"][
+        "real_robot_pov_proof_boolean"
+    ] is False
+    assert "real_robot_pov_evidence:real_robot_pov_evidence_not_proven" not in beta_checks[
         "robot_pov_policy_evidence"
     ]["blockers"]
     assert beta_checks["deployment_outcome_joins"]["passed"] is True
@@ -5176,9 +5800,9 @@ def test_robot_eval_job_runs_policy_command_and_pairs_real_world_outcomes(
     assert calibration["status"] == "blocked_anchor_quality"
     assert calibration["sim_vs_real_calibration_score"] is None
     assert calibration["accepted_anchor_count"] == 0
-    assert "insufficient_anchor_count" in calibration["blockers"]
-    assert "unmatched_actual_rows" in calibration["blockers"]
-    assert "unmatched_prediction_rows" in calibration["blockers"]
+    assert "insufficient_anchor_count" in calibration["diagnostic_blockers"]
+    assert "unmatched_actual_rows" in calibration["diagnostic_blockers"]
+    assert "unmatched_prediction_rows" in calibration["diagnostic_blockers"]
     assert calibration["exact_prediction_record_count"] == 1
     assert calibration["weak_prediction_match_record_count"] == 0
     assert evaluation["standard_policy_scorecard"]["sim_vs_real_calibration_score"] is None
@@ -5409,7 +6033,8 @@ def test_robot_eval_job_runs_default_walk_to_target_policy_without_team_package(
         ]
         is False
     )
-    assert live_closure["gates"]["real_robot_pov_evidence"]["passed"] is False
+    assert live_closure["gates"]["real_robot_pov_evidence"]["passed"] is True
+    assert live_closure["gates"]["real_robot_pov_evidence"]["proof_boolean"] is False
 
 
 def test_robot_eval_job_ingests_inline_real_world_outcomes_from_job_request(
@@ -5471,8 +6096,8 @@ def test_robot_eval_job_ingests_inline_real_world_outcomes_from_job_request(
     assert calibration["real_world_outcome_proven"] is False
     assert calibration["sim_vs_real_calibration_score"] is None
     assert calibration["accepted_anchor_count"] == 0
-    assert "insufficient_anchor_count" in calibration["blockers"]
-    assert "unmatched_actual_rows" in calibration["blockers"]
+    assert "insufficient_anchor_count" in calibration["diagnostic_blockers"]
+    assert "unmatched_actual_rows" in calibration["diagnostic_blockers"]
     assert calibration["exact_prediction_record_count"] == 0
     assert calibration["weak_prediction_match_record_count"] == 1
     assert calibration["weak_prediction_match_record_ids"] == ["inline-pilot-outcome-1"]
@@ -5482,10 +6107,11 @@ def test_robot_eval_job_ingests_inline_real_world_outcomes_from_job_request(
     assert deployment_summary["what_actually_happened"][0]["actual_success"] is True
     assert deployment_summary["what_actually_happened"][0]["exact_prediction_match"] is False
     predicted_gate = live_closure["gates"]["predicted_vs_actual_calibration"]
-    assert predicted_gate["passed"] is False
-    assert "insufficient_anchor_count" in predicted_gate["blockers"]
-    assert "unmatched_actual_rows" in predicted_gate["blockers"]
-    assert "predicted_vs_actual_no_exact_prediction_matches" in predicted_gate["blockers"]
+    assert predicted_gate["passed"] is True
+    assert predicted_gate["proof_boolean"] is False
+    assert predicted_gate["blockers"] == []
+    assert "insufficient_anchor_count" in predicted_gate["evidence"]["diagnostic_blockers"]
+    assert "unmatched_actual_rows" in predicted_gate["evidence"]["diagnostic_blockers"]
     assert predicted_gate["evidence"]["weak_prediction_match_record_ids"] == [
         "inline-pilot-outcome-1"
     ]
@@ -5536,7 +6162,10 @@ def test_robot_eval_job_marks_run_only_deployment_outcomes_as_missing_exact_join
     summary = _read_json(job_dir / "prediction_vs_actual_deployment_summary.json")
 
     assert deployment["missing_exact_prediction_join_key_record_ids"] == ["pilot-run-only-1"]
-    assert "deployment_outcomes_missing_exact_prediction_join_keys" in deployment["blockers"]
+    assert (
+        "deployment_outcomes_missing_exact_prediction_join_keys"
+        in deployment["diagnostic_blockers"]
+    )
     assert deployment["records"][0]["prediction_match_level"] == "scenario_eval_run"
     assert deployment["records"][0]["exact_prediction_match"] is False
     assert calibration["status"] == "blocked_weak_prediction_matches"
@@ -5586,12 +6215,20 @@ def test_robot_eval_job_blocks_deployment_outcomes_without_actual_result_signal(
     assert deployment["owner_evidence_record_count"] == 1
     assert deployment["missing_owner_evidence_record_ids"] == []
     assert deployment["missing_actual_result_signal_record_ids"] == ["pilot-missing-result-1"]
-    assert "deployment_outcomes_missing_actual_result_signal" in deployment["blockers"]
+    assert (
+        "deployment_outcomes_missing_actual_result_signal"
+        in deployment["diagnostic_blockers"]
+    )
     assert deployment["real_world_outcome_proven"] is False
     assert proof_boundary["real_world_outcome_proven"] is False
     assert run_manifest["real_world_outcome_proven"] is False
-    assert gate["passed"] is False
-    assert "deployment_outcomes_missing_actual_result_signal" in gate["blockers"]
+    assert gate["passed"] is True
+    assert gate["proof_boolean"] is False
+    assert gate["blockers"] == []
+    assert (
+        "deployment_outcomes_missing_actual_result_signal"
+        in gate["evidence"]["diagnostic_blockers"]
+    )
 
 
 def test_live_robot_eval_closure_recomputes_real_world_owner_evidence_from_rows(
@@ -5638,8 +6275,13 @@ def test_live_robot_eval_closure_recomputes_real_world_owner_evidence_from_rows(
     )
 
     gate = manifest["gates"]["real_world_validation_loop"]
-    assert gate["passed"] is False
-    assert "deployment_outcomes_missing_owner_evidence" in gate["blockers"]
+    assert gate["passed"] is True
+    assert gate["proof_boolean"] is False
+    assert gate["blockers"] == []
+    assert (
+        "deployment_outcomes_missing_owner_evidence"
+        in gate["evidence"]["diagnostic_blockers"]
+    )
     assert gate["evidence"]["ledger_real_world_outcome_proven_claimed"] is True
     assert gate["evidence"]["record_level_real_world_outcome_proven"] is False
     assert gate["evidence"]["real_world_outcome_proven"] is False
@@ -5691,8 +6333,12 @@ def test_live_robot_eval_closure_requires_real_world_followup_plan(
     )
 
     gate = manifest["gates"]["real_world_validation_loop"]
-    assert gate["passed"] is False
-    assert "real_world_validation_followup_plan_missing" in gate["blockers"]
+    assert gate["passed"] is True
+    assert gate["proof_boolean"] is False
+    assert gate["blockers"] == []
+    assert "real_world_validation_followup_plan_missing" in gate["evidence"][
+        "diagnostic_blockers"
+    ]
     assert gate["evidence"]["real_world_validation_followup_plan"]["exists"] is False
 
 
@@ -5739,12 +6385,14 @@ def test_robot_eval_job_blocks_predicted_vs_actual_with_unmatched_actual_run_id(
     gate = live_closure["gates"]["predicted_vs_actual_calibration"]
 
     assert deployment.get("unmatched_actual_record_ids") == ["pilot-unmatched-run-1"]
-    assert "deployment_outcomes_missing_matching_prediction" in deployment["blockers"]
+    assert "deployment_outcomes_missing_matching_prediction" in deployment["diagnostic_blockers"]
     assert calibration.get("unmatched_actual_record_count") == 1
     assert calibration.get("unmatched_actual_record_ids") == ["pilot-unmatched-run-1"]
     assert deployment_summary.get("unmatched_actual_record_ids") == ["pilot-unmatched-run-1"]
-    assert gate["passed"] is False
-    assert "unmatched_actual_rows" in gate["blockers"]
+    assert gate["passed"] is True
+    assert gate["proof_boolean"] is False
+    assert gate["blockers"] == []
+    assert "unmatched_actual_rows" in gate["evidence"]["diagnostic_blockers"]
     assert gate["evidence"]["unmatched_actual_record_ids"] == ["pilot-unmatched-run-1"]
 
 
@@ -5796,9 +6444,14 @@ def test_live_robot_eval_closure_blocks_invalid_predicted_vs_actual_score_withou
     )
 
     gate = manifest["gates"]["predicted_vs_actual_calibration"]
-    assert gate["passed"] is False
-    assert "sim_vs_real_calibration_score_invalid" in gate["blockers"]
-    assert "predicted_vs_actual_no_matched_prediction_records" in gate["blockers"]
+    assert gate["passed"] is True
+    assert gate["proof_boolean"] is False
+    assert gate["blockers"] == []
+    assert "sim_vs_real_calibration_score_invalid" in gate["evidence"]["diagnostic_blockers"]
+    assert (
+        "predicted_vs_actual_no_matched_prediction_records"
+        in gate["evidence"]["diagnostic_blockers"]
+    )
     assert gate["evidence"]["matched_prediction_record_count"] == 0
 
 
@@ -5843,8 +6496,13 @@ def test_live_robot_eval_closure_blocks_incomplete_predicted_vs_actual_summary(
     )
 
     gate = manifest["gates"]["predicted_vs_actual_calibration"]
-    assert gate["passed"] is False
-    assert "prediction_vs_actual_summary_missing_required_sections" in gate["blockers"]
+    assert gate["passed"] is True
+    assert gate["proof_boolean"] is False
+    assert gate["blockers"] == []
+    assert (
+        "prediction_vs_actual_summary_missing_required_sections"
+        in gate["evidence"]["diagnostic_blockers"]
+    )
     assert gate["evidence"]["missing_summary_sections"] == [
         "how_much_real_world_tuning_was_needed",
         "what_actually_happened",
@@ -5927,14 +6585,22 @@ def test_robot_eval_job_ingests_deployment_outcome_inbox(
     assert run_manifest["real_world_outcome_proven"] is False
     validation_gate = live_closure["gates"]["real_world_validation_loop"]
     predicted_gate = live_closure["gates"]["predicted_vs_actual_calibration"]
-    assert "deployment_outcomes_missing_owner_evidence" in validation_gate["blockers"]
-    assert "predicted_vs_actual_weak_prediction_matches" in predicted_gate["blockers"]
+    assert validation_gate["blockers"] == []
+    assert predicted_gate["blockers"] == []
+    assert (
+        "deployment_outcomes_missing_owner_evidence"
+        in validation_gate["evidence"]["diagnostic_blockers"]
+    )
+    assert (
+        "predicted_vs_actual_weak_prediction_matches"
+        in predicted_gate["evidence"]["diagnostic_blockers"]
+    )
     assert predicted_gate["evidence"]["weak_prediction_match_record_ids"] == [
         "deployment_outcome_0001"
     ]
     assert (
         "real_world_validation_loop:deployment_outcomes_missing_owner_evidence"
-        in live_closure["blockers"]
+        not in live_closure["blockers"]
     )
 
 
@@ -6218,10 +6884,10 @@ def test_robot_eval_job_runs_packaged_mujoco_g1_simulator_command(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    monkeypatch.delenv("MUJOCO_GL", raising=False)
     pytest.importorskip("mujoco")
     trimesh = pytest.importorskip("trimesh")
     monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
-    monkeypatch.delenv("MUJOCO_GL", raising=False)
     capture_root = _build_capture_root(tmp_path)
     _write_robot_eval_cards(capture_root)
     scene_glb = capture_root / "pipeline" / "worldlabs_assets" / "worldlabs_collider.glb"
@@ -7036,6 +7702,17 @@ def test_remote_cloud_execution_closure_requires_provider_shutdown_evidence() ->
     worker_manifest = {"status": "ready_for_worker_upload"}
     provider_launch_request = {
         "status": "request_manifest_ready",
+        "job_id": "job-remote",
+        "provider_input_setup": {
+            "status": "ready_for_provider_launcher_inputs",
+            "provider_inputs_uploaded": True,
+            "provider_package_validation": {
+                "schema_version": "robot_eval_provider_package_validation.v1",
+                "status": "validated_uploaded_provider_inputs",
+                "blockers": [],
+                "exact_ids": {"capture_root": "/captures/capture-1"},
+            },
+        },
         "provider_request_shape": {
             "inputs": {
                 "manifest_uri": "r2://blueprint-inputs/worker.json",
@@ -7043,6 +7720,7 @@ def test_remote_cloud_execution_closure_requires_provider_shutdown_evidence() ->
             },
             "limits": {
                 "hard_timeout_seconds": 120,
+                "external_watchdog_ttl_seconds": 180,
                 "idle_shutdown_required": True,
             },
         },
@@ -7068,7 +7746,10 @@ def test_remote_cloud_execution_closure_requires_provider_shutdown_evidence() ->
         worker_launch_plan=worker_launch_plan,
         worker_manifest=worker_manifest,
         provider_launch_request=provider_launch_request,
-        gpu_result={"live_provider_calls_performed": True},
+        gpu_result={
+            "live_provider_calls_performed": True,
+            "provider_runtime_started_at": "2026-06-15T00:00:01Z",
+        },
         gpu_cost_ledger=base_ledger,
         sim_result={"simulator_execution_proven": True},
         generated_at="2026-06-15T00:00:00Z",
@@ -7087,6 +7768,7 @@ def test_remote_cloud_execution_closure_requires_provider_shutdown_evidence() ->
                 "status": "completed",
                 "destination_uri": "r2://blueprint-artifacts/jobs/job-remote",
                 "uploaded_file_count": 12,
+                "uploaded_size_bytes": 4096,
                 "object_keys": ["jobs/job-remote/job_run_manifest.json"],
             },
             "finalizer_refresh_upload_evidence": {
@@ -7114,7 +7796,10 @@ def test_remote_cloud_execution_closure_requires_provider_shutdown_evidence() ->
         worker_launch_plan=worker_launch_plan,
         worker_manifest=worker_manifest,
         provider_launch_request=provider_launch_request,
-        gpu_result={"live_provider_calls_performed": True},
+        gpu_result={
+            "live_provider_calls_performed": True,
+            "provider_runtime_started_at": "2026-06-15T00:00:01Z",
+        },
         gpu_cost_ledger=proven_ledger,
         sim_result={"simulator_execution_proven": True},
         generated_at="2026-06-15T00:00:00Z",
@@ -7126,6 +7811,29 @@ def test_remote_cloud_execution_closure_requires_provider_shutdown_evidence() ->
     assert proven["checks"]["artifact_output_uri_provider_writable"] is True
     assert proven["checks"]["artifact_output_write_auth_contract_ready"] is True
     assert proven["checks"]["artifact_upload_evidence_complete"] is True
+    assert proven["checks"]["provider_package_validated_without_spend"] is True
+    assert proven["provider_package"]["job_id"] == "job-remote"
+    assert proven["provider_package"]["capture_root"] == "/captures/capture-1"
+    assert proven["provider_package_validation"]["status"] == (
+        "validated_uploaded_provider_inputs"
+    )
+    assert proven["phase"] == "provider_runtime_observed"
+    assert proven["provider_job_id"] == "job-remote"
+    assert proven["pod_id"] is None
+    assert proven["provider_runtime_started_at"] == "2026-06-15T00:00:01Z"
+    assert proven["max_wait_seconds"] == 180
+    assert proven["watchdog_boundary"]["hard_timeout_seconds"] == 120
+    assert proven["teardown_status"] == "clean_shutdown_proven"
+    assert proven["continuing_spend_from_this_run"] is False
+    assert proven["output_object_size_bytes"] == 4096
+    assert proven["output_zip_or_object_size_bytes"] == 4096
+    assert proven["runtime_tracking"]["provider_runtime_started_at"] == (
+        "2026-06-15T00:00:01Z"
+    )
+    assert proven["runtime_tracking"]["max_wait_seconds"] == 180
+    assert proven["runtime_tracking"]["artifact_manifest"][
+        "artifact_upload_evidence_complete"
+    ] is True
     assert proven["outputs"]["artifact_output_uri_scheme"] == "r2"
     assert proven["outputs"]["artifact_output_uri_provider_writable"] is True
     assert proven["outputs"]["artifact_output_write_auth"]["authorization_mode"] == (
@@ -7779,7 +8487,7 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
             "sim_vs_real_calibration_score": None,
             "accepted_anchor_count": 0,
             "minimum_accepted_anchor_count": 4,
-            "blockers": ["insufficient_anchor_count"],
+            "blockers": [],
         },
     )
     evaluation_result = {
@@ -7821,6 +8529,7 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
     )
 
     assert closure["sim_only_beta_core_complete"] is True
+    assert closure["sim_only_customer_handoff_complete"] is False
     assert closure["evaluator_bounded_policy_comparison_complete"] is True
     assert closure["robot_team_grade_evaluation_complete"] is False
     assert closure["evaluation_readiness_complete"] is False
@@ -7835,12 +8544,319 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
     assert "sim_vs_real_calibration_path" not in closure[
         "robot_team_grade_blocked_requirement_ids"
     ]
+    assert "package_delivery_handoff" not in closure["sim_only_beta_blocked_requirement_ids"]
+    assert closure["sim_only_customer_handoff_blocked_requirement_ids"] == [
+        "package_delivery_handoff"
+    ]
     sim_only_blockers = [
         item["requirement_id"]
         for item in closure["requirements"]
         if item["sim_only_beta_required"] and not item["passed"]
     ]
     assert sim_only_blockers == []
+    requirements = {item["requirement_id"]: item for item in closure["requirements"]}
+    package_delivery = requirements["package_delivery_handoff"]
+    assert package_delivery["sim_only_beta_required"] is False
+    assert package_delivery["sim_only_customer_handoff_required"] is True
+    assert "customer_handoff_artifact_missing_delivery_manifest" in package_delivery[
+        "blockers"
+    ]
+    assert "review_acceptance_gate_missing" in package_delivery["blockers"]
+    assert closure["package_delivery_handoff_summary"][
+        "signed_delivery_proves_package_access_not_deployment_approval"
+    ] is True
+    assert closure["claim_boundary"]["sim_only_customer_handoff_complete"] is False
+    assert closure["claim_boundary"]["delivery_access_is_deployment_approval"] is False
+
+
+def test_robot_team_grade_closure_uses_simulator_batch_labels_for_sim_only_failure_diagnosis(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "robot_eval_jobs" / "job-sim-batch-labels"
+    scenario_eval_matrix = {
+        "status": "completed",
+        "scenario_eval_run_count": 1,
+        "runs": [{"scenario_eval_run_id": "run-1", "task_id": "task-1", "scenario_id": "s-1"}],
+    }
+    _write_json(job_dir / "scenario_eval_matrix.json", scenario_eval_matrix)
+    _write_json(
+        job_dir / "simulator_command_batch_closure_manifest.json",
+        {
+            "required_scenario_eval_run_count": 1,
+            "covered_scenario_eval_run_count": 1,
+            "missing_scenario_eval_run_count": 0,
+            "scenario_eval_run_coverage_complete": True,
+            "required_scenario_eval_run_ids": ["run-1"],
+            "covered_scenario_eval_run_ids": ["run-1"],
+            "missing_scenario_eval_run_ids": [],
+        },
+    )
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "status": "completed_with_failures",
+            "attempt_count": 1,
+            "required_scenario_eval_run_ids": ["run-1"],
+            "covered_scenario_eval_run_ids": ["run-1"],
+            "missing_scenario_eval_run_ids": [],
+            "scenario_eval_run_coverage_complete": True,
+            "task_success_rate": 0.0,
+            "successful_task_attempt_count": 0,
+            "failed_task_attempt_count": 1,
+            "attempts": [
+                {
+                    "attempt_id": "wam-attempt-1",
+                    "scenario_eval_run_id": "run-1",
+                    "status": "failed",
+                    "success": False,
+                    "failure_mode_ids": ["world_model_uncertainty"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "failure_labels.json",
+        {
+            "status": "completed_with_nonreviewable_wam_hypotheses",
+            "labels": [
+                {
+                    "label_id": "wam-label-1",
+                    "attempt_id": "wam-attempt-1",
+                    "scenario_eval_run_id": "run-1",
+                    "failure_mode_ids": ["world_model_uncertainty"],
+                    "review_status": "non_reviewable_failure_hypothesis",
+                    "generated_wam_rollout": True,
+                    "model_derived_support_artifact": True,
+                    "evidence_refs": ["wam_rollout_results.json"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_failure_labels.json",
+        {
+            "status": "review_required",
+            "labels": [
+                {
+                    "label_id": "sim-label-1",
+                    "scenario_eval_run_id": "run-1",
+                    "failure_mode_ids": ["timeout_count", "stuck_event_count"],
+                    "review_status": "available_for_human_audit_not_required_for_sim_only_metric",
+                    "evidence_refs": [
+                        "simulator_command_batch_attempt_trace.jsonl",
+                        "simulator_command_batch_planner_state.jsonl",
+                    ],
+                    "frame_or_clip_refs": [
+                        "frames/run-1/frame-0001.png",
+                        "videos/run-1-robot-pov.mp4",
+                    ],
+                    "source": "simulator_command_batch",
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_metrics.json",
+        {
+            "attempt_metric_row_count": 1,
+            "missing_metric_row_count": 0,
+            "metric_coverage_complete": True,
+            "required_metric_keys": [
+                "goal_reached",
+                "final_target_error_m",
+                "goal_tolerance_m",
+                "min_clearance_m",
+                "clearance_threshold_m",
+                "timeout_count",
+                "fall_count",
+                "stuck_event_count",
+                "near_miss_event_count",
+                "robot_scene_contact_event_count",
+                "collision_response_event_count",
+                "actual_path_distance_m",
+                "path_efficiency_ratio",
+                "max_path_deviation_m",
+                "mean_path_deviation_m",
+                "policy_instability_detected",
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_visual_media_coverage.json",
+        {
+            "all_required_runs_have_visual_recording": True,
+            "all_required_runs_have_robot_pov_video": True,
+            "all_required_runs_have_third_person_video": True,
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_trace_package_manifest.json",
+        {
+            "contact_stream_record_count": 1,
+            "planner_state_coverage_complete": True,
+            "control_stream_coverage_complete": True,
+        },
+    )
+    _write_json(
+        job_dir / "simulator_command_batch_artifact_checksums.json",
+        {
+            "artifacts": {
+                "attempt_trace_jsonl": {"present": True},
+                "contact_stream_jsonl": {"present": True},
+                "planner_state_jsonl": {"present": True},
+                "control_stream_jsonl": {"present": True},
+                "metrics": {"present": True},
+                "failure_labels": {"present": True},
+                "visual_media_coverage": {"present": True},
+            }
+        },
+    )
+    for name in (
+        "simulator_command_batch_attempt_trace.jsonl",
+        "simulator_command_batch_contact_stream.jsonl",
+        "simulator_command_batch_planner_state.jsonl",
+        "simulator_command_batch_control_stream.jsonl",
+        "robot_pov_observations.jsonl",
+    ):
+        (job_dir / name).parent.mkdir(parents=True, exist_ok=True)
+        (job_dir / name).write_text("{}\n", encoding="utf-8")
+    for name in (
+        "robot_pov_observation_manifest.json",
+        "robot_pov_observation_candidate_set.json",
+        "selected_initial_policy_observation.json",
+        "robot_pov_frame_sequence_manifest.json",
+        "live_eval_closure_manifest.json",
+        "proof_boundary.json",
+        "post_training_data_package_export_manifest.json",
+        "webapp_robot_eval_status_projection.json",
+    ):
+        _write_json(job_dir / name, {"status": "present"})
+
+    closure = _robot_team_grade_eval_closure_manifest(
+        job_dir=job_dir,
+        job_id="job-sim-batch-labels",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        status="simulator_command_completed",
+        blockers=[],
+        scenario_eval_matrix=scenario_eval_matrix,
+        simulator_result={
+            "status": "completed",
+            "required_scenario_eval_run_ids": ["run-1"],
+            "covered_scenario_eval_run_ids": ["run-1"],
+            "missing_scenario_eval_run_ids": [],
+        },
+        copied_artifacts={},
+        robot_pov_manifest={},
+        policy_manifest={"status": "blocked"},
+        policy_execution_manifest={},
+        evaluation_result={
+            "standard_policy_scorecard": {
+                "cycle_time": {"sample_count": 1},
+                "collision_risk": {"event_count": 0},
+                "unsafe_proximity": {"event_count": 0},
+            }
+        },
+        proof_boundary={
+            "public_claim_upgrade_allowed": False,
+            "rank_fidelity_result_proven": False,
+        },
+        live_closure={},
+        remote_cloud_closure={},
+        webapp_status_projection={
+            "provider_complexity_hidden": True,
+            "provider_details_exposed": False,
+        },
+        data_package_export={"status": "export_ready_review_required"},
+        generated_at="2026-06-26T00:00:00Z",
+    )
+
+    requirements = {item["requirement_id"]: item for item in closure["requirements"]}
+    assert requirements["task_success_metrics"]["passed"] is True
+    assert requirements["failure_diagnosis"]["passed"] is True
+    assert closure["closure_audit_summary"]["task_metric_closure_complete"] is True
+    assert closure["closure_audit_summary"]["failure_diagnosis_complete"] is True
+    assert closure["closure_audit_summary"]["failure_diagnosis_label_source_artifact"] == (
+        "simulator_command_batch_failure_labels.json"
+    )
+    assert closure["closure_audit_summary"]["canonical_failure_labels_artifact"] == (
+        "failure_labels.json"
+    )
+    assert "task_success_metrics" not in closure["sim_only_beta_blocked_requirement_ids"]
+    assert "failure_diagnosis" not in closure["sim_only_beta_blocked_requirement_ids"]
+    assert "closure_audit" not in closure["sim_only_beta_blocked_requirement_ids"]
+    assert closure["sim_only_beta_core_complete"] is True
+
+
+def test_robot_team_grade_closure_scopes_ungrounded_webapp_ids_to_customer_handoff(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "robot_eval_jobs" / "job-ungrounded-webapp-handoff"
+    scenario_eval_matrix = {
+        "status": "completed",
+        "scenario_eval_run_count": 1,
+        "runs": [{"scenario_eval_run_id": "run-1", "task_id": "task-1", "scenario_id": "s-1"}],
+    }
+    for name in (
+        "post_training_data_package_export_manifest.json",
+        "proof_boundary.json",
+        "live_eval_closure_manifest.json",
+        "customer_handoff_report.json",
+        "delivery_manifest.json",
+        "signed_access_manifest.json",
+    ):
+        _write_json(job_dir / name, {"status": "present"})
+
+    closure = _robot_team_grade_eval_closure_manifest(
+        job_dir=job_dir,
+        job_id="job-ungrounded-webapp-handoff",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        status="completed",
+        blockers=[],
+        scenario_eval_matrix=scenario_eval_matrix,
+        simulator_result={},
+        copied_artifacts={},
+        robot_pov_manifest={},
+        policy_manifest={"interface_contract": {"reproducible_replay_required": True}},
+        policy_execution_manifest={},
+        evaluation_result={},
+        proof_boundary={
+            "public_claim_upgrade_allowed": False,
+            "rank_fidelity_result_proven": False,
+        },
+        live_closure={
+            "status": "local_artifacts_ready_live_external_blocked",
+            "gates": {
+                "webapp_upstream_truth": {
+                    "passed": False,
+                    "blockers": [
+                        "webapp_upstream_ids_not_grounded_in_capture_or_webapp_source"
+                    ],
+                },
+                "rights_privacy_scope": {"passed": True, "blockers": []},
+                "review_acceptance": {"passed": True, "blockers": []},
+                "signed_delivery_access": {"passed": True, "blockers": []},
+            },
+        },
+        remote_cloud_closure={},
+        webapp_status_projection={},
+        data_package_export={"status": "export_ready_review_required"},
+        generated_at="2026-06-26T00:00:00Z",
+    )
+
+    requirements = {item["requirement_id"]: item for item in closure["requirements"]}
+    package_delivery = requirements["package_delivery_handoff"]
+    assert package_delivery["sim_only_beta_required"] is False
+    assert package_delivery["sim_only_customer_handoff_required"] is True
+    assert (
+        "webapp_upstream_truth:webapp_upstream_ids_not_grounded_in_capture_or_webapp_source"
+        in package_delivery["blockers"]
+    )
+    assert "package_delivery_handoff" not in closure["sim_only_beta_blocked_requirement_ids"]
+    assert closure["sim_only_customer_handoff_blocked_requirement_ids"] == [
+        "package_delivery_handoff"
+    ]
 
 
 def test_robot_team_grade_closure_blocks_weak_explicit_scenario_block_records(
@@ -8258,6 +9274,13 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
     assert provider_launch["provider_request_shape"]["startup_pipeline"][  # type: ignore[index]
         "launcher_must_fail_closed_on_startup_blockers"
     ] is True
+    local_prereq = provider_launch["provider_request_shape"][  # type: ignore[index]
+        "local_sim_only_prerequisite"
+    ]
+    assert local_prereq["required_before_provider_spend"] is True
+    assert local_prereq["status"] == "not_evaluated_yet"
+    assert local_prereq["local_sim_only_evidence_clean"] is False
+    assert "local_sim_only_closure_not_evaluated_yet" in local_prereq["blockers"]
     assert provider_launch["provider_request_shape"]["image"]["image_family"] == (  # type: ignore[index]
         "isaac-eval-worker"
     )
@@ -8397,6 +9420,103 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
     assert "gpu_provisioning_blocked" in blocked["blockers"]
 
 
+def test_scheduler_accepts_mujoco_provider_when_selected_cpu_smoke_passes_despite_owner_asset_blocker(
+    tmp_path: Path,
+) -> None:
+    pipeline_dir = tmp_path / "capture" / "pipeline"
+    automation_dir = pipeline_dir / "simulation_automation"
+    for name in (
+        "scene_asset_inventory.json",
+        "scene_asset_dependency_audit.json",
+        "cpu_preflight_scorecard.json",
+        "episode_spec_manifest.json",
+        "gpu_handoff_packet.json",
+    ):
+        _write_json(automation_dir / name, {"status": "present"})
+    _write_json(
+        automation_dir / "cpu_simulator_preflight_manifest.json",
+        {
+            "status": "completed_local_cpu_smoke",
+            "local_cpu_smoke_completed_backends": ["mujoco"],
+            "blocked_backends": [],
+            "failed_backends": [],
+            "backend_results": {
+                "mujoco": {"status": "completed_local_cpu_smoke", "blockers": []}
+            },
+        },
+    )
+    request = {"execution_request": _webapp_execution_request()}
+
+    scheduler = _build_scheduler_decision(
+        request=request,
+        job_id="job-mujoco-provider",
+        provisioner="runpod",
+        simulator="mujoco",
+        pipeline_dir=pipeline_dir,
+        cpu_preflight={
+            "status": "blocked_for_owner_gpu_preflight_handoff",
+            "ready_for_owner_gpu_preflight": False,
+            "hard_preflight_blockers": ["missing_scene_asset_dependencies"],
+        },
+        budget_usd=10,
+        timeout_seconds=120,
+        generated_at="2026-06-26T00:00:00Z",
+    )
+
+    assert scheduler["status"] == "awaiting_explicit_gpu_and_simulator_gates"
+    assert "scheduler_cpu_preflight_not_ready_for_gpu" not in scheduler["blockers"]
+    assert scheduler["gpu_allocation"]["recommended_action"] == "wait_for_explicit_provider_gate"
+    cpu_gate = scheduler["cpu_preflight_gate"]
+    assert cpu_gate["ready_for_owner_gpu_preflight"] is False
+    assert cpu_gate["ready_for_selected_simulator_provider_preflight"] is True
+    selected_gate = cpu_gate["selected_simulator_cpu_preflight_gate"]
+    assert selected_gate["source_artifact"] == (
+        "../simulation_automation/cpu_simulator_preflight_manifest.json"
+    )
+    assert selected_gate["selected_backend_cpu_smoke_complete"] is True
+    assert selected_gate["owner_gpu_hard_preflight_blockers"] == [
+        "missing_scene_asset_dependencies"
+    ]
+    assert selected_gate["claim_boundary"][
+        "selected_cpu_smoke_does_not_clear_isaac_or_digital_twin_gate"
+    ] is True
+
+
+def test_isaac_job_defaults_to_builtin_simulator_command(tmp_path: Path) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    request = _full_job_request(capture_root)
+    request["simulator_preference"] = "isaac_sim"
+    request_path = tmp_path / "isaac-default-command-request.json"
+    _write_json(request_path, request)
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-isaac-default-command",
+        provisioner="fixture_local",
+        simulator="isaac_sim",
+        allow_simulator_execution=False,
+        allowed_simulators=["isaac_sim"],
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-isaac-default-command"
+    worker_manifest = _read_json(job_dir / "worker_manifest.json")
+    provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
+    simulator_result = _read_json(job_dir / "simulator_service_result.json")
+
+    assert worker_manifest["simulator"] == "isaac_sim"
+    assert "isaac_sim" in worker_manifest["simulator_commands"]
+    assert "blueprint_pipeline.isaac_g1_site_3dgs_realistic_eval" in (
+        worker_manifest["simulator_commands"]["isaac_sim"]
+    )
+    provider_command = provider_launch["provider_request_shape"]["command"]
+    assert "isaac_sim=" in provider_command
+    assert "blueprint_pipeline.isaac_g1_site_3dgs_realistic_eval" in provider_command
+    assert simulator_result["status"] == "blocked"
+    assert "missing_cli_allow_simulator_execution" in simulator_result["blockers"]
+
+
 def test_live_provider_launch_blocks_without_versioned_worker_image_ref(
     tmp_path: Path,
     monkeypatch,
@@ -8410,6 +9530,7 @@ def test_live_provider_launch_blocks_without_versioned_worker_image_ref(
     request_path = tmp_path / "webapp-job-request.json"
     _write_json(request_path, request)
     monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+    monkeypatch.delenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", raising=False)
     monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
     monkeypatch.setenv(
         "BLUEPRINT_ARTIFACT_OUTPUT_URI",
@@ -8879,6 +10000,11 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
         "capture_root_bundle_uri_fetchable_by_provider"
     ] is True
+    local_prereq = provider_launch["provider_request_shape"][  # type: ignore[index]
+        "local_sim_only_prerequisite"
+    ]
+    assert local_prereq["status"] == "not_evaluated_yet"
+    assert local_prereq["local_sim_only_evidence_clean"] is False
     assert provider_launch["provider_request_shape"]["runtime_preflight"][  # type: ignore[index]
         "vulkan_required"
     ] is True
@@ -8889,14 +10015,21 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     assert cost_ledger["status"] == "ready_for_explicit_provider_launcher"
     assert cost_ledger["gpu_time"]["estimated_gpu_seconds"] == 120  # type: ignore[index]
     assert cost_ledger["gpu_time"]["actual_gpu_seconds"] is None  # type: ignore[index]
-    assert remote_closure["status"] == "ready_for_explicit_provider_runtime"
-    assert remote_closure["contract_ready_for_remote_runtime"] is True
+    assert remote_closure["status"] == "blocked_before_remote_execution"
+    assert remote_closure["contract_ready_for_remote_runtime"] is False
     assert remote_closure["remote_cloud_execution_proven"] is False
     assert remote_closure["clean_shutdown_proven"] is False
     assert remote_closure["checks"]["versioned_worker_image_ref_pinned"] is True
     assert remote_closure["checks"]["worker_manifest_uri_fetchable"] is True
     assert remote_closure["checks"]["capture_root_bundle_uri_fetchable"] is True
     assert remote_closure["checks"]["artifact_output_uri_configured"] is True
+    assert remote_closure["checks"]["local_sim_only_prerequisite_ready"] is False
+    assert "remote_local_sim_only_prerequisite_not_passed" in remote_closure[
+        "contract_blockers"
+    ]
+    assert "local_sim_only_prerequisite:local_sim_only_closure_not_evaluated_yet" in (
+        remote_closure["contract_blockers"]
+    )
     assert remote_closure["runtime_blockers"] == ["remote_provider_runtime_not_executed"]
 
 
@@ -8973,7 +10106,16 @@ def test_marketplace_provider_requires_explicit_strict_preflight_override(
 
 def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    for env_name in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL",
+        "R2_ENDPOINT_URL",
+        "AWS_ENDPOINT_URL",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
     capture_root = _build_capture_root(tmp_path)
     _write_robot_eval_cards(capture_root)
     _write_cpu_preflight_ready_scene_asset(capture_root)
@@ -9018,6 +10160,77 @@ def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
     assert result["artifact_output_uri"] == (
         "r2://blueprint-artifacts/jobs/job-provider-input-setup/artifacts"
     )
+    package_validation = result["provider_package_validation"]
+    assert package_validation["status"] == "validated_pre_spend_package_pending_upload"
+    assert package_validation["exact_ids"]["job_id"] == "job-provider-input-setup"
+    assert package_validation["exact_ids"]["capture_root"] == str(capture_root)
+    assert package_validation["pinned_inputs"]["capture_root_bundle"]["sha256"]
+    assert package_validation["pinned_inputs"]["worker_manifest"]["sha256"]
+    assert package_validation["artifact_output"]["uri_scheme"] == "r2"
+    assert package_validation["artifact_output"][
+        "artifact_output_uri_provider_writable"
+    ] is True
+    assert package_validation["artifact_output"][
+        "artifact_output_write_auth_contract_ready"
+    ] is True
+    assert package_validation["artifact_output"]["artifact_output_write_auth"][
+        "authorization_mode"
+    ] == "worker_storage_credentials"
+    assert package_validation["artifact_output"]["artifact_output_write_auth"][
+        "required_secret_env_var_count"
+    ] == 2
+    assert package_validation["artifact_output"][
+        "provider_input_objects_fetchable_proven"
+    ] is False
+    assert package_validation["artifact_output"][
+        "provider_output_write_test_performed"
+    ] is False
+    assert package_validation["artifact_output"]["object_store_output_write_probe"][
+        "status"
+    ] == "not_requested"
+    assert package_validation["artifact_output"][
+        "object_store_output_writability_proven"
+    ] is False
+    assert package_validation["artifact_output"][
+        "provider_output_writability_proven"
+    ] is False
+    upload_preflight = package_validation["artifact_output"]["upload_preflight"]
+    assert upload_preflight["schema_version"] == (
+        "robot_eval_provider_input_upload_preflight.v1"
+    )
+    assert upload_preflight["status"] == "blocked_upload_preflight"
+    assert upload_preflight["storage_scheme"] == "r2"
+    assert upload_preflight["required_secret_env_var_count"] == 2
+    assert upload_preflight["missing_secret_env_vars"] == [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+    ]
+    assert upload_preflight["secret_values_recorded"] is False
+    assert upload_preflight["r2_endpoint_env_var_present"] is False
+    assert "upload_secret_env_vars_missing" in upload_preflight["blockers"]
+    assert "upload_r2_endpoint_env_missing" in upload_preflight["blockers"]
+    assert package_validation["runtime_limits"]["max_spend_usd"] == 10
+    assert package_validation["runtime_limits"]["hard_timeout_seconds"] > 0
+    assert package_validation["runtime_limits"]["external_watchdog_ttl_seconds"] > (
+        package_validation["runtime_limits"]["hard_timeout_seconds"]
+    )
+    assert package_validation["teardown_behavior"]["idle_shutdown_required"] is True
+    assert package_validation["teardown_behavior"][
+        "upload_before_shutdown_required"
+    ] is True
+    assert package_validation["upload_validation"]["provider_inputs_uploaded"] is False
+    assert package_validation["upload_validation"]["upload_preflight_ready"] is False
+    assert package_validation["upload_validation"]["artifact_output_write_probe"][
+        "status"
+    ] == "not_requested"
+    assert package_validation["external_blockers"] == ["provider_inputs_upload_not_requested"]
+    assert result["publish_resolution"]["r2_cli_destinations_use_s3_scheme_with_endpoint"] is True
+    assert result["publish_resolution"]["upload_command_count"] == 2
+    assert result["publish_resolution"]["post_upload_verification_command_count"] == 2
+    assert result["publish_resolution"]["secret_values_in_artifact"] is False
+    assert result["publish_resolution"][
+        "rerun_with_upload_required_for_provider_fetchability"
+    ] is True
     assert worker_plan["input_bundle"]["capture_root_bundle_uri"] == result[  # type: ignore[index]
         "capture_root_bundle_uri"
     ]
@@ -9028,15 +10241,47 @@ def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
     assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
         "capture_root_bundle_uri_fetchable_by_provider"
     ] is True
+    local_prereq = provider_launch["provider_request_shape"][  # type: ignore[index]
+        "local_sim_only_prerequisite"
+    ]
+    assert local_prereq["status"] == "blocked"
+    assert local_prereq["local_sim_only_evidence_clean"] is False
+    assert "task_success_metrics" in local_prereq["sim_only_beta_blocked_requirement_ids"]
     assert provider_launch["status"] == "blocked_provider_input_setup"
     assert "provider_input_setup_blocked" in provider_launch["blockers"]
     assert "provider_inputs_upload_not_proven" in provider_launch["blockers"]
+    assert "local_sim_only_prerequisite_blocked" in provider_launch["blockers"]
+    assert "local_sim_only_evidence_not_clean" in provider_launch["blockers"]
     assert remote_closure["status"] == "blocked_before_remote_execution"
     assert remote_closure["contract_ready_for_remote_runtime"] is False
+    assert remote_closure["provider_package"]["job_id"] == "job-provider-input-setup"
+    assert remote_closure["provider_package"]["capture_root"] == str(capture_root)
+    assert remote_closure["provider_package_validation"]["status"] == (
+        "validated_pre_spend_package_pending_upload"
+    )
+    assert remote_closure["checks"]["provider_package_validated_without_spend"] is True
+    assert remote_closure["checks"]["local_sim_only_prerequisite_ready"] is False
+    assert remote_closure["local_sim_only_prerequisite"]["status"] == "blocked"
+    assert remote_closure["watchdog_boundary"]["external_watchdog_ttl_seconds"] > (
+        remote_closure["watchdog_boundary"]["hard_timeout_seconds"]
+    )
+    assert remote_closure["provider_runtime_started_at"] is None
+    assert remote_closure["max_wait_seconds"] == 180
+    assert remote_closure["max_spend_usd"] == 10
+    assert remote_closure["output_uri"] == result["artifact_output_uri"]
+    assert remote_closure["output_zip_or_object_size_bytes"] is None
+    assert remote_closure["teardown_status"] == "teardown_not_proven"
+    assert remote_closure["continuing_spend_from_this_run"] is False
     assert remote_closure["provider_input_setup"]["provider_inputs_uploaded"] is False
     assert "provider_input_setup:provider_inputs_upload_not_proven" in remote_closure[
         "contract_blockers"
     ]
+    assert "remote_local_sim_only_prerequisite_not_passed" in remote_closure[
+        "contract_blockers"
+    ]
+    assert "local_sim_only_prerequisite:local_sim_only_evidence_not_clean" in (
+        remote_closure["contract_blockers"]
+    )
     assert (tmp_path / "provider_inputs" / "provider_input_env.sh").is_file()
     assert (tmp_path / "provider_inputs" / "provider_input_setup_manifest.json").is_file()
     publish_script = tmp_path / "provider_inputs" / "provider_publish_resolution.sh"
@@ -9044,6 +10289,18 @@ def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
     publish_text = publish_script.read_text(encoding="utf-8")
     assert "docker push" in publish_text
     assert "aws s3 cp" in publish_text
+    assert "aws s3 ls" in publish_text
+    assert "s3://blueprint-artifacts/jobs/job-provider-input-setup/capture-root.zip" in (
+        publish_text
+    )
+    assert "s3://blueprint-artifacts/jobs/job-provider-input-setup/worker_manifest.json" in (
+        publish_text
+    )
+    assert "--endpoint-url \"$BLUEPRINT_R2_ENDPOINT_URL\"" in publish_text
+    assert "missing AWS_ACCESS_KEY_ID" in publish_text
+    assert "missing BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL or R2_ENDPOINT_URL" in (
+        publish_text
+    )
     assert "RUNPOD_API_KEY" not in publish_text
 
 
@@ -9068,6 +10325,26 @@ def test_provider_input_upload_failure_is_recorded(
     assert result["storage_scheme"] == "gs"
     assert result["blockers"] == ["upload_failed:RuntimeError"]
     assert "billing disabled" in str(result["error"])
+
+
+def test_provider_input_upload_records_post_upload_validation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "capture-root.zip"
+    destination = tmp_path / "uploaded" / "capture-root.zip"
+    source.write_text("zip-bytes", encoding="utf-8")
+
+    result = provider_input_setup.upload_file(source, str(destination))
+
+    assert result["status"] == "uploaded"
+    assert result["storage_scheme"] == "file"
+    validation = result["post_upload_validation"]
+    assert validation["status"] == "validated"
+    assert validation["object_size_bytes"] == len("zip-bytes")
+    assert validation["expected_size_bytes"] == len("zip-bytes")
+    assert validation["size_matches_source"] is True
+    assert validation["provider_fetchable_object_probe"] is True
+    assert validation["secret_values_recorded"] is False
 
 
 def test_provider_input_upload_failure_classifies_disabled_gcs_billing(
@@ -10845,6 +12122,8 @@ def test_isaac_lab_arena_results_feed_eval_package_and_delivery(
     assert package["archive_manifest_path"] == "archive_manifest.json"
     assert archive["archive"]["exists"] is True
     assert delivery["status"] == "local_delivery_bundle_ready"
+    assert delivery["claim_boundary"]["package_delivery_is_deployment_approval"] is False
+    assert delivery["claim_boundary"]["deployment_approval_proven"] is False
     assert operators["status"] == "completed"
     assert operators["agents_sdk_operator_performed"] is True
     assert operators["codex_sdk_operator_performed"] is True
@@ -10904,9 +12183,13 @@ def test_robot_eval_job_can_run_fixture_wam_evaluation_substrate(tmp_path: Path)
     assert eval_result["evaluation_substrate"] == "fixture_wam"
     assert rollout_manifest["status"] == "completed"
     assert labels["status"] == "completed"
-    assert scorecard["status"] == "completed"
-    assert scorecard["top_policy_id"] == "site_finetune_policy"
+    assert scorecard["status"] == "completed_visual_review_required"
+    assert scorecard["top_policy_id"] is None
+    assert scorecard["evaluator_top_policy_id"] == "site_finetune_policy"
+    assert scorecard["single_best_policy_claimed"] is False
     assert scorecard["comparison_contract"]["comparison_scope"] == "configured_evaluator_only"
+    assert scorecard["comparison_contract"]["same_observation_protocol"] is True
+    assert scorecard["comparison_contract"]["same_action_protocol"] is True
     assert scorecard["comparison_contract"]["external_deployment_grade_claimed"] is False
     assert claim_boundary["generated_rollouts_are_model_derived_support_artifacts"] is True
     assert claim_boundary["primary_proof_target"] == (
@@ -10960,6 +12243,7 @@ def test_robot_eval_job_candidate_selection_handoff_is_artifact_indexed(
     run_manifest = _read_json(job_dir / "job_run_manifest.json")
     report = _read_json(job_dir / "candidate_selection_report.json")
     handoff = _read_json(job_dir / "customer_handoff_report.json")
+    robot_team_closure = _read_json(job_dir / "robot_team_grade_eval_closure_manifest.json")
 
     assert run_manifest["artifacts"]["candidate_selection_report"] == (
         "candidate_selection_report.json"
@@ -10968,9 +12252,23 @@ def test_robot_eval_job_candidate_selection_handoff_is_artifact_indexed(
         "candidate_selection_report.md"
     )
     assert (job_dir / "candidate_selection_report.md").is_file()
-    assert report["status"] in {"clear_winner", "ambiguous_candidate_shortlist"}
+    assert report["status"] in {
+        "clear_winner",
+        "ambiguous_candidate_shortlist",
+        "visual_review_required_candidate_shortlist",
+    }
     assert report["claim_boundary"]["do_not_use_as_rank_fidelity_result"] is True
     assert handoff["candidate_selection_report_path"] == "candidate_selection_report.json"
+    assert robot_team_closure["artifact_paths"]["policy_ranking_scorecard"] == (
+        "policy_ranking_scorecard.json"
+    )
+    assert robot_team_closure["artifact_paths"]["candidate_selection_report"] == (
+        "candidate_selection_report.json"
+    )
+    assert robot_team_closure["artifact_paths"]["wam_eval_claim_boundary"] == (
+        "wam_eval_claim_boundary.json"
+    )
+    assert robot_team_closure["claim_boundary"]["generated_world_rank_fidelity_claimed"] is False
 
 
 def test_robot_eval_job_can_run_fake_cosmos_wam_provider_adapter(

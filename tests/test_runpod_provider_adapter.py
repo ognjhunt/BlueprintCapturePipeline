@@ -56,6 +56,7 @@ def _ready_runpod_request(path: Path) -> Path:
                 "environment": {
                     "secret_env_var_names": ["RUNPOD_API_KEY"],
                     "secret_values_in_artifact": False,
+                    "customer_visible_secret_values_allowed": False,
                 },
                 "inputs": {
                     "manifest_uri_required_for_provider": True,
@@ -64,10 +65,23 @@ def _ready_runpod_request(path: Path) -> Path:
                         "worker_manifest.json"
                     ),
                     "manifest_uri_fetchable_by_provider": True,
+                    "capture_root_bundle_uri_required_for_provider": True,
+                    "capture_root_bundle_uri": (
+                        "r2://blueprint-artifacts/jobs/runpod-adapter-job-1/"
+                        "capture-root.zip"
+                    ),
+                    "capture_root_bundle_uri_fetchable_by_provider": True,
                     "artifact_output_uri_required": True,
                     "artifact_output_uri": (
                         "r2://blueprint-artifacts/jobs/runpod-adapter-job-1"
                     ),
+                    "artifact_output_uri_scheme": "r2",
+                    "artifact_output_uri_provider_writable": True,
+                    "artifact_output_write_auth_contract_ready": True,
+                    "artifact_output_write_auth": {
+                        "write_auth_contract_ready": True,
+                        "secret_values_in_artifact": False,
+                    },
                 },
                 "gpu": {
                     "preferred_gpu_class": "NVIDIA RTX A6000",
@@ -75,9 +89,33 @@ def _ready_runpod_request(path: Path) -> Path:
                 },
                 "limits": {
                     "max_active_workers": 1,
+                    "requested_budget_usd": 0.25,
                     "hard_timeout_seconds": 120,
                     "idle_timeout_seconds": 60,
+                    "idle_shutdown_required": True,
+                    "external_watchdog_ttl_required": True,
                     "external_watchdog_ttl_seconds": 180,
+                    "external_watchdog_owner": "provider_launcher_or_owner_control_plane",
+                    "scale_to_zero_default": True,
+                },
+                "artifact_finalizer": {
+                    "upload_before_shutdown_required": True,
+                    "record_actual_gpu_time_required": True,
+                },
+                "local_sim_only_prerequisite": {
+                    "schema_version": "robot_eval_provider_local_sim_only_prerequisite.v1",
+                    "required_before_provider_spend": True,
+                    "status": "passed",
+                    "source_artifact": "robot_team_grade_eval_closure_manifest.json",
+                    "local_sim_only_evidence_clean": True,
+                    "sim_only_beta_core_complete": True,
+                    "sim_only_beta_blocked_requirement_ids": [],
+                    "blockers": [],
+                    "claim_boundary": {
+                        "provider_spend_requires_local_sim_only_evidence_clean": True,
+                        "local_sim_only_clean_does_not_prove_remote_provider_execution": True,
+                        "local_sim_only_clean_does_not_prove_launch_approval": True,
+                    },
                 },
             },
         },
@@ -118,6 +156,56 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
         == "BLUEPRINT_PROVIDER_POLICY_WORKER_URL"
     )
     assert endpoint_manifest == result["provider_worker_endpoint_manifest"]
+    readiness_path = Path(result["provider_readiness_manifest_path"])
+    readiness = _read_json(readiness_path)
+    assert readiness_path == tmp_path / "runpod_provider_readiness_manifest.json"
+    assert readiness["schema_version"] == "runpod_provider_readiness_manifest.v1"
+    assert readiness["status"] == "ready_for_explicit_paid_provider_attempt"
+    assert readiness["api_call_performed"] is False
+    assert readiness["live_provider_call_authorized"] is False
+    assert readiness["spend_limits"]["requested_budget_usd"] == 0.25  # type: ignore[index]
+    assert readiness["spend_limits"]["bounded_single_worker_attempt"] is True  # type: ignore[index]
+    provider_inputs = readiness["provider_inputs"]  # type: ignore[index]
+    assert provider_inputs["manifest_uri_present"] is True
+    assert provider_inputs["manifest_uri_fetchable_by_provider"] is True
+    assert provider_inputs["capture_root_bundle_uri_present"] is True
+    assert (
+        provider_inputs["capture_root_bundle_uri_fetchable_by_provider"]
+        is True
+    )
+    assert (
+        readiness["artifact_output"]["artifact_output_uri_provider_writable"]  # type: ignore[index]
+        is True
+    )
+    assert (
+        readiness["artifact_output"][  # type: ignore[index]
+            "artifact_output_uri_scheme_provider_writable"
+        ]
+        is True
+    )
+    assert (
+        readiness["watchdog_and_teardown"]["idle_shutdown_required"]  # type: ignore[index]
+        is True
+    )
+    assert readiness["watchdog_and_teardown"][  # type: ignore[index]
+        "external_watchdog_ttl_exceeds_hard_timeout"
+    ] is True
+    assert (
+        readiness["watchdog_and_teardown"][  # type: ignore[index]
+            "upload_before_shutdown_required"
+        ]
+        is True
+    )
+    assert (
+        readiness["no_secret_artifact_policy"]["secret_values_in_artifact"]  # type: ignore[index]
+        is False
+    )
+    claim_boundary = readiness["claim_boundary"]  # type: ignore[index]
+    assert claim_boundary["optional_provider_runtime_evidence_only"] is True
+    assert claim_boundary[
+        "not_sim_only_launch_proof_until_artifacts_imported_and_reviewed"
+    ] is True
+    assert readiness == result["provider_readiness_manifest"]
     cost_policy = result["cost_control_policy"]
     assert cost_policy["hard_timeout_seconds"] == 120  # type: ignore[index]
     assert cost_policy["idle_timeout_seconds"] == 60  # type: ignore[index]
@@ -140,7 +228,12 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
     ] is True
     serverless = result["runpod_request"]["serverless_run"]  # type: ignore[index]
     assert serverless["url"] == "https://api.runpod.ai/v2/endpoint-123/run"
-    assert serverless["body"]["input"]["worker_manifest_uri"].startswith("r2://")  # type: ignore[index]
+    assert serverless["body"]["input"][  # type: ignore[index]
+        "worker_manifest_uri"
+    ].startswith("r2://")
+    assert serverless["body"]["input"]["capture_root_bundle_uri"].endswith(  # type: ignore[index]
+        "capture-root.zip"
+    )
     assert serverless["body"]["input"]["cost_control_policy"][  # type: ignore[index]
         "serverless_idle_timeout_requires_endpoint_setting"
     ] is True
@@ -267,6 +360,85 @@ def test_runpod_adapter_blocks_unfetchable_worker_image_ref(
 
     assert result["status"] == "blocked"
     assert "prebuilt_worker_image_ref_not_provider_fetchable" in result["blockers"]
+
+
+def test_runpod_adapter_blocks_missing_or_unfetchable_capture_bundle_uri(
+    tmp_path: Path,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "capture_root_bundle_uri"
+    ] = ""
+    request["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "capture_root_bundle_uri_fetchable_by_provider"
+    ] = False
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+    readiness = _read_json(tmp_path / "runpod_provider_readiness_manifest.json")
+
+    assert result["status"] == "blocked"
+    assert "missing_provider_capture_root_bundle_uri" in result["blockers"]
+    assert "provider_capture_root_bundle_uri_not_fetchable" in result["blockers"]
+    assert readiness["provider_inputs"]["capture_root_bundle_uri_present"] is False
+    assert (
+        readiness["provider_inputs"]["capture_root_bundle_uri_fetchable_by_provider"]
+        is False
+    )
+
+
+def test_runpod_adapter_blocks_missing_or_blocked_local_sim_only_prerequisite(
+    tmp_path: Path,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    del request["provider_request_shape"]["local_sim_only_prerequisite"]  # type: ignore[index]
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+
+    assert result["status"] == "blocked"
+    assert "missing_local_sim_only_provider_prerequisite" in result["blockers"]
+
+    request["provider_request_shape"]["local_sim_only_prerequisite"] = {  # type: ignore[index]
+        "schema_version": "robot_eval_provider_local_sim_only_prerequisite.v1",
+        "required_before_provider_spend": True,
+        "status": "blocked",
+        "source_artifact": "robot_team_grade_eval_closure_manifest.json",
+        "local_sim_only_evidence_clean": False,
+        "sim_only_beta_core_complete": False,
+        "sim_only_beta_blocked_requirement_ids": ["failure_diagnosis"],
+        "blockers": [
+            "local_sim_only_evidence_not_clean",
+            "sim_only_beta_requirement_failure_diagnosis_not_complete",
+        ],
+    }
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+    readiness = _read_json(tmp_path / "runpod_provider_readiness_manifest.json")
+
+    assert result["status"] == "blocked"
+    assert "local_sim_only_provider_prerequisite_not_passed" in result["blockers"]
+    assert "local_sim_only_evidence_not_clean" in result["blockers"]
+    assert readiness["local_sim_only_prerequisite"]["status"] == "blocked"
+    assert (
+        readiness["local_sim_only_prerequisite"]["local_sim_only_evidence_clean"]
+        is False
+    )
 
 
 def test_runpod_adapter_uses_provider_gpu_priority_and_cache_env(
@@ -415,6 +587,61 @@ def test_runpod_adapter_blocks_unwritable_artifact_output_uri(
 
     assert result["status"] == "blocked"
     assert "provider_artifact_output_uri_not_writable" in result["blockers"]
+
+
+def test_runpod_adapter_blocks_local_artifact_output_for_required_remote_runtime(
+    tmp_path: Path,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["provider_request_shape"]["inputs"]["artifact_output_uri"] = (  # type: ignore[index]
+        "file:///tmp/blueprint-provider-output"
+    )
+    request["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "artifact_output_uri_scheme"
+    ] = "file"
+    request["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "artifact_output_uri_provider_writable"
+    ] = True
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+    readiness = _read_json(tmp_path / "runpod_provider_readiness_manifest.json")
+
+    assert result["status"] == "blocked"
+    assert "provider_artifact_output_uri_not_writable" in result["blockers"]
+    assert readiness["artifact_output"]["artifact_output_uri_scheme"] == "file"
+    assert (
+        readiness["artifact_output"]["artifact_output_uri_scheme_provider_writable"]
+        is False
+    )
+
+
+def test_runpod_adapter_blocks_artifact_output_uri_not_marked_writable(
+    tmp_path: Path,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["provider_request_shape"]["inputs"][  # type: ignore[index]
+        "artifact_output_uri_provider_writable"
+    ] = False
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+    readiness = _read_json(tmp_path / "runpod_provider_readiness_manifest.json")
+
+    assert result["status"] == "blocked"
+    assert "provider_artifact_output_uri_not_marked_writable" in result["blockers"]
+    assert readiness["status"] == "blocked_before_paid_provider_attempt"
+    assert "provider_artifact_output_uri_not_marked_writable" in readiness["blockers"]
 
 
 def test_runpod_adapter_blocks_provider_input_setup_blockers(
@@ -899,8 +1126,14 @@ def test_runpod_adapter_request_blocker_variants() -> None:
         "missing_provider_worker_image_ref",
         "missing_provider_worker_manifest_uri",
         "provider_worker_manifest_uri_not_fetchable",
+        "missing_provider_capture_root_bundle_uri",
+        "provider_capture_root_bundle_uri_not_fetchable",
         "missing_provider_artifact_output_uri",
         "provider_external_watchdog_ttl_must_exceed_hard_timeout",
+        "missing_provider_requested_budget_usd",
+        "provider_idle_shutdown_not_required",
+        "provider_external_watchdog_owner_missing",
+        "provider_artifact_upload_before_shutdown_not_required",
         "provider_launch_request_secret_values_in_artifact",
     ]
     unversioned = {
@@ -915,13 +1148,28 @@ def test_runpod_adapter_request_blocker_variants() -> None:
             "inputs": {
                 "manifest_uri": "r2://bucket/worker.json",
                 "manifest_uri_fetchable_by_provider": True,
+                "capture_root_bundle_uri": "r2://bucket/capture-root.zip",
+                "capture_root_bundle_uri_fetchable_by_provider": True,
                 "artifact_output_uri": "r2://bucket/artifacts",
+                "artifact_output_uri_provider_writable": True,
+                "artifact_output_write_auth_contract_ready": True,
             },
             "limits": {
                 "hard_timeout_seconds": 120,
                 "idle_timeout_seconds": 60,
+                "idle_shutdown_required": True,
+                "external_watchdog_ttl_required": True,
                 "external_watchdog_ttl_seconds": 180,
+                "external_watchdog_owner": "provider_launcher_or_owner_control_plane",
                 "max_active_workers": 1,
+                "requested_budget_usd": 0.25,
+            },
+            "artifact_finalizer": {"upload_before_shutdown_required": True},
+            "local_sim_only_prerequisite": {
+                "required_before_provider_spend": True,
+                "status": "passed",
+                "local_sim_only_evidence_clean": True,
+                "blockers": [],
             },
             "environment": {"secret_values_in_artifact": False},
         },

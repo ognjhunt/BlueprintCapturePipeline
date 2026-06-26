@@ -335,6 +335,8 @@ def test_review_quality_profile_rejects_128px_media_while_smoke_marks_smoke_only
     assert review_report["visual_success"] is False
     assert "review_quality_profile_media_below_minimum" in review_report["blockers"]
     assert review_report["provider_completed_visual_quality_failed"] is True
+    assert review_report["claim_boundary"]["generated_observation_review_support_only"] is True
+    assert review_report["claim_boundary"]["review_quality_gate_is_not_scale_up_approval"] is True
     assert smoke_report["profile_contract"]["smoke_only"] is True
     assert "review_quality_profile_media_below_minimum" not in smoke_report["blockers"]
     assert Path(str(smoke_report["contact_sheet_path"])).is_file()
@@ -374,6 +376,7 @@ def test_128px_4fps_mp4_is_valid_media_but_not_reviewable_success_evidence(
         smoke["claim_boundary"]["visual_rollout_useful_for_task_success_review"]
         is False
     )
+    assert smoke["claim_boundary"]["generated_observation_review_support_only"] is True
 
 
 def test_provider_completed_but_visual_quality_fails_on_dark_generated_frame(

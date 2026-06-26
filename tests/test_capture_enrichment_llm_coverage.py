@@ -7,7 +7,6 @@ import types
 from pathlib import Path
 from urllib import error as urllib_error
 
-import pytest
 
 from blueprint_pipeline import capture_enrichment_llm as enrichment
 

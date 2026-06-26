@@ -113,6 +113,33 @@ def _provider_error_blocker(exc: Exception) -> str:
     return f"gemini_wam_episode_consistency_failed:{type(exc).__name__}"
 
 
+def _consistency_support_claim_boundary() -> dict[str, Any]:
+    return {
+        "consistency_label_is_external_to_wam_and_evaluator": True,
+        "consistency_label_is_from_generated_video_and_trace_context": True,
+        "consistency_label_does_not_prove_task_success": True,
+        "consistency_label_does_not_prove_generated_world_rank_fidelity": True,
+        "forward_inverse_consistency_is_reliability_review_signal_only": True,
+        "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking": True,
+        "forward_inverse_consistency_does_not_prove_policy_success": True,
+        "forward_inverse_consistency_does_not_prove_task_success": True,
+        "forward_inverse_consistency_does_not_prove_rank_fidelity": True,
+        "forward_inverse_consistency_does_not_prove_deployment_readiness": True,
+        "forward_inverse_consistency_does_not_prove_sensor_truth": True,
+        "forward_inverse_consistency_is_not_external_validation": True,
+        "consistency_metrics_are_support_signals_only": True,
+        "evaluator_bounded_policy_ranking_upgraded_by_consistency": False,
+        "policy_success_claimed_from_consistency": False,
+        "task_success_claimed_from_consistency": False,
+        "rank_fidelity_claimed_from_consistency": False,
+        "deployment_readiness_claimed_from_consistency": False,
+        "sensor_truth_claimed_from_consistency": False,
+        "external_validation_claimed_from_consistency": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "public_claim_upgrade_allowed": False,
+    }
+
+
 def _rollout_task_prompt(request: Mapping[str, Any], rollout: Mapping[str, Any]) -> str:
     scenario_id = _string(rollout.get("scenario_eval_run_id"))
     for prompt in request.get("task_prompts", []) or []:
@@ -196,6 +223,7 @@ def _gemini_score_one(
         "model": model,
         "visual_evidence_used": True,
         "action_trace_evidence_used": True,
+        **_consistency_support_claim_boundary(),
         "task_success_proven": False,
         "generated_world_rank_fidelity_result_proven": False,
         "generated_world_policy_evaluation_scope_proven": False,
@@ -292,12 +320,7 @@ def build_gemini_wam_episode_consistency_labels(
         "rollout_checks": checks,
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
-        "claim_boundary": {
-            "consistency_label_is_external_to_wam_and_evaluator": True,
-            "consistency_label_is_from_generated_video_and_trace_context": True,
-            "consistency_label_does_not_prove_task_success": True,
-            "generated_world_policy_evaluation_scope_proven": False,
-        },
+        "claim_boundary": _consistency_support_claim_boundary(),
     }
     write_json(resolved_output, manifest)
     return manifest

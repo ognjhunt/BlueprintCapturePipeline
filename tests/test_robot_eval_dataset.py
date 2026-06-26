@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from blueprint_pipeline.evaluation_prep_stage import _hosted_session_runtime_claim_boundary
 from blueprint_pipeline.robot_eval_dataset import build_real_site_robot_eval_dataset
 
 
@@ -82,9 +83,25 @@ def _write_eval_inputs(capture_root: Path) -> None:
             ],
         },
     )
+    hosted_claim_boundary = _hosted_session_runtime_claim_boundary()
     _write_json(
         eval_dir / "hosted_session_runtime_manifest.json",
-        {"schema_version": "v1", "robot_profiles": []},
+        {
+            "schema_version": "v1",
+            "robot_profiles": [],
+            "simulator_execution_proven": False,
+            "rank_fidelity_result_proven": False,
+            "deployment_approval_proven": False,
+            "safety_validation_proven": False,
+            "physical_readiness_proven": False,
+            "physical_robot_readiness_proven": False,
+            "public_claim_upgrade_allowed": False,
+            "claim_boundary": hosted_claim_boundary,
+            "proof_boundary": {
+                **hosted_claim_boundary,
+                "artifact_purpose": "hosted_session_runtime_proof_boundary",
+            },
+        },
     )
 
 

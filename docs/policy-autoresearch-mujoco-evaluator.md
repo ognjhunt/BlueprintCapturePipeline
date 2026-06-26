@@ -1,5 +1,9 @@
 # Policy Autoresearch MuJoCo Evaluator
 
+See `docs/simulator-agnostic-g1-execution-contract.md` for the shared
+MuJoCo/Isaac simulator evidence contract and the stricter rule that
+`isaac_sim` is counted only from Isaac-specific evaluator proof.
+
 `blueprint-run-policy-autoresearch-mujoco-evaluator` is the real sim execution
 bridge for the sim-only policy autoresearch lane. The source
 `scenario_eval_matrix.json` remains the frozen verifier. The evaluator derives a

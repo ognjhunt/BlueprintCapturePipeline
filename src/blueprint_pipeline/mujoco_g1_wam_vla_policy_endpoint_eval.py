@@ -34,6 +34,7 @@ from .mujoco_g1_simulator_command import (
     _resolve_g1_model_root,
     _write_g1_xml_with_absolute_meshes,
 )
+from .policy_endpoint_boundary import build_policy_endpoint_boundary_manifest
 from .provider_worker_contract import (
     PROVIDER_WORKER_CONTRACT_SCHEMA_VERSION,
     classify_policy_worker_command,
@@ -8099,6 +8100,16 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         ),
     )
     write_json(
+        job_dir / "policy_endpoint_boundary_manifest.json",
+        build_policy_endpoint_boundary_manifest(
+            generated_at=generated_at,
+            endpoint_discovery=endpoint_discovery,
+            selected_runtime=selected_runtime,
+            fixture_policy_used=selected_runtime is None,
+            policy_execution_manifest_path=job_dir / "policy_execution_manifest.json",
+        ),
+    )
+    write_json(
         job_dir / "policy_model_candidate_matrix.json",
         build_policy_model_candidate_matrix(generated_at=generated_at),
     )
@@ -8570,6 +8581,9 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "blockers": same_scene_controller_manifest.get("blockers", []),
             "attempted_episode_count": 0,
             "artifact_paths": {
+                "policy_endpoint_boundary_manifest": str(
+                    job_dir / "policy_endpoint_boundary_manifest.json"
+                ),
                 "same_scene_unitree_controller_backend_manifest": str(
                     job_dir / "same_scene_unitree_controller_backend_manifest.json"
                 ),
@@ -11263,6 +11277,20 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         ),
     )
     write_json(
+        job_dir / "policy_endpoint_boundary_manifest.json",
+        build_policy_endpoint_boundary_manifest(
+            generated_at=generated_at,
+            endpoint_discovery=endpoint_discovery,
+            selected_runtime=selected_runtime,
+            endpoint_policy_used=endpoint_policy_used,
+            fixture_policy_used=final_fixture_policy_used,
+            endpoint_invocation_count=endpoint_invocation_count,
+            endpoint_valid_action_count=endpoint_policy_valid_actions,
+            rejected_policy_action_count=len(rejected_actions),
+            policy_execution_manifest_path=job_dir / "policy_execution_manifest.json",
+        ),
+    )
+    write_json(
         job_dir / "policy_command_adapter_manifest.json",
         build_policy_command_adapter_manifest(
             generated_at=generated_at,
@@ -11530,6 +11558,9 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             "policy_endpoint_discovery": str(job_dir / "policy_endpoint_discovery.json"),
             "policy_endpoint_runtime_manifest": str(
                 job_dir / "policy_endpoint_runtime_manifest.json"
+            ),
+            "policy_endpoint_boundary_manifest": str(
+                job_dir / "policy_endpoint_boundary_manifest.json"
             ),
             "policy_endpoint_server_manifest": str(
                 job_dir / "policy_endpoint_server_manifest.json"

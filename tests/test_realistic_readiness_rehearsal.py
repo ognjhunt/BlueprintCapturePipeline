@@ -185,6 +185,12 @@ def _seed_ready_physical_g1_evidence_drop(evidence_dir: Path, job_id: str) -> No
             "schema_version": "g1_controlled_run_inputs.v1",
             "job_id": job_id,
             "run_id": "unitree-g1-controlled-run-001",
+            "physical_evidence_required": True,
+            "policy_id": "unitree_rl_gym_g1_mujoco_policy_candidate",
+            "task_id": "walk_to_target",
+            "scenario_id": "site-a_walk_to_target_pose",
+            "scenario_eval_run_id": "robot-eval-test-site-a_walk_to_target_pose",
+            "scenario_variation_instance_id": "site-a_walk_to_target_pose",
             "robot_serial_or_fleet_id": "unitree-g1-lab-001",
             "site_or_lab_location_id": "lab-a",
             "operator_id": "operator-a",
@@ -203,6 +209,44 @@ def _seed_ready_physical_g1_evidence_drop(evidence_dir: Path, job_id: str) -> No
                 "max_contact_force_n": 0,
                 "emergency_stop_required": True,
             },
+            "operator_site_checklist": {
+                "controlled_area_verified": True,
+                "floor_clear_for_g1_walk": True,
+                "bystander_exclusion_zone_marked": True,
+                "emergency_stop_operator_present": True,
+                "site_or_lab_location_id": "lab-a",
+            },
+            "allowed_task_set": [
+                {
+                    "task_id": "walk_to_target",
+                    "scenario_id": "site-a_walk_to_target_pose",
+                    "scenario_eval_run_id": "robot-eval-test-site-a_walk_to_target_pose",
+                    "scenario_variation_instance_id": "site-a_walk_to_target_pose",
+                    "policy_id": "unitree_rl_gym_g1_mujoco_policy_candidate",
+                    "allowed": True,
+                }
+            ],
+            "exclusion_and_abort_criteria": {
+                "excluded_task_ids": ["non_walk_to_target"],
+                "abort_conditions": [
+                    "loss_of_comms",
+                    "unexpected_human_entry",
+                    "fall_detected",
+                    "contact_force_exceeds_threshold",
+                    "operator_estop",
+                ],
+                "loose_or_inferred_anchor_matches_allowed": False,
+            },
+            "robot_calibration_refs": {
+                "robot_state_log": "robot_state_log.jsonl",
+                "hardware_validation": "hardware_validation.json",
+                "contact_collision_log": "contact_collision_log.json",
+            },
+            "camera_calibration_refs": {
+                "robot_camera_video": "robot_camera_video.mp4",
+                "timestamp_alignment": "timestamp_alignment.json",
+                "camera_mount_or_sensor_ids": ["g1-head-camera-a"],
+            },
             "review_decision": "accepted",
             "storage_upload_performed": True,
             "entitlement_verified": True,
@@ -215,11 +259,19 @@ def _seed_ready_physical_g1_evidence_drop(evidence_dir: Path, job_id: str) -> No
             "webapp_response_status_code": "202",
             "sync_status": "succeeded",
             "operator_statement": "Operator signed the physical G1 evidence package.",
+            "operator_attestation_signed": True,
+            "operator_attestation_signed_at_utc": "2026-06-12T14:03:00Z",
             "hardware_owner_statement": "Hardware owner signed the G1 identity and run.",
+            "hardware_owner_attestation_signed": True,
+            "hardware_owner_attestation_signed_at_utc": "2026-06-12T14:04:00Z",
             "safety_reviewer_statement": "Safety reviewer accepted this controlled G1 run.",
+            "safety_reviewer_attestation_signed": True,
+            "safety_reviewer_attestation_signed_at_utc": "2026-06-12T14:05:00Z",
             "robot_team_review_statement": (
                 "Robot team accepted the non-default G1 policy package."
             ),
+            "robot_team_review_attestation_signed": True,
+            "robot_team_review_attestation_signed_at_utc": "2026-06-12T14:06:00Z",
         },
     )
 

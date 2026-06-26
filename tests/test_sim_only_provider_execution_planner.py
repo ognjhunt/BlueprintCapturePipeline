@@ -8,6 +8,10 @@ from PIL import Image
 
 from blueprint_pipeline.agent_operator_runtime import LIVE_AGENTS_SDK_ENV
 from blueprint_pipeline import sim_only_provider_execution_planner as planner
+from blueprint_pipeline.provider_closure_audit import (
+    PROVIDER_CLOSURE_AUDIT_REPORT_NAME,
+    audit_provider_closure,
+)
 from blueprint_pipeline.sim_only_provider_execution_planner import (
     LIVE_AGENT_PLANNER_ENV,
     build_sim_only_provider_execution_layer,
@@ -630,6 +634,279 @@ def test_runtime_and_cost_status_cover_pending_blocked_and_failed_paths(tmp_path
 
     assert failed["runtime_manifest"]["status"] == "failed"  # type: ignore[index]
     assert failed["cost_ledger"]["status"] == "failed"  # type: ignore[index]
+
+
+def test_provider_closure_audit_passes_with_local_runpod_finalizer_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = tmp_path / "capture"
+    job_dir = _seed_ready_job(capture_root)
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    monkeypatch.delenv("RUNPOD_API_KEY_FILE", raising=False)
+    monkeypatch.setenv("RUNPOD_CONFIG_FILE", str(tmp_path / "missing-runpod-config.toml"))
+    build_sim_only_provider_execution_layer(capture_root=capture_root, job_dir=job_dir)
+    _write_json(
+        job_dir / "runpod_live_execution_proof.json",
+        {
+            "status": "runpod_live_proof_collected",
+            "shutdown_or_termination_proof": True,
+            "active_pod_count_before": 1,
+            "active_pod_count_after": 0,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        job_dir / "provider_runtime_finalizer_proof.json",
+        {
+            "schema_version": "robot_eval_provider_runtime_finalizer_proof.v1",
+            "status": "completed",
+            "provider": "runpod",
+            "artifact_upload_completed_before_shutdown": True,
+            "worker_artifacts_finalized_before_shutdown": True,
+            "worker_runtime_manifest_upload_completed_before_shutdown": True,
+            "provider_shutdown_proven": True,
+            "clean_shutdown_proven": True,
+            "provider_shutdown_evidence": {
+                "zero_active_workers_after_run": True,
+                "active_pod_count_after_stop": 0,
+            },
+            "blockers": [],
+        },
+    )
+
+    report = audit_provider_closure(job_dir=job_dir)
+
+    assert report["status"] == "passed"
+    assert report["live_provider_calls_performed"] is False
+    assert report["optional_provider_closure_verified"] is True
+    assert report["provider_credentials"]["credential_configured"] is False  # type: ignore[index]
+    assert report["checks"]["watchdog"]["status"] == "passed"  # type: ignore[index]
+    assert report["checks"]["spend_ledger"]["status"] == "passed"  # type: ignore[index]
+    assert report["checks"]["artifact_output_closure"]["status"] == "passed"  # type: ignore[index]
+    assert report["checks"]["teardown"]["status"] == "passed"  # type: ignore[index]
+    assert report["claim_boundary"]["rank_fidelity_result_proven"] is False  # type: ignore[index]
+    assert report["claim_boundary"]["physical_robot_readiness_proven"] is False  # type: ignore[index]
+    assert (job_dir / PROVIDER_CLOSURE_AUDIT_REPORT_NAME).is_file()
+
+
+def test_provider_closure_audit_passes_with_local_vast_teardown_and_upload_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_dir = tmp_path / "vast-provider-run"
+    job_dir.mkdir(parents=True)
+    monkeypatch.setenv("VAST_API_KEY_FILE", str(tmp_path / "missing-vast-api-key"))
+    _write_json(
+        job_dir / "vast_provider_plan.json",
+        {
+            "schema_version": "vast_provider_plan.v1",
+            "status": "ready_for_explicit_vast_probe",
+            "budget": {
+                "target_spend_usd": 0.35,
+                "hard_cap_usd": 0.75,
+                "max_live_minutes": 10,
+            },
+        },
+    )
+    _write_json(
+        job_dir / "vast_budget_ledger.json",
+        {
+            "schema_version": "vast_budget_ledger.v1",
+            "status": "completed",
+            "estimated_cost_usd": 0.03,
+            "hard_cap_usd": 0.75,
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    _write_json(
+        job_dir / "vast_provider_command_result.json",
+        {
+            "schema_version": "vast_provider_command_result.v1",
+            "status": "completed",
+            "provider_output_upload_ok": True,
+            "provider_runtime_output_zip_produced": True,
+            "provider_runtime_output_zip_received": True,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        job_dir / "vast_teardown_manifest.json",
+        {
+            "schema_version": "vast_teardown_manifest.v1",
+            "status": "completed",
+            "vast_instance_ids": [555],
+            "runner_gpu_teardown_completed": True,
+            "continuing_spend_from_this_run": False,
+            "raw_secret_values_recorded": False,
+        },
+    )
+    _write_json(
+        job_dir / "vast_final_validation.json",
+        {
+            "schema_version": "vast_final_validation.v1",
+            "status": "passed",
+            "vast_instance_ids": [555],
+            "estimated_cost_usd": 0.03,
+            "spend_hard_cap_usd": 0.75,
+            "continuing_spend_from_this_run": False,
+            "all_vast_instances_destroyed_by_adapter": True,
+            "blockers": [],
+        },
+    )
+    (job_dir / "vast_runtime_phase_log.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"phase": "vast_instance_teardown_started", "status": "running"}),
+                json.dumps({"phase": "vast_instance_teardown_completed", "status": "completed"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = audit_provider_closure(job_dir=job_dir, provider="vast")
+
+    assert report["status"] == "passed"
+    assert report["provider"] == "vast"
+    assert report["provider_credentials"]["credential_configured"] is False  # type: ignore[index]
+    assert report["checks"]["watchdog"]["status"] == "passed"  # type: ignore[index]
+    assert report["checks"]["artifact_output_closure"]["evidence"][0]["source"] == (  # type: ignore[index]
+        "vast_provider_command_result"
+    )
+    assert report["checks"]["teardown"]["status"] == "passed"  # type: ignore[index]
+    assert report["claim_boundary"]["safety_validation_proven"] is False  # type: ignore[index]
+
+
+def test_provider_closure_audit_blocks_when_provider_artifacts_and_credentials_are_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = tmp_path / "capture"
+    job_dir = _seed_ready_job(capture_root, job_id="job-missing-provider-closure")
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    monkeypatch.delenv("RUNPOD_API_KEY_FILE", raising=False)
+    monkeypatch.setenv("RUNPOD_CONFIG_FILE", str(tmp_path / "missing-runpod-config.toml"))
+
+    report = audit_provider_closure(job_dir=job_dir)
+
+    assert report["status"] == "blocked_optional_provider_closure"
+    assert report["optional_provider_closure_verified"] is False
+    assert "provider_artifact_output_closure_missing" in report["blockers"]
+    assert "provider_teardown_evidence_missing" in report["blockers"]
+    assert "provider_closure_artifacts_unavailable" in report["blockers"]
+    assert "provider_credentials_missing_for_remote_artifact_recovery" in report["blockers"]
+    assert report["live_provider_calls_performed"] is False
+    assert report["claim_boundary"]["optional_provider_closure_required_for_local_sim_only_beta"] is False  # type: ignore[index]
+
+
+def test_provider_closure_audit_tracks_remote_execution_and_readiness_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_dir = tmp_path / "runpod-dry-run-job"
+    job_dir.mkdir(parents=True)
+    runpod_key_file = tmp_path / "runpod.key"
+    runpod_key_file.write_text("test-runpod-key\n", encoding="utf-8")
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    monkeypatch.setenv("RUNPOD_API_KEY_FILE", str(runpod_key_file))
+    _write_json(
+        job_dir / "remote_cloud_execution_closure_manifest.json",
+        {
+            "schema_version": "robot_eval_remote_cloud_execution_closure.v1",
+            "status": "blocked_before_remote_execution",
+            "provider": "runpod",
+            "simulator": "mujoco",
+            "remote_cloud_execution_proven": False,
+            "clean_shutdown_proven": False,
+            "live_provider_calls_performed": False,
+            "phase": "blocked",
+            "provider_job_id": "remote-job-1",
+            "pod_id": None,
+            "provider_runtime_started_at": None,
+            "max_wait_seconds": 180,
+            "watchdog_boundary": {
+                "hard_timeout_seconds": 120,
+                "idle_timeout_seconds": 60,
+                "external_watchdog_ttl_seconds": 180,
+                "watchdog_owner": "provider_launcher_or_owner_control_plane",
+            },
+            "max_spend_usd": 0.25,
+            "output_uri": "r2://blueprint-artifacts/jobs/remote-job-1/artifacts",
+            "output_zip_or_object_size_bytes": None,
+            "artifact_manifest": {
+                "artifact_output_uri": "r2://blueprint-artifacts/jobs/remote-job-1/artifacts",
+                "artifact_upload_evidence_complete": True,
+            },
+            "teardown_status": "teardown_not_proven",
+            "continuing_spend_from_this_run": False,
+            "contract_blockers": ["provider_input_setup:provider_inputs_upload_not_proven"],
+            "runtime_blockers": ["remote_provider_runtime_not_executed"],
+            "checks": {"provider_package_validated_without_spend": True},
+        },
+    )
+    _write_json(
+        job_dir / "runpod_provider_readiness_manifest.json",
+        {
+            "schema_version": "runpod_provider_readiness_manifest.v1",
+            "status": "blocked_before_paid_provider_attempt",
+            "provider": "runpod",
+            "mode": "dry-run",
+            "api_call_performed": False,
+            "live_provider_call_authorized": False,
+            "blockers": ["provider_inputs_upload_not_proven"],
+            "spend_limits": {
+                "requested_budget_usd": 0.25,
+                "bounded_single_worker_attempt": True,
+                "hard_timeout_seconds": 120,
+                "idle_timeout_seconds": 60,
+                "external_watchdog_ttl_seconds": 180,
+            },
+            "artifact_output": {
+                "artifact_output_uri_scheme": "r2",
+                "artifact_output_uri_provider_writable": True,
+            },
+            "watchdog_and_teardown": {
+                "upload_before_shutdown_required": True,
+                "continuing_spend_from_this_run_must_be_false_after_teardown": True,
+            },
+            "no_secret_artifact_policy": {
+                "raw_api_key_stored": False,
+                "secret_env_var_names_stored": False,
+            },
+            "claim_boundary": {
+                "provider_job_submitted": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        },
+    )
+
+    report = audit_provider_closure(job_dir=job_dir, provider="runpod")
+
+    assert report["status"] == "blocked_optional_provider_closure"
+    assert report["optional_provider_closure_verified"] is False
+    assert report["provider_credentials"]["credential_configured"] is True  # type: ignore[index]
+    remote = report["remote_execution"]
+    assert remote["status"] == "blocked_before_remote_execution"  # type: ignore[index]
+    assert remote["remote_cloud_execution_proven"] is False  # type: ignore[index]
+    assert remote["provider_job_id"] == "remote-job-1"  # type: ignore[index]
+    assert remote["max_spend_usd"] == 0.25  # type: ignore[index]
+    assert remote["watchdog_boundary"]["hard_timeout_seconds"] == 120  # type: ignore[index]
+    assert remote["output_zip_or_object_size_bytes"] is None  # type: ignore[index]
+    assert remote["teardown_status"] == "teardown_not_proven"  # type: ignore[index]
+    readiness = report["provider_readiness"]
+    assert readiness["status"] == "blocked_before_paid_provider_attempt"  # type: ignore[index]
+    assert readiness["api_call_performed"] is False  # type: ignore[index]
+    assert readiness["live_provider_call_authorized"] is False  # type: ignore[index]
+    assert readiness["spend_limits"]["bounded_single_worker_attempt"] is True  # type: ignore[index]
+    assert (
+        report["observed_artifacts"]["remote_execution_closure"][0]["relative_path"]  # type: ignore[index]
+        == "remote_cloud_execution_closure_manifest.json"
+    )
+    assert (
+        report["observed_artifacts"]["provider_readiness"][0]["relative_path"]  # type: ignore[index]
+        == "runpod_provider_readiness_manifest.json"
+    )
 
 
 def test_runtime_preflight_simulator_fallback_drives_isaac_priority_and_cache(

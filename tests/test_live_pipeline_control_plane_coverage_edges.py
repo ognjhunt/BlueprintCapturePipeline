@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +101,7 @@ def test_next_inputs_field_sources_and_policy_modality_edges() -> None:
         policy_package_ready=True,
         followup_request_queues={"ready": True, "queues": ["skip", {"safe_processing_command": "process inbox"}]},
     )
-    assert any("exact prediction join keys" in item for item in next_inputs)
+    assert not any("exact prediction join keys" in item for item in next_inputs)
     assert "process inbox" in next_inputs
 
     owner_inputs = lcp._control_plane_next_inputs_needed(
@@ -117,7 +116,7 @@ def test_next_inputs_field_sources_and_policy_modality_edges() -> None:
         deployment_owner_evidence_ready=False,
         policy_package_ready=True,
     )
-    assert any("owner evidence" in item for item in owner_inputs)
+    assert not any("owner evidence" in item for item in owner_inputs)
 
     payload = {"owner_system": {"request_id": "owner-request"}}
     assert lcp._field_value_from_sources(payload, "request_id", [{}]) == "owner-request"
@@ -281,8 +280,10 @@ def test_staged_inputs_edges(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         "staged_arena_results_dir_missing",
         "staged_webapp_request_missing",
         "staged_live_closure_evidence_missing",
-        "staged_deployment_outcomes_missing",
         "staged_policy_package_missing",
+    }
+    assert set(blocked["diagnostic_blockers"]) >= {
+        "staged_deployment_outcomes_missing",
         "staged_real_robot_pov_missing",
     }
 
@@ -320,7 +321,9 @@ def test_external_packet_prediction_and_owner_evidence_branches(tmp_path: Path) 
             "live_closure_evidence_ready": True,
         },
     )
-    assert any(item["id"] == "predicted_vs_actual_exact_match_keys" for item in prediction_packet["required_inputs"])
+    prediction_ids = {item["id"] for item in prediction_packet["required_inputs"]}
+    assert "predicted_vs_actual_exact_match_keys" not in prediction_ids
+    assert "real_world_deployment_outcome_owner_evidence" not in prediction_ids
 
     owner_packet = lcp._build_external_input_packet(
         **base,
@@ -334,7 +337,9 @@ def test_external_packet_prediction_and_owner_evidence_branches(tmp_path: Path) 
             "live_closure_evidence_ready": True,
         },
     )
-    assert any(item["id"] == "real_world_deployment_outcome_owner_evidence" for item in owner_packet["required_inputs"])
+    owner_ids = {item["id"] for item in owner_packet["required_inputs"]}
+    assert "predicted_vs_actual_exact_match_keys" not in owner_ids
+    assert "real_world_deployment_outcome_owner_evidence" not in owner_ids
 
 
 def test_external_input_packet_markdown_edges() -> None:

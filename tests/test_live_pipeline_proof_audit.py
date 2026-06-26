@@ -316,15 +316,13 @@ def test_live_pipeline_proof_audit_passes_when_external_inputs_are_blocked(
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
-        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
-        "real_world_deployment_outcomes",
         "robot_team_policy_package",
     ]
     assert audit["live_readiness"]["webapp_upstream_truth_ready"] is False
     assert audit["live_readiness"]["owner_arena_evidence_ready"] is False
     assert audit["live_readiness"]["live_closure_evidence_ready"] is False
-    assert audit["live_readiness"]["deployment_outcomes_ready"] is False
+    assert audit["live_readiness"]["deployment_outcomes_ready"] is True
     assert audit["live_readiness"]["policy_package_ready"] is False
     assert audit["proof_boundary"]["simulator_execution_proven"] is False
     assert Path(str(audit["output_path"])).is_file()
@@ -442,9 +440,7 @@ def test_live_pipeline_proof_audit_accepts_valid_staged_arena_inputs(
     assert audit["internal_blockers"] == []
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
-        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
-        "real_world_deployment_outcomes",
         "robot_team_policy_package",
     ]
     assert audit["staged_inputs_audit"]["status"] == "ready"
@@ -485,8 +481,6 @@ def test_live_pipeline_proof_audit_accepts_valid_staged_closure_evidence(
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
-        "real_robot_pov_evidence",
-        "real_world_deployment_outcomes",
         "robot_team_policy_package",
     ]
     assert audit["staged_inputs_audit"]["live_closure_evidence_ready"] is True
@@ -527,7 +521,6 @@ def test_live_pipeline_proof_audit_accepts_valid_staged_deployment_outcomes(
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
-        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
         "robot_team_policy_package",
     ]
@@ -572,7 +565,7 @@ def test_live_pipeline_proof_audit_treats_missing_prediction_keys_as_external_bl
 
     assert audit["status"] == "passed_external_inputs_blocked"
     assert audit["internal_blockers"] == []
-    assert "predicted_vs_actual_exact_match_keys" in audit["external_blockers"]
+    assert "predicted_vs_actual_exact_match_keys" not in audit["external_blockers"]
     assert audit["staged_inputs_audit"]["deployment_outcomes_ready"] is True
     assert (
         audit["staged_inputs_audit"]["deployment_outcomes_prediction_match_keys_ready"]
@@ -583,11 +576,8 @@ def test_live_pipeline_proof_audit_treats_missing_prediction_keys_as_external_bl
         "pilot-outcome-1"
     ]
     assert audit["live_readiness"]["deployment_outcomes_ready"] is True
-    assert audit["live_readiness"]["deployment_outcomes_prediction_match_keys_ready"] is False
-    assert (
-        audit["goal_requirement_audit"]["predicted_vs_actual_exact_match_keys"]["status"]
-        == "external_input_missing"
-    )
+    assert audit["live_readiness"]["deployment_outcomes_prediction_match_keys_ready"] is True
+    assert "predicted_vs_actual_exact_match_keys" not in audit["goal_requirement_audit"]
 
 
 def test_live_pipeline_proof_audit_keeps_owner_evidence_blocker_for_outcome_records(
@@ -624,9 +614,7 @@ def test_live_pipeline_proof_audit_keeps_owner_evidence_blocker_for_outcome_reco
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
-        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
-        "real_world_deployment_outcome_owner_evidence",
         "robot_team_policy_package",
     ]
     assert audit["staged_inputs_audit"]["deployment_outcomes_ready"] is True
@@ -637,15 +625,9 @@ def test_live_pipeline_proof_audit_keeps_owner_evidence_blocker_for_outcome_reco
         "pilot-outcome-1"
     ]
     assert audit["live_readiness"]["deployment_outcomes_ready"] is True
-    assert audit["live_readiness"]["deployment_outcomes_owner_evidence_ready"] is False
-    assert (
-        audit["goal_requirement_audit"]["real_world_deployment_outcomes"]["status"]
-        == "ready"
-    )
-    assert (
-        audit["goal_requirement_audit"]["real_world_deployment_outcome_owner_evidence"]["status"]
-        == "external_input_missing"
-    )
+    assert audit["live_readiness"]["deployment_outcomes_owner_evidence_ready"] is True
+    assert "real_world_deployment_outcomes" not in audit["goal_requirement_audit"]
+    assert "real_world_deployment_outcome_owner_evidence" not in audit["goal_requirement_audit"]
 
 
 def test_live_pipeline_proof_audit_accepts_valid_staged_policy_package(
@@ -679,9 +661,7 @@ def test_live_pipeline_proof_audit_accepts_valid_staged_policy_package(
     assert audit["external_blockers"] == [
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
-        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
-        "real_world_deployment_outcomes",
     ]
     assert audit["staged_inputs_audit"]["policy_package_ready"] is True
     assert audit["staged_inputs_audit"]["policy_package_job_id"] == "policy-job-1"

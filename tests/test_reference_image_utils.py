@@ -7,7 +7,6 @@ import sys
 import types
 from pathlib import Path
 
-import pytest
 from PIL import Image
 
 from blueprint_pipeline import reference_image_utils as ref

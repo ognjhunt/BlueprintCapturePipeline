@@ -10,6 +10,7 @@ from PIL import Image
 from blueprint_pipeline.robot_eval_execution import build_robot_pov_observation_bundle
 from blueprint_pipeline.robot_initial_observation import (
     build_initial_observation_source_resolution,
+    build_owner_robot_camera_calibration_request,
     build_robot_camera_profile_registry,
     build_robot_camera_profile_launch_readiness,
 )
@@ -126,6 +127,73 @@ def _owner_robot_profile(index: int) -> dict[str, Any]:
     }
 
 
+def _unitree_g1_owner_camera(
+    *,
+    camera_id: str,
+    mount: str,
+    frame_id: str,
+    xyz_m: list[float],
+    horizontal_fov_degrees: float,
+    vertical_fov_degrees: float,
+) -> dict[str, Any]:
+    return {
+        "camera_id": camera_id,
+        "display_name": camera_id.replace("_", " ").title(),
+        "modalities": ["rgb", "depth"],
+        "mount": mount,
+        "frame_id": frame_id,
+        "horizontal_fov_degrees": horizontal_fov_degrees,
+        "vertical_fov_degrees": vertical_fov_degrees,
+        "intrinsics": {
+            "width": 1280,
+            "height": 720,
+            "fx": 920.0,
+            "fy": 918.0,
+            "cx": 640.0,
+            "cy": 360.0,
+            "camera_model": "pinhole",
+            "source": "owner_provided_calibration_file",
+        },
+        "extrinsics": {
+            "reference_frame": "robot_base",
+            "child_frame": frame_id,
+            "xyz_m": xyz_m,
+            "rpy_rad": [0.0, -0.08, 0.0],
+            "source": "owner_provided_calibration_file",
+        },
+    }
+
+
+def _unitree_g1_owner_profile(*, cameras: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {
+        "robot_profile_id": "unitree_g1",
+        "display_name": "Owner Unitree G1",
+        "embodiment_type": "humanoid",
+        "source": "owner_provided_robot_team_camera_calibration",
+        "primary_camera_id": "head_rgbd",
+        "cameras": cameras
+        if cameras is not None
+        else [
+            _unitree_g1_owner_camera(
+                camera_id="head_rgbd",
+                mount="head",
+                frame_id="unitree_g1_head_camera",
+                xyz_m=[0.18, 0.0, 1.42],
+                horizontal_fov_degrees=75.0,
+                vertical_fov_degrees=46.7,
+            ),
+            _unitree_g1_owner_camera(
+                camera_id="chest_rgbd",
+                mount="torso",
+                frame_id="unitree_g1_chest_camera",
+                xyz_m=[0.12, 0.0, 1.05],
+                horizontal_fov_degrees=82.0,
+                vertical_fov_degrees=52.1,
+            ),
+        ],
+    }
+
+
 def _task_cards() -> dict[str, Any]:
     return {
         "cards": [
@@ -210,7 +278,7 @@ def test_robot_camera_profile_registry_normalizes_multiple_profiles() -> None:
     assert camera["horizontal_fov_degrees"] == 90.0
 
 
-def test_robot_camera_profile_launch_readiness_blocks_default_profiles() -> None:
+def test_robot_camera_profile_launch_readiness_accepts_default_profiles_for_sim_only() -> None:
     registry = build_robot_camera_profile_registry(
         job_request={},
         scenario_cards={},
@@ -224,12 +292,249 @@ def test_robot_camera_profile_launch_readiness_blocks_default_profiles() -> None
 
     assert registry["profile_count"] == 1
     assert registry["profiles"][0]["smoke_only"] is True
-    assert readiness["status"] == "blocked"
+    assert readiness["status"] == "ready"
     assert readiness["launch_mode"] is True
+    assert readiness["launch_scope"] == "sim_only"
     assert readiness["defaults_are_smoke_only"] is True
     assert readiness["default_smoke_only_profile_count"] == 1
-    assert readiness["launch_ready_profile_count"] == 0
-    assert "default_robot_camera_profile_smoke_only:unitree_g1" in readiness["blockers"]
+    assert readiness["launch_ready_profile_count"] == 1
+    assert readiness["sim_only_launch_ready_profile_count"] == 1
+    assert readiness["physical_robot_launch_ready_profile_count"] == 0
+    assert readiness["ready_for_launch"] is True
+    assert readiness["owner_provided_camera_calibration_required_for_launch"] is False
+    assert readiness["owner_provided_camera_calibration_required_for_physical_robot_launch"] is True
+    assert readiness["owner_calibration_request_packet_path"] is None
+    assert readiness["blockers"] == []
+    assert "default_robot_camera_profile_smoke_only:unitree_g1" in (
+        readiness["physical_robot_calibration_blockers"]
+    )
+    missing = readiness["physical_robot_calibration_inputs_needed_for_physical_launch"]
+    assert {
+        (item["robot_profile_id"], item["camera_id"]) for item in missing
+    } == {
+        ("unitree_g1", "head_rgbd"),
+        ("unitree_g1", "chest_rgbd"),
+    }
+    head_missing = next(item for item in missing if item["camera_id"] == "head_rgbd")
+    assert head_missing["missing_launch_fields"] == [
+        "owner_provided_intrinsics",
+        "owner_provided_extrinsics",
+        "owner_provided_fov",
+    ]
+    assert {
+        field["path"] for field in head_missing["required_owner_fields"]
+    } >= {
+        "cameras[?camera_id=='head_rgbd'].intrinsics.fx",
+        "cameras[?camera_id=='head_rgbd'].intrinsics.fy",
+        "cameras[?camera_id=='head_rgbd'].extrinsics.reference_frame",
+        "cameras[?camera_id=='head_rgbd'].extrinsics.child_frame",
+        "cameras[?camera_id=='head_rgbd'].extrinsics.xyz_m",
+        "cameras[?camera_id=='head_rgbd'].horizontal_fov_degrees",
+        "cameras[?camera_id=='head_rgbd'].vertical_fov_degrees",
+    }
+    assert head_missing["required_file_names"] == {
+        "combined_owner_profile_file": "unitree_g1_owner_robot_camera_profile.json",
+        "camera_intrinsics_file": "unitree_g1_head_rgbd_intrinsics.json",
+        "camera_fov_file": "unitree_g1_head_rgbd_fov.json",
+        "camera_extrinsics_file": "unitree_g1_head_rgbd_extrinsics.json",
+    }
+    assert "missing_owner_provided_extrinsics:unitree_g1:head_rgbd" in (
+        readiness["physical_robot_calibration_blockers"]
+    )
+
+
+def test_unitree_g1_owner_camera_calibration_accepts_head_and_chest_rgbd_profile() -> None:
+    registry = build_robot_camera_profile_registry(
+        job_request={"robot_profile": _unitree_g1_owner_profile()},
+        scenario_cards=_scenario_cards(),
+        generated_at=GENERATED_AT,
+    )
+    readiness = build_robot_camera_profile_launch_readiness(
+        registry=registry,
+        generated_at=GENERATED_AT,
+        launch_mode=True,
+    )
+    request = build_owner_robot_camera_calibration_request(
+        registry=registry,
+        launch_readiness=readiness,
+        generated_at=GENERATED_AT,
+    )
+
+    profile = registry["profiles"][0]
+    assert profile["robot_profile_id"] == "unitree_g1"
+    assert profile["smoke_only"] is False
+    assert profile["calibration_contract"]["physical_robot_camera_shape_valid"] is True
+    assert profile["calibration_contract"]["required_physical_camera_ids"] == [
+        "head_rgbd",
+        "chest_rgbd",
+    ]
+    assert readiness["status"] == "ready"
+    assert readiness["ready_for_launch"] is True
+    assert readiness["physical_robot_launch_ready_profile_count"] == 1
+    assert readiness["physical_robot_calibration_blockers"] == []
+    assert request["status"] == "not_required"
+    assert request["artifact_is_calibration_proof"] is False
+    assert request["physical_robot_claim_upgrade_proven_by_this_artifact"] is False
+    for camera in profile["cameras"]:
+        contract = camera["calibration_contract"]
+        assert camera["owner_input_context"] is True
+        assert camera["intrinsics"]["owner_provided"] is True
+        assert camera["extrinsics"]["owner_provided"] is True
+        assert contract["owner_provided_intrinsics"] is True
+        assert contract["owner_provided_extrinsics"] is True
+        assert contract["owner_provided_fov"] is True
+        assert contract["missing_launch_fields"] == []
+
+
+def test_unitree_g1_owner_camera_calibration_flags_partial_profile_shape() -> None:
+    head_only = _unitree_g1_owner_camera(
+        camera_id="head_rgbd",
+        mount="head",
+        frame_id="unitree_g1_head_camera",
+        xyz_m=[0.18, 0.0, 1.42],
+        horizontal_fov_degrees=75.0,
+        vertical_fov_degrees=46.7,
+    )
+    registry = build_robot_camera_profile_registry(
+        job_request={"robot_profile": _unitree_g1_owner_profile(cameras=[head_only])},
+        scenario_cards={},
+        generated_at=GENERATED_AT,
+    )
+    readiness = build_robot_camera_profile_launch_readiness(
+        registry=registry,
+        generated_at=GENERATED_AT,
+        launch_mode=True,
+    )
+
+    profile = registry["profiles"][0]
+    assert readiness["status"] == "ready"
+    assert readiness["ready_for_launch"] is True
+    assert readiness["blockers"] == []
+    assert readiness["physical_robot_launch_ready_profile_count"] == 0
+    assert profile["smoke_only"] is True
+    assert profile["calibration_contract"]["physical_robot_camera_shape_valid"] is False
+    assert profile["calibration_contract"]["missing_required_physical_camera_ids"] == [
+        "chest_rgbd"
+    ]
+    assert (
+        "missing_required_unitree_g1_rgbd_camera:unitree_g1:chest_rgbd"
+        in readiness["physical_robot_calibration_blockers"]
+    )
+    missing = readiness["physical_robot_calibration_inputs_needed_for_physical_launch"]
+    chest_missing = next(item for item in missing if item["camera_id"] == "chest_rgbd")
+    assert chest_missing["missing_launch_fields"] == [
+        "owner_provided_camera_profile",
+        "owner_provided_intrinsics",
+        "owner_provided_extrinsics",
+        "owner_provided_fov",
+    ]
+    assert {
+        field["path"] for field in chest_missing["required_owner_fields"]
+    } >= {
+        "cameras[?camera_id=='chest_rgbd'].modalities",
+        "cameras[?camera_id=='chest_rgbd'].intrinsics.fx",
+        "cameras[?camera_id=='chest_rgbd'].extrinsics.reference_frame",
+        "cameras[?camera_id=='chest_rgbd'].horizontal_fov_degrees",
+    }
+
+
+def test_physical_launch_blocks_without_owner_robot_base_to_camera_extrinsics() -> None:
+    cameras = _unitree_g1_owner_profile()["cameras"]
+    cameras[0]["extrinsics"] = {
+        **cameras[0]["extrinsics"],
+        "reference_frame": "map",
+    }
+    registry = build_robot_camera_profile_registry(
+        job_request={"robot_profile": _unitree_g1_owner_profile(cameras=cameras)},
+        scenario_cards={},
+        generated_at=GENERATED_AT,
+    )
+    readiness = build_robot_camera_profile_launch_readiness(
+        registry=registry,
+        generated_at=GENERATED_AT,
+        launch_mode=True,
+    )
+    request = build_owner_robot_camera_calibration_request(
+        registry=registry,
+        launch_readiness=readiness,
+        generated_at=GENERATED_AT,
+    )
+
+    profile = registry["profiles"][0]
+    head = next(camera for camera in profile["cameras"] if camera["camera_id"] == "head_rgbd")
+    assert readiness["status"] == "ready"
+    assert readiness["ready_for_launch"] is True
+    assert readiness["blockers"] == []
+    assert readiness["physical_robot_launch_ready_profile_count"] == 0
+    assert head["calibration_contract"]["owner_provided_extrinsics"] is False
+    assert head["calibration_contract"]["missing_launch_fields"] == [
+        "owner_provided_extrinsics"
+    ]
+    assert "missing_owner_provided_extrinsics:unitree_g1:head_rgbd" in (
+        readiness["physical_robot_calibration_blockers"]
+    )
+    missing = request["optional_physical_robot_calibration_inputs"]
+    head_missing = next(item for item in missing if item["camera_id"] == "head_rgbd")
+    assert head_missing["missing_launch_fields"] == ["owner_provided_extrinsics"]
+    assert {
+        field["path"] for field in head_missing["required_owner_fields"]
+    } >= {
+        "cameras[?camera_id=='head_rgbd'].extrinsics.reference_frame",
+        "cameras[?camera_id=='head_rgbd'].extrinsics.child_frame",
+        "cameras[?camera_id=='head_rgbd'].extrinsics.xyz_m",
+        "cameras[?camera_id=='head_rgbd'].extrinsics.rpy_rad",
+    }
+
+
+def test_owner_camera_calibration_request_packet_documents_required_inputs() -> None:
+    registry = build_robot_camera_profile_registry(
+        job_request={},
+        scenario_cards={},
+        generated_at=GENERATED_AT,
+    )
+    readiness = build_robot_camera_profile_launch_readiness(
+        registry=registry,
+        generated_at=GENERATED_AT,
+        launch_mode=False,
+    )
+    request = build_owner_robot_camera_calibration_request(
+        registry=registry,
+        launch_readiness=readiness,
+        generated_at=GENERATED_AT,
+    )
+
+    assert request["schema_version"] == "owner_robot_camera_calibration_request.v1"
+    assert request["artifact_is_calibration_proof"] is False
+    assert request["request_packet_is_not_owner_calibration"] is True
+    assert request["accepted_owner_calibration_evidence_in_this_artifact"] is False
+    assert request["physical_robot_claim_upgrade_proven_by_this_artifact"] is False
+    assert request["status"] == "not_required_for_sim_only"
+    assert request["ready_for_launch"] is True
+    assert request["required_profile_count"] == 0
+    assert request["profiles"] == []
+    assert request["missing_owner_calibration_inputs"] == []
+    assert request["physical_robot_calibration_profiles"][0]["canonical_owner_profile_path"] == (
+        "pipeline/robot_eval_inputs/robot_camera_profile_calibration/"
+        "unitree_g1_owner_robot_camera_profile.json"
+    )
+    template = request["physical_robot_calibration_profiles"][0][
+        "owner_profile_schema_template"
+    ]
+    assert template["robot_profile_id"] == "unitree_g1"
+    assert template["source"] == "owner_provided_robot_team_camera_calibration"
+    assert {camera["camera_id"] for camera in template["cameras"]} == {
+        "head_rgbd",
+        "chest_rgbd",
+    }
+    assert template["cameras"][0]["intrinsics"]["fx"] is None
+    assert "Export intrinsics in pixel units" in " ".join(request["capture_procedure"])
+    assert request["claim_boundary"]["request_packet_is_not_owner_calibration"] is True
+    assert request["claim_boundary"]["request_packet_is_shape_contract_not_evidence"] is True
+    assert request["claim_boundary"]["artifact_is_calibration_proof"] is False
+    assert request["claim_boundary"]["owner_calibration_not_required_for_sim_only_launch"] is True
+    readiness_key = "_".join(["physical", "robot", "readiness", "proven"])
+    assert readiness_key not in request["claim_boundary"]
+    assert request["claim_boundary"]["safety_validation_proven"] is False
 
 
 def test_robot_camera_profile_launch_readiness_validates_ten_owner_profiles() -> None:
@@ -257,6 +562,9 @@ def test_robot_camera_profile_launch_readiness_validates_ten_owner_profiles() ->
     assert readiness["status"] == "ready"
     assert readiness["profile_count"] == 10
     assert readiness["launch_ready_profile_count"] == 10
+    assert readiness["ready_for_launch"] is True
+    assert readiness["owner_calibration_request_packet_path"] is None
+    assert readiness["missing_owner_calibration_inputs"] == []
     assert readiness["smoke_only_profile_count"] == 0
     assert readiness["blockers"] == []
     assert {profile["robot_profile_id"] for profile in readiness["profiles"]} == {
@@ -534,6 +842,7 @@ def test_robot_pov_bundle_emits_blocked_default_profile_launch_artifacts(
     assert (job_dir / "initial_policy_observation_source_qa.json").is_file()
     assert (job_dir / "initial_policy_observation_contact_sheet.jpg").is_file()
     assert (job_dir / "initial_policy_observation_recapture_guidance.json").is_file()
+    assert (job_dir / "owner_robot_camera_calibration_request.json").is_file()
     resolver = manifest["initial_observation_source_resolver"]
     assert resolver["candidate_set_path"] == "robot_pov_observation_candidate_set.json"
     assert resolver["selected_initial_policy_observation_path"] == (
@@ -549,10 +858,18 @@ def test_robot_pov_bundle_emits_blocked_default_profile_launch_artifacts(
     assert selected["schema_version"] == "selected_initial_policy_observation.v1"
     assert selected["status"] == "blocked"
     assert selected["selection_source_kind"] is None
-    assert readiness["status"] == "blocked"
+    assert readiness["status"] == "ready"
     assert readiness["launch_mode"] is True
+    assert readiness["ready_for_launch"] is True
     assert readiness["default_smoke_only_profile_count"] == 1
-    assert resolver["camera_profile_launch_readiness_status"] == "blocked"
+    assert resolver["camera_profile_launch_readiness_status"] == "ready"
+    assert resolver["owner_robot_camera_calibration_request_path"] == (
+        "owner_robot_camera_calibration_request.json"
+    )
+    request = _read_json(job_dir / "owner_robot_camera_calibration_request.json")
+    assert request["status"] == "not_required_for_sim_only"
+    assert request["ready_for_launch"] is True
+    assert request["physical_robot_calibration_profiles"][0]["missing_camera_count"] == 2
 
 
 def test_robot_pov_bundle_writes_launch_ready_ten_profile_artifacts(
@@ -592,12 +909,16 @@ def test_robot_pov_bundle_writes_launch_ready_ten_profile_artifacts(
 
     registry = _read_json(job_dir / "robot_camera_profile_registry.json")
     readiness = _read_json(job_dir / "robot_camera_profile_launch_readiness.json")
+    request = _read_json(job_dir / "owner_robot_camera_calibration_request.json")
     candidate_set = _read_json(job_dir / "robot_pov_observation_candidate_set.json")
     assert registry["profile_count"] == 10
     assert readiness["status"] == "ready"
     assert readiness["launch_mode"] is True
     assert readiness["profile_count"] == 10
     assert readiness["launch_ready_profile_count"] == 10
+    assert readiness["ready_for_launch"] is True
+    assert request["status"] == "not_required"
+    assert request["ready_for_launch"] is True
     assert candidate_set["camera_profile_registry_path"] == "robot_camera_profile_registry.json"
     assert (
         candidate_set["camera_profile_launch_readiness_path"]

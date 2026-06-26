@@ -17,6 +17,67 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def test_local_sim_only_prerequisite_prefers_route_proof_job_closure(
+    tmp_path: Path,
+) -> None:
+    pipeline_dir = tmp_path / "capture" / "pipeline"
+    remote_job_dir = pipeline_dir / "robot_eval_jobs" / "remote-provider-job"
+    local_job_dir = pipeline_dir / "robot_eval_jobs" / "local-route-proof-job"
+    _write_json(
+        remote_job_dir / "robot_team_grade_eval_closure_manifest.json",
+        {
+            "sim_only_beta_core_complete": False,
+            "sim_only_beta_blocked_requirement_ids": ["full_trace_package"],
+            "requirements": [
+                {
+                    "requirement_id": "full_trace_package",
+                    "sim_only_beta_required": True,
+                    "passed": False,
+                    "blockers": ["missing_trace_artifact_metrics"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        local_job_dir / "robot_team_grade_eval_closure_manifest.json",
+        {
+            "sim_only_beta_core_complete": False,
+            "sim_only_beta_blocked_requirement_ids": ["failure_diagnosis"],
+            "requirements": [
+                {
+                    "requirement_id": "failure_diagnosis",
+                    "sim_only_beta_required": True,
+                    "passed": False,
+                    "blockers": ["failure_labels_not_accepted_or_reviewable"],
+                }
+            ],
+        },
+    )
+    _write_json(
+        pipeline_dir
+        / "live_pipeline_control_plane"
+        / "sim_only_beta_local_gate"
+        / "sim_only_beta_local_gate_report.json",
+        {"route_proof_job_id": "local-route-proof-job", "status": "passed"},
+    )
+
+    prerequisite = setup._local_sim_only_provider_prerequisite(remote_job_dir)
+
+    assert prerequisite["source_kind"] == "sim_only_beta_local_gate_route_proof_job"
+    assert prerequisite["source_path"] == str(
+        local_job_dir / "robot_team_grade_eval_closure_manifest.json"
+    )
+    assert prerequisite["sim_only_beta_blocked_requirement_ids"] == [
+        "failure_diagnosis"
+    ]
+    assert "sim_only_beta_requirement_failure_diagnosis_not_complete" in prerequisite[
+        "blockers"
+    ]
+    assert "sim_only_beta_requirement_full_trace_package_not_complete" not in prerequisite[
+        "blockers"
+    ]
+
+
 def test_bundle_helpers_select_files_and_archive_names(tmp_path: Path) -> None:
     capture_root = tmp_path / "capture"
     (capture_root / "pipeline" / "robot_eval_dataset").mkdir(parents=True)
@@ -167,6 +228,56 @@ def test_upload_helpers_cover_supported_schemes_and_error_classification(
         "endpoint_url": "https://r2.example",
         "region_name": "auto",
     }
+    monkeypatch.delenv("BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    access_file = tmp_path / "access-key-id"
+    secret_file = tmp_path / "secret-access-key"
+    endpoint_file = tmp_path / "spaces-endpoint"
+    region_file = tmp_path / "spaces-region"
+    access_file.write_text("file-access-key", encoding="utf-8")
+    secret_file.write_text("file-secret-key", encoding="utf-8")
+    endpoint_file.write_text("https://file-r2.example", encoding="utf-8")
+    region_file.write_text("auto", encoding="utf-8")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID_FILE", str(access_file))
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY_FILE", str(secret_file))
+    monkeypatch.setenv("BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL_FILE", str(endpoint_file))
+    monkeypatch.setenv("AWS_REGION_FILE", str(region_file))
+
+    file_r2_upload = setup._upload_file_to_s3_compatible(
+        source,
+        "r2://bucket/path/source.txt",
+    )
+    assert file_r2_upload["storage_scheme"] == "r2"
+    assert file_r2_upload["secret_values_recorded"] is False
+    assert file_r2_upload["file_based_secret_env_vars_present"] == [
+        "AWS_ACCESS_KEY_ID_FILE",
+        "AWS_SECRET_ACCESS_KEY_FILE",
+    ]
+    assert uploaded["s3_kwargs"] == {
+        "endpoint_url": "https://file-r2.example",
+        "region_name": "auto",
+        "aws_access_key_id": "file-access-key",
+        "aws_secret_access_key": "file-secret-key",
+    }
+    monkeypatch.setattr(setup, "_module_available", lambda name: name == "boto3")
+    upload_preflight = setup._upload_readiness_preflight(
+        destination_uri="r2://bucket/path/source.txt",
+        artifact_write_auth={
+            "required_secret_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+            "required_plaintext_env_vars": ["BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL"],
+        },
+    )
+    assert upload_preflight["status"] == "ready_for_upload_attempt"
+    assert upload_preflight["missing_secret_env_vars"] == []
+    assert upload_preflight["missing_plaintext_env_vars"] == []
+    assert upload_preflight["present_secret_file_env_vars"] == [
+        "AWS_ACCESS_KEY_ID_FILE",
+        "AWS_SECRET_ACCESS_KEY_FILE",
+    ]
+    assert upload_preflight["present_plaintext_file_env_vars"] == [
+        "BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL_FILE"
+    ]
+    assert upload_preflight["secret_values_recorded"] is False
 
     file_destination = tmp_path / "copied.txt"
     assert setup.upload_file(source, str(file_destination))["storage_scheme"] == "file"
@@ -209,12 +320,20 @@ def test_manifest_scripts_rewrite_and_annotation_helpers(
     assert "export A='one two'" in Path(env_file["path"]).read_text(encoding="utf-8")
     assert setup._dedupe([" a ", "a", "", "b"]) == ["a", "b"]
     assert setup._storage_upload_commands(source="/tmp/a", destination_uri="gs://bucket/a") == [
-        'gcloud storage cp "/tmp/a" "gs://bucket/a"'
+        'test -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" || { echo "missing GOOGLE_APPLICATION_CREDENTIALS" >&2; exit 2; }',
+        'gcloud storage cp "/tmp/a" "gs://bucket/a"',
+        'gcloud storage ls "gs://bucket/a" >/dev/null',
     ]
     assert setup._storage_upload_commands(source="/tmp/a", destination_uri="s3://bucket/a") == [
-        'aws s3 cp "/tmp/a" "s3://bucket/a"'
+        'test -n "${AWS_ACCESS_KEY_ID:-}" || { echo "missing AWS_ACCESS_KEY_ID" >&2; exit 2; }',
+        'test -n "${AWS_SECRET_ACCESS_KEY:-}" || { echo "missing AWS_SECRET_ACCESS_KEY" >&2; exit 2; }',
+        'aws s3 cp "/tmp/a" "s3://bucket/a"',
+        'aws s3 ls "s3://bucket/a" >/dev/null',
     ]
-    assert len(setup._storage_upload_commands(source="/tmp/a", destination_uri="r2://bucket/a")) == 2
+    r2_commands = setup._storage_upload_commands(source="/tmp/a", destination_uri="r2://bucket/a")
+    assert 'BLUEPRINT_R2_ENDPOINT_URL="${BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL:-${R2_ENDPOINT_URL:-${AWS_ENDPOINT_URL:-}}}"' in r2_commands
+    assert 'aws s3 cp "/tmp/a" "s3://bucket/a" --endpoint-url "$BLUEPRINT_R2_ENDPOINT_URL"' in r2_commands
+    assert 'aws s3 ls "s3://bucket/a" --endpoint-url "$BLUEPRINT_R2_ENDPOINT_URL" >/dev/null' in r2_commands
     assert setup._storage_upload_commands(source="/tmp/a", destination_uri="file:///tmp/b") == [
         'cp "/tmp/a" "file:///tmp/b"'
     ]
@@ -363,9 +482,96 @@ def test_manifest_scripts_rewrite_and_annotation_helpers(
         "existing",
         "provider_input_setup_blocked",
         "missing_upload",
+        "local_sim_only_prerequisite_blocked",
+        "local_sim_only_closure_manifest_missing",
     ]
     assert annotated["provider_input_setup"]["provider_inputs_uploaded"] is True
     assert refreshed == ["job-2"]
+
+
+def test_annotate_provider_launch_request_clears_stale_local_prereq_blockers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline_dir = tmp_path / "capture" / "pipeline"
+    remote_job_dir = pipeline_dir / "robot_eval_jobs" / "remote-provider-job"
+    route_proof_job_dir = pipeline_dir / "robot_eval_jobs" / "local-route-proof-job"
+    _write_json(
+        route_proof_job_dir / "robot_team_grade_eval_closure_manifest.json",
+        {
+            "sim_only_beta_core_complete": True,
+            "sim_only_beta_blocked_requirement_ids": [],
+            "requirements": [
+                {
+                    "requirement_id": "task_success_metrics",
+                    "sim_only_beta_required": True,
+                    "passed": True,
+                    "blockers": [],
+                }
+            ],
+        },
+    )
+    _write_json(
+        pipeline_dir
+        / "live_pipeline_control_plane"
+        / "sim_only_beta_local_gate"
+        / "sim_only_beta_local_gate_report.json",
+        {"route_proof_job_id": "local-route-proof-job", "status": "passed"},
+    )
+    _write_json(
+        remote_job_dir / "gpu_provider_launch_request.json",
+        {
+            "status": "blocked_by_scheduler",
+            "blockers": [
+                "scheduler_cpu_preflight_not_ready_for_gpu",
+                "local_sim_only_prerequisite_blocked",
+                "local_sim_only_evidence_not_clean",
+                "sim_only_beta_requirement_failure_diagnosis_not_complete",
+            ],
+            "provider_request_shape": {
+                "local_sim_only_prerequisite": {
+                    "status": "blocked",
+                    "local_sim_only_evidence_clean": False,
+                    "blockers": ["local_sim_only_evidence_not_clean"],
+                }
+            },
+        },
+    )
+    refreshed: list[str] = []
+    monkeypatch.setattr(
+        setup,
+        "_refresh_remote_cloud_execution_closure_manifest",
+        lambda **kwargs: refreshed.append(kwargs["job_id"]),
+    )
+
+    setup._annotate_provider_launch_request(
+        job_dir=remote_job_dir,
+        job_id="remote-provider-job",
+        provisioner="runpod",
+        simulator="mujoco",
+        setup_manifest={
+            "status": "ready_for_provider_launcher_inputs",
+            "blockers": [],
+            "proof_boundary": {
+                "provider_inputs_uploaded": True,
+                "image_ref_published_proven": True,
+            },
+        },
+        setup_manifest_path=tmp_path / "manifest.json",
+    )
+
+    annotated = json.loads(
+        (remote_job_dir / "gpu_provider_launch_request.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    local_prereq = annotated["provider_request_shape"]["local_sim_only_prerequisite"]
+    assert annotated["status"] == "blocked_by_scheduler"
+    assert annotated["blockers"] == ["scheduler_cpu_preflight_not_ready_for_gpu"]
+    assert local_prereq["status"] == "passed"
+    assert local_prereq["local_sim_only_evidence_clean"] is True
+    assert local_prereq["sim_only_beta_blocked_requirement_ids"] == []
+    assert refreshed == ["remote-provider-job"]
 
 
 def test_prepare_provider_inputs_uses_job_builder_uploads_and_status_boundaries(
@@ -405,6 +611,7 @@ def test_prepare_provider_inputs_uses_job_builder_uploads_and_status_boundaries(
             "source": str(source),
             "destination_uri": destination_uri,
             "storage_scheme": "r2",
+            "post_upload_validation": {"status": "validated", "blockers": []},
         }
 
     monkeypatch.setattr(setup, "build_robot_eval_job", fake_build_robot_eval_job)
@@ -430,6 +637,7 @@ def test_prepare_provider_inputs_uses_job_builder_uploads_and_status_boundaries(
     assert uploads == [
         "r2://bucket/jobs/ready-job/capture-root.zip",
         "r2://bucket/jobs/ready-job/worker_manifest.json",
+        "r2://bucket/jobs/ready-job/artifacts/_blueprint_provider_output_write_probe.json",
     ]
     provider_request = json.loads(
         (
@@ -461,7 +669,10 @@ def test_prepare_provider_inputs_uses_job_builder_uploads_and_status_boundaries(
         "provider_inputs_upload_not_proven",
     ]
     assert blocked["image_ref"]["candidate_build_command"] is None  # type: ignore[index]
-    assert uploads == ["r2://bucket/jobs/missing-worker-job/capture-root.zip"]
+    assert uploads == [
+        "r2://bucket/jobs/missing-worker-job/capture-root.zip",
+        "r2://bucket/jobs/missing-worker-job/artifacts/_blueprint_provider_output_write_probe.json",
+    ]
 
     candidate = setup.prepare_robot_eval_provider_inputs(
         capture_root=capture_root,

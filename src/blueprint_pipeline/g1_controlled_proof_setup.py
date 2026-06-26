@@ -11,6 +11,23 @@ from .common import ensure_dir, optional_read_json, utc_now_iso, write_json, wri
 
 
 G1_CONTROLLED_PROOF_SETUP_SCHEMA_VERSION = "g1_controlled_proof_setup.v1"
+CONTROLLED_FIELD_ANCHOR_REQUEST_SCHEMA_VERSION = "controlled_field_anchor_request_packet.v1"
+ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION = "accepted_real_world_anchor.v1"
+CONTROLLED_ANCHOR_JOIN_KEYS = (
+    "scenario_eval_run_id",
+    "policy_id",
+    "task_id",
+    "scenario_variation_instance_id",
+)
+OWNER_EVIDENCE_CLAIM_REQUIREMENTS = (
+    "real_robot_pov",
+    "action_logs",
+    "timestamp_alignment",
+    "hardware_validation",
+    "contact_collision_logs",
+    "policy_metrics",
+    "robot_team_review",
+)
 DEFAULT_ROBOT_PROFILE_ID = "unitree_g1_humanoid"
 DEFAULT_ROBOT_MAKE_MODEL = "Unitree G1"
 DEFAULT_POLICY_ID = "unitree_rl_gym_g1_mujoco_policy_candidate"
@@ -329,16 +346,38 @@ def _deployment_outcome_manifest(context: Mapping[str, Any]) -> dict[str, Any]:
             {
                 "outcome_id": f"unitree-g1-outcome-{_safe_id(job_id, 'job')}",
                 "job_id": job_id,
+                "policy_id": DEFAULT_POLICY_ID,
                 "task_id": context["task_id"],
                 "scenario_id": context["scenario_id"],
                 "scenario_variation_instance_id": context["scenario_variation_instance_id"],
                 "scenario_eval_run_id": context["scenario_eval_run_id"],
+                "anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+                "anchor_join_key": {
+                    "scenario_eval_run_id": context["scenario_eval_run_id"],
+                    "policy_id": DEFAULT_POLICY_ID,
+                    "task_id": context["task_id"],
+                    "scenario_variation_instance_id": context[
+                        "scenario_variation_instance_id"
+                    ],
+                },
+                "anchor_status": "template_external_operator_input_required",
+                "review_status": "not_reviewed",
                 "actual_status": "<passed|failed|aborted>",
                 "actual_success": "<true|false>",
                 "failure_mode_ids": [],
                 "cycle_time_seconds": "<measured-cycle-time>",
                 "intervention_count": "<operator-intervention-count>",
+                "reviewer_decision": {
+                    "safety_review_decision": "not_reviewed",
+                    "policy_review_decision": "not_reviewed",
+                    "accepted_for_calibration": False,
+                },
                 "evidence_refs": {
+                    "physical_robot_run_manifest": "<physical-robot-run-manifest-uri>",
+                    "operator_log": "<operator-log-uri>",
+                    "video_review": "<review-video-uri>",
+                },
+                "owner_evidence_refs": {
                     "physical_robot_run_manifest": "<physical-robot-run-manifest-uri>",
                     "operator_log": "<operator-log-uri>",
                     "video_review": "<review-video-uri>",
@@ -347,6 +386,110 @@ def _deployment_outcome_manifest(context: Mapping[str, Any]) -> dict[str, Any]:
             }
         ],
         "proof_boundary": _proof_boundary(),
+    }
+
+
+def _controlled_field_anchor_request_packet(context: Mapping[str, Any]) -> dict[str, Any]:
+    join_key = {
+        "scenario_eval_run_id": context["scenario_eval_run_id"],
+        "policy_id": DEFAULT_POLICY_ID,
+        "task_id": context["task_id"],
+        "scenario_variation_instance_id": context["scenario_variation_instance_id"],
+    }
+    return {
+        "schema_version": CONTROLLED_FIELD_ANCHOR_REQUEST_SCHEMA_VERSION,
+        "status": "not_requested_for_sim_only",
+        "job_id": context["job_id"],
+        "job_context": {
+            "job_id": context["job_id"],
+            "task_id": context["task_id"],
+            "scenario_id": context["scenario_id"],
+            "scenario_eval_run_id": context["scenario_eval_run_id"],
+            "scenario_variation_instance_id": context["scenario_variation_instance_id"],
+            "robot_profile_id": context["robot_profile_id"],
+        },
+        "accepted_anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+        "required_exact_join_keys": list(CONTROLLED_ANCHOR_JOIN_KEYS),
+        "anchor_join_key": join_key,
+        "loose_or_inferred_matches_allowed_for_calibration": False,
+        "operator_site_checklist": {
+            "controlled_area_verified": False,
+            "floor_clear_for_g1_walk": False,
+            "bystander_exclusion_zone_marked": False,
+            "emergency_stop_operator_present": True,
+            "site_or_lab_location_id": "<controlled-test-site-or-lab-id>",
+        },
+        "allowed_task_set": [
+            {
+                "task_id": context["task_id"],
+                "scenario_id": context["scenario_id"],
+                "scenario_eval_run_id": context["scenario_eval_run_id"],
+                "scenario_variation_instance_id": context[
+                    "scenario_variation_instance_id"
+                ],
+                "policy_id": DEFAULT_POLICY_ID,
+                "allowed": True,
+            }
+        ],
+        "exclusion_and_abort_criteria": {
+            "excluded_task_ids": ["<any-task-not-listed-in-allowed_task_set>"],
+            "abort_conditions": [
+                "loss_of_comms",
+                "unexpected_human_entry",
+                "fall_detected",
+                "contact_force_exceeds_threshold",
+                "operator_estop",
+            ],
+            "loose_or_inferred_anchor_matches_allowed": False,
+        },
+        "robot_calibration_refs": {
+            "robot_state_log": "robot_state_log.jsonl",
+            "hardware_validation": "hardware_validation.json",
+            "contact_collision_log": "contact_collision_log.json",
+        },
+        "camera_calibration_refs": {
+            "robot_camera_video": "robot_camera_video.mp4",
+            "timestamp_alignment": "timestamp_alignment.json",
+            "camera_mount_or_sensor_ids": ["<g1-head-or-body-camera-id>"],
+        },
+        "actual_outcome": {
+            "actual_status": "<passed|failed|aborted>",
+            "actual_success": "<true|false>",
+            "cycle_time_seconds": "<measured-cycle-time>",
+            "intervention_count": "<operator-intervention-count>",
+        },
+        "reviewer_decision": {
+            "safety_review_decision": "not_reviewed",
+            "policy_review_decision": "not_reviewed",
+            "accepted_for_calibration": False,
+        },
+        "owner_evidence": {
+            "required_before_physical_claim": list(OWNER_EVIDENCE_CLAIM_REQUIREMENTS),
+            "operator_attestation_required": True,
+            "hardware_owner_attestation_required": True,
+            "safety_reviewer_attestation_required": True,
+            "robot_team_review_attestation_required": True,
+            "explicit_signed_attestations_required": True,
+            "physical_robot_camera_action_and_timestamp_refs_required": True,
+        },
+        "timestamps": {
+            "start_time_utc": "<timestamp>",
+            "end_time_utc": "<timestamp>",
+        },
+        "artifact_provenance": {
+            "source": "g1_controlled_proof_setup_template",
+            "capture_root": context.get("capture_root"),
+        },
+        "blockers": [],
+        "proof_boundary": {
+            **_proof_boundary(),
+            "accepted_anchors_can_calibrate_evaluator_ranking_against_supplied_outcomes": False,
+            "broad_deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "future_real_world_success_proven": False,
+            "sim_only_beta_ranking_blocked": False,
+            "physical_evidence_not_requested_for_sim_only": True,
+        },
     }
 
 
@@ -807,6 +950,7 @@ This packet makes Unitree G1 the default robot for the live-product robot-eval p
 Key paths:
 
 - Setup manifest: `{paths['setup_manifest']}`
+- Controlled anchor request packet: `{paths['controlled_field_anchor_request_packet']}`
 - Field-run capture kit: `{paths['field_run_capture_kit']}`
 - Evidence assembler: `{paths['assemble_script']}`
 - Stage script: `{paths['stage_script']}`
@@ -841,6 +985,8 @@ def build_g1_controlled_proof_setup(
     )
     artifacts = {
         "setup_manifest": output_root / "g1_controlled_proof_setup_manifest.json",
+        "controlled_field_anchor_request_packet": output_root
+        / "controlled_field_anchor_request_packet.template.json",
         "physical_robot_run_manifest": output_root / "physical_robot_run_manifest.template.json",
         "deployment_outcome_manifest": output_root / "deployment_outcome_manifest.template.json",
         "real_robot_pov_manifest": output_root / "real_robot_pov_manifest.template.json",
@@ -866,6 +1012,10 @@ def build_g1_controlled_proof_setup(
         "webapp_script": output_root / "run_webapp_production_forwarding_proof.sh",
         "readme": output_root / "README.md",
     }
+    write_json(
+        artifacts["controlled_field_anchor_request_packet"],
+        _controlled_field_anchor_request_packet(context),
+    )
     write_json(artifacts["physical_robot_run_manifest"], _physical_robot_run_manifest(context))
     write_json(artifacts["deployment_outcome_manifest"], _deployment_outcome_manifest(context))
     write_json(artifacts["real_robot_pov_manifest"], _real_robot_pov_manifest(context))
@@ -882,6 +1032,9 @@ def build_g1_controlled_proof_setup(
         "job_request": job_request_path,
         "provider_launch_request": str(provider_launch_request_path),
         "setup_manifest": str(artifacts["setup_manifest"]),
+        "controlled_field_anchor_request_packet": str(
+            artifacts["controlled_field_anchor_request_packet"]
+        ),
         "stage_script": str(artifacts["stage_script"]),
         "runpod_script": str(artifacts["runpod_script"]),
         "webapp_script": str(artifacts["webapp_script"]),

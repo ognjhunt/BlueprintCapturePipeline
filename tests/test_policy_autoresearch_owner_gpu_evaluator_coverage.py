@@ -149,6 +149,7 @@ def test_run_owner_gpu_policy_evaluator_blocked_and_completed(monkeypatch, tmp_p
     assert blocked["status"] == "blocked_owner_gpu_simulator_execution_not_proven"
     assert blocked["policy_attempt_trace_present"] is False
     assert blocked["attempts"][0]["failure_mode_ids"] == [
+        "isaac_simulator_execution_not_proven",
         "owner_gpu_policy_attempt_trace_missing",
         "owner_gpu_simulator_execution_not_proven",
     ]
@@ -193,6 +194,42 @@ def test_run_owner_gpu_policy_evaluator_blocked_and_completed(monkeypatch, tmp_p
     assert completed["simulator_backend"] == "owner_backend"
     assert completed["isaac_sim_execution_proven"] is True
     assert completed["attempts"][0]["success"] is True
+
+    def fake_generic_owner_gpu_proof(**kwargs):
+        trace_path = Path(kwargs["extra_env"]["BLUEPRINT_POLICY_AUTORESEARCH_OWNER_ATTEMPT_TRACE"])
+        _write_json(trace_path, {"attempts": [{"scenario_eval_run_id": "run-1", "task_success": True}]})
+        validation_path = tmp_path / "generic_validation.json"
+        _write_json(
+            validation_path,
+            {
+                "status": "completed",
+                "simulator_backend": "owner_backend",
+                "owner_gpu_simulator_execution_proven": True,
+                "isaac_sim_execution_proven": False,
+            },
+        )
+        return {
+            "owner_gpu_simulator_execution_proven": True,
+            "validation_manifest_path": str(validation_path),
+        }
+
+    monkeypatch.setattr(owner_eval, "run_owner_gpu_proof", fake_generic_owner_gpu_proof)
+    generic_only = owner_eval.run_owner_gpu_policy_evaluator(
+        recipe_path=recipe_path,
+        matrix_path=matrix_path,
+        output_path=tmp_path / "out" / "generic-only.json",
+        capture_root=capture_root,
+        owner_command="run-owner-policy",
+        simulator_engine="isaac_sim",
+        timeout_seconds=5,
+        generated_at="2026-06-20T00:00:00Z",
+    )
+
+    assert generic_only["status"] == "blocked_owner_gpu_simulator_execution_not_proven"
+    assert generic_only["generic_owner_gpu_simulator_execution_proven"] is True
+    assert generic_only["owner_gpu_simulator_execution_proven"] is False
+    assert generic_only["attempts"][0]["task_success"] is False
+    assert "isaac_simulator_execution_not_proven" in generic_only["attempts"][0]["failure_mode_ids"]
 
 
 def test_owner_gpu_policy_evaluator_main_and_module_guard(monkeypatch, tmp_path: Path, capsys) -> None:

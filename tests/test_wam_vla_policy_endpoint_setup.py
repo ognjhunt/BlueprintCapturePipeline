@@ -71,6 +71,28 @@ def test_wam_vla_policy_endpoint_setup_writes_contracts(tmp_path: Path) -> None:
     assert Path(summary["artifacts"]["runbook"]).is_file()
     assert Path(summary["artifacts"]["policy_model_runnable_env"]).is_file()
     assert Path(summary["artifacts"]["policy_model_runnable_env_manifest"]).is_file()
+    endpoint_boundary = json.loads(
+        Path(summary["artifacts"]["policy_endpoint_boundary_manifest"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert endpoint_boundary["status"] == "endpoint_setup_boundary_only"
+    assert endpoint_boundary["endpoint_setup_configured"] is True
+    assert endpoint_boundary["robot_policy_execution_proven"] is False
+    assert (
+        endpoint_boundary["claim_boundary"][
+            "endpoint_setup_is_not_robot_policy_execution"
+        ]
+        is True
+    )
+    assert (
+        endpoint_boundary["claim_boundary"]["endpoint_setup_is_not_safety_validation"]
+        is True
+    )
+    assert (
+        endpoint_boundary["claim_boundary"]["endpoint_setup_is_not_deployment_approval"]
+        is True
+    )
     candidate_matrix = json.loads(
         Path(summary["artifacts"]["policy_model_candidate_matrix"]).read_text(encoding="utf-8")
     )

@@ -6,7 +6,6 @@ import sys
 import types
 from pathlib import Path
 
-import pytest
 
 from blueprint_pipeline import rollout_vision_label_openai as vision
 

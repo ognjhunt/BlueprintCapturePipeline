@@ -10,6 +10,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker \
+    BLUEPRINT_SIMULATOR_FRAMEWORK=isaac_sim \
+    BLUEPRINT_ISAAC_PYTHON=/isaac-sim/python.sh \
+    BLUEPRINT_ISAAC_UNITREE_G1_USD=/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd \
     NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,video
 
 WORKDIR /app

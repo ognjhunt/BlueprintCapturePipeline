@@ -92,7 +92,7 @@ They are not part of the active default process. Delete them only in a separate 
 
 Local CPU smoke can be displayed only as local CPU preflight. It must not be
 treated as accepted simulator execution, physics/contact validation, safety
-proof, policy success, generated-world rank fidelity, generated-world rank fidelity, or training proof.
+proof, policy success, generated-world rank fidelity, or training proof.
 
 `provider_preview_qa_manifest.json` and
 `production_handoff_readiness_manifest.json` are local proof summaries. A

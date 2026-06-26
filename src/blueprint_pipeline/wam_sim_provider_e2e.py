@@ -426,7 +426,7 @@ def run_sim_provider_e2e(args: argparse.Namespace) -> dict[str, Any]:
         "adapter_status": "completed" if all_adapters_completed else "blocked",
         "safe_for_policy_requery_all_steps": all_safe_for_requery,
         "real_provider_triplet_completed": provider_triplet_completed,
-        "perception_accuracy_validated": False,
+        "optional_truth_label_validation_requested": False,
         "sim_only_provider_harness_e2e_completed": bool(completed),
         "blockers": []
         if completed

@@ -5,7 +5,6 @@ import runpy
 import sys
 from hashlib import sha256
 from pathlib import Path
-from types import SimpleNamespace
 
 from blueprint_pipeline.marble_sim_assets import build_marble_sim_assets
 from blueprint_pipeline import worldlabs_asset_materialization as w

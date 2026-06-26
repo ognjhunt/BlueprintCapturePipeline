@@ -83,6 +83,17 @@ Isaac Sim and Isaac Lab/Arena remain escalation backends for those proof classes
 MuJoCo proof does not clear Isaac-specific gates, real robot POV, safety/contact,
 delivery, or public-claim upgrades.
 
+`pipeline/evaluation_prep/hosted_session_runtime_manifest.json` must include
+schema-stable `claim_boundary` and `proof_boundary` objects with
+`schema_version: hosted_session_runtime_claim_boundary.v1`. Hosted-session
+artifacts can describe launchable review runtime backends, task catalogs,
+scenario catalogs, and export defaults, but they must keep
+`simulator_execution_proven`, `rank_fidelity_result_proven`,
+`deployment_approval_proven`, `safety_validation_proven`, and
+`physical_readiness_proven` false. Their blocked claim upgrades must include
+simulator execution completion, rank-fidelity result, deployment approval,
+safety validation, and physical readiness claims.
+
 ## Outputs
 
 The writer emits:

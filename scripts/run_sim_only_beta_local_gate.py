@@ -32,6 +32,11 @@ from blueprint_pipeline.common import ensure_dir, read_json_any, utc_now_iso, wr
 
 
 DEFAULT_TOKEN = "local-sim-only-beta-forwarding-token"
+WAM_HANDOFF_ARTIFACTS = {
+    "policy_ranking_scorecard": "policy_ranking_scorecard.json",
+    "candidate_selection_report": "candidate_selection_report.json",
+    "wam_eval_claim_boundary": "wam_eval_claim_boundary.json",
+}
 
 
 def _repo_root() -> Path:
@@ -93,6 +98,19 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _string(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = _string(value)
+        return [text] if text else []
+    if not isinstance(value, Sequence):
+        return []
+    return [_string(item) for item in value if _string(item)]
+
+
 def _load_mapping(path: Path) -> dict[str, Any]:
     payload = read_json_any(path)
     if not isinstance(payload, Mapping):
@@ -103,6 +121,283 @@ def _load_mapping(path: Path) -> dict[str, Any]:
 def _require(condition: bool, blocker: str, blockers: list[str]) -> None:
     if not condition:
         blockers.append(blocker)
+
+
+def _sim_only_beta_requirement_summary(
+    robot_team_closure: Mapping[str, Any],
+) -> tuple[list[str], dict[str, list[str]], bool]:
+    requirements = [
+        dict(item)
+        for item in robot_team_closure.get("requirements") or []
+        if isinstance(item, Mapping)
+    ]
+    explicit_blocked_ids = _string_list(
+        robot_team_closure.get("sim_only_beta_blocked_requirement_ids")
+    )
+    requirement_blocked_ids = [
+        _string(requirement.get("requirement_id"))
+        for requirement in requirements
+        if requirement.get("sim_only_beta_required") is True
+        and requirement.get("passed") is not True
+        and _string(requirement.get("requirement_id"))
+    ]
+    blocked_ids = sorted({*explicit_blocked_ids, *requirement_blocked_ids})
+    blockers_by_requirement = {
+        requirement_id: _string_list(requirement.get("blockers"))
+        for requirement in requirements
+        for requirement_id in [_string(requirement.get("requirement_id"))]
+        if requirement_id in blocked_ids
+    }
+    details_present = bool(requirements or explicit_blocked_ids)
+    return blocked_ids, blockers_by_requirement, details_present
+
+
+def _sim_only_beta_core_blockers(
+    robot_team_closure: Mapping[str, Any],
+) -> tuple[list[str], list[str], dict[str, list[str]], bool]:
+    blocked_ids, blockers_by_requirement, details_present = (
+        _sim_only_beta_requirement_summary(robot_team_closure)
+    )
+    if blocked_ids:
+        blockers = [
+            f"sim_only_beta_requirement_{requirement_id}_not_complete"
+            for requirement_id in blocked_ids
+        ]
+    elif details_present:
+        blockers = []
+    elif robot_team_closure.get("sim_only_beta_core_complete") is not True:
+        blockers = ["sim_only_beta_core_completion_not_true_without_requirement_details"]
+    else:
+        blockers = []
+    return blockers, blocked_ids, blockers_by_requirement, details_present
+
+
+def _load_optional_mapping(path: Path, blockers: list[str], blocker_prefix: str) -> dict[str, Any]:
+    if not path.is_file():
+        blockers.append(f"{blocker_prefix}_missing")
+        return {}
+    try:
+        payload = read_json_any(path)
+    except (OSError, ValueError) as exc:
+        blockers.append(f"{blocker_prefix}_unreadable:{type(exc).__name__}")
+        return {}
+    if not isinstance(payload, Mapping):
+        blockers.append(f"{blocker_prefix}_not_json_object")
+        return {}
+    return dict(payload)
+
+
+def _not_true(value: Any) -> bool:
+    return value is not True
+
+
+def _validate_wam_handoff_artifacts(
+    *,
+    job_root: Path,
+    blockers: list[str],
+) -> dict[str, Any]:
+    payloads: dict[str, dict[str, Any]] = {}
+    summary: dict[str, Any] = {"required_artifacts": dict(WAM_HANDOFF_ARTIFACTS)}
+    for artifact_key, filename in WAM_HANDOFF_ARTIFACTS.items():
+        path = job_root / filename
+        payload = _load_optional_mapping(
+            path,
+            blockers,
+            f"wam_handoff_artifact_{artifact_key}",
+        )
+        payloads[artifact_key] = payload
+        summary[artifact_key] = {
+            "path": filename,
+            "present": bool(payload),
+            "status": payload.get("status"),
+        }
+
+    scorecard = payloads.get("policy_ranking_scorecard") or {}
+    scorecard_boundary = _mapping(scorecard.get("claim_boundary"))
+    ranking_confidence = _mapping(scorecard.get("ranking_confidence"))
+    scorecard_status = _string(scorecard.get("status"))
+    guarded_scorecard_statuses = {
+        "blocked_inconclusive_ranking",
+        "completed_ambiguous_ranking",
+        "completed_visual_review_required",
+        "completed_low_confidence_ranking",
+    }
+    if scorecard:
+        _require(
+            scorecard_boundary.get("policy_ranking_is_evaluator_bounded") is True,
+            "policy_ranking_scorecard_boundary_not_evaluator_bounded",
+            blockers,
+        )
+        _require(
+            scorecard_boundary.get("policy_ranking_is_not_evaluation_readiness") is True,
+            "policy_ranking_scorecard_boundary_allows_evaluation_readiness",
+            blockers,
+        )
+        _require(
+            scorecard_boundary.get("rank_fidelity_result_proven") is False,
+            "policy_ranking_scorecard_boundary_upgrades_rank_fidelity",
+            blockers,
+        )
+        _require(
+            scorecard_boundary.get("public_claim_upgrade_allowed") is False,
+            "policy_ranking_scorecard_boundary_allows_public_claim_upgrade",
+            blockers,
+        )
+        _require(
+            _not_true(scorecard_boundary.get("deployment_approval_proven")),
+            "policy_ranking_scorecard_boundary_claims_deployment_approval",
+            blockers,
+        )
+        _require(
+            _not_true(scorecard_boundary.get("physical_robot_readiness_proven")),
+            "policy_ranking_scorecard_boundary_claims_physical_robot_readiness",
+            blockers,
+        )
+        _require(
+            _not_true(scorecard_boundary.get("safety_validation_proven")),
+            "policy_ranking_scorecard_boundary_claims_safety_validation",
+            blockers,
+        )
+        if scorecard_status in guarded_scorecard_statuses:
+            _require(
+                scorecard.get("top_policy_id") in (None, ""),
+                "policy_ranking_scorecard_claims_winner_despite_blocked_or_ambiguous_status",
+                blockers,
+            )
+
+    candidate_report = payloads.get("candidate_selection_report") or {}
+    candidate_boundary = _mapping(candidate_report.get("claim_boundary"))
+    candidate_status = _string(candidate_report.get("status"))
+    if candidate_report:
+        _require(
+            candidate_boundary.get("do_not_use_as_rank_fidelity_result") is True,
+            "candidate_selection_report_missing_rank_fidelity_guard",
+            blockers,
+        )
+        _require(
+            candidate_boundary.get("rank_fidelity_result_claimed") is False,
+            "candidate_selection_report_claims_rank_fidelity",
+            blockers,
+        )
+        _require(
+            candidate_boundary.get("accepted_anchor_success_claimed") is False,
+            "candidate_selection_report_claims_accepted_anchor_success",
+            blockers,
+        )
+        _require(
+            _not_true(candidate_boundary.get("deployment_approval_proven")),
+            "candidate_selection_report_claims_deployment_approval",
+            blockers,
+        )
+        _require(
+            _not_true(candidate_boundary.get("physical_robot_readiness_proven")),
+            "candidate_selection_report_claims_physical_robot_readiness",
+            blockers,
+        )
+        _require(
+            _not_true(candidate_boundary.get("safety_validation_proven")),
+            "candidate_selection_report_claims_safety_validation",
+            blockers,
+        )
+        if candidate_status != "clear_winner":
+            _require(
+                candidate_report.get("top_policy_id") in (None, ""),
+                "candidate_selection_report_claims_winner_despite_blocked_or_ambiguous_status",
+                blockers,
+            )
+
+    claim_boundary = payloads.get("wam_eval_claim_boundary") or {}
+    if claim_boundary:
+        _require(
+            claim_boundary.get("primary_proof_target")
+            == "policy_comparison_within_configured_evaluator",
+            "wam_eval_claim_boundary_primary_target_not_policy_comparison",
+            blockers,
+        )
+        _require(
+            claim_boundary.get("policy_ranking_is_evaluator_bounded") is True,
+            "wam_eval_claim_boundary_not_evaluator_bounded",
+            blockers,
+        )
+        _require(
+            claim_boundary.get("policy_ranking_is_not_evaluation_readiness") is True,
+            "wam_eval_claim_boundary_allows_evaluation_readiness",
+            blockers,
+        )
+        _require(
+            claim_boundary.get("rank_fidelity_result_proven") is False,
+            "wam_eval_claim_boundary_upgrades_rank_fidelity",
+            blockers,
+        )
+        _require(
+            claim_boundary.get("public_claim_upgrade_allowed") is False,
+            "wam_eval_claim_boundary_allows_public_claim_upgrade",
+            blockers,
+        )
+        _require(
+            claim_boundary.get("simulator_execution_proven") is False,
+            "wam_eval_claim_boundary_claims_simulator_execution",
+            blockers,
+        )
+        _require(
+            claim_boundary.get("robot_policy_execution_proven") is False,
+            "wam_eval_claim_boundary_claims_robot_policy_execution",
+            blockers,
+        )
+        _require(
+            claim_boundary.get("real_world_outcome_proven") is False,
+            "wam_eval_claim_boundary_claims_real_world_outcome",
+            blockers,
+        )
+        _require(
+            _not_true(claim_boundary.get("deployment_approval_proven")),
+            "wam_eval_claim_boundary_claims_deployment_approval",
+            blockers,
+        )
+        _require(
+            _not_true(claim_boundary.get("physical_robot_readiness_proven")),
+            "wam_eval_claim_boundary_claims_physical_robot_readiness",
+            blockers,
+        )
+        _require(
+            _not_true(claim_boundary.get("safety_validation_proven")),
+            "wam_eval_claim_boundary_claims_safety_validation",
+            blockers,
+        )
+
+    summary["policy_ranking"] = {
+        "status": scorecard_status or None,
+        "top_policy_id": scorecard.get("top_policy_id"),
+        "evaluator_top_policy_id": scorecard.get("evaluator_top_policy_id"),
+        "single_best_policy_claimed": bool(scorecard.get("single_best_policy_claimed")),
+        "comparison_blockers": _string_list(scorecard.get("comparison_blockers")),
+        "ranking_confidence": ranking_confidence,
+    }
+    summary["candidate_selection"] = {
+        "status": candidate_status or None,
+        "top_policy_id": candidate_report.get("top_policy_id"),
+        "evaluator_top_policy_id": candidate_report.get("evaluator_top_policy_id"),
+        "tie_or_ambiguity_status": candidate_report.get("tie_or_ambiguity_status"),
+        "candidate_shortlist_count": len(
+            [
+                item
+                for item in candidate_report.get("candidate_shortlist") or []
+                if isinstance(item, Mapping)
+            ]
+        ),
+    }
+    summary["claim_boundary"] = {
+        "primary_proof_target": claim_boundary.get("primary_proof_target"),
+        "policy_ranking_is_evaluator_bounded": claim_boundary.get(
+            "policy_ranking_is_evaluator_bounded"
+        ),
+        "policy_ranking_is_not_evaluation_readiness": claim_boundary.get(
+            "policy_ranking_is_not_evaluation_readiness"
+        ),
+        "rank_fidelity_result_proven": claim_boundary.get("rank_fidelity_result_proven"),
+        "public_claim_upgrade_allowed": claim_boundary.get("public_claim_upgrade_allowed"),
+    }
+    return summary
 
 
 def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[str, Any]:
@@ -169,6 +464,14 @@ def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[
     scenario_eval_matrix: dict[str, Any] = {}
     batch_closure: dict[str, Any] = {}
     robot_team_closure: dict[str, Any] = {}
+    sim_only_beta_core_blockers: list[str] = []
+    sim_only_beta_blocked_requirement_ids: list[str] = []
+    sim_only_beta_requirement_blockers: dict[str, list[str]] = {}
+    sim_only_beta_requirement_details_present = False
+    wam_handoff_blockers: list[str] = []
+    wam_handoff_artifacts: dict[str, Any] = {
+        "required_artifacts": dict(WAM_HANDOFF_ARTIFACTS)
+    }
     if job_root is None or not job_root.is_dir():
         blockers.append("job_root_missing")
     else:
@@ -243,12 +546,47 @@ def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[
             "visual_files_incomplete",
             blockers,
         )
-        _require(
-            robot_team_closure.get("sim_only_beta_core_complete") is True,
-            "sim_only_beta_core_not_complete",
-            blockers,
+        (
+            sim_only_beta_core_blockers,
+            sim_only_beta_blocked_requirement_ids,
+            sim_only_beta_requirement_blockers,
+            sim_only_beta_requirement_details_present,
+        ) = _sim_only_beta_core_blockers(robot_team_closure)
+        blockers.extend(sim_only_beta_core_blockers)
+        wam_handoff_artifacts = _validate_wam_handoff_artifacts(
+            job_root=job_root,
+            blockers=wam_handoff_blockers,
         )
+        blockers.extend(wam_handoff_blockers)
 
+    sim_only_beta_requirements_satisfied = not sim_only_beta_core_blockers
+    simulator_only_requirement_blockers = set(sim_only_beta_core_blockers) | set(
+        wam_handoff_blockers
+    )
+    simulator_execution_blockers = [
+        blocker
+        for blocker in blockers
+        if blocker not in simulator_only_requirement_blockers
+    ]
+    simulator_execution_proven = not simulator_execution_blockers
+
+    robot_team_grade_closure = {
+        "status": robot_team_closure.get("status"),
+        "sim_only_beta_core_complete": robot_team_closure.get("sim_only_beta_core_complete"),
+        "sim_only_beta_requirements_satisfied": sim_only_beta_requirements_satisfied,
+        "sim_only_beta_requirement_details_present": sim_only_beta_requirement_details_present,
+        "sim_only_beta_blocked_requirement_ids": sim_only_beta_blocked_requirement_ids,
+        "sim_only_beta_requirement_blockers": sim_only_beta_requirement_blockers,
+        "robot_team_grade_evaluation_complete": robot_team_closure.get(
+            "robot_team_grade_evaluation_complete"
+        ),
+        "evaluation_readiness_complete": robot_team_closure.get("evaluation_readiness_complete"),
+        "blocked_requirement_ids": robot_team_closure.get("blocked_requirement_ids"),
+    }
+    if robot_team_closure.get("requirements") is not None:
+        robot_team_grade_closure["requirements"] = robot_team_closure.get(
+            "requirements"
+        )
     status = "passed" if not blockers else "blocked"
     return {
         "schema_version": "blueprint.sim_only_beta_local_gate_report.v1",
@@ -262,6 +600,12 @@ def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[
         ),
         "job_id": job_id,
         "route_proof_job_id": expected_job_id or None,
+        "simulator_execution_proven": simulator_execution_proven,
+        "sim_only_beta_requirements_satisfied": sim_only_beta_requirements_satisfied,
+        "sim_only_beta_blocked_requirement_ids": sim_only_beta_blocked_requirement_ids,
+        "wam_handoff_artifacts_satisfied": not wam_handoff_blockers,
+        "wam_handoff_blockers": wam_handoff_blockers,
+        "public_claim_upgrade_allowed": False,
         "job_run_manifest": {
             "status": job_run_manifest.get("status"),
             "simulator_execution_proven": job_run_manifest.get("simulator_execution_proven"),
@@ -304,20 +648,14 @@ def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[
             "robot_team_grade_package_complete": batch_closure.get("robot_team_grade_package_complete"),
             "robot_team_grade_blockers": batch_closure.get("robot_team_grade_blockers"),
         },
-        "robot_team_grade_closure": {
-            "status": robot_team_closure.get("status"),
-            "sim_only_beta_core_complete": robot_team_closure.get("sim_only_beta_core_complete"),
-            "robot_team_grade_evaluation_complete": robot_team_closure.get(
-                "robot_team_grade_evaluation_complete"
-            ),
-            "evaluation_readiness_complete": robot_team_closure.get("evaluation_readiness_complete"),
-            "blocked_requirement_ids": robot_team_closure.get("blocked_requirement_ids"),
-        },
+        "robot_team_grade_closure": robot_team_grade_closure,
+        "wam_handoff_artifacts": wam_handoff_artifacts,
         "proof_boundary": {
             "local_webapp_route_forwarding_proven": True,
             "pipeline_intake_staged_request_proven": True,
             "local_control_plane_processed_staged_request": True,
-            "local_mujoco_simulator_execution_proven": not blockers,
+            "local_mujoco_simulator_execution_proven": simulator_execution_proven,
+            "simulator_execution_proven": simulator_execution_proven,
             "production_live_webapp_forwarding_proven": False,
             "production_deployment_proven": False,
             "remote_cloud_provider_execution_proven": False,
@@ -513,6 +851,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--no-load-env-files",
             "--simulator",
             "mujoco",
+            "--evaluation-substrate",
+            "fixture_wam",
             "--allow-simulator-execution",
             "--allow-simulator",
             "mujoco",

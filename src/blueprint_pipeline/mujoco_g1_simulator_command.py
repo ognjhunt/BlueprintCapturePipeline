@@ -2296,13 +2296,276 @@ def _int_set(values: Any) -> set[int]:
     return result
 
 
+def _sample_ints(values: Any, *, limit: int = 12) -> list[int]:
+    return sorted(_int_set(values))[: max(0, limit)]
+
+
+def _component_coverage_summary(
+    component_coverage: Mapping[str, Any],
+    *,
+    proxy_summary: Mapping[str, Any],
+    visible_object_count: int,
+) -> dict[str, Any]:
+    skipped = _mapping(proxy_summary.get("skipped"))
+    source_component_count = int(proxy_summary.get("source_component_count") or 0)
+    proxy_count = int(proxy_summary.get("proxy_count") or 0)
+    max_proxy_count = int(proxy_summary.get("max_proxy_count") or 0)
+    component_mapping_one_to_one = bool(
+        visible_object_count and source_component_count == visible_object_count
+    )
+    return {
+        "source_component_count": source_component_count,
+        "visible_object_count": visible_object_count,
+        "proxy_count": proxy_count,
+        "max_proxy_count": max_proxy_count,
+        "covered_source_component_count": int(
+            component_coverage.get("covered_source_component_count") or 0
+        ),
+        "reference_floor_covered_source_component_count": len(
+            _int_set(
+                component_coverage.get(
+                    "reference_floor_covered_source_component_indexes"
+                )
+            )
+        ),
+        "intentionally_excluded_source_component_count": len(
+            _int_set(
+                component_coverage.get("intentionally_excluded_source_component_indexes")
+            )
+        ),
+        "truncated_source_component_count": int(
+            component_coverage.get("truncated_source_component_count") or 0
+        ),
+        "uncovered_source_component_count": int(
+            component_coverage.get("uncovered_source_component_count") or 0
+        ),
+        "component_proxy_coverage_complete": bool(
+            component_coverage.get("component_proxy_coverage_complete")
+        ),
+        "component_mapping_status": "one_to_one"
+        if component_mapping_one_to_one
+        else "not_one_to_one",
+        "component_mapping_one_to_one": component_mapping_one_to_one,
+        "sample_covered_source_component_indexes": _sample_ints(
+            component_coverage.get("covered_source_component_indexes")
+        ),
+        "sample_reference_floor_source_component_indexes": _sample_ints(
+            component_coverage.get("reference_floor_covered_source_component_indexes")
+        ),
+        "sample_intentionally_excluded_source_component_indexes": _sample_ints(
+            component_coverage.get("intentionally_excluded_source_component_indexes")
+        ),
+        "sample_truncated_source_component_indexes": _sample_ints(
+            component_coverage.get("truncated_source_component_indexes")
+        ),
+        "sample_uncovered_source_component_indexes": _sample_ints(
+            component_coverage.get("uncovered_source_component_indexes")
+        ),
+        "skipped_component_counts": skipped,
+        "boundary": (
+            "Coverage counts are over split collision-proxy components. A visible GLB "
+            "object is only considered directly mapped when the visible-object count "
+            "and proxy source-component count match one-to-one."
+        ),
+    }
+
+
+def _artifact_ref(
+    artifact_refs: Mapping[str, Any],
+    key: str,
+    *,
+    json_pointer: str | None = None,
+    object_id: str | None = None,
+) -> dict[str, Any] | None:
+    path = _string(artifact_refs.get(key))
+    if not path:
+        return None
+    ref: dict[str, Any] = {"kind": key, "path": path}
+    if json_pointer:
+        ref["json_pointer"] = json_pointer
+    if object_id:
+        ref["object_id"] = object_id
+    return ref
+
+
+def _artifact_refs(
+    artifact_refs: Mapping[str, Any],
+    keys: Sequence[tuple[str, str | None]],
+    *,
+    object_id: str | None = None,
+) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for key, json_pointer in keys:
+        ref = _artifact_ref(
+            artifact_refs,
+            key,
+            json_pointer=json_pointer,
+            object_id=object_id,
+        )
+        if ref:
+            refs.append(ref)
+    return refs
+
+
+def _visible_object_identity_payload(visible_object: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "object_id": _string(visible_object.get("object_id")),
+        "name": _string(visible_object.get("name")),
+        "source_component_index": visible_object.get("source_component_index"),
+        "semantic_label_available": bool(
+            visible_object.get("semantic_label_available")
+        ),
+        "geometry_name": visible_object.get("geometry_name"),
+        "material_name": visible_object.get("material_name"),
+        "gltf_mesh_index": visible_object.get("gltf_mesh_index"),
+        "gltf_mesh_name": visible_object.get("gltf_mesh_name"),
+        "bounds": visible_object.get("bounds"),
+        "extents": visible_object.get("extents"),
+        "volume_m3_estimate": visible_object.get("volume_m3_estimate"),
+    }
+
+
+def _component_membership_reason(
+    component_index: int | None,
+    component_coverage: Mapping[str, Any],
+) -> str:
+    if component_index is None:
+        return "visible_object_missing_source_component_index"
+    if component_index in _int_set(component_coverage.get("covered_source_component_indexes")):
+        return "source_component_has_collision_proxy"
+    if component_index in _int_set(
+        component_coverage.get("reference_floor_covered_source_component_indexes")
+    ):
+        return "source_component_covered_by_reference_floor"
+    if component_index in _int_set(
+        component_coverage.get("intentionally_excluded_source_component_indexes")
+    ):
+        return "source_component_intentionally_excluded_from_proxy_generation"
+    if component_index in _int_set(component_coverage.get("truncated_source_component_indexes")):
+        return "source_component_truncated_by_proxy_limit"
+    if component_index in _int_set(component_coverage.get("uncovered_source_component_indexes")):
+        return "source_component_uncovered_by_proxy_generation"
+    return "source_component_not_found_in_proxy_coverage_sets"
+
+
+def _missing_semantic_object_records(
+    object_semantics_summary: Mapping[str, Any],
+    *,
+    artifact_refs: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    missing: list[dict[str, Any]] = []
+    for visible_object in object_semantics_summary.get("visible_objects", []) or []:
+        if not isinstance(visible_object, Mapping):
+            continue
+        semantic_label = visible_object.get("semantic_label_available")
+        if semantic_label is True:
+            continue
+        if semantic_label is None and _string(visible_object.get("name")):
+            if not _is_generated_semantic_name(_string(visible_object.get("name"))):
+                continue
+        if semantic_label is None and _string(visible_object.get("gltf_mesh_name")):
+            if not _is_generated_semantic_name(
+                _string(visible_object.get("gltf_mesh_name"))
+            ):
+                continue
+        if semantic_label is None and _string(visible_object.get("geometry_name")):
+            if not _is_generated_semantic_name(
+                _string(visible_object.get("geometry_name"))
+            ):
+                continue
+        if semantic_label is None and _string(visible_object.get("material_name")):
+            continue
+        object_id = _string(visible_object.get("object_id"))
+        record = {
+            **_visible_object_identity_payload(visible_object),
+            "missing_semantics": [
+                "non_generated_visible_object_name",
+                "semantic_label_or_material_object_reference",
+            ],
+            "reason": "visible_glb_object_has_only_generated_or_missing_semantic_name",
+            "available_name_candidates": {
+                "name": visible_object.get("name"),
+                "geometry_name": visible_object.get("geometry_name"),
+                "gltf_mesh_name": visible_object.get("gltf_mesh_name"),
+                "material_name": visible_object.get("material_name"),
+                "gltf_material_indexes": visible_object.get("gltf_material_indexes"),
+            },
+            "evidence_refs": _artifact_refs(
+                artifact_refs,
+                (
+                    (
+                        "scene_load_trace",
+                        "/mesh_info/visual_object_semantics_summary/visible_objects",
+                    ),
+                    ("source_scene_glb", None),
+                    ("converted_scene_obj", None),
+                ),
+                object_id=object_id,
+            ),
+        }
+        missing.append(record)
+    return missing
+
+
+def _capture_object_semantics_summary(capture_root: Path) -> dict[str, Any]:
+    object_index_path = capture_root / "raw" / "object_index.json"
+    task_targets_path = capture_root / "pipeline" / "task_targets.json"
+    object_index = (
+        _mapping(read_json_any(object_index_path)) if object_index_path.is_file() else {}
+    )
+    task_targets = (
+        _mapping(read_json_any(task_targets_path)) if task_targets_path.is_file() else {}
+    )
+    objects = [
+        dict(item)
+        for item in object_index.get("objects", []) or []
+        if isinstance(item, Mapping)
+    ]
+    target_entries = [
+        dict(item)
+        for item in task_targets.get("object_index_entries", []) or []
+        if isinstance(item, Mapping)
+    ]
+
+    def compact_object(item: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "object_id": item.get("object_id"),
+            "label": item.get("label") or item.get("category"),
+            "confidence": item.get("confidence"),
+            "reference_crop": item.get("reference_crop"),
+        }
+
+    return {
+        "status": "available" if objects or target_entries else "not_available",
+        "object_index_path": str(object_index_path) if object_index_path.is_file() else None,
+        "task_targets_path": str(task_targets_path) if task_targets_path.is_file() else None,
+        "capture_object_count": len(objects),
+        "task_target_object_entry_count": len(target_entries),
+        "sample_capture_objects": [compact_object(item) for item in objects[:12]],
+        "sample_task_target_objects": [compact_object(item) for item in target_entries[:12]],
+        "explicit_target_object_ids": [
+            _string(item)
+            for item in task_targets.get("explicit_target_object_ids", []) or []
+            if _string(item)
+        ],
+        "semantic_link_to_mujoco_visual_objects_verified": False,
+        "proof_boundary": (
+            "Capture object-index labels are raw/capture-side semantic evidence. They "
+            "are supporting refs only until a verified 2D/3D join links each label to "
+            "a generated MuJoCo/GLB visible object."
+        ),
+    }
+
+
 def _visual_object_physics_coverage(
     *,
     object_semantics_summary: Mapping[str, Any],
     collision_summary: Mapping[str, Any],
     proxy_summary: Mapping[str, Any],
     collider_loaded: bool,
+    artifact_refs: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    artifact_refs = _mapping(artifact_refs)
     visible_objects = [
         dict(item)
         for item in object_semantics_summary.get("visible_objects", []) or []
@@ -2316,6 +2579,7 @@ def _visual_object_physics_coverage(
             "visible_object_count": 0,
             "covered_visible_object_count": 0,
             "missing_physics_object_ids": [],
+            "missing_physics_objects": [],
         }
 
     if collider_loaded and bool(collision_summary.get("scene_collision_mesh_geom_enabled")):
@@ -2329,6 +2593,7 @@ def _visual_object_physics_coverage(
                 _string(item.get("object_id")) for item in visible_objects
             ],
             "missing_physics_object_ids": [],
+            "missing_physics_objects": [],
             "boundary": (
                 "The full converted scene mesh is loaded as collision geometry, so every "
                 "visible object in the converted scene has at least mesh-level physics "
@@ -2344,23 +2609,70 @@ def _visual_object_physics_coverage(
         component_coverage.get("reference_floor_covered_source_component_indexes")
     )
     physics_supported_indexes = covered_component_indexes | reference_floor_indexes
+    coverage_summary = _component_coverage_summary(
+        component_coverage,
+        proxy_summary=proxy_summary,
+        visible_object_count=len(visible_objects),
+    )
+    component_mapping_one_to_one = bool(
+        coverage_summary.get("component_mapping_one_to_one")
+    )
     missing_objects: list[dict[str, Any]] = []
     covered_objects: list[dict[str, Any]] = []
     unmapped_objects: list[dict[str, Any]] = []
+    missing_physics_object_records: list[dict[str, Any]] = []
     for visible_object in visible_objects:
         component_index = visible_object.get("source_component_index")
         try:
             normalized_component_index = int(component_index)
         except (TypeError, ValueError):
             normalized_component_index = None
+        membership_reason = _component_membership_reason(
+            normalized_component_index,
+            component_coverage,
+        )
         if normalized_component_index is None:
             unmapped_objects.append(visible_object)
             missing_objects.append(visible_object)
-            continue
-        if normalized_component_index in physics_supported_indexes:
+            coverage_reason = "visible_object_missing_source_component_index"
+        elif not component_mapping_one_to_one:
+            missing_objects.append(visible_object)
+            coverage_reason = "visible_object_proxy_component_mapping_not_one_to_one"
+        elif normalized_component_index in physics_supported_indexes:
             covered_objects.append(visible_object)
+            continue
         else:
             missing_objects.append(visible_object)
+            coverage_reason = membership_reason
+        object_id = _string(visible_object.get("object_id"))
+        missing_physics_object_records.append(
+            {
+                **_visible_object_identity_payload(visible_object),
+                "coverage_reason": coverage_reason,
+                "source_component_membership": membership_reason,
+                "component_mapping_status": coverage_summary.get(
+                    "component_mapping_status"
+                ),
+                "component_mapping_one_to_one": component_mapping_one_to_one,
+                "component_coverage_summary": coverage_summary,
+                "evidence_refs": _artifact_refs(
+                    artifact_refs,
+                    (
+                        (
+                            "scene_load_trace",
+                            "/mesh_info/visual_object_semantics_summary/visible_objects",
+                        ),
+                        (
+                            "scene_load_trace",
+                            "/mesh_info/collision_proxy_summary/component_coverage",
+                        ),
+                        ("source_scene_glb", None),
+                        ("converted_scene_obj", None),
+                    ),
+                    object_id=object_id,
+                ),
+            }
+        )
 
     proxy_model_enabled = bool(collision_summary.get("scene_collision_proxy_geoms_enabled"))
     proxy_generation_complete = bool(
@@ -2386,9 +2698,11 @@ def _visual_object_physics_coverage(
         "missing_physics_object_ids": [
             _string(item.get("object_id")) for item in missing_objects
         ],
+        "missing_physics_objects": missing_physics_object_records,
         "unmapped_visible_object_ids": [
             _string(item.get("object_id")) for item in unmapped_objects
         ],
+        "component_coverage_summary": coverage_summary,
         "component_coverage": component_coverage,
         "proxy_collision_model_used": proxy_model_enabled,
         "proxy_generation_complete": proxy_generation_complete,
@@ -2406,7 +2720,11 @@ def _build_digital_twin_fidelity_qa(
     mesh_info: Mapping[str, Any],
     collision_summary: Mapping[str, Any],
     visual_artifacts: Mapping[str, Any],
+    artifact_refs: Mapping[str, Any] | None = None,
+    capture_object_semantics_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    artifact_refs = _mapping(artifact_refs)
+    capture_object_semantics_summary = _mapping(capture_object_semantics_summary)
     visual_summary = _mapping(mesh_info.get("visual_asset_summary"))
     object_semantics_summary = _mapping(mesh_info.get("visual_object_semantics_summary"))
     obj_summary = _mapping(mesh_info.get("obj_vertex_color_summary"))
@@ -2445,11 +2763,22 @@ def _build_digital_twin_fidelity_qa(
         and int(object_semantics_summary.get("visible_object_count") or 0) > 0
         and int(object_semantics_summary.get("named_visible_object_count") or 0) > 0
     )
+    missing_semantic_objects = _missing_semantic_object_records(
+        object_semantics_summary,
+        artifact_refs=artifact_refs,
+    )
+    object_semantics_evidence = {
+        **object_semantics_summary,
+        "missing_semantic_objects": missing_semantic_objects,
+        "capture_object_semantics_summary": capture_object_semantics_summary,
+        "semantic_link_to_capture_object_index_verified": False,
+    }
     visual_object_physics_coverage = _visual_object_physics_coverage(
         object_semantics_summary=object_semantics_summary,
         collision_summary=collision_summary,
         proxy_summary=proxy_summary,
         collider_loaded=collider_loaded,
+        artifact_refs=artifact_refs,
     )
     visible_objects_have_physics_coverage = bool(
         object_semantics_available
@@ -2461,6 +2790,11 @@ def _build_digital_twin_fidelity_qa(
     component_coverage = _mapping(proxy_summary.get("component_coverage"))
     full_mesh_collision_loaded = bool(
         collider_loaded and collision_summary.get("scene_collision_mesh_geom_enabled")
+    )
+    component_coverage_summary = _component_coverage_summary(
+        component_coverage,
+        proxy_summary=proxy_summary,
+        visible_object_count=int(object_semantics_summary.get("visible_object_count") or 0),
     )
     hidden_obstacle_risk_reviewed = bool(
         collider_coverage_available
@@ -2508,7 +2842,7 @@ def _build_digital_twin_fidelity_qa(
         },
         "object_semantics_available": {
             "passed": object_semantics_available,
-            "evidence": object_semantics_summary,
+            "evidence": object_semantics_evidence,
         },
         "visible_objects_have_physics_coverage": {
             "passed": visible_objects_have_physics_coverage,
@@ -2541,8 +2875,21 @@ def _build_digital_twin_fidelity_qa(
                 "proxy_generation_truncated": proxy_generation_truncated,
                 "source_component_count": source_component_count,
                 "proxy_count": proxy_count,
+                "max_proxy_count": max_proxy_count,
                 "skipped_components": proxy_summary.get("skipped") or {},
+                "component_coverage_summary": component_coverage_summary,
                 "component_coverage": component_coverage,
+                "evidence_refs": _artifact_refs(
+                    artifact_refs,
+                    (
+                        (
+                            "scene_load_trace",
+                            "/mesh_info/collision_proxy_summary/component_coverage",
+                        ),
+                        ("source_scene_glb", None),
+                        ("converted_scene_obj", None),
+                    ),
+                ),
             },
         },
     }
@@ -2579,6 +2926,58 @@ def _build_digital_twin_fidelity_qa(
         machine_fidelity_audit_complete
         and gates["visual_object_has_matching_physics"]["passed"]
     )
+    visual_collision_alignment_gap = {
+        "status": "passed"
+        if gates["visual_object_has_matching_physics"]["passed"]
+        else "review_required",
+        "visible_scene_collision_alignment_validated": visible_collision_alignment_validated,
+        "visible_objects_have_physics_coverage": visible_objects_have_physics_coverage,
+        "reason": "alignment_validated_by_full_collision_mesh_or_complete_component_proxy_coverage"
+        if gates["visual_object_has_matching_physics"]["passed"]
+        else "neither_full_mesh_collision_nor_complete_component_proxy_coverage_validated",
+        "evidence_refs": _artifact_refs(
+            artifact_refs,
+            (
+                ("scene_load_trace", "/collision_summary"),
+                (
+                    "scene_load_trace",
+                    "/mesh_info/collision_proxy_summary/component_coverage",
+                ),
+                ("source_scene_glb", None),
+                ("converted_scene_obj", None),
+            ),
+        ),
+        "boundary": (
+            "This is simulator visual/physics alignment evidence only. It is not "
+            "physical collision validation or real-world safety evidence."
+        ),
+    }
+    hidden_obstacle_gap = {
+        "status": "passed" if hidden_obstacle_risk_reviewed else "review_required",
+        "proxy_generation_truncated": proxy_generation_truncated,
+        "source_component_count": source_component_count,
+        "proxy_count": proxy_count,
+        "max_proxy_count": max_proxy_count,
+        "component_coverage_summary": component_coverage_summary,
+        "reason": "all_proxy_components_covered_or_full_mesh_collision_loaded"
+        if hidden_obstacle_risk_reviewed
+        else "proxy_generation_truncated_or_split_components_uncovered",
+        "evidence_refs": _artifact_refs(
+            artifact_refs,
+            (
+                (
+                    "scene_load_trace",
+                    "/mesh_info/collision_proxy_summary/component_coverage",
+                ),
+                ("source_scene_glb", None),
+                ("converted_scene_obj", None),
+            ),
+        ),
+        "boundary": (
+            "Proxy truncation review can support simulator QA only; it does not "
+            "approve physical navigation or safety."
+        ),
+    }
     return {
         "schema_version": MUJOCO_G1_DIGITAL_TWIN_FIDELITY_QA_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -2586,13 +2985,27 @@ def _build_digital_twin_fidelity_qa(
         "machine_fidelity_audit_complete": machine_fidelity_audit_complete,
         "robot_team_grade_fidelity_passed": robot_team_grade_fidelity_passed,
         "blockers": sorted(set(blockers)),
+        "object_level_fidelity_gaps": {
+            "missing_semantic_objects": missing_semantic_objects,
+            "visible_objects_without_physics_coverage": (
+                visual_object_physics_coverage.get("missing_physics_objects", [])
+            ),
+            "hidden_obstacle_or_proxy_truncation_review": hidden_obstacle_gap,
+            "visual_collision_alignment": visual_collision_alignment_gap,
+            "capture_object_semantics_supporting_refs": capture_object_semantics_summary,
+            "boundary": (
+                "Object-level gap records identify simulator QA gaps. They do not "
+                "turn capture-side object labels into generated GLB semantics unless "
+                "a verified link is present."
+            ),
+        },
         "gates": gates,
         "mesh_info_summary": {
             "source_glb": mesh_info.get("source_glb"),
             "converted_obj": mesh_info.get("converted_obj"),
             "vertices": mesh_info.get("vertices"),
             "faces": mesh_info.get("faces"),
-            "visual_object_semantics_summary": object_semantics_summary,
+            "visual_object_semantics_summary": object_semantics_evidence,
             **bounds_summary,
         },
         "visual_collision_parity": {
@@ -4121,11 +4534,20 @@ def run_mujoco_g1_simulator_command(
         collision_response_events=full_collision_response_events,
         collision_proxy_count=collision_proxy_count,
     )
+    digital_twin_artifact_refs = {
+        "scene_load_trace": str(output_root / "scene_load_trace.json"),
+        "source_scene_glb": str(scene_glb),
+        "converted_scene_obj": str(scene_obj),
+        "capture_object_index": str(root / "raw" / "object_index.json"),
+        "task_targets": str(root / "pipeline" / "task_targets.json"),
+    }
     digital_twin_fidelity_qa = _build_digital_twin_fidelity_qa(
         generated_at=generated_at,
         mesh_info=mesh_info,
         collision_summary=collision_summary,
         visual_artifacts=visual_artifacts,
+        artifact_refs=digital_twin_artifact_refs,
+        capture_object_semantics_summary=_capture_object_semantics_summary(root),
     )
     blocked_collision_attempt_count = sum(
         1 for attempt in attempts if _string(attempt.get("status")) == "blocked_collision_overlap_detected"

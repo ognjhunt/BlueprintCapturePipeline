@@ -6,7 +6,6 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
-import pytest
 from PIL import Image
 
 from blueprint_pipeline.synthesis import synthesize as synth

@@ -92,8 +92,7 @@ secrets; they must not be baked into the image or written into artifacts.
 
 The image healthcheck verifies imports and a fixture-mode harness loop. It is a
 runtime-readiness check only; it does not prove provider accuracy, sensor depth,
-physical contact, off-scope validation, generated-world rank fidelity, or physical robot
-readiness.
+physical contact, off-scope validation, or generated-world rank fidelity.
 
 ## Environment variables
 

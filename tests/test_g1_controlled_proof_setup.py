@@ -81,6 +81,36 @@ def test_g1_setup_writes_unitree_default_artifacts_without_secrets(tmp_path: Pat
     artifacts = manifest["artifacts"]  # type: ignore[assignment]
     setup_manifest_path = Path(artifacts["setup_manifest"])  # type: ignore[index]
     assert setup_manifest_path.is_file()
+    anchor_request = _read_json(Path(artifacts["controlled_field_anchor_request_packet"]))  # type: ignore[index]
+    assert anchor_request["status"] == "not_requested_for_sim_only"
+    assert anchor_request["blockers"] == []
+    assert anchor_request["required_exact_join_keys"] == [
+        "scenario_eval_run_id",
+        "policy_id",
+        "task_id",
+        "scenario_variation_instance_id",
+    ]
+    assert anchor_request["anchor_join_key"] == {
+        "scenario_eval_run_id": "robot-eval-test-site-a_walk_to_target_pose",
+        "policy_id": DEFAULT_POLICY_ID,
+        "task_id": "walk_to_target",
+        "scenario_variation_instance_id": "site-a_walk_to_target_pose",
+    }
+    assert anchor_request["owner_evidence"]["required_before_physical_claim"] == [  # type: ignore[index]
+        "real_robot_pov",
+        "action_logs",
+        "timestamp_alignment",
+        "hardware_validation",
+        "contact_collision_logs",
+        "policy_metrics",
+        "robot_team_review",
+    ]
+    assert anchor_request["owner_evidence"]["explicit_signed_attestations_required"] is True  # type: ignore[index]
+    outcome_template = _read_json(Path(artifacts["deployment_outcome_manifest"]))  # type: ignore[index]
+    outcome = outcome_template["records"][0]  # type: ignore[index]
+    assert outcome["policy_id"] == DEFAULT_POLICY_ID
+    assert outcome["anchor_schema_version"] == "accepted_real_world_anchor.v1"
+    assert outcome["review_status"] == "not_reviewed"
     policy = _read_json(Path(artifacts["robot_team_policy_package"]))  # type: ignore[index]
     assert policy["policy_id"] == DEFAULT_POLICY_ID
     assert "https://github.com/unitreerobotics/unitree_rl_gym" in json.dumps(policy)
@@ -129,6 +159,8 @@ def test_g1_setup_writes_unitree_default_artifacts_without_secrets(tmp_path: Pat
     assert "BLUEPRINT_ALLOW_G1_PHYSICAL_RUN=true" in capture_script
     assert "BLUEPRINT_G1_CAMERA_SOURCE" in capture_script
     assert "BLUEPRINT_G1_POLICY_COMMAND" in capture_script
+    readme = Path(artifacts["readme"]).read_text(encoding="utf-8")  # type: ignore[index]
+    assert "Controlled anchor request packet" in readme
     stage_script = Path(artifacts["stage_script"]).read_text(encoding="utf-8")  # type: ignore[index]
     assert "blueprint-intake-live-pipeline-inputs" in stage_script
     assert "BLUEPRINT_ALLOW_STAGING_G1_CONTROLLED_RUN_INPUTS=true" in stage_script

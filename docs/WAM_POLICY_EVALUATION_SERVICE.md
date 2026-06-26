@@ -44,7 +44,11 @@ Accepted real-world calibration anchors use
 measurement only when the predicted row and actual row join exactly on
 `scenario_eval_run_id`, `policy_id`, `task_id`, and
 `scenario_variation_instance_id`. The actual row must also carry an actual
-success/failure result plus owner evidence or an operator attestation.
+success/failure result, owner evidence, signed operator or owner attestation,
+and an accepted reviewer/calibration decision. If the anchor requests physical
+evidence, the physical run evidence refs must be present. Loose, fallback, or
+inferred joins can be recorded for follow-up diagnostics, but they must not be
+accepted for calibration.
 Calibration reports must keep `sim_vs_real_calibration_score=null` until enough
 accepted paired anchors exist.
 
@@ -221,11 +225,10 @@ steps, runs the WAM-derived harness on each step, adapts the observation back to
 the declared policy schema, and writes `wam_sim_provider_e2e_manifest.json`,
 `wam_sim_provider_e2e_trace.jsonl`, generated step frames, and the normal
 `wam_derived_observation_harness/` artifact family. This proves the sim
-architecture path only. The manifest keeps
-`perception_accuracy_validated=false` and records that generated frames are not
-capture truth, inferred depth is not sensor depth, SAM3 masks are not physical
-truth, contact likelihood is not physical contact proof, and no deployment,
-safety, physical-readiness, or real-world-success claim is proven.
+architecture path only. The manifest records that optional truth-label
+validation was not requested and keeps generated frames separate from capture
+truth, inferred depth separate from sensor depth, SAM3 masks separate from
+physical truth, and contact likelihood separate from physical contact proof.
 
 Depth providers are replaceable. The default local smoke path uses the
 Transformers Depth Anything V2 small model because it is lightweight enough for
@@ -270,7 +273,7 @@ For a one-command proof probe of the real-provider lane, use:
 ```bash
 python -m blueprint_pipeline.wam_real_provider_validation_probe run \
   --generated-frame <wam-generated-frame.jpg> \
-  --validation-set <capture-backed-validation-rows.json>
+  [--validation-set <capture-backed-validation-rows.json>]
 ```
 
 The probe writes
@@ -280,21 +283,28 @@ whether SAM3 weights are present through `SAM3_WEIGHTS_PATH` or
 `BLUEPRINT_SAM3_WEIGHTS_PATH`, whether depth and pose provider commands are
 configured through `BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND` and
 `BLUEPRINT_WAM_POSE_PROVIDER_COMMAND`, and whether labeled validation rows were
-supplied. If any required real-provider or validation input is missing, the
-manifest status is `blocked`, the harness recommends early termination, policy
-requery and success scoring are blocked, and validation/perception accuracy
-metrics stay `not_measured`.
+supplied. The validation set is optional for sim-only runs: missing or invalid
+rows are recorded as `diagnostic_issues`, not as launch
+or policy-ranking blockers. Provider setup can still fail its own probe, but
+labeled validation absence does not block sim-only candidate selection.
 
-The validation set path must contain real/capture-backed labeled rows, not only
-fixture expectations. At least one row must carry an accepted truth flag such as
+When supplied for an external-accuracy diagnostic, the validation set path should
+contain real/capture-backed labeled rows, not only fixture expectations. At
+least one row should carry an accepted truth flag such as
 `capture_backed=true`, `capture_truth=true`, `real_labeled_validation=true`, or
 `accepted_real_world_anchor=true`; at least one validation label such as
 `actual_success`, `capture_success`, `expected_target_visible`,
 `expected_contact`, or `expected_object_id`; and a provenance reference such as
 `source_capture_path`, `source_artifact_path`, `source_video_path`,
 `source_frame_path`, `source_label_path`, `evidence_path`, or
-`operator_attestation_path`. Files that exist but do not meet that row contract
-still produce a blocked proof manifest.
+`operator_attestation_path`. Accepted probe rows must also include a target
+prompt, carry reviewer or label provenance, and match the probed frame when a
+frame ID or frame path is supplied. Provider-only outputs such as SAM/depth/pose
+result files can support reviewer inspection, but they are not accepted as the
+validation source by themselves. Files that exist but do not meet that row
+contract produce optional validation diagnostics and leave label-based accuracy
+or false-success reduction as `not_measured`; they do not block generated-frame
+provider runs by themselves.
 
 Authoritative/evaluator-controlled channels stay separate from pixel-inferred
 channels. Action command/history, gripper command, nominal joint state,
@@ -541,18 +551,20 @@ For a scorecard to support robot-team closure, it must be an evaluator-bounded,
 non-overclaiming comparison with at least two policies, symmetric required-run
 coverage, no missing required scenarios, no extra unknown scenarios, valid
 score ranges, and no scorecard comparison blockers. High OOD or uncertainty
-does not become real-world failure proof; it downgrades
-`ranking_confidence.confidence_level` and preserves the real-world calibration
-boundary.
+is a sim-ranking confidence issue: it downgrades
+`ranking_confidence.confidence_level` and can require targeted reruns, but it
+does not add an IRL-data blocker to candidate selection.
 
 `candidate_selection_report.json` is the product handoff for the near-term
 question: which policy performed best in this evaluator, and what broke. It
-records the top policy only when the ranking is decisive; otherwise it reports
-a candidate shortlist. It also carries the runner-up, predicted success-rate
-margin, tie or ambiguity status, scenario matrix coverage, decisive scenarios
-where candidates diverged, high-uncertainty scenarios, OOD blockers, dominant
-failure modes, exemplar evidence refs, failure clusters, and real-world
-validation follow-up requests.
+records `top_policy_id` only when the comparison is symmetric, decisive, outside
+the tie band, not low-confidence, and not blocked by visual-review evidence.
+Otherwise it keeps the diagnostic `evaluator_top_policy_id` visible and reports
+a candidate shortlist instead of forcing a winner. It also carries the runner-up,
+predicted success-rate margin, tie or ambiguity status, scenario matrix coverage,
+decisive scenarios where candidates diverged, high-uncertainty scenarios, OOD
+blockers, visual-review blockers, dominant failure modes, exemplar evidence
+refs, failure clusters, and sim-ranking rerun recommendations.
 
 Failure clusters are post-training data package hooks, not root-cause
 certification. Each cluster should say what data to collect, which scenario
@@ -560,8 +572,25 @@ variants to add, and which policy adapter or checkpoint to retry. When failure
 evidence is weak, the report must use `unknown_needs_review` instead of
 inventing a root cause.
 
-The report's boundary statement is explicit: do not use for deployment
-approval.
+The report's boundary statement is explicit: it is a sim-ranking handoff, and
+IRL validation artifacts are outside its pass/fail state.
+
+Generated next-observation media cannot unlock a review-grade winner or
+review-grade success/failure label from booleans alone. The scorecard gate must
+carry a passed `persistent_wam_short_visual_sanity_manifest.json` or equivalent
+inline short-sanity manifest with `visual_profile=review_quality`,
+`short_visual_sanity_passed=true`, `visually_useful_rollout=true`, contact-sheet
+or review-media refs, and provenance refs such as the source QA, visual-quality
+report, video-review status, frame stats, or review video. Each generated-media
+success/failure label used for ranking must also carry review-label refs. If
+the media is fixture-only, visually weak, missing the short-sanity manifest, or
+missing review-label refs, `policy_ranking_scorecard.json`,
+`failure_labels.json`, `candidate_selection_report.json`, and
+`visual_review_blocker_summary.json` must keep the review-grade ranking or
+failure diagnosis blocked while preserving diagnostic evaluator rows and
+blocker summaries. The gate remains a reviewability/support gate only; it does
+not turn generated observations into raw capture, sensor truth, task-success
+proof, or field evidence.
 
 Forward/inverse episode consistency is intentionally separate from WAM/provider
 execution and from the evaluator. The evaluator can prepare

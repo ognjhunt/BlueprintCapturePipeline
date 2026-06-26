@@ -173,7 +173,21 @@ def _write_passed_short_sanity_manifest(root: Path, observation_path: Path) -> P
         json.dumps({"status": "passed_visual_quality_gate"}),
         encoding="utf-8",
     )
-    report.write_text(json.dumps({"visual_success": True}), encoding="utf-8")
+    report.write_text(
+        json.dumps(
+            {
+                "status": "passed_visual_quality_gate",
+                "visual_profile": "review_quality",
+                "visual_success": True,
+                "profile_contract": {
+                    "review_quality_profile": True,
+                    "review_quality_minimum_satisfied": True,
+                    "smoke_only": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     video_status.write_text(
         json.dumps(
             {
@@ -1439,7 +1453,21 @@ def test_short_visual_sanity_pass_manifest_records_review_artifacts_and_teardown
             json.dumps({"status": "passed_visual_quality_gate"}),
             encoding="utf-8",
         )
-        report.write_text(json.dumps({"visual_success": True}), encoding="utf-8")
+        report.write_text(
+            json.dumps(
+                {
+                    "status": "passed_visual_quality_gate",
+                    "visual_profile": "review_quality",
+                    "visual_success": True,
+                    "profile_contract": {
+                        "review_quality_profile": True,
+                        "review_quality_minimum_satisfied": True,
+                        "smoke_only": False,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         frame_stats.write_text("{}\n", encoding="utf-8")
         video_status.write_text(
             json.dumps(
@@ -1657,9 +1685,10 @@ def test_short_visual_sanity_can_wrap_existing_persistent_session_result(
         persistent_session_result_path=result_path,
     )
 
-    assert exit_code == 0
+    assert exit_code == 2
     assert called is False
-    assert manifest["status"] == "passed_short_visual_sanity"
+    assert manifest["status"] == "blocked"
+    assert manifest["short_visual_sanity_passed"] is False
     assert manifest["manifest_source"] == "imported_persistent_session_result"
     assert Path(manifest["short_visual_sanity_manifest_path"]).parent == (
         tmp_path / "short-manifest"
@@ -1670,10 +1699,28 @@ def test_short_visual_sanity_can_wrap_existing_persistent_session_result(
     assert manifest["review_media_resolution"] == {
         "width": 320,
         "height": 256,
+        "fps": 6.0,
+        "frame_count": 9,
         "minimum_width": 320,
         "minimum_height": 256,
-        "passed": True,
+        "minimum_fps": 8.0,
+        "minimum_num_frames": 12,
+        "resolution_passed": True,
+        "fps_passed": False,
+        "frame_count_passed": False,
+        "passed": False,
     }
+    assert (
+        "short_visual_sanity_review_video_fps_below_review_quality_minimum"
+        in manifest["blockers"]
+    )
+    assert (
+        "short_visual_sanity_review_video_frame_count_below_review_quality_minimum"
+        in manifest["blockers"]
+    )
+    assert "short_visual_sanity_quality_report_not_review_quality_profile" in manifest[
+        "blockers"
+    ]
     source_qa = json.loads(
         Path(manifest["source_policy_observation_visual_qa_path"]).read_text(encoding="utf-8")
     )
@@ -1686,7 +1733,115 @@ def test_short_visual_sanity_can_wrap_existing_persistent_session_result(
         manifest["short_visual_sanity_manifest_path"],
         policy_observation_path=observation_path,
     )
-    assert validation["status"] == "passed_short_visual_sanity"
+    assert validation["status"] == "blocked"
+    assert (
+        "short_visual_sanity_video_status_review_video_fps_below_review_quality_minimum"
+        in validation["blockers"]
+    )
+    assert (
+        "short_visual_sanity_video_status_review_video_frame_count_below_review_quality_minimum"
+        in validation["blockers"]
+    )
+
+
+def test_short_visual_sanity_validation_rechecks_referenced_artifacts(
+    tmp_path: Path,
+) -> None:
+    frame = _write_reviewable_frame(tmp_path / "frame.jpg")
+    observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    manifest_path = _write_passed_short_sanity_manifest(
+        tmp_path / "short-sanity",
+        observation_path,
+    )
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    source_qa_path = Path(payload["source_policy_observation_visual_qa_path"])
+    visual_report_path = Path(payload["wam_rollout_visual_quality_report_path"])
+    video_status_path = Path(payload["video_review_status_path"])
+    review_video_path = Path(payload["review_video_path"])
+    teardown_path = tmp_path / "short-sanity" / "runpod_wam_async_delete_manifest.json"
+
+    source_qa_path.write_text(
+        json.dumps(
+            {
+                "status": "failed_visual_quality_gate",
+                "blockers": ["source_policy_observation_too_dark_for_review"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    visual_report_path.write_text(
+        json.dumps(
+            {
+                "status": "failed_visual_quality_gate",
+                "visual_success": False,
+                "structural_fallback_used": True,
+                "blockers": [
+                    "autoregressive_chain_visual_drift_or_quality_blocked_long_rollout",
+                    "wam_generated_frame_too_dark_for_review",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    video_status_path.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "ffprobe_command_ran": True,
+                "ffprobe_returncode": 2,
+                "ffprobe_metadata": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    review_video_path.write_bytes(b"")
+    teardown_path.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "continuing_spend_from_this_run": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    payload["paid_provider"] = {
+        "provider": "runpod",
+        "used": True,
+        "teardown_status": "completed",
+        "teardown_performed": True,
+        "continuing_spend_from_this_run": False,
+        "teardown_manifest_path": str(teardown_path),
+    }
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    validation = session.validate_persistent_wam_short_visual_sanity_manifest(
+        manifest_path,
+        policy_observation_path=observation_path,
+    )
+
+    assert validation["status"] == "blocked"
+    assert "short_visual_sanity_source_qa_artifact_not_passed" in validation["blockers"]
+    assert "source_policy_observation_too_dark_for_review" in validation["blockers"]
+    assert "short_visual_sanity_quality_report_visual_success_not_passed" in validation[
+        "blockers"
+    ]
+    assert "short_visual_sanity_quality_report_structural_fallback_used" in validation[
+        "blockers"
+    ]
+    assert "autoregressive_chain_visual_drift_or_quality_blocked_long_rollout" in validation[
+        "blockers"
+    ]
+    assert "wam_generated_frame_too_dark_for_review" in validation["blockers"]
+    assert "short_visual_sanity_video_status_ffprobe_returncode_not_zero" in validation[
+        "blockers"
+    ]
+    assert "short_visual_sanity_video_status_ffprobe_metadata_missing" in validation[
+        "blockers"
+    ]
+    assert "short_visual_sanity_review_video_empty" in validation["blockers"]
+    assert "short_visual_sanity_paid_provider_teardown_artifact_not_zero_spend" in validation[
+        "blockers"
+    ]
 
 
 def test_runpod_persistent_session_clamps_tiny_oscar_frame_count(

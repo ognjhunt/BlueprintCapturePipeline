@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import builtins
-import json
 import types
 import urllib.error
 from pathlib import Path

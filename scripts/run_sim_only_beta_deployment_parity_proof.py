@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -20,6 +20,9 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from blueprint_pipeline.common import ensure_dir, read_json_any, utc_now_iso, write_json  # noqa: E402
+from blueprint_pipeline.live_pipeline_forwarding_secret_setup import (  # noqa: E402
+    parse_env_file_values,
+)
 
 SCHEMA_VERSION = "blueprint.sim_only_beta_deployment_parity_proof.v1"
 
@@ -178,6 +181,28 @@ def _json_status(payload: Mapping[str, Any] | None) -> str:
     if not isinstance(payload, Mapping):
         return ""
     return _string(payload.get("status") or payload.get("ok"))
+
+
+def _load_env_file_values(paths: Sequence[Path]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for path in paths:
+        values.update(parse_env_file_values(path.expanduser().resolve()))
+    return values
+
+
+def _first_env_value(values: Mapping[str, str], *names: str) -> str:
+    for name in names:
+        value = _string(os.getenv(name)) or _string(values.get(name))
+        if value:
+            return value
+    return ""
+
+
+def _pipeline_intake_token(token_env: str, env_file_values: Mapping[str, str]) -> str:
+    token = _first_env_value(env_file_values, token_env)
+    if not token and token_env != "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN":
+        token = _first_env_value(env_file_values, "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN")
+    return token
 
 
 def build_deployment_parity_proof(
@@ -358,6 +383,8 @@ def build_deployment_parity_proof(
         "webapp_url": webapp_base_url or None,
         "pipeline_intake_url": pipeline_base_url or None,
         "blockers": blockers,
+        "simulator_execution_proven": False,
+        "public_claim_upgrade_allowed": False,
         "checks": {
             "route_forwarding_proof": route_proof_hints,
             "webapp_health": webapp_health,
@@ -401,6 +428,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--pipeline-intake-url", default=os.getenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL") or os.getenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_URL") or "")
     parser.add_argument("--route-forwarding-proof", type=Path)
     parser.add_argument("--pipeline-intake-token-env", default="ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN")
+    parser.add_argument(
+        "--forwarding-env-file",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Read forwarding/intake env values from a local env file. Process env still wins."
+        ),
+    )
     parser.add_argument("--webapp-repo", type=Path, default=ROOT.parent / "Blueprint-WebApp")
     parser.add_argument("--pipeline-repo", type=Path, default=ROOT)
     parser.add_argument("--capture-repo", type=Path, default=ROOT.parent / "BlueprintCapture")
@@ -419,19 +455,37 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(list(argv or sys.argv[1:]))
     capture_root = args.capture_root.resolve()
     output_path = (args.output or _default_output_path(capture_root)).resolve()
-    token = _string(os.getenv(args.pipeline_intake_token_env))
-    if not token and args.pipeline_intake_token_env != "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN":
-        token = _string(os.getenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN"))
+    env_file_values = _load_env_file_values(args.forwarding_env_file)
+    token = _pipeline_intake_token(args.pipeline_intake_token_env, env_file_values)
+    webapp_url = _string(args.webapp_url) or _first_env_value(
+        env_file_values,
+        "BLUEPRINT_WEBAPP_PRODUCTION_URL",
+        "ALPHA_BASE_URL",
+        "BASE_URL",
+    )
+    pipeline_intake_url = _string(args.pipeline_intake_url) or _first_env_value(
+        env_file_values,
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_URL",
+        "BLUEPRINT_LIVE_PIPELINE_INTAKE_URL",
+    )
+    webapp_deployed_commit = _string(args.webapp_deployed_commit) or _first_env_value(
+        env_file_values,
+        "BLUEPRINT_WEBAPP_DEPLOYED_COMMIT",
+    )
+    pipeline_deployed_commit = _string(args.pipeline_deployed_commit) or _first_env_value(
+        env_file_values,
+        "BLUEPRINT_PIPELINE_DEPLOYED_COMMIT",
+    )
 
     report = build_deployment_parity_proof(
-        webapp_url=args.webapp_url,
-        pipeline_intake_url=args.pipeline_intake_url,
+        webapp_url=webapp_url,
+        pipeline_intake_url=pipeline_intake_url,
         pipeline_intake_token=token,
         webapp_repo=args.webapp_repo.resolve(),
         pipeline_repo=args.pipeline_repo.resolve(),
         capture_repo=args.capture_repo.resolve() if args.capture_repo else None,
-        webapp_deployed_commit=args.webapp_deployed_commit,
-        pipeline_deployed_commit=args.pipeline_deployed_commit,
+        webapp_deployed_commit=webapp_deployed_commit,
+        pipeline_deployed_commit=pipeline_deployed_commit,
         route_forwarding_proof_path=args.route_forwarding_proof.resolve()
         if args.route_forwarding_proof
         else None,

@@ -117,6 +117,17 @@ def test_g1_field_run_capture_kit_writes_operator_packet_without_secrets(tmp_pat
     assert config["job_context"]["site_submission_id"] == "site-submission-123"  # type: ignore[index]
     assert config["job_context"]["capture_job_id"] == "capture-job-123"  # type: ignore[index]
     assert config["job_context"]["robot_profile_id"] == "unitree_g1_humanoid"  # type: ignore[index]
+    assert config["policy_id"] == "unitree_rl_gym_g1_mujoco_policy_candidate"
+    assert config["task_id"] == "walk_to_target"
+    assert config["scenario_eval_run_id"] == "robot-eval-test-site-a_walk_to_target_pose"
+    assert config["scenario_variation_instance_id"] == "site-a_walk_to_target_pose"
+    assert config["allowed_task_set"][0]["policy_id"] == (  # type: ignore[index]
+        "unitree_rl_gym_g1_mujoco_policy_candidate"
+    )
+    assert (
+        config["exclusion_and_abort_criteria"]["loose_or_inferred_anchor_matches_allowed"]  # type: ignore[index]
+        is False
+    )
     assert config["policy"]["source_repo"] == "https://github.com/unitreerobotics/unitree_rl_gym"  # type: ignore[index]
     assert config["policy"]["fallback_source_repo"] == "https://github.com/unitreerobotics/unitree_rl_lab"  # type: ignore[index]
     assert config["policy"]["sim_bridge_repo"] == "https://github.com/unitreerobotics/unitree_mujoco"  # type: ignore[index]
@@ -126,6 +137,19 @@ def test_g1_field_run_capture_kit_writes_operator_packet_without_secrets(tmp_pat
     assert config["real_robot_pov_contract"]["physical_source_required"] is True  # type: ignore[index]
     assert config["real_robot_pov_contract"]["simulator_frames_count_as_real_pov"] is False  # type: ignore[index]
     assert config["real_robot_pov_contract"]["test_fixture_policy"]["synthetic_media_can_upgrade_readiness"] is False  # type: ignore[index]
+    assert config["required_owner_evidence_before_physical_claim"] == [
+        "robot_camera_video",
+        "action_log",
+        "timestamp_alignment",
+        "hardware_validation",
+        "contact_collision_log",
+        "policy_metrics",
+        "robot_team_review",
+    ]
+    assert config["attestation_requirements"]["operator_attestation_signed"] is False  # type: ignore[index]
+    assert config["attestation_requirements"]["hardware_owner_attestation_signed"] is False  # type: ignore[index]
+    assert config["attestation_requirements"]["safety_reviewer_attestation_signed"] is False  # type: ignore[index]
+    assert config["attestation_requirements"]["robot_team_review_attestation_signed"] is False  # type: ignore[index]
     assert config["commands"]["required_env"] == [  # type: ignore[index]
         "BLUEPRINT_G1_CAMERA_SOURCE",
         "BLUEPRINT_G1_POLICY_COMMAND",
@@ -151,6 +175,41 @@ def test_g1_field_run_capture_kit_writes_operator_packet_without_secrets(tmp_pat
     ]
     expected = _read_json(Path(artifacts["evidence_manifest"]))  # type: ignore[index]
     assert "robot_camera_video.mp4" in expected["required_files"]  # type: ignore[index]
+    assert expected["required_exact_join_keys"] == [
+        "scenario_eval_run_id",
+        "policy_id",
+        "task_id",
+        "scenario_variation_instance_id",
+    ]
+    assert expected["expected_anchor_join_key"] == {
+        "scenario_eval_run_id": "robot-eval-test-site-a_walk_to_target_pose",
+        "policy_id": "unitree_rl_gym_g1_mujoco_policy_candidate",
+        "task_id": "walk_to_target",
+        "scenario_variation_instance_id": "site-a_walk_to_target_pose",
+    }
+    assert expected["required_owner_evidence_before_physical_claim"] == [
+        "robot_camera_video",
+        "action_log",
+        "timestamp_alignment",
+        "hardware_validation",
+        "contact_collision_log",
+        "policy_metrics",
+        "robot_team_review",
+    ]
+    assert expected["required_signed_attestations_before_physical_claim"] == [
+        "operator_attestation_signed",
+        "hardware_owner_attestation_signed",
+        "safety_reviewer_attestation_signed",
+        "robot_team_review_attestation_signed",
+    ]
+    assert expected["physical_claim_gate"] == {  # type: ignore[index]
+        "templates_are_not_evidence": True,
+        "exact_join_keys_required": True,
+        "owner_evidence_required": True,
+        "unsigned_attestations_fail_closed": True,
+        "sim_only_policy_comparison_blocked_by_missing_physical_evidence": False,
+    }
+    assert expected["contracts"]["controlled_field_anchor_request_packet"] == artifacts["controlled_field_anchor_request_packet"]  # type: ignore[index]
     assert expected["contracts"]["real_robot_pov_capture_contract"] == artifacts["real_robot_pov_capture_contract"]  # type: ignore[index]
     assert expected["contracts"]["safety_review_checklist"] == artifacts["safety_review_checklist"]  # type: ignore[index]
     assert expected["required_live_commands"] == [  # type: ignore[index]
@@ -175,6 +234,7 @@ def test_g1_field_run_capture_kit_writes_operator_packet_without_secrets(tmp_pat
     assert script.index("CONTACT_PID=$!") < script.index('python - "$POLICY_COMMAND"')
     assert "g1_controlled_run_inputs.json" in script
     readme = Path(artifacts["readme"]).read_text(encoding="utf-8")  # type: ignore[index]
+    assert "controlled_field_anchor_request_packet.json" in readme
     assert "real_robot_pov_capture_contract.json" in readme
     assert "safety_review_checklist.json" in readme
     assert "Job request source: `robot_eval_jobs`" in readme
@@ -193,6 +253,22 @@ def test_g1_field_run_capture_kit_writes_operator_packet_without_secrets(tmp_pat
     assert "rpa_" not in json.dumps(manifest)
     assert "rpa_" not in script
     assert manifest["proof_boundary"]["requires_real_g1_hardware"] is True  # type: ignore[index]
+    anchor_request = _read_json(Path(artifacts["controlled_field_anchor_request_packet"]))  # type: ignore[index]
+    assert anchor_request["status"] == "not_requested_for_sim_only"
+    assert anchor_request["blockers"] == []
+    assert anchor_request["required_exact_join_keys"] == [
+        "scenario_eval_run_id",
+        "policy_id",
+        "task_id",
+        "scenario_variation_instance_id",
+    ]
+    assert anchor_request["anchor_join_key"] == {
+        "scenario_eval_run_id": "robot-eval-test-site-a_walk_to_target_pose",
+        "policy_id": "unitree_rl_gym_g1_mujoco_policy_candidate",
+        "task_id": "walk_to_target",
+        "scenario_variation_instance_id": "site-a_walk_to_target_pose",
+    }
+    assert anchor_request["loose_or_inferred_matches_allowed_for_calibration"] is False
     pov_contract = _read_json(Path(artifacts["real_robot_pov_capture_contract"]))  # type: ignore[index]
     assert pov_contract["job_context"]["job_id"] == job_id  # type: ignore[index]
     assert pov_contract["job_context"]["site_submission_id"] == "site-submission-123"  # type: ignore[index]

@@ -26,6 +26,7 @@ REVIEWABLE_FAILURE_REVIEW_STATUSES = {
     "ready_for_review",
     "reviewable_failure_hypothesis",
     "reviewable_generated_media",
+    "available_for_human_audit_not_required_for_sim_only_metric",
 }
 
 NON_REVIEWABLE_FAILURE_REVIEW_STATUSES = {

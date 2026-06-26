@@ -70,6 +70,71 @@ ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS = (
 CANDIDATE_SELECTION_REPORT_SCHEMA_VERSION = "wam_candidate_selection_report.v1"
 CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN = 0.05
 CANDIDATE_SELECTION_HIGH_UNCERTAINTY_THRESHOLD = 0.5
+SHORT_VISUAL_SANITY_PASSED_STATUSES = {
+    "passed_short_visual_sanity",
+}
+SHORT_VISUAL_SANITY_MANIFEST_KEYS = (
+    "short_visual_sanity_manifest_path",
+    "persistent_wam_short_visual_sanity_manifest_path",
+    "review_quality_manifest_path",
+)
+SHORT_VISUAL_SANITY_INLINE_KEYS = (
+    "short_visual_sanity_manifest",
+    "persistent_wam_short_visual_sanity_manifest",
+    "review_quality_manifest",
+)
+REVIEW_LABEL_REF_KEYS = (
+    "review_label_ref",
+    "review_label_refs",
+    "review_label_path",
+    "review_label_paths",
+    "review_evidence_ref",
+    "review_evidence_refs",
+    "reviewer_id",
+    "reviewed_by",
+    "review_provenance",
+    "label_provenance",
+    "human_review_label_path",
+    "vlm_review_result_path",
+    "reviewed_visual_label_path",
+)
+REVIEW_PROVENANCE_REF_KEYS = (
+    "source_policy_observation_visual_qa_path",
+    "wam_rollout_visual_quality_report_path",
+    "video_review_status_path",
+    "review_video_path",
+    "wam_rollout_frame_stats_path",
+    "source_label_path",
+    "evidence_path",
+)
+CONTACT_SHEET_REF_KEYS = (
+    "wam_rollout_contact_sheet_path",
+    "contact_sheet_path",
+)
+CONSISTENCY_SIGNAL_SUMMARY_SCHEMA_VERSION = "wam_forward_inverse_consistency_signal_summary.v1"
+CONSISTENCY_SIGNAL_KEYS = (
+    "forward_inverse_consistency_proven",
+    "forward_dynamics_consistency_proven",
+    "inverse_dynamics_consistency_proven",
+    "forward_consistent",
+    "inverse_consistent",
+)
+CONSISTENCY_OVERCLAIM_KEYS = (
+    "evaluator_bounded_policy_ranking_upgraded_by_consistency",
+    "policy_success_claimed_from_consistency",
+    "task_success_claimed_from_consistency",
+    "rank_fidelity_claimed_from_consistency",
+    "deployment_readiness_claimed_from_consistency",
+    "sensor_truth_claimed_from_consistency",
+    "external_validation_claimed_from_consistency",
+    "policy_success_proven",
+    "task_success_proven",
+    "rank_fidelity_result_proven",
+    "deployment_readiness_proven",
+    "sensor_truth_proven",
+    "external_validation_proven",
+    "public_claim_upgrade_allowed",
+)
 
 WAM_ARTIFACT_PATHS = {
     "evaluation_substrate_registry": "evaluation_substrate_registry.json",
@@ -98,6 +163,7 @@ WAM_ARTIFACT_PATHS = {
     "wam_classical_sim_cross_check_plan": "wam_classical_sim_cross_check_plan.json",
     "candidate_selection_report": "candidate_selection_report.json",
     "candidate_selection_report_markdown": "candidate_selection_report.md",
+    "visual_review_blocker_summary": "visual_review_blocker_summary.json",
     "customer_handoff_report": "customer_handoff_report.json",
     "customer_handoff_report_markdown": "customer_handoff_report.md",
 }
@@ -137,6 +203,14 @@ def _optional_number(value: Any) -> float | None:
         return None
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return _string(value).lower() in {"1", "true", "yes", "y", "on", "passed"}
+
+
 def _ordered_unique_strings(values: Sequence[Any]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -152,14 +226,269 @@ def _dedupe(values: Sequence[str]) -> list[str]:
     return _ordered_unique_strings(values)
 
 
+def _consistency_support_signal_summary(
+    *,
+    labels: Mapping[str, Any],
+    label_rows: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    sources: list[Mapping[str, Any]] = [labels, *label_rows]
+    signal_fields_present = sorted(
+        {
+            key
+            for source in sources
+            for key in CONSISTENCY_SIGNAL_KEYS
+            if key in source
+        }
+    )
+    overclaim_fields_present = sorted(
+        {
+            key
+            for source in sources
+            for key in CONSISTENCY_OVERCLAIM_KEYS
+            if key in source and _truthy(source.get(key))
+        }
+    )
+    proven_label_count = sum(
+        1
+        for row in label_rows
+        if any(_truthy(row.get(key)) for key in CONSISTENCY_SIGNAL_KEYS)
+    )
+    return {
+        "schema_version": CONSISTENCY_SIGNAL_SUMMARY_SCHEMA_VERSION,
+        "status": "support_signal_present" if signal_fields_present else "not_provided",
+        "support_signal_only": True,
+        "label_count_with_consistency_signal": proven_label_count,
+        "signal_fields_present": signal_fields_present,
+        "ignored_upgrade_fields_present": overclaim_fields_present,
+        "ranking_inputs_unchanged": True,
+        "task_success_labels_unchanged": True,
+        "evaluator_bounded_policy_ranking_upgraded_by_consistency": False,
+        "policy_success_claimed_from_consistency": False,
+        "task_success_claimed_from_consistency": False,
+        "rank_fidelity_claimed_from_consistency": False,
+        "deployment_readiness_claimed_from_consistency": False,
+        "sensor_truth_claimed_from_consistency": False,
+        "external_validation_claimed_from_consistency": False,
+        "public_claim_upgrade_allowed": False,
+        "claim_boundary": {
+            "forward_inverse_consistency_is_reliability_review_signal_only": True,
+            "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking": True,
+            "forward_inverse_consistency_does_not_prove_policy_success": True,
+            "forward_inverse_consistency_does_not_prove_task_success": True,
+            "forward_inverse_consistency_does_not_prove_rank_fidelity": True,
+            "forward_inverse_consistency_does_not_prove_deployment_readiness": True,
+            "forward_inverse_consistency_does_not_prove_sensor_truth": True,
+            "forward_inverse_consistency_is_not_external_validation": True,
+        },
+    }
+
+
 def _safe_id(value: Any, *, fallback: str = "item") -> str:
     text = _string(value) or fallback
     cleaned = "".join(char.lower() if char.isalnum() else "_" for char in text)
     return "_".join(part for part in cleaned.split("_") if part) or fallback
 
 
+def _refs_from_keys(payload: Mapping[str, Any], keys: Sequence[str]) -> list[str]:
+    refs: list[str] = []
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            refs.extend(_string(item) for item in value.values() if _string(item))
+        else:
+            refs.extend(_string_list(value))
+    return _dedupe(refs)
+
+
+def _artifact_refs_with_markers(
+    payload: Mapping[str, Any],
+    markers: Sequence[str],
+) -> list[str]:
+    artifact_paths = _mapping(payload.get("artifact_paths") or payload.get("artifactPaths"))
+    refs: list[str] = []
+    for key, value in artifact_paths.items():
+        key_text = _string(key).lower()
+        if any(marker in key_text for marker in markers):
+            refs.extend(_string_list(value))
+            if not isinstance(value, (str, Sequence)) or isinstance(value, Mapping):
+                refs.append(_string(value))
+    return _dedupe(refs)
+
+
+def _review_label_refs(payload: Mapping[str, Any]) -> list[str]:
+    return _dedupe(
+        [
+            *_refs_from_keys(payload, REVIEW_LABEL_REF_KEYS),
+            *_artifact_refs_with_markers(payload, ("review", "reviewed", "human", "vlm")),
+        ]
+    )
+
+
+def _contact_sheet_refs(payload: Mapping[str, Any]) -> list[str]:
+    return _dedupe(
+        [
+            *_refs_from_keys(payload, CONTACT_SHEET_REF_KEYS),
+            *_artifact_refs_with_markers(payload, ("contact_sheet",)),
+        ]
+    )
+
+
+def _review_provenance_refs(payload: Mapping[str, Any]) -> list[str]:
+    return _dedupe(
+        [
+            *_refs_from_keys(payload, REVIEW_PROVENANCE_REF_KEYS),
+            *_artifact_refs_with_markers(
+                payload,
+                ("visual_quality", "video_review", "frame_stats", "review_video"),
+            ),
+        ]
+    )
+
+
+def _inline_short_visual_sanity_manifest(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    for key in SHORT_VISUAL_SANITY_INLINE_KEYS:
+        manifest = _mapping(payload.get(key))
+        if manifest:
+            return manifest
+    return {}
+
+
+def _short_visual_sanity_manifest_paths(payload: Mapping[str, Any]) -> list[str]:
+    return _dedupe(
+        [
+            *_refs_from_keys(payload, SHORT_VISUAL_SANITY_MANIFEST_KEYS),
+            *_artifact_refs_with_markers(
+                payload,
+                ("short_visual_sanity", "persistent_wam_short_visual_sanity"),
+            ),
+        ]
+    )
+
+
+def _load_short_visual_sanity_manifest_from_ref(path_text: str) -> Dict[str, Any]:
+    path = Path(path_text).expanduser()
+    if not path.is_file():
+        return {}
+    return _read_optional_mapping(path)
+
+
+def _short_visual_sanity_gate_from_labels(labels: Mapping[str, Any]) -> Dict[str, Any]:
+    label_rows = [row for row in labels.get("labels", []) or [] if isinstance(row, Mapping)]
+    sources = [labels, *label_rows]
+    manifest: Dict[str, Any] = {}
+    manifest_path = ""
+    for source in sources:
+        manifest = _inline_short_visual_sanity_manifest(source)
+        paths = _short_visual_sanity_manifest_paths(source)
+        if paths and not manifest_path:
+            manifest_path = paths[0]
+        if not manifest and paths:
+            manifest = _load_short_visual_sanity_manifest_from_ref(paths[0])
+        if manifest:
+            manifest_path = (
+                _string(manifest.get("short_visual_sanity_manifest_path"))
+                or _string(manifest.get("manifest_path"))
+                or manifest_path
+            )
+            break
+
+    contact_sheet_refs = _dedupe(
+        [
+            *_contact_sheet_refs(labels),
+            *[ref for row in label_rows for ref in _contact_sheet_refs(row)],
+            *_contact_sheet_refs(manifest),
+        ]
+    )
+    provenance_refs = _dedupe(
+        [
+            *_review_provenance_refs(labels),
+            *[ref for row in label_rows for ref in _review_provenance_refs(row)],
+            *_review_provenance_refs(manifest),
+        ]
+    )
+    review_label_refs = _dedupe(
+        [
+            *_review_label_refs(labels),
+            *[ref for row in label_rows for ref in _review_label_refs(row)],
+        ]
+    )
+    missing_review_label_ids = [
+        _string(row.get("label_id"))
+        or _string(row.get("attempt_id"))
+        or _string(row.get("rollout_id"))
+        or f"label_{index:04d}"
+        for index, row in enumerate(label_rows, start=1)
+        if not _review_label_refs(row) and not _review_label_refs(labels)
+    ]
+    missing_review_grade_label_ids = [
+        _string(row.get("label_id"))
+        or _string(row.get("attempt_id"))
+        or _string(row.get("rollout_id"))
+        or f"label_{index:04d}"
+        for index, row in enumerate(label_rows, start=1)
+        if row.get("review_grade_success_label") is not True
+    ]
+
+    blockers: list[str] = []
+    if not manifest:
+        blockers.append("short_visual_sanity_manifest_missing_for_review_grade_ranking")
+    else:
+        manifest_status = _string(manifest.get("status"))
+        if (
+            manifest_status not in SHORT_VISUAL_SANITY_PASSED_STATUSES
+            or manifest.get("short_visual_sanity_passed") is not True
+        ):
+            blockers.append("short_visual_sanity_manifest_not_passed")
+        if _string(manifest.get("visual_profile")) != "review_quality":
+            blockers.append("short_visual_sanity_manifest_not_review_quality")
+        if manifest.get("visually_useful_rollout") is not True:
+            blockers.append("short_visual_sanity_manifest_not_visually_useful")
+        if _string(manifest.get("source_policy_observation_visual_qa_status")) and (
+            _string(manifest.get("source_policy_observation_visual_qa_status"))
+            != "passed_visual_quality_gate"
+        ):
+            blockers.append("short_visual_sanity_source_observation_qa_not_passed")
+        blockers.extend(_string_list(manifest.get("blockers")))
+    if not manifest_path:
+        blockers.append("short_visual_sanity_manifest_ref_missing")
+    if not contact_sheet_refs:
+        blockers.append("short_visual_sanity_contact_sheet_ref_missing")
+    if not provenance_refs:
+        blockers.append("review_quality_provenance_refs_missing")
+    if label_rows and missing_review_label_ids:
+        blockers.append("review_grade_success_label_refs_missing")
+    if label_rows and missing_review_grade_label_ids:
+        blockers.append("review_grade_success_labels_missing_for_some_rollouts")
+
+    blockers = sorted(set(blockers))
+    return {
+        "status": "passed"
+        if not blockers
+        else "blocked_visual_review_required",
+        "passed": not blockers,
+        "manifest_path": manifest_path or None,
+        "manifest_status": _string(manifest.get("status")) or None,
+        "short_visual_sanity_passed": manifest.get("short_visual_sanity_passed")
+        is True,
+        "visual_profile": _string(manifest.get("visual_profile")) or None,
+        "visually_useful_rollout": manifest.get("visually_useful_rollout") is True,
+        "contact_sheet_refs": contact_sheet_refs,
+        "provenance_refs": provenance_refs,
+        "review_label_refs": review_label_refs,
+        "missing_review_label_ids": missing_review_label_ids,
+        "missing_review_grade_success_label_ids": missing_review_grade_label_ids,
+        "blockers": blockers,
+        "claim_boundary": {
+            "short_visual_sanity_is_review_quality_gate_not_task_success_proof": True,
+            "generated_observations_are_support_artifacts_not_sensor_truth": True,
+            "review_labels_required_for_success_label_use_in_ranking": True,
+        },
+    }
+
+
 def _visual_review_gate_from_labels(labels: Mapping[str, Any]) -> Dict[str, Any]:
     label_rows = [row for row in labels.get("labels", []) or [] if isinstance(row, Mapping)]
+    short_visual_sanity_gate = _short_visual_sanity_gate_from_labels(labels)
     visual_smoke_statuses = _string_list(labels.get("visual_smoke_statuses"))
     if not visual_smoke_statuses:
         visual_smoke_statuses = sorted(
@@ -185,10 +514,12 @@ def _visual_review_gate_from_labels(labels: Mapping[str, Any]) -> Dict[str, Any]
         labels.get("review_grade_success_labels")
         and visual_rollout_useful
         and not fixture_only
+        and short_visual_sanity_gate["passed"]
     )
     blockers = _string_list(labels.get("visual_review_blockers"))
     for row in label_rows:
         blockers.extend(_string_list(row.get("visual_review_blockers")))
+    blockers.extend(_string_list(short_visual_sanity_gate.get("blockers")))
     if fixture_only and FIXTURE_VISUAL_REVIEW_BLOCKER not in blockers:
         blockers.append(FIXTURE_VISUAL_REVIEW_BLOCKER)
     if not visual_rollout_useful and not blockers:
@@ -218,6 +549,8 @@ def _visual_review_gate_from_labels(labels: Mapping[str, Any]) -> Dict[str, Any]
         ),
         "review_grade_success_labels": review_grade_success_labels,
         "fixture_evaluator_only": fixture_only,
+        "short_visual_sanity_gate": short_visual_sanity_gate,
+        "review_quality_manifest_required_for_policy_ranking": True,
         "blockers": blockers,
     }
 
@@ -521,9 +854,32 @@ def _normalized_attempt_trace(
         for label in labels.get("labels", []) or []
         if isinstance(label, Mapping)
     ]
+    short_visual_sanity_gate = _short_visual_sanity_gate_from_labels(labels)
+    shared_review_refs = _review_label_refs(labels)
+    shared_contact_refs = _string_list(short_visual_sanity_gate.get("contact_sheet_refs"))
+    shared_provenance_refs = _string_list(short_visual_sanity_gate.get("provenance_refs"))
     attempts: list[Dict[str, Any]] = []
     for label in label_rows:
         success = bool(label.get("task_success"))
+        review_label_refs = _dedupe([*shared_review_refs, *_review_label_refs(label)])
+        frame_or_clip_refs = _dedupe_refs(
+            [
+                *_failure_frame_or_clip_refs(label),
+                *shared_contact_refs,
+                *_contact_sheet_refs(label),
+            ]
+        )
+        visual_review_blockers = _dedupe(
+            [
+                *_string_list(label.get("visual_review_blockers")),
+                *_string_list(short_visual_sanity_gate.get("blockers")),
+                *(
+                    ["review_grade_label_refs_missing"]
+                    if not review_label_refs
+                    else []
+                ),
+            ]
+        )
         attempts.append(
             {
                 "attempt_id": label.get("attempt_id"),
@@ -543,22 +899,31 @@ def _normalized_attempt_trace(
                 "confidence": label.get("confidence"),
                 "evidence_refs": _failure_evidence_refs(
                     label,
-                    extra_refs=("vision_success_labels.json",),
+                    extra_refs=(
+                        "vision_success_labels.json",
+                        *_string_list(short_visual_sanity_gate.get("manifest_path")),
+                        *shared_contact_refs,
+                        *shared_provenance_refs,
+                        *review_label_refs,
+                    ),
                 ),
                 "source_trace_refs": _dedupe_refs(["vision_success_labels.json"]),
-                "frame_or_clip_refs": _failure_frame_or_clip_refs(label),
+                "frame_or_clip_refs": frame_or_clip_refs,
                 "visual_smoke_ref": label.get("visual_smoke_ref")
                 or label.get("visualSmokeRef"),
                 "visual_smoke_status": label.get("visual_smoke_status"),
                 "visual_rollout_useful_for_task_success_review": bool(
                     label.get("visual_rollout_useful_for_task_success_review")
                 ),
-                "visual_review_blockers": _string_list(label.get("visual_review_blockers")),
+                "visual_review_blockers": visual_review_blockers,
                 "fixture_evaluator_only": bool(label.get("fixture_evaluator_only")),
                 "review_grade_visual_evidence_available": bool(
                     label.get("review_grade_visual_evidence_available")
                 ),
                 "review_grade_success_label": bool(label.get("review_grade_success_label")),
+                "review_status": label.get("review_status") or label.get("review_label_status"),
+                "review_label_refs": review_label_refs,
+                "short_visual_sanity_gate": short_visual_sanity_gate,
                 "generated_wam_rollout": True,
                 "model_derived_support_artifact": True,
                 "metrics": {
@@ -573,6 +938,8 @@ def _normalized_attempt_trace(
                     "generated_wam_attempt": True,
                     "model_derived_support_artifact": True,
                     "visual_smoke_required_for_review_grade_success_label": True,
+                    "short_visual_sanity_required_for_review_grade_success_label": True,
+                    "review_label_refs_required_for_review_grade_success_label": True,
                     "visual_rollout_useful_for_task_success_review": bool(
                         label.get("visual_rollout_useful_for_task_success_review")
                     ),
@@ -608,6 +975,7 @@ def _normalized_attempt_trace(
         "covered_scenario_eval_run_ids": run_ids,
         "missing_scenario_eval_run_ids": [],
         "scenario_eval_run_coverage_complete": bool(run_ids),
+        "short_visual_sanity_gate": short_visual_sanity_gate,
         "attempts": attempts,
         "claim_boundary": _claim_boundary(substrate=substrate, generated_at=generated_at),
     }
@@ -667,9 +1035,16 @@ def _failure_labels(
             attempt.get("visual_rollout_useful_for_task_success_review")
         )
         attempt_visual_blockers = _string_list(attempt.get("visual_review_blockers"))
+        short_visual_sanity_gate = _mapping(attempt.get("short_visual_sanity_gate"))
+        review_label_refs = _string_list(attempt.get("review_label_refs"))
         fixture_only = bool(attempt.get("fixture_evaluator_only"))
         if fixture_only and FIXTURE_VISUAL_REVIEW_BLOCKER not in attempt_visual_blockers:
             attempt_visual_blockers.append(FIXTURE_VISUAL_REVIEW_BLOCKER)
+        attempt_visual_blockers.extend(_string_list(short_visual_sanity_gate.get("blockers")))
+        if short_visual_sanity_gate.get("passed") is not True:
+            attempt_visual_blockers.append("short_visual_sanity_gate_not_passed")
+        if not review_label_refs:
+            attempt_visual_blockers.append("review_grade_failure_label_refs_missing")
         if not visual_rollout_useful and not attempt_visual_blockers:
             attempt_visual_blockers.append("generated_rollout_visual_smoke_missing_or_failed")
         visual_smoke_statuses.append(visual_smoke_status)
@@ -708,6 +1083,8 @@ def _failure_labels(
             "visual_smoke_status": visual_smoke_status,
             "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
             "visual_review_blockers": sorted(set(attempt_visual_blockers)),
+            "short_visual_sanity_gate": short_visual_sanity_gate,
+            "review_label_refs": review_label_refs,
             "fixture_evaluator_only": fixture_only,
             "review_grade_failure_diagnosis": False,
             "authoritative_failure_diagnosis": False,
@@ -724,6 +1101,8 @@ def _failure_labels(
         if review_status == "non_reviewable_failure_hypothesis":
             nonreviewable_labels.append(label_id)
         if fixture_only or not visual_rollout_useful:
+            nonreviewable_labels.append(label_id)
+        if attempt_visual_blockers:
             nonreviewable_labels.append(label_id)
         labels.append(label)
     coverage_blockers = []
@@ -1020,6 +1399,10 @@ def _policy_scorecard(
 ) -> Dict[str, Any]:
     label_rows = [dict(item) for item in labels.get("labels", []) or [] if isinstance(item, Mapping)]
     visual_review_gate = _visual_review_gate_from_labels(labels)
+    consistency_signal_summary = _consistency_support_signal_summary(
+        labels=labels,
+        label_rows=label_rows,
+    )
     by_policy: Dict[str, list[Dict[str, Any]]] = {}
     for label in label_rows:
         by_policy.setdefault(_string(label.get("policy_id")) or "policy", []).append(label)
@@ -1197,8 +1580,17 @@ def _policy_scorecard(
     if not score_ranges_valid:
         comparison_blockers.extend(score_range_blockers)
     comparison_blockers = _dedupe(comparison_blockers)
+    visual_review_blockers = visual_review_gate["blockers"]
+    visual_review_required = bool(
+        visual_review_blockers
+        or not visual_review_gate["review_grade_success_labels"]
+        or not visual_review_gate["visual_rollout_useful_for_task_success_review"]
+        or not _mapping(visual_review_gate.get("short_visual_sanity_gate")).get("passed")
+    )
     if comparison_blockers:
         status = "blocked_inconclusive_ranking"
+    elif visual_review_required:
+        status = "completed_visual_review_required"
     elif ranking_ambiguous:
         status = "completed_ambiguous_ranking"
     elif uncertainty_penalty_applied or ood_blockers:
@@ -1206,7 +1598,12 @@ def _policy_scorecard(
     else:
         status = "completed"
     single_best_policy_claimed = bool(
-        ranked and not comparison_blockers and not ranking_ambiguous
+        ranked
+        and status == "completed"
+        and not comparison_blockers
+        and not ranking_ambiguous
+        and not uncertainty_penalty_applied
+        and not ood_blockers
     )
     evaluator_top_policy_id = ranked[0]["policy_id"] if ranked else None
     confidence_level = "blocked"
@@ -1233,7 +1630,7 @@ def _policy_scorecard(
         "visual_rollout_useful_for_task_success_review": visual_review_gate[
             "visual_rollout_useful_for_task_success_review"
         ],
-        "visual_review_blockers": visual_review_gate["blockers"],
+        "visual_review_blockers": visual_review_blockers,
         "fixture_evaluator_only": visual_review_gate["fixture_evaluator_only"],
         "review_grade_visual_evidence_available": visual_review_gate[
             "review_grade_visual_evidence_available"
@@ -1243,12 +1640,18 @@ def _policy_scorecard(
         "review_grade_policy_ranking_status": "completed"
         if review_grade_policy_ranking
         else "blocked_visual_review_required",
+        "short_visual_sanity_gate": visual_review_gate["short_visual_sanity_gate"],
+        "review_quality_manifest_required_for_policy_ranking": True,
         "comparison_contract": {
             "primary_eval_question": (
                 "which policy_or_checkpoint performs better inside this configured evaluator"
             ),
             "comparison_scope": "configured_evaluator_only",
             "same_scenario_eval_matrix_required": True,
+            "same_observation_protocol": True,
+            "same_observation_protocol_id": "blueprint.robot_eval.observation.v1",
+            "same_action_protocol": True,
+            "same_action_protocol_id": "blueprint.robot_eval.action_trace.v1",
             "same_observation_and_label_protocol_required": True,
             "ranking_metrics": [
                 "predicted_success_rate",
@@ -1264,9 +1667,15 @@ def _policy_scorecard(
             "traditional_sim_cross_check_optional": True,
             "evaluation_readiness_claimed": False,
             "external_deployment_grade_claimed": False,
+            "forward_inverse_consistency_metrics_are_support_signals_only": True,
+            "forward_inverse_consistency_does_not_upgrade_policy_ranking": True,
+            "forward_inverse_consistency_does_not_prove_task_success": True,
+            "forward_inverse_consistency_is_not_external_validation": True,
             "single_best_policy_claim_requires_margin_above_tie_band": True,
             "review_grade_policy_ranking_requires_passed_visual_smoke": True,
             "fixture_evaluator_only_ranking_is_not_review_grade": True,
+            "review_grade_policy_ranking_requires_short_visual_sanity_manifest": True,
+            "review_grade_policy_ranking_requires_review_label_refs": True,
         },
         "policy_count": len(ranked),
         "scenario_attempt_count": len(label_rows),
@@ -1279,6 +1688,7 @@ def _policy_scorecard(
         "comparison_blockers": comparison_blockers,
         "score_ranges_valid": score_ranges_valid,
         "score_range_blockers": _dedupe(score_range_blockers),
+        "forward_inverse_consistency_signal_summary": consistency_signal_summary,
         "policy_rankings": ranked,
         "evaluator_top_policy_id": evaluator_top_policy_id,
         "top_policy_id": evaluator_top_policy_id if single_best_policy_claimed else None,
@@ -1316,6 +1726,8 @@ def _policy_scorecard(
         "claim_boundary": {
             **_claim_boundary(substrate=substrate, generated_at=generated_at),
             "visual_smoke_required_for_review_grade_policy_ranking": True,
+            "short_visual_sanity_required_for_review_grade_policy_ranking": True,
+            "review_label_refs_required_for_review_grade_policy_ranking": True,
             "visual_rollout_useful_for_task_success_review": visual_review_gate[
                 "visual_rollout_useful_for_task_success_review"
             ],
@@ -1423,6 +1835,7 @@ def _candidate_selection_summary(scorecard: Mapping[str, Any]) -> Dict[str, Any]
         return {
             "status": "blocked_missing_ranking_evidence",
             "top_policy_id": None,
+            "evaluator_top_policy_id": None,
             "runner_up_policy_id": None,
             "margin": None,
             "ranking_ambiguous": True,
@@ -1436,6 +1849,7 @@ def _candidate_selection_summary(scorecard: Mapping[str, Any]) -> Dict[str, Any]
         return {
             "status": "single_candidate_no_comparative_ranking",
             "top_policy_id": None,
+            "evaluator_top_policy_id": only.get("policy_id"),
             "runner_up_policy_id": None,
             "margin": None,
             "ranking_ambiguous": True,
@@ -1469,20 +1883,100 @@ def _candidate_selection_summary(scorecard: Mapping[str, Any]) -> Dict[str, Any]
         )
         < CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN
     ]
+    fallback_shortlist = shortlist
+    if len(fallback_shortlist) < 2:
+        fallback_shortlist = ranked[:2]
     ambiguous = success_margin < CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN
+    scorecard_status = _string(scorecard.get("status"))
+    comparison_blockers = _string_list(scorecard.get("comparison_blockers"))
+    confidence = _mapping(scorecard.get("ranking_confidence"))
+    visual_blockers = _string_list(scorecard.get("visual_review_blockers"))
+    short_visual_sanity_gate = _mapping(scorecard.get("short_visual_sanity_gate"))
+    visual_review_required = bool(
+        scorecard_status == "completed_visual_review_required"
+        or visual_blockers
+        or short_visual_sanity_gate.get("passed") is False
+        or not bool(scorecard.get("visual_rollout_useful_for_task_success_review"))
+        or bool(scorecard.get("fixture_evaluator_only"))
+        or not bool(scorecard.get("review_grade_success_labels"))
+    )
+    low_confidence_reasons = [
+        *_string_list(confidence.get("ood_blockers")),
+        *(
+            ["uncertainty_penalty_applied"]
+            if bool(confidence.get("uncertainty_penalty_applied"))
+            else []
+        ),
+    ]
+    low_confidence = bool(
+        scorecard_status == "completed_low_confidence_ranking" or low_confidence_reasons
+    )
+    if comparison_blockers or scorecard_status == "blocked_inconclusive_ranking":
+        return {
+            "status": "blocked_inconclusive_candidate_selection",
+            "top_policy_id": None,
+            "evaluator_top_policy_id": top.get("policy_id"),
+            "runner_up_policy_id": runner_up.get("policy_id"),
+            "margin": {
+                "predicted_success_rate": success_margin,
+                "mean_uncertainty_advantage": uncertainty_delta,
+                "ambiguity_threshold": CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN,
+            },
+            "ranking_ambiguous": True,
+            "tie_or_ambiguity_status": "blocked_inconclusive",
+            "candidate_shortlist": ranked,
+            "ambiguity_reasons": [
+                "policy_ranking_scorecard_blocked_or_inconclusive",
+                *comparison_blockers,
+            ],
+            "policy_rankings": ranked,
+        }
     return {
-        "status": "ambiguous_candidate_shortlist" if ambiguous else "clear_winner",
-        "top_policy_id": None if ambiguous else top.get("policy_id"),
+        "status": (
+            "visual_review_required_candidate_shortlist"
+            if visual_review_required
+            else "ambiguous_candidate_shortlist"
+            if ambiguous
+            else "low_confidence_candidate_shortlist"
+            if low_confidence
+            else "clear_winner"
+        ),
+        "top_policy_id": None
+        if ambiguous or visual_review_required or low_confidence
+        else top.get("policy_id"),
+        "evaluator_top_policy_id": top.get("policy_id"),
         "runner_up_policy_id": runner_up.get("policy_id"),
         "margin": {
             "predicted_success_rate": success_margin,
             "mean_uncertainty_advantage": uncertainty_delta,
             "ambiguity_threshold": CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN,
         },
-        "ranking_ambiguous": ambiguous,
-        "tie_or_ambiguity_status": "ambiguous" if ambiguous else "clear",
-        "candidate_shortlist": shortlist if ambiguous else [],
-        "ambiguity_reasons": ["top_two_success_rates_within_threshold"] if ambiguous else [],
+        "ranking_ambiguous": bool(ambiguous or visual_review_required or low_confidence),
+        "tie_or_ambiguity_status": (
+            "visual_review_required"
+            if visual_review_required
+            else "ambiguous"
+            if ambiguous
+            else "low_confidence"
+            if low_confidence
+            else "clear"
+        ),
+        "candidate_shortlist": fallback_shortlist
+        if ambiguous or visual_review_required or low_confidence
+        else [],
+        "ambiguity_reasons": (
+            [
+                "visual_review_blockers_or_fixture_only_labels_prevent_winner_claim",
+                *visual_blockers,
+                *_string_list(short_visual_sanity_gate.get("blockers")),
+            ]
+            if visual_review_required
+            else ["top_two_success_rates_within_threshold"]
+            if ambiguous
+            else ["ranking_low_confidence", *low_confidence_reasons]
+            if low_confidence
+            else []
+        ),
         "policy_rankings": ranked,
     }
 
@@ -1856,6 +2350,100 @@ def _dominant_failure_modes_from_clusters(
     ]
 
 
+def _recommended_reruns(
+    *,
+    selection: Mapping[str, Any],
+    high_uncertainty: Sequence[Mapping[str, Any]],
+    ood_blockers: Sequence[Mapping[str, Any]],
+    clusters: Sequence[Mapping[str, Any]],
+    visual_gate: Mapping[str, Any],
+) -> list[Dict[str, Any]]:
+    reruns: list[Dict[str, Any]] = []
+    if selection.get("top_policy_id") is None:
+        reruns.append(
+            {
+                "reason": "candidate_selection_not_decisive_enough_for_winner_claim",
+                "status": "recommended",
+                "policy_ids": [
+                    _string(row.get("policy_id"))
+                    for row in selection.get("candidate_shortlist", []) or []
+                    if isinstance(row, Mapping) and _string(row.get("policy_id"))
+                ],
+                "scenario_eval_run_ids": [],
+            }
+        )
+    blockers = _string_list(visual_gate.get("blockers"))
+    if blockers:
+        reruns.append(
+            {
+                "reason": "visual_review_blockers_present",
+                "status": "required_before_review_grade_policy_ranking",
+                "blockers": blockers,
+                "policy_ids": [
+                    _string(row.get("policy_id"))
+                    for row in selection.get("candidate_shortlist", []) or []
+                    if isinstance(row, Mapping) and _string(row.get("policy_id"))
+                ],
+                "scenario_eval_run_ids": [],
+            }
+        )
+    if high_uncertainty:
+        reruns.append(
+            {
+                "reason": "high_uncertainty_scenarios",
+                "status": "recommended",
+                "policy_ids": sorted(
+                    {
+                        _string(row.get("policy_id"))
+                        for row in high_uncertainty
+                        if _string(row.get("policy_id"))
+                    }
+                ),
+                "scenario_eval_run_ids": sorted(
+                    {
+                        _string(row.get("scenario_eval_run_id"))
+                        for row in high_uncertainty
+                        if _string(row.get("scenario_eval_run_id"))
+                    }
+                ),
+            }
+        )
+    if ood_blockers:
+        reruns.append(
+            {
+                "reason": "ood_blockers_present",
+                "status": "recommended",
+                "policy_ids": sorted(
+                    {
+                        policy_id
+                        for row in ood_blockers
+                        for policy_id in _string_list(row.get("affected_policy_ids"))
+                    }
+                ),
+                "scenario_eval_run_ids": sorted(
+                    {
+                        run_id
+                        for row in ood_blockers
+                        for run_id in _string_list(row.get("scenario_eval_run_ids"))
+                    }
+                ),
+            }
+        )
+    for cluster in clusters[:5]:
+        if not isinstance(cluster, Mapping):
+            continue
+        reruns.append(
+            {
+                "reason": "failure_cluster_regression",
+                "status": "recommended",
+                "failure_mode_id": cluster.get("failure_mode_id") or "unknown_needs_review",
+                "policy_ids": _string_list(cluster.get("affected_policy_ids")),
+                "scenario_eval_run_ids": _string_list(cluster.get("scenario_eval_run_ids")),
+            }
+        )
+    return reruns
+
+
 def _candidate_selection_report(
     *,
     job_id: str,
@@ -1880,6 +2468,21 @@ def _candidate_selection_report(
     coverage = _scenario_matrix_coverage(matrix=matrix, labels=labels, scorecard=scorecard)
     high_uncertainty = _high_uncertainty_scenarios(labels)
     ood_blockers = _ood_blockers(labels)
+    visual_gate = {
+        "status": scorecard.get("review_grade_policy_ranking_status")
+        or "blocked_visual_review_required",
+        "visual_smoke_status": scorecard.get("visual_smoke_status"),
+        "visual_rollout_useful_for_task_success_review": bool(
+            scorecard.get("visual_rollout_useful_for_task_success_review")
+        ),
+        "review_grade_policy_ranking": bool(scorecard.get("review_grade_policy_ranking")),
+        "fixture_evaluator_only": bool(scorecard.get("fixture_evaluator_only")),
+        "short_visual_sanity_gate": _mapping(scorecard.get("short_visual_sanity_gate")),
+        "blockers": _string_list(scorecard.get("visual_review_blockers")),
+    }
+    consistency_signal_summary = _mapping(
+        scorecard.get("forward_inverse_consistency_signal_summary")
+    )
     exemplar_refs: list[Dict[str, Any]] = []
     for scenario in decisive[:4]:
         exemplar_refs.extend(
@@ -1893,10 +2496,9 @@ def _candidate_selection_report(
             for ref in cluster.get("exemplar_evidence_refs", []) or []
             if isinstance(ref, Mapping)
         )
-    usable_anchor_count = int(_number(anchor_manifest.get("usable_anchor_count"), 0) or 0)
     claim_boundary = {
         **_claim_boundary(substrate=substrate, generated_at=generated_at),
-        "boundary_statement": "do not use for generated-world rank-fidelity result",
+        "boundary_statement": "sim-ranking handoff only; IRL validation is out of scope",
         "do_not_use_as_rank_fidelity_result": True,
         "rank_fidelity_result_claimed": False,
         "accepted_anchor_success_claimed": False,
@@ -1911,48 +2513,45 @@ def _candidate_selection_report(
         "primary_eval_question": "which policy performed best in this evaluator, and what broke",
         "selection": selection,
         "top_policy_id": selection.get("top_policy_id"),
+        "evaluator_top_policy_id": selection.get("evaluator_top_policy_id"),
         "runner_up_policy_id": selection.get("runner_up_policy_id"),
         "margin": selection.get("margin"),
         "tie_or_ambiguity_status": selection.get("tie_or_ambiguity_status"),
         "candidate_shortlist": selection.get("candidate_shortlist"),
+        "recommendation": {
+            "recommended_policy_id": selection.get("top_policy_id"),
+            "evaluator_top_policy_id": selection.get("evaluator_top_policy_id"),
+            "status": "recommended_in_configured_evaluator"
+            if selection.get("top_policy_id")
+            else "no_winner_claim_use_shortlist",
+            "basis": "policy_ranking_scorecard.json",
+            "why_not_recommended": _string_list(selection.get("ambiguity_reasons")),
+        },
         "scenario_matrix_coverage": coverage,
         "decisive_scenarios": decisive,
         "high_uncertainty_scenarios": high_uncertainty,
         "ood_blockers": ood_blockers,
+        "visual_reviewability_gate": visual_gate,
+        "forward_inverse_consistency_signal_summary": consistency_signal_summary,
         "dominant_failure_modes": _dominant_failure_modes_from_clusters(clusters),
         "failure_clusters": clusters,
         "failure_evidence_status": "unknown_needs_review"
         if clusters and all(cluster.get("evidence_strength") == "weak" for cluster in clusters)
         else ("no_failures_observed_in_evaluator" if not clusters else "label_only_needs_review"),
         "exemplar_evidence_refs": exemplar_refs[:10],
-        "real_world_validation_followup_request": {
-            "artifact_path": "real_world_validation_followup_request.json",
-            "status": followup.get("status") or "requested_real_world_validation_anchors",
-            "triggered_by_no_real_world_anchors": usable_anchor_count == 0,
-            "usable_anchor_count": usable_anchor_count,
-            "requested_anchor_rollouts": _string_list(followup.get("requested_anchor_rollouts")),
-            "minimum_validation_requirements": followup.get("minimum_validation_requirements")
-            or {},
-        },
-        "real_world_validation_requests": [
-            {
-                "request_type": "paired_real_world_rollout_anchors",
-                "status": followup.get("status") or "requested_real_world_validation_anchors",
-                "artifact_path": "real_world_validation_followup_request.json",
-                "needed_before_external_claims": True,
-            }
-        ],
+        "recommended_reruns": _recommended_reruns(
+            selection=selection,
+            high_uncertainty=high_uncertainty,
+            ood_blockers=ood_blockers,
+            clusters=clusters,
+            visual_gate=visual_gate,
+        ),
         "artifact_paths": {
             "policy_ranking_scorecard": "policy_ranking_scorecard.json",
             "vision_success_labels": "vision_success_labels.json",
             "failure_labels": "failure_labels.json",
             "wam_rollout_results": "wam_rollout_results.json",
-            "real_world_validation_followup_request": (
-                "real_world_validation_followup_request.json"
-            ),
-            "wam_real_world_validation_anchor_manifest": (
-                "wam_real_world_validation_anchor_manifest.json"
-            ),
+            "visual_review_blocker_summary": "visual_review_blocker_summary.json",
         },
         "claim_boundary": claim_boundary,
     }
@@ -1961,7 +2560,8 @@ def _candidate_selection_report(
 def _candidate_selection_markdown(report: Mapping[str, Any]) -> str:
     selection = _mapping(report.get("selection"))
     margin = _mapping(report.get("margin"))
-    top_policy = report.get("top_policy_id") or "ambiguous, use shortlist"
+    recommended_policy = report.get("top_policy_id") or "none; use shortlist"
+    evaluator_top_policy = report.get("evaluator_top_policy_id") or "none"
     shortlist = [
         _string(row.get("policy_id"))
         for row in report.get("candidate_shortlist", []) or []
@@ -1972,12 +2572,13 @@ def _candidate_selection_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"Status: `{report.get('status')}`",
         f"Evaluation substrate: `{report.get('evaluation_substrate')}`",
-        f"Top policy: `{top_policy}`",
+        f"Recommended policy: `{recommended_policy}`",
+        f"Evaluator top policy: `{evaluator_top_policy}`",
         f"Runner-up: `{report.get('runner_up_policy_id')}`",
         f"Predicted success-rate margin: `{margin.get('predicted_success_rate')}`",
         f"Tie or ambiguity status: `{report.get('tie_or_ambiguity_status')}`",
         "",
-        "Boundary: do not use for generated-world rank-fidelity result.",
+        "Boundary: sim-ranking handoff only; IRL validation is out of scope.",
         "",
     ]
     if shortlist:
@@ -2015,18 +2616,6 @@ def _candidate_selection_markdown(report: Mapping[str, Any]) -> str:
             )
     else:
         lines.append("- No failed evaluator labels were produced.")
-    lines.extend(
-        [
-            "",
-            "## Real-World Validation",
-            "",
-            (
-                "- Follow-up request: "
-                f"`{_mapping(report.get('real_world_validation_followup_request')).get('status')}`"
-            ),
-            "",
-        ]
-    )
     if selection.get("ambiguity_reasons"):
         lines.extend(
             [
@@ -2036,7 +2625,72 @@ def _candidate_selection_markdown(report: Mapping[str, Any]) -> str:
                 "",
             ]
         )
+    reruns = report.get("recommended_reruns", []) or []
+    lines.extend(["## Recommended Reruns", ""])
+    if reruns:
+        for rerun in reruns[:8]:
+            if not isinstance(rerun, Mapping):
+                continue
+            lines.append(f"- `{rerun.get('reason')}`: `{rerun.get('status')}`")
+    else:
+        lines.append("- None from this fixture handoff.")
+    lines.append("")
     return "\n".join(lines)
+
+
+def _visual_review_blocker_summary(
+    *,
+    job_id: str,
+    substrate: str,
+    labels: Mapping[str, Any],
+    failure_labels: Mapping[str, Any],
+    scorecard: Mapping[str, Any],
+    candidate_selection_report: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    label_blockers = _string_list(labels.get("visual_review_blockers"))
+    failure_blockers = _string_list(failure_labels.get("visual_review_blockers"))
+    scorecard_blockers = _string_list(scorecard.get("visual_review_blockers"))
+    short_visual_sanity_gate = _mapping(scorecard.get("short_visual_sanity_gate"))
+    blockers = _dedupe(
+        [
+            *label_blockers,
+            *failure_blockers,
+            *scorecard_blockers,
+            *_string_list(short_visual_sanity_gate.get("blockers")),
+        ]
+    )
+    return {
+        "schema_version": "wam_visual_review_blocker_summary.v1",
+        "generated_at": generated_at,
+        "job_id": job_id,
+        "status": "blocked_visual_review_required" if blockers else "no_visual_review_blockers",
+        "evaluation_substrate": substrate,
+        "blockers": blockers,
+        "visual_smoke_status": scorecard.get("visual_smoke_status"),
+        "visual_rollout_useful_for_task_success_review": bool(
+            scorecard.get("visual_rollout_useful_for_task_success_review")
+        ),
+        "review_grade_policy_ranking": bool(scorecard.get("review_grade_policy_ranking")),
+        "fixture_evaluator_only": bool(scorecard.get("fixture_evaluator_only")),
+        "short_visual_sanity_gate": short_visual_sanity_gate,
+        "candidate_selection_status": candidate_selection_report.get("status"),
+        "recommended_policy_id": candidate_selection_report.get("top_policy_id"),
+        "evaluator_top_policy_id": candidate_selection_report.get("evaluator_top_policy_id"),
+        "source_artifacts": [
+            "vision_success_labels.json",
+            "failure_labels.json",
+            "policy_ranking_scorecard.json",
+            "candidate_selection_report.json",
+            "persistent_wam_short_visual_sanity_manifest.json",
+        ],
+        "claim_boundary": {
+            **_claim_boundary(substrate=substrate, generated_at=generated_at),
+            "valid_mp4_or_provider_completion_is_not_visual_success": True,
+            "visual_review_blockers_prevent_review_grade_policy_ranking": bool(blockers),
+            "short_visual_sanity_required_for_review_grade_policy_ranking": True,
+        },
+    }
 
 
 def _customer_handoff_markdown(report: Mapping[str, Any]) -> str:
@@ -2054,8 +2708,7 @@ def _customer_handoff_markdown(report: Mapping[str, Any]) -> str:
             "",
             (
                 "This ranks policies inside the configured evaluator. Generated rollouts "
-                "and fixture labels are support artifacts; they do not prove real-world "
-                "success, generated-world rank-fidelity result, robot safety, or customer-specific SRCC."
+                "and fixture labels are support artifacts for sim-ranking and failure triage."
             ),
             "",
         ]
@@ -2080,8 +2733,12 @@ def _customer_handoff_report(
         ),
         "review_grade_policy_ranking": bool(scorecard.get("review_grade_policy_ranking")),
         "fixture_evaluator_only": bool(scorecard.get("fixture_evaluator_only")),
+        "short_visual_sanity_gate": _mapping(scorecard.get("short_visual_sanity_gate")),
         "blockers": _string_list(scorecard.get("visual_review_blockers")),
     }
+    consistency_signal_summary = _mapping(
+        scorecard.get("forward_inverse_consistency_signal_summary")
+    )
     return {
         "schema_version": "wam_customer_handoff_report.v1",
         "generated_at": generated_at,
@@ -2089,10 +2746,14 @@ def _customer_handoff_report(
         "status": "generated",
         "evaluation_substrate": substrate,
         "top_policy_id": candidate_selection_report.get("top_policy_id"),
+        "evaluator_top_policy_id": candidate_selection_report.get("evaluator_top_policy_id"),
         "candidate_selection_report_path": "candidate_selection_report.json",
         "candidate_selection_summary": {
             "status": candidate_selection_report.get("status"),
             "top_policy_id": candidate_selection_report.get("top_policy_id"),
+            "evaluator_top_policy_id": candidate_selection_report.get(
+                "evaluator_top_policy_id"
+            ),
             "runner_up_policy_id": candidate_selection_report.get("runner_up_policy_id"),
             "margin": candidate_selection_report.get("margin"),
             "tie_or_ambiguity_status": candidate_selection_report.get(
@@ -2102,20 +2763,29 @@ def _customer_handoff_report(
         },
         "legacy_scorecard_top_policy_id": scorecard.get("top_policy_id"),
         "visual_reviewability_gate": visual_gate,
+        "forward_inverse_consistency_signal_summary": consistency_signal_summary,
         "artifact_paths": {
             key: value
             for key, value in WAM_ARTIFACT_PATHS.items()
-            if key not in {"customer_handoff_report_markdown", "candidate_selection_report_markdown"}
+            if key
+            not in {
+                "customer_handoff_report_markdown",
+                "candidate_selection_report_markdown",
+                "real_world_validation_followup_request",
+                "wam_real_world_validation_anchor_manifest",
+            }
         },
         "reader_boundary": (
-            "Generated WAM rollouts are model-derived support artifacts, not raw truth or "
-            "generated-world rank-fidelity result. Fixture-only labels and rankings are not review-grade "
-            "task-success evidence unless an explicit visual smoke artifact says the "
-            "rollout is useful for task-success review."
+            "Generated WAM rollouts and fixture-only labels are model-derived support "
+            "artifacts for sim-ranking and failure triage. They become review-grade "
+            "task-success evidence only when an explicit visual smoke artifact says "
+            "the rollout is useful for task-success review."
         ),
         "claim_boundary": {
             **_claim_boundary(substrate=substrate, generated_at=generated_at),
             "visual_smoke_required_for_review_grade_policy_ranking": True,
+            "short_visual_sanity_required_for_review_grade_policy_ranking": True,
+            "review_label_refs_required_for_review_grade_policy_ranking": True,
             "fixture_evaluator_only": bool(scorecard.get("fixture_evaluator_only")),
             "review_grade_policy_ranking": bool(scorecard.get("review_grade_policy_ranking")),
         },
@@ -2283,6 +2953,15 @@ def _blocked_wam_artifacts(
         candidate_selection_report=candidate_report,
         generated_at=generated_at,
     )
+    visual_blocker_summary = _visual_review_blocker_summary(
+        job_id=job_id,
+        substrate=substrate,
+        labels=labels,
+        failure_labels=failure_labels,
+        scorecard=scorecard,
+        candidate_selection_report=candidate_report,
+        generated_at=generated_at,
+    )
     payloads = {
         "wam_provider_runtime_package": runtime_package,
         "wam_provider_execution_manifest": provider_execution,
@@ -2305,6 +2984,7 @@ def _blocked_wam_artifacts(
         "wam_production_ops_manifest": production_ops,
         "wam_classical_sim_cross_check_plan": cross_check_plan,
         "candidate_selection_report": candidate_report,
+        "visual_review_blocker_summary": visual_blocker_summary,
         "customer_handoff_report": handoff,
     }
     _write_wam_artifacts(job_dir, payloads)
@@ -2605,6 +3285,15 @@ def run_wam_eval_job(
         candidate_selection_report=candidate_report,
         generated_at=generated,
     )
+    visual_blocker_summary = _visual_review_blocker_summary(
+        job_id=job_id,
+        substrate=substrate,
+        labels=labels,
+        failure_labels=failure_labels,
+        scorecard=scorecard,
+        candidate_selection_report=candidate_report,
+        generated_at=generated,
+    )
     payloads = {
         "wam_provider_runtime_package": provider_runtime_package,
         "wam_provider_execution_manifest": provider_execution,
@@ -2630,6 +3319,7 @@ def run_wam_eval_job(
         "wam_production_ops_manifest": production_ops,
         "wam_classical_sim_cross_check_plan": cross_check_plan,
         "candidate_selection_report": candidate_report,
+        "visual_review_blocker_summary": visual_blocker_summary,
         "customer_handoff_report": handoff,
     }
     _write_wam_artifacts(resolved_job_dir, payloads)

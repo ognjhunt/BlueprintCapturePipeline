@@ -18,6 +18,14 @@ from .g1_controlled_proof_setup import (
 
 G1_CONTROLLED_RUN_EVIDENCE_SCHEMA_VERSION = "g1_controlled_run_evidence_assembly.v1"
 EVIDENCE_INPUT_TEMPLATE_SCHEMA_VERSION = "g1_controlled_run_inputs.v1"
+CONTROLLED_FIELD_ANCHOR_REQUEST_SCHEMA_VERSION = "controlled_field_anchor_request_packet.v1"
+ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION = "accepted_real_world_anchor.v1"
+CONTROLLED_ANCHOR_JOIN_KEYS = (
+    "scenario_eval_run_id",
+    "policy_id",
+    "task_id",
+    "scenario_variation_instance_id",
+)
 
 
 REQUIRED_EVIDENCE_FILES = {
@@ -31,6 +39,41 @@ REQUIRED_EVIDENCE_FILES = {
     "policy_execution_trace": ("policy_execution_trace.jsonl", "policy_execution_trace.json"),
     "policy_metrics": ("policy_metrics.json",),
     "robot_team_review": ("robot_team_review.json", "policy_owner_review.json"),
+}
+OWNER_EVIDENCE_CLAIM_REQUIREMENTS = (
+    "robot_camera_video",
+    "action_log",
+    "timestamp_alignment",
+    "hardware_validation",
+    "contact_collision_log",
+    "policy_metrics",
+    "robot_team_review",
+)
+REQUIRED_ATTESTATION_FIELDS = {
+    "operator": {
+        "actor_field": "operator_id",
+        "statement_field": "operator_statement",
+        "signed_field": "operator_attestation_signed",
+        "signed_at_field": "operator_attestation_signed_at_utc",
+    },
+    "hardware_owner": {
+        "actor_field": "hardware_owner_id",
+        "statement_field": "hardware_owner_statement",
+        "signed_field": "hardware_owner_attestation_signed",
+        "signed_at_field": "hardware_owner_attestation_signed_at_utc",
+    },
+    "safety_reviewer": {
+        "actor_field": "safety_reviewer_id",
+        "statement_field": "safety_reviewer_statement",
+        "signed_field": "safety_reviewer_attestation_signed",
+        "signed_at_field": "safety_reviewer_attestation_signed_at_utc",
+    },
+    "robot_team_reviewer": {
+        "actor_field": "robot_team_reviewer_id",
+        "statement_field": "robot_team_review_statement",
+        "signed_field": "robot_team_review_attestation_signed",
+        "signed_at_field": "robot_team_review_attestation_signed_at_utc",
+    },
 }
 
 
@@ -103,10 +146,24 @@ def _discover_evidence_files(evidence_dir: Path) -> tuple[dict[str, Path], list[
 
 def _input_template(context: Mapping[str, Any]) -> dict[str, Any]:
     job_id = _string(context.get("job_id")) or "<robot-eval-job-id>"
+    task_id = _string(context.get("task_id")) or "<task-id>"
+    scenario_id = _string(context.get("scenario_id")) or "<scenario-id>"
+    scenario_eval_run_id = _string(context.get("scenario_eval_run_id")) or "<scenario-eval-run-id>"
+    variation_id = (
+        _string(context.get("scenario_variation_instance_id"))
+        or "<scenario-variation-instance-id>"
+    )
     return {
         "schema_version": EVIDENCE_INPUT_TEMPLATE_SCHEMA_VERSION,
         "job_id": job_id,
         "run_id": f"unitree-g1-controlled-run-{_safe_id(job_id, 'job')}",
+        "sim_only_mode": True,
+        "physical_evidence_required": False,
+        "policy_id": DEFAULT_POLICY_ID,
+        "task_id": task_id,
+        "scenario_id": scenario_id,
+        "scenario_eval_run_id": scenario_eval_run_id,
+        "scenario_variation_instance_id": variation_id,
         "robot_serial_or_fleet_id": "<unitree-g1-serial-or-fleet-id>",
         "site_or_lab_location_id": "<controlled-test-site-or-lab-id>",
         "operator_id": "<operator-id>",
@@ -117,8 +174,53 @@ def _input_template(context: Mapping[str, Any]) -> dict[str, Any]:
         "end_time_utc": "<timestamp>",
         "actual_status": "passed",
         "actual_success": True,
+        "actual_outcome": {
+            "actual_status": "passed",
+            "actual_success": True,
+            "failure_mode_ids": [],
+            "cycle_time_seconds": "<measured-cycle-time>",
+            "intervention_count": 0,
+        },
         "cycle_time_seconds": "<measured-cycle-time>",
         "intervention_count": 0,
+        "operator_site_checklist": {
+            "controlled_area_verified": False,
+            "floor_clear_for_g1_walk": False,
+            "bystander_exclusion_zone_marked": False,
+            "emergency_stop_operator_present": True,
+            "site_or_lab_location_id": "<controlled-test-site-or-lab-id>",
+        },
+        "allowed_task_set": [
+            {
+                "task_id": task_id,
+                "scenario_id": scenario_id,
+                "scenario_eval_run_id": scenario_eval_run_id,
+                "scenario_variation_instance_id": variation_id,
+                "policy_id": DEFAULT_POLICY_ID,
+                "allowed": True,
+            }
+        ],
+        "exclusion_and_abort_criteria": {
+            "excluded_task_ids": ["<any-task-not-listed-in-allowed_task_set>"],
+            "abort_conditions": [
+                "loss_of_comms",
+                "unexpected_human_entry",
+                "fall_detected",
+                "contact_force_exceeds_threshold",
+                "operator_estop",
+            ],
+            "loose_or_inferred_anchor_matches_allowed": False,
+        },
+        "robot_calibration_refs": {
+            "robot_state_log": "robot_state_log.jsonl",
+            "hardware_validation": "hardware_validation.json",
+            "contact_collision_log": "contact_collision_log.json",
+        },
+        "camera_calibration_refs": {
+            "robot_camera_video": "robot_camera_video.mp4",
+            "timestamp_alignment": "timestamp_alignment.json",
+            "camera_mount_or_sensor_ids": ["<g1-head-or-body-camera-id>"],
+        },
         "accepted_safety_thresholds": {
             "max_speed_mps": "<reviewed-threshold>",
             "min_human_clearance_m": "<reviewed-threshold>",
@@ -126,6 +228,16 @@ def _input_template(context: Mapping[str, Any]) -> dict[str, Any]:
             "emergency_stop_required": True,
         },
         "review_decision": "accepted",
+        "reviewer_decision": {
+            "safety_review_decision": "not_reviewed",
+            "policy_review_decision": "not_reviewed",
+            "accepted_for_calibration": False,
+        },
+        "owner_evidence_refs": {
+            "robot_camera_video": "robot_camera_video.mp4",
+            "action_log": "action_log.jsonl",
+            "timestamp_alignment": "timestamp_alignment.json",
+        },
         "storage_upload_performed": False,
         "entitlement_verified": False,
         "signed_customer_delivery_url": "<signed-customer-delivery-url>",
@@ -140,30 +252,81 @@ def _input_template(context: Mapping[str, Any]) -> dict[str, Any]:
             "I attest that the referenced files were captured from the physical Unitree G1 "
             "controlled run for this job, task, and scenario."
         ),
+        "operator_attestation_signed": False,
+        "operator_attestation_signed_at_utc": "<operator-attestation-signed-at>",
         "hardware_owner_statement": "I attest that the robot identifier and hardware run are accurate.",
+        "hardware_owner_attestation_signed": False,
+        "hardware_owner_attestation_signed_at_utc": "<hardware-owner-attestation-signed-at>",
         "safety_reviewer_statement": "I attest that the safety package was reviewed for this run.",
+        "safety_reviewer_attestation_signed": False,
+        "safety_reviewer_attestation_signed_at_utc": "<safety-reviewer-attestation-signed-at>",
         "robot_team_review_statement": (
             "I accept this non-default Unitree G1 policy package for this controlled run."
         ),
+        "robot_team_review_attestation_signed": False,
+        "robot_team_review_attestation_signed_at_utc": "<robot-team-review-attestation-signed-at>",
     }
 
 
-def _attestation(*, role: str, actor_id: str, statement: str) -> dict[str, Any]:
+def _attestation(
+    *,
+    role: str,
+    actor_id: str,
+    statement: str,
+    signed: bool,
+    signed_at_utc: str,
+) -> dict[str, Any]:
+    status = (
+        "signed"
+        if signed
+        and not _is_placeholder(actor_id)
+        and not _is_placeholder(statement)
+        and not _is_placeholder(signed_at_utc)
+        else "not_signed"
+    )
     return {
-        "status": "signed" if actor_id and "<" not in actor_id and statement else "not_signed",
+        "status": status,
         "role": role,
         "attested_by": actor_id,
         "statement": statement,
         "accepted_claim_boundary": (
             "This attestation applies only to the referenced physical Unitree G1 run evidence."
         ),
-        "signed_at_utc": utc_now_iso(),
+        "signed_at_utc": signed_at_utc,
     }
+
+
+def _attestation_from_config(config: Mapping[str, Any], role: str) -> dict[str, Any]:
+    fields = REQUIRED_ATTESTATION_FIELDS[role]
+    return _attestation(
+        role=role,
+        actor_id=_string(config.get(fields["actor_field"])),
+        statement=_string(config.get(fields["statement_field"])),
+        signed=_bool(config.get(fields["signed_field"])),
+        signed_at_utc=_string(config.get(fields["signed_at_field"])),
+    )
+
+
+def _attestation_config_blockers(config: Mapping[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    for role, fields in REQUIRED_ATTESTATION_FIELDS.items():
+        signed_field = fields["signed_field"]
+        signed_at_field = fields["signed_at_field"]
+        if not _bool(config.get(signed_field)):
+            blockers.append(f"unsigned_attestation:{role}")
+        signed_at = _string(config.get(signed_at_field))
+        if not signed_at or "<" in signed_at or ">" in signed_at:
+            blockers.append(f"missing_or_placeholder_attestation_signed_at:{role}")
+    return blockers
 
 
 def _required_config_blockers(config: Mapping[str, Any]) -> list[str]:
     required = [
         "run_id",
+        "policy_id",
+        "task_id",
+        "scenario_eval_run_id",
+        "scenario_variation_instance_id",
         "robot_serial_or_fleet_id",
         "site_or_lab_location_id",
         "operator_id",
@@ -192,6 +355,7 @@ def _required_config_blockers(config: Mapping[str, Any]) -> list[str]:
         value = _string(config.get(field))
         if not value or "<" in value or ">" in value:
             blockers.append(f"missing_or_placeholder_config:{field}")
+    blockers.extend(_attestation_config_blockers(config))
     thresholds = _mapping(config.get("accepted_safety_thresholds"))
     for field in ("max_speed_mps", "min_human_clearance_m", "max_contact_force_n"):
         value = _string(thresholds.get(field))
@@ -219,6 +383,77 @@ def _required_config_blockers(config: Mapping[str, Any]) -> list[str]:
         blockers.append("entitlement_not_verified")
     if not _bool(config.get("external_use_allowed")):
         blockers.append("rights_privacy_external_use_not_allowed")
+    return blockers
+
+
+def _configured_policy_id(config: Mapping[str, Any]) -> str:
+    return _string(config.get("policy_id")) or DEFAULT_POLICY_ID
+
+
+def _physical_evidence_required(config: Mapping[str, Any]) -> bool:
+    reviewer_decision = _mapping(config.get("reviewer_decision"))
+    return bool(
+        _bool(config.get("physical_evidence_required"))
+        or _bool(config.get("field_evidence_required"))
+        or _bool(config.get("accepted_for_calibration"))
+        or _bool(reviewer_decision.get("accepted_for_calibration"))
+    )
+
+
+def _expected_anchor_values(context: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "policy_id": DEFAULT_POLICY_ID,
+        "task_id": _string(context.get("task_id")),
+        "scenario_eval_run_id": _string(context.get("scenario_eval_run_id")),
+        "scenario_variation_instance_id": _string(
+            context.get("scenario_variation_instance_id")
+        ),
+    }
+
+
+def _anchor_join_key(config: Mapping[str, Any], context: Mapping[str, Any]) -> dict[str, str]:
+    expected = _expected_anchor_values(context)
+    return {
+        "scenario_eval_run_id": _string(config.get("scenario_eval_run_id"))
+        or expected["scenario_eval_run_id"],
+        "policy_id": _configured_policy_id(config),
+        "task_id": _string(config.get("task_id")) or expected["task_id"],
+        "scenario_variation_instance_id": _string(
+            config.get("scenario_variation_instance_id")
+        )
+        or expected["scenario_variation_instance_id"],
+    }
+
+
+def _anchor_context_blockers(config: Mapping[str, Any], context: Mapping[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    expected = _expected_anchor_values(context)
+    for field, expected_value in expected.items():
+        configured = _string(config.get(field))
+        if not configured or "<" in configured or ">" in configured:
+            continue
+        if expected_value and configured != expected_value:
+            blockers.append(f"mismatched_anchor_join_key:{field}")
+    allowed_rows = config.get("allowed_task_set")
+    if not isinstance(allowed_rows, list) or not allowed_rows:
+        blockers.append("missing_allowed_task_set")
+    else:
+        join_key = _anchor_join_key(config, context)
+        if not any(
+            isinstance(row, Mapping)
+            and all(_string(row.get(key)) == value for key, value in join_key.items())
+            and row.get("allowed") is True
+            for row in allowed_rows
+        ):
+            blockers.append("allowed_task_set_missing_exact_anchor_join_key")
+    if not isinstance(config.get("operator_site_checklist"), Mapping):
+        blockers.append("missing_operator_site_checklist")
+    if not isinstance(config.get("exclusion_and_abort_criteria"), Mapping):
+        blockers.append("missing_exclusion_and_abort_criteria")
+    if not isinstance(config.get("robot_calibration_refs"), Mapping):
+        blockers.append("missing_robot_calibration_refs")
+    if not isinstance(config.get("camera_calibration_refs"), Mapping):
+        blockers.append("missing_camera_calibration_refs")
     return blockers
 
 
@@ -264,6 +499,22 @@ def _is_placeholder(value: Any) -> bool:
     return not text or "<" in text or ">" in text
 
 
+def _contains_placeholder_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return "<" in value or ">" in value
+    if isinstance(value, Mapping):
+        return any(_contains_placeholder_value(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_placeholder_value(item) for item in value)
+    return False
+
+
+def _placeholder_evidence_blocker(evidence_id: str, value: Any) -> list[str]:
+    if _contains_placeholder_value(value):
+        return [f"placeholder_evidence_value:{evidence_id}"]
+    return []
+
+
 def _accepted_status(value: Any) -> bool:
     return _string(value).lower() in {"accepted", "approved", "passed", "succeeded", "complete"}
 
@@ -273,6 +524,7 @@ def _evidence_content_blockers(
     config: Mapping[str, Any],
 ) -> list[str]:
     blockers: list[str] = []
+    expected_policy_id = _configured_policy_id(config)
     video_path = discovered_files.get("robot_camera_video")
     if video_path and video_path.stat().st_size <= 0:
         blockers.append("empty_evidence_file:robot_camera_video")
@@ -282,6 +534,7 @@ def _evidence_content_blockers(
         alignment, alignment_blockers = _read_json_file(alignment_path, "timestamp_alignment")
         blockers.extend(alignment_blockers)
         if not alignment_blockers:
+            blockers.extend(_placeholder_evidence_blocker("timestamp_alignment", alignment))
             alignment_map = _mapping(alignment)
             max_error = _number(alignment_map.get("max_alignment_error_ms"))
             if max_error is None:
@@ -295,6 +548,8 @@ def _evidence_content_blockers(
             continue
         records, record_blockers = _read_json_records(path, evidence_id)
         blockers.extend(record_blockers)
+        if not record_blockers:
+            blockers.extend(_placeholder_evidence_blocker(evidence_id, records))
         if evidence_id == "action_log" and records:
             action_record_fields = {
                 "action_id",
@@ -323,8 +578,15 @@ def _evidence_content_blockers(
             elif any(_number(record.get("exit_code")) != 0 for record in completed):
                 blockers.append("command_log_policy_command_exit_nonzero")
         if evidence_id == "policy_execution_trace" and records:
-            if not any(_string(_mapping(record).get("policy_id")) for record in records):
+            policy_ids = [
+                _string(_mapping(record).get("policy_id"))
+                for record in records
+                if _string(_mapping(record).get("policy_id"))
+            ]
+            if not policy_ids:
                 blockers.append("policy_execution_trace_missing_policy_id")
+            elif expected_policy_id not in policy_ids:
+                blockers.append("policy_execution_trace_policy_id_mismatch")
 
     contact_path = discovered_files.get("contact_collision_log")
     if contact_path:
@@ -332,6 +594,7 @@ def _evidence_content_blockers(
         blockers.extend(contact_blockers)
         contact_map = _mapping(contact)
         if not contact_blockers:
+            blockers.extend(_placeholder_evidence_blocker("contact_collision_log", contact))
             if _string(contact_map.get("status")).lower() == "operator_review_required":
                 blockers.append("contact_collision_log_still_operator_review_required")
             max_contact_force = _number(contact_map.get("max_contact_force_n"))
@@ -347,6 +610,7 @@ def _evidence_content_blockers(
         blockers.extend(hardware_blockers)
         hardware_map = _mapping(hardware)
         if not hardware_blockers:
+            blockers.extend(_placeholder_evidence_blocker("hardware_validation", hardware))
             if hardware_map.get("hardware_ready") is not True:
                 blockers.append("hardware_validation_not_ready")
             if hardware_map.get("estop_verified") is not True:
@@ -360,6 +624,7 @@ def _evidence_content_blockers(
         blockers.extend(metrics_blockers)
         metrics_map = _mapping(metrics)
         if not metrics_blockers:
+            blockers.extend(_placeholder_evidence_blocker("policy_metrics", metrics))
             episode_count = _number(metrics_map.get("episode_count"))
             if episode_count is None or episode_count <= 0:
                 blockers.append("policy_metrics_missing_episode_count")
@@ -376,14 +641,127 @@ def _evidence_content_blockers(
         blockers.extend(review_blockers)
         review_map = _mapping(review)
         if not review_blockers:
+            blockers.extend(_placeholder_evidence_blocker("robot_team_review", review))
             if review_map.get("accepted") is not True:
                 blockers.append("robot_team_review_not_accepted")
             if not _accepted_status(review_map.get("review_decision")):
                 blockers.append("robot_team_review_decision_not_accepted")
             if _is_placeholder(review_map.get("reviewer_id")):
                 blockers.append("robot_team_review_missing_reviewer_id")
+            elif _string(review_map.get("reviewer_id")) != _string(
+                config.get("robot_team_reviewer_id")
+            ):
+                blockers.append("robot_team_review_reviewer_id_mismatch")
 
     return blockers
+
+
+def _attestation_is_signed(attestation: Mapping[str, Any]) -> bool:
+    return (
+        _string(attestation.get("status")) == "signed"
+        and not _is_placeholder(attestation.get("attested_by"))
+        and not _is_placeholder(attestation.get("statement"))
+        and not _is_placeholder(attestation.get("signed_at_utc"))
+    )
+
+
+def _controlled_anchor_request_packet(
+    *,
+    context: Mapping[str, Any],
+    config: Mapping[str, Any],
+    output_root: Path,
+    evidence_root: Path,
+    evidence_file_refs: Mapping[str, Any],
+    blockers: Sequence[str],
+    ready: bool,
+    physical_evidence_required: bool,
+) -> dict[str, Any]:
+    join_key = _anchor_join_key(config, context)
+    status = (
+        "ready_for_calibration_intake"
+        if ready
+        else "blocked_missing_evidence"
+        if physical_evidence_required
+        else "not_requested_for_sim_only"
+    )
+    return {
+        "schema_version": CONTROLLED_FIELD_ANCHOR_REQUEST_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": status,
+        "capture_root_job_context": dict(context),
+        "output_dir": str(output_root),
+        "evidence_dir": str(evidence_root),
+        "accepted_anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+        "required_exact_join_keys": list(CONTROLLED_ANCHOR_JOIN_KEYS),
+        "anchor_join_key": join_key,
+        "loose_or_inferred_matches_allowed_for_calibration": False,
+        "operator_site_checklist": _mapping(config.get("operator_site_checklist")),
+        "allowed_task_set": config.get("allowed_task_set") or [],
+        "exclusion_and_abort_criteria": _mapping(config.get("exclusion_and_abort_criteria")),
+        "robot_calibration_refs": _mapping(config.get("robot_calibration_refs")),
+        "camera_calibration_refs": _mapping(config.get("camera_calibration_refs")),
+        "policy_id": join_key["policy_id"],
+        "task_id": join_key["task_id"],
+        "scenario_eval_run_id": join_key["scenario_eval_run_id"],
+        "scenario_variation_instance_id": join_key["scenario_variation_instance_id"],
+        "actual_outcome": {
+            **_mapping(config.get("actual_outcome")),
+            "actual_status": _string(config.get("actual_status"))
+            or _string(_mapping(config.get("actual_outcome")).get("actual_status")),
+            "actual_success": _bool(
+                config.get("actual_success")
+                if config.get("actual_success") is not None
+                else _mapping(config.get("actual_outcome")).get("actual_success")
+            ),
+            "cycle_time_seconds": _number(config.get("cycle_time_seconds")),
+            "intervention_count": _number(config.get("intervention_count"), 0),
+        },
+        "reviewer_decision": {
+            **_mapping(config.get("reviewer_decision")),
+            "safety_review_decision": _string(config.get("review_decision")) or "not_reviewed",
+            "policy_review_decision": "accepted" if ready else "not_accepted",
+            "accepted_for_calibration": ready,
+        },
+        "owner_evidence": {
+            "operator_id": _string(config.get("operator_id")),
+            "hardware_owner_id": _string(config.get("hardware_owner_id")),
+            "required_before_physical_claim": list(OWNER_EVIDENCE_CLAIM_REQUIREMENTS),
+            "owner_evidence_refs": _mapping(config.get("owner_evidence_refs")),
+            "evidence_file_refs": dict(evidence_file_refs),
+            "all_required_owner_evidence_present": all(
+                evidence_file_refs.get(evidence_id)
+                for evidence_id in OWNER_EVIDENCE_CLAIM_REQUIREMENTS
+            ),
+        },
+        "timestamps": {
+            "start_time_utc": _string(config.get("start_time_utc")),
+            "end_time_utc": _string(config.get("end_time_utc")),
+        },
+        "artifact_provenance": {
+            "input_config_path": str(evidence_root / "g1_controlled_run_inputs.json"),
+            "assembly_output_dir": str(output_root),
+            "evidence_file_refs": dict(evidence_file_refs),
+            "claim_boundary": (
+                "This packet can carry controlled field evidence when explicitly requested. "
+                "For sim-only runs it is not a blocker and does not request physical evidence."
+            ),
+        },
+        "blockers": (
+            sorted(set(_string(item) for item in blockers if _string(item)))
+            if physical_evidence_required
+            else []
+        ),
+        "diagnostic_blockers": sorted(set(_string(item) for item in blockers if _string(item))),
+        "proof_boundary": {
+            **_proof_boundary(),
+            "accepted_anchors_can_calibrate_evaluator_ranking_against_supplied_outcomes": ready,
+            "broad_deployment_readiness_proven": False,
+            "safety_validation_proven": False,
+            "future_real_world_success_proven": False,
+            "sim_only_beta_ranking_blocked": False,
+            "physical_evidence_not_requested_for_sim_only": not physical_evidence_required,
+        },
+    }
 
 
 def _proof_boundary() -> dict[str, bool]:
@@ -442,45 +820,75 @@ def assemble_g1_controlled_run_evidence(
     )
     ensure_dir(output_root)
 
-    discovered_files, file_blockers = _discover_evidence_files(evidence_root)
-    config_blockers = _required_config_blockers(config)
-    content_blockers = _evidence_content_blockers(discovered_files, config)
+    discovered_files, discovered_missing_files = _discover_evidence_files(evidence_root)
+    physical_evidence_required = _physical_evidence_required(config)
+    if physical_evidence_required:
+        file_blockers = discovered_missing_files
+        config_blockers = [
+            *_required_config_blockers(config),
+            *_anchor_context_blockers(config, context),
+        ]
+        content_blockers = _evidence_content_blockers(discovered_files, config)
+    else:
+        file_blockers = []
+        config_blockers = []
+        content_blockers = []
     blockers = [*file_blockers, *config_blockers, *content_blockers]
-    ready = not blockers
+    ready = bool(physical_evidence_required and not blockers)
+    status = (
+        "ready_for_live_input_staging"
+        if ready
+        else "blocked_missing_evidence"
+        if physical_evidence_required
+        else "not_requested_for_sim_only"
+    )
     job_id_value = _string(context.get("job_id"))
-    task_id = _string(context.get("task_id"))
+    anchor_join_key = _anchor_join_key(config, context)
+    policy_id = anchor_join_key["policy_id"]
+    task_id = anchor_join_key["task_id"]
     scenario_id = _string(context.get("scenario_id"))
-    scenario_variation_id = _string(context.get("scenario_variation_instance_id"))
-    scenario_eval_run_id = _string(context.get("scenario_eval_run_id"))
+    scenario_variation_id = anchor_join_key["scenario_variation_instance_id"]
+    scenario_eval_run_id = anchor_join_key["scenario_eval_run_id"]
     run_id = _string(config.get("run_id")) or f"unitree-g1-controlled-run-{_safe_id(job_id_value, 'job')}"
-    operator_attestation = _attestation(
-        role="operator",
-        actor_id=_string(config.get("operator_id")),
-        statement=_string(config.get("operator_statement")),
-    )
-    hardware_owner_attestation = _attestation(
-        role="hardware_owner",
-        actor_id=_string(config.get("hardware_owner_id")),
-        statement=_string(config.get("hardware_owner_statement")),
-    )
-    safety_attestation = _attestation(
-        role="safety_reviewer",
-        actor_id=_string(config.get("safety_reviewer_id")),
-        statement=_string(config.get("safety_reviewer_statement")),
-    )
-    robot_team_attestation = _attestation(
-        role="robot_team_reviewer",
-        actor_id=_string(config.get("robot_team_reviewer_id")),
-        statement=_string(config.get("robot_team_review_statement")),
-    )
+    operator_attestation = _attestation_from_config(config, "operator")
+    hardware_owner_attestation = _attestation_from_config(config, "hardware_owner")
+    safety_attestation = _attestation_from_config(config, "safety_reviewer")
+    robot_team_attestation = _attestation_from_config(config, "robot_team_reviewer")
     refs = {name: _file_ref(path) for name, path in discovered_files.items()}
 
     def path_uri(name: str) -> str:
         return _string(_mapping(refs.get(name)).get("uri"))
 
+    owner_evidence_presence = {
+        evidence_id: bool(refs.get(evidence_id))
+        for evidence_id in OWNER_EVIDENCE_CLAIM_REQUIREMENTS
+    }
+    attestations_signed = {
+        "operator": _attestation_is_signed(operator_attestation),
+        "hardware_owner": _attestation_is_signed(hardware_owner_attestation),
+        "safety_reviewer": _attestation_is_signed(safety_attestation),
+        "robot_team_reviewer": _attestation_is_signed(robot_team_attestation),
+    }
+    owner_evidence_ready = (
+        ready
+        and all(owner_evidence_presence.values())
+        and all(attestations_signed.values())
+    )
+    owner_evidence_refs = {
+        "physical_robot_run_manifest": str(output_root / "physical_robot_run_manifest.json"),
+        "operator_log": path_uri("action_log"),
+        "video_review": path_uri("robot_camera_video"),
+        "timestamp_alignment": path_uri("timestamp_alignment"),
+        "hardware_validation": path_uri("hardware_validation"),
+        "contact_collision_log": path_uri("contact_collision_log"),
+        "policy_metrics": path_uri("policy_metrics"),
+        "robot_team_review": path_uri("robot_team_review"),
+        **_mapping(config.get("owner_evidence_refs")),
+    }
+
     physical_robot_run = {
         "schema_version": "physical_robot_run_package.v1",
-        "status": "ready_for_live_input_staging" if ready else "blocked_missing_evidence",
+        "status": status,
         "job_id": job_id_value,
         "run_id": run_id,
         "robot_make_model": DEFAULT_ROBOT_MAKE_MODEL,
@@ -489,12 +897,22 @@ def assemble_g1_controlled_run_evidence(
         "site_or_lab_location_id": _string(config.get("site_or_lab_location_id")),
         "operator_attestation": operator_attestation,
         "hardware_owner_attestation": hardware_owner_attestation,
+        "safety_reviewer_attestation": safety_attestation,
+        "robot_team_review_attestation": robot_team_attestation,
         "start_time_utc": _string(config.get("start_time_utc")),
         "end_time_utc": _string(config.get("end_time_utc")),
+        "policy_id": policy_id,
         "task_id": task_id,
         "scenario_id": scenario_id,
         "scenario_variation_id": scenario_variation_id,
         "scenario_eval_run_id": scenario_eval_run_id,
+        "accepted_anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+        "anchor_join_key": anchor_join_key,
+        "allowed_task_set": config.get("allowed_task_set") or [],
+        "operator_site_checklist": _mapping(config.get("operator_site_checklist")),
+        "exclusion_and_abort_criteria": _mapping(config.get("exclusion_and_abort_criteria")),
+        "robot_calibration_refs": _mapping(config.get("robot_calibration_refs")),
+        "camera_calibration_refs": _mapping(config.get("camera_calibration_refs")),
         "action_log_refs": {
             "robot_state_log_uri": path_uri("robot_state_log"),
             "command_log_uri": path_uri("command_log"),
@@ -502,53 +920,91 @@ def assemble_g1_controlled_run_evidence(
         },
         "outcome_ledger_ref": str(output_root / "deployment_outcome_manifest.json"),
         "evidence_file_refs": refs,
-        "blockers": blockers,
+        "required_owner_evidence": list(OWNER_EVIDENCE_CLAIM_REQUIREMENTS),
+        "owner_evidence_presence": owner_evidence_presence,
+        "attestations_signed": attestations_signed,
+        "owner_evidence_ready_for_physical_claim": owner_evidence_ready,
+        "blockers": blockers if physical_evidence_required else [],
+        "diagnostic_blockers": blockers,
         "proof_boundary": _proof_boundary(),
     }
     physical_path = output_root / "physical_robot_run_manifest.json"
     write_json(physical_path, physical_robot_run)
 
-    deployment_outcomes = {
-        "schema_version": "deployment_outcome_manifest.v1",
-        "status": "ready_for_live_input_staging" if ready else "blocked_missing_evidence",
-        "job_id": job_id_value,
-        "records": [
+    deployment_records = []
+    if physical_evidence_required:
+        deployment_records.append(
             {
                 "outcome_id": f"unitree-g1-outcome-{_safe_id(job_id_value, 'job')}",
                 "job_id": job_id_value,
+                "policy_id": policy_id,
                 "task_id": task_id,
                 "scenario_id": scenario_id,
                 "scenario_variation_instance_id": scenario_variation_id,
                 "scenario_eval_run_id": scenario_eval_run_id,
+                "anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+                "anchor_join_key": anchor_join_key,
+                "anchor_status": "accepted" if ready else "blocked",
+                "review_status": "accepted" if ready else "blocked",
                 "actual_status": _string(config.get("actual_status")) or "unknown",
                 "actual_success": _bool(config.get("actual_success")),
+                "actual_outcome": _mapping(config.get("actual_outcome")),
                 "failure_mode_ids": config.get("failure_mode_ids") or [],
                 "cycle_time_seconds": _number(config.get("cycle_time_seconds"), 0),
                 "intervention_count": _number(config.get("intervention_count"), 0),
-                "evidence_refs": {
-                    "physical_robot_run_manifest": str(physical_path),
-                    "operator_log": path_uri("action_log"),
-                    "video_review": path_uri("robot_camera_video"),
+                "reviewer_decision": {
+                    "safety_review_decision": _string(config.get("review_decision"))
+                    or "not_reviewed",
+                    "policy_review_decision": "accepted" if ready else "not_accepted",
+                    "accepted_for_calibration": ready,
                 },
-                "operator_attestation": operator_attestation,
+                "evidence_refs": owner_evidence_refs if owner_evidence_ready else {},
+                "owner_evidence_refs": owner_evidence_refs if owner_evidence_ready else {},
+                "operator_attestation": operator_attestation if owner_evidence_ready else {},
+                "hardware_owner_attestation": hardware_owner_attestation
+                if owner_evidence_ready
+                else {},
+                "safety_reviewer_attestation": safety_attestation
+                if owner_evidence_ready
+                else {},
+                "robot_team_review_attestation": robot_team_attestation
+                if owner_evidence_ready
+                else {},
+                "owner_evidence_present": owner_evidence_ready,
+                "required_owner_evidence": list(OWNER_EVIDENCE_CLAIM_REQUIREMENTS),
+                "owner_evidence_presence": owner_evidence_presence,
+                "attestations_signed": attestations_signed,
+                "timestamps": {
+                    "start_time_utc": _string(config.get("start_time_utc")),
+                    "end_time_utc": _string(config.get("end_time_utc")),
+                },
+                "artifact_provenance": {
+                    "physical_robot_run_manifest": str(physical_path),
+                    "source_evidence_dir": str(evidence_root),
+                    "evidence_file_refs": refs,
+                },
             }
-        ],
-        "blockers": blockers,
+        )
+
+    deployment_outcomes = {
+        "schema_version": "deployment_outcome_manifest.v1",
+        "status": status,
+        "job_id": job_id_value,
+        "records": deployment_records,
+        "blockers": blockers if physical_evidence_required else [],
+        "diagnostic_blockers": blockers,
         "proof_boundary": _proof_boundary(),
     }
     deployment_path = output_root / "deployment_outcome_manifest.json"
     write_json(deployment_path, deployment_outcomes)
 
-    real_robot_pov = {
-        "schema_version": "real_robot_pov_manifest.v1",
-        "status": "ready_for_live_input_staging" if ready else "blocked_missing_evidence",
-        "job_id": job_id_value,
-        "run_id": run_id,
-        "timestamp_alignment": path_uri("timestamp_alignment"),
-        "records": [
+    pov_records = []
+    if physical_evidence_required:
+        pov_records.append(
             {
                 "evidence_id": f"unitree-g1-pov-{_safe_id(job_id_value, 'job')}",
                 "job_id": job_id_value,
+                "policy_id": policy_id,
                 "task_id": task_id,
                 "scenario_id": scenario_id,
                 "scenario_variation_instance_id": scenario_variation_id,
@@ -564,9 +1020,21 @@ def assemble_g1_controlled_run_evidence(
                 },
                 "operator_attestation": operator_attestation,
             }
-        ],
-        "claim_boundary": "Physical camera/action evidence only; MuJoCo frames do not count.",
-        "blockers": blockers,
+        )
+
+    real_robot_pov = {
+        "schema_version": "real_robot_pov_manifest.v1",
+        "status": status,
+        "job_id": job_id_value,
+        "run_id": run_id,
+        "timestamp_alignment": path_uri("timestamp_alignment"),
+        "records": pov_records,
+        "claim_boundary": (
+            "Real robot POV evidence is optional for sim-only runs and must not block "
+            "simulator evaluation."
+        ),
+        "blockers": blockers if physical_evidence_required else [],
+        "diagnostic_blockers": blockers,
         "proof_boundary": _proof_boundary(),
     }
     pov_path = output_root / "real_robot_pov_manifest.json"
@@ -574,11 +1042,12 @@ def assemble_g1_controlled_run_evidence(
 
     safety_package = {
         "schema_version": "reviewed_non_ranking_operational_claim_package.v1",
-        "status": "ready_for_live_input_staging" if ready else "blocked_missing_evidence",
+        "status": status,
         "job_id": job_id_value,
         "robot_make_model": DEFAULT_ROBOT_MAKE_MODEL,
         "robot_profile_id": DEFAULT_ROBOT_PROFILE_ID,
         "robot_id": _string(config.get("robot_serial_or_fleet_id")),
+        "policy_id": policy_id,
         "task_id": task_id,
         "scenario_id": scenario_id,
         "scenario_variation_id": scenario_variation_id,
@@ -597,17 +1066,20 @@ def assemble_g1_controlled_run_evidence(
         "review_decision": _string(config.get("review_decision")) or "not_reviewed",
         "review_timestamp_utc": _string(config.get("review_timestamp_utc")) or utc_now_iso(),
         "operator_attestation": safety_attestation,
-        "blockers": blockers,
+        "blockers": blockers if physical_evidence_required else [],
+        "diagnostic_blockers": blockers,
         "proof_boundary": _proof_boundary(),
     }
     safety_path = output_root / "reviewed_non_ranking_operational_claim_package.json"
     write_json(safety_path, safety_package)
+    legacy_safety_path = output_root / "reviewed_safety_validation_package.json"
+    write_json(legacy_safety_path, {**safety_package, "schema_version": "reviewed_safety_validation_package.v1"})
 
     policy_package = {
         "schema_version": "robot_team_policy_package.v1",
-        "status": "ready_for_live_input_staging" if ready else "blocked_missing_evidence",
+        "status": status,
         "job_id": job_id_value,
-        "policy_id": DEFAULT_POLICY_ID,
+        "policy_id": policy_id,
         "policy_owner": "Unitree G1 controlled proof operator",
         "robot_make_model": DEFAULT_ROBOT_MAKE_MODEL,
         "robot_profile_id": DEFAULT_ROBOT_PROFILE_ID,
@@ -627,7 +1099,8 @@ def assemble_g1_controlled_run_evidence(
         },
         "scenario_variation_ids": [scenario_variation_id],
         "owner_attestation": robot_team_attestation,
-        "blockers": blockers,
+        "blockers": blockers if physical_evidence_required else [],
+        "diagnostic_blockers": blockers,
         "proof_boundary": _proof_boundary(),
     }
     policy_path = output_root / "robot_team_policy_package.json"
@@ -635,7 +1108,7 @@ def assemble_g1_controlled_run_evidence(
 
     live_closure_evidence = {
         "schema_version": "live_robot_eval_closure_evidence.v1",
-        "status": "ready_for_live_input_staging" if ready else "blocked_missing_evidence",
+        "status": status,
         "job_id": job_id_value,
         "review_acceptance": {
             "status": "accepted" if ready else "blocked",
@@ -651,7 +1124,7 @@ def assemble_g1_controlled_run_evidence(
         "safety_contact_physics": {
             "physics_contact_validated": ready,
             "non_ranking_operational_claim_validated": ready,
-            "rank_fidelity_result_proven": ready,
+            "rank_fidelity_result_proven": False,
             "non_ranking_operational_claim_uri_or_path": str(safety_path),
             "contact_validation_uri_or_path": path_uri("contact_collision_log"),
             "operator_attestation": safety_attestation,
@@ -672,11 +1145,25 @@ def assemble_g1_controlled_run_evidence(
             "request_timestamp_utc": _string(config.get("request_timestamp_utc")) or utc_now_iso(),
             "response_status_code": _string(config.get("webapp_response_status_code")),
         },
-        "blockers": blockers,
+        "blockers": blockers if physical_evidence_required else [],
+        "diagnostic_blockers": blockers,
         "proof_boundary": _proof_boundary(),
     }
     closure_path = output_root / "live_eval_closure_evidence.json"
     write_json(closure_path, live_closure_evidence)
+
+    anchor_request_packet = _controlled_anchor_request_packet(
+        context=context,
+        config=config,
+        output_root=output_root,
+        evidence_root=evidence_root,
+        evidence_file_refs=refs,
+        blockers=blockers,
+        ready=ready,
+        physical_evidence_required=physical_evidence_required,
+    )
+    anchor_request_path = output_root / "controlled_field_anchor_request_packet.json"
+    write_json(anchor_request_path, anchor_request_packet)
 
     stage_script = output_root / "stage_assembled_g1_live_inputs.sh"
     write_text(
@@ -724,27 +1211,44 @@ blueprint-intake-live-pipeline-inputs \\
     manifest = {
         "schema_version": G1_CONTROLLED_RUN_EVIDENCE_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
-        "status": "ready_for_live_input_staging" if ready else "blocked_missing_evidence",
+        "status": status,
         "capture_root": str(root),
         "evidence_dir": str(evidence_root),
         "input_config_path": str(config_path),
         "output_dir": str(output_root),
         "job_context": context,
         "evidence_file_refs": refs,
+        "accepted_anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+        "required_exact_join_keys": list(CONTROLLED_ANCHOR_JOIN_KEYS),
+        "anchor_join_key": anchor_join_key,
+        "loose_or_inferred_matches_allowed_for_calibration": False,
+        "physical_evidence_required": physical_evidence_required,
+        "sim_only_beta_ranking_blocked": False,
+        "required_owner_evidence": list(OWNER_EVIDENCE_CLAIM_REQUIREMENTS),
+        "owner_evidence_presence": owner_evidence_presence,
+        "attestations_signed": attestations_signed,
+        "owner_evidence_ready_for_physical_claim": owner_evidence_ready,
         "file_blockers": file_blockers,
         "config_blockers": config_blockers,
         "content_blockers": content_blockers,
-        "blockers": blockers,
+        "blockers": blockers if physical_evidence_required else [],
+        "diagnostic_blockers": blockers,
         "artifacts": {
+            "controlled_field_anchor_request_packet": str(anchor_request_path),
             "physical_robot_run_manifest": str(physical_path),
             "deployment_outcome_manifest": str(deployment_path),
             "real_robot_pov_manifest": str(pov_path),
             "reviewed_non_ranking_operational_claim_package": str(safety_path),
+            "reviewed_safety_validation_package": str(legacy_safety_path),
             "robot_team_policy_package": str(policy_path),
             "live_closure_evidence": str(closure_path),
             "stage_script": str(stage_script),
         },
-        "proof_boundary": _proof_boundary(),
+        "proof_boundary": {
+            **_proof_boundary(),
+            "sim_only_beta_ranking_blocked": False,
+            "physical_evidence_not_requested_for_sim_only": not physical_evidence_required,
+        },
     }
     manifest_path = output_root / "g1_controlled_run_evidence_assembly_manifest.json"
     write_json(manifest_path, manifest)

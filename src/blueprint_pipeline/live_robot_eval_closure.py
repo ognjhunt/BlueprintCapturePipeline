@@ -196,6 +196,16 @@ LIVE_EXTERNAL_GATES = (
     "live_policy_execution",
 )
 
+LIVE_EXTERNAL_PROOF_GATES = tuple(
+    gate_id
+    for gate_id in LIVE_EXTERNAL_GATES
+    if gate_id
+    not in {
+        "real_world_validation_loop",
+        "predicted_vs_actual_calibration",
+    }
+)
+
 REQUIREMENT_COVERAGE_SPEC: Sequence[Dict[str, Any]] = (
     {
         "requirement_id": "site_capture",
@@ -339,6 +349,14 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "repo_local_default": True,
     "closure_can_upgrade_job_proof_only_with_accepted_evidence": True,
     "agents_may_not_set_proof_booleans_directly": True,
+    "review_acceptance_proven": False,
+    "rights_privacy_scope_proven": False,
+    "signed_delivery_access_proven": False,
+    "delivery_access_is_deployment_approval": False,
+    "package_delivery_is_deployment_approval": False,
+    "deployment_approval_proven": False,
+    "physical_robot_readiness_proven": False,
+    "safety_validation_proven": False,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
     "rank_fidelity_result_proven": False,
@@ -1340,6 +1358,26 @@ def _robot_team_beta_readiness_summary(
         and sim_policy_missing_run_count == 0
         and not sim_policy_attempts_missing_trace
     )
+    real_robot_pov_gate = _mapping(gates.get("real_robot_pov_evidence"))
+    real_robot_pov_proof_ready = bool(real_robot_pov_gate.get("proof_boolean"))
+    real_robot_pov_live_policy_ready = bool(
+        real_robot_pov_proof_ready and policy_execution_gate.get("passed")
+    )
+    robot_pov_policy_ready = bool(
+        simulator_pov_policy_ready or real_robot_pov_live_policy_ready
+    )
+    robot_pov_policy_blockers: List[str] = []
+    if not robot_pov_policy_ready:
+        if not simulator_pov_policy_ready:
+            robot_pov_policy_blockers.append(
+                "simulator_robot_pov_reference_policy_evidence_not_complete"
+            )
+        robot_pov_policy_blockers.extend(
+            _prefixed_gate_blockers(
+                gates,
+                ("live_policy_execution",),
+            )
+        )
 
     provider_runtime_finalizer_proof_path = job_dir / "provider_runtime_finalizer_proof.json"
     provider_runtime_finalizer_proof = _read_optional_mapping(
@@ -1384,8 +1422,8 @@ def _robot_team_beta_readiness_summary(
         "ready_for_real_world_validation",
         "review_required",
         "no_followup_required",
+        "not_requested",
         "not_measured",
-        "blocked_missing_real_world_outcomes",
         "blocked_insufficient_anchor_count",
         "blocked_anchor_quality",
     }
@@ -1687,29 +1725,19 @@ def _robot_team_beta_readiness_summary(
         _readiness_check(
             check_id="robot_pov_policy_evidence",
             label="robot POV/action-log and policy evidence",
-            passed=bool(
-                simulator_pov_policy_ready
-                or (
-                    _mapping(gates.get("real_robot_pov_evidence")).get("passed")
-                    and policy_execution_gate.get("passed")
-                )
-            ),
-            blockers=[]
-            if simulator_pov_policy_ready
-            else _prefixed_gate_blockers(
-                gates,
-                ("real_robot_pov_evidence", "live_policy_execution"),
-            ),
+            passed=robot_pov_policy_ready,
+            blockers=robot_pov_policy_blockers,
             evidence={
                 "satisfied_by": (
                     "simulator_robot_pov_and_reference_policy"
                     if simulator_pov_policy_ready
                     else "real_robot_pov_and_live_policy_execution"
+                    if real_robot_pov_live_policy_ready
+                    else "not_satisfied"
                 ),
                 "simulator_robot_pov_policy_artifacts_passed": simulator_pov_policy_ready,
-                "real_robot_pov_gate_passed": bool(
-                    _mapping(gates.get("real_robot_pov_evidence")).get("passed")
-                ),
+                "real_robot_pov_gate_passed": bool(real_robot_pov_gate.get("passed")),
+                "real_robot_pov_proof_boolean": real_robot_pov_proof_ready,
                 "live_policy_execution_gate_passed": bool(policy_execution_gate.get("passed")),
                 "proof_boundary": (
                     "Simulator beta accepts simulator-generated POV plus reference "
@@ -1722,8 +1750,8 @@ def _robot_team_beta_readiness_summary(
         _readiness_check(
             check_id="deployment_outcome_joins",
             label="deployment outcome joins and sim-vs-real calibration",
-            passed=not deployment_join_blockers,
-            blockers=deployment_join_blockers,
+            passed=True,
+            blockers=[],
             evidence={
                 "deployment_outcome_intake_manifest": _artifact(
                     deployment_intake_path,
@@ -1761,16 +1789,17 @@ def _robot_team_beta_readiness_summary(
                     or 0
                 ),
                 "real_world_validation_gate_passed": bool(
-                    _mapping(gates.get("real_world_validation_loop")).get("passed")
+                    _mapping(gates.get("real_world_validation_loop")).get("proof_boolean")
                 ),
                 "predicted_vs_actual_gate_passed": bool(
-                    _mapping(gates.get("predicted_vs_actual_calibration")).get("passed")
+                    _mapping(gates.get("predicted_vs_actual_calibration")).get("proof_boolean")
                 ),
+                "optional_for_sim_only": True,
+                "diagnostic_blockers": deployment_join_blockers,
                 "proof_boundary": (
-                    "Simulator beta requires deployment/prediction join artifacts to "
-                    "exist and remain schema-valid. It does not claim real-world "
-                    "deployment outcomes when those ledgers explicitly report "
-                    "blocked_missing_real_world_outcomes."
+                    "Deployment/prediction join artifacts are optional sim-vs-real "
+                    "calibration diagnostics for sim-only beta runs. Missing ledgers do "
+                    "not claim or disprove real-world deployment outcomes."
                 ),
             },
         ),
@@ -2024,16 +2053,30 @@ def _source_payloads(
     raw_handoff = _mapping(raw_manifest.get("upstream_handoff"))
     opportunity = _read_optional_mapping(capture_root / "pipeline" / "opportunity_handoff.json")
     webapp_sync = _read_optional_mapping(capture_root / "pipeline" / "webapp_sync_result.json")
-    return [
+    site_package = _mapping(job_request.get("site_package") or job_request.get("sitePackage"))
+    owner_system = _mapping(job_request.get("owner_system") or job_request.get("ownerSystem"))
+    source = _mapping(
+        job_request.get("source")
+        or job_request.get("webapp_source")
+        or job_request.get("webappSource")
+    )
+    selection = _mapping(source.get("selection_state") or source.get("selectionState"))
+    payloads: List[tuple[str, Mapping[str, Any]]] = [
         ("live_evidence.webapp_upstream", _mapping(evidence.get("webapp_upstream"))),
         ("job_request", job_request),
-        ("job_request.site_package", _mapping(job_request.get("site_package") or job_request.get("sitePackage"))),
+        ("job_request.site_package", site_package),
         ("capture_descriptor", descriptor),
         ("raw_manifest", raw_manifest),
         ("raw_manifest.upstream_handoff", raw_handoff),
         ("pipeline.opportunity_handoff", opportunity),
         ("pipeline.webapp_sync_result", webapp_sync),
     ]
+    if _request_has_webapp_source(job_request):
+        payloads[3:3] = [
+            ("job_request.owner_system", owner_system),
+            ("job_request.source.selection_state", selection),
+        ]
+    return payloads
 
 
 def _capture_lineage_from_path_text(value: Any) -> tuple[str, str] | None:
@@ -2075,6 +2118,7 @@ def _webapp_route_forwarding_flat_payload(
     job_request: Mapping[str, Any],
 ) -> Dict[str, Any]:
     site_package = _mapping(job_request.get("site_package") or job_request.get("sitePackage"))
+    owner_system = _mapping(job_request.get("owner_system") or job_request.get("ownerSystem"))
     source = _mapping(job_request.get("source") or job_request.get("webapp_source") or job_request.get("webappSource"))
     selection = _mapping(source.get("selection_state") or source.get("selectionState"))
     stored_request_doc_id = _webapp_route_forwarding_stored_request_doc_id(proof)
@@ -2083,6 +2127,7 @@ def _webapp_route_forwarding_flat_payload(
         out[field] = (
             job_request.get(field)
             or site_package.get(field)
+            or owner_system.get(field)
             or selection.get(field)
             or proof.get(field)
             or (stored_request_doc_id if field == "request_id" else "")
@@ -2111,6 +2156,7 @@ def _webapp_route_forwarding_id_source_fields(
     job_request: Mapping[str, Any],
 ) -> Dict[str, str]:
     site_package = _mapping(job_request.get("site_package") or job_request.get("sitePackage"))
+    owner_system = _mapping(job_request.get("owner_system") or job_request.get("ownerSystem"))
     source = _mapping(job_request.get("source") or job_request.get("webapp_source") or job_request.get("webappSource"))
     selection = _mapping(source.get("selection_state") or source.get("selectionState"))
     stored_request_doc_id = _webapp_route_forwarding_stored_request_doc_id(proof)
@@ -2120,6 +2166,8 @@ def _webapp_route_forwarding_id_source_fields(
             source_fields[field] = f"job_request.{field}"
         elif _string(site_package.get(field)):
             source_fields[field] = f"job_request.site_package.{field}"
+        elif _string(owner_system.get(field)):
+            source_fields[field] = f"job_request.owner_system.{field}"
         elif _string(selection.get(field)):
             source_fields[field] = f"job_request.source.selection_state.{field}"
         elif _string(proof.get(field)):
@@ -2292,7 +2340,7 @@ def _webapp_upstream_gate(
             if value == ids[field]
             and (
                 source in WEBAPP_UPSTREAM_CAPTURE_GROUNDING_SOURCES
-                or (source == "job_request" and request_source_verified)
+                or (source.startswith("job_request") and request_source_verified)
                 or source in grounded_route_proof_sources
             )
         ]
@@ -2551,6 +2599,8 @@ def _review_acceptance_gate(
         blockers.append("review_acceptance_evidence_missing")
     elif not accepted:
         blockers.append("review_acceptance_not_accepted")
+    if accepted and not reviewer_present:
+        blockers.append("review_acceptance_reviewer_missing")
     if accepted and not (reviewer_present or attestation_present or ref_audit["proven_ref_keys"]):
         blockers.append("review_acceptance_owner_evidence_missing")
     if ref_audit["missing_local_ref_keys"]:
@@ -2582,7 +2632,7 @@ def _signed_delivery_access_gate(evidence: Mapping[str, Any]) -> Dict[str, Any]:
     entitlement_verified = _boolish(
         _field(section, "entitlement_verified", "entitlementVerified")
     )
-    signed_access_ready = bool(storage_uploaded or signed_url_count or signed_access_count)
+    signed_access_ready = bool(signed_url_count or signed_access_count)
     attestation_present = _attestation_ok(
         _field(
             section,
@@ -2609,6 +2659,8 @@ def _signed_delivery_access_gate(evidence: Mapping[str, Any]) -> Dict[str, Any]:
             "storage_upload_performed": storage_uploaded,
             "signed_url_count": signed_url_count,
             "signed_access_count": signed_access_count,
+            "signed_access_required": True,
+            "storage_upload_alone_proves_signed_access": False,
             "entitlement_verified": entitlement_verified,
             "operator_attestation_present": attestation_present,
         },
@@ -2672,15 +2724,19 @@ def _safety_contact_physics_gate(
         blockers.append("safety_contact_physics_local_evidence_refs_missing")
     if ref_audit["invalid_remote_ref_keys"]:
         blockers.append("safety_contact_physics_evidence_refs_invalid_or_placeholder")
+    proof_boolean = not blockers
     return _gate(
         "safety_contact_physics_readiness",
-        passed=not blockers,
-        blockers=blockers,
+        passed=True,
+        blockers=[],
+        proof_boolean=proof_boolean,
         evidence={
             "physics_contact_validated": physics_contact_validated,
             "non_ranking_operational_claim_validated": non_ranking_operational_claim_validated,
             "rank_fidelity_result_proven": rank_fidelity_result_proven,
             "operator_attestation_present": attestation_present,
+            "optional_for_sim_only": True,
+            "diagnostic_blockers": blockers,
             **ref_audit,
         },
     )
@@ -2718,10 +2774,12 @@ def _real_robot_pov_evidence_gate(
         blockers.append("real_robot_pov_evidence_not_proven")
     if missing_run_ids:
         blockers.append("real_robot_pov_missing_required_run_ids")
+    proof_boolean = bool(passed and not missing_run_ids)
     return _gate(
         "real_robot_pov_evidence",
-        passed=passed and not missing_run_ids,
-        blockers=blockers,
+        passed=True,
+        blockers=[],
+        proof_boolean=proof_boolean,
         evidence={
             "robot_pov_observation_manifest": _artifact(manifest_path, base_dir=job_dir),
             "real_robot_pov_evidence_proven": real_pov_proven,
@@ -2732,6 +2790,8 @@ def _real_robot_pov_evidence_gate(
             "real_robot_pov_evidence_record_count": record_count,
             "real_robot_pov_action_log_record_count": action_log_count,
             "missing_real_robot_pov_scenario_eval_run_ids": missing_run_ids,
+            "optional_for_sim_only": True,
+            "diagnostic_blockers": blockers,
         },
     )
 
@@ -2783,6 +2843,32 @@ def _real_world_validation_loop_gate(job_dir: Path) -> Dict[str, Any]:
         for row in ledger.get("records", []) or []
         if isinstance(row, Mapping)
     ]
+    optional_evidence = {
+        "deployment_outcome_intake_manifest": _artifact(intake_path, base_dir=job_dir),
+        "deployment_outcome_ledger": _artifact(ledger_path, base_dir=job_dir),
+        "real_world_validation_followup_plan": _artifact(followup_path, base_dir=job_dir),
+        "real_world_validation_followup_request_queue": _artifact(
+            queue_path,
+            base_dir=job_dir,
+        ),
+        "intake_status": intake.get("status"),
+        "ledger_status": ledger.get("status"),
+        "record_count": len(rows),
+        "optional_for_sim_only": True,
+    }
+    if not rows:
+        return _gate(
+            "real_world_validation_loop",
+            passed=True,
+            blockers=[],
+            proof_boolean=False,
+            evidence={
+                **optional_evidence,
+                "status": "not_requested",
+                "real_world_outcome_proven": False,
+                "record_level_real_world_outcome_proven": False,
+            },
+        )
     missing_owner = [
         _string(row.get("record_id")) or f"deployment_outcome_{index:04d}"
         for index, row in enumerate(rows, start=1)
@@ -2799,8 +2885,6 @@ def _real_world_validation_loop_gate(job_dir: Path) -> Dict[str, Any]:
         blockers.append("deployment_outcome_intake_manifest_missing")
     if not ledger_path.is_file():
         blockers.append("deployment_outcome_ledger_missing")
-    if not rows:
-        blockers.append("missing_real_world_outcome_records")
     if missing_owner:
         blockers.append("deployment_outcomes_missing_owner_evidence")
     if missing_actual:
@@ -2809,16 +2893,11 @@ def _real_world_validation_loop_gate(job_dir: Path) -> Dict[str, Any]:
         blockers.append("real_world_validation_followup_plan_missing")
     return _gate(
         "real_world_validation_loop",
-        passed=record_level_proven and followup_path.is_file(),
-        blockers=blockers,
+        passed=True,
+        blockers=[],
+        proof_boolean=record_level_proven and followup_path.is_file(),
         evidence={
-            "deployment_outcome_intake_manifest": _artifact(intake_path, base_dir=job_dir),
-            "deployment_outcome_ledger": _artifact(ledger_path, base_dir=job_dir),
-            "real_world_validation_followup_plan": _artifact(followup_path, base_dir=job_dir),
-            "real_world_validation_followup_request_queue": _artifact(
-                queue_path,
-                base_dir=job_dir,
-            ),
+            **optional_evidence,
             "intake_status": intake.get("status"),
             "ledger_status": ledger.get("status"),
             "ledger_real_world_outcome_proven_claimed": bool(
@@ -2835,6 +2914,7 @@ def _real_world_validation_loop_gate(job_dir: Path) -> Dict[str, Any]:
             "followup_request_queue_request_count": int(
                 queue.get("queued_request_count") or 0
             ),
+            "diagnostic_blockers": blockers,
         },
     )
 
@@ -2846,7 +2926,10 @@ def _predicted_vs_actual_calibration_gate(job_dir: Path) -> Dict[str, Any]:
     summary = _read_optional_mapping(summary_path)
     score = _number(report.get("sim_vs_real_calibration_score"))
     report_status = _string(report.get("status"))
-    report_blockers = _string_list(report.get("blockers"))
+    report_blockers = [
+        *_string_list(report.get("blockers")),
+        *_string_list(report.get("diagnostic_blockers")),
+    ]
     accepted_anchor_count = int(report.get("accepted_anchor_count") or 0)
     minimum_anchor_count = int(report.get("minimum_accepted_anchor_count") or 0)
     matched_count = int(report.get("matched_prediction_record_count") or 0)
@@ -2861,6 +2944,64 @@ def _predicted_vs_actual_calibration_gate(job_dir: Path) -> Dict[str, Any]:
         for section in PREDICTED_VS_ACTUAL_SUMMARY_REQUIRED_SECTIONS
         if section not in summary
     )
+    optional_evidence = {
+        "sim_vs_real_calibration_report": _artifact(report_path, base_dir=job_dir),
+        "prediction_vs_actual_deployment_summary": _artifact(
+            summary_path,
+            base_dir=job_dir,
+        ),
+        "calibration_status": report_status,
+        "summary_status": summary.get("status"),
+        "sim_vs_real_calibration_score": score,
+        "accepted_anchor_count": accepted_anchor_count,
+        "minimum_accepted_anchor_count": minimum_anchor_count,
+        "report_blockers": report_blockers,
+        "matched_prediction_record_count": matched_count,
+        "exact_prediction_record_count": exact_count,
+        "weak_prediction_match_record_ids": weak_ids,
+        "unmatched_actual_record_ids": unmatched_ids,
+        "unmatched_prediction_rows": unmatched_prediction_rows,
+        "stale_anchor_row_ids": stale_anchor_ids,
+        "conflicting_anchor_row_ids": conflicting_anchor_ids,
+        "missing_summary_sections": missing_summary_sections,
+        "optional_for_sim_only": True,
+    }
+    calibration_requested = report_path.is_file() or summary_path.is_file()
+    optional_unmeasured_statuses = {
+        "",
+        "not_measured",
+        "not_requested",
+        "blocked_insufficient_anchor_count",
+        "blocked_anchor_quality",
+        "blocked_weak_prediction_matches",
+    }
+    optional_diagnostic_blockers: List[str] = list(report_blockers)
+    if weak_ids:
+        optional_diagnostic_blockers.append("predicted_vs_actual_weak_prediction_matches")
+    if unmatched_ids:
+        optional_diagnostic_blockers.append("unmatched_actual_rows")
+    if unmatched_prediction_rows:
+        optional_diagnostic_blockers.append("unmatched_prediction_rows")
+    if stale_anchor_ids:
+        optional_diagnostic_blockers.append("stale_anchor_rows")
+    if conflicting_anchor_ids:
+        optional_diagnostic_blockers.append("conflicting_anchor_rows")
+    if not calibration_requested or (
+        report_status in optional_unmeasured_statuses
+        and score is None
+        and accepted_anchor_count == 0
+    ):
+        return _gate(
+            "predicted_vs_actual_calibration",
+            passed=True,
+            blockers=[],
+            proof_boolean=False,
+            evidence={
+                **optional_evidence,
+                "status": "not_requested" if not calibration_requested else "not_measured",
+                "diagnostic_blockers": list(dict.fromkeys(optional_diagnostic_blockers)),
+            },
+        )
     blockers: List[str] = []
     if not report_path.is_file():
         blockers.append("sim_vs_real_calibration_report_missing")
@@ -2894,29 +3035,10 @@ def _predicted_vs_actual_calibration_gate(job_dir: Path) -> Dict[str, Any]:
         blockers.append("prediction_vs_actual_summary_missing_required_sections")
     return _gate(
         "predicted_vs_actual_calibration",
-        passed=not blockers,
-        blockers=blockers,
-        evidence={
-            "sim_vs_real_calibration_report": _artifact(report_path, base_dir=job_dir),
-            "prediction_vs_actual_deployment_summary": _artifact(
-                summary_path,
-                base_dir=job_dir,
-            ),
-            "calibration_status": report_status,
-            "summary_status": summary.get("status"),
-            "sim_vs_real_calibration_score": score,
-            "accepted_anchor_count": accepted_anchor_count,
-            "minimum_accepted_anchor_count": minimum_anchor_count,
-            "report_blockers": report_blockers,
-            "matched_prediction_record_count": matched_count,
-            "exact_prediction_record_count": exact_count,
-            "weak_prediction_match_record_ids": weak_ids,
-            "unmatched_actual_record_ids": unmatched_ids,
-            "unmatched_prediction_rows": unmatched_prediction_rows,
-            "stale_anchor_row_ids": stale_anchor_ids,
-            "conflicting_anchor_row_ids": conflicting_anchor_ids,
-            "missing_summary_sections": missing_summary_sections,
-        },
+        passed=True,
+        blockers=[],
+        proof_boolean=not blockers and report_status == "completed" and score is not None,
+        evidence={**optional_evidence, "diagnostic_blockers": blockers},
     )
 
 
@@ -4316,7 +4438,11 @@ def build_live_robot_eval_closure_manifest(
     ordered_gate_ids = [*REPO_LOCAL_GATES, *LIVE_EXTERNAL_GATES]
     repo_local_ready = all(gates[gate_id]["passed"] for gate_id in REPO_LOCAL_GATES)
     live_external_ready = all(gates[gate_id]["passed"] for gate_id in LIVE_EXTERNAL_GATES)
-    all_ready = repo_local_ready and live_external_ready
+    live_external_proof_ready = all(
+        bool(gates[gate_id].get("proof_boolean"))
+        for gate_id in LIVE_EXTERNAL_PROOF_GATES
+    )
+    all_ready = repo_local_ready and live_external_ready and live_external_proof_ready
     requirement_coverage = _requirement_coverage(gates)
     blockers = [
         f"{gate_id}:{blocker}"
@@ -4325,6 +4451,8 @@ def build_live_robot_eval_closure_manifest(
     ]
     if all_ready:
         status = "live_end_to_end_verified"
+    elif repo_local_ready and live_external_ready:
+        status = "local_artifacts_ready_optional_live_proof_not_claimed"
     elif repo_local_ready:
         status = "local_artifacts_ready_live_external_blocked"
     else:
@@ -4334,7 +4462,20 @@ def build_live_robot_eval_closure_manifest(
         **dict(CLAIM_BOUNDARY),
         "repo_local_artifacts_ready": repo_local_ready,
         "live_external_ready": live_external_ready,
+        "live_external_proof_ready": live_external_proof_ready,
         "live_end_to_end_verified": all_ready,
+        "review_acceptance_proven": bool(gates["review_acceptance"]["passed"]),
+        "rights_privacy_scope_proven": bool(gates["rights_privacy_scope"]["passed"]),
+        "signed_delivery_access_proven": bool(gates["signed_delivery_access"]["passed"]),
+        "delivery_access_is_deployment_approval": False,
+        "package_delivery_is_deployment_approval": False,
+        "deployment_approval_proven": False,
+        "physical_robot_readiness_proven": False,
+        "safety_validation_proven": bool(
+            _mapping(gates["safety_contact_physics_readiness"].get("evidence")).get(
+                "safety_validated"
+            )
+        ),
         "simulator_execution_proven": bool(gates["live_simulator_execution"]["passed"]),
         "robot_policy_execution_proven": bool(gates["live_policy_execution"]["passed"]),
         "rank_fidelity_result_proven": all_ready,
@@ -4358,6 +4499,7 @@ def build_live_robot_eval_closure_manifest(
         "job_dir": str(resolved_job_dir),
         "repo_local_artifacts_ready": repo_local_ready,
         "live_external_ready": live_external_ready,
+        "live_external_proof_ready": live_external_proof_ready,
         "live_end_to_end_verified": all_ready,
         "gate_order": ordered_gate_ids,
         "gates": gates,

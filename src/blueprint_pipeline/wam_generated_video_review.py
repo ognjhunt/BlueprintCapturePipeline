@@ -1382,6 +1382,8 @@ def write_persistent_wam_visual_quality_artifacts(
         "claim_boundary": {
             "valid_mp4_or_provider_completed_is_not_visual_success": True,
             "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
+            "generated_observation_review_support_only": True,
+            "review_quality_gate_is_not_scale_up_approval": True,
             "visual_quality_is_not_task_success_proof": True,
             "generated_world_rank_fidelity_result_proven": False,
             "generated_world_policy_evaluation_scope_proven": False,
@@ -1422,6 +1424,7 @@ def visual_smoke_generated_rollouts_for_review(
             "claim_boundary": {
                 "valid_mp4_file_generated": bool(rollouts),
                 "visual_rollout_useful_for_task_success_review": False,
+                "generated_observation_review_support_only": True,
                 "valid_media_artifact_is_not_task_success_review_evidence": True,
                 "task_success_review_requires_visual_smoke_pass": True,
                 "raw_secret_values_recorded": False,
@@ -1648,6 +1651,7 @@ def visual_smoke_generated_rollouts_for_review(
         "claim_boundary": {
             "valid_mp4_file_generated": bool(rollouts),
             "visual_rollout_useful_for_task_success_review": useful,
+            "generated_observation_review_support_only": True,
             "valid_media_artifact_is_not_task_success_review_evidence": not useful,
             "task_success_review_requires_visual_smoke_pass": require_review_quality_profile,
             "review_quality_profile_required": require_review_quality_profile,

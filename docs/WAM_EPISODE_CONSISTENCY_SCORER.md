@@ -132,5 +132,10 @@ credentials or secret hashes into artifacts.
 - Visual smoke only decides whether a generated rollout is reviewable enough to
   send to the external scorer.
 - A passing consistency label is an episode-level support label, not task
-  success, generated-world rank fidelity, generated-world rank fidelity, SRCC proof, or safety
+  success, generated-world rank fidelity, SRCC proof, or safety
   approval.
+- WAM reports that surface consistency metrics keep them under claim-boundary
+  fields or `forward_inverse_consistency_signal_summary` as reliability/review
+  support only. They do not upgrade evaluator-bounded policy ranking, policy
+  success, task success, rank fidelity, deployment readiness, sensor truth, or
+  external validation claims.

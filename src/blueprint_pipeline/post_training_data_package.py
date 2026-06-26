@@ -13,14 +13,28 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
+from .rl_post_training_handoff import build_rl_post_training_handoff_packet
 
 
 POST_TRAINING_DATA_PACKAGE_EXPORT_SCHEMA_VERSION = "post_training_data_package_export.v1"
+CUSTOMER_HANDOFF_REPORT_SCHEMA_VERSION = "post_training_customer_handoff_report.v1"
+DELIVERY_MANIFEST_SCHEMA_VERSION = "post_training_delivery_manifest.v1"
+SIGNED_ACCESS_MANIFEST_SCHEMA_VERSION = "post_training_signed_access_manifest.v1"
+HANDOFF_SUMMARY_SCHEMA_VERSION = "post_training_data_package_handoff_summary.v1"
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "post_training_data_package_export",
     "export_manifest_only": False,
     "export_files_written": True,
+    "review_acceptance_proven": False,
+    "rights_privacy_scope_proven": False,
+    "signed_delivery_access_proven": False,
+    "customer_handoff_ready": False,
+    "delivery_access_is_deployment_approval": False,
+    "package_delivery_is_deployment_approval": False,
+    "deployment_approval_proven": False,
+    "physical_robot_readiness_proven": False,
+    "safety_validation_proven": False,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
     "rank_fidelity_result_proven": False,
@@ -38,6 +52,23 @@ def _read_optional_mapping(path: Path) -> Dict[str, Any]:
 
 def _mapping(value: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _string_list(value: Any) -> List[str]:
+    if value is None:
+        values: Sequence[Any] = []
+    elif isinstance(value, str):
+        values = [value]
+    elif isinstance(value, Sequence):
+        values = value
+    else:
+        values = [value]
+    out: List[str] = []
+    for item in values:
+        text = str(item or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
 
 
 def _rows(payload: Mapping[str, Any], key: str) -> List[Dict[str, Any]]:
@@ -78,7 +109,7 @@ def _artifact(base_dir: Path, path: Path) -> Dict[str, Any]:
 
 def _job_artifact(job_dir: Path, name: str) -> str | None:
     path = job_dir / name
-    return path.name if path.is_file() else None
+    return name.replace("\\", "/") if path.is_file() else None
 
 
 def _pipeline_artifact(pipeline_dir: Path, relative_path: str) -> str | None:
@@ -107,6 +138,431 @@ def _optional_export_formats() -> Dict[str, Dict[str, Any]]:
         "format_written": False,
     }
     return formats
+
+
+def _live_closure_gate_reference(
+    live_closure: Mapping[str, Any],
+    gate_id: str,
+) -> Dict[str, Any]:
+    gate = _mapping(_mapping(live_closure.get("gates")).get(gate_id))
+    evidence = _mapping(gate.get("evidence"))
+    return {
+        "gate_id": gate_id,
+        "present": bool(gate),
+        "passed": bool(gate.get("passed")),
+        "blockers": _string_list(gate.get("blockers")),
+        "evidence_keys": sorted(evidence),
+    }
+
+
+def _gate_blockers(
+    gate_reference: Mapping[str, Any],
+    gate_id: str,
+    fallback_blocker: str,
+) -> List[str]:
+    if not gate_reference.get("present"):
+        return [f"{gate_id}_gate_missing"]
+    if gate_reference.get("passed"):
+        return []
+    blockers = _string_list(gate_reference.get("blockers"))
+    if not blockers:
+        blockers = [fallback_blocker]
+    return [f"{gate_id}:{blocker}" for blocker in blockers]
+
+
+def _handoff_claim_boundary(
+    *,
+    export_ready: bool,
+    customer_handoff_ready: bool,
+    review_acceptance_proven: bool,
+    rights_privacy_scope_proven: bool,
+    signed_delivery_access_proven: bool,
+) -> Dict[str, Any]:
+    return {
+        **dict(CLAIM_BOUNDARY),
+        "post_training_package_export_ready": bool(export_ready),
+        "customer_handoff_ready": bool(customer_handoff_ready),
+        "hosted_access_ready": bool(customer_handoff_ready),
+        "review_acceptance_proven": bool(review_acceptance_proven),
+        "rights_privacy_scope_proven": bool(rights_privacy_scope_proven),
+        "signed_delivery_access_proven": bool(signed_delivery_access_proven),
+        "delivery_approval_proven": False,
+        "delivery_access_is_deployment_approval": False,
+        "package_delivery_is_deployment_approval": False,
+        "deployment_approval_proven": False,
+        "physical_robot_readiness_proven": False,
+        "field_readiness_proven": False,
+        "safety_validation_proven": False,
+        "simulator_execution_proven": False,
+        "robot_policy_execution_proven": False,
+        "rank_fidelity_result_proven": False,
+        "training_completed": False,
+        "public_claim_upgrade_allowed": False,
+    }
+
+
+def _merge_claim_boundary(
+    existing: Mapping[str, Any],
+    boundary: Mapping[str, Any],
+) -> Dict[str, Any]:
+    return {
+        **dict(existing),
+        **dict(boundary),
+        "delivery_approval_proven": False,
+        "delivery_access_is_deployment_approval": False,
+        "package_delivery_is_deployment_approval": False,
+        "deployment_approval_proven": False,
+        "physical_robot_readiness_proven": False,
+        "field_readiness_proven": False,
+        "safety_validation_proven": False,
+        "public_claim_upgrade_allowed": False,
+    }
+
+
+def _handoff_status(*, export_ready: bool, customer_handoff_ready: bool) -> str:
+    if customer_handoff_ready:
+        return "customer_handoff_ready"
+    if export_ready:
+        return "export_ready_handoff_blocked"
+    return "blocked_missing_package_export_inputs"
+
+
+def _handoff_summary(
+    *,
+    generated_at: str,
+    export_ready: bool,
+    customer_handoff_ready: bool,
+    handoff_blockers: Sequence[str],
+    gate_blockers: Mapping[str, Sequence[str]],
+    live_gate_references: Mapping[str, Mapping[str, Any]],
+    webapp_ids: Mapping[str, Any],
+    included_artifacts: Mapping[str, str],
+    boundary: Mapping[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "schema_version": HANDOFF_SUMMARY_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": _handoff_status(
+            export_ready=export_ready,
+            customer_handoff_ready=customer_handoff_ready,
+        ),
+        "post_training_package_export_ready": bool(export_ready),
+        "customer_handoff_ready": bool(customer_handoff_ready),
+        "handoff_ready": bool(customer_handoff_ready),
+        "blockers": _string_list(handoff_blockers),
+        "gate_blockers": {
+            key: _string_list(value) for key, value in gate_blockers.items()
+        },
+        "webapp_ids": dict(webapp_ids),
+        "artifact_paths": {
+            "post_training_data_package_export_manifest": (
+                "post_training_data_package_export_manifest.json"
+            ),
+            "customer_handoff_report": "customer_handoff_report.json",
+            "delivery_manifest": "delivery_manifest.json",
+            "signed_access_manifest": "signed_access_manifest.json",
+            "proof_boundary": included_artifacts.get("proof_boundary"),
+            "live_eval_closure_manifest": included_artifacts.get("live_eval_closure_manifest"),
+            "rights_packet": included_artifacts.get("rights_packet"),
+            "review_resolution_ledger": included_artifacts.get("review_resolution_ledger"),
+            "accepted_failure_labels": included_artifacts.get("accepted_failure_labels"),
+        },
+        "live_closure_gate_references": {
+            key: dict(value) for key, value in live_gate_references.items()
+        },
+        "claim_boundary": dict(boundary),
+    }
+
+
+def _read_existing_handoff_payload(
+    *,
+    output_dir: Path,
+    job_dir: Path | None,
+    name: str,
+) -> Dict[str, Any]:
+    output_payload = _read_optional_mapping(output_dir / name)
+    if output_payload:
+        return output_payload
+    if job_dir and (job_dir / name).resolve() != (output_dir / name).resolve():
+        return _read_optional_mapping(job_dir / name)
+    return {}
+
+
+def _write_customer_handoff_markdown(path: Path, report: Mapping[str, Any]) -> None:
+    summary = _mapping(report.get("post_training_data_package_handoff"))
+    blockers = _string_list(summary.get("blockers") or report.get("blockers"))
+    lines = [
+        "# Post-Training Data Package Handoff",
+        "",
+        f"- Status: `{summary.get('status') or report.get('status')}`",
+        f"- Export ready: `{bool(summary.get('post_training_package_export_ready'))}`",
+        f"- Customer handoff ready: `{bool(summary.get('customer_handoff_ready'))}`",
+        "",
+        "## Blockers",
+        "",
+    ]
+    if blockers:
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    else:
+        lines.append("- None")
+    lines.extend(
+        [
+            "",
+            "## Claim Boundary",
+            "",
+            "Package export readiness does not prove hosted access, delivery approval, deployment approval, safety validation, or field readiness.",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_handoff_manifests(
+    *,
+    output_dir: Path,
+    job_dir: Path | None,
+    generated_at: str,
+    scene_id: str,
+    capture_id: str,
+    export_ready: bool,
+    included_artifacts: Mapping[str, str],
+    live_closure: Mapping[str, Any],
+    live_gate_references: Mapping[str, Mapping[str, Any]],
+    trace: Mapping[str, Any],
+    labels: Mapping[str, Any],
+    clips: Mapping[str, Any],
+) -> Dict[str, Any]:
+    gate_blockers = {
+        "webapp_upstream_truth": _gate_blockers(
+            live_gate_references["webapp_upstream_truth"],
+            "webapp_upstream_truth",
+            "webapp_upstream_truth_not_proven",
+        ),
+        "rights_privacy_scope": _gate_blockers(
+            live_gate_references["rights_privacy_scope"],
+            "rights_privacy_scope",
+            "rights_privacy_scope_not_proven",
+        ),
+        "review_acceptance": _gate_blockers(
+            live_gate_references["review_acceptance"],
+            "review_acceptance",
+            "review_acceptance_not_proven",
+        ),
+        "signed_delivery_access": _gate_blockers(
+            live_gate_references["signed_delivery_access"],
+            "signed_delivery_access",
+            "signed_delivery_access_not_proven",
+        ),
+    }
+    handoff_blockers = _string_list(
+        [
+            *(["post_training_data_package_export_not_ready"] if not export_ready else []),
+            *gate_blockers["webapp_upstream_truth"],
+            *gate_blockers["rights_privacy_scope"],
+            *gate_blockers["review_acceptance"],
+            *gate_blockers["signed_delivery_access"],
+        ]
+    )
+    customer_handoff_ready = bool(export_ready and not handoff_blockers)
+    boundary = _handoff_claim_boundary(
+        export_ready=export_ready,
+        customer_handoff_ready=customer_handoff_ready,
+        review_acceptance_proven=bool(live_gate_references["review_acceptance"]["passed"]),
+        rights_privacy_scope_proven=bool(
+            live_gate_references["rights_privacy_scope"]["passed"]
+        ),
+        signed_delivery_access_proven=bool(
+            live_gate_references["signed_delivery_access"]["passed"]
+        ),
+    )
+    webapp_evidence = _mapping(
+        _mapping(_mapping(live_closure.get("gates")).get("webapp_upstream_truth")).get(
+            "evidence"
+        )
+    )
+    webapp_ids = _mapping(webapp_evidence.get("ids"))
+    summary = _handoff_summary(
+        generated_at=generated_at,
+        export_ready=export_ready,
+        customer_handoff_ready=customer_handoff_ready,
+        handoff_blockers=handoff_blockers,
+        gate_blockers=gate_blockers,
+        live_gate_references=live_gate_references,
+        webapp_ids=webapp_ids,
+        included_artifacts=included_artifacts,
+        boundary=boundary,
+    )
+
+    existing_report = _read_existing_handoff_payload(
+        output_dir=output_dir,
+        job_dir=job_dir,
+        name="customer_handoff_report.json",
+    )
+    report = {
+        **existing_report,
+        "schema_version": existing_report.get(
+            "schema_version",
+            CUSTOMER_HANDOFF_REPORT_SCHEMA_VERSION,
+        ),
+        "generated_at": generated_at,
+        "status": existing_report.get("status")
+        if existing_report and existing_report.get("status")
+        else summary["status"],
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "blockers": _string_list(existing_report.get("blockers") or handoff_blockers),
+        "post_training_data_package_export_path": (
+            "post_training_data_package_export_manifest.json"
+        ),
+        "delivery_manifest_path": "delivery_manifest.json",
+        "signed_access_manifest_path": "signed_access_manifest.json",
+        "buyer_summary": {
+            **_mapping(existing_report.get("buyer_summary")),
+            "post_training_package_export_ready": bool(export_ready),
+            "customer_handoff_ready": bool(customer_handoff_ready),
+            "attempt_count": int(trace.get("attempt_count") or 0),
+            "failure_label_count": int(labels.get("label_count") or 0),
+            "clip_count": int(clips.get("clip_count") or 0),
+        },
+        "known_limits": _string_list(existing_report.get("known_limits"))
+        or [
+            "Post-Training Data Package export readiness is not hosted access.",
+            "Signed delivery access is package access only, not deployment approval.",
+            "This handoff does not prove safety validation or physical field readiness.",
+        ],
+        "post_training_data_package_handoff": summary,
+        "claim_boundary": _merge_claim_boundary(
+            _mapping(existing_report.get("claim_boundary")),
+            boundary,
+        ),
+    }
+    write_json(output_dir / "customer_handoff_report.json", report)
+    _write_customer_handoff_markdown(output_dir / "customer_handoff_report.md", report)
+
+    existing_signed_access = _read_existing_handoff_payload(
+        output_dir=output_dir,
+        job_dir=job_dir,
+        name="signed_access_manifest.json",
+    )
+    signed_access_ready = bool(live_gate_references["signed_delivery_access"]["passed"])
+    signed_access_blockers = gate_blockers["signed_delivery_access"]
+    signed_access = {
+        **existing_signed_access,
+        "schema_version": existing_signed_access.get(
+            "schema_version",
+            SIGNED_ACCESS_MANIFEST_SCHEMA_VERSION,
+        ),
+        "generated_at": generated_at,
+        "status": existing_signed_access.get("status")
+        if existing_signed_access and existing_signed_access.get("status")
+        else ("signed_access_ready" if signed_access_ready else "blocked_signed_delivery_access"),
+        "blockers": _string_list(
+            existing_signed_access.get("blockers") or signed_access_blockers
+        ),
+        "signed_delivery_access_proven": bool(signed_access_ready),
+        "signed_access_ready": bool(signed_access_ready),
+        "customer_handoff_ready": bool(customer_handoff_ready),
+        "handoff_blockers": handoff_blockers,
+        "delivery_access_is_deployment_approval": False,
+        "package_delivery_is_deployment_approval": False,
+        "claim_boundary": _merge_claim_boundary(
+            _mapping(existing_signed_access.get("claim_boundary")),
+            boundary,
+        ),
+    }
+    write_json(output_dir / "signed_access_manifest.json", signed_access)
+
+    existing_delivery = _read_existing_handoff_payload(
+        output_dir=output_dir,
+        job_dir=job_dir,
+        name="delivery_manifest.json",
+    )
+    delivery = {
+        **existing_delivery,
+        "schema_version": existing_delivery.get(
+            "schema_version",
+            DELIVERY_MANIFEST_SCHEMA_VERSION,
+        ),
+        "generated_at": generated_at,
+        "status": existing_delivery.get("status")
+        if existing_delivery and existing_delivery.get("status")
+        else summary["status"],
+        "blockers": _string_list(existing_delivery.get("blockers") or handoff_blockers),
+        "post_training_data_package_export_path": (
+            "post_training_data_package_export_manifest.json"
+        ),
+        "customer_handoff_report_path": "customer_handoff_report.json",
+        "signed_access_manifest_path": "signed_access_manifest.json",
+        "local_package_index_path": "package_index.json",
+        "archive_manifest_path": "archive_manifest.json",
+        "post_training_data_package_handoff": summary,
+        "claim_boundary": _merge_claim_boundary(
+            _mapping(existing_delivery.get("claim_boundary")),
+            boundary,
+        ),
+    }
+    write_json(output_dir / "delivery_manifest.json", delivery)
+
+    return {
+        "customer_handoff_report": report,
+        "delivery_manifest": delivery,
+        "signed_access_manifest": signed_access,
+        "summary": summary,
+    }
+
+
+def _annotate_live_closure_with_handoff(
+    *,
+    job_dir: Path | None,
+    handoff_summary: Mapping[str, Any],
+) -> None:
+    if not job_dir:
+        return
+    path = job_dir / "live_eval_closure_manifest.json"
+    live_closure = _read_optional_mapping(path)
+    if not live_closure:
+        return
+    boundary = _mapping(handoff_summary.get("claim_boundary"))
+    live_closure["post_training_data_package_handoff"] = dict(handoff_summary)
+    proof_boundary = _mapping(live_closure.get("proof_boundary"))
+    proof_boundary.update(
+        {
+            "post_training_package_export_ready": bool(
+                handoff_summary.get("post_training_package_export_ready")
+            ),
+            "customer_handoff_ready": bool(handoff_summary.get("customer_handoff_ready")),
+            "hosted_access_ready": bool(handoff_summary.get("customer_handoff_ready")),
+            "delivery_approval_proven": False,
+            "delivery_access_is_deployment_approval": False,
+            "package_delivery_is_deployment_approval": False,
+            "deployment_approval_proven": False,
+            "physical_robot_readiness_proven": False,
+            "field_readiness_proven": False,
+            "safety_validation_proven": bool(boundary.get("safety_validation_proven")),
+            "public_claim_upgrade_allowed": False,
+        }
+    )
+    live_closure["proof_boundary"] = proof_boundary
+    claim_boundary = _mapping(live_closure.get("claim_boundary"))
+    claim_boundary.update(
+        {
+            "post_training_package_export_ready": bool(
+                handoff_summary.get("post_training_package_export_ready")
+            ),
+            "customer_handoff_ready": bool(handoff_summary.get("customer_handoff_ready")),
+            "hosted_access_ready": bool(handoff_summary.get("customer_handoff_ready")),
+            "delivery_approval_proven": False,
+            "delivery_access_is_deployment_approval": False,
+            "package_delivery_is_deployment_approval": False,
+            "deployment_approval_proven": False,
+            "physical_robot_readiness_proven": False,
+            "field_readiness_proven": False,
+            "safety_validation_proven": False,
+            "public_claim_upgrade_allowed": False,
+        }
+    )
+    live_closure["claim_boundary"] = claim_boundary
+    write_json(path, live_closure)
 
 
 def _rows_for_optional_exports(
@@ -379,6 +835,8 @@ def _write_package_files(
     generated_at: str,
     scene_id: str,
     capture_id: str,
+    visual_augmentation_packet: Mapping[str, Any] | None = None,
+    rl_post_training_handoff: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     data_dir = output_dir / "data"
     attempts = _rows(trace, "attempts")
@@ -439,6 +897,46 @@ def _write_package_files(
         scene_id=scene_id,
         capture_id=capture_id,
     )
+    visual_augmentation_support: Dict[str, Any] | None = None
+    if visual_augmentation_packet:
+        packet_boundary = _mapping(visual_augmentation_packet.get("claim_boundary"))
+        visual_augmentation_support = {
+            "schema_version": "post_training_visual_augmentation_support_manifest.v1",
+            "generated_at": generated_at,
+            "status": "included_model_derived_support_packet",
+            "source_packet_manifest": included_artifacts.get(
+                "oscar_visual_augmentation_packet_manifest"
+            ),
+            "source_packet_status": visual_augmentation_packet.get("status"),
+            "source_packet_type": visual_augmentation_packet.get("packet_type"),
+            "variant_count": int(visual_augmentation_packet.get("variant_count") or 0),
+            "generated_video_count": int(
+                visual_augmentation_packet.get("generated_video_count") or 0
+            ),
+            "selected_backend_id": visual_augmentation_packet.get("selected_backend_id"),
+            "requires_human_or_vlm_review_before_training_use": True,
+            "generated_videos_model_derived": True,
+            "raw_capture_evidence": False,
+            "physical_robot_episode_evidence": False,
+            "claim_boundary": {
+                **packet_boundary,
+                "artifact_purpose": "post_training_visual_augmentation_support",
+                "included_in_post_training_data_package": True,
+                "generated_videos_are_model_derived_support_assets": True,
+                "generated_videos_are_raw_capture_evidence": False,
+                "contact_physics_proven": False,
+                "real_robot_readiness_proven": False,
+                "deployment_safety_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        }
+        write_json(
+            output_dir / "visual_augmentation_support_manifest.json",
+            visual_augmentation_support,
+        )
+    rl_handoff_payload = dict(rl_post_training_handoff or {})
+    if rl_handoff_payload:
+        write_json(output_dir / "rl_post_training_handoff_packet.json", rl_handoff_payload)
     write_json(output_dir / "dataset_card.json", dataset_card)
     write_json(output_dir / "license_manifest.json", license_manifest)
     write_json(output_dir / "optional_export_manifest.json", optional_exports)
@@ -452,6 +950,14 @@ def _write_package_files(
         "optional_export_manifest": "optional_export_manifest.json",
         **dict(optional_exports.get("files") or {}),
     }
+    if visual_augmentation_support:
+        package_file_index["visual_augmentation_support_manifest"] = (
+            "visual_augmentation_support_manifest.json"
+        )
+    if rl_handoff_payload:
+        package_file_index["rl_post_training_handoff_packet"] = (
+            "rl_post_training_handoff_packet.json"
+        )
     package_index = {
         "schema_version": "post_training_data_package_index.v1",
         "generated_at": generated_at,
@@ -473,6 +979,8 @@ def _write_package_files(
     return {
         "dataset_card": dataset_card,
         "license_manifest": license_manifest,
+        "visual_augmentation_support": visual_augmentation_support,
+        "rl_post_training_handoff": rl_handoff_payload,
         "package_index": package_index,
         "checksums": checksums,
         "package_files": package_files,
@@ -488,9 +996,15 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
         output_dir / "data" / "failure_labels.jsonl",
         output_dir / "data" / "metrics.json",
         output_dir / "clips_manifest.json",
+        output_dir / "customer_handoff_report.json",
+        output_dir / "customer_handoff_report.md",
+        output_dir / "delivery_manifest.json",
+        output_dir / "signed_access_manifest.json",
         output_dir / "dataset_card.json",
         output_dir / "license_manifest.json",
         output_dir / "optional_export_manifest.json",
+        output_dir / "visual_augmentation_support_manifest.json",
+        output_dir / "rl_post_training_handoff_packet.json",
         output_dir / "package_index.json",
         output_dir / "checksums.json",
     ]
@@ -539,8 +1053,11 @@ def build_post_training_data_package_export(
     included_artifacts: Dict[str, str] = {}
     if resolved_job_dir:
         for key, name in (
+            ("job_request", "job_request.json"),
             ("normalized_attempt_trace", "normalized_attempt_trace.json"),
             ("failure_labels", "failure_labels.json"),
+            ("policy_package_manifest", "policy_package_manifest.json"),
+            ("task_eval_rl_post_training_handoff_packet", "rl_post_training_handoff_packet.json"),
             ("visual_review_ledger", "visual_review_ledger.json"),
             ("arena_eval_metrics", "arena_eval_metrics.json"),
             ("simulator_provider_adapter_manifest", "simulator_provider_adapter_manifest.json"),
@@ -614,11 +1131,14 @@ def build_post_training_data_package_export(
             ("robot_pov_render_storyboard", "robot_pov_render_storyboard.json"),
             ("policy_execution_manifest", "policy_execution_manifest.json"),
             ("policy_execution_trace", "policy_execution_trace.json"),
+            ("intervention_safety_ledger", "intervention_safety_ledger.json"),
+            ("safety_events_ledger", "safety_events_ledger.json"),
             ("clips_manifest", "clips_manifest.json"),
             ("accepted_failure_labels", "accepted_failure_labels.json"),
             ("review_resolution_ledger", "review_resolution_ledger.json"),
             ("customer_handoff_report", "customer_handoff_report.json"),
             ("delivery_manifest", "delivery_manifest.json"),
+            ("signed_access_manifest", "signed_access_manifest.json"),
             ("live_operator_ledger", "live_operator_ledger.json"),
             ("arena_rerun_plan", "arena_rerun_plan.json"),
             ("policy_adapter_manifest", "policy_adapter_manifest.json"),
@@ -641,11 +1161,69 @@ def build_post_training_data_package_export(
                 "real_world_validation_followup_request_queue.json",
             ),
             ("live_eval_closure_manifest", "live_eval_closure_manifest.json"),
+            ("live_eval_closure_evidence", "live_eval_closure_evidence.json"),
             ("breakage_library", "breakage_library.json"),
             ("evaluation_result", "evaluation_result.json"),
             ("robot_eval_report", "robot_eval_report.json"),
             ("robot_eval_report_markdown", "robot_eval_report.md"),
             ("proof_boundary", "proof_boundary.json"),
+            (
+                "policy_improvement_rl_post_training_handoff_packet",
+                "policy_improvement_run/rl_post_training_handoff_packet.json",
+            ),
+            (
+                "policy_autoresearch_report",
+                "policy_autoresearch/policy_autoresearch_report.json",
+            ),
+            (
+                "policy_candidate_package",
+                "policy_autoresearch/policy_candidate_package.json",
+            ),
+            ("heldout_eval_result", "policy_autoresearch/heldout_eval_result.json"),
+            (
+                "oscar_visual_augmentation_packet_manifest",
+                "oscar_visual_augmentation_packet/oscar_visual_augmentation_packet_manifest.json",
+            ),
+            (
+                "oscar_visual_augmentation_variant_requests",
+                "oscar_visual_augmentation_packet/visual_augmentation_variant_requests.jsonl",
+            ),
+            (
+                "oscar_visual_augmentation_backend_registry",
+                "oscar_visual_augmentation_packet/model_backend_registry.json",
+            ),
+            (
+                "oscar_visual_distribution_shift_eval_protocol",
+                "oscar_visual_augmentation_packet/visual_distribution_shift_eval_protocol.json",
+            ),
+            (
+                "oscar_visual_augmentation_claim_boundary",
+                "oscar_visual_augmentation_packet/claim_boundary.json",
+            ),
+            (
+                "oscar_visual_augmentation_generation_run_manifest",
+                "oscar_visual_augmentation_packet/visual_augmentation_generation_run_manifest.json",
+            ),
+            (
+                "oscar_visual_augmentation_generation_results",
+                "oscar_visual_augmentation_packet/visual_augmentation_generation_results.jsonl",
+            ),
+            (
+                "oscar_visual_augmentation_generation_qa",
+                "oscar_visual_augmentation_packet/visual_augmentation_generation_qa_manifest.json",
+            ),
+            (
+                "oscar_visual_augmentation_training_readiness",
+                "oscar_visual_augmentation_packet/visual_augmentation_training_readiness_manifest.json",
+            ),
+            (
+                "oscar_visual_augmentation_training_dataset",
+                "oscar_visual_augmentation_packet/visual_augmentation_training_dataset_manifest.json",
+            ),
+            (
+                "oscar_visual_augmentation_training_episodes",
+                "oscar_visual_augmentation_packet/exports/visual_augmentation/episodes.jsonl",
+            ),
         ):
             value = _job_artifact(resolved_job_dir, name)
             if value:
@@ -681,6 +1259,16 @@ def build_post_training_data_package_export(
     )
     missing = [key for key in required if key not in included_artifacts]
     status = "blocked_missing_inputs" if missing else "export_ready_review_required"
+    live_closure = (
+        _read_optional_mapping(resolved_job_dir / "live_eval_closure_manifest.json")
+        if resolved_job_dir
+        else {}
+    )
+    proof_boundary = (
+        _read_optional_mapping(resolved_job_dir / "proof_boundary.json")
+        if resolved_job_dir
+        else {}
+    )
     trace = (
         _read_optional_mapping(resolved_job_dir / "normalized_attempt_trace.json")
         if resolved_job_dir
@@ -701,6 +1289,84 @@ def build_post_training_data_package_export(
         if resolved_job_dir
         else {}
     )
+    job_request = (
+        _read_optional_mapping(resolved_job_dir / "job_request.json")
+        if resolved_job_dir
+        else {}
+    )
+    scenario_matrix = (
+        _read_optional_mapping(resolved_job_dir / "scenario_eval_matrix.json")
+        if resolved_job_dir
+        else {}
+    )
+    evaluation_result = (
+        _read_optional_mapping(resolved_job_dir / "evaluation_result.json")
+        if resolved_job_dir
+        else {}
+    )
+    policy_package = (
+        _read_optional_mapping(resolved_job_dir / "policy_package_manifest.json")
+        if resolved_job_dir
+        else {}
+    )
+    policy_report = (
+        _read_optional_mapping(
+            resolved_job_dir / "policy_autoresearch" / "policy_autoresearch_report.json"
+        )
+        if resolved_job_dir
+        else {}
+    )
+    candidate_package = (
+        _read_optional_mapping(
+            resolved_job_dir / "policy_autoresearch" / "policy_candidate_package.json"
+        )
+        if resolved_job_dir
+        else {}
+    )
+    heldout_result = (
+        _read_optional_mapping(resolved_job_dir / "policy_autoresearch" / "heldout_eval_result.json")
+        if resolved_job_dir
+        else {}
+    )
+    policy_execution_trace = (
+        _read_optional_mapping(resolved_job_dir / "policy_execution_trace.json")
+        if resolved_job_dir
+        else {}
+    )
+    safety_events = (
+        _read_optional_mapping(resolved_job_dir / "intervention_safety_ledger.json")
+        if resolved_job_dir
+        else {}
+    )
+    if not safety_events and resolved_job_dir:
+        safety_events = _read_optional_mapping(resolved_job_dir / "safety_events_ledger.json")
+    visual_augmentation_packet = (
+        _read_optional_mapping(
+            resolved_job_dir
+            / "oscar_visual_augmentation_packet"
+            / "oscar_visual_augmentation_packet_manifest.json"
+        )
+        if resolved_job_dir
+        else {}
+    )
+    rl_post_training_handoff = build_rl_post_training_handoff_packet(
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        job_id=resolved_job_dir.name if resolved_job_dir else None,
+        generated_at=generated_at,
+        job_request=job_request,
+        scenario_matrix=scenario_matrix,
+        trace=trace,
+        labels=labels,
+        evaluation_result=evaluation_result,
+        policy_package=policy_package,
+        policy_report=policy_report,
+        candidate_package=candidate_package,
+        heldout_result=heldout_result,
+        policy_execution_trace=policy_execution_trace,
+        safety_events=safety_events,
+        source_artifacts=included_artifacts,
+    )
     package_files = _write_package_files(
         output_dir=resolved_output_dir,
         included_artifacts=included_artifacts,
@@ -711,8 +1377,94 @@ def build_post_training_data_package_export(
         generated_at=generated_at,
         scene_id=context.scene_id,
         capture_id=context.capture_id,
+        visual_augmentation_packet=visual_augmentation_packet,
+        rl_post_training_handoff=rl_post_training_handoff,
     )
+    live_gate_references = {
+        gate_id: _live_closure_gate_reference(live_closure, gate_id)
+        for gate_id in (
+            "webapp_upstream_truth",
+            "rights_privacy_scope",
+            "review_acceptance",
+            "signed_delivery_access",
+        )
+    }
+    handoff_payloads = _write_handoff_manifests(
+        output_dir=resolved_output_dir,
+        job_dir=resolved_job_dir,
+        generated_at=generated_at,
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        export_ready=status == "export_ready_review_required",
+        included_artifacts=included_artifacts,
+        live_closure=live_closure,
+        live_gate_references=live_gate_references,
+        trace=trace,
+        labels=labels,
+        clips=clips,
+    )
+    included_artifacts["customer_handoff_report"] = "customer_handoff_report.json"
+    included_artifacts["customer_handoff_report_markdown"] = "customer_handoff_report.md"
+    included_artifacts["delivery_manifest"] = "delivery_manifest.json"
+    included_artifacts["signed_access_manifest"] = "signed_access_manifest.json"
     archive_manifest = _write_archive(resolved_output_dir, generated_at)
+    delivery_manifest = _mapping(handoff_payloads.get("delivery_manifest"))
+    signed_access_manifest = _mapping(handoff_payloads.get("signed_access_manifest"))
+    handoff_records = {
+        "proof_boundary_path": included_artifacts.get("proof_boundary"),
+        "live_eval_closure_manifest_path": included_artifacts.get(
+            "live_eval_closure_manifest"
+        ),
+        "live_eval_closure_evidence_path": included_artifacts.get(
+            "live_eval_closure_evidence"
+        ),
+        "rights_packet_path": included_artifacts.get("rights_packet"),
+        "review_resolution_ledger_path": included_artifacts.get(
+            "review_resolution_ledger"
+        ),
+        "accepted_failure_labels_path": included_artifacts.get(
+            "accepted_failure_labels"
+        ),
+        "customer_handoff_report_path": included_artifacts.get("customer_handoff_report"),
+        "delivery_manifest_path": included_artifacts.get("delivery_manifest"),
+        "signed_access_manifest_path": included_artifacts.get("signed_access_manifest"),
+        "delivery_manifest_status": delivery_manifest.get("status"),
+        "signed_access_manifest_status": signed_access_manifest.get("status"),
+        "post_training_package_export_ready": status == "export_ready_review_required",
+        "customer_handoff_ready": bool(
+            _mapping(handoff_payloads.get("summary")).get("customer_handoff_ready")
+        ),
+        "customer_handoff_blockers": _string_list(
+            _mapping(handoff_payloads.get("summary")).get("blockers")
+        ),
+        "live_eval_closure_status": live_closure.get("status"),
+        "proof_boundary_status": proof_boundary.get("status"),
+        "live_closure_gate_references": live_gate_references,
+    }
+    manifest_claim_boundary = {
+        **dict(CLAIM_BOUNDARY),
+        "post_training_package_export_ready": status == "export_ready_review_required",
+        "review_acceptance_proven": live_gate_references["review_acceptance"]["passed"],
+        "rights_privacy_scope_proven": live_gate_references["rights_privacy_scope"][
+            "passed"
+        ],
+        "signed_delivery_access_proven": live_gate_references["signed_delivery_access"][
+            "passed"
+        ],
+        "customer_handoff_ready": bool(
+            _mapping(handoff_payloads.get("summary")).get("customer_handoff_ready")
+        ),
+        "hosted_access_ready": bool(
+            _mapping(handoff_payloads.get("summary")).get("customer_handoff_ready")
+        ),
+        "delivery_approval_proven": False,
+        "delivery_access_is_deployment_approval": False,
+        "package_delivery_is_deployment_approval": False,
+        "deployment_approval_proven": False,
+        "physical_robot_readiness_proven": False,
+        "field_readiness_proven": False,
+        "safety_validation_proven": False,
+    }
 
     manifest = {
         "schema_version": POST_TRAINING_DATA_PACKAGE_EXPORT_SCHEMA_VERSION,
@@ -723,10 +1475,29 @@ def build_post_training_data_package_export(
         "status": status,
         "blockers": [f"missing_{key}" for key in missing],
         "included_artifacts": included_artifacts,
+        "handoff_records": handoff_records,
         "manifest_counts": {
             "attempt_count": int(trace.get("attempt_count") or 0),
             "failure_label_count": int(labels.get("label_count") or 0),
             "clip_count": int(clips.get("clip_count") or 0),
+            "visual_augmentation_variant_count": int(
+                visual_augmentation_packet.get("variant_count") or 0
+            ),
+            "visual_augmentation_generated_video_count": int(
+                visual_augmentation_packet.get("generated_video_count") or 0
+            ),
+            "rl_handoff_recoverable_failure_label_count": int(
+                _mapping(
+                    rl_post_training_handoff.get("recoverable_failure_labels")
+                ).get("label_count")
+                or 0
+            ),
+            "rl_handoff_intervention_event_count": int(
+                _mapping(
+                    rl_post_training_handoff.get("intervention_safety_ledger")
+                ).get("event_count")
+                or 0
+            ),
         },
         "export_policy": {
             "curated_robot_pov_clips_required_for_richer_exports": True,
@@ -767,6 +1538,18 @@ def build_post_training_data_package_export(
             in included_artifacts,
             "breakage_library_included": "breakage_library" in included_artifacts,
             "robot_eval_report_included": "robot_eval_report" in included_artifacts,
+            "visual_augmentation_packet_included": bool(visual_augmentation_packet),
+            "visual_augmentation_is_model_derived_support": bool(
+                visual_augmentation_packet
+            ),
+            "visual_augmentation_generated_videos_are_raw_capture_evidence": False,
+            "rl_post_training_handoff_included": True,
+            "rl_sparse_reward_signal_included": True,
+            "concurrent_baseline_ab_plan_included": True,
+            "bottleneck_stage_detection_included": True,
+            "speed_curriculum_plan_included": True,
+            "action_chunk_continuity_qa_included": True,
+            "intervention_safety_ledger_included": True,
         },
         "package_files": package_files["package_files"],
         "dataset_card_path": "dataset_card.json",
@@ -776,9 +1559,34 @@ def build_post_training_data_package_export(
         "archive_manifest_path": "archive_manifest.json",
         "archive": archive_manifest["archive"],
         "optional_export_manifest_path": "optional_export_manifest.json",
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "visual_augmentation_support_manifest_path": (
+            "visual_augmentation_support_manifest.json"
+            if package_files.get("visual_augmentation_support")
+            else None
+        ),
+        "rl_post_training_handoff_packet_path": "rl_post_training_handoff_packet.json",
+        "rl_post_training_handoff_summary": {
+            "concurrent_baseline_ab_status": _mapping(
+                rl_post_training_handoff.get("concurrent_baseline_ab")
+            ).get("status"),
+            "dominant_bottleneck_stage": _mapping(
+                rl_post_training_handoff.get("bottleneck_stage_detection")
+            ).get("dominant_stage"),
+            "speed_curriculum_status": _mapping(
+                rl_post_training_handoff.get("speed_curriculum_plan")
+            ).get("status"),
+            "action_chunk_qa_status": _mapping(
+                rl_post_training_handoff.get("action_chunk_continuity_qa")
+            ).get("status"),
+            "safety_validation_proven": False,
+        },
+        "claim_boundary": manifest_claim_boundary,
     }
     write_json(resolved_output_dir / "post_training_data_package_export_manifest.json", manifest)
+    _annotate_live_closure_with_handoff(
+        job_dir=resolved_job_dir,
+        handoff_summary=_mapping(handoff_payloads.get("summary")),
+    )
     return manifest
 
 

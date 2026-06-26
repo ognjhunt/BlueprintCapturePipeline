@@ -136,9 +136,7 @@ def test_live_pipeline_control_plane_blocks_without_capture_root(tmp_path: Path,
     assert {item["id"] for item in packet["required_inputs"]} == {
         "webapp_upstream_truth",
         "isaac_lab_arena_owner_evidence",
-        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
-        "real_world_deployment_outcomes",
         "robot_team_policy_package",
     }
 
@@ -177,15 +175,13 @@ def test_live_pipeline_control_plane_processes_empty_inbox_without_live_actions(
 
     assert packet_info["schema_version"] == LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION
     assert packet_info["status"] == "waiting_for_external_inputs"
-    assert packet_info["required_input_count"] == 5
+    assert packet_info["required_input_count"] == 3
     assert packet_info["enablement_input_count"] == 4
     assert packet_path.is_file()
     assert packet_markdown_path.is_file()
     assert required_input_ids == {
         "isaac_lab_arena_owner_evidence",
-        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
-        "real_world_deployment_outcomes",
         "robot_team_policy_package",
     }
     assert "webapp_upstream_truth" not in required_input_ids
@@ -287,11 +283,8 @@ def test_live_pipeline_control_plane_writes_resumable_blocker_packets(
     assert by_id["isaac_lab_arena_owner_evidence"]["safe_proof_command"].startswith(
         "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true"
     )
-    assert (
-        "deployment outcome"
-        in by_id["real_world_deployment_outcomes"]["required_input"].lower()
-    )
-    assert "real robot pov" in by_id["real_robot_pov_evidence"]["required_input"].lower()
+    assert "real_world_deployment_outcomes" not in by_id
+    assert "real_robot_pov_evidence" not in by_id
     assert (
         "blueprint-run-live-pipeline-control-plane"
         in by_id["delivery_upload"]["resume_target"]
@@ -337,7 +330,7 @@ def test_live_pipeline_control_plane_accepts_matching_webapp_inbox_truth(
     assert "WebApp capture root" not in next_inputs
     assert "Isaac Lab-Arena" in next_inputs
     assert "live closure evidence" in next_inputs
-    assert "deployment outcome" in next_inputs
+    assert "deployment outcome" not in next_inputs
     assert "policy package" not in next_inputs
 
 
@@ -603,7 +596,7 @@ def test_live_pipeline_control_plane_next_inputs_follow_ready_sections(
     assert "delivery command" not in next_inputs
     assert "Isaac Lab-Arena" in next_inputs
     assert "live closure evidence" in next_inputs
-    assert "deployment outcome" in next_inputs
+    assert "deployment outcome" not in next_inputs
     assert "policy package" in next_inputs
 
 

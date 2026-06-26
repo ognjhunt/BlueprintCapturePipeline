@@ -13,6 +13,7 @@ from .oscar_cosmos_wam_evaluator import (
     build_policy_model_endpoint_creation_plan,
     build_policy_model_endpoint_readiness_manifest,
 )
+from .policy_endpoint_boundary import build_policy_endpoint_boundary_manifest
 from .policy_model_runtime_proofs import discover_openvla_provider_smoke_proof
 from .provider_worker_contract import (
     HEALTHZ_PATH,
@@ -539,6 +540,11 @@ def build_wam_vla_policy_endpoint_setup(
         generated_at=generated,
         readiness_manifest=endpoint_readiness,
     )
+    endpoint_boundary_manifest = build_policy_endpoint_boundary_manifest(
+        generated_at=generated,
+        endpoint_setup_configured=True,
+        policy_execution_manifest_path=root / "policy_execution_manifest.json",
+    )
     runnable_env_metadata, runnable_env_text = build_policy_model_runnable_env_artifact(
         repo_root=_repo_root(),
         generated_at=generated,
@@ -646,6 +652,7 @@ See `policy_model_endpoint_readiness_manifest.json` for the exact missing env va
         "policy_model_endpoint_readiness_manifest": root
         / "policy_model_endpoint_readiness_manifest.json",
         "policy_model_endpoint_creation_plan": root / "policy_model_endpoint_creation_plan.json",
+        "policy_endpoint_boundary_manifest": root / "policy_endpoint_boundary_manifest.json",
         "policy_model_runnable_env_manifest": root / "policy_model_runnable_env_manifest.json",
         "policy_model_runnable_env": root / "policy_model_runnable_env.sh",
         "policy_command_adapter_manifest": root / "policy_command_adapter_manifest.json",
@@ -658,6 +665,7 @@ See `policy_model_endpoint_readiness_manifest.json` for the exact missing env va
     write_json(paths["policy_model_truth_boundary"], truth_boundary)
     write_json(paths["policy_model_endpoint_readiness_manifest"], endpoint_readiness)
     write_json(paths["policy_model_endpoint_creation_plan"], endpoint_creation_plan)
+    write_json(paths["policy_endpoint_boundary_manifest"], endpoint_boundary_manifest)
     write_json(paths["policy_model_runnable_env_manifest"], runnable_env_metadata)
     _write_text(paths["policy_model_runnable_env"], runnable_env_text)
     write_json(paths["policy_command_adapter_manifest"], adapter_manifest)

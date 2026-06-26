@@ -12,10 +12,13 @@ from typing import Any, Iterator, Mapping, Sequence
 from .common import ensure_dir, utc_now_iso, write_json
 from .unitree_groot_n17_sonic_vast_persistent_session import (
     PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_HEIGHT,
+    PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_FPS,
+    PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_NUM_FRAMES,
     PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_WIDTH,
     PERSISTENT_WAM_SHORT_VISUAL_SANITY_SCHEMA_VERSION,
     _camera_frame_path,
     _current_wam_visual_profile_settings,
+    _ffprobe_review_media_profile,
     _load_policy_observation,
     _mapping,
     _read_json,
@@ -79,31 +82,22 @@ def _resolve_artifact_path(path: Any) -> str | None:
     return str(Path(text).expanduser().resolve())
 
 
-def _first_ffprobe_video_stream(metadata: Mapping[str, Any]) -> dict[str, Any]:
-    streams = metadata.get("streams")
-    if not isinstance(streams, Sequence) or isinstance(streams, (str, bytes, bytearray)):
-        return {}
-    for stream in streams:
-        if isinstance(stream, Mapping):
-            return dict(stream)
-    return {}
-
-
 def _review_media_resolution(video_status: Mapping[str, Any]) -> dict[str, Any]:
     metadata = _mapping(video_status.get("ffprobe_metadata"))
-    stream = _first_ffprobe_video_stream(metadata)
-    width = _intish(stream.get("width")) or 0
-    height = _intish(stream.get("height")) or 0
-    passed = (
-        width >= PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_WIDTH
-        and height >= PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_HEIGHT
-    )
+    profile = _ffprobe_review_media_profile(metadata)
     return {
-        "width": width or None,
-        "height": height or None,
+        "width": profile["width"] or None,
+        "height": profile["height"] or None,
+        "fps": profile["fps"] or None,
+        "frame_count": profile["frame_count"] or None,
         "minimum_width": PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_WIDTH,
         "minimum_height": PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_HEIGHT,
-        "passed": passed,
+        "minimum_fps": PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_FPS,
+        "minimum_num_frames": PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_NUM_FRAMES,
+        "resolution_passed": profile["resolution_passed"],
+        "fps_passed": profile["fps_passed"],
+        "frame_count_passed": profile["frame_count_passed"],
+        "passed": profile["passed"],
     }
 
 
@@ -221,8 +215,27 @@ def _manifest_blockers(
         blockers.append("short_visual_sanity_ffprobe_command_not_ran")
     if _intish(video_status.get("ffprobe_returncode")) != 0:
         blockers.append("short_visual_sanity_ffprobe_returncode_not_zero")
-    if not _review_media_resolution(video_status)["passed"]:
+    media_profile = _review_media_resolution(video_status)
+    if not media_profile["resolution_passed"]:
         blockers.append("short_visual_sanity_review_video_below_minimum_resolution")
+    if not media_profile["fps_passed"]:
+        blockers.append("short_visual_sanity_review_video_fps_below_review_quality_minimum")
+    if not media_profile["frame_count_passed"]:
+        blockers.append(
+            "short_visual_sanity_review_video_frame_count_below_review_quality_minimum"
+        )
+    profile_contract = _mapping(visual_report.get("profile_contract"))
+    if visual_report and _string(visual_report.get("visual_profile")) != "review_quality":
+        blockers.append("short_visual_sanity_quality_report_not_review_quality_profile")
+    if profile_contract.get("smoke_only") is True:
+        blockers.append("short_visual_sanity_quality_report_smoke_only")
+    if (
+        profile_contract
+        and profile_contract.get("review_quality_minimum_satisfied") is not True
+    ):
+        blockers.append(
+            "short_visual_sanity_quality_report_review_quality_minimum_not_satisfied"
+        )
     contact_sheet_path = _resolve_artifact_path(
         result.get("wam_rollout_contact_sheet_path")
         or _mapping(result.get("postprocess_artifacts")).get("wam_rollout_contact_sheet")
@@ -287,6 +300,8 @@ def _write_blocked_preflight_manifest(
             "provider_success": False,
             "provider_success_separate_from_visually_useful_rollout": True,
             "visually_useful_rollout": False,
+            "generated_observation_review_support_only": True,
+            "review_quality_gate_is_not_scale_up_approval": True,
             "generated_world_rank_fidelity_result_proven": False,
             "generated_world_policy_evaluation_scope_proven": False,
             "non_ranking_operational_claim_proven": False,
@@ -405,6 +420,8 @@ def _build_short_sanity_manifest(
             "provider_success_separate_from_visually_useful_rollout": True,
             "visually_useful_rollout": visually_useful_rollout,
             "source_observation_qa_is_required_before_provider_run": True,
+            "generated_observation_review_support_only": True,
+            "review_quality_gate_is_not_scale_up_approval": True,
             "generated_world_rank_fidelity_result_proven": False,
             "generated_world_policy_evaluation_scope_proven": False,
             "non_ranking_operational_claim_proven": False,

@@ -78,6 +78,65 @@ def _fixture_job(tmp_path: Path) -> tuple[Path, Path]:
     return capture_root, job_dir
 
 
+def _passed_short_visual_sanity_manifest(tmp_path: Path) -> dict:
+    return {
+        "schema_version": "persistent_wam_short_visual_sanity.v1",
+        "generated_at": "2026-06-20T00:00:00+00:00",
+        "status": "passed_short_visual_sanity",
+        "short_visual_sanity_passed": True,
+        "short_visual_sanity_manifest_path": str(
+            tmp_path / "persistent_wam_short_visual_sanity_manifest.json"
+        ),
+        "visual_profile": "review_quality",
+        "visually_useful_rollout": True,
+        "source_policy_observation_visual_qa_status": "passed_visual_quality_gate",
+        "wam_rollout_contact_sheet_path": str(tmp_path / "wam_rollout_contact_sheet.jpg"),
+        "wam_rollout_visual_quality_report_path": str(
+            tmp_path / "wam_rollout_visual_quality_report.json"
+        ),
+        "video_review_status_path": str(tmp_path / "video_review_status.json"),
+        "review_video_path": str(tmp_path / "review.mp4"),
+        "blockers": [],
+        "claim_boundary": {
+            "generated_observation_review_support_only": True,
+            "short_visual_sanity_is_not_task_success_proof": True,
+            "capture_truth": False,
+        },
+    }
+
+
+def _reviewed_success_label(
+    *,
+    label_id: str,
+    policy_id: str,
+    run_id: str,
+    task_success: bool,
+    uncertainty_score: float = 0.12,
+) -> dict:
+    return {
+        "label_id": label_id,
+        "attempt_id": f"{label_id}_attempt",
+        "rollout_id": f"{label_id}_rollout",
+        "policy_id": policy_id,
+        "scenario_eval_run_id": run_id,
+        "task_id": "tote_transfer",
+        "scenario_id": "review_quality_case",
+        "task_success": task_success,
+        "confidence": round(1.0 - uncertainty_score, 6),
+        "uncertainty_score": uncertainty_score,
+        "failure_mode_ids": [] if task_success else ["reviewed_generated_failure"],
+        "visual_smoke_status": "passed_visual_quality_smoke",
+        "visual_rollout_useful_for_task_success_review": True,
+        "visual_review_blockers": [],
+        "fixture_evaluator_only": False,
+        "review_grade_visual_evidence_available": True,
+        "review_grade_success_label": True,
+        "review_status": "accepted_reviewed_success_label",
+        "review_label_refs": [f"review_labels/{label_id}.json"],
+        "frame_or_clip_refs": [f"review_media/{label_id}.mp4"],
+    }
+
+
 def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     tmp_path: Path,
 ) -> None:
@@ -127,6 +186,7 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
         "srcc_validation_plan.json",
         "candidate_selection_report.json",
         "candidate_selection_report.md",
+        "visual_review_blocker_summary.json",
         "customer_handoff_report.json",
         "customer_handoff_report.md",
     }
@@ -138,6 +198,7 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     failure_labels = _read_json(job_dir / "failure_labels.json")
     scorecard = _read_json(job_dir / "policy_ranking_scorecard.json")
     candidate_report = _read_json(job_dir / "candidate_selection_report.json")
+    visual_blockers = _read_json(job_dir / "visual_review_blocker_summary.json")
     claim_boundary = _read_json(job_dir / "wam_eval_claim_boundary.json")
     srcc_plan = _read_json(job_dir / "srcc_validation_plan.json")
     anchor_manifest = _read_json(job_dir / "wam_real_world_validation_anchor_manifest.json")
@@ -153,7 +214,9 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     )
     assert labels["labels"][0]["fixture_evaluator_only"] is True
     assert trace["attempt_count"] == 4
-    assert scorecard["top_policy_id"] == "site_finetune_policy"
+    assert scorecard["status"] == "completed_visual_review_required"
+    assert scorecard["top_policy_id"] is None
+    assert scorecard["evaluator_top_policy_id"] == "site_finetune_policy"
     assert scorecard["policy_count"] == 2
     assert scorecard["fixture_evaluator_only"] is True
     assert scorecard["review_grade_policy_ranking"] is False
@@ -181,21 +244,46 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     assert scorecard["comparison_blockers"] == []
     assert scorecard["ranking_confidence"]["top_policy_margin"] > 0
     assert scorecard["ranking_confidence"]["ranking_ambiguous"] is False
-    assert scorecard["single_best_policy_claimed"] is True
-    assert candidate_report["status"] == "clear_winner"
-    assert candidate_report["top_policy_id"] == "site_finetune_policy"
+    assert scorecard["single_best_policy_claimed"] is False
+    assert candidate_report["status"] == "visual_review_required_candidate_shortlist"
+    assert candidate_report["top_policy_id"] is None
+    assert candidate_report["evaluator_top_policy_id"] == "site_finetune_policy"
     assert candidate_report["runner_up_policy_id"] == "baseline_policy"
     assert candidate_report["margin"]["predicted_success_rate"] == 0.5
-    assert candidate_report["tie_or_ambiguity_status"] == "clear"
-    assert candidate_report["candidate_shortlist"] == []
+    assert candidate_report["tie_or_ambiguity_status"] == "visual_review_required"
+    assert [row["policy_id"] for row in candidate_report["candidate_shortlist"]] == [
+        "site_finetune_policy",
+        "baseline_policy",
+    ]
+    assert candidate_report["recommendation"]["recommended_policy_id"] is None
+    assert candidate_report["recommendation"]["evaluator_top_policy_id"] == (
+        "site_finetune_policy"
+    )
+    assert any(
+        row["reason"] == "visual_review_blockers_present"
+        for row in candidate_report["recommended_reruns"]
+    )
     assert candidate_report["scenario_matrix_coverage"]["coverage_complete"] is True
     assert candidate_report["scenario_matrix_coverage"]["expected_candidate_attempt_count"] == 4
     assert candidate_report["scenario_matrix_coverage"]["observed_candidate_attempt_count"] == 4
-    assert candidate_report["real_world_validation_followup_request"][
-        "triggered_by_no_real_world_anchors"
-    ] is False
+    assert "real_world_validation_followup_request" not in candidate_report
+    assert "real_world_validation_requests" not in candidate_report
+    assert all(
+        row["reason"] != "paired_real_world_anchor_missing"
+        for row in candidate_report["recommended_reruns"]
+    )
     assert scorecard["comparison_contract"]["comparison_scope"] == "configured_evaluator_only"
+    assert scorecard["comparison_contract"]["same_observation_protocol"] is True
+    assert scorecard["comparison_contract"]["same_action_protocol"] is True
     assert scorecard["comparison_contract"]["evaluation_readiness_claimed"] is False
+    assert scorecard["comparison_contract"][
+        "forward_inverse_consistency_metrics_are_support_signals_only"
+    ] is True
+    assert scorecard["comparison_contract"][
+        "forward_inverse_consistency_does_not_upgrade_policy_ranking"
+    ] is True
+    assert scorecard["forward_inverse_consistency_signal_summary"]["status"] == "not_provided"
+    assert scorecard["forward_inverse_consistency_signal_summary"]["support_signal_only"] is True
     assert failure_labels["fixture_evaluator_only"] is True
     assert failure_labels["review_grade_failure_diagnosis"] is False
     assert "fixture_evaluator_only_no_review_grade_visual_evidence" in failure_labels[
@@ -212,6 +300,18 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     assert claim_boundary["live_provider_calls_performed"] is False
     assert claim_boundary["customer_specific_srcc_claimed"] is False
     assert claim_boundary["passing_wam_heldout_eval_is_not_rank_fidelity_result"] is True
+    assert claim_boundary[
+        "forward_inverse_consistency_is_reliability_review_signal_only"
+    ] is True
+    assert claim_boundary[
+        "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking"
+    ] is True
+    assert claim_boundary["policy_success_claimed_from_consistency"] is False
+    assert claim_boundary["task_success_claimed_from_consistency"] is False
+    assert claim_boundary["rank_fidelity_claimed_from_consistency"] is False
+    assert claim_boundary["deployment_readiness_claimed_from_consistency"] is False
+    assert claim_boundary["sensor_truth_claimed_from_consistency"] is False
+    assert claim_boundary["external_validation_claimed_from_consistency"] is False
     assert srcc_plan["status"] == "requires_real_world_rollout_anchors"
     assert srcc_plan["customer_specific_srcc_claimed"] is False
     assert anchor_manifest["deployment_outcome_ledger_path"] == "deployment_outcome_ledger.json"
@@ -220,9 +320,82 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     assert anchor_manifest["anchors"][0]["actual_success"] is True
     assert anchor_manifest["missing_anchor_requirements"][0]["record_id"] == "missing-owner-evidence"
     assert handoff["visual_reviewability_gate"]["status"] == "blocked_visual_review_required"
+    assert handoff["forward_inverse_consistency_signal_summary"]["support_signal_only"] is True
     assert "fixture_evaluator_only_no_review_grade_visual_evidence" in handoff[
         "visual_reviewability_gate"
     ]["blockers"]
+    assert visual_blockers["status"] == "blocked_visual_review_required"
+    assert visual_blockers["recommended_policy_id"] is None
+    assert visual_blockers["evaluator_top_policy_id"] == "site_finetune_policy"
+    assert "fixture_evaluator_only_no_review_grade_visual_evidence" in visual_blockers[
+        "blockers"
+    ]
+
+
+def test_forward_inverse_consistency_overclaims_do_not_upgrade_fixture_policy_ranking() -> None:
+    labels = {
+        "schema_version": "vision_success_labels.v1",
+        "status": "completed",
+        "visual_rollout_useful_for_task_success_review": True,
+        "review_grade_success_labels": True,
+        "fixture_evaluator_only": False,
+        "forward_inverse_consistency_proven": True,
+        "public_claim_upgrade_allowed": True,
+        "labels": [
+            {
+                "policy_id": policy_id,
+                "scenario_eval_run_id": run_id,
+                "task_success": False,
+                "confidence": 0.9,
+                "uncertainty_score": 0.1,
+                "forward_inverse_consistency_proven": True,
+                "policy_success_claimed_from_consistency": True,
+                "task_success_claimed_from_consistency": True,
+                "rank_fidelity_claimed_from_consistency": True,
+                "deployment_readiness_claimed_from_consistency": True,
+                "sensor_truth_claimed_from_consistency": True,
+                "external_validation_claimed_from_consistency": True,
+                "public_claim_upgrade_allowed": True,
+                "visual_rollout_useful_for_task_success_review": True,
+                "fixture_evaluator_only": False,
+            }
+            for policy_id in ("policy_alpha", "policy_beta")
+            for run_id in ("run_one", "run_two")
+        ],
+    }
+
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="oscar_wam",
+        labels=labels,
+        generated_at="2026-06-20T00:00:00+00:00",
+        required_scenario_eval_run_ids=["run_one", "run_two"],
+        policy_ids=["policy_alpha", "policy_beta"],
+    )
+
+    summary = scorecard["forward_inverse_consistency_signal_summary"]
+    assert summary["status"] == "support_signal_present"
+    assert summary["support_signal_only"] is True
+    assert summary["label_count_with_consistency_signal"] == 4
+    assert "public_claim_upgrade_allowed" in summary["ignored_upgrade_fields_present"]
+    assert summary["evaluator_bounded_policy_ranking_upgraded_by_consistency"] is False
+    assert summary["policy_success_claimed_from_consistency"] is False
+    assert summary["task_success_claimed_from_consistency"] is False
+    assert summary["rank_fidelity_claimed_from_consistency"] is False
+    assert summary["deployment_readiness_claimed_from_consistency"] is False
+    assert summary["sensor_truth_claimed_from_consistency"] is False
+    assert summary["external_validation_claimed_from_consistency"] is False
+    assert all(row["predicted_success_count"] == 0 for row in scorecard["policy_rankings"])
+    assert all(row["predicted_success_rate"] == 0.0 for row in scorecard["policy_rankings"])
+    assert scorecard["top_policy_id"] is None
+    assert scorecard["single_best_policy_claimed"] is False
+    assert scorecard["review_grade_policy_ranking"] is False
+    assert scorecard["ranking_confidence"]["ranking_ambiguous"] is True
+    assert scorecard["comparison_contract"]["evaluation_readiness_claimed"] is False
+    assert scorecard["claim_boundary"][
+        "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking"
+    ] is True
+    assert scorecard["claim_boundary"]["task_success_claimed_from_consistency"] is False
+    assert scorecard["claim_boundary"]["external_validation_claimed_from_consistency"] is False
 
 
 def test_fixture_wam_failure_labels_stay_review_required_and_breakage_aggregates(
@@ -273,7 +446,7 @@ def test_fixture_wam_failure_labels_stay_review_required_and_breakage_aggregates
     assert dominant["evidence_refs"]
 
 
-def test_candidate_selection_report_clear_winner_decisive_failure_handoff(
+def test_candidate_selection_report_shortlists_when_visual_review_is_blocked(
     tmp_path: Path,
 ) -> None:
     capture_root, job_dir = _fixture_job(tmp_path)
@@ -292,9 +465,14 @@ def test_candidate_selection_report_clear_winner_decisive_failure_handoff(
     assert report["primary_eval_question"] == (
         "which policy performed best in this evaluator, and what broke"
     )
-    assert report["status"] == "clear_winner"
-    assert report["top_policy_id"] == "site_finetune_policy"
+    assert report["status"] == "visual_review_required_candidate_shortlist"
+    assert report["top_policy_id"] is None
+    assert report["evaluator_top_policy_id"] == "site_finetune_policy"
     assert report["runner_up_policy_id"] == "baseline_policy"
+    assert [
+        row["policy_id"] for row in report["candidate_shortlist"]
+    ] == ["site_finetune_policy", "baseline_policy"]
+    assert report["recommendation"]["status"] == "no_winner_claim_use_shortlist"
     assert report["decisive_scenarios"][0]["scenario_eval_run_id"] == (
         "run_heldout_grasp_glare"
     )
@@ -315,23 +493,28 @@ def test_candidate_selection_report_clear_winner_decisive_failure_handoff(
     assert hooks["policy_adapter_or_checkpoint_to_retry"][0]["policy_id"] == (
         "baseline_policy"
     )
-    assert report["real_world_validation_followup_request"][
-        "triggered_by_no_real_world_anchors"
-    ] is True
-    assert report["real_world_validation_followup_request"]["usable_anchor_count"] == 0
+    assert "real_world_validation_followup_request" not in report
+    assert "real_world_validation_requests" not in report
+    assert all(
+        row["reason"] != "paired_real_world_anchor_missing"
+        for row in report["recommended_reruns"]
+    )
     assert report["claim_boundary"]["boundary_statement"] == (
-        "do not use for generated-world rank-fidelity result"
+        "sim-ranking handoff only; IRL validation is out of scope"
     )
     assert report["claim_boundary"]["do_not_use_as_rank_fidelity_result"] is True
     assert report["claim_boundary"]["rank_fidelity_result_claimed"] is False
     markdown_lower = markdown.lower()
-    assert "do not use for generated-world rank-fidelity result" in markdown_lower
+    assert "sim-ranking handoff only" in markdown_lower
+    assert "real-world validation" not in markdown_lower
     assert "ready for deployment" not in markdown_lower
     assert "policy-ranking ready" not in markdown_lower
     assert "approved for deployment" not in markdown_lower
     assert "will work irl" not in markdown_lower
     assert handoff["candidate_selection_report_path"] == "candidate_selection_report.json"
-    assert handoff["candidate_selection_summary"]["status"] == "clear_winner"
+    assert handoff["candidate_selection_summary"]["status"] == (
+        "visual_review_required_candidate_shortlist"
+    )
 
 
 def test_candidate_ranking_ambiguous_report_uses_shortlist_instead_of_best_policy(
@@ -355,12 +538,13 @@ def test_candidate_ranking_ambiguous_report_uses_shortlist_instead_of_best_polic
     report = _read_json(job_dir / "candidate_selection_report.json")
     handoff = _read_json(job_dir / "customer_handoff_report.json")
 
-    assert report["status"] == "ambiguous_candidate_shortlist"
+    assert report["status"] == "visual_review_required_candidate_shortlist"
     assert report["top_policy_id"] is None
     assert report["selection"]["ranking_ambiguous"] is True
-    assert report["selection"]["ambiguity_reasons"] == [
-        "top_two_success_rates_within_threshold"
-    ]
+    assert "visual_review_blockers_or_fixture_only_labels_prevent_winner_claim" in report[
+        "selection"
+    ]["ambiguity_reasons"]
+    assert report["tie_or_ambiguity_status"] == "visual_review_required"
     assert [row["policy_id"] for row in report["candidate_shortlist"]] == [
         "policy_alpha",
         "policy_beta",
@@ -374,6 +558,258 @@ def test_candidate_ranking_ambiguous_report_uses_shortlist_instead_of_best_polic
         "policy_alpha",
         "policy_beta",
     ]
+
+
+def test_candidate_selection_blocks_completed_visual_review_required_scorecard() -> None:
+    selection = wam_fixture_module._candidate_selection_summary(
+        {
+            "status": "completed_visual_review_required",
+            "visual_rollout_useful_for_task_success_review": True,
+            "review_grade_success_labels": False,
+            "review_grade_policy_ranking": False,
+            "fixture_evaluator_only": False,
+            "visual_review_blockers": [],
+            "comparison_blockers": [],
+            "ranking_confidence": {
+                "ranking_ambiguous": False,
+                "uncertainty_penalty_applied": False,
+                "ood_blockers": [],
+            },
+            "policy_rankings": [
+                {
+                    "rank": 1,
+                    "policy_id": "policy-a",
+                    "predicted_success_rate": 1.0,
+                    "mean_uncertainty": 0.1,
+                },
+                {
+                    "rank": 2,
+                    "policy_id": "policy-b",
+                    "predicted_success_rate": 0.0,
+                    "mean_uncertainty": 0.1,
+                },
+            ],
+        }
+    )
+
+    assert selection["status"] == "visual_review_required_candidate_shortlist"
+    assert selection["top_policy_id"] is None
+    assert selection["evaluator_top_policy_id"] == "policy-a"
+    assert "visual_review_blockers_or_fixture_only_labels_prevent_winner_claim" in selection[
+        "ambiguity_reasons"
+    ]
+    assert [row["policy_id"] for row in selection["candidate_shortlist"]] == [
+        "policy-a",
+        "policy-b",
+    ]
+
+
+def test_review_grade_ranking_requires_short_sanity_manifest_and_review_refs(
+    tmp_path: Path,
+) -> None:
+    labels = {
+        "visual_rollout_useful_for_task_success_review": True,
+        "review_grade_success_labels": True,
+        "fixture_evaluator_only": False,
+        "labels": [
+            _reviewed_success_label(
+                label_id="a-run-1",
+                policy_id="policy-a",
+                run_id="run-1",
+                task_success=True,
+            ),
+            _reviewed_success_label(
+                label_id="a-run-2",
+                policy_id="policy-a",
+                run_id="run-2",
+                task_success=True,
+            ),
+            _reviewed_success_label(
+                label_id="b-run-1",
+                policy_id="policy-b",
+                run_id="run-1",
+                task_success=True,
+            ),
+            _reviewed_success_label(
+                label_id="b-run-2",
+                policy_id="policy-b",
+                run_id="run-2",
+                task_success=False,
+            ),
+        ],
+    }
+
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="fixture_wam",
+        generated_at="2026-06-20T00:00:00+00:00",
+        required_scenario_eval_run_ids=["run-1", "run-2"],
+        policy_ids=["policy-a", "policy-b"],
+        labels=labels,
+    )
+
+    assert scorecard["status"] == "completed_visual_review_required"
+    assert scorecard["top_policy_id"] is None
+    assert scorecard["evaluator_top_policy_id"] == "policy-a"
+    assert scorecard["review_grade_policy_ranking"] is False
+    assert "short_visual_sanity_manifest_missing_for_review_grade_ranking" in scorecard[
+        "visual_review_blockers"
+    ]
+    assert scorecard["short_visual_sanity_gate"]["passed"] is False
+    selection = wam_fixture_module._candidate_selection_summary(scorecard)
+    assert selection["status"] == "visual_review_required_candidate_shortlist"
+    assert selection["top_policy_id"] is None
+
+
+def test_review_grade_ranking_can_claim_winner_with_passed_short_sanity_gate(
+    tmp_path: Path,
+) -> None:
+    labels = {
+        "visual_rollout_useful_for_task_success_review": True,
+        "review_grade_success_labels": True,
+        "review_grade_visual_evidence_available": True,
+        "fixture_evaluator_only": False,
+        "short_visual_sanity_manifest": _passed_short_visual_sanity_manifest(tmp_path),
+        "labels": [
+            _reviewed_success_label(
+                label_id="a-run-1",
+                policy_id="policy-a",
+                run_id="run-1",
+                task_success=True,
+            ),
+            _reviewed_success_label(
+                label_id="a-run-2",
+                policy_id="policy-a",
+                run_id="run-2",
+                task_success=True,
+            ),
+            _reviewed_success_label(
+                label_id="b-run-1",
+                policy_id="policy-b",
+                run_id="run-1",
+                task_success=True,
+            ),
+            _reviewed_success_label(
+                label_id="b-run-2",
+                policy_id="policy-b",
+                run_id="run-2",
+                task_success=False,
+            ),
+        ],
+    }
+
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="fixture_wam",
+        generated_at="2026-06-20T00:00:00+00:00",
+        required_scenario_eval_run_ids=["run-1", "run-2"],
+        policy_ids=["policy-a", "policy-b"],
+        labels=labels,
+    )
+
+    assert scorecard["status"] == "completed"
+    assert scorecard["top_policy_id"] == "policy-a"
+    assert scorecard["single_best_policy_claimed"] is True
+    assert scorecard["review_grade_policy_ranking"] is True
+    assert scorecard["short_visual_sanity_gate"]["passed"] is True
+    assert scorecard["short_visual_sanity_gate"]["contact_sheet_refs"]
+    assert scorecard["short_visual_sanity_gate"]["provenance_refs"]
+    selection = wam_fixture_module._candidate_selection_summary(scorecard)
+    assert selection["status"] == "clear_winner"
+    assert selection["top_policy_id"] == "policy-a"
+
+
+def test_review_grade_ranking_blocks_visually_weak_short_sanity_manifest(
+    tmp_path: Path,
+) -> None:
+    weak_manifest = {
+        **_passed_short_visual_sanity_manifest(tmp_path),
+        "status": "blocked",
+        "short_visual_sanity_passed": False,
+        "visually_useful_rollout": False,
+        "blockers": ["short_visual_sanity_wam_visual_quality_failed"],
+    }
+    labels = {
+        "visual_rollout_useful_for_task_success_review": True,
+        "review_grade_success_labels": True,
+        "review_grade_visual_evidence_available": True,
+        "fixture_evaluator_only": False,
+        "short_visual_sanity_manifest": weak_manifest,
+        "labels": [
+            _reviewed_success_label(
+                label_id="a-run-1",
+                policy_id="policy-a",
+                run_id="run-1",
+                task_success=True,
+            ),
+            _reviewed_success_label(
+                label_id="b-run-1",
+                policy_id="policy-b",
+                run_id="run-1",
+                task_success=False,
+            ),
+        ],
+    }
+
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="fixture_wam",
+        generated_at="2026-06-20T00:00:00+00:00",
+        required_scenario_eval_run_ids=["run-1"],
+        policy_ids=["policy-a", "policy-b"],
+        labels=labels,
+    )
+
+    assert scorecard["status"] == "completed_visual_review_required"
+    assert scorecard["top_policy_id"] is None
+    assert scorecard["short_visual_sanity_gate"]["passed"] is False
+    assert "short_visual_sanity_manifest_not_passed" in scorecard[
+        "visual_review_blockers"
+    ]
+    assert "short_visual_sanity_manifest_not_visually_useful" in scorecard[
+        "visual_review_blockers"
+    ]
+    assert "short_visual_sanity_wam_visual_quality_failed" in scorecard[
+        "visual_review_blockers"
+    ]
+
+
+def test_failure_diagnosis_blocks_when_review_label_refs_are_missing(
+    tmp_path: Path,
+) -> None:
+    label = _reviewed_success_label(
+        label_id="weak-failure",
+        policy_id="policy-a",
+        run_id="run-1",
+        task_success=False,
+    )
+    label.pop("review_label_refs")
+    label["review_status"] = "review_required"
+    labels = {
+        "visual_rollout_useful_for_task_success_review": True,
+        "review_grade_success_labels": True,
+        "fixture_evaluator_only": False,
+        "labels": [label],
+    }
+
+    trace = wam_fixture_module._normalized_attempt_trace(
+        substrate="fixture_wam",
+        labels=labels,
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+    failure_labels = wam_fixture_module._failure_labels(
+        substrate="fixture_wam",
+        trace=trace,
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+
+    assert failure_labels["failure_diagnosis_complete"] is False
+    assert "review_grade_failure_label_refs_missing" in failure_labels[
+        "failure_diagnosis_blockers"
+    ]
+    assert "short_visual_sanity_manifest_missing_for_review_grade_ranking" in failure_labels[
+        "failure_diagnosis_blockers"
+    ]
+    first = failure_labels["labels"][0]
+    assert first["non_reviewable_failure_hypothesis"] is False
+    assert first["label_id"] in failure_labels["nonreviewable_failure_hypothesis_label_ids"]
 
 
 def test_candidate_failure_handoff_uses_unknown_when_failure_evidence_is_weak() -> None:
@@ -572,14 +1008,60 @@ def test_fixture_wam_uses_wam_request_policy_fields_and_redacts_references(
     assert scorecard["evaluator_top_policy_id"] == "policy_candidate_01"
     assert scorecard["top_policy_id"] is None
     assert scorecard["single_best_policy_claimed"] is False
-    assert "policy_comparison_requires_at_least_two_candidates" in scorecard[
-        "comparison_blockers"
+    selection = wam_fixture_module._candidate_selection_summary(scorecard)
+    assert selection["status"] == "single_candidate_no_comparative_ranking"
+    assert selection["top_policy_id"] is None
+    assert selection["evaluator_top_policy_id"] == "policy_candidate_01"
+    assert [row["policy_id"] for row in selection["candidate_shortlist"]] == [
+        "policy_candidate_01",
     ]
+    assert selection["ambiguity_reasons"] == ["only_one_policy_candidate_was_evaluated"]
     assert validation["hardware_id"] == "unitree-g1"
     assert validation["task_family"] == "warehouse_tote_transfer"
     assert cross_check["recommended_cross_checks"] == [
         "classical_sim_isaac",
         "classical_sim_mujoco",
+    ]
+
+
+def test_policy_ranking_blocks_missing_scenario_ids_without_candidate_winner() -> None:
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="fixture_wam",
+        generated_at="2026-06-20T00:00:00+00:00",
+        required_scenario_eval_run_ids=["run-1"],
+        policy_ids=["policy-a", "policy-b"],
+        labels={
+            "labels": [
+                {
+                    "policy_id": "policy-a",
+                    "task_success": True,
+                    "uncertainty_score": 0.12,
+                    "confidence": 0.88,
+                },
+                {
+                    "policy_id": "policy-b",
+                    "task_success": False,
+                    "uncertainty_score": 0.12,
+                    "confidence": 0.88,
+                },
+            ]
+        },
+    )
+
+    assert scorecard["status"] == "blocked_inconclusive_ranking"
+    assert scorecard["missing_by_policy"] == {"policy-a": ["run-1"], "policy-b": ["run-1"]}
+    assert "policy_coverage_missing_required_scenario_eval_run_ids" in scorecard[
+        "comparison_blockers"
+    ]
+    assert scorecard["top_policy_id"] is None
+    assert scorecard["single_best_policy_claimed"] is False
+    selection = wam_fixture_module._candidate_selection_summary(scorecard)
+    assert selection["status"] == "blocked_inconclusive_candidate_selection"
+    assert selection["top_policy_id"] is None
+    assert selection["evaluator_top_policy_id"] == "policy-a"
+    assert [row["policy_id"] for row in selection["candidate_shortlist"]] == [
+        "policy-a",
+        "policy-b",
     ]
 
 
@@ -789,6 +1271,8 @@ def test_policy_ranking_blocks_asymmetric_policy_scenario_coverage() -> None:
         required_scenario_eval_run_ids=["run-1", "run-2"],
         policy_ids=["policy-a", "policy-b"],
         labels={
+            "visual_rollout_useful_for_task_success_review": True,
+            "review_grade_success_labels": True,
             "labels": [
                 {
                     "policy_id": "policy-a",
@@ -826,42 +1310,47 @@ def test_policy_ranking_blocks_asymmetric_policy_scenario_coverage() -> None:
     assert scorecard["single_best_policy_claimed"] is False
 
 
-def test_policy_ranking_tie_band_is_ambiguous_without_best_policy_claim() -> None:
+def test_policy_ranking_tie_band_is_ambiguous_without_best_policy_claim(
+    tmp_path: Path,
+) -> None:
     scorecard = wam_fixture_module._policy_scorecard(
         substrate="fixture_wam",
         generated_at="2026-06-20T00:00:00+00:00",
         required_scenario_eval_run_ids=["run-1", "run-2"],
         policy_ids=["policy-a", "policy-b"],
         labels={
+            "visual_rollout_useful_for_task_success_review": True,
+            "review_grade_success_labels": True,
+            "short_visual_sanity_manifest": _passed_short_visual_sanity_manifest(tmp_path),
             "labels": [
-                {
-                    "policy_id": "policy-a",
-                    "scenario_eval_run_id": "run-1",
-                    "task_success": True,
-                    "uncertainty_score": 0.1,
-                    "confidence": 0.9,
-                },
-                {
-                    "policy_id": "policy-a",
-                    "scenario_eval_run_id": "run-2",
-                    "task_success": False,
-                    "uncertainty_score": 0.1,
-                    "confidence": 0.9,
-                },
-                {
-                    "policy_id": "policy-b",
-                    "scenario_eval_run_id": "run-1",
-                    "task_success": True,
-                    "uncertainty_score": 0.2,
-                    "confidence": 0.8,
-                },
-                {
-                    "policy_id": "policy-b",
-                    "scenario_eval_run_id": "run-2",
-                    "task_success": False,
-                    "uncertainty_score": 0.2,
-                    "confidence": 0.8,
-                },
+                _reviewed_success_label(
+                    label_id="policy-a-run-1",
+                    policy_id="policy-a",
+                    run_id="run-1",
+                    task_success=True,
+                    uncertainty_score=0.1,
+                ),
+                _reviewed_success_label(
+                    label_id="policy-a-run-2",
+                    policy_id="policy-a",
+                    run_id="run-2",
+                    task_success=False,
+                    uncertainty_score=0.1,
+                ),
+                _reviewed_success_label(
+                    label_id="policy-b-run-1",
+                    policy_id="policy-b",
+                    run_id="run-1",
+                    task_success=True,
+                    uncertainty_score=0.2,
+                ),
+                _reviewed_success_label(
+                    label_id="policy-b-run-2",
+                    policy_id="policy-b",
+                    run_id="run-2",
+                    task_success=False,
+                    uncertainty_score=0.2,
+                ),
             ]
         },
     )
@@ -877,49 +1366,64 @@ def test_policy_ranking_tie_band_is_ambiguous_without_best_policy_claim() -> Non
     assert scorecard["single_best_policy_claimed"] is False
 
 
-def test_policy_ranking_high_ood_or_uncertainty_downgrades_confidence() -> None:
+def test_policy_ranking_high_ood_or_uncertainty_downgrades_confidence(
+    tmp_path: Path,
+) -> None:
     scorecard = wam_fixture_module._policy_scorecard(
         substrate="fixture_wam",
         generated_at="2026-06-20T00:00:00+00:00",
         required_scenario_eval_run_ids=["run-1", "run-2"],
         policy_ids=["policy-a", "policy-b"],
         labels={
+            "visual_rollout_useful_for_task_success_review": True,
+            "review_grade_success_labels": True,
+            "short_visual_sanity_manifest": _passed_short_visual_sanity_manifest(tmp_path),
             "labels": [
                 {
-                    "policy_id": "policy-a",
-                    "scenario_eval_run_id": "run-1",
-                    "task_success": True,
+                    **_reviewed_success_label(
+                        label_id="policy-a-run-1",
+                        policy_id="policy-a",
+                        run_id="run-1",
+                        task_success=True,
+                        uncertainty_score=0.72,
+                    ),
                     "uncertainty_score": 0.72,
                     "confidence": 0.28,
                     "ood_flags": ["vision_distribution_shift"],
                 },
                 {
-                    "policy_id": "policy-a",
-                    "scenario_eval_run_id": "run-2",
-                    "task_success": True,
+                    **_reviewed_success_label(
+                        label_id="policy-a-run-2",
+                        policy_id="policy-a",
+                        run_id="run-2",
+                        task_success=True,
+                        uncertainty_score=0.68,
+                    ),
                     "uncertainty_score": 0.68,
                     "confidence": 0.32,
                 },
-                {
-                    "policy_id": "policy-b",
-                    "scenario_eval_run_id": "run-1",
-                    "task_success": True,
-                    "uncertainty_score": 0.1,
-                    "confidence": 0.9,
-                },
-                {
-                    "policy_id": "policy-b",
-                    "scenario_eval_run_id": "run-2",
-                    "task_success": False,
-                    "uncertainty_score": 0.1,
-                    "confidence": 0.9,
-                },
+                _reviewed_success_label(
+                    label_id="policy-b-run-1",
+                    policy_id="policy-b",
+                    run_id="run-1",
+                    task_success=True,
+                    uncertainty_score=0.1,
+                ),
+                _reviewed_success_label(
+                    label_id="policy-b-run-2",
+                    policy_id="policy-b",
+                    run_id="run-2",
+                    task_success=False,
+                    uncertainty_score=0.1,
+                ),
             ]
         },
     )
 
     assert scorecard["status"] == "completed_low_confidence_ranking"
-    assert scorecard["top_policy_id"] == "policy-a"
+    assert scorecard["top_policy_id"] is None
+    assert scorecard["evaluator_top_policy_id"] == "policy-a"
+    assert scorecard["single_best_policy_claimed"] is False
     assert scorecard["ranking_confidence"]["top_policy_margin"] == 0.5
     assert scorecard["ranking_confidence"]["uncertainty_penalty_applied"] is True
     assert scorecard["ranking_confidence"]["ood_blockers"] == [
@@ -931,3 +1435,11 @@ def test_policy_ranking_high_ood_or_uncertainty_downgrades_confidence() -> None:
         "pearson_success_rate_correlation": "not_measured",
         "mean_maximum_rank_violation": "not_measured",
     }
+    selection = wam_fixture_module._candidate_selection_summary(scorecard)
+    assert selection["status"] == "low_confidence_candidate_shortlist"
+    assert selection["top_policy_id"] is None
+    assert selection["evaluator_top_policy_id"] == "policy-a"
+    assert [row["policy_id"] for row in selection["candidate_shortlist"]] == [
+        "policy-a",
+        "policy-b",
+    ]

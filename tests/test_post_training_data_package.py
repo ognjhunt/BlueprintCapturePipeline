@@ -5,11 +5,9 @@ import sys
 import types
 from pathlib import Path
 
-import pytest
 
 import blueprint_pipeline.post_training_data_package as package_module
 from blueprint_pipeline.post_training_data_package import (
-    CLAIM_BOUNDARY,
     _artifact,
     _read_optional_mapping,
     _rows,
@@ -99,11 +97,30 @@ def _seed_ready_job(job_dir: Path) -> None:
         "real_world_validation_followup_plan.json",
         "real_world_validation_followup_request_queue.json",
         "live_eval_closure_manifest.json",
+        "live_eval_closure_evidence.json",
         "robot_eval_report.json",
+        "proof_boundary.json",
+        "review_resolution_ledger.json",
+        "accepted_failure_labels.json",
+        "customer_handoff_report.json",
+        "delivery_manifest.json",
+        "signed_access_manifest.json",
     ):
         path = job_dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}\n", encoding="utf-8")
+    _write_json(
+        job_dir / "live_eval_closure_manifest.json",
+        {
+            "status": "local_artifacts_ready_live_external_blocked",
+            "gates": {
+                "webapp_upstream_truth": {"passed": True, "blockers": []},
+                "rights_privacy_scope": {"passed": True, "blockers": []},
+                "review_acceptance": {"passed": True, "blockers": []},
+                "signed_delivery_access": {"passed": False, "blockers": ["signed_url_missing"]},
+            },
+        },
+    )
 
 
 def test_post_training_data_package_blocks_with_manifest_only_defaults(tmp_path: Path) -> None:
@@ -121,7 +138,10 @@ def test_post_training_data_package_blocks_with_manifest_only_defaults(tmp_path:
     assert clips["status"] == "missing_source_clips"
     optional = json.loads((output_dir / "optional_export_manifest.json").read_text(encoding="utf-8"))
     assert optional["formats"]["video_bundle"]["clip_count"] == 0
-    assert manifest["claim_boundary"] == CLAIM_BOUNDARY
+    assert manifest["claim_boundary"]["rank_fidelity_result_proven"] is False
+    assert manifest["claim_boundary"]["deployment_approval_proven"] is False
+    assert manifest["claim_boundary"]["package_delivery_is_deployment_approval"] is False
+    assert manifest["claim_boundary"]["post_training_package_export_ready"] is False
 
 
 def test_post_training_data_package_exports_ready_package_with_policy_flags(
@@ -155,19 +175,277 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
 
     assert manifest["status"] == "export_ready_review_required"
     assert manifest["blockers"] == []
-    assert manifest["manifest_counts"] == {
-        "attempt_count": 1,
-        "failure_label_count": 1,
-        "clip_count": 1,
-    }
+    assert manifest["manifest_counts"]["attempt_count"] == 1
+    assert manifest["manifest_counts"]["failure_label_count"] == 1
+    assert manifest["manifest_counts"]["clip_count"] == 1
+    assert manifest["included_artifacts"]["signed_access_manifest"] == (
+        "signed_access_manifest.json"
+    )
+    assert manifest["handoff_records"]["proof_boundary_path"] == "proof_boundary.json"
+    assert manifest["handoff_records"]["delivery_manifest_path"] == "delivery_manifest.json"
+    assert manifest["handoff_records"]["signed_access_manifest_path"] == (
+        "signed_access_manifest.json"
+    )
+    assert manifest["handoff_records"]["live_closure_gate_references"][
+        "review_acceptance"
+    ]["passed"] is True
+    assert manifest["handoff_records"]["live_closure_gate_references"][
+        "signed_delivery_access"
+    ]["blockers"] == ["signed_url_missing"]
+    assert manifest["claim_boundary"]["post_training_package_export_ready"] is True
+    assert manifest["claim_boundary"]["review_acceptance_proven"] is True
+    assert manifest["claim_boundary"]["signed_delivery_access_proven"] is False
+    assert manifest["claim_boundary"]["deployment_approval_proven"] is False
     assert manifest["export_policy"]["simulator_command_batch_trace_streams_included"] is True
     assert manifest["export_policy"]["deployment_outcomes_included"] is True
     assert manifest["export_policy"]["real_world_validation_followup_queue_included"] is True
+    assert manifest["export_policy"]["rl_post_training_handoff_included"] is True
+    assert manifest["export_policy"]["concurrent_baseline_ab_plan_included"] is True
+    assert manifest["export_policy"]["bottleneck_stage_detection_included"] is True
+    assert manifest["export_policy"]["speed_curriculum_plan_included"] is True
+    assert manifest["export_policy"]["action_chunk_continuity_qa_included"] is True
+    assert manifest["export_policy"]["intervention_safety_ledger_included"] is True
+    assert manifest["rl_post_training_handoff_packet_path"] == (
+        "rl_post_training_handoff_packet.json"
+    )
+    rl_handoff = json.loads(
+        (output_dir / "rl_post_training_handoff_packet.json").read_text(encoding="utf-8")
+    )
+    assert rl_handoff["schema_version"] == "rl_post_training_handoff_packet.v1"
+    assert rl_handoff["success_definition"]["source"] == (
+        "job_request.thresholds + evaluation_result.standard_policy_scorecard"
+    )
+    assert rl_handoff["sparse_reward_signal"]["reward_family"] == (
+        "sparse_task_success_with_intervention_penalties"
+    )
+    assert rl_handoff["concurrent_baseline_ab"]["old_run_only_comparison_allowed"] is False
+    assert rl_handoff["claim_boundary"]["speed_curriculum_is_plan_not_completed_training"] is True
+    package_index = json.loads((output_dir / "package_index.json").read_text(encoding="utf-8"))
+    assert package_index["files"]["rl_post_training_handoff_packet"] == (
+        "rl_post_training_handoff_packet.json"
+    )
     optional = json.loads((output_dir / "optional_export_manifest.json").read_text(encoding="utf-8"))
     assert optional["formats"]["hdf5"]["status"] == "written_native"
     assert optional["formats"]["parquet"]["status"] == "written_native"
     archive_members = json.loads((output_dir / "archive_manifest.json").read_text(encoding="utf-8"))
     assert "exports/rlds/episodes.jsonl" in archive_members["included_files"]
+    assert "rl_post_training_handoff_packet.json" in archive_members["included_files"]
+
+
+def test_post_training_data_package_writes_blocked_customer_handoff_manifests(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    for name in (
+        "customer_handoff_report.json",
+        "delivery_manifest.json",
+        "signed_access_manifest.json",
+    ):
+        (job_dir / name).unlink()
+    _write_json(
+        job_dir / "live_eval_closure_manifest.json",
+        {
+            "status": "blocked",
+            "gates": {
+                "webapp_upstream_truth": {
+                    "passed": False,
+                    "blockers": [
+                        "missing_webapp_request_id",
+                        "webapp_upstream_ids_not_grounded_in_capture_or_webapp_source",
+                    ],
+                    "evidence": {
+                        "ids": {
+                            "site_submission_id": "site-1",
+                            "request_id": "",
+                            "buyer_request_id": "buyer-1",
+                            "capture_job_id": "capture-job-1",
+                        }
+                    },
+                },
+                "rights_privacy_scope": {"passed": True, "blockers": []},
+                "review_acceptance": {
+                    "passed": False,
+                    "blockers": ["review_acceptance_evidence_missing"],
+                },
+                "signed_delivery_access": {
+                    "passed": False,
+                    "blockers": [
+                        "signed_delivery_evidence_missing",
+                        "signed_delivery_access_not_proven",
+                    ],
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(package_module, "_write_native_hdf5", lambda path, rows: False)
+    monkeypatch.setattr(package_module, "_write_native_parquet", lambda path, rows: False)
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    assert manifest["status"] == "export_ready_review_required"
+    assert manifest["included_artifacts"]["customer_handoff_report"] == (
+        "customer_handoff_report.json"
+    )
+    assert manifest["included_artifacts"]["delivery_manifest"] == "delivery_manifest.json"
+    assert manifest["included_artifacts"]["signed_access_manifest"] == (
+        "signed_access_manifest.json"
+    )
+    assert manifest["handoff_records"]["post_training_package_export_ready"] is True
+    assert manifest["handoff_records"]["customer_handoff_ready"] is False
+    assert (
+        "webapp_upstream_truth:missing_webapp_request_id"
+        in manifest["handoff_records"]["customer_handoff_blockers"]
+    )
+    assert (
+        "review_acceptance:review_acceptance_evidence_missing"
+        in manifest["handoff_records"]["customer_handoff_blockers"]
+    )
+    assert (
+        "signed_delivery_access:signed_delivery_access_not_proven"
+        in manifest["handoff_records"]["customer_handoff_blockers"]
+    )
+    assert manifest["claim_boundary"]["post_training_package_export_ready"] is True
+    assert manifest["claim_boundary"]["customer_handoff_ready"] is False
+    assert manifest["claim_boundary"]["hosted_access_ready"] is False
+    assert manifest["claim_boundary"]["deployment_approval_proven"] is False
+    assert manifest["claim_boundary"]["safety_validation_proven"] is False
+    delivery = json.loads((job_dir / "delivery_manifest.json").read_text(encoding="utf-8"))
+    signed_access = json.loads((job_dir / "signed_access_manifest.json").read_text(encoding="utf-8"))
+    handoff = json.loads((job_dir / "customer_handoff_report.json").read_text(encoding="utf-8"))
+    assert delivery["status"] == "export_ready_handoff_blocked"
+    assert signed_access["status"] == "blocked_signed_delivery_access"
+    assert handoff["post_training_data_package_handoff"]["customer_handoff_ready"] is False
+    assert delivery["claim_boundary"]["delivery_access_is_deployment_approval"] is False
+    assert signed_access["claim_boundary"]["physical_robot_readiness_proven"] is False
+    closure = json.loads((job_dir / "live_eval_closure_manifest.json").read_text(encoding="utf-8"))
+    assert closure["post_training_data_package_handoff"][
+        "post_training_package_export_ready"
+    ] is True
+    assert closure["post_training_data_package_handoff"]["customer_handoff_ready"] is False
+    assert closure["proof_boundary"]["post_training_package_export_ready"] is True
+    assert closure["proof_boundary"]["customer_handoff_ready"] is False
+    archive_members = json.loads((job_dir / "archive_manifest.json").read_text(encoding="utf-8"))
+    assert "customer_handoff_report.json" in archive_members["included_files"]
+    assert "delivery_manifest.json" in archive_members["included_files"]
+    assert "signed_access_manifest.json" in archive_members["included_files"]
+
+
+def test_post_training_data_package_includes_visual_augmentation_support_packet(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    packet_dir = job_dir / "oscar_visual_augmentation_packet"
+    _write_json(
+        packet_dir / "oscar_visual_augmentation_packet_manifest.json",
+        {
+            "schema_version": "oscar_visual_augmentation_packet.v1",
+            "status": "completed_with_model_derived_generated_videos",
+            "packet_type": "oscar_visual_augmentation_packet",
+            "variant_count": 2,
+            "generated_video_count": 1,
+            "selected_backend_id": "oscar_wam",
+            "claim_boundary": {
+                "generated_videos_are_model_derived_support_assets": True,
+                "generated_videos_are_raw_capture_evidence": False,
+                "contact_physics_proven": False,
+                "real_robot_readiness_proven": False,
+                "deployment_safety_proven": False,
+            },
+        },
+    )
+    (packet_dir / "visual_augmentation_variant_requests.jsonl").write_text(
+        '{"variant_id":"kitchen"}\n',
+        encoding="utf-8",
+    )
+    _write_json(packet_dir / "model_backend_registry.json", {"backends": []})
+    _write_json(packet_dir / "visual_distribution_shift_eval_protocol.json", {"status": "ready"})
+    _write_json(packet_dir / "claim_boundary.json", {"model_derived_visual_augmentation": True})
+    _write_json(
+        packet_dir / "visual_augmentation_generation_run_manifest.json",
+        {"status": "completed_with_model_derived_outputs"},
+    )
+    (packet_dir / "visual_augmentation_generation_results.jsonl").write_text(
+        '{"variant_id":"kitchen","model_derived":true}\n',
+        encoding="utf-8",
+    )
+    _write_json(
+        packet_dir / "visual_augmentation_generation_qa_manifest.json",
+        {"status": "passed_visual_qa_smoke"},
+    )
+    _write_json(
+        packet_dir / "visual_augmentation_training_readiness_manifest.json",
+        {"training_ready_without_review": False},
+    )
+    _write_json(
+        packet_dir / "visual_augmentation_training_dataset_manifest.json",
+        {"status": "candidate_dataset_written_requires_review"},
+    )
+    (packet_dir / "exports" / "visual_augmentation" / "episodes.jsonl").parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    (packet_dir / "exports" / "visual_augmentation" / "episodes.jsonl").write_text(
+        '{"variant_id":"kitchen","use_status":"candidate_requires_review"}\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "package"
+    monkeypatch.setattr(package_module, "_write_native_hdf5", lambda path, rows: False)
+    monkeypatch.setattr(package_module, "_write_native_parquet", lambda path, rows: False)
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=output_dir,
+    )
+
+    assert manifest["status"] == "export_ready_review_required"
+    assert (
+        manifest["included_artifacts"]["oscar_visual_augmentation_packet_manifest"]
+        == "oscar_visual_augmentation_packet/oscar_visual_augmentation_packet_manifest.json"
+    )
+    assert manifest["included_artifacts"]["oscar_visual_augmentation_generation_run_manifest"] == (
+        "oscar_visual_augmentation_packet/visual_augmentation_generation_run_manifest.json"
+    )
+    assert manifest["included_artifacts"]["oscar_visual_augmentation_training_episodes"] == (
+        "oscar_visual_augmentation_packet/exports/visual_augmentation/episodes.jsonl"
+    )
+    assert manifest["export_policy"]["visual_augmentation_packet_included"] is True
+    assert manifest["export_policy"]["visual_augmentation_is_model_derived_support"] is True
+    assert (
+        manifest["export_policy"]["visual_augmentation_generated_videos_are_raw_capture_evidence"]
+        is False
+    )
+    assert manifest["manifest_counts"]["visual_augmentation_variant_count"] == 2
+    assert manifest["visual_augmentation_support_manifest_path"] == (
+        "visual_augmentation_support_manifest.json"
+    )
+    support = json.loads(
+        (output_dir / "visual_augmentation_support_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert support["generated_videos_model_derived"] is True
+    assert support["raw_capture_evidence"] is False
+    assert support["claim_boundary"]["contact_physics_proven"] is False
+    assert support["claim_boundary"]["real_robot_readiness_proven"] is False
+    assert support["claim_boundary"]["deployment_safety_proven"] is False
+    package_index = json.loads((output_dir / "package_index.json").read_text(encoding="utf-8"))
+    assert package_index["files"]["visual_augmentation_support_manifest"] == (
+        "visual_augmentation_support_manifest.json"
+    )
+    archive_members = json.loads((output_dir / "archive_manifest.json").read_text(encoding="utf-8"))
+    assert "visual_augmentation_support_manifest.json" in archive_members["included_files"]
 
 
 def test_post_training_data_package_main_returns_status_codes(

@@ -446,6 +446,31 @@ def test_hosted_session_runtime_manifest_edge_catalogs(monkeypatch: pytest.Monke
     ]
     assert "missing_task_anchor_manifest" in manifest["blockers"]
     assert "no_launchable_stage1_backend" in manifest["blockers"]
+    assert manifest["simulator_execution_proven"] is False
+    assert manifest["rank_fidelity_result_proven"] is False
+    assert manifest["deployment_approval_proven"] is False
+    assert manifest["safety_validation_proven"] is False
+    assert manifest["physical_readiness_proven"] is False
+    assert manifest["physical_robot_readiness_proven"] is False
+    assert manifest["public_claim_upgrade_allowed"] is False
+    assert manifest["claim_boundary"]["schema_version"] == (
+        "hosted_session_runtime_claim_boundary.v1"
+    )
+    assert manifest["claim_boundary"]["hosted_session_artifacts_only"] is True
+    assert manifest["claim_boundary"]["simulator_execution_proven"] is False
+    assert manifest["claim_boundary"]["rank_fidelity_result_proven"] is False
+    assert manifest["claim_boundary"]["deployment_approval_proven"] is False
+    assert manifest["claim_boundary"]["safety_validation_proven"] is False
+    assert manifest["claim_boundary"]["physical_readiness_proven"] is False
+    assert manifest["claim_boundary"]["physical_robot_readiness_proven"] is False
+    assert manifest["proof_boundary"]["simulator_execution_proven"] is False
+    assert manifest["proof_boundary"]["rank_fidelity_result_proven"] is False
+    assert "simulator_execution_completed" in manifest["claim_boundary"]["disallowed_claims"]
+    assert "rank_fidelity_result" in manifest["claim_boundary"]["disallowed_claims"]
+    assert "deployment_approval" in manifest["claim_boundary"]["disallowed_claims"]
+    assert "safety_validation" in manifest["claim_boundary"]["disallowed_claims"]
+    assert "physical_readiness" in manifest["claim_boundary"]["disallowed_claims"]
+    assert "physical_readiness_claim" in manifest["claim_boundary"]["blocked_claim_upgrades"]
 
     monkeypatch.setattr(eps, "_build_runtime_backend_variants", lambda **_kwargs: {})
     empty_backend_manifest = eps._build_hosted_session_runtime_manifest(

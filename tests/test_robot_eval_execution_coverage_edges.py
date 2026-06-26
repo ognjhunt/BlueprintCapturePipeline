@@ -356,6 +356,30 @@ def test_robot_eval_execution_simulator_and_actual_outcome_edges(tmp_path: Path)
         "blocked_incomplete_scenario_eval_run_coverage"
     )
 
+    blocked_execution = ree.build_simulator_command_artifacts(
+        job_dir=tmp_path / "job-blocked-execution",
+        simulator="isaac_sim",
+        simulator_output={
+            "simulator_execution_proven": False,
+            "required_scenario_eval_run_ids": ["run-1"],
+            "attempts": [
+                {
+                    "attempt_id": "attempt-1",
+                    "scenario_eval_run_id": "run-1",
+                    "status": "blocked",
+                    "success": False,
+                    "failure_reason": "isaac_runtime_or_authorized_gpu_unavailable",
+                }
+            ],
+        },
+        generated_at="2026-06-01T00:00:00Z",
+    )
+    assert blocked_execution["normalized_attempt_trace"]["status"] == (
+        "blocked_simulator_execution_not_proven"
+    )
+    assert blocked_execution["normalized_attempt_trace"]["simulator_execution_proven"] is False
+    assert blocked_execution["manifest"]["simulator_execution_proven"] is False
+
     missing_qa = ree.build_simulator_command_artifacts(
         job_dir=tmp_path / "job-missing-qa",
         simulator="mujoco",

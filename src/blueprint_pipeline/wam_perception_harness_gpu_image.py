@@ -82,11 +82,23 @@ import argparse
 import importlib
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 
 def _probe(label: str, module: str) -> dict[str, object]:
+    if os.getenv("BLUEPRINT_WAM_IMAGE_HEALTHCHECK_STUB_IMPORTS", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return {
+            "label": label,
+            "module": module,
+            "status": "importable",
+            "version": "stubbed_for_contract_test",
+        }
     try:
         imported = importlib.import_module(module)
         return {
@@ -139,7 +151,9 @@ def _run_fixture_smoke() -> dict[str, object]:
                 "sim_only_provider_harness_e2e_completed": manifest.get(
                     "sim_only_provider_harness_e2e_completed"
                 ),
-                "perception_accuracy_validated": manifest.get("perception_accuracy_validated"),
+                "optional_truth_label_validation_requested": manifest.get(
+                    "optional_truth_label_validation_requested"
+                ),
                 "step_count_completed": manifest.get("step_count_completed"),
             }
     except Exception as exc:
@@ -150,12 +164,29 @@ def _run_fixture_smoke() -> dict[str, object]:
         }
 
 
+def _import_status(probes: list[dict[str, object]], label: str) -> str:
+    for row in probes:
+        if row.get("label") == label:
+            return str(row.get("status") or "unknown")
+    return "unknown"
+
+
+def _write_payload(payload: dict[str, object], output_path: str | None) -> None:
+    text = json.dumps(payload, indent=2, sort_keys=True)
+    if output_path:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n", encoding="utf-8")
+    print(text)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build-time", action="store_true")
     parser.add_argument("--require-cuda", action="store_true")
     parser.add_argument("--require-sam3-weights", action="store_true")
     parser.add_argument("--skip-fixture-smoke", action="store_true")
+    parser.add_argument("--output")
     args = parser.parse_args()
 
     probes = [
@@ -177,14 +208,24 @@ def main() -> int:
     torch_cuda = None
     torch_probe = next(row for row in probes if row["label"] == "torch")
     if torch_probe["status"] == "importable":
-        import torch
+        if os.getenv("BLUEPRINT_WAM_IMAGE_HEALTHCHECK_STUB_IMPORTS", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            cuda_available = os.getenv(
+                "BLUEPRINT_WAM_IMAGE_HEALTHCHECK_STUB_CUDA_AVAILABLE", ""
+            ).lower() in {"1", "true", "yes"}
+            torch_cuda = os.getenv("BLUEPRINT_WAM_IMAGE_HEALTHCHECK_STUB_TORCH_CUDA", "12.6")
+        else:
+            import torch
 
-        cuda_available = bool(torch.cuda.is_available())
-        torch_cuda = torch.version.cuda
-        if not str(torch.__version__).split("+", 1)[0].startswith("2.7."):
-            blockers.append("torch_version_not_2_7_x")
-        if torch_cuda and not str(torch_cuda).startswith("12.6"):
-            blockers.append("torch_not_built_for_cu126")
+            cuda_available = bool(torch.cuda.is_available())
+            torch_cuda = torch.version.cuda
+            if not str(torch.__version__).split("+", 1)[0].startswith("2.7."):
+                blockers.append("torch_version_not_2_7_x")
+            if torch_cuda and not str(torch_cuda).startswith("12.6"):
+                blockers.append("torch_not_built_for_cu126")
     if args.require_cuda and not cuda_available:
         blockers.append("cuda_not_available")
 
@@ -192,7 +233,7 @@ def main() -> int:
     pose_model_path = Path(os.getenv("BLUEPRINT_WAM_POSE_MODEL_PATH") or "/models/yolo/yolo11n-pose.pt")
     hf_home = Path(os.getenv("HF_HOME") or "/models/hf")
     if args.require_sam3_weights and not sam3_weights_path.is_file():
-        blockers.append("sam3_weights_missing")
+        blockers.append(f"sam3_weights_missing:{sam3_weights_path}")
 
     fixture_smoke = {"status": "skipped"}
     if not args.skip_fixture_smoke:
@@ -200,9 +241,33 @@ def main() -> int:
         if fixture_smoke.get("status") != "completed":
             blockers.append("wam_sim_provider_e2e_fixture_smoke_failed")
 
+    model_mount_contract = {
+        "sam3_weights_expected_path": str(sam3_weights_path),
+        "sam3_weights_present": sam3_weights_path.is_file(),
+        "sam3_weights_mount_or_fetch_required": True,
+        "sam3_weights_mount_or_fetch_status": "available"
+        if sam3_weights_path.is_file()
+        else "blocked_missing_mount_or_fetch",
+        "sam3_weights_baked_into_image": False,
+        "runtime_fetch_attempted": False,
+        "runtime_fetch_secret_values_recorded": False,
+    }
+    provider_adapter_readiness = {
+        "wam_sim_provider_e2e_importable": _import_status(probes, "wam_sim_provider_e2e")
+        == "importable",
+        "wam_real_provider_validation_probe_importable": _import_status(
+            probes, "wam_real_provider_validation_probe"
+        )
+        == "importable",
+        "fixture_smoke_status": fixture_smoke.get("status"),
+        "fixture_mode_ready": fixture_smoke.get("status") in ("completed", "skipped"),
+        "real_provider_probe_requires_sam3_weights": True,
+        "real_provider_probe_model_mount_ready": sam3_weights_path.is_file(),
+    }
+    status = "completed" if not blockers else "blocked"
     payload = {
         "schema_version": "wam_perception_harness_gpu_image_healthcheck.v1",
-        "status": "completed" if not blockers else "blocked",
+        "status": status,
         "build_time": bool(args.build_time),
         "require_cuda": bool(args.require_cuda),
         "require_sam3_weights": bool(args.require_sam3_weights),
@@ -216,8 +281,25 @@ def main() -> int:
         "hf_home_present": hf_home.exists(),
         "probes": probes,
         "optional_probes": [da3_probe],
+        "model_mount_contract": model_mount_contract,
+        "provider_adapter_readiness": provider_adapter_readiness,
         "fixture_smoke": fixture_smoke,
         "blockers": blockers,
+        "status_transition": {
+            "from": "image_build_time" if args.build_time else "image_runtime_healthcheck",
+            "to": status,
+            "blocked": bool(blockers),
+        },
+        "missing_external_inputs": [
+            item
+            for item in (
+                "actual_nvidia_cuda_gpu_runtime" if args.require_cuda and not cuda_available else "",
+                f"sam3_weights_at_{sam3_weights_path}"
+                if args.require_sam3_weights and not sam3_weights_path.is_file()
+                else "",
+            )
+            if item
+        ],
         "claim_boundary": {
             "image_healthcheck_is_not_provider_accuracy_validation": True,
             "fixture_smoke_is_not_real_provider_execution": True,
@@ -225,11 +307,13 @@ def main() -> int:
             "inferred_depth_is_not_sensor_depth": True,
             "generated_world_rank_fidelity_result_proven": False,
             "generated_world_policy_evaluation_scope_proven": False,
+            "deployment_readiness_proven": False,
+            "optional_truth_label_validation_requested": False,
         },
         "raw_secret_values_recorded": False,
         "secret_hashes_recorded": False,
     }
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    _write_payload(payload, args.output)
     return 0 if not blockers else 2
 
 
@@ -347,9 +431,13 @@ def _push_command_text(*, image_ref_default: str) -> str:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f'IMAGE_REF="${{{IMAGE_REF_ENV}:-{image_ref_default}}}"\n'
-        'if [[ -n "${DOCKER_USERNAME_FILE:-}" && -n "${DOCKER_PAT_FILE:-}" ]]; then\n'
-        '  docker login -u "$(cat "$DOCKER_USERNAME_FILE")" --password-stdin < "$DOCKER_PAT_FILE"\n'
+        'DOCKER_USERNAME_FILE="${DOCKER_USERNAME_FILE:-$HOME/.blueprint-secrets/docker_username}"\n'
+        'DOCKER_PAT_FILE="${DOCKER_PAT_FILE:-$HOME/.blueprint-secrets/docker_pat}"\n'
+        'if [[ ! -f "$DOCKER_USERNAME_FILE" || ! -f "$DOCKER_PAT_FILE" ]]; then\n'
+        '  echo "blocked: registry auth files missing; not pushing image" >&2\n'
+        "  exit 2\n"
         "fi\n"
+        'docker login -u "$(cat "$DOCKER_USERNAME_FILE")" --password-stdin < "$DOCKER_PAT_FILE"\n'
         'docker push "$IMAGE_REF"\n'
     )
 
@@ -358,12 +446,76 @@ def _run_healthcheck_command_text(*, image_ref_default: str) -> str:
     return (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
         f'IMAGE_REF="${{{IMAGE_REF_ENV}:-{image_ref_default}}}"\n'
+        'MODEL_MOUNT_DIR="${BLUEPRINT_WAM_PERCEPTION_HARNESS_MODEL_MOUNT_DIR:-$SCRIPT_DIR/model_mounts}"\n'
+        'OUTPUT_PATH="${BLUEPRINT_WAM_PERCEPTION_HARNESS_HEALTHCHECK_MANIFEST:-$SCRIPT_DIR/wam_perception_harness_gpu_image_healthcheck_manifest.json}"\n'
+        'STDERR_LOG="${BLUEPRINT_WAM_PERCEPTION_HARNESS_HEALTHCHECK_STDERR:-$SCRIPT_DIR/wam_perception_harness_gpu_image_healthcheck.stderr.log}"\n'
+        'mkdir -p "$(dirname "$OUTPUT_PATH")" "$MODEL_MOUNT_DIR/sam3" "$MODEL_MOUNT_DIR/hf" "$MODEL_MOUNT_DIR/yolo"\n'
+        "set +e\n"
         'docker run --rm --gpus all \\\n'
-        '  -e SAM3_WEIGHTS_PATH="${SAM3_WEIGHTS_PATH:-/models/sam3/sam3.pt}" \\\n'
+        '  -v "$MODEL_MOUNT_DIR/sam3:/models/sam3:ro" \\\n'
+        '  -v "$MODEL_MOUNT_DIR/hf:/models/hf" \\\n'
+        '  -v "$MODEL_MOUNT_DIR/yolo:/models/yolo:ro" \\\n'
+        '  -e SAM3_WEIGHTS_PATH=/models/sam3/sam3.pt \\\n'
         '  --entrypoint python \\\n'
         '  "$IMAGE_REF" \\\n'
-        "  /opt/blueprint/wam_perception_harness_image_healthcheck.py --require-cuda\n"
+        "  /opt/blueprint/wam_perception_harness_image_healthcheck.py --require-cuda --require-sam3-weights > \"$OUTPUT_PATH\" 2> \"$STDERR_LOG\"\n"
+        "status=$?\n"
+        "set -e\n"
+        'if ! python3 -m json.tool "$OUTPUT_PATH" >/dev/null 2>&1; then\n'
+        '  python3 - "$OUTPUT_PATH" "$STDERR_LOG" "$status" "$MODEL_MOUNT_DIR" <<\'PY\'\n'
+        "from __future__ import annotations\n"
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "output_path = Path(sys.argv[1])\n"
+        "stderr_path = Path(sys.argv[2])\n"
+        "status = int(sys.argv[3])\n"
+        "model_mount_dir = Path(sys.argv[4])\n"
+        "host_sam3_weights = model_mount_dir / 'sam3' / 'sam3.pt'\n"
+        "stderr_preview = stderr_path.read_text(encoding='utf-8', errors='replace')[:1000] if stderr_path.is_file() else ''\n"
+        "missing = []\n"
+        "lower = stderr_preview.lower()\n"
+        "if 'gpu' in lower or 'nvidia' in lower or '--gpus' in lower:\n"
+        "    missing.append('actual_nvidia_cuda_gpu_runtime')\n"
+        "if not host_sam3_weights.is_file():\n"
+        "    missing.append('sam3_weights_at_/models/sam3/sam3.pt_or_host_model_mounts/sam3/sam3.pt')\n"
+        "payload = {\n"
+        "    'schema_version': 'wam_perception_harness_gpu_image_healthcheck.v1',\n"
+        "    'status': 'blocked',\n"
+        "    'docker_exit_status': status,\n"
+        "    'blockers': ['gpu_healthcheck_command_failed_before_manifest'],\n"
+        "    'missing_external_inputs': missing,\n"
+        "    'model_mount_contract': {\n"
+        "        'sam3_weights_expected_path': '/models/sam3/sam3.pt',\n"
+        "        'host_sam3_weights_path': str(host_sam3_weights),\n"
+        "        'host_sam3_weights_present': host_sam3_weights.is_file(),\n"
+        "        'sam3_weights_baked_into_image': False,\n"
+        "        'sam3_weights_mount_or_fetch_required': True,\n"
+        "    },\n"
+        "    'provider_adapter_readiness': {\n"
+        "        'status': 'not_evaluated_docker_failed_before_manifest'\n"
+        "    },\n"
+        "    'status_transition': {\n"
+        "        'from': 'image_runtime_healthcheck',\n"
+        "        'to': 'blocked',\n"
+        "        'blocked': True,\n"
+        "    },\n"
+        "    'stderr_log_path': str(stderr_path),\n"
+        "    'stderr_preview_redacted': stderr_preview,\n"
+        "    'claim_boundary': {\n"
+        "        'image_healthcheck_is_not_provider_accuracy_validation': True,\n"
+        "        'deployment_readiness_proven': False,\n"
+        "        'optional_truth_label_validation_requested': False,\n"
+        "    },\n"
+        "    'raw_secret_values_recorded': False,\n"
+        "    'secret_hashes_recorded': False,\n"
+        "}\n"
+        "output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\\n', encoding='utf-8')\n"
+        "PY\n"
+        "fi\n"
+        "exit \"$status\"\n"
     )
 
 
@@ -498,6 +650,8 @@ def build_wam_perception_harness_gpu_image_context(
         "object_store_secret_values_written": False,
         "object_store_secret_hashes_written": False,
     }
+    healthcheck_manifest_path = output / "wam_perception_harness_gpu_image_healthcheck_manifest.json"
+    blocked_manifest_path = output / "wam_perception_harness_gpu_image_blocked_manifest.json"
     manifest = {
         "schema_version": WAM_PERCEPTION_HARNESS_GPU_IMAGE_SCHEMA_VERSION,
         "generated_at": generated,
@@ -543,6 +697,21 @@ def build_wam_perception_harness_gpu_image_context(
             "push_command": str(push_command_path),
             "run_healthcheck_command": str(run_healthcheck_command_path),
             "prepare_model_mounts_command": str(prepare_models_command_path),
+            "build_stdout_log": str(output / "build_image.stdout.log"),
+            "build_stderr_log": str(output / "build_image.stderr.log"),
+            "push_stdout_log": str(output / "push_image.stdout.log"),
+            "push_stderr_log": str(output / "push_image.stderr.log"),
+            "image_healthcheck_manifest": str(healthcheck_manifest_path),
+            "image_healthcheck_stderr_log": str(
+                output / "wam_perception_harness_gpu_image_healthcheck.stderr.log"
+            ),
+            "fixture_e2e_manifest": str(
+                output / "fixture_e2e" / "wam_sim_provider_e2e_manifest.json"
+            ),
+            "real_provider_e2e_manifest": str(
+                output / "real_provider_e2e" / "wam_sim_provider_e2e_manifest.json"
+            ),
+            "blocked_manifest": str(blocked_manifest_path),
             "manifest": str(output / "wam_perception_harness_gpu_image_manifest.json"),
         },
         "commands": {
@@ -561,6 +730,14 @@ def build_wam_perception_harness_gpu_image_context(
         },
         "registry_auth": docker_auth,
         "object_store_auth": object_store_auth,
+        "secret_handling_contract": {
+            "registry_auth_is_file_backed": True,
+            "object_store_auth_is_file_backed": True,
+            "raw_secret_values_forbidden_in_context": True,
+            "raw_secret_values_forbidden_in_docker_layers": True,
+            "raw_secret_values_forbidden_in_logs": True,
+            "secret_hashes_forbidden_in_artifacts": True,
+        },
         "blockers": blockers,
         "truth_boundary": {
             "image_build_is_not_provider_execution": True,

@@ -53,6 +53,15 @@ def _string(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = _string(value)
+        return [text] if text else []
+    if not isinstance(value, Sequence):
+        return []
+    return [_string(item) for item in value if _string(item)]
+
+
 def _bool(value: Any) -> bool:
     return value is True
 
@@ -90,6 +99,55 @@ def _gate(gate_id: str, *, passed: bool, blockers: list[str], evidence: dict[str
     }
 
 
+def _sim_only_beta_requirement_summary(
+    local_gate: Mapping[str, Any],
+    robot_team_closure: Mapping[str, Any],
+) -> tuple[bool, list[str], dict[str, list[str]], bool]:
+    requirements = [
+        dict(item)
+        for item in robot_team_closure.get("requirements") or []
+        if isinstance(item, Mapping)
+    ]
+    explicit_blocked_ids = [
+        *_string_list(local_gate.get("sim_only_beta_blocked_requirement_ids")),
+        *_string_list(robot_team_closure.get("sim_only_beta_blocked_requirement_ids")),
+    ]
+    requirement_blocked_ids = [
+        _string(requirement.get("requirement_id"))
+        for requirement in requirements
+        if requirement.get("sim_only_beta_required") is True
+        and requirement.get("passed") is not True
+        and _string(requirement.get("requirement_id"))
+    ]
+    blocked_ids = sorted({*explicit_blocked_ids, *requirement_blocked_ids})
+    closure_blockers = _mapping(robot_team_closure.get("sim_only_beta_requirement_blockers"))
+    blockers_by_requirement = {
+        requirement_id: _string_list(closure_blockers.get(requirement_id))
+        for requirement_id in blocked_ids
+    }
+    for requirement in requirements:
+        requirement_id = _string(requirement.get("requirement_id"))
+        if requirement_id in blocked_ids and not blockers_by_requirement.get(requirement_id):
+            blockers_by_requirement[requirement_id] = _string_list(requirement.get("blockers"))
+
+    explicit_satisfied = local_gate.get("sim_only_beta_requirements_satisfied")
+    if explicit_satisfied is None:
+        explicit_satisfied = robot_team_closure.get("sim_only_beta_requirements_satisfied")
+    details_present = bool(
+        requirements
+        or explicit_blocked_ids
+        or explicit_satisfied is not None
+        or robot_team_closure.get("sim_only_beta_core_complete") is not None
+    )
+    if explicit_satisfied is not None:
+        satisfied = explicit_satisfied is True and not blocked_ids
+    elif requirements or explicit_blocked_ids:
+        satisfied = not blocked_ids
+    else:
+        satisfied = robot_team_closure.get("sim_only_beta_core_complete") is True
+    return satisfied, blocked_ids, blockers_by_requirement, details_present
+
+
 def _local_sim_only_gate(local_gate: Mapping[str, Any], load_error: str | None, path: Path) -> dict[str, Any]:
     blockers: list[str] = []
     if load_error:
@@ -103,7 +161,14 @@ def _local_sim_only_gate(local_gate: Mapping[str, Any], load_error: str | None, 
     batch_closure = _mapping(local_gate.get("batch_closure"))
     robot_team_closure = _mapping(local_gate.get("robot_team_grade_closure"))
     visual_coverage = _mapping(batch_closure.get("visual_coverage"))
+    visual_review = _mapping(batch_closure.get("visual_review"))
     scenario_eval_matrix = _mapping(local_gate.get("scenario_eval_matrix"))
+    (
+        sim_only_requirements_satisfied,
+        sim_only_blocked_requirement_ids,
+        sim_only_requirement_blockers,
+        sim_only_requirement_details_present,
+    ) = _sim_only_beta_requirement_summary(local_gate, robot_team_closure)
     required_true = {
         "local_mujoco_simulator_execution_proven": proof_boundary.get(
             "local_mujoco_simulator_execution_proven"
@@ -127,11 +192,20 @@ def _local_sim_only_gate(local_gate: Mapping[str, Any], load_error: str | None, 
             "all_required_runs_have_visual_recording"
         ),
         "visual_files_complete": visual_coverage.get("all_video_files_complete"),
-        "sim_only_beta_core_complete": robot_team_closure.get("sim_only_beta_core_complete"),
     }
     for key, value in required_true.items():
         if value is not True:
             blockers.append(f"{key}_not_true")
+    if sim_only_blocked_requirement_ids:
+        blockers.extend(
+            f"sim_only_beta_requirement_{requirement_id}_not_complete"
+            for requirement_id in sim_only_blocked_requirement_ids
+        )
+    elif not sim_only_requirements_satisfied:
+        if sim_only_requirement_details_present:
+            blockers.append("sim_only_beta_requirements_not_satisfied_without_requirement_ids")
+        else:
+            blockers.append("sim_only_beta_core_completion_not_true_without_requirement_details")
 
     return _gate(
         "local_sim_only_post_upload_autonomy",
@@ -141,8 +215,17 @@ def _local_sim_only_gate(local_gate: Mapping[str, Any], load_error: str | None, 
             "path": str(path),
             "status": local_gate.get("status"),
             "attempt_count": batch_closure.get("attempt_count"),
-            "required_true": required_true,
+            "required_true": {
+                **required_true,
+                "sim_only_beta_requirements_satisfied": sim_only_requirements_satisfied,
+            },
             "scenario_eval_matrix": scenario_eval_matrix,
+            "visual_review_accepted_count": visual_review.get("accepted_review_count"),
+            "sim_only_beta_core_complete": robot_team_closure.get(
+                "sim_only_beta_core_complete"
+            ),
+            "sim_only_beta_blocked_requirement_ids": sim_only_blocked_requirement_ids,
+            "sim_only_beta_requirement_blockers": sim_only_requirement_blockers,
             "proof_boundary": proof_boundary,
         },
     )
@@ -324,6 +407,9 @@ def _deployment_gate(deployment_proof: Mapping[str, Any], load_error: str | None
             "status": deployment_proof.get("status"),
             "webapp_url": deployment_proof.get("webapp_url"),
             "pipeline_intake_url": deployment_proof.get("pipeline_intake_url"),
+            "webapp_health_ready": deployment_proof.get("webapp_health_ready"),
+            "pipeline_intake_health_ready": deployment_proof.get("pipeline_intake_health_ready"),
+            "git_parity_proven": deployment_proof.get("git_parity_proven"),
         },
     )
 
@@ -366,6 +452,14 @@ def build_release_gate_report(
         for gate in gates
         for blocker in gate.get("blockers", [])
     ]
+    local_gate_evidence = _mapping(gates[0].get("evidence"))
+    local_gate_proof_boundary = _mapping(local_gate_evidence.get("proof_boundary"))
+    local_scenario_eval_matrix = _mapping(local_gate_evidence.get("scenario_eval_matrix"))
+    deployment_gate_evidence = _mapping(gates[3].get("evidence"))
+    simulator_execution_proven = (
+        local_gate_proof_boundary.get("simulator_execution_proven") is True
+        or local_gate_proof_boundary.get("local_mujoco_simulator_execution_proven") is True
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
@@ -373,12 +467,20 @@ def build_release_gate_report(
         "ready_for_beta_release": not blockers,
         "capture_root": str(capture_root),
         "blockers": blockers,
+        "scenario_eval_run_count": local_scenario_eval_matrix.get("scenario_eval_run_count"),
+        "visual_review_accepted_count": local_gate_evidence.get("visual_review_accepted_count"),
+        "webapp_health_ready": deployment_gate_evidence.get("webapp_health_ready"),
+        "pipeline_intake_health_ready": deployment_gate_evidence.get("pipeline_intake_health_ready"),
+        "git_parity_proven": deployment_gate_evidence.get("git_parity_proven"),
+        "simulator_execution_proven": simulator_execution_proven,
+        "public_claim_upgrade_allowed": False,
         "gates": gates,
         "proof_boundary": {
             "local_sim_only_post_upload_autonomy_checked": True,
             "production_forwarding_checked": True,
             "production_route_forwarding_checked": True,
             "production_deployment_parity_checked": True,
+            "simulator_execution_proven": simulator_execution_proven,
             "generated_world_rank_fidelity_required_for_this_gate": False,
             "remote_cloud_provider_execution_required_for_this_gate": False,
             "public_claim_upgrade_allowed": False,

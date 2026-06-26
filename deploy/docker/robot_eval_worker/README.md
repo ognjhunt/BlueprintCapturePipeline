@@ -103,11 +103,16 @@ walking-controller or training-grade rollout proof.
 ## Isaac Worker
 
 ```bash
-docker build \
-  -f deploy/docker/robot_eval_worker/isaac/Dockerfile \
-  --build-arg ISAAC_SIM_BASE_IMAGE=nvcr.io/nvidia/isaac-sim:6.0.0 \
-  -t blueprint/isaac-eval-worker:local .
+BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF="registry.example/blueprint/isaac-eval-worker:2026-06-26" \
+BLUEPRINT_ISAAC_WORKER_PLATFORM=linux/amd64 \
+./scripts/build_push_isaac_worker_image.sh
 ```
+
+Set `BLUEPRINT_ALLOW_ISAAC_WORKER_IMAGE_PUSH=true` only after Docker is
+authenticated to the target registry and the image ref is intended to be
+provider-fetchable. The helper refuses `latest`, `local`, `dev`, and `test`
+tags. To use a different pinned Isaac base image, set
+`BLUEPRINT_ISAAC_SIM_BASE_IMAGE`.
 
 NVIDIA's current Isaac Sim 6.0 container docs use
 `nvcr.io/nvidia/isaac-sim:6.0.0`, rootless user `1234:1234`, `--gpus all`, and

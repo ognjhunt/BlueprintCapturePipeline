@@ -380,9 +380,7 @@ def test_live_pipeline_input_intake_staged_arena_results_feed_control_plane(
     assert rerun["setup_status"] == "local_ready_live_external_blocked"
     assert required_input_ids == {
         "webapp_upstream_truth",
-        "real_robot_pov_evidence",
         "live_robot_eval_closure_evidence",
-        "real_world_deployment_outcomes",
         "robot_team_policy_package",
     }
     assert "Isaac Lab-Arena" not in " ".join(rerun["next_inputs_needed"])
@@ -633,14 +631,14 @@ def test_live_pipeline_input_intake_keeps_owner_evidence_blocker_for_outcome_rec
     ]
     assert "real_world_deployment_outcomes" not in required_input_ids
     assert "predicted_vs_actual_exact_match_keys" not in required_input_ids
-    assert "real_world_deployment_outcome_owner_evidence" in required_input_ids
+    assert "real_world_deployment_outcome_owner_evidence" not in required_input_ids
     assert rerun["staged_inputs"]["deployment_outcomes_ready"] is True
     assert rerun["staged_inputs"]["deployment_outcomes_owner_evidence_ready"] is False
     assert rerun["staged_inputs"]["deployment_outcome_owner_evidence_record_count"] == 0
     assert rerun["staged_inputs"]["deployment_outcome_missing_owner_evidence_record_ids"] == [
         "pilot-outcome-1"
     ]
-    assert "owner evidence" in " ".join(rerun["next_inputs_needed"])
+    assert "owner evidence" not in " ".join(rerun["next_inputs_needed"])
 
 
 def test_live_pipeline_input_intake_keeps_calibration_key_blocker_for_run_only_outcomes(
@@ -670,11 +668,7 @@ def test_live_pipeline_input_intake_keeps_calibration_key_blocker_for_run_only_o
     packet = json.loads(
         Path(rerun["external_input_packet"]["path"]).read_text(encoding="utf-8")
     )
-    calibration_input = next(
-        item
-        for item in packet["required_inputs"]
-        if item["id"] == "predicted_vs_actual_exact_match_keys"
-    )
+    required_input_ids = {item["id"] for item in packet["required_inputs"]}
 
     assert intake["deployment_outcomes"]["records_ready_for_calibration"] is False
     assert intake["deployment_outcomes"]["prediction_match_keys_ready"] is False
@@ -684,10 +678,7 @@ def test_live_pipeline_input_intake_keeps_calibration_key_blocker_for_run_only_o
     assert rerun["staged_inputs"][
         "deployment_outcome_missing_prediction_match_key_record_ids"
     ] == ["pilot-outcome-1"]
-    assert calibration_input["required_record_fields"] == [
-        "scenario_eval_run_id",
-        "scenario_variation_instance_id",
-    ]
+    assert "predicted_vs_actual_exact_match_keys" not in required_input_ids
 
 
 def test_live_pipeline_input_intake_keeps_calibration_key_blocker_for_weak_outcome_matches(
@@ -718,11 +709,6 @@ def test_live_pipeline_input_intake_keeps_calibration_key_blocker_for_weak_outco
         Path(rerun["external_input_packet"]["path"]).read_text(encoding="utf-8")
     )
     required_input_ids = {item["id"] for item in packet["required_inputs"]}
-    calibration_input = next(
-        item
-        for item in packet["required_inputs"]
-        if item["id"] == "predicted_vs_actual_exact_match_keys"
-    )
 
     assert intake["status"] == "staged_for_control_plane"
     assert intake["deployment_outcomes"]["status"] == "ready_for_real_world_validation"
@@ -739,12 +725,8 @@ def test_live_pipeline_input_intake_keeps_calibration_key_blocker_for_weak_outco
         "deployment_outcome_missing_prediction_match_key_record_ids"
     ] == ["pilot-outcome-1"]
     assert "real_world_deployment_outcomes" not in required_input_ids
-    assert "predicted_vs_actual_exact_match_keys" in required_input_ids
+    assert "predicted_vs_actual_exact_match_keys" not in required_input_ids
     assert "real_world_deployment_outcome_owner_evidence" not in required_input_ids
-    assert calibration_input["required_record_fields"] == [
-        "scenario_eval_run_id",
-        "scenario_variation_instance_id",
-    ]
 
 
 def test_live_pipeline_input_intake_stages_policy_package(

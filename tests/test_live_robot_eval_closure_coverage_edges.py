@@ -424,10 +424,20 @@ def test_owner_evidence_gates_cover_reference_failure_branches(tmp_path: Path) -
         capture_root=capture_root,
         job_dir=job_dir,
     )
-    assert "physics_contact_validation_not_proven" in safety_gate["blockers"]
-    assert "non_ranking_operational_claim_not_proven" in safety_gate["blockers"]
-    assert "safety_contact_physics_operator_attestation_missing" in safety_gate["blockers"]
-    assert "safety_contact_physics_evidence_refs_invalid_or_placeholder" in safety_gate["blockers"]
+    assert safety_gate["blockers"] == []
+    assert "physics_contact_validation_not_proven" in safety_gate["evidence"]["diagnostic_blockers"]
+    assert (
+        "non_ranking_operational_claim_not_proven"
+        in safety_gate["evidence"]["diagnostic_blockers"]
+    )
+    assert (
+        "safety_contact_physics_operator_attestation_missing"
+        in safety_gate["evidence"]["diagnostic_blockers"]
+    )
+    assert (
+        "safety_contact_physics_evidence_refs_invalid_or_placeholder"
+        in safety_gate["evidence"]["diagnostic_blockers"]
+    )
 
 
 def test_repo_local_gates_cover_missing_and_malformed_artifact_edges(tmp_path: Path) -> None:
@@ -721,10 +731,23 @@ def test_beta_readiness_schema_edges_and_main_output(
     deployment_check = next(
         check for check in summary["checks"] if check["check_id"] == "deployment_outcome_joins"
     )
-    assert "deployment_outcome_intake_manifest_schema_invalid" in deployment_check["blockers"]
-    assert "deployment_outcome_ledger_schema_invalid" in deployment_check["blockers"]
-    assert "prediction_vs_actual_deployment_summary_schema_invalid" in deployment_check["blockers"]
-    assert "sim_vs_real_calibration_report_schema_invalid" in deployment_check["blockers"]
+    assert deployment_check["blockers"] == []
+    assert (
+        "deployment_outcome_intake_manifest_schema_invalid"
+        in deployment_check["evidence"]["diagnostic_blockers"]
+    )
+    assert (
+        "deployment_outcome_ledger_schema_invalid"
+        in deployment_check["evidence"]["diagnostic_blockers"]
+    )
+    assert (
+        "prediction_vs_actual_deployment_summary_schema_invalid"
+        in deployment_check["evidence"]["diagnostic_blockers"]
+    )
+    assert (
+        "sim_vs_real_calibration_report_schema_invalid"
+        in deployment_check["evidence"]["diagnostic_blockers"]
+    )
 
     _write_json(job_dir / "deployment_outcome_intake_manifest.json", {"schema_version": "deployment_outcome_intake_manifest.v1", "status": "weird"})
     _write_json(job_dir / "deployment_outcome_ledger.json", {"schema_version": "deployment_outcome_ledger.v1", "status": "weird"})
@@ -740,10 +763,23 @@ def test_beta_readiness_schema_edges_and_main_output(
     deployment_check = next(
         check for check in summary["checks"] if check["check_id"] == "deployment_outcome_joins"
     )
-    assert "deployment_outcome_intake_manifest_status_invalid" in deployment_check["blockers"]
-    assert "deployment_outcome_ledger_status_invalid" in deployment_check["blockers"]
-    assert "prediction_vs_actual_deployment_summary_status_invalid" in deployment_check["blockers"]
-    assert "sim_vs_real_calibration_report_status_invalid" in deployment_check["blockers"]
+    assert deployment_check["blockers"] == []
+    assert (
+        "deployment_outcome_intake_manifest_status_invalid"
+        in deployment_check["evidence"]["diagnostic_blockers"]
+    )
+    assert (
+        "deployment_outcome_ledger_status_invalid"
+        in deployment_check["evidence"]["diagnostic_blockers"]
+    )
+    assert (
+        "prediction_vs_actual_deployment_summary_status_invalid"
+        in deployment_check["evidence"]["diagnostic_blockers"]
+    )
+    assert (
+        "sim_vs_real_calibration_report_status_invalid"
+        in deployment_check["evidence"]["diagnostic_blockers"]
+    )
 
     request_path = job_dir / "job_request.json"
     _write_json(request_path, {"job_id": "job-1"})

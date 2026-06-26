@@ -102,7 +102,7 @@ BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES=false
 Do not enable `BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES=true` for customer beta
 closure evidence; sim-only beta core closure still requires visual media
 coverage, trace package coverage, attempt metrics, and scenario-run coverage.
-This profile does not prove generated-world rank fidelity, generated-world rank fidelity, live
+This profile does not prove generated-world rank fidelity, live
 customer delivery, or external robot-team closure. WAM/substrate artifacts add
 only evaluator-bounded policy comparison unless paired real-world validation
 anchors are accepted separately.
@@ -160,11 +160,9 @@ blueprint-intake-live-pipeline-inputs \
   --webapp-job-request /path/to/robot_eval_job_request.json \
   --arena-results-dir /path/to/owner-system/isaac-lab-arena-results \
   --policy-package /path/to/robot_team_policy_package.json \
-  --real-robot-pov /path/to/real_robot_pov_manifest.json \
   --stage-webapp-request \
   --stage-arena-results \
-  --stage-policy-package \
-  --stage-real-robot-pov
+  --stage-policy-package
 ```
 
 The intake command checks that a WebApp request is a direct
@@ -187,14 +185,14 @@ input only; policy proof still requires the job-level policy execution bundle to
 produce attempts. The closure audit revalidates selected modality status and
 modality-specific required fields before the policy-interface gate can pass.
 
-`--real-robot-pov` accepts `real_robot_pov_manifest.v1` with exact
+`--real-robot-pov` is optional and accepts `real_robot_pov_manifest.v1` with exact
 `scenario_eval_run_id` and `scenario_variation_instance_id` keys, robot camera
 video refs, action log refs, timestamp alignment, and owner evidence or
 operator attestation. With `--stage-real-robot-pov`, intake copies the manifest
 to `pipeline/robot_eval_inputs/real_robot_pov_manifest.json`. Generated robot
-POV support artifacts do not satisfy this input; real POV proof remains blocked
-until the robot-eval job ingests matching real robot evidence for every required
-scenario eval run.
+POV support artifacts do not satisfy real-POV proof, but missing real POV
+evidence is a diagnostic/proof-boundary state and not a sim-only control-plane
+blocker.
 
 For live WebApp-to-droplet handoff, run the authenticated intake service:
 
@@ -202,6 +200,40 @@ For live WebApp-to-droplet handoff, run the authenticated intake service:
 BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN=<redacted> \
 blueprint-live-pipeline-intake-service --host 127.0.0.1 --port 8765
 ```
+
+The intake token is intentionally not a default. It is the bearer secret that
+lets WebApp forwarding and the Pipeline intake service trust each other, so it
+must live in local/deployment secrets instead of source control. Generate a
+local env file with matching WebApp and Pipeline variables:
+
+```bash
+python -m blueprint_pipeline.live_pipeline_forwarding_secret_setup \
+  --env-file "$HOME/.blueprint-secrets/live_pipeline_forwarding.env" \
+  --forward-url "https://paperclip.tryblueprint.io/api/live-pipeline/job-requests" \
+  --capture-root "$CAPTURE_ROOT" \
+  --site-slug "$WEBAPP_SITE_SLUG"
+```
+
+Source that file on the Pipeline intake host before starting the service, and
+pass the same file to the WebApp read-only preflight:
+
+```bash
+set -a
+source "$HOME/.blueprint-secrets/live_pipeline_forwarding.env"
+set +a
+blueprint-live-pipeline-intake-service --host 127.0.0.1 --port 8765
+
+npm run pipeline:forwarding:preflight -- \
+  --require-forwarding \
+  --probe-intake-audit \
+  --forwarding-env-file "$HOME/.blueprint-secrets/live_pipeline_forwarding.env"
+```
+
+For production deployment, copy the same generated token into the WebApp secret
+store as `ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN` and the Pipeline intake service
+secret store as `BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN`. The helper does not make
+the remote endpoint authenticate by itself; both deployed services must receive
+the same secret.
 
 The service exposes:
 
@@ -324,6 +356,15 @@ ready state for the full live loop is `live_end_to_end_verified`. Anything else
 is a local/package-ready or externally blocked state, even if deterministic
 package artifacts are complete.
 
+Optional GPU/provider closure can be audited separately with
+`blueprint-audit-provider-closure --job-dir
+pipeline/robot_eval_jobs/<job_id>`. The command is read-only: it checks local
+watchdog, spend-ledger, artifact-output finalizer/upload, and teardown evidence
+and writes `provider_closure_audit_report.json`. Missing credentials or missing
+provider artifacts are blocked optional provider closure, not a local sim-only
+beta blocker and not proof of rank fidelity, physical readiness, safety, or
+field success.
+
 Robot-team policy packages should be staged per job before claiming policy
 execution input readiness:
 
@@ -355,19 +396,12 @@ blueprint-intake-live-pipeline-inputs \
 
 The intake command copies validated records to
 `pipeline/robot_eval_inputs/<job_id>/deployment_outcomes/inbox/`. This is a
-real-world validation input only; the robot-eval job still has to pair it with
-predictions before a calibration score appears. For predicted-vs-actual
-calibration, every staged actual record must include `scenario_eval_run_id` or
-`scenario_variation_instance_id`; task/scenario-only records remain real-world
-validation inputs but keep `predicted_vs_actual_exact_match_keys` open. If an
-actual record includes a `scenario_eval_run_id`, the prediction match must be
-for that same run; unmatched run-level actuals remain predicted-vs-actual
-blockers. `real_world_outcome_proven` requires owner evidence on every actual
-outcome record, such as `evidence_refs`, an owner proof URI, or an
-operator/owner attestation. If records have task, scenario, actual-result, and
-exact-match-key fields but lack owner evidence, the control plane accepts them
-for calibration and keeps `real_world_deployment_outcome_owner_evidence` as the
-remaining proof blocker.
+real-world validation diagnostic input only; the robot-eval job still has to
+pair it with predictions before a calibration score appears. Exact
+`scenario_eval_run_id` or `scenario_variation_instance_id` keys and owner
+evidence are needed only before claiming calibration or real-world outcome
+proof. Missing keys, unmatched run-level actuals, and missing owner evidence are
+recorded as diagnostics without adding required inputs for sim-only work.
 
 Closure evidence for review acceptance, signed delivery/access, rights/privacy,
 and safety/contact/physics readiness should also be staged per job with:

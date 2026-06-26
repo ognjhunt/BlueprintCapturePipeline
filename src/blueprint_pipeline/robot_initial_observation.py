@@ -21,6 +21,12 @@ ROBOT_CAMERA_PROFILE_REGISTRY_SCHEMA_VERSION = "robot_camera_profile_registry.v1
 ROBOT_CAMERA_PROFILE_LAUNCH_READINESS_SCHEMA_VERSION = (
     "robot_camera_profile_launch_readiness.v1"
 )
+OWNER_ROBOT_CAMERA_CALIBRATION_REQUEST_SCHEMA_VERSION = (
+    "owner_robot_camera_calibration_request.v1"
+)
+OWNER_ROBOT_CAMERA_CALIBRATION_REQUEST_FILENAME = (
+    "owner_robot_camera_calibration_request.json"
+)
 ROBOT_POV_OBSERVATION_CANDIDATE_SET_SCHEMA_VERSION = (
     "robot_pov_observation_candidate_set.v1"
 )
@@ -36,11 +42,15 @@ POLICY_OBSERVATION_SCHEMA_REF = "blueprint://schemas/robot_eval_observation.v1"
 DEFAULT_WIDTH = 960
 DEFAULT_HEIGHT = 540
 DEFAULT_HORIZONTAL_FOV_DEGREES = 75.0
+CAMERA_PROFILE_LAUNCH_SCOPE = "sim_only"
 LAUNCH_REQUIRED_CAMERA_CALIBRATION_FIELDS = (
     "owner_provided_intrinsics",
     "owner_provided_extrinsics",
     "owner_provided_fov",
 )
+UNITREE_G1_PHYSICAL_PROFILE_IDS = ("unitree_g1", "unitree_g1_humanoid")
+UNITREE_G1_REQUIRED_RGBD_CAMERA_IDS = ("head_rgbd", "chest_rgbd")
+ROBOT_BASE_FRAME_IDS = ("robot_base", "base_link", "base")
 SOURCE_PRIORITY = {
     "direct_capture_frame": 100,
     "capture_derived_depth_splat": 80,
@@ -200,6 +210,33 @@ def _safe_id(value: Any) -> str:
     return "".join(char if char.isalnum() else "_" for char in text).strip("_") or "unknown"
 
 
+def _default_or_support_source(source: Any) -> bool:
+    normalized = _string(source).lower()
+    return normalized in {
+        "blueprint_default_robot_camera_profile",
+        "robot_eval_dataset.scenario_cards",
+        "active_profile_default",
+    } or normalized.startswith("blueprint_default_")
+
+
+def _owner_input_context(*sources: Any) -> bool:
+    text_sources = [_string(source).lower() for source in sources if _string(source)]
+    explicit_owner = any(
+        marker in source
+        for source in text_sources
+        for marker in ("owner", "customer", "robot_team", "calibration")
+    ) or any(source is True for source in sources)
+    if explicit_owner:
+        return True
+    if any(_default_or_support_source(source) for source in text_sources):
+        return False
+    return any(source in {"job_request", "job_request.robot_profile"} for source in text_sources)
+
+
+def _robot_base_reference_frame(value: Any) -> bool:
+    return _string(value).lower() in ROBOT_BASE_FRAME_IDS
+
+
 def _source_claim_boundary() -> dict[str, Any]:
     return {
         "artifact_purpose": "initial_policy_observation_source_selection",
@@ -210,6 +247,8 @@ def _source_claim_boundary() -> dict[str, Any]:
         "robot_policy_execution_proven": False,
         "simulator_execution_proven": False,
         "physical_robot_sensor_proof": False,
+        "deployment_readiness_proven": False,
+        "safety_validation_proven": False,
         "generated_world_rank_fidelity_result_proven": False,
         "generated_world_policy_evaluation_scope_proven": False,
         "non_ranking_operational_claim_proven": False,
@@ -221,8 +260,22 @@ def _raw_intrinsics(camera: Mapping[str, Any]) -> dict[str, Any]:
     return _mapping(camera.get("intrinsics") or camera.get("camera_intrinsics"))
 
 
-def _owner_intrinsics_provided(camera: Mapping[str, Any]) -> bool:
+def _owner_intrinsics_provided(
+    camera: Mapping[str, Any],
+    *,
+    owner_input_context: bool = False,
+) -> bool:
     intrinsics = _raw_intrinsics(camera)
+    if not (
+        owner_input_context
+        or _owner_input_context(
+            camera.get("source"),
+            camera.get("owner_provided"),
+            intrinsics.get("source"),
+            intrinsics.get("owner_provided"),
+        )
+    ):
+        return False
     resolution = _mapping(camera.get("resolution"))
     width = intrinsics.get("width") or intrinsics.get("image_width") or resolution.get("width")
     height = intrinsics.get("height") or intrinsics.get("image_height") or resolution.get("height")
@@ -252,17 +305,43 @@ def _vector_present(value: Any, *, length: int) -> bool:
     return all(_float(values[index]) is not None for index in range(length))
 
 
-def _owner_extrinsics_provided(camera: Mapping[str, Any]) -> bool:
+def _owner_extrinsics_provided(
+    camera: Mapping[str, Any],
+    *,
+    owner_input_context: bool = False,
+) -> bool:
     extrinsics = _raw_extrinsics(camera)
     if not extrinsics:
         return False
+    if not (
+        owner_input_context
+        or _owner_input_context(
+            camera.get("source"),
+            camera.get("owner_provided"),
+            extrinsics.get("source"),
+            extrinsics.get("owner_provided"),
+        )
+    ):
+        return False
+    reference_frame_present = _robot_base_reference_frame(extrinsics.get("reference_frame"))
+    child_frame_present = bool(_string(extrinsics.get("child_frame")))
+    direction = _string(
+        extrinsics.get("transform_direction")
+        or extrinsics.get("direction")
+        or extrinsics.get("frame_transform")
+    ).lower()
     matrix_value = (
-        extrinsics.get("matrix")
-        or extrinsics.get("T_robot_camera")
+        extrinsics.get("T_robot_base_camera")
         or extrinsics.get("T_base_camera")
-        or extrinsics.get("robot_from_camera")
-        or extrinsics.get("camera_from_robot")
+        or extrinsics.get("robot_base_to_camera")
+        or extrinsics.get("base_to_camera")
     )
+    if matrix_value is None and direction in {
+        "robot_base_to_camera",
+        "base_to_camera",
+        "base_link_to_camera",
+    }:
+        matrix_value = extrinsics.get("matrix")
     matrix_present = _matrix(matrix_value) is not None
     translation = (
         extrinsics.get("xyz_m")
@@ -275,15 +354,13 @@ def _owner_extrinsics_provided(camera: Mapping[str, Any]) -> bool:
         or extrinsics.get("rpy")
         or extrinsics.get("rotation_rpy_rad")
         or extrinsics.get("rotation")
-        or extrinsics.get("quaternion_xyzw")
-        or extrinsics.get("quaternion")
     )
-    pose_vectors_present = _vector_present(translation, length=3) and _vector_present(
-        rotation,
-        length=3,
+    quaternion = extrinsics.get("quaternion_xyzw") or extrinsics.get("quaternion")
+    pose_vectors_present = _vector_present(translation, length=3) and (
+        _vector_present(rotation, length=3)
+        or _vector_present(quaternion, length=4)
     )
-    reference_frame_present = bool(_string(extrinsics.get("reference_frame")))
-    return reference_frame_present and (matrix_present or pose_vectors_present)
+    return reference_frame_present and child_frame_present and (matrix_present or pose_vectors_present)
 
 
 def _fov_value(camera: Mapping[str, Any], *, axis: str) -> Any:
@@ -305,19 +382,28 @@ def _fov_value(camera: Mapping[str, Any], *, axis: str) -> Any:
     )
 
 
-def _owner_fov_provided(camera: Mapping[str, Any]) -> bool:
+def _owner_fov_provided(
+    camera: Mapping[str, Any],
+    *,
+    owner_input_context: bool = False,
+) -> bool:
+    if not (
+        owner_input_context
+        or _owner_input_context(
+            camera.get("source"),
+            camera.get("owner_provided"),
+            _mapping(camera.get("fov")).get("source"),
+            _mapping(camera.get("fov")).get("owner_provided"),
+        )
+    ):
+        return False
     return _positive_number(_fov_value(camera, axis="horizontal")) and _positive_number(
         _fov_value(camera, axis="vertical")
     )
 
 
 def _smoke_only_source(source: str) -> bool:
-    normalized = source.strip().lower()
-    return normalized in {
-        "blueprint_default_robot_camera_profile",
-        "robot_eval_dataset.scenario_cards",
-        "active_profile_default",
-    } or normalized.startswith("blueprint_default_")
+    return _default_or_support_source(source)
 
 
 def _horizontal_fov(camera: Mapping[str, Any], intrinsics: Mapping[str, Any]) -> float:
@@ -360,7 +446,11 @@ def _vertical_fov(camera: Mapping[str, Any], intrinsics: Mapping[str, Any]) -> f
     )
 
 
-def _intrinsics_from_camera(camera: Mapping[str, Any]) -> dict[str, Any]:
+def _intrinsics_from_camera(
+    camera: Mapping[str, Any],
+    *,
+    owner_input_context: bool = False,
+) -> dict[str, Any]:
     intrinsics = _raw_intrinsics(camera)
     resolution = _mapping(camera.get("resolution"))
     width = _int(
@@ -387,7 +477,10 @@ def _intrinsics_from_camera(camera: Mapping[str, Any]) -> dict[str, Any]:
         fy = (float(height) / 2.0) / math.tan(math.radians(vertical) / 2.0)
     cx = _float(intrinsics.get("cx"), float(width) / 2.0)
     cy = _float(intrinsics.get("cy"), float(height) / 2.0)
-    owner_provided = _owner_intrinsics_provided(camera)
+    owner_provided = _owner_intrinsics_provided(
+        camera,
+        owner_input_context=owner_input_context,
+    )
     return {
         "width": width,
         "height": height,
@@ -419,7 +512,11 @@ def _pose_vector(value: Any, *, length: int, default: Sequence[float]) -> list[f
     return out
 
 
-def _extrinsics_from_camera(camera: Mapping[str, Any]) -> dict[str, Any]:
+def _extrinsics_from_camera(
+    camera: Mapping[str, Any],
+    *,
+    owner_input_context: bool = False,
+) -> dict[str, Any]:
     extrinsics = _raw_extrinsics(camera)
     xyz = _pose_vector(
         extrinsics.get("xyz_m") or extrinsics.get("xyz") or extrinsics.get("translation_m"),
@@ -431,7 +528,10 @@ def _extrinsics_from_camera(camera: Mapping[str, Any]) -> dict[str, Any]:
         length=3,
         default=[0.0, 0.0, 0.0],
     )
-    owner_provided = _owner_extrinsics_provided(camera)
+    owner_provided = _owner_extrinsics_provided(
+        camera,
+        owner_input_context=owner_input_context,
+    )
     return {
         "reference_frame": _string(extrinsics.get("reference_frame")) or "robot_base",
         "child_frame": _string(
@@ -454,10 +554,20 @@ def _extrinsics_from_camera(camera: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _camera_calibration_contract(camera: Mapping[str, Any]) -> dict[str, Any]:
-    owner_intrinsics = _owner_intrinsics_provided(camera)
-    owner_extrinsics = _owner_extrinsics_provided(camera)
-    owner_fov = _owner_fov_provided(camera)
+def _camera_calibration_contract(
+    camera: Mapping[str, Any],
+    *,
+    owner_input_context: bool = False,
+) -> dict[str, Any]:
+    owner_intrinsics = _owner_intrinsics_provided(
+        camera,
+        owner_input_context=owner_input_context,
+    )
+    owner_extrinsics = _owner_extrinsics_provided(
+        camera,
+        owner_input_context=owner_input_context,
+    )
+    owner_fov = _owner_fov_provided(camera, owner_input_context=owner_input_context)
     flags = {
         "owner_provided_intrinsics": owner_intrinsics,
         "owner_provided_extrinsics": owner_extrinsics,
@@ -468,16 +578,397 @@ def _camera_calibration_contract(camera: Mapping[str, Any]) -> dict[str, Any]:
     ]
     return {
         "launch_required_fields": list(LAUNCH_REQUIRED_CAMERA_CALIBRATION_FIELDS),
+        "physical_claim_required_fields": list(LAUNCH_REQUIRED_CAMERA_CALIBRATION_FIELDS),
         **flags,
         "owner_provided_calibration_complete": not missing,
+        "physical_claim_calibration_complete": not missing,
         "missing_launch_fields": missing,
         "smoke_only": bool(missing),
+        "sim_only_launch_ready": True,
+        "owner_calibration_required_for_sim_only_launch": False,
+        "owner_calibration_required_for_physical_robot_launch": True,
         "default_or_derived_values_allowed_for_smoke_only": bool(missing),
-        "launch_mode_blocks_without_owner_calibration": bool(missing),
+        "launch_mode_blocks_without_owner_calibration": False,
+        "physical_robot_launch_blocks_without_owner_calibration": bool(missing),
     }
 
 
-def _normalize_camera(camera: Mapping[str, Any], *, index: int) -> dict[str, Any]:
+def _owner_calibration_file_names(*, profile_id: str, camera_id: str) -> dict[str, str]:
+    safe_profile = _safe_id(profile_id)
+    safe_camera = _safe_id(camera_id)
+    return {
+        "combined_owner_profile_file": f"{safe_profile}_owner_robot_camera_profile.json",
+        "camera_intrinsics_file": f"{safe_profile}_{safe_camera}_intrinsics.json",
+        "camera_fov_file": f"{safe_profile}_{safe_camera}_fov.json",
+        "camera_extrinsics_file": f"{safe_profile}_{safe_camera}_extrinsics.json",
+    }
+
+
+def _owner_calibration_required_fields(
+    *, camera_id: str, missing_fields: Sequence[str]
+) -> list[dict[str, str]]:
+    paths_by_field = {
+        "owner_provided_camera_profile": [
+            ("camera_id", "literal", camera_id),
+            ("modalities", "array_contains[rgb,depth]", "modalities"),
+        ],
+        "owner_provided_rgbd_modalities": [
+            ("modalities", "array_contains[rgb,depth]", "modalities"),
+        ],
+        "owner_provided_intrinsics": [
+            ("intrinsics.width", "positive_integer", "pixels"),
+            ("intrinsics.height", "positive_integer", "pixels"),
+            ("intrinsics.fx", "positive_number", "pixels"),
+            ("intrinsics.fy", "positive_number", "pixels"),
+            ("intrinsics.cx", "nonnegative_number", "pixels"),
+            ("intrinsics.cy", "nonnegative_number", "pixels"),
+            ("intrinsics.camera_model", "string", "model_name"),
+        ],
+        "owner_provided_fov": [
+            ("horizontal_fov_degrees", "positive_number", "degrees"),
+            ("vertical_fov_degrees", "positive_number", "degrees"),
+        ],
+        "owner_provided_extrinsics": [
+            ("extrinsics.reference_frame", "string", "frame_id"),
+            ("extrinsics.child_frame", "string", "frame_id"),
+            ("extrinsics.xyz_m", "array[3]", "meters"),
+            ("extrinsics.rpy_rad", "array[3]", "radians"),
+        ],
+    }
+    required: list[dict[str, str]] = []
+    for missing in missing_fields:
+        for suffix, value_type, unit in paths_by_field.get(_string(missing), []):
+            required.append(
+                {
+                    "path": f"cameras[?camera_id=='{camera_id}'].{suffix}",
+                    "type": value_type,
+                    "unit": unit,
+                }
+            )
+    return required
+
+
+def _unitree_g1_physical_profile(profile_id: str) -> bool:
+    return _safe_id(profile_id) in UNITREE_G1_PHYSICAL_PROFILE_IDS
+
+
+def _camera_modalities(camera: Mapping[str, Any]) -> set[str]:
+    return {
+        _string(item).lower()
+        for item in _list(camera.get("modalities") or camera.get("sensors"))
+        if _string(item)
+    }
+
+
+def _physical_camera_profile_shape_contract(
+    *,
+    profile_id: str,
+    cameras: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    if not _unitree_g1_physical_profile(profile_id):
+        return {
+            "profile_shape_contract_applies": False,
+            "profile_shape_valid": True,
+            "required_camera_ids": [],
+            "missing_required_camera_ids": [],
+            "invalid_required_camera_modalities": {},
+            "physical_robot_launch_blockers": [],
+        }
+
+    cameras_by_id = {_string(camera.get("camera_id")): camera for camera in cameras}
+    missing_camera_ids = [
+        camera_id
+        for camera_id in UNITREE_G1_REQUIRED_RGBD_CAMERA_IDS
+        if camera_id not in cameras_by_id
+    ]
+    invalid_modalities: dict[str, list[str]] = {}
+    for camera_id in UNITREE_G1_REQUIRED_RGBD_CAMERA_IDS:
+        camera = cameras_by_id.get(camera_id)
+        if not camera:
+            continue
+        modalities = _camera_modalities(camera)
+        missing_modalities = [
+            modality for modality in ("rgb", "depth") if modality not in modalities
+        ]
+        if missing_modalities:
+            invalid_modalities[camera_id] = missing_modalities
+
+    blockers = [
+        f"missing_required_unitree_g1_rgbd_camera:{profile_id}:{camera_id}"
+        for camera_id in missing_camera_ids
+    ]
+    blockers.extend(
+        f"missing_required_unitree_g1_camera_modalities:{profile_id}:{camera_id}:"
+        f"{','.join(missing_modalities)}"
+        for camera_id, missing_modalities in sorted(invalid_modalities.items())
+    )
+    return {
+        "profile_shape_contract_applies": True,
+        "profile_shape_valid": not missing_camera_ids and not invalid_modalities,
+        "required_camera_ids": list(UNITREE_G1_REQUIRED_RGBD_CAMERA_IDS),
+        "missing_required_camera_ids": missing_camera_ids,
+        "invalid_required_camera_modalities": invalid_modalities,
+        "physical_robot_launch_blockers": blockers,
+    }
+
+
+def _owner_calibration_schema_template(
+    *,
+    profile_id: str,
+    cameras: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    template_cameras: list[dict[str, Any]] = []
+    for camera in cameras:
+        camera_id = _string(camera.get("camera_id"))
+        template_cameras.append(
+            {
+                "camera_id": camera_id,
+                "display_name": _string(camera.get("display_name") or camera_id),
+                "modalities": _list(camera.get("modalities")) or ["rgb", "depth"],
+                "mount": camera.get("mount"),
+                "frame_id": _string(camera.get("frame_id") or camera_id),
+                "horizontal_fov_degrees": None,
+                "vertical_fov_degrees": None,
+                "intrinsics": {
+                    "width": None,
+                    "height": None,
+                    "fx": None,
+                    "fy": None,
+                    "cx": None,
+                    "cy": None,
+                    "camera_model": "pinhole",
+                    "source": "owner_provided_calibration_file",
+                },
+                "extrinsics": {
+                    "reference_frame": "robot_base",
+                    "child_frame": _string(camera.get("frame_id") or camera_id),
+                    "xyz_m": None,
+                    "rpy_rad": None,
+                    "source": "owner_provided_calibration_file",
+                },
+            }
+        )
+    return {
+        "schema_version": "owner_robot_camera_profile.v1",
+        "robot_profile_id": profile_id,
+        "source": "owner_provided_robot_team_camera_calibration",
+        "primary_camera_id": template_cameras[0]["camera_id"] if template_cameras else None,
+        "cameras": template_cameras,
+    }
+
+
+def _missing_owner_calibration_inputs(registry: Mapping[str, Any]) -> list[dict[str, Any]]:
+    missing_inputs: list[dict[str, Any]] = []
+    for profile in registry.get("profiles", []) or []:
+        if not isinstance(profile, Mapping):
+            continue
+        profile_id = _string(profile.get("robot_profile_id"))
+        contract = _mapping(profile.get("calibration_contract"))
+        for camera_id in _list(contract.get("missing_required_physical_camera_ids")):
+            safe_camera_id = _string(camera_id)
+            if not safe_camera_id:
+                continue
+            missing_fields = [
+                "owner_provided_camera_profile",
+                *LAUNCH_REQUIRED_CAMERA_CALIBRATION_FIELDS,
+            ]
+            missing_inputs.append(
+                {
+                    "robot_profile_id": profile_id,
+                    "camera_id": safe_camera_id,
+                    "missing_launch_fields": missing_fields,
+                    "required_owner_fields": _owner_calibration_required_fields(
+                        camera_id=safe_camera_id,
+                        missing_fields=missing_fields,
+                    ),
+                    "required_file_names": _owner_calibration_file_names(
+                        profile_id=profile_id,
+                        camera_id=safe_camera_id,
+                    ),
+                }
+            )
+        invalid_modalities = _mapping(contract.get("invalid_required_camera_modalities"))
+        for camera_id, missing_modalities in sorted(invalid_modalities.items()):
+            safe_camera_id = _string(camera_id)
+            if not safe_camera_id:
+                continue
+            missing_inputs.append(
+                {
+                    "robot_profile_id": profile_id,
+                    "camera_id": safe_camera_id,
+                    "missing_launch_fields": ["owner_provided_rgbd_modalities"],
+                    "missing_modalities": [
+                        _string(item) for item in _list(missing_modalities) if _string(item)
+                    ],
+                    "required_owner_fields": _owner_calibration_required_fields(
+                        camera_id=safe_camera_id,
+                        missing_fields=["owner_provided_rgbd_modalities"],
+                    ),
+                    "required_file_names": _owner_calibration_file_names(
+                        profile_id=profile_id,
+                        camera_id=safe_camera_id,
+                    ),
+                }
+            )
+        for camera in profile.get("cameras", []) or []:
+            if not isinstance(camera, Mapping):
+                continue
+            camera_id = _string(camera.get("camera_id"))
+            missing_fields = [
+                _string(item)
+                for item in _list(
+                    _mapping(camera.get("calibration_contract")).get("missing_launch_fields")
+                )
+                if _string(item)
+            ]
+            if not missing_fields:
+                continue
+            missing_inputs.append(
+                {
+                    "robot_profile_id": profile_id,
+                    "camera_id": camera_id,
+                    "missing_launch_fields": missing_fields,
+                    "required_owner_fields": _owner_calibration_required_fields(
+                        camera_id=camera_id,
+                        missing_fields=missing_fields,
+                    ),
+                    "required_file_names": _owner_calibration_file_names(
+                        profile_id=profile_id,
+                        camera_id=camera_id,
+                    ),
+                }
+            )
+    return missing_inputs
+
+
+def build_owner_robot_camera_calibration_request(
+    *,
+    registry: Mapping[str, Any],
+    launch_readiness: Mapping[str, Any],
+    generated_at: str,
+) -> dict[str, Any]:
+    """Document optional physical robot camera calibration outside sim-only launch."""
+
+    missing_inputs = _missing_owner_calibration_inputs(registry)
+    owner_required_for_launch = bool(
+        launch_readiness.get("owner_provided_camera_calibration_required_for_launch")
+    )
+    profile_requests: list[dict[str, Any]] = []
+    for profile in registry.get("profiles", []) or []:
+        if not isinstance(profile, Mapping):
+            continue
+        profile_id = _string(profile.get("robot_profile_id"))
+        profile_contract = _mapping(profile.get("calibration_contract"))
+        cameras = [
+            dict(camera)
+            for camera in profile.get("cameras", []) or []
+            if isinstance(camera, Mapping)
+        ]
+        profile_missing = [
+            item for item in missing_inputs if item.get("robot_profile_id") == profile_id
+        ]
+        if not profile_missing:
+            continue
+        profile_requests.append(
+            {
+                "robot_profile_id": profile_id,
+                "profile_source": _string(profile.get("source")),
+                "status": "external_owner_input_required",
+                "missing_camera_count": len(profile_missing),
+                "profile_shape_contract": {
+                    "applies": bool(profile_contract.get("profile_shape_contract_applies")),
+                    "valid_for_physical_robot_claims": bool(
+                        profile_contract.get("physical_robot_camera_shape_valid", True)
+                    ),
+                    "required_physical_camera_ids": _list(
+                        profile_contract.get("required_physical_camera_ids")
+                    ),
+                    "missing_required_physical_camera_ids": _list(
+                        profile_contract.get("missing_required_physical_camera_ids")
+                    ),
+                    "invalid_required_camera_modalities": _mapping(
+                        profile_contract.get("invalid_required_camera_modalities")
+                    ),
+                    "physical_robot_launch_blockers": _list(
+                        profile_contract.get("physical_robot_launch_blockers")
+                    ),
+                },
+                "canonical_owner_profile_path": (
+                    "pipeline/robot_eval_inputs/robot_camera_profile_calibration/"
+                    f"{_safe_id(profile_id)}_owner_robot_camera_profile.json"
+                ),
+                "accepted_job_request_paths": [
+                    "job_request.robot_profile",
+                    "job_request.robot_profiles[]",
+                ],
+                "missing_inputs": profile_missing,
+                "owner_profile_schema_template": _owner_calibration_schema_template(
+                    profile_id=profile_id,
+                    cameras=cameras,
+                ),
+            }
+        )
+    return {
+        "schema_version": OWNER_ROBOT_CAMERA_CALIBRATION_REQUEST_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "artifact_purpose": (
+            "request_owner_camera_calibration_for_optional_physical_robot_claim_upgrade"
+        ),
+        "artifact_is_calibration_proof": False,
+        "request_packet_is_not_owner_calibration": True,
+        "accepted_owner_calibration_evidence_in_this_artifact": False,
+        "physical_robot_claim_upgrade_proven_by_this_artifact": False,
+        "status": (
+            "not_required"
+            if not missing_inputs
+            else "not_required_for_sim_only"
+            if not owner_required_for_launch
+            and bool(launch_readiness.get("all_profiles_launch_ready"))
+            else "external_owner_input_required"
+        ),
+        "ready_for_launch": bool(launch_readiness.get("all_profiles_launch_ready")),
+        "launch_mode": bool(launch_readiness.get("launch_mode")),
+        "launch_scope": _string(launch_readiness.get("launch_scope")) or CAMERA_PROFILE_LAUNCH_SCOPE,
+        "launch_mode_fail_closed": True,
+        "request_packet_path": OWNER_ROBOT_CAMERA_CALIBRATION_REQUEST_FILENAME,
+        "required_profile_count": len(profile_requests) if owner_required_for_launch else 0,
+        "missing_owner_calibration_inputs": missing_inputs if owner_required_for_launch else [],
+        "profiles": profile_requests if owner_required_for_launch else [],
+        "optional_physical_robot_calibration_inputs": missing_inputs,
+        "physical_robot_calibration_profiles": profile_requests,
+        "capture_procedure": [
+            "Use the physical Unitree G1 with the final launch camera mounts.",
+            "For each requested camera, record calibration target images at the launch resolution.",
+            "Export intrinsics in pixel units: width, height, fx, fy, cx, cy, and camera_model.",
+            "Export horizontal_fov_degrees and vertical_fov_degrees in degrees for each camera.",
+            "Export robot_base to camera extrinsics as xyz_m in meters and rpy_rad in radians, or an equivalent 4x4 transform accepted by the registry.",
+            "Include the owner-provided calibration file through the canonical profile path or the job_request robot_profile fields before rerunning the initial-observation resolver.",
+        ],
+        "claim_boundary": {
+            **_source_claim_boundary(),
+            "artifact_purpose": "owner_robot_camera_calibration_request",
+            "artifact_is_calibration_proof": False,
+            "accepted_owner_calibration_evidence_in_this_artifact": False,
+            "physical_robot_claim_upgrade_proven_by_this_artifact": False,
+            "request_packet_is_not_owner_calibration": True,
+            "request_packet_is_shape_contract_not_evidence": True,
+            "owner_calibration_not_required_for_sim_only_launch": not owner_required_for_launch,
+            "default_or_derived_profile_values_allowed_for_sim_only_launch": True,
+            "default_or_derived_profile_values_do_not_unlock_physical_robot_launch": True,
+            "owner_provided_camera_calibration_required_for_launch": owner_required_for_launch,
+            "owner_provided_camera_calibration_required_for_physical_robot_launch": True,
+            "ready_for_launch_does_not_prove_physical_robot_readiness": True,
+            "ready_for_launch_does_not_prove_safety_validation": True,
+        },
+    }
+
+
+def _normalize_camera(
+    camera: Mapping[str, Any],
+    *,
+    index: int,
+    profile_source: str = "",
+) -> dict[str, Any]:
     camera_id = _string(
         camera.get("camera_id")
         or camera.get("cameraId")
@@ -485,8 +976,25 @@ def _normalize_camera(camera: Mapping[str, Any], *, index: int) -> dict[str, Any
         or camera.get("name")
         or f"camera_{index}"
     )
-    intrinsics = _intrinsics_from_camera(camera)
-    calibration_contract = _camera_calibration_contract(camera)
+    owner_input_context = _owner_input_context(
+        profile_source,
+        camera.get("source"),
+        camera.get("owner_provided"),
+        _raw_intrinsics(camera).get("source"),
+        _raw_intrinsics(camera).get("owner_provided"),
+        _raw_extrinsics(camera).get("source"),
+        _raw_extrinsics(camera).get("owner_provided"),
+        _mapping(camera.get("fov")).get("source"),
+        _mapping(camera.get("fov")).get("owner_provided"),
+    )
+    intrinsics = _intrinsics_from_camera(
+        camera,
+        owner_input_context=owner_input_context,
+    )
+    calibration_contract = _camera_calibration_contract(
+        camera,
+        owner_input_context=owner_input_context,
+    )
     return {
         "camera_id": camera_id,
         "display_name": _string(camera.get("display_name") or camera.get("name") or camera_id),
@@ -499,10 +1007,14 @@ def _normalize_camera(camera: Mapping[str, Any], *, index: int) -> dict[str, Any
         "mount": _string(camera.get("mount") or camera.get("mount_point")) or None,
         "frame_id": _string(camera.get("frame_id") or camera.get("frame") or camera_id),
         "intrinsics": intrinsics,
-        "extrinsics": _extrinsics_from_camera(camera),
+        "extrinsics": _extrinsics_from_camera(
+            camera,
+            owner_input_context=owner_input_context,
+        ),
         "horizontal_fov_degrees": _horizontal_fov(camera, intrinsics),
         "vertical_fov_degrees": _vertical_fov(camera, intrinsics),
         "source": _string(camera.get("source")) or "robot_camera_profile",
+        "owner_input_context": owner_input_context,
         "calibration_contract": calibration_contract,
         "smoke_only": calibration_contract["smoke_only"],
     }
@@ -520,6 +1032,7 @@ def _profile_id(profile: Mapping[str, Any], *, fallback: str) -> str:
 
 def _normalize_profile(profile: Mapping[str, Any], *, fallback: str, source: str) -> dict[str, Any]:
     profile_id = _profile_id(profile, fallback=fallback)
+    profile_source = _string(profile.get("source")) or source
     cameras = _list(
         profile.get("cameras")
         or profile.get("camera_profiles")
@@ -528,7 +1041,11 @@ def _normalize_profile(profile: Mapping[str, Any], *, fallback: str, source: str
     )
     default_cameras_used = False
     normalized_cameras = [
-        _normalize_camera(_mapping(camera), index=index)
+        _normalize_camera(
+            _mapping(camera),
+            index=index,
+            profile_source=profile_source,
+        )
         for index, camera in enumerate(cameras, start=1)
         if isinstance(camera, Mapping)
     ]
@@ -543,13 +1060,17 @@ def _normalize_profile(profile: Mapping[str, Any], *, fallback: str, source: str
             DEFAULT_PROFILE_DEFINITIONS[0],
         )
         normalized_cameras = [
-            _normalize_camera(_mapping(camera), index=index)
+            _normalize_camera(
+                _mapping(camera),
+                index=index,
+                profile_source=_string(default.get("source"))
+                or "blueprint_default_robot_camera_profile",
+            )
             for index, camera in enumerate(default["cameras"], start=1)
         ]
     primary_camera_id = _string(
         profile.get("primary_camera_id") or profile.get("primaryCameraId")
     ) or normalized_cameras[0]["camera_id"]
-    profile_source = _string(profile.get("source")) or source
     camera_missing: dict[str, list[str]] = {}
     for camera in normalized_cameras:
         missing = [
@@ -561,8 +1082,18 @@ def _normalize_profile(profile: Mapping[str, Any], *, fallback: str, source: str
         ]
         if missing:
             camera_missing[_string(camera.get("camera_id"))] = missing
-    smoke_only = bool(default_cameras_used or _smoke_only_source(profile_source) or camera_missing)
-    launch_ready = bool(normalized_cameras) and not smoke_only
+    shape_contract = _physical_camera_profile_shape_contract(
+        profile_id=profile_id,
+        cameras=normalized_cameras,
+    )
+    smoke_only = bool(
+        default_cameras_used
+        or _smoke_only_source(profile_source)
+        or camera_missing
+        or not shape_contract["profile_shape_valid"]
+    )
+    sim_only_launch_ready = bool(normalized_cameras)
+    physical_robot_launch_ready = bool(normalized_cameras) and not smoke_only
     return {
         "robot_profile_id": profile_id,
         "display_name": _string(profile.get("display_name") or profile.get("name") or profile_id),
@@ -581,21 +1112,54 @@ def _normalize_profile(profile: Mapping[str, Any], *, fallback: str, source: str
             "owner_provided_intrinsics_required_for_launch": True,
             "owner_provided_extrinsics_required_for_launch": True,
             "owner_provided_fov_required_for_launch": True,
+            "owner_provided_intrinsics_required_for_sim_only_launch": False,
+            "owner_provided_extrinsics_required_for_sim_only_launch": False,
+            "owner_provided_fov_required_for_sim_only_launch": False,
+            "owner_provided_intrinsics_required_for_physical_robot_launch": True,
+            "owner_provided_extrinsics_required_for_physical_robot_launch": True,
+            "owner_provided_fov_required_for_physical_robot_launch": True,
             "default_profile_used": default_cameras_used or _smoke_only_source(profile_source),
             "default_profile_smoke_only": default_cameras_used or _smoke_only_source(profile_source),
             "smoke_only": smoke_only,
-            "launch_ready": launch_ready,
+            "launch_scope": CAMERA_PROFILE_LAUNCH_SCOPE,
+            "launch_ready": sim_only_launch_ready,
+            "sim_only_launch_ready": sim_only_launch_ready,
+            "physical_robot_launch_ready": physical_robot_launch_ready,
             "camera_count": len(normalized_cameras),
-            "launch_ready_camera_count": sum(
+            "launch_ready_camera_count": len(normalized_cameras),
+            "sim_only_launch_ready_camera_count": len(normalized_cameras),
+            "physical_robot_launch_ready_camera_count": sum(
                 1
                 for camera in normalized_cameras
                 if not _mapping(camera.get("calibration_contract")).get("missing_launch_fields")
             ),
             "camera_missing_launch_fields": camera_missing,
+            "profile_shape_contract_applies": shape_contract[
+                "profile_shape_contract_applies"
+            ],
+            "physical_robot_camera_shape_valid": shape_contract["profile_shape_valid"],
+            "required_physical_camera_ids": shape_contract["required_camera_ids"],
+            "missing_required_physical_camera_ids": shape_contract[
+                "missing_required_camera_ids"
+            ],
+            "invalid_required_camera_modalities": shape_contract[
+                "invalid_required_camera_modalities"
+            ],
+            "physical_robot_launch_blockers": [
+                *shape_contract["physical_robot_launch_blockers"],
+                *[
+                    f"missing_{field}:{profile_id}:{camera_id}"
+                    for camera_id, fields in sorted(camera_missing.items())
+                    for field in fields
+                ],
+            ],
             "missing_launch_fields": sorted(
                 {field for fields in camera_missing.values() for field in fields}
             ),
-            "launch_mode_blocks_without_owner_calibration": not launch_ready,
+            "launch_mode_blocks_without_owner_calibration": False,
+            "physical_robot_launch_blocks_without_owner_calibration": (
+                not physical_robot_launch_ready
+            ),
         },
         "claim_boundary": "robot_camera_profile_defines_eval_input_contract_not_rank_fidelity",
     }
@@ -607,32 +1171,42 @@ def build_robot_camera_profile_launch_readiness(
     generated_at: str,
     launch_mode: bool | None = None,
 ) -> dict[str, Any]:
-    """Validate owner-provided robot camera calibration for launch-mode use."""
+    """Validate robot camera profiles for the sim-only launch path."""
 
     launch_mode_enabled = production_launch_mode() if launch_mode is None else bool(launch_mode)
     profiles = [dict(item) for item in registry.get("profiles", []) if isinstance(item, Mapping)]
     profile_summaries: list[dict[str, Any]] = []
     blockers: list[str] = []
+    physical_calibration_blockers: list[str] = []
     launch_ready_count = 0
+    physical_robot_launch_ready_count = 0
     smoke_only_count = 0
     default_smoke_only_count = 0
     for profile in profiles:
         profile_id = _string(profile.get("robot_profile_id"))
         contract = _mapping(profile.get("calibration_contract"))
-        launch_ready = bool(contract.get("launch_ready"))
+        cameras = [item for item in profile.get("cameras", []) or [] if isinstance(item, Mapping)]
+        launch_ready = bool(contract.get("sim_only_launch_ready") or cameras)
+        physical_robot_launch_ready = bool(contract.get("physical_robot_launch_ready"))
         smoke_only = bool(contract.get("smoke_only") or profile.get("smoke_only"))
         default_smoke_only = bool(contract.get("default_profile_smoke_only"))
         if launch_ready:
             launch_ready_count += 1
+        if physical_robot_launch_ready:
+            physical_robot_launch_ready_count += 1
         if smoke_only:
             smoke_only_count += 1
         if default_smoke_only:
             default_smoke_only_count += 1
-            blockers.append(f"default_robot_camera_profile_smoke_only:{profile_id}")
+            physical_calibration_blockers.append(
+                f"default_robot_camera_profile_smoke_only:{profile_id}"
+            )
+        for blocker in _list(contract.get("physical_robot_launch_blockers")):
+            blocker_text = _string(blocker)
+            if blocker_text:
+                physical_calibration_blockers.append(blocker_text)
         camera_summaries: list[dict[str, Any]] = []
-        for camera in profile.get("cameras", []) or []:
-            if not isinstance(camera, Mapping):
-                continue
+        for camera in cameras:
             camera_id = _string(camera.get("camera_id"))
             camera_contract = _mapping(camera.get("calibration_contract"))
             missing = [
@@ -641,10 +1215,13 @@ def build_robot_camera_profile_launch_readiness(
                 if _string(item)
             ]
             for field in missing:
-                blockers.append(f"missing_{field}:{profile_id}:{camera_id}")
+                physical_calibration_blockers.append(f"missing_{field}:{profile_id}:{camera_id}")
             camera_summaries.append(
                 {
                     "camera_id": camera_id,
+                    "launch_ready": True,
+                    "sim_only_launch_ready": True,
+                    "physical_robot_launch_ready": not missing,
                     "owner_provided_intrinsics": bool(
                         camera_contract.get("owner_provided_intrinsics")
                     ),
@@ -652,7 +1229,6 @@ def build_robot_camera_profile_launch_readiness(
                         camera_contract.get("owner_provided_extrinsics")
                     ),
                     "owner_provided_fov": bool(camera_contract.get("owner_provided_fov")),
-                    "launch_ready": not missing,
                     "smoke_only": bool(camera_contract.get("smoke_only")),
                     "missing_launch_fields": missing,
                 }
@@ -663,14 +1239,38 @@ def build_robot_camera_profile_launch_readiness(
                 "source": _string(profile.get("source")),
                 "camera_count": int(profile.get("camera_count") or len(camera_summaries)),
                 "launch_ready": launch_ready,
+                "sim_only_launch_ready": launch_ready,
+                "physical_robot_launch_ready": physical_robot_launch_ready,
                 "smoke_only": smoke_only,
                 "default_profile_smoke_only": default_smoke_only,
+                "profile_shape_contract_applies": bool(
+                    contract.get("profile_shape_contract_applies")
+                ),
+                "physical_robot_camera_shape_valid": bool(
+                    contract.get("physical_robot_camera_shape_valid", True)
+                ),
+                "required_physical_camera_ids": _list(
+                    contract.get("required_physical_camera_ids")
+                ),
+                "missing_required_physical_camera_ids": _list(
+                    contract.get("missing_required_physical_camera_ids")
+                ),
+                "invalid_required_camera_modalities": _mapping(
+                    contract.get("invalid_required_camera_modalities")
+                ),
+                "physical_robot_launch_blockers": _list(
+                    contract.get("physical_robot_launch_blockers")
+                ),
                 "missing_launch_fields": _list(contract.get("missing_launch_fields")),
                 "cameras": camera_summaries,
             }
         )
     unique_blockers = sorted({blocker for blocker in blockers if blocker})
+    unique_physical_calibration_blockers = sorted(
+        {blocker for blocker in physical_calibration_blockers if blocker}
+    )
     all_profiles_launch_ready = bool(profiles) and launch_ready_count == len(profiles)
+    missing_owner_inputs = _missing_owner_calibration_inputs(registry)
     status = (
         "ready"
         if all_profiles_launch_ready
@@ -684,24 +1284,46 @@ def build_robot_camera_profile_launch_readiness(
         "status": status,
         "launch_mode": launch_mode_enabled,
         "launch_mode_fail_closed": True,
+        "launch_scope": CAMERA_PROFILE_LAUNCH_SCOPE,
+        "sim_only_pipeline": True,
         "profile_count": len(profiles),
         "launch_ready_profile_count": launch_ready_count,
+        "sim_only_launch_ready_profile_count": launch_ready_count,
+        "physical_robot_launch_ready_profile_count": physical_robot_launch_ready_count,
         "smoke_only_profile_count": smoke_only_count,
         "default_smoke_only_profile_count": default_smoke_only_count,
         "all_profiles_launch_ready": all_profiles_launch_ready,
-        "owner_provided_intrinsics_required_for_launch": True,
-        "owner_provided_extrinsics_required_for_launch": True,
-        "owner_provided_fov_required_for_launch": True,
+        "ready_for_launch": all_profiles_launch_ready,
+        "owner_provided_intrinsics_required_for_launch": False,
+        "owner_provided_extrinsics_required_for_launch": False,
+        "owner_provided_fov_required_for_launch": False,
+        "owner_provided_camera_calibration_required_for_launch": False,
+        "owner_provided_camera_calibration_required_for_sim_only_launch": False,
+        "owner_provided_camera_calibration_required_for_physical_robot_launch": True,
+        "owner_provided_intrinsics_required_for_sim_only_launch": False,
+        "owner_provided_extrinsics_required_for_sim_only_launch": False,
+        "owner_provided_fov_required_for_sim_only_launch": False,
+        "owner_provided_intrinsics_required_for_physical_robot_launch": True,
+        "owner_provided_extrinsics_required_for_physical_robot_launch": True,
+        "owner_provided_fov_required_for_physical_robot_launch": True,
         "defaults_are_smoke_only": default_smoke_only_count > 0,
         "blockers": unique_blockers if launch_mode_enabled or unique_blockers else [],
+        "owner_calibration_request_packet_path": None,
+        "missing_owner_calibration_inputs": [],
+        "physical_robot_calibration_blockers": unique_physical_calibration_blockers,
+        "physical_robot_calibration_inputs_needed_for_physical_launch": missing_owner_inputs,
         "profiles": profile_summaries,
         "claim_boundary": {
             **_source_claim_boundary(),
             "artifact_purpose": "robot_camera_profile_launch_readiness_gate",
-            "owner_provided_camera_calibration_required_for_launch": True,
-            "defaults_can_only_support_smoke_artifacts": True,
+            "sim_only_launch_scope": True,
+            "owner_provided_camera_calibration_required_for_launch": False,
+            "owner_provided_camera_calibration_required_for_physical_robot_launch": True,
+            "defaults_can_support_sim_only_camera_launch": True,
             "launch_ready_does_not_prove_robot_policy_execution": True,
             "launch_ready_does_not_prove_generated_world_rank_fidelity": True,
+            "ready_for_launch_does_not_prove_physical_robot_readiness": True,
+            "ready_for_launch_does_not_prove_safety_validation": True,
         },
     }
 
@@ -2042,6 +2664,11 @@ def build_initial_observation_source_resolution(
         registry=registry,
         generated_at=generated_at,
     )
+    owner_calibration_request = build_owner_robot_camera_calibration_request(
+        registry=registry,
+        launch_readiness=launch_readiness,
+        generated_at=generated_at,
+    )
     eval_run = _first_eval_run(scenario_eval_matrix=scenario_eval_matrix, observations=observations)
     profile = _select_profile(registry, _string(eval_run.get("robot_profile_id")) or None)
     camera = _select_camera(profile, job_request)
@@ -2160,8 +2787,12 @@ def build_initial_observation_source_resolution(
         "synthetic_fallback_allowed": False,
         "camera_profile_registry_path": "robot_camera_profile_registry.json",
         "camera_profile_launch_readiness_path": "robot_camera_profile_launch_readiness.json",
+        "owner_robot_camera_calibration_request_path": (
+            OWNER_ROBOT_CAMERA_CALIBRATION_REQUEST_FILENAME
+        ),
         "camera_profile_registry": registry,
         "camera_profile_launch_readiness": launch_readiness,
+        "owner_robot_camera_calibration_request": owner_calibration_request,
         "target": {
             "robot_profile_id": profile.get("robot_profile_id"),
             "camera_id": camera.get("camera_id"),
@@ -2195,8 +2826,15 @@ def build_initial_observation_source_resolution(
             "path": "robot_camera_profile_launch_readiness.json",
             "status": launch_readiness.get("status"),
             "launch_mode": launch_readiness.get("launch_mode"),
+            "ready_for_launch": launch_readiness.get("ready_for_launch"),
             "all_profiles_launch_ready": launch_readiness.get("all_profiles_launch_ready"),
+            "owner_calibration_request_packet_path": launch_readiness.get(
+                "owner_calibration_request_packet_path"
+            ),
         },
+        "owner_robot_camera_calibration_request_path": (
+            OWNER_ROBOT_CAMERA_CALIBRATION_REQUEST_FILENAME
+        ),
         "scenario_eval_run_id": eval_run.get("scenario_eval_run_id"),
         "task_id": eval_run.get("task_id"),
         "scenario_id": eval_run.get("scenario_id"),
@@ -2238,6 +2876,10 @@ def build_initial_observation_source_resolution(
     write_json(
         resolved_job_dir / "robot_camera_profile_launch_readiness.json",
         launch_readiness,
+    )
+    write_json(
+        resolved_job_dir / OWNER_ROBOT_CAMERA_CALIBRATION_REQUEST_FILENAME,
+        owner_calibration_request,
     )
     write_json(source_qa_path, source_qa)
     write_json(recapture_guidance_path, recapture_guidance)

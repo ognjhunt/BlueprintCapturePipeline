@@ -36,11 +36,7 @@ FORBIDDEN_TRUE_FIELDS = (
 CORE_EXTERNAL_INPUT_IDS = (
     "webapp_upstream_truth",
     "isaac_lab_arena_owner_evidence",
-    "real_robot_pov_evidence",
     "live_robot_eval_closure_evidence",
-    "real_world_deployment_outcomes",
-    "predicted_vs_actual_exact_match_keys",
-    "real_world_deployment_outcome_owner_evidence",
     "robot_team_policy_package",
 )
 
@@ -59,11 +55,7 @@ CORE_GOAL_REQUIREMENTS = (
     "live_codex_operator",
     "webapp_upstream_truth",
     "owner_arena_evidence",
-    "real_robot_pov_evidence",
     "live_robot_eval_closure_evidence",
-    "real_world_deployment_outcomes",
-    "predicted_vs_actual_exact_match_keys",
-    "real_world_deployment_outcome_owner_evidence",
     "robot_team_policy_package",
 )
 
@@ -236,12 +228,6 @@ def _goal_requirement_audit(
         and "delivery_upload" not in enablement_inputs
     )
     live_closure_evidence_ready = "live_robot_eval_closure_evidence" not in required_inputs
-    real_robot_pov_ready = "real_robot_pov_evidence" not in required_inputs
-    deployment_outcomes_ready = "real_world_deployment_outcomes" not in required_inputs
-    prediction_match_keys_ready = "predicted_vs_actual_exact_match_keys" not in required_inputs
-    deployment_owner_evidence_ready = (
-        "real_world_deployment_outcome_owner_evidence" not in required_inputs
-    )
     policy_package_ready = "robot_team_policy_package" not in required_inputs
 
     package_lane = {
@@ -283,28 +269,12 @@ def _goal_requirement_audit(
             "arena_section_status": arena_section.get("status"),
             "proof_boundary": "requires owner-system Arena command or result artifacts",
         },
-        "real_robot_pov_evidence": {
-            "status": "ready" if real_robot_pov_ready else "external_input_missing",
-            "proof_boundary": "requires real robot POV camera/action evidence from owner systems",
-        },
         "live_robot_eval_closure_evidence": {
             "status": "ready" if live_closure_evidence_ready else "external_input_missing",
             "proof_boundary": (
                 "requires job-specific package closure evidence for delivery/access, "
                 "rights/privacy, and WebApp lineage"
             ),
-        },
-        "real_world_deployment_outcomes": {
-            "status": "ready" if deployment_outcomes_ready else "external_input_missing",
-            "proof_boundary": "requires owner-supplied real-world deployment outcome records",
-        },
-        "predicted_vs_actual_exact_match_keys": {
-            "status": "ready" if prediction_match_keys_ready else "external_input_missing",
-            "proof_boundary": "requires exact scenario eval run and variation join keys",
-        },
-        "real_world_deployment_outcome_owner_evidence": {
-            "status": "ready" if deployment_owner_evidence_ready else "external_input_missing",
-            "proof_boundary": "requires owner evidence for every deployment outcome row",
         },
         "robot_team_policy_package": {
             "status": "ready" if policy_package_ready else "external_input_missing",

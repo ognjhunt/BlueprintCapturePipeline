@@ -34,6 +34,48 @@ BACKEND_RESULT_SCHEMA_VERSION = "wam_perception_backend_result.v1"
 VALIDATION_REPORT_SCHEMA_VERSION = "wam_perception_harness_validation_report.v1"
 FALSE_SUCCESS_METRICS_SCHEMA_VERSION = "wam_false_success_reduction_metrics.v1"
 REVIEW_REPORT_SCHEMA_VERSION = "wam_perception_harness_review_report.v1"
+VALIDATION_LABEL_KEYS = (
+    "expected_object_id",
+    "object_id",
+    "expected_target_visible",
+    "target_visible",
+    "expected_contact",
+    "contact_expected",
+    "actual_success",
+    "real_success",
+    "capture_success",
+    "plain_video_success",
+    "generated_video_success",
+)
+VALIDATION_ACCEPTED_TRUTH_KEYS = (
+    "accepted_validation_label",
+    "capture_backed",
+    "capture_truth",
+    "real_labeled_validation",
+    "accepted_real_world_anchor",
+    "operator_attested",
+)
+VALIDATION_SOURCE_KEYS = (
+    "source_capture_path",
+    "source_capture_bundle_path",
+    "source_artifact_path",
+    "source_manifest_path",
+    "source_video_path",
+    "source_frame_path",
+    "source_label_path",
+    "evidence_path",
+    "operator_attestation_path",
+)
+VALIDATION_PROVENANCE_KEYS = (
+    "reviewer_id",
+    "reviewer",
+    "reviewed_by",
+    "review_decision",
+    "review_status",
+    "label_provenance",
+    "source_label_path",
+    "operator_attestation_path",
+)
 
 DEFAULT_EARLY_TERMINATION_CONFIDENCE_THRESHOLD = 0.35
 DEFAULT_EXTERNAL_BACKEND_TIMEOUT_SECONDS = 120
@@ -88,6 +130,25 @@ def _string_list(value: Any) -> list[str]:
         return [_string(item) for item in value if _string(item)]
     text = _string(value)
     return [text] if text else []
+
+
+def _valid_ref_strings(row: Mapping[str, Any], keys: Sequence[str]) -> list[str]:
+    refs: list[str] = []
+    for key in keys:
+        values = _sequence(row.get(key))
+        if not values and row.get(key) is not None:
+            values = [row.get(key)]
+        for value in values:
+            text = _string(value)
+            if text and text.lower() not in {"none", "null", "n/a", "na", "todo", "tbd"}:
+                refs.append(text)
+    return refs
+
+
+def _subprocess_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
 
 
 def _truthy(value: Any) -> bool:
@@ -536,8 +597,8 @@ def _run_external_backend(
             env=env,
         )
     except subprocess.TimeoutExpired as exc:
-        stdout_path.write_text(exc.stdout or "", encoding="utf-8")
-        stderr_path.write_text(exc.stderr or "", encoding="utf-8")
+        stdout_path.write_text(_subprocess_text(exc.stdout), encoding="utf-8")
+        stderr_path.write_text(_subprocess_text(exc.stderr), encoding="utf-8")
         blocked = _blocked_backend_result(
             backend_kind=backend_kind,
             command_path=command_path,
@@ -546,6 +607,8 @@ def _run_external_backend(
             request_path=request_path,
             result_path=result_path,
         )
+        blocked["backend"]["stdout_path"] = str(stdout_path)
+        blocked["backend"]["stderr_path"] = str(stderr_path)
         write_json(result_path, blocked)
         return blocked
     stdout_path.write_text(completed.stdout or "", encoding="utf-8")
@@ -1362,6 +1425,79 @@ def _review_acceptance_for_step(
     }
 
 
+def _external_consistency_rollout_check_passed(row: Mapping[str, Any]) -> bool:
+    return bool(
+        _truthy(row.get("forward_consistent", row.get("forward_dynamics_consistent")))
+        and _truthy(row.get("inverse_consistent", row.get("inverse_dynamics_consistent")))
+        and _truthy(row.get("visual_evidence_used"))
+        and _truthy(row.get("action_trace_evidence_used"))
+    )
+
+
+def _forward_inverse_consistency_support_boundary() -> dict[str, Any]:
+    return {
+        "forward_inverse_consistency_is_reliability_review_signal_only": True,
+        "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking": True,
+        "forward_inverse_consistency_does_not_prove_policy_success": True,
+        "forward_inverse_consistency_does_not_prove_task_success": True,
+        "forward_inverse_consistency_does_not_prove_rank_fidelity": True,
+        "forward_inverse_consistency_does_not_prove_deployment_readiness": True,
+        "forward_inverse_consistency_does_not_prove_sensor_truth": True,
+        "forward_inverse_consistency_is_not_external_validation": True,
+        "consistency_metrics_are_support_signals_only": True,
+        "evaluator_bounded_policy_ranking_upgraded_by_consistency": False,
+        "policy_success_claimed_from_consistency": False,
+        "task_success_claimed_from_consistency": False,
+        "rank_fidelity_claimed_from_consistency": False,
+        "deployment_readiness_claimed_from_consistency": False,
+        "sensor_truth_claimed_from_consistency": False,
+        "external_validation_claimed_from_consistency": False,
+        "public_claim_upgrade_allowed": False,
+    }
+
+
+def _external_forward_inverse_consistency_status(
+    external_consistency: Mapping[str, Any],
+) -> dict[str, Any]:
+    rollout_checks = [
+        _mapping(row) for row in _sequence(external_consistency.get("rollout_checks"))
+    ]
+    scorer_id = _string(
+        external_consistency.get("external_episode_consistency_scorer_id")
+        or external_consistency.get("provider")
+        or external_consistency.get("scorer")
+        or external_consistency.get("label_source")
+    )
+    scorer_ran = bool(
+        external_consistency.get("external_episode_consistency_scorer_ran")
+        or external_consistency.get("external_scorer_ran")
+        or external_consistency.get("scorer_ran")
+    )
+    checks_passed = bool(rollout_checks) and all(
+        _external_consistency_rollout_check_passed(row) for row in rollout_checks
+    )
+    claimed = bool(external_consistency.get("forward_inverse_consistency_proven"))
+    blockers: list[str] = []
+    if claimed and not scorer_ran:
+        blockers.append("external_episode_consistency_scorer_run_not_proven")
+    if claimed and not scorer_id:
+        blockers.append("external_episode_consistency_scorer_id_missing")
+    if claimed and not rollout_checks:
+        blockers.append("external_episode_consistency_rollout_checks_missing")
+    elif claimed and not checks_passed:
+        blockers.append("external_episode_consistency_rollout_checks_not_passing")
+    proven = bool(claimed and scorer_ran and scorer_id and checks_passed)
+    return {
+        "proven": proven,
+        "scorer_ran": scorer_ran,
+        "scorer_id": scorer_id or None,
+        "rollout_check_count": len(rollout_checks),
+        "rollout_checks_passed": checks_passed,
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": _forward_inverse_consistency_support_boundary(),
+    }
+
+
 def _consistency_checks(
     *,
     action: Mapping[str, Any],
@@ -1424,6 +1560,9 @@ def _consistency_checks(
     multiview = dict(multiview_summary)
     if multiview.get("status") == "blocked":
         blockers.extend(_string_list(multiview.get("blockers")))
+    external_consistency_status = _external_forward_inverse_consistency_status(
+        external_consistency
+    )
     checks = {
         "robot_motion_matches_command": robot_motion_matches_command,
         "object_identity_stable": object_identity,
@@ -1437,16 +1576,27 @@ def _consistency_checks(
         "multiview_consistent": multiview,
         "inverse_action_consistency": {
             "status": "external_scorer_passed"
-            if external_consistency.get("forward_inverse_consistency_proven")
+            if external_consistency_status["proven"]
             else "separate_external_scorer_required",
-            "passed": True
-            if external_consistency.get("forward_inverse_consistency_proven")
-            else None,
+            "passed": True if external_consistency_status["proven"] else None,
             "source": "external_wam_episode_consistency_scorer",
-            "forward_inverse_consistency_proven": bool(
-                external_consistency.get("forward_inverse_consistency_proven")
-            ),
+            "external_episode_consistency_scorer_ran": external_consistency_status[
+                "scorer_ran"
+            ],
+            "external_episode_consistency_scorer_id": external_consistency_status[
+                "scorer_id"
+            ],
+            "external_rollout_check_count": external_consistency_status[
+                "rollout_check_count"
+            ],
+            "external_rollout_checks_passed": external_consistency_status[
+                "rollout_checks_passed"
+            ],
+            "forward_inverse_consistency_proven": external_consistency_status["proven"],
             "harness_does_not_prove_forward_inverse_consistency": True,
+            **_forward_inverse_consistency_support_boundary(),
+            "claim_boundary": external_consistency_status["claim_boundary"],
+            "blockers": external_consistency_status["blockers"],
         },
     }
     return checks, blockers
@@ -1921,6 +2071,7 @@ def _claim_boundary() -> dict[str, Any]:
         "non_ranking_operational_claim_proven": False,
         "accepted_anchor_success_proven": False,
         "task_evaluation_run_and_post_training_data_package_support_artifact": True,
+        **_forward_inverse_consistency_support_boundary(),
         "raw_capture_evidence_remains_authoritative": True,
     }
 
@@ -1958,6 +2109,21 @@ def _bool_label(row: Mapping[str, Any], *keys: str) -> bool | None:
     return None
 
 
+def _row_has_validation_label(row: Mapping[str, Any]) -> bool:
+    return any(_string(row.get(key)) for key in VALIDATION_LABEL_KEYS)
+
+
+def _validation_acceptance_issues(row: Mapping[str, Any]) -> list[str]:
+    issues: list[str] = []
+    if not any(_truthy(row.get(key)) for key in VALIDATION_ACCEPTED_TRUTH_KEYS):
+        issues.append("validation_row_not_capture_backed_or_accepted_anchor")
+    if not _valid_ref_strings(row, VALIDATION_SOURCE_KEYS):
+        issues.append("validation_row_source_reference_missing")
+    if not _valid_ref_strings(row, VALIDATION_PROVENANCE_KEYS):
+        issues.append("validation_row_label_provenance_missing")
+    return issues
+
+
 def _step_by_index(steps: Sequence[Mapping[str, Any]]) -> dict[int, Mapping[str, Any]]:
     result: dict[int, Mapping[str, Any]] = {}
     for step in steps:
@@ -1985,7 +2151,7 @@ def _build_validation_report(
         return {
             "schema_version": VALIDATION_REPORT_SCHEMA_VERSION,
             "generated_at": generated_at,
-            "status": "blocked_no_validation_set",
+            "status": "not_requested",
             "validation_set_path": _string(validation_set_path) or None,
             "row_count": 0,
             "matched_step_count": 0,
@@ -1995,8 +2161,13 @@ def _build_validation_report(
                 "contact_likelihood_accuracy": "not_measured",
                 "false_success_reduction": "not_measured",
             },
-            "blockers": ["validation_set_not_supplied"],
-            "claim_boundary": _claim_boundary(),
+            "blockers": [],
+            "diagnostic_issues": [],
+            "claim_boundary": {
+                **_claim_boundary(),
+                "labeled_validation_is_optional_for_sim_only_runs": True,
+                "missing_validation_set_does_not_block_sim_only_runs": True,
+            },
         }
     by_step = _step_by_index(steps)
     matched: list[dict[str, Any]] = []
@@ -2008,15 +2179,38 @@ def _build_validation_report(
     contact_total = 0
     plain_false_success = 0
     harness_false_success = 0
+    validation_issues: list[str] = []
     for row in rows:
         step_index = int(_float_value(row.get("step_index"), -1.0))
         step = _mapping(by_step.get(step_index))
         if not step:
+            validation_issues.append("validation_step_not_found_in_harness_output")
             matched.append(
                 {
                     "step_index": step_index,
                     "status": "unmatched_step",
-                    "blockers": ["validation_step_not_found_in_harness_output"],
+                    "diagnostic_issues": ["validation_step_not_found_in_harness_output"],
+                }
+            )
+            continue
+        if not _row_has_validation_label(row):
+            validation_issues.append("validation_row_label_missing")
+            matched.append(
+                {
+                    "step_index": step_index,
+                    "status": "missing_validation_label",
+                    "diagnostic_issues": ["validation_row_label_missing"],
+                }
+            )
+            continue
+        acceptance_issues = _validation_acceptance_issues(row)
+        if acceptance_issues:
+            validation_issues.extend(acceptance_issues)
+            matched.append(
+                {
+                    "step_index": step_index,
+                    "status": "validation_label_not_accepted",
+                    "diagnostic_issues": acceptance_issues,
                 }
             )
             continue
@@ -2071,19 +2265,26 @@ def _build_validation_report(
                 "harness_success_scoring_allowed": harness_allows,
             }
         )
+    matched_step_count = sum(1 for row in matched if row.get("status") == "matched")
     false_success_reduction_count = plain_false_success - harness_false_success
     false_success_reduction_rate = (
         round(false_success_reduction_count / plain_false_success, 6)
         if plain_false_success
         else None
     )
+    if matched_step_count:
+        status = "completed" if not validation_issues else "diagnostic_issues"
+    elif validation_issues:
+        status = "diagnostic_issues"
+    else:
+        status = "not_measured"
     return {
         "schema_version": VALIDATION_REPORT_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "completed" if matched else "blocked_no_matched_steps",
+        "status": status,
         "validation_set_path": _string(validation_set_path) or None,
         "row_count": len(rows),
-        "matched_step_count": sum(1 for row in matched if row.get("status") == "matched"),
+        "matched_step_count": matched_step_count,
         "per_step_validation": matched,
         "metrics": {
             "object_id_accuracy": round(object_matches / object_total, 6)
@@ -2100,28 +2301,53 @@ def _build_validation_report(
             "false_success_reduction_count": false_success_reduction_count,
             "false_success_reduction_rate": false_success_reduction_rate,
         },
-        "blockers": [] if matched else ["validation_steps_did_not_match_harness_steps"],
+        "blockers": [],
+        "diagnostic_issues": sorted(set(validation_issues))
+        or ([] if matched_step_count else ["validation_steps_did_not_match_harness_steps"]),
         "claim_boundary": {
             **_claim_boundary(),
-            "validation_metrics_require_labeled_capture_or_real_anchor_rows": True,
+            "validation_metrics_use_optional_labeled_capture_or_anchor_rows": True,
+            "validation_metrics_require_accepted_capture_or_anchor_labels": True,
             "validation_metrics_do_not_prove_evaluation_readiness": True,
+            "validation_diagnostic_issues_do_not_block_generated_provider_runs": True,
         },
     }
 
 
 def _false_success_metrics(validation_report: Mapping[str, Any]) -> dict[str, Any]:
     metrics = _mapping(validation_report.get("metrics"))
+    if validation_report.get("status") == "not_requested":
+        return {
+            "schema_version": FALSE_SUCCESS_METRICS_SCHEMA_VERSION,
+            "status": "not_requested",
+            "blockers": [],
+            "plain_video_false_success_count": "not_measured",
+            "harness_false_success_after_gating_count": "not_measured",
+            "false_success_reduction_count": "not_measured",
+            "false_success_reduction_rate": "not_measured",
+            "diagnostic_issues": [],
+            "claim_boundary": {
+                **_claim_boundary(),
+                "labeled_validation_is_optional_for_sim_only_runs": True,
+            },
+        }
     if validation_report.get("status") != "completed":
         return {
             "schema_version": FALSE_SUCCESS_METRICS_SCHEMA_VERSION,
-            "status": "blocked",
-            "blockers": _string_list(validation_report.get("blockers"))
+            "status": "not_measured",
+            "blockers": [],
+            "diagnostic_issues": _string_list(validation_report.get("diagnostic_issues"))
+            or _string_list(validation_report.get("blockers"))
             or ["validation_report_not_completed"],
             "plain_video_false_success_count": "not_measured",
             "harness_false_success_after_gating_count": "not_measured",
             "false_success_reduction_count": "not_measured",
             "false_success_reduction_rate": "not_measured",
-            "claim_boundary": _claim_boundary(),
+            "claim_boundary": {
+                **_claim_boundary(),
+                "false_success_reduction_not_measured_without_accepted_labels": True,
+                "missing_or_incomplete_labels_do_not_block_generated_provider_runs": True,
+            },
         }
     return {
         "schema_version": FALSE_SUCCESS_METRICS_SCHEMA_VERSION,
@@ -2225,6 +2451,7 @@ def _aggregate_checks(steps: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         ],
         "forward_inverse_consistency_proven": False,
         "harness_output_does_not_prove_forward_inverse_consistency": True,
+        **_forward_inverse_consistency_support_boundary(),
         "blockers": blockers,
         "checks": {
             "derived_observation_steps_present": bool(steps),

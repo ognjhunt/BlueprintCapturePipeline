@@ -14,6 +14,10 @@ DEFAULT_OUTPUT_RELATIVE = "pipeline/sim_only_beta_rehearsal/simulator_beta_readi
 DEFAULT_MUJOCO_OUTPUT_RELATIVE = (
     "pipeline/sim_only_beta_rehearsal/mujoco_g1_command/mujoco_g1_simulator_output.json"
 )
+DEFAULT_ISAAC_OUTPUT_RELATIVE = (
+    "pipeline/simulation_automation/isaac_g1_simulator_command/"
+    "isaac_g1_simulator_output.json"
+)
 DEFAULT_POLICY_EXECUTION_RELATIVE = (
     "pipeline/sim_only_beta_rehearsal/official_unitree_g1_policy_execution/"
     "official_unitree_g1_policy_execution_manifest.json"
@@ -252,6 +256,183 @@ def _mujoco_gate(path: Path, payload: Mapping[str, Any] | None) -> dict[str, Any
     )
 
 
+def _artifact_path(
+    artifacts: Mapping[str, Any],
+    *keys: str,
+) -> str:
+    for key in keys:
+        value = _string(artifacts.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _completed_video_paths(video_manifest: Mapping[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for row in video_manifest.get("videos", []) or []:
+        if not isinstance(row, Mapping):
+            continue
+        path = _string(row.get("path"))
+        if row.get("status") == "completed" and path:
+            paths.append(path)
+    return paths
+
+
+def _isaac_gate(path: Path, payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not payload:
+        return _proof_item(
+            proven=False,
+            status="missing_isaac_g1_simulator_output",
+            evidence=[],
+            blockers=[f"missing_file:{path}"],
+            claim_boundary="Simulator beta can use Isaac only when an Isaac-specific proof package exists.",
+        )
+    artifacts = _mapping(payload.get("artifact_paths"))
+    video_manifest = _mapping(payload.get("realistic_video_manifest"))
+    batch_closure = _mapping(payload.get("batch_closure_manifest"))
+    artifact_manifest = _mapping(payload.get("artifact_manifest"))
+    blockers: list[str] = []
+    if payload.get("simulator_backend") != "isaac_sim":
+        blockers.append("isaac_simulator_backend_missing")
+    if payload.get("status") not in {"completed", "completed_with_failures"}:
+        blockers.append(f"isaac_status:{_string(payload.get('status')) or 'missing'}")
+    for field in (
+        "simulator_execution_proven",
+        "isaac_sim_execution_proven",
+        "unitree_g1_asset_spawned",
+        "attempt_count_matches_matrix_count",
+        "scenario_eval_run_coverage_complete",
+    ):
+        if payload.get(field) is not True:
+            blockers.append(f"{field}_not_true")
+    if payload.get("placeholder_scene_assets_used") is True:
+        blockers.append("isaac_placeholder_scene_assets_used")
+    if int(payload.get("scenario_eval_run_count") or 0) <= 0:
+        blockers.append("isaac_scenario_eval_run_count_missing")
+    if batch_closure.get("machine_trace_package_complete") is not True:
+        blockers.append("isaac_machine_trace_package_not_complete")
+    if artifact_manifest.get("status") not in {"complete", "completed"}:
+        blockers.append("isaac_artifact_manifest_not_complete")
+    if video_manifest.get("status") != "completed":
+        blockers.append("isaac_video_manifest_not_completed")
+    if int(video_manifest.get("video_count") or 0) != int(
+        video_manifest.get("expected_video_count") or -1
+    ):
+        blockers.append("isaac_video_count_mismatch")
+    required_artifact_refs = {
+        "normalized_attempt_trace": _artifact_path(
+            artifacts,
+            "normalized_attempt_trace.json",
+            "normalized_attempt_trace",
+        ),
+        "failure_labels": _artifact_path(artifacts, "failure_labels.json", "failure_labels"),
+        "realistic_video_manifest": _artifact_path(
+            artifacts,
+            "realistic_video_manifest.json",
+            "realistic_video_manifest",
+        ),
+        "g1_locomotion_trace": _artifact_path(
+            artifacts,
+            "g1_locomotion_trace.jsonl",
+            "g1_locomotion_trace",
+        ),
+        "collision_contact_report": _artifact_path(
+            artifacts,
+            "collision_contact_report.json",
+            "collision_contact_report",
+        ),
+        "artifact_manifest": _artifact_path(artifacts, "artifact_manifest"),
+        "batch_closure_manifest": _artifact_path(artifacts, "batch_closure_manifest"),
+        "job_run_manifest": _artifact_path(artifacts, "job_run_manifest.json", "job_run_manifest"),
+    }
+    missing_required_artifacts = [
+        key for key, value in required_artifact_refs.items() if not value or not Path(value).is_file()
+    ]
+    if missing_required_artifacts:
+        blockers.append("isaac_required_artifacts_missing")
+    video_paths = _completed_video_paths(video_manifest)
+    missing_video_paths = [value for value in video_paths if not Path(value).is_file()]
+    if missing_video_paths:
+        blockers.append("isaac_video_files_missing")
+    evidence = _existing_paths(
+        [
+            path,
+            *required_artifact_refs.values(),
+            *video_paths,
+        ]
+    )
+    return _proof_item(
+        proven=not blockers,
+        status="proven" if not blockers else "blocked",
+        evidence=evidence,
+        blockers=blockers,
+        claim_boundary=(
+            "Proves an Isaac-specific Unitree G1 simulator package with exact scenario "
+            "matrix coverage, normalized attempts, media evidence, trace package closure, "
+            "and artifact manifest. It does not prove MuJoCo execution, safety validation, "
+            "deployment approval, physical robot readiness, WAM consistency, or generated-world "
+            "rank fidelity."
+        ),
+        details={
+            "simulator_backend": payload.get("simulator_backend"),
+            "simulator_version": payload.get("simulator_version"),
+            "scenario_eval_run_count": payload.get("scenario_eval_run_count"),
+            "attempt_count": payload.get("attempt_count"),
+            "video_count": video_manifest.get("video_count"),
+            "machine_trace_package_complete": batch_closure.get(
+                "machine_trace_package_complete"
+            ),
+            "robot_team_grade_package_complete": batch_closure.get(
+                "robot_team_grade_package_complete"
+            ),
+            "missing_required_artifacts": missing_required_artifacts,
+        },
+    )
+
+
+def _site_capture_simulator_gate(
+    *,
+    mujoco: Mapping[str, Any],
+    isaac: Mapping[str, Any],
+) -> dict[str, Any]:
+    if mujoco.get("proven") is True:
+        selected = "mujoco"
+        selected_gate = mujoco
+    elif isaac.get("proven") is True:
+        selected = "isaac_sim"
+        selected_gate = isaac
+    else:
+        return _proof_item(
+            proven=False,
+            status="blocked",
+            evidence=[
+                *list(mujoco.get("evidence") or []),
+                *list(isaac.get("evidence") or []),
+            ],
+            blockers=[
+                "no_site_capture_simulator_backend_proven",
+                *list(mujoco.get("blockers") or []),
+                *list(isaac.get("blockers") or []),
+            ],
+            claim_boundary=(
+                "A simulator beta site-capture run can be proven by MuJoCo or Isaac, but "
+                "backend evidence is not interchangeable."
+            ),
+            details={"selected_backend": None},
+        )
+    return _proof_item(
+        proven=True,
+        status="proven",
+        evidence=list(selected_gate.get("evidence") or []),
+        blockers=[],
+        claim_boundary=(
+            "Simulator beta site-capture proof is satisfied by the selected backend only. "
+            "MuJoCo and Isaac artifacts do not clear each other's backend-specific proof gates."
+        ),
+        details={"selected_backend": selected},
+    )
+
+
 def _official_policy_gate(path: Path, payload: Mapping[str, Any] | None) -> dict[str, Any]:
     if not payload:
         return _proof_item(
@@ -469,6 +650,7 @@ def build_simulator_beta_readiness(
     capture_root: str | Path,
     output_dir: str | Path | None = None,
     mujoco_output_path: str | Path | None = None,
+    isaac_output_path: str | Path | None = None,
     official_policy_execution_path: str | Path | None = None,
     handoff_manifest_path: str | Path | None = None,
     release_gate_report_path: str | Path | None = None,
@@ -484,6 +666,11 @@ def build_simulator_beta_readiness(
         Path(mujoco_output_path).expanduser().resolve()
         if mujoco_output_path
         else root / DEFAULT_MUJOCO_OUTPUT_RELATIVE
+    )
+    isaac_path = (
+        Path(isaac_output_path).expanduser().resolve()
+        if isaac_output_path
+        else root / DEFAULT_ISAAC_OUTPUT_RELATIVE
     )
     policy_path = (
         Path(official_policy_execution_path).expanduser().resolve()
@@ -503,8 +690,13 @@ def build_simulator_beta_readiness(
     release_gate_payload = optional_read_json(release_gate_path)
     runpod_path, runpod_payload = _select_runpod_live_execution_proof(root)
     webapp_path, webapp_payload = _select_webapp_route_forwarding_proof(root)
+    mujoco_gate = _mujoco_gate(mujoco_path, optional_read_json(mujoco_path))
+    isaac_gate = _isaac_gate(isaac_path, optional_read_json(isaac_path))
+    simulator_gate = _site_capture_simulator_gate(mujoco=mujoco_gate, isaac=isaac_gate)
     gates = {
-        "site_capture_mujoco_g1_run": _mujoco_gate(mujoco_path, optional_read_json(mujoco_path)),
+        "site_capture_simulator_g1_run": simulator_gate,
+        "site_capture_mujoco_g1_run": mujoco_gate,
+        "site_capture_isaac_g1_run": isaac_gate,
         "official_unitree_g1_policy_execution": _official_policy_gate(
             policy_path,
             optional_read_json(policy_path),
@@ -517,11 +709,17 @@ def build_simulator_beta_readiness(
         "customer_website_to_pipeline_request": _webapp_gate(webapp_path, webapp_payload),
     }
     infrastructure_gate_ids = [
-        "site_capture_mujoco_g1_run",
+        "site_capture_simulator_g1_run",
         "official_unitree_g1_policy_execution",
         "production_runpod_worker_execution",
         "customer_website_to_pipeline_request",
     ]
+    legacy_blocking_gate_id_by_gate = {
+        "site_capture_simulator_g1_run": "site_capture_mujoco_g1_run",
+        "official_unitree_g1_policy_execution": "official_unitree_g1_policy_execution",
+        "production_runpod_worker_execution": "production_runpod_worker_execution",
+        "customer_website_to_pipeline_request": "customer_website_to_pipeline_request",
+    }
     release_gate_authority_present = isinstance(release_gate_payload, Mapping)
     release_gate_ready = bool(
         release_gate_authority_present
@@ -531,13 +729,13 @@ def build_simulator_beta_readiness(
     if release_gate_authority_present:
         blocking_gate_ids = [] if release_gate_ready else ["sim_only_beta_release_gate"]
         legacy_provider_rehearsal_blocking_gate_ids = [
-            gate_id
+            legacy_blocking_gate_id_by_gate.get(gate_id, gate_id)
             for gate_id in infrastructure_gate_ids
             if gates[gate_id].get("proven") is not True
         ]
     else:
         blocking_gate_ids = [
-            gate_id
+            legacy_blocking_gate_id_by_gate.get(gate_id, gate_id)
             for gate_id in infrastructure_gate_ids
             if gates[gate_id].get("proven") is not True
         ]
@@ -555,6 +753,7 @@ def build_simulator_beta_readiness(
     }
     status = "ready_for_simulator_beta" if not blocking_gate_ids else "blocked_simulator_beta"
     manifest_path = out_dir / "simulator_beta_readiness_manifest.json"
+    selected_simulator_backend = _mapping(simulator_gate.get("details")).get("selected_backend")
     manifest = {
         "schema_version": SIMULATOR_BETA_READINESS_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
@@ -565,7 +764,7 @@ def build_simulator_beta_readiness(
         "default_robot": {
             "make_model": "Unitree G1",
             "robot_profile_id": "unitree_g1_humanoid",
-            "simulator_backend": "mujoco",
+            "simulator_backend": selected_simulator_backend or "mujoco_or_isaac_sim",
         },
         "blocking_gate_ids": blocking_gate_ids,
         "release_authority": {
@@ -614,11 +813,15 @@ def build_simulator_beta_readiness(
             is True,
             "public_claim_upgrade_allowed": False,
             "sim_only_release_gate_authoritative": release_gate_authority_present,
+            "site_capture_simulator_backend": selected_simulator_backend,
+            "mujoco_proof_counted_as_isaac_proof": False,
+            "isaac_proof_counted_as_mujoco_proof": False,
         },
         "artifacts": {
             "manifest": str(manifest_path),
             "sim_only_beta_release_gate_report": str(release_gate_path),
             "mujoco_output": str(mujoco_path),
+            "isaac_output": str(isaac_path),
             "official_policy_execution": str(policy_path),
             "robot_team_handoff_manifest": str(handoff_path),
             "runpod_live_execution_proof": str(runpod_path),
@@ -634,6 +837,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--capture-root", required=True)
     parser.add_argument("--output-dir")
     parser.add_argument("--mujoco-output")
+    parser.add_argument("--isaac-output")
     parser.add_argument("--official-policy-execution")
     parser.add_argument("--handoff-manifest")
     parser.add_argument("--release-gate-report")
@@ -642,6 +846,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         capture_root=args.capture_root,
         output_dir=args.output_dir,
         mujoco_output_path=args.mujoco_output,
+        isaac_output_path=args.isaac_output,
         official_policy_execution_path=args.official_policy_execution,
         handoff_manifest_path=args.handoff_manifest,
         release_gate_report_path=args.release_gate_report,

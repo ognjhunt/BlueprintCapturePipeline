@@ -15,7 +15,13 @@ from blueprint_pipeline.isaac_g1_site_3dgs_realistic_eval import (
     _isaac_runtime_runner_source,
     _provider_entrypoint_source,
     detect_isaac_runtime,
+    run_isaac_g1_simulator_command,
     run_isaac_g1_site_3dgs_realistic_eval,
+)
+
+
+PREBUILT_ISAAC_WORKER_IMAGE_REF = (
+    "registry.example.com/blueprint/isaac-eval-worker:2026-06-26"
 )
 
 
@@ -142,6 +148,7 @@ def test_realistic_isaac_lane_writes_fail_closed_artifacts(tmp_path: Path) -> No
     assert "missing_provider_fetchable_bundle_uri" in provider_request["blockers"]
     assert bundle_readiness["status"] == "blocked"
     assert bundle_readiness["local_bundle_ready_for_remote_staging"] is True
+    assert bundle_readiness["ready_for_next_authorized_runpod_bundle_attempt"] is False
     assert bundle_readiness["ready_for_next_authorized_vast_bundle_attempt"] is False
     assert bundle_readiness["zip_required_entries_present"] is True
     assert bundle_readiness["zip_integrity_test_passed"] is True
@@ -155,6 +162,10 @@ def test_realistic_isaac_lane_writes_fail_closed_artifacts(tmp_path: Path) -> No
     assert bundle_readiness["runner_has_per_camera_video_smoke_diagnostics"] is True
     assert bundle_readiness["runner_has_scene_open_diagnostics"] is True
     assert bundle_readiness["runner_has_g1_asset_resolution_diagnostics"] is True
+    assert bundle_readiness["provider_fetch_command_has_early_phase_upload"] is True
+    assert bundle_readiness["provider_fetch_command_has_periodic_heartbeat_upload"] is True
+    assert bundle_readiness["provider_fetch_command_has_timeout_finalizer"] is True
+    assert bundle_readiness["provider_fetch_command_uses_stable_output_dir"] is True
     assert bundle_readiness["provider_eval_manifest_paths_runner_relative"] is True
     assert bundle_readiness["provider_eval_manifest_relative_paths"][
         "generated_site_scene_usda"
@@ -198,6 +209,268 @@ def test_realistic_isaac_lane_writes_fail_closed_artifacts(tmp_path: Path) -> No
     assert "provider_runtime/run_isaac_realistic_runtime.sh" in names
     assert "provider_runtime/isaac_provider_eval_manifest.json" in names
     assert "provider_runtime/generated_site_scene.usda" in names
+
+
+def test_isaac_command_ingests_scenario_matrix_and_runtime_result(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    ply = capture_root / "scene.ply"
+    spz = capture_root / "scene.spz"
+    _write_gaussian_ply(ply)
+    spz.write_bytes(b"SPZ\x00placeholder")
+    matrix_path = tmp_path / "scenario_eval_matrix.json"
+    runs = [
+        {
+            "scenario_eval_run_id": "isaac-run-1",
+            "episode_id": "episode-1",
+            "scenario_id": "scenario-a",
+            "task_id": "walk_to_target",
+            "spawn_id": "spawn-a",
+            "camera_ids": ["head_pov"],
+            "route_waypoints": [[0, 0, 0.8], [1, 0, 0.8]],
+        },
+        {
+            "scenario_eval_run_id": "isaac-run-2",
+            "episode_id": "episode-2",
+            "scenario_id": "scenario-b",
+            "task_id": "desk_object_contact_check",
+            "spawn_id": "spawn-b",
+            "camera_ids": ["head_pov"],
+            "route_waypoints": [[0, 0, 0.8], [0, 1, 0.8]],
+        },
+    ]
+    matrix_path.write_text(
+        json.dumps({"scenario_eval_run_count": 2, "runs": runs}, indent=2),
+        encoding="utf-8",
+    )
+    video_dir = tmp_path / "runtime_videos"
+    video_dir.mkdir()
+    videos = [video_dir / "run1.mp4", video_dir / "run2.mp4"]
+    for video in videos:
+        video.write_bytes(b"runtime-video")
+    runtime_result_path = tmp_path / "isaac_runtime_result.json"
+    runtime_result_path.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "simulator_version": "6.0.0",
+                "isaac_runtime_executed": True,
+                "isaac_sim_execution_proven": True,
+                "isaac_usd_scene_loaded": True,
+                "unitree_g1_loaded_in_isaac": True,
+                "controller_grade_execution_proven": True,
+                "official_policy_execution_proven": True,
+                "locomotion_continuity_validated": True,
+                "collision_dynamics_validated": True,
+                "manipulation_contact_dynamics_validated": True,
+                "realistic_splat_visual_rendered": True,
+                "attempts": [
+                    {
+                        "scenario_eval_run_id": "isaac-run-1",
+                        "attempt_id": "runtime-attempt-1",
+                        "status": "completed",
+                        "success": True,
+                        "actions": [{"t": 0.0, "action": "walk"}],
+                        "contact_trace": [{"body_a": "left_foot", "body_b": "floor"}],
+                        "artifact_paths": {"video_paths": {"head_pov": str(videos[0])}},
+                        "metrics": {"simulated_step_count": 120, "contact_event_count": 1},
+                    },
+                    {
+                        "scenario_eval_run_id": "isaac-run-2",
+                        "attempt_id": "runtime-attempt-2",
+                        "status": "completed",
+                        "success": True,
+                        "actions": [{"t": 0.0, "action": "inspect_contact"}],
+                        "contact_trace": [{"body_a": "right_hand", "body_b": "desk_object"}],
+                        "artifact_paths": {"video_paths": {"head_pov": str(videos[1])}},
+                        "metrics": {"simulated_step_count": 160, "contact_event_count": 1},
+                    },
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    simulator_output_path = tmp_path / "isaac_output.json"
+
+    result = run_isaac_g1_simulator_command(
+        capture_root=capture_root,
+        scenario_eval_matrix_path=matrix_path,
+        simulator_output_path=simulator_output_path,
+        runtime_result_path=runtime_result_path,
+        camera_ids=["head_pov"],
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+
+    job_dir = Path(result["job_dir"])
+    output = json.loads(simulator_output_path.read_text(encoding="utf-8"))
+    validation = json.loads((job_dir / "local_validation_report.json").read_text())
+    closure = json.loads((job_dir / "isaac_batch_closure_manifest.json").read_text())
+    locomotion_rows = [
+        json.loads(line)
+        for line in (job_dir / "g1_locomotion_trace.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+
+    assert result["status"] == "completed"
+    assert output["simulator_backend"] == "isaac_sim"
+    assert output["simulator_execution_proven"] is True
+    assert output["scenario_eval_run_count"] == 2
+    assert output["attempt_count"] == 2
+    assert output["attempt_count_matches_matrix_count"] is True
+    assert output["scenario_eval_run_coverage_complete"] is True
+    assert output["realistic_video_manifest"]["status"] == "completed"
+    assert output["realistic_video_manifest"]["video_count"] == 2
+    assert output["collision_contact_report"]["collision_dynamics_validated"] is True
+    assert closure["machine_trace_package_complete"] is True
+    assert closure["robot_team_grade_package_complete"] is True
+    assert validation["status"] == "passed_with_runtime_blockers"
+    assert all(row["status"] == "completed" for row in locomotion_rows)
+    assert output["proof_boundary"]["mujoco_artifacts_counted_as_isaac_proof"] is False
+
+
+def test_isaac_provider_readiness_accepts_multi_row_matrix_and_camera_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    ply = capture_root / "scene.ply"
+    spz = capture_root / "scene.spz"
+    _write_gaussian_ply(ply)
+    spz.write_bytes(b"SPZ\x00placeholder")
+    matrix_path = tmp_path / "scenario_eval_matrix.json"
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "scenario_eval_run_count": 2,
+                "runs": [
+                    {
+                        "scenario_eval_run_id": "isaac-matrix-1",
+                        "episode_id": "episode-1",
+                        "scenario_id": "scenario-a",
+                        "task_id": "walk_to_target",
+                        "camera_ids": ["head_pov", "overview"],
+                    },
+                    {
+                        "scenario_eval_run_id": "isaac-matrix-2",
+                        "episode_id": "episode-2",
+                        "scenario_id": "scenario-b",
+                        "task_id": "walk_to_target",
+                        "camera_ids": ["head_pov", "overview"],
+                    },
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_EVAL_MANIFEST_URI",
+        "https://storage.googleapis.com/blueprint-test/job/bundle.zip?x-goog-signature=test",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+        "https://storage.googleapis.com/blueprint-test/job/output.zip?x-goog-signature=test",
+    )
+    ngc = tmp_path / "ngc-api-key"
+    runpod = tmp_path / "runpod-api-key"
+    ngc.write_text("secret-ngc", encoding="utf-8")
+    runpod.write_text("secret-runpod", encoding="utf-8")
+    monkeypatch.setenv("NGC_API_KEY_FILE", str(ngc))
+    monkeypatch.setenv("RUNPOD_API_KEY_FILE", str(runpod))
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
+        PREBUILT_ISAAC_WORKER_IMAGE_REF,
+    )
+
+    result = run_isaac_g1_simulator_command(
+        capture_root=capture_root,
+        scenario_eval_matrix_path=matrix_path,
+        output_dir=tmp_path / "isaac_output",
+        simulator_output_path=tmp_path / "isaac_output.json",
+        camera_ids=["head_pov", "overview"],
+        allow_cloud_gpu=True,
+        generated_at="2026-06-20T00:00:00+00:00",
+    )
+
+    job_dir = Path(result["job_dir"])
+    provider_request = json.loads((job_dir / "gpu_provider_launch_request.json").read_text())
+    readiness = json.loads((job_dir / "isaac_provider_bundle_readiness.json").read_text())
+    camera_manifest = json.loads((job_dir / "camera_manifest.json").read_text())
+    matrix = json.loads((job_dir / "scenario_eval_matrix.json").read_text())
+    output = json.loads((tmp_path / "isaac_output.json").read_text())
+
+    assert provider_request["status"] == "request_manifest_ready"
+    assert provider_request["blockers"] == []
+    assert provider_request["provider_request_shape"]["image"][
+        "configured_image_ref"
+    ] == PREBUILT_ISAAC_WORKER_IMAGE_REF
+    assert provider_request["provider_request_shape"]["image"][
+        "prebuilt_worker_image_ref_configured"
+    ] is True
+    assert provider_request["provider_request_shape"]["image"][
+        "direct_isaac_base_image_blocked_by_default"
+    ] is False
+    assert readiness["status"] == "ready"
+    assert readiness["blockers"] == []
+    assert readiness["ready_for_next_authorized_runpod_bundle_attempt"] is True
+    assert readiness["provider_fetch_command_has_early_phase_upload"] is True
+    assert readiness["provider_fetch_command_has_periodic_heartbeat_upload"] is True
+    assert readiness["provider_fetch_command_has_timeout_finalizer"] is True
+    assert readiness["provider_fetch_command_uses_stable_output_dir"] is True
+    assert readiness["matrix_contract"]["scenario_eval_run_count"] == 2
+    assert readiness["matrix_contract"]["matrix_camera_slot_count"] == 4
+    assert readiness["matrix_contract"][
+        "expected_video_count_matches_matrix_camera_slots"
+    ] is True
+    assert readiness["matrix_contract"][
+        "multi_row_matrix_allowed_for_provider_execution"
+    ] is True
+    assert readiness["reduced_smoke_shape"][
+        "shape_is_1_spawn_1_task_all_6_cameras"
+    ] is False
+    assert "provider_bundle_not_reduced_to_1_spawn_1_task_all_cameras" not in (
+        readiness["blockers"]
+    )
+    assert "provider_bundle_camera_manifest_missing_required_cameras" not in (
+        readiness["blockers"]
+    )
+    assert camera_manifest["camera_id_aliases"] == {"overview": "third_person"}
+    assert matrix["runs"][0]["camera_ids"] == ["head_pov", "third_person"]
+    assert output["scenario_eval_run_count"] == 2
+    assert output["attempt_count"] == 2
+    assert output["attempt_count_matches_matrix_count"] is True
+    assert output["scenario_eval_run_coverage_complete"] is True
+    assert output["simulator_execution_proven"] is False
+
+
+def test_isaac_simulator_command_rejects_duplicate_matrix_rows(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    _write_gaussian_ply(capture_root / "scene.ply")
+    (capture_root / "scene.spz").write_bytes(b"SPZ\x00placeholder")
+    matrix_path = tmp_path / "scenario_eval_matrix.json"
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "scenario_eval_run_count": 2,
+                "runs": [
+                    {"scenario_eval_run_id": "dup", "task_id": "a"},
+                    {"scenario_eval_run_id": "dup", "task_id": "b"},
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="duplicate_scenario_eval_run_id"):
+        run_isaac_g1_simulator_command(
+            capture_root=capture_root,
+            scenario_eval_matrix_path=matrix_path,
+            generated_at="2026-06-20T00:00:00+00:00",
+        )
 
 
 def test_provider_entrypoint_writes_runtime_result_after_isaac_process_crash(
@@ -622,6 +895,16 @@ def test_signed_url_provider_request_can_be_launch_ready(
         "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
         "https://storage.googleapis.com/blueprint-test/job/output.zip?x-goog-signature=test",
     )
+    ngc = tmp_path / "ngc-api-key"
+    runpod = tmp_path / "runpod-api-key"
+    ngc.write_text("secret-ngc", encoding="utf-8")
+    runpod.write_text("secret-runpod", encoding="utf-8")
+    monkeypatch.setenv("NGC_API_KEY_FILE", str(ngc))
+    monkeypatch.setenv("RUNPOD_API_KEY_FILE", str(runpod))
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
+        PREBUILT_ISAAC_WORKER_IMAGE_REF,
+    )
 
     result = run_isaac_g1_site_3dgs_realistic_eval(
         ply_asset=ply,
@@ -643,8 +926,15 @@ def test_signed_url_provider_request_can_be_launch_ready(
 
     assert provider_request["status"] == "request_manifest_ready"
     assert provider_request["blockers"] == []
+    assert shape["image"]["configured_image_ref"] == PREBUILT_ISAAC_WORKER_IMAGE_REF
+    assert shape["image"]["image_family"] == "isaac-eval-worker"
+    assert shape["image"]["prebuilt_worker_image_ref_configured"] is True
+    assert shape["image"]["direct_isaac_base_image_blocked_by_default"] is False
     assert bundle_readiness["status"] == "ready"
+    assert provider_plan["status"] == "ready_for_authorized_provider_execution"
+    assert provider_plan["blockers"] == []
     assert bundle_readiness["local_bundle_ready_for_remote_staging"] is True
+    assert bundle_readiness["ready_for_next_authorized_runpod_bundle_attempt"] is True
     assert bundle_readiness["ready_for_next_authorized_vast_bundle_attempt"] is True
     assert bundle_readiness["blockers"] == []
     assert provider_plan["provider_bundle_readiness"][
@@ -654,6 +944,12 @@ def test_signed_url_provider_request_can_be_launch_ready(
     assert shape["inputs"]["manifest_uri_fetchable_by_provider"] is True
     assert shape["inputs"]["artifact_output_uri_required"] is False
     assert shape["inputs"]["signed_put_output_env_present_at_request_build"] is True
+    assert shape["environment"]["plaintext_env_values"][
+        "BLUEPRINT_ISAAC_PROVIDER_UPLOAD_INTERVAL_SECONDS"
+    ] == "15"
+    assert shape["environment"]["plaintext_env_values"][
+        "BLUEPRINT_ISAAC_PROVIDER_RUNNER_TIMEOUT_SECONDS"
+    ] == "780"
     assert "BLUEPRINT_ARTIFACT_OUTPUT_URI" not in shape["environment"][
         "plaintext_env_var_names"
     ]
@@ -661,6 +957,76 @@ def test_signed_url_provider_request_can_be_launch_ready(
         "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"
         == shape["inputs"]["signed_put_output_env_var"]
     )
+
+
+def test_signed_url_provider_request_requires_prebuilt_isaac_worker_image(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ply = tmp_path / "scene.ply"
+    spz = tmp_path / "scene.spz"
+    _write_gaussian_ply(ply)
+    spz.write_bytes(b"SPZ\x00placeholder")
+    monkeypatch.setenv(
+        "BLUEPRINT_EVAL_MANIFEST_URI",
+        "https://storage.googleapis.com/blueprint-test/job/bundle.zip?x-goog-signature=test",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+        "https://storage.googleapis.com/blueprint-test/job/output.zip?x-goog-signature=test",
+    )
+    for name in (
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
+        "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF",
+        "BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE",
+        str(tmp_path / "missing-isaac-worker-image-ref"),
+    )
+    ngc = tmp_path / "ngc-api-key"
+    runpod = tmp_path / "runpod-api-key"
+    ngc.write_text("secret-ngc", encoding="utf-8")
+    runpod.write_text("secret-runpod", encoding="utf-8")
+    monkeypatch.setenv("NGC_API_KEY_FILE", str(ngc))
+    monkeypatch.setenv("RUNPOD_API_KEY_FILE", str(runpod))
+
+    result = run_isaac_g1_site_3dgs_realistic_eval(
+        ply_asset=ply,
+        spz_asset=spz,
+        job_id="isaac-signed-url-missing-worker-image",
+        job_root=tmp_path / "robot_eval_jobs",
+        task_limit=1,
+        spawn_limit=1,
+        generated_at="2026-06-20T00:00:00+00:00",
+        allow_cloud_gpu=True,
+    )
+    job_dir = Path(result["job_dir"])
+    provider_request = json.loads((job_dir / "gpu_provider_launch_request.json").read_text())
+    bundle_readiness = json.loads(
+        (job_dir / "isaac_provider_bundle_readiness.json").read_text()
+    )
+    provider_plan = json.loads((job_dir / "isaac_provider_plan.json").read_text())
+    image = provider_request["provider_request_shape"]["image"]
+
+    assert provider_request["status"] == "blocked_provider_inputs_missing"
+    assert provider_request["blockers"] == ["prebuilt_isaac_eval_worker_image_ref_missing"]
+    assert provider_plan["status"] == "blocked"
+    assert "prebuilt_isaac_eval_worker_image_ref_missing" in provider_plan["blockers"]
+    assert (
+        "provider_launch_request_blocked:prebuilt_isaac_eval_worker_image_ref_missing"
+        in provider_plan["blockers"]
+    )
+    assert bundle_readiness["status"] == "blocked"
+    assert (
+        "provider_launch_request_blocked:prebuilt_isaac_eval_worker_image_ref_missing"
+        in bundle_readiness["blockers"]
+    )
+    assert bundle_readiness["ready_for_next_authorized_runpod_bundle_attempt"] is False
+    assert image["configured_image_ref"] == DEFAULT_ISAAC_RUNTIME_IMAGE_REF
+    assert image["prebuilt_worker_image_ref_configured"] is False
+    assert image["direct_isaac_base_image_blocked_by_default"] is True
+    assert image["worker_image_ref_file_present"] is False
 
 
 def test_provider_request_records_registry_auth_presence_without_secret(
@@ -679,6 +1045,10 @@ def test_provider_request_records_registry_auth_presence_without_secret(
         "https://storage.googleapis.com/blueprint-test/job/output.zip?x-goog-signature=test",
     )
     monkeypatch.setenv("BLUEPRINT_RUNPOD_CONTAINER_REGISTRY_AUTH_ID", "registry-auth-123")
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
+        PREBUILT_ISAAC_WORKER_IMAGE_REF,
+    )
 
     result = run_isaac_g1_site_3dgs_realistic_eval(
         ply_asset=ply,
@@ -695,6 +1065,7 @@ def test_provider_request_records_registry_auth_presence_without_secret(
     image = provider_request["provider_request_shape"]["image"]
 
     assert provider_request["status"] == "request_manifest_ready"
+    assert image["configured_image_ref"] == PREBUILT_ISAAC_WORKER_IMAGE_REF
     assert image["container_registry_auth_id_present"] is True
     assert (
         image["container_registry_auth_id_source"]
@@ -742,8 +1113,15 @@ def test_isaac_helper_runtime_and_provider_plan_edges(
         "BLUEPRINT_ISAAC_PROVIDER_BUNDLE_URI",
         "BLUEPRINT_ARTIFACT_OUTPUT_URI",
         "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
+        "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF",
+        "BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE",
+        str(tmp_path / "missing-isaac-worker-image-ref"),
+    )
     monkeypatch.setenv("NGC_API_KEY_FILE", str(tmp_path / "missing-ngc"))
     monkeypatch.setenv("RUNPOD_API_KEY_FILE", str(tmp_path / "missing-runpod"))
     missing_plan = isaac_eval.build_provider_plan(
@@ -755,6 +1133,13 @@ def test_isaac_helper_runtime_and_provider_plan_edges(
     )
     assert "required_file_based_provider_secret_missing" in missing_plan["blockers"]
     assert "provider_fetchable_bundle_uri_missing" in missing_plan["blockers"]
+    assert "prebuilt_isaac_eval_worker_image_ref_missing" in missing_plan["blockers"]
+    assert missing_plan["provider_runtime_inputs"][
+        "prebuilt_worker_image_ref_configured"
+    ] is False
+    assert missing_plan["provider_runtime_inputs"][
+        "direct_isaac_base_image_runpod_allowed"
+    ] is False
 
     ngc = tmp_path / "ngc"
     runpod = tmp_path / "runpod"
@@ -777,6 +1162,7 @@ def test_isaac_helper_runtime_and_provider_plan_edges(
     assert "provider_writable_artifact_output_uri_unsupported_scheme" in unsupported_plan[
         "blockers"
     ]
+    assert "prebuilt_isaac_eval_worker_image_ref_missing" in unsupported_plan["blockers"]
 
     phase_rows = isaac_eval._phase_rows(
         runtime={"isaac_runtime_available": True},
@@ -797,8 +1183,12 @@ def test_isaac_helper_runtime_and_provider_plan_edges(
         bundle_manifest={"bundle_path": str(tmp_path / "bundle.zip")},
         allow_cloud_gpu=True,
     )
+    assert "prebuilt_isaac_eval_worker_image_ref_missing" in launch_request["blockers"]
     assert "provider_bundle_uri_not_fetchable_by_provider" in launch_request["blockers"]
     assert "provider_artifact_output_uri_not_writable" in launch_request["blockers"]
+    assert launch_request["provider_request_shape"]["image"][
+        "direct_isaac_base_image_blocked_by_default"
+    ] is True
 
     ply = tmp_path / "scene.ply"
     spz = tmp_path / "scene.spz"
@@ -1031,6 +1421,14 @@ def test_isaac_cli_and_camera_id_edges(
 ) -> None:
     assert isaac_eval._parse_camera_ids(None) is None
     assert isaac_eval._parse_camera_ids("front, wrist_rgb") == ["front", "wrist_rgb"]
+    normalized_cameras, camera_aliases = isaac_eval._normalize_camera_ids(
+        ["overview", "sim_robot_follow_pov", "head_pov"]
+    )
+    assert normalized_cameras == ["third_person", "head_pov"]
+    assert camera_aliases == {
+        "overview": "third_person",
+        "sim_robot_follow_pov": "head_pov",
+    }
     ply = tmp_path / "scene.ply"
     spz = tmp_path / "scene.spz"
     _write_gaussian_ply(ply)

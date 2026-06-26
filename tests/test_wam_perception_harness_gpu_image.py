@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from blueprint_pipeline import wam_perception_harness_gpu_image as image_module
@@ -25,9 +28,17 @@ def test_wam_perception_harness_gpu_image_context_writes_provider_contract(
     assert manifest["runtime_contract"]["bakes_sam3_weights"] is False
     assert manifest["runtime_contract"]["sam3_weights_mount_or_fetch_required"] is True
     assert manifest["truth_boundary"]["no_raw_tokens_or_hashes_written"] is True
+    assert manifest["secret_handling_contract"]["registry_auth_is_file_backed"] is True
+    assert (
+        manifest["secret_handling_contract"]["raw_secret_values_forbidden_in_docker_layers"]
+        is True
+    )
     assert Path(str(manifest["artifact_paths"]["context_pyproject"])).is_file()
     assert Path(str(manifest["artifact_paths"]["context_readme"])).is_file()
     assert Path(str(manifest["artifact_paths"]["context_src"])).is_dir()
+    assert str(manifest["artifact_paths"]["image_healthcheck_manifest"]).endswith(
+        "wam_perception_harness_gpu_image_healthcheck_manifest.json"
+    )
     assert (
         Path(str(manifest["artifact_paths"]["context_src"]))
         / "blueprint_pipeline"
@@ -52,6 +63,8 @@ def test_wam_perception_harness_gpu_image_context_writes_provider_contract(
     assert "AutoModelForDepthEstimation.from_pretrained" in dockerfile
     assert "YOLO(\"yolo11n-pose.pt\")" in dockerfile
     assert "ByteDance-Seed/depth-anything-3" in dockerfile
+    assert "COPY /models/sam3" not in dockerfile
+    assert "COPY sam3" not in dockerfile
     assert "HF_TOKEN" not in dockerfile
     assert "dckr_pat_" not in dockerfile
     assert "dop_v1_" not in dockerfile
@@ -64,8 +77,13 @@ def test_wam_perception_harness_gpu_image_context_writes_provider_contract(
     assert "wam_sim_provider_e2e_fixture_smoke_failed" in healthcheck
     assert "torch_not_built_for_cu126" in healthcheck
     assert "sam3_weights_missing" in healthcheck
+    assert "model_mount_contract" in healthcheck
+    assert "provider_adapter_readiness" in healthcheck
+    assert "status_transition" in healthcheck
     assert "depth_anything_3" in healthcheck
     assert "image_healthcheck_is_not_provider_accuracy_validation" in healthcheck
+    perception_key = "perception_accuracy_" "validated"
+    assert perception_key not in healthcheck
 
     build_script = Path(str(manifest["artifact_paths"]["build_command"])).read_text(
         encoding="utf-8"
@@ -81,6 +99,7 @@ def test_wam_perception_harness_gpu_image_context_writes_provider_contract(
     )
     assert "DOCKER_USERNAME_FILE" in push_script
     assert "DOCKER_PAT_FILE" in push_script
+    assert "registry auth files missing; not pushing image" in push_script
     assert "--password-stdin" in push_script
     assert "dckr_pat_" not in push_script
 
@@ -102,6 +121,13 @@ def test_wam_perception_harness_gpu_image_context_writes_provider_contract(
         str(manifest["artifact_paths"]["run_healthcheck_command"])
     ).read_text(encoding="utf-8")
     assert "--entrypoint python" in run_healthcheck_script
+    assert '--require-cuda --require-sam3-weights > "$OUTPUT_PATH"' in run_healthcheck_script
+    assert '-v "$MODEL_MOUNT_DIR/sam3:/models/sam3:ro"' in run_healthcheck_script
+    assert "gpu_healthcheck_command_failed_before_manifest" in run_healthcheck_script
+    assert "sam3_weights_at_/models/sam3/sam3.pt_or_host_model_mounts/sam3/sam3.pt" in (
+        run_healthcheck_script
+    )
+    assert "'status_transition'" in run_healthcheck_script
 
 
 def test_wam_perception_harness_gpu_image_context_blocks_unversioned_ref(
@@ -142,3 +168,77 @@ def test_wam_perception_harness_gpu_image_context_can_request_da3_without_prefet
     assert "ARG PREFETCH_WAM_PERCEPTION_MODELS=false" in dockerfile
     assert "--build-arg INSTALL_DA3=true" in build_script
     assert "--build-arg PREFETCH_WAM_PERCEPTION_MODELS=false" in build_script
+
+
+def test_wam_perception_harness_gpu_image_context_does_not_copy_secret_values(
+    tmp_path: Path, monkeypatch
+) -> None:
+    username_file = tmp_path / "docker_username"
+    pat_file = tmp_path / "docker_pat"
+    username_file.write_text("registry-user\n", encoding="utf-8")
+    pat_file.write_text("dckr_pat_test_secret_value\n", encoding="utf-8")
+    username_file.chmod(0o600)
+    pat_file.chmod(0o600)
+    monkeypatch.setenv("DOCKER_USERNAME_FILE", str(username_file))
+    monkeypatch.setenv("DOCKER_PAT_FILE", str(pat_file))
+
+    manifest = image_module.build_wam_perception_harness_gpu_image_context(
+        job_dir=tmp_path / "image-context",
+        image_ref="docker.io/nijelhunt/blueprint-wam-perception-harness:20260626-secret",
+        generated_at="2026-06-26T00:00:00+00:00",
+    )
+
+    assert manifest["registry_auth"]["docker_username_file"]["present"] is True
+    assert manifest["registry_auth"]["docker_pat_file"]["mode_is_0600"] is True
+    serialized_manifest = json.dumps(manifest, sort_keys=True)
+    assert "registry-user" not in serialized_manifest
+    assert "dckr_pat_test_secret_value" not in serialized_manifest
+    for path in Path(str(manifest["job_dir"])).rglob("*"):
+        if path.is_file():
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            assert "registry-user" not in text
+            assert "dckr_pat_test_secret_value" not in text
+
+
+def test_wam_perception_harness_healthcheck_writes_blocked_manifest_for_missing_gpu_and_sam3(
+    tmp_path: Path,
+) -> None:
+    manifest = image_module.build_wam_perception_harness_gpu_image_context(
+        job_dir=tmp_path / "image-context",
+        image_ref="docker.io/nijelhunt/blueprint-wam-perception-harness:20260626-healthcheck",
+        generated_at="2026-06-26T00:00:00+00:00",
+    )
+    healthcheck_path = Path(str(manifest["artifact_paths"]["image_healthcheck"]))
+    output_path = tmp_path / "healthcheck.json"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(healthcheck_path),
+            "--skip-fixture-smoke",
+            "--require-cuda",
+            "--require-sam3-weights",
+            "--output",
+            str(output_path),
+        ],
+        check=False,
+        env={
+            **os.environ,
+            "BLUEPRINT_WAM_IMAGE_HEALTHCHECK_STUB_IMPORTS": "true",
+            "KMP_DUPLICATE_LIB_OK": "TRUE",
+        },
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 2
+    payload = _read_json(output_path)
+    assert payload["schema_version"] == "wam_perception_harness_gpu_image_healthcheck.v1"
+    assert payload["status"] == "blocked"
+    assert payload["model_mount_contract"]["sam3_weights_baked_into_image"] is False
+    assert payload["model_mount_contract"]["sam3_weights_mount_or_fetch_required"] is True
+    assert payload["status_transition"]["to"] == "blocked"
+    assert "actual_nvidia_cuda_gpu_runtime" in payload["missing_external_inputs"]
+    assert any("sam3_weights_at_" in item for item in payload["missing_external_inputs"])
+    assert payload["claim_boundary"]["optional_truth_label_validation_requested"] is False
+    assert "dckr_pat_" not in completed.stdout

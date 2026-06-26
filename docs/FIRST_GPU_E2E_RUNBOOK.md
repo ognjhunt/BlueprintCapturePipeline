@@ -448,7 +448,17 @@ for RunPod/Vast/GCP:
 
 ```bash
 export BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF="registry.example/blueprint/isaac-eval-worker:2026-06-12"
+./scripts/build_push_isaac_worker_image.sh
 ```
+
+For unattended RunPod Isaac runs, do not rely on the raw
+`nvcr.io/nvidia/isaac-sim:6.0.0` base image. The provider request now blocks
+before spend with `prebuilt_isaac_eval_worker_image_ref_missing` unless the
+image ref is configured directly, via
+`BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE`, or via
+`BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF`. The direct base-image path requires
+`BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD=true` and should be used only
+for manual debug runs with a wider observation window.
 
 From the WebApp repo, write the redacted forwarding preflight report before
 submitting a request:
@@ -642,7 +652,7 @@ blueprint-write-owner-gpu-default-smoke-artifacts \
 The helper writes `BLUEPRINT_POLICY_EXECUTION_TRACE`, `BLUEPRINT_SIM_ROBOT_POV_EVIDENCE`,
 and merges those outputs into `BLUEPRINT_ARTIFACT_MANIFEST`. It requires a real
 simulator frame or video path from that owner command. It does not write scene-load
-or spawn proof, and it does not create physical robot POV evidence.
+or spawn proof.
 The generated packet also includes `owner_default_smoke_command_binding.sh`, a
 fail-closed fallback template that runs owner-provided scene-load, spawn, and
 default walk-to-target commands before invoking the helper.

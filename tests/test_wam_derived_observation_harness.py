@@ -335,6 +335,35 @@ def test_external_backend_fails_closed_without_gate(tmp_path: Path) -> None:
     assert step["harness_backend"]["real_sam_or_depth_model_ran"] is False
 
 
+def test_external_backend_timeout_writes_blocked_artifacts(tmp_path: Path) -> None:
+    frame = _write_frame(tmp_path / "generated.jpg")
+
+    result = run_wam_derived_observation_harness_step(
+        output_dir=tmp_path / "harness",
+        generated_at="now",
+        step_index=1,
+        source_generated_frame_path=frame,
+        source_policy_action={"action_type": "manipulation_contact"},
+        current_policy_observation=_observation(frame),
+        backend_kind="external_command",
+        backend_command=[
+            sys.executable,
+            "-c",
+            "import time; print('started'); time.sleep(5)",
+        ],
+        allow_external_backend=True,
+        backend_timeout_seconds=1,
+        policy_id="rgb_only_policy",
+        declared_policy_observation_schema={"rgb_only": True},
+    )
+
+    backend = result["step_record"]["harness_backend"]
+    assert backend["status"] == "blocked"
+    assert "external_perception_backend_command_timed_out" in backend["blockers"]
+    assert Path(backend["stdout_path"]).is_file()
+    assert Path(backend["stderr_path"]).is_file()
+
+
 def test_multiview_calibration_validation_and_review_report_surfaces(
     tmp_path: Path,
 ) -> None:
@@ -382,6 +411,9 @@ def test_multiview_calibration_validation_and_review_report_surfaces(
                 "expected_contact": True,
                 "actual_success": True,
                 "plain_video_success": True,
+                "capture_backed": True,
+                "source_capture_path": "captures/kitchen-run-001",
+                "reviewer_id": "operator-reviewer-1",
             }
         ],
     )
@@ -427,6 +459,9 @@ def test_review_acceptance_can_unblock_success_scoring_for_low_confidence_step(
                 "expected_target_visible": False,
                 "actual_success": False,
                 "plain_video_success": True,
+                "capture_backed": True,
+                "source_capture_path": "captures/kitchen-run-001",
+                "reviewer_id": "operator-reviewer-1",
             }
         ],
         policy_id="rgb_only_policy",
@@ -463,6 +498,9 @@ def test_false_success_metrics_show_reduction_when_harness_blocks_bad_video_scor
                 "expected_target_visible": False,
                 "actual_success": False,
                 "plain_video_success": True,
+                "capture_backed": True,
+                "source_capture_path": "captures/kitchen-run-001",
+                "reviewer_id": "operator-reviewer-1",
             }
         ],
         policy_id="rgb_only_policy",
@@ -476,15 +514,167 @@ def test_false_success_metrics_show_reduction_when_harness_blocks_bad_video_scor
     assert metrics["false_success_reduction_rate"] == 1.0
 
 
+def test_harness_validation_rows_without_labels_are_diagnostic_only(tmp_path: Path) -> None:
+    frame = _write_frame(tmp_path / "generated.jpg")
+    target = _target()
+
+    result = run_wam_derived_observation_harness_step(
+        output_dir=tmp_path / "harness",
+        generated_at="now",
+        step_index=1,
+        source_generated_frame_path=frame,
+        source_policy_action={"action_type": "manipulation_contact"},
+        current_policy_observation=_observation(frame),
+        object_index={"objects": [target]},
+        eval_ready_task_grounding=_grounding(target),
+        validation_set=[{"step_index": 1}],
+        policy_id="rgb_only_policy",
+        declared_policy_observation_schema={"rgb_only": True},
+    )
+
+    assert result["validation_report"]["status"] == "diagnostic_issues"
+    assert result["validation_report"]["blockers"] == []
+    assert "diagnostic_blockers" not in result["validation_report"]
+    assert "validation_row_label_missing" in result["validation_report"]["diagnostic_issues"]
+    assert result["false_success_reduction_metrics"]["status"] == "not_measured"
+    assert result["false_success_reduction_metrics"]["blockers"] == []
+    assert (
+        "validation_row_label_missing"
+        in result["false_success_reduction_metrics"]["diagnostic_issues"]
+    )
+
+
+def test_false_success_metrics_not_measured_without_accepted_labels(tmp_path: Path) -> None:
+    frame = _write_frame(tmp_path / "generated.jpg", dark=True)
+    target = _target(bbox={"x": 900, "y": 240, "width": 120, "height": 80})
+
+    result = run_wam_derived_observation_harness_step(
+        output_dir=tmp_path / "harness",
+        generated_at="now",
+        step_index=1,
+        source_generated_frame_path=frame,
+        source_policy_action={"action_type": "manipulation_contact"},
+        current_policy_observation=_observation(frame),
+        object_index={"objects": [target]},
+        eval_ready_task_grounding=_grounding(target),
+        validation_set=[
+            {
+                "step_index": 1,
+                "expected_target_visible": False,
+                "actual_success": False,
+                "plain_video_success": True,
+            }
+        ],
+        policy_id="rgb_only_policy",
+        declared_policy_observation_schema={"rgb_only": True},
+    )
+
+    assert result["validation_report"]["status"] == "diagnostic_issues"
+    assert result["validation_report"]["matched_step_count"] == 0
+    assert "validation_row_not_capture_backed_or_accepted_anchor" in result[
+        "validation_report"
+    ]["diagnostic_issues"]
+    assert result["false_success_reduction_metrics"]["status"] == "not_measured"
+    assert result["false_success_reduction_metrics"]["plain_video_false_success_count"] == (
+        "not_measured"
+    )
+    assert result["false_success_reduction_metrics"]["blockers"] == []
+
+
+def test_external_consistency_requires_external_scorer_evidence(tmp_path: Path) -> None:
+    frame = _write_frame(tmp_path / "generated.jpg")
+    target = _target()
+
+    bare_claim = run_wam_derived_observation_harness_step(
+        output_dir=tmp_path / "bare_claim",
+        generated_at="now",
+        step_index=1,
+        source_generated_frame_path=frame,
+        source_policy_action={"action_type": "manipulation_contact"},
+        current_policy_observation=_observation(frame),
+        object_index={"objects": [target]},
+        eval_ready_task_grounding=_grounding(target),
+        external_consistency={"forward_inverse_consistency_proven": True},
+        policy_id="rgb_only_policy",
+        declared_policy_observation_schema={"rgb_only": True},
+    )
+
+    inverse = bare_claim["step_record"]["consistency_checks"]["inverse_action_consistency"]
+    assert inverse["status"] == "separate_external_scorer_required"
+    assert inverse["forward_inverse_consistency_proven"] is False
+    assert "external_episode_consistency_scorer_run_not_proven" in inverse["blockers"]
+    assert bare_claim["checks"]["forward_inverse_consistency_proven"] is False
+
+    scorer_result = run_wam_derived_observation_harness_step(
+        output_dir=tmp_path / "scorer_result",
+        generated_at="now",
+        step_index=1,
+        source_generated_frame_path=frame,
+        source_policy_action={"action_type": "manipulation_contact"},
+        current_policy_observation=_observation(frame),
+        object_index={"objects": [target]},
+        eval_ready_task_grounding=_grounding(target),
+        external_consistency={
+            "forward_inverse_consistency_proven": True,
+            "external_episode_consistency_scorer_ran": True,
+            "external_episode_consistency_scorer_id": "external-vlm-consistency",
+            "policy_success_claimed_from_consistency": True,
+            "task_success_claimed_from_consistency": True,
+            "rank_fidelity_claimed_from_consistency": True,
+            "deployment_readiness_claimed_from_consistency": True,
+            "sensor_truth_claimed_from_consistency": True,
+            "external_validation_claimed_from_consistency": True,
+            "public_claim_upgrade_allowed": True,
+            "rollout_checks": [
+                {
+                    "rollout_id": "rollout-1",
+                    "forward_consistent": True,
+                    "inverse_consistent": True,
+                    "visual_evidence_used": True,
+                    "action_trace_evidence_used": True,
+                }
+            ],
+        },
+        policy_id="rgb_only_policy",
+        declared_policy_observation_schema={"rgb_only": True},
+    )
+
+    inverse = scorer_result["step_record"]["consistency_checks"]["inverse_action_consistency"]
+    assert inverse["status"] == "external_scorer_passed"
+    assert inverse["forward_inverse_consistency_proven"] is True
+    assert inverse["external_episode_consistency_scorer_id"] == "external-vlm-consistency"
+    assert inverse["forward_inverse_consistency_is_reliability_review_signal_only"] is True
+    assert inverse[
+        "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking"
+    ] is True
+    assert inverse["policy_success_claimed_from_consistency"] is False
+    assert inverse["task_success_claimed_from_consistency"] is False
+    assert inverse["rank_fidelity_claimed_from_consistency"] is False
+    assert inverse["deployment_readiness_claimed_from_consistency"] is False
+    assert inverse["sensor_truth_claimed_from_consistency"] is False
+    assert inverse["external_validation_claimed_from_consistency"] is False
+    assert inverse["claim_boundary"]["forward_inverse_consistency_is_not_external_validation"] is True
+    assert scorer_result["checks"]["forward_inverse_consistency_proven"] is False
+    assert scorer_result["checks"]["consistency_metrics_are_support_signals_only"] is True
+    assert scorer_result["checks"]["task_success_claimed_from_consistency"] is False
+    assert scorer_result["bundle"]["claim_boundary"][
+        "forward_inverse_consistency_does_not_prove_sensor_truth"
+    ] is True
+    assert scorer_result["manifest"]["claim_boundary"][
+        "deployment_readiness_claimed_from_consistency"
+    ] is False
+
+
 def test_real_provider_probe_validation_status_requires_capture_backed_labeled_rows(
     tmp_path: Path,
 ) -> None:
     empty_path = tmp_path / "empty_validation.json"
     empty_path.write_text(json.dumps({"rows": []}), encoding="utf-8")
     empty_status = _validation_status(empty_path)
-    assert empty_status["status"] == "blocked"
-    assert "validation_set_rows_missing" in empty_status["blockers"]
-    assert "capture_backed_validation_rows_missing" in empty_status["blockers"]
+    assert empty_status["status"] == "diagnostic_issues"
+    assert "diagnostic_blockers" not in empty_status
+    assert "validation_set_rows_missing" in empty_status["diagnostic_issues"]
+    assert "capture_backed_validation_rows_missing" in empty_status["diagnostic_issues"]
 
     fixture_path = tmp_path / "fixture_validation.json"
     fixture_path.write_text(
@@ -502,9 +692,9 @@ def test_real_provider_probe_validation_status_requires_capture_backed_labeled_r
         encoding="utf-8",
     )
     fixture_status = _validation_status(fixture_path)
-    assert fixture_status["status"] == "blocked"
-    assert "capture_backed_validation_rows_missing" in fixture_status["blockers"]
-    assert "real_labeled_validation_rows_missing" in fixture_status["blockers"]
+    assert fixture_status["status"] == "diagnostic_issues"
+    assert "capture_backed_validation_rows_missing" in fixture_status["diagnostic_issues"]
+    assert "real_labeled_validation_rows_missing" in fixture_status["diagnostic_issues"]
 
     source_less_path = tmp_path / "source_less_validation.json"
     source_less_path.write_text(
@@ -522,8 +712,8 @@ def test_real_provider_probe_validation_status_requires_capture_backed_labeled_r
         encoding="utf-8",
     )
     source_less_status = _validation_status(source_less_path)
-    assert source_less_status["status"] == "blocked"
-    assert "real_labeled_validation_source_missing" in source_less_status["blockers"]
+    assert source_less_status["status"] == "diagnostic_issues"
+    assert "real_labeled_validation_source_missing" in source_less_status["diagnostic_issues"]
 
     real_path = tmp_path / "real_validation.json"
     real_path.write_text(
@@ -533,8 +723,10 @@ def test_real_provider_probe_validation_status_requires_capture_backed_labeled_r
                     {
                         "step_index": 1,
                         "capture_backed": True,
+                        "target_prompt": "robot arm",
                         "actual_success": False,
                         "source_capture_path": "captures/kitchen-run-001",
+                        "reviewer_id": "operator-reviewer-1",
                     }
                 ]
             }
@@ -543,8 +735,164 @@ def test_real_provider_probe_validation_status_requires_capture_backed_labeled_r
     )
     real_status = _validation_status(real_path)
     assert real_status["status"] == "available"
+    assert real_status["diagnostic_issues"] == []
     assert real_status["real_labeled_row_count"] == 1
     assert real_status["sourced_real_labeled_row_count"] == 1
+    assert real_status["accepted_contract_row_count"] == 1
+
+
+def test_real_provider_probe_validation_status_reports_bad_rows_as_diagnostics(
+    tmp_path: Path,
+) -> None:
+    expected_frame = _write_frame(tmp_path / "probe_frame_001.jpg")
+
+    missing_label_path = tmp_path / "missing_label_validation.json"
+    missing_label_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "step_index": 1,
+                        "capture_backed": True,
+                        "target_prompt": "robot arm",
+                        "source_capture_path": "captures/kitchen-run-001",
+                        "reviewer_id": "operator-reviewer-1",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    missing_label_status = _validation_status(
+        missing_label_path,
+        expected_frame_path=expected_frame,
+        target_prompts=["robot arm"],
+    )
+    assert missing_label_status["status"] == "diagnostic_issues"
+    assert "diagnostic_blockers" not in missing_label_status
+    assert "row_validation_label_missing" in missing_label_status["diagnostic_issues"]
+    assert "blockers" not in missing_label_status["row_results"][0]
+    assert "row_validation_label_missing" in missing_label_status["row_results"][0][
+        "diagnostic_issues"
+    ]
+
+    mismatched_frame_path = tmp_path / "mismatched_frame_validation.json"
+    mismatched_frame_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "step_index": 1,
+                        "capture_backed": True,
+                        "target_prompt": "robot arm",
+                        "actual_success": False,
+                        "source_capture_path": "captures/kitchen-run-001",
+                        "reviewer_id": "operator-reviewer-1",
+                        "frame_id": "different_frame_999",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    mismatched_frame_status = _validation_status(
+        mismatched_frame_path,
+        expected_frame_path=expected_frame,
+        target_prompts=["robot arm"],
+    )
+    assert mismatched_frame_status["status"] == "diagnostic_issues"
+    assert "row_frame_id_or_path_mismatch" in mismatched_frame_status["diagnostic_issues"]
+    assert mismatched_frame_status["accepted_contract_row_count"] == 0
+
+    empty_target_path = tmp_path / "empty_target_validation.json"
+    empty_target_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "step_index": 1,
+                        "capture_backed": True,
+                        "target_prompt": " ",
+                        "actual_success": False,
+                        "source_capture_path": "captures/kitchen-run-001",
+                        "reviewer_id": "operator-reviewer-1",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    empty_target_status = _validation_status(
+        empty_target_path,
+        expected_frame_path=expected_frame,
+        target_prompts=[],
+    )
+    assert empty_target_status["status"] == "diagnostic_issues"
+    assert "validation_target_prompt_empty" in empty_target_status["diagnostic_issues"]
+    assert "row_target_prompt_empty" in empty_target_status["diagnostic_issues"]
+
+    provider_only_path = tmp_path / "provider_only_validation.json"
+    provider_only_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "step_index": 1,
+                        "capture_backed": True,
+                        "target_prompt": "robot arm",
+                        "actual_success": False,
+                        "source_artifact_path": "wam_perception_backend_result.json",
+                        "reviewer_id": "operator-reviewer-1",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider_only_status = _validation_status(
+        provider_only_path,
+        expected_frame_path=expected_frame,
+        target_prompts=["robot arm"],
+    )
+    assert provider_only_status["status"] == "diagnostic_issues"
+    assert (
+        "provider_only_validation_source_not_accepted"
+        in provider_only_status["diagnostic_issues"]
+    )
+    assert "row_source_is_provider_only_output" in provider_only_status["diagnostic_issues"]
+
+    bad_provenance_path = tmp_path / "bad_provenance_validation.json"
+    bad_provenance_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "step_index": 1,
+                        "capture_backed": True,
+                        "target_prompt": "robot arm",
+                        "actual_success": False,
+                        "source_capture_path": "captures/kitchen-run-001",
+                        "reviewer_id": "<reviewer>",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    bad_provenance_status = _validation_status(
+        bad_provenance_path,
+        expected_frame_path=expected_frame,
+        target_prompts=["robot arm"],
+    )
+    assert bad_provenance_status["status"] == "diagnostic_issues"
+    assert (
+        "real_labeled_validation_provenance_missing"
+        in bad_provenance_status["diagnostic_issues"]
+    )
+    assert (
+        "row_reviewer_or_label_provenance_missing"
+        in bad_provenance_status["diagnostic_issues"]
+    )
 
 
 def test_sim_provider_e2e_fixture_mode_runs_multistep_harness_and_adapter(
@@ -575,7 +923,7 @@ def test_sim_provider_e2e_fixture_mode_runs_multistep_harness_and_adapter(
     assert manifest["step_count_completed"] == 2
     assert manifest["policy_requery_count"] == 2
     assert manifest["sim_only_provider_harness_e2e_completed"] is True
-    assert manifest["perception_accuracy_validated"] is False
+    assert manifest["optional_truth_label_validation_requested"] is False
     assert manifest["claim_boundary"]["generated_frames_are_not_capture_truth"] is True
     assert manifest["claim_boundaries"]["generated_frames_are_not_capture_truth"] is True
     assert manifest["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
@@ -632,10 +980,17 @@ def test_real_provider_validation_probe_fails_closed_without_real_provider_input
 
     assert manifest["status"] == "blocked"
     assert manifest["proof_scope"]["real_sam3_depth_pose_proof_complete"] is False
-    assert manifest["proof_scope"]["perception_accuracy_validated"] is False
+    assert manifest["proof_scope"]["optional_labeled_validation_requested"] is False
+    assert manifest["proof_scope"]["optional_labeled_validation_completed"] is False
     assert "sam3_weights_path_missing" in manifest["blockers"]
     assert "no_real_sam3_depth_or_pose_provider_ran" in manifest["blockers"]
-    assert "validation_set_path_not_supplied" in manifest["blockers"]
+    assert manifest["validation_set"]["status"] == "not_requested"
+    assert manifest["validation_set"]["diagnostic_issues"] == []
+    assert manifest["optional_validation_diagnostic_issues"] == []
+    assert manifest["validation_report"]["diagnostic_issues"] == []
+    assert manifest["false_success_reduction_metrics"]["diagnostic_issues"] == []
+    assert "optional_validation_diagnostic_blockers" not in manifest
+    assert not any("validation_set" in blocker for blocker in manifest["blockers"])
     assert manifest["provider_readiness"]["sam3"]["hf_token_env_presence"]["HF_TOKEN"] is False
     assert Path(manifest["manifest_path"]).is_file()
     assert Path(
@@ -648,6 +1003,72 @@ def test_real_provider_validation_probe_fails_closed_without_real_provider_input
         ]
         is True
     )
+
+
+def test_real_provider_validation_probe_treats_bad_labels_as_diagnostics(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    for name in (
+        "SAM3_WEIGHTS_PATH",
+        "BLUEPRINT_SAM3_WEIGHTS_PATH",
+        "HF_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND",
+        "BLUEPRINT_WAM_POSE_PROVIDER_COMMAND",
+        "BLUEPRINT_WAM_POSE_MODEL_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    frame = _write_frame(tmp_path / "generated.jpg")
+    validation_path = tmp_path / "missing_label_validation.json"
+    validation_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "step_index": 1,
+                        "capture_backed": True,
+                        "target_prompt": "robot arm",
+                        "source_capture_path": "captures/kitchen-run-001",
+                        "reviewer_id": "operator-reviewer-1",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = run_probe(
+        output_dir=tmp_path / "proof",
+        generated_frame_path=frame,
+        validation_set_path=validation_path,
+        target_prompts=["robot arm"],
+        policy_id="rgbd_mask_pose_policy",
+        policy_observation_schema={
+            "modalities": ["rgb", "depth", "mask", "pose", "state"],
+            "fields": [
+                "camera_frame_path",
+                "visual_observation",
+                "objects",
+                "depth_estimates",
+                "pose_estimates",
+            ],
+        },
+    )
+
+    assert manifest["status"] == "blocked"
+    assert "sam3_weights_path_missing" in manifest["blockers"]
+    assert "row_validation_label_missing" not in manifest["blockers"]
+    assert "real_labeled_validation_rows_missing" not in manifest["blockers"]
+    assert manifest["validation_set"]["status"] == "diagnostic_issues"
+    assert "diagnostic_blockers" not in manifest["validation_set"]
+    assert "row_validation_label_missing" in manifest["validation_set"]["diagnostic_issues"]
+    assert (
+        "row_validation_label_missing"
+        in manifest["optional_validation_diagnostic_issues"]
+    )
+    assert manifest["false_success_reduction_metrics"]["status"] == "not_measured"
 
 
 def test_real_provider_backend_contract_records_missing_provider_blockers(

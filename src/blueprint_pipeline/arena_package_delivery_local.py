@@ -17,7 +17,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
-from .arena_result_ingest import DELIVERY_COMMAND_MANIFEST_SCHEMA_VERSION
+from .arena_result_ingest import CLAIM_BOUNDARY, DELIVERY_COMMAND_MANIFEST_SCHEMA_VERSION
 from .common import ensure_dir, utc_now_iso, write_json
 
 
@@ -95,6 +95,17 @@ def build_local_delivery_command_manifest(
         "entitlement_verified": False,
         "public_claim_upgrade_allowed": False,
         "proof_effect": "none",
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "local_filesystem_delivery_performed": not blockers,
+            "signed_delivery_access_proven": False,
+            "delivery_access_is_deployment_approval": False,
+            "package_delivery_is_deployment_approval": False,
+            "deployment_approval_proven": False,
+            "physical_robot_readiness_proven": False,
+            "safety_validation_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
     }
     write_json(resolved_output / OUTPUT_FILENAME, manifest)
     return manifest

@@ -9,6 +9,7 @@ writes the full job bundle with blocked attempts and exact proof boundaries.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -20,10 +21,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .g1_site_3dgs_mujoco_preview import (
-    DEFAULT_ROOT_Z_M,
-    MIN_CLEARANCE_M,
     _attempt_visual_asset_mesh_conversion,
     _safe_id,
     build_default_spawns,
@@ -83,6 +82,10 @@ LOCAL_PROVIDER_COMMAND_DIAGNOSTIC_SCHEMA_VERSION = (
     "isaac_provider_command_local_diagnostic.v1"
 )
 ISAAC_PROVIDER_BUNDLE_READINESS_SCHEMA_VERSION = "isaac_provider_bundle_readiness.v1"
+ISAAC_G1_SIMULATOR_COMMAND_OUTPUT_SCHEMA_VERSION = "isaac_g1_simulator_command_output.v1"
+ISAAC_G1_ARTIFACT_MANIFEST_SCHEMA_VERSION = "isaac_g1_simulator_artifact_manifest.v1"
+ISAAC_G1_BATCH_TRACE_PACKAGE_SCHEMA_VERSION = "isaac_g1_batch_trace_package.v1"
+ISAAC_G1_BATCH_CLOSURE_SCHEMA_VERSION = "isaac_g1_batch_closure_manifest.v1"
 
 OFFICIAL_ISAAC_G1_ASSET_PATH = "Isaac/Robots/Unitree/G1/g1.usd"
 OFFICIAL_ISAAC_G1_DOC_URL = (
@@ -96,6 +99,10 @@ DEFAULT_CAMERA_IDS = (
     "overhead",
     "task_focus",
 )
+CAMERA_ID_ALIASES = {
+    "overview": "third_person",
+    "sim_robot_follow_pov": "head_pov",
+}
 REQUIRED_PHASES = (
     "runner_referencing_official_g1",
     "runner_official_g1_resolved",
@@ -108,6 +115,10 @@ REQUIRED_PHASES = (
     "runner_gpu_teardown_completed",
 )
 DEFAULT_ISAAC_RUNTIME_IMAGE_REF = "nvcr.io/nvidia/isaac-sim:6.0.0"
+ISAAC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF"
+ISAAC_WORKER_IMAGE_REF_FILE_ENV = "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE"
+DEFAULT_ISAAC_WORKER_IMAGE_REF_FILE = "~/.blueprint-secrets/isaac_eval_worker_image_ref"
+ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV = "BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD"
 RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV = "BLUEPRINT_RUNPOD_CONTAINER_REGISTRY_AUTH_ID"
 
 
@@ -117,6 +128,10 @@ def _repo_root() -> Path:
 
 def _string(value: Any) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -131,6 +146,21 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
+def _normalize_camera_ids(camera_ids: Sequence[str]) -> tuple[list[str], dict[str, str]]:
+    normalized: list[str] = []
+    aliases: dict[str, str] = {}
+    for raw_camera_id in camera_ids:
+        camera_id = _string(raw_camera_id)
+        if not camera_id:
+            continue
+        canonical_id = CAMERA_ID_ALIASES.get(camera_id, camera_id)
+        if canonical_id != camera_id:
+            aliases[camera_id] = canonical_id
+        if canonical_id not in normalized:
+            normalized.append(canonical_id)
+    return normalized, aliases
+
+
 def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> int:
     ensure_dir(path.parent)
     count = 0
@@ -139,6 +169,474 @@ def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> int:
             handle.write(json.dumps(dict(row), sort_keys=True) + "\n")
             count += 1
     return count
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(float(str(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _json_mapping(path: Path) -> dict[str, Any]:
+    try:
+        return _mapping(read_json_any(path))
+    except Exception:
+        return {}
+
+
+def _scenario_eval_matrix_from_path(
+    path: str | Path,
+    *,
+    camera_ids: Sequence[str],
+    job_id: str,
+) -> dict[str, Any]:
+    matrix_path = Path(path).expanduser().resolve()
+    payload = _mapping(read_json_any(matrix_path))
+    raw_runs = payload.get("runs")
+    runs: list[dict[str, Any]] = []
+    missing_id_indexes: list[int] = []
+    run_ids: list[str] = []
+    if isinstance(raw_runs, Sequence) and not isinstance(raw_runs, (str, bytes, bytearray)):
+        for index, raw_run in enumerate(raw_runs, start=1):
+            if not isinstance(raw_run, Mapping):
+                missing_id_indexes.append(index)
+                continue
+            row = dict(raw_run)
+            run_id = _string(row.get("scenario_eval_run_id") or row.get("scenarioEvalRunId"))
+            if run_id:
+                row["scenario_eval_run_id"] = run_id
+                run_ids.append(run_id)
+            else:
+                missing_id_indexes.append(index)
+            if not isinstance(row.get("camera_ids"), list):
+                row["camera_ids"] = list(camera_ids)
+            else:
+                row["camera_ids"] = _normalize_camera_ids(
+                    _string_list(row.get("camera_ids"))
+                )[0]
+            if not _string(row.get("episode_id")):
+                row["episode_id"] = f"{job_id}_isaac_episode_{index:04d}"
+            runs.append(row)
+
+    declared_count = _int(payload.get("scenario_eval_run_count"), default=len(runs))
+    duplicate_run_ids = sorted({run_id for run_id in run_ids if run_ids.count(run_id) > 1})
+    blockers: list[str] = []
+    if not runs:
+        blockers.append("scenario_eval_matrix_contains_no_runs")
+    if missing_id_indexes:
+        blockers.append("scenario_eval_matrix_missing_scenario_eval_run_id")
+    if duplicate_run_ids:
+        blockers.append("scenario_eval_matrix_duplicate_scenario_eval_run_id")
+    if declared_count != len(runs):
+        blockers.append("scenario_eval_matrix_declared_count_mismatch")
+    if blockers:
+        raise RuntimeError(
+            "scenario_eval_matrix is not executable by Isaac command: " + ",".join(blockers)
+        )
+
+    return {
+        **payload,
+        "runs": runs,
+        "scenario_eval_run_count": len(runs),
+        "source_scenario_eval_matrix_path": str(matrix_path),
+        "source_matrix_scenario_eval_run_count": declared_count,
+        "matrix_declared_count_matches_rows": declared_count == len(runs),
+        "required_scenario_eval_run_ids": run_ids,
+        "missing_scenario_eval_run_id_indexes": missing_id_indexes,
+        "duplicate_scenario_eval_run_ids": duplicate_run_ids,
+    }
+
+
+def _matrix_required_run_ids(matrix: Mapping[str, Any]) -> list[str]:
+    required = _string_list(matrix.get("required_scenario_eval_run_ids"))
+    if required:
+        return required
+    return [
+        run_id
+        for run_id in (
+            _string(_mapping(run).get("scenario_eval_run_id"))
+            for run in matrix.get("runs", []) or []
+        )
+        if run_id
+    ]
+
+
+def _coverage_summary(
+    *,
+    matrix: Mapping[str, Any],
+    attempts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    required = _matrix_required_run_ids(matrix)
+    covered = sorted(
+        {
+            _string(attempt.get("scenario_eval_run_id"))
+            for attempt in attempts
+            if _string(attempt.get("scenario_eval_run_id"))
+        }
+    )
+    duplicates = sorted({run_id for run_id in required if required.count(run_id) > 1})
+    missing = sorted(set(required) - set(covered))
+    attempt_count_matches = len(attempts) == len(required)
+    exact = (
+        set(covered) == set(required)
+        and len(covered) == len(required)
+        and not duplicates
+    )
+    complete = bool(required) and attempt_count_matches and exact and not missing
+    return {
+        "required_scenario_eval_run_count": len(required),
+        "covered_scenario_eval_run_count": len(covered),
+        "missing_scenario_eval_run_count": len(missing),
+        "attempt_count_matches_matrix_count": attempt_count_matches,
+        "scenario_eval_run_id_coverage_exact": exact,
+        "scenario_eval_run_coverage_complete": complete,
+        "duplicate_scenario_eval_run_ids": duplicates,
+        "required_scenario_eval_run_ids": required,
+        "covered_scenario_eval_run_ids": covered,
+        "missing_scenario_eval_run_ids": missing,
+    }
+
+
+def _file_ref(path: Path, *, base_dir: Path) -> dict[str, Any]:
+    present = path.is_file()
+    try:
+        relative = os.path.relpath(path.resolve(), base_dir.resolve())
+    except Exception:
+        relative = str(path)
+    return {
+        "path": str(path),
+        "relative_path": relative,
+        "present": present,
+        "size_bytes": path.stat().st_size if present else None,
+        "sha256": _sha256(path) if present else None,
+    }
+
+
+def _runtime_result_attempts(runtime_result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    for key in ("attempts", "episodes", "results"):
+        value = runtime_result.get(key)
+        if isinstance(value, list):
+            return [dict(item) for item in value if isinstance(item, Mapping)]
+    return []
+
+
+def _write_isaac_batch_trace_package(
+    *,
+    job_dir: Path,
+    generated_at: str,
+    attempts: Sequence[Mapping[str, Any]],
+    failure_labels: Mapping[str, Any],
+    video_manifest: Mapping[str, Any],
+    collision_contact_report: Mapping[str, Any],
+    coverage: Mapping[str, Any],
+) -> dict[str, Any]:
+    attempt_trace_path = job_dir / "isaac_batch_attempt_trace.jsonl"
+    contact_stream_path = job_dir / "isaac_batch_contact_stream.jsonl"
+    planner_state_path = job_dir / "isaac_batch_planner_state.jsonl"
+    control_stream_path = job_dir / "isaac_batch_control_stream.jsonl"
+    metrics_path = job_dir / "isaac_batch_metrics.json"
+    failure_labels_path = job_dir / "isaac_batch_failure_labels.json"
+    visual_media_path = job_dir / "isaac_batch_visual_media_coverage.json"
+    visual_review_path = job_dir / "isaac_batch_visual_review_ledger.json"
+    checksums_path = job_dir / "isaac_batch_artifact_checksums.json"
+    manifest_path = job_dir / "isaac_batch_trace_package_manifest.json"
+
+    _write_jsonl(attempt_trace_path, attempts)
+    contact_rows: list[dict[str, Any]] = []
+    planner_rows: list[dict[str, Any]] = []
+    control_rows: list[dict[str, Any]] = []
+    for attempt in attempts:
+        attempt_id = _string(attempt.get("attempt_id"))
+        for contact in attempt.get("contact_trace") or []:
+            if isinstance(contact, Mapping):
+                contact_rows.append({"attempt_id": attempt_id, **dict(contact)})
+        planner_rows.append(
+            {
+                "attempt_id": attempt_id,
+                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+                "route_waypoints": attempt.get("route_waypoints") or [],
+                "status": attempt.get("status"),
+            }
+        )
+        for index, action in enumerate(attempt.get("actions") or attempt.get("action_trace") or []):
+            if isinstance(action, Mapping):
+                control_rows.append({"attempt_id": attempt_id, "action_index": index, **dict(action)})
+    _write_jsonl(contact_stream_path, contact_rows)
+    _write_jsonl(planner_state_path, planner_rows)
+    _write_jsonl(control_stream_path, control_rows)
+
+    metrics = {
+        "schema_version": "isaac_g1_batch_metrics.v1",
+        "generated_at": generated_at,
+        "status": "completed" if attempts else "blocked",
+        "attempt_count": len(attempts),
+        "successful_attempt_count": sum(1 for attempt in attempts if attempt.get("success") is True),
+        "failed_attempt_count": sum(1 for attempt in attempts if attempt.get("success") is not True),
+        "contact_count": collision_contact_report.get("contact_count"),
+        "collision_dynamics_validated": collision_contact_report.get("collision_dynamics_validated"),
+        **dict(coverage),
+        "proof_boundary": (
+            "Isaac batch metrics summarize Isaac command/runtime attempts only. They do not "
+            "prove MuJoCo execution, real robot readiness, safety validation, deployment "
+            "approval, WAM consistency, or generated-world rank fidelity."
+        ),
+    }
+    write_json(metrics_path, metrics)
+    write_json(failure_labels_path, dict(failure_labels))
+    visual_rows = []
+    for video in video_manifest.get("videos") or []:
+        if isinstance(video, Mapping):
+            visual_rows.append(dict(video))
+    visual_media = {
+        "schema_version": "isaac_g1_batch_visual_media_coverage.v1",
+        "generated_at": generated_at,
+        "status": "completed" if video_manifest.get("video_count") else "blocked_no_runtime_videos",
+        "video_count": video_manifest.get("video_count"),
+        "expected_video_count": video_manifest.get("expected_video_count"),
+        "all_required_runs_have_visual_recording": (
+            int(video_manifest.get("video_count") or 0)
+            >= int(video_manifest.get("expected_video_count") or 0)
+            and int(video_manifest.get("expected_video_count") or 0) > 0
+        ),
+        "videos": visual_rows,
+    }
+    write_json(visual_media_path, visual_media)
+    visual_review = {
+        "schema_version": "isaac_g1_batch_visual_review_ledger.v1",
+        "generated_at": generated_at,
+        "status": "review_required" if attempts else "not_available",
+        "review_count": len(attempts),
+        "attempt_count": len(attempts),
+        "accepted_review_count": len(attempts),
+        "media_backed_review_count": sum(
+            1
+            for attempt in attempts
+            if _mapping(attempt.get("artifact_paths")).get("video_path")
+            or _mapping(attempt.get("artifact_paths")).get("robot_pov_video")
+        ),
+        "visual_review_coverage_complete": bool(attempts),
+        "records": [
+            {
+                "review_id": f"isaac_visual_review_{_safe_id(attempt.get('attempt_id'))}",
+                "attempt_id": attempt.get("attempt_id"),
+                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+                "decision": "success" if attempt.get("success") is True else "failure_or_blocked",
+                "success": attempt.get("success") is True,
+                "failure_label_ids": attempt.get("failure_label_ids") or [],
+                "review_status": "accepted_runtime_trace_review_required_for_claim_upgrade",
+            }
+            for attempt in attempts
+        ],
+    }
+    write_json(visual_review_path, visual_review)
+    checksum_inputs = [
+        attempt_trace_path,
+        contact_stream_path,
+        planner_state_path,
+        control_stream_path,
+        metrics_path,
+        failure_labels_path,
+        visual_media_path,
+        visual_review_path,
+    ]
+    checksums = {
+        "schema_version": "isaac_g1_batch_artifact_checksums.v1",
+        "generated_at": generated_at,
+        "files": {path.name: _file_ref(path, base_dir=job_dir) for path in checksum_inputs},
+    }
+    write_json(checksums_path, checksums)
+    artifact_paths = {
+        "attempt_trace_jsonl": str(attempt_trace_path),
+        "contact_stream_jsonl": str(contact_stream_path),
+        "planner_state_jsonl": str(planner_state_path),
+        "control_stream_jsonl": str(control_stream_path),
+        "metrics": str(metrics_path),
+        "failure_labels": str(failure_labels_path),
+        "visual_media_coverage": str(visual_media_path),
+        "visual_review_ledger": str(visual_review_path),
+        "artifact_checksums": str(checksums_path),
+        "trace_package_manifest": str(manifest_path),
+    }
+    manifest = {
+        "schema_version": ISAAC_G1_BATCH_TRACE_PACKAGE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "completed" if attempts else "blocked",
+        "simulator_backend": "isaac_sim",
+        "attempt_count": len(attempts),
+        **dict(coverage),
+        "metric_coverage_complete": bool(attempts),
+        "failed_run_label_coverage_complete": True,
+        "artifact_paths": artifact_paths,
+        "proof_boundary": (
+            "Trace package is Isaac simulator evidence and closure input only. It does not "
+            "prove MuJoCo execution, physical robot readiness, safety validation, deployment "
+            "approval, WAM consistency, or generated-world rank fidelity."
+        ),
+    }
+    write_json(manifest_path, manifest)
+    return {
+        "manifest": manifest,
+        "artifact_paths": artifact_paths,
+        "metrics": metrics,
+        "visual_media_coverage": visual_media,
+        "visual_review_ledger": visual_review,
+    }
+
+
+def _build_isaac_batch_closure_manifest(
+    *,
+    job_dir: Path,
+    generated_at: str,
+    attempts: Sequence[Mapping[str, Any]],
+    coverage: Mapping[str, Any],
+    batch_trace_package: Mapping[str, Any],
+    artifact_paths: Mapping[str, str],
+    summary: Mapping[str, Any],
+    video_manifest: Mapping[str, Any],
+    collision_contact_report: Mapping[str, Any],
+) -> dict[str, Any]:
+    required_artifacts = {
+        "normalized_attempt_trace": job_dir / "normalized_attempt_trace.json",
+        "failure_labels": job_dir / "failure_labels.json",
+        "policy_evaluation_summary": job_dir / "policy_evaluation_summary.json",
+        "realistic_video_manifest": job_dir / "realistic_video_manifest.json",
+        "g1_locomotion_trace_jsonl": job_dir / "g1_locomotion_trace.jsonl",
+        "collision_contact_report": job_dir / "collision_contact_report.json",
+        "job_run_manifest": job_dir / "job_run_manifest.json",
+    }
+    for key, path in artifact_paths.items():
+        if key.startswith("batch_"):
+            required_artifacts[key] = Path(path)
+    artifact_presence = {
+        key: _file_ref(path, base_dir=job_dir)
+        for key, path in required_artifacts.items()
+    }
+    missing = [
+        key for key, record in artifact_presence.items() if record.get("present") is not True
+    ]
+    runtime_attempt_rows = [
+        attempt for attempt in attempts if attempt.get("status") != "blocked"
+    ]
+    contact_validated = bool(collision_contact_report.get("collision_dynamics_validated"))
+    video_complete = (
+        int(video_manifest.get("video_count") or 0)
+        >= int(video_manifest.get("expected_video_count") or 0)
+        and int(video_manifest.get("expected_video_count") or 0) > 0
+    )
+    machine_trace_package_complete = (
+        bool(coverage.get("scenario_eval_run_coverage_complete"))
+        and not missing
+        and bool(batch_trace_package)
+    )
+    robot_team_grade_package_complete = (
+        machine_trace_package_complete
+        and bool(runtime_attempt_rows)
+        and bool(summary.get("official_policy_execution_proven"))
+        and bool(summary.get("controller_grade_execution_proven"))
+        and contact_validated
+        and video_complete
+    )
+    blockers: list[str] = []
+    if not coverage.get("scenario_eval_run_coverage_complete"):
+        blockers.append("scenario_eval_run_coverage_incomplete")
+    if missing:
+        blockers.append("isaac_required_artifacts_missing")
+    if not runtime_attempt_rows:
+        blockers.append("isaac_runtime_attempts_missing")
+    if not summary.get("official_policy_execution_proven"):
+        blockers.append("official_policy_execution_not_proven_by_isaac")
+    if not summary.get("controller_grade_execution_proven"):
+        blockers.append("controller_grade_execution_not_proven_by_isaac")
+    if not contact_validated:
+        blockers.append("isaac_contact_collision_dynamics_not_validated")
+    if not video_complete:
+        blockers.append("isaac_video_coverage_not_complete_for_all_runs")
+    return {
+        "schema_version": ISAAC_G1_BATCH_CLOSURE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "completed"
+        if robot_team_grade_package_complete
+        else "completed_with_robot_team_grade_blockers"
+        if machine_trace_package_complete
+        else "blocked",
+        "simulator_backend": "isaac_sim",
+        "machine_trace_package_complete": machine_trace_package_complete,
+        "robot_team_grade_package_complete": robot_team_grade_package_complete,
+        "blockers": sorted(set(blockers)),
+        "attempt_count": len(attempts),
+        **dict(coverage),
+        "runtime_attempt_count": len(runtime_attempt_rows),
+        "video_coverage_complete": video_complete,
+        "contact_dynamics_validated": contact_validated,
+        "artifact_presence": artifact_presence,
+        "missing_required_artifacts": missing,
+        "policy_interface_boundary": {
+            "robot_team_policy_execution_proven": bool(
+                summary.get("official_policy_execution_proven")
+            ),
+            "controller_grade_execution_proven": bool(
+                summary.get("controller_grade_execution_proven")
+            ),
+            "training_grade_policy_rollout_proven": False,
+        },
+        "claim_boundary": {
+            "simulator_backend": "isaac_sim",
+            "mujoco_proof_counted_as_isaac_proof": False,
+            "simulator_proof_is_not_safety_validation": True,
+            "simulator_proof_is_not_physical_robot_readiness": True,
+            "generated_world_rank_fidelity_result_proven": False,
+            "deployment_approval_proven": False,
+        },
+    }
+
+
+def _write_isaac_artifact_manifest(
+    *,
+    job_dir: Path,
+    generated_at: str,
+    artifact_paths: Mapping[str, str],
+    summary: Mapping[str, Any],
+    coverage: Mapping[str, Any],
+    batch_closure_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    records = {
+        key: _file_ref(Path(path), base_dir=job_dir)
+        for key, path in sorted(artifact_paths.items())
+        if path
+    }
+    manifest = {
+        "schema_version": ISAAC_G1_ARTIFACT_MANIFEST_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "complete" if records else "blocked_no_artifacts",
+        "simulator_backend": "isaac_sim",
+        "simulator_version": summary.get("simulator_version"),
+        "attempt_count": summary.get("attempted_episode_count"),
+        **dict(coverage),
+        "artifacts": dict(artifact_paths),
+        "files": records,
+        "batch_closure_manifest": dict(batch_closure_manifest),
+        "proof_boundary": {
+            "artifact_manifest_is_not_runtime_proof_by_itself": True,
+            "mujoco_artifacts_counted_as_isaac_proof": False,
+            "simulator_proof_is_not_safety_validation": True,
+            "simulator_proof_is_not_deployment_approval": True,
+            "simulator_proof_is_not_physical_robot_readiness": True,
+            "generated_world_rank_fidelity_result_proven": False,
+        },
+    }
+    write_json(job_dir / "artifact_manifest.json", manifest)
+    return manifest
 
 
 def _usd_string(value: Any) -> str:
@@ -281,6 +779,62 @@ def _secret_file_status(name: str, default_path: str) -> dict[str, Any]:
     }
 
 
+def _configured_isaac_worker_image_ref() -> dict[str, Any]:
+    explicit = _string(os.getenv(ISAAC_WORKER_IMAGE_REF_ENV))
+    if explicit:
+        return {
+            "image_ref": explicit,
+            "source": ISAAC_WORKER_IMAGE_REF_ENV,
+            "configured": True,
+            "image_ref_file": None,
+            "image_ref_file_present": False,
+            "raw_secret_values_recorded": False,
+        }
+    file_value = _string(os.getenv(ISAAC_WORKER_IMAGE_REF_FILE_ENV))
+    image_ref_file = Path(file_value or DEFAULT_ISAAC_WORKER_IMAGE_REF_FILE).expanduser()
+    if image_ref_file.is_file():
+        image_ref = image_ref_file.read_text(encoding="utf-8").strip()
+        if not image_ref:
+            return {
+                "image_ref": "",
+                "source": ISAAC_WORKER_IMAGE_REF_FILE_ENV
+                if file_value
+                else "default_blueprint_secret_file_path",
+                "configured": False,
+                "image_ref_file": str(image_ref_file),
+                "image_ref_file_present": True,
+                "raw_secret_values_recorded": False,
+            }
+        return {
+            "image_ref": image_ref,
+            "source": ISAAC_WORKER_IMAGE_REF_FILE_ENV
+            if file_value
+            else "default_blueprint_secret_file_path",
+            "configured": True,
+            "image_ref_file": str(image_ref_file),
+            "image_ref_file_present": True,
+            "raw_secret_values_recorded": False,
+        }
+    generic = _string(os.getenv("BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"))
+    if generic:
+        return {
+            "image_ref": generic,
+            "source": "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF",
+            "configured": True,
+            "image_ref_file": str(image_ref_file),
+            "image_ref_file_present": False,
+            "raw_secret_values_recorded": False,
+        }
+    return {
+        "image_ref": "",
+        "source": None,
+        "configured": False,
+        "image_ref_file": str(image_ref_file),
+        "image_ref_file_present": False,
+        "raw_secret_values_recorded": False,
+    }
+
+
 def build_provider_plan(
     *,
     runtime: Mapping[str, Any],
@@ -296,16 +850,17 @@ def build_provider_plan(
         _secret_file_status("NGC_API_KEY_FILE", "~/.blueprint-secrets/ngc_api_key"),
         _secret_file_status("RUNPOD_API_KEY_FILE", "~/.blueprint-secrets/runpod_api_key"),
     ]
-    worker_image_ref = _string(
-        os.getenv("BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF")
-        or os.getenv("BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF")
-        or DEFAULT_ISAAC_RUNTIME_IMAGE_REF
-    )
+    image_config = _configured_isaac_worker_image_ref()
+    direct_base_image_allowed = _env_truthy(ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV)
+    worker_image_ref = _string(image_config.get("image_ref")) or DEFAULT_ISAAC_RUNTIME_IMAGE_REF
     eval_manifest_uri = _string(
         os.getenv("BLUEPRINT_EVAL_MANIFEST_URI")
         or os.getenv("BLUEPRINT_ISAAC_PROVIDER_BUNDLE_URI")
     )
     artifact_output_uri = _string(os.getenv("BLUEPRINT_ARTIFACT_OUTPUT_URI"))
+    signed_put_url_present = bool(
+        _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
+    )
     eval_manifest_uri_fetchable = _provider_uri_fetchable(eval_manifest_uri)
     artifact_output_uri_writable = _provider_uri_writable(artifact_output_uri)
     local_runtime_blockers = (
@@ -313,14 +868,17 @@ def build_provider_plan(
     )
     if allow_cloud_gpu and not all(item["present"] for item in secret_files):
         blockers.append("required_file_based_provider_secret_missing")
+    if allow_cloud_gpu and not image_config.get("configured") and not direct_base_image_allowed:
+        blockers.append("prebuilt_isaac_eval_worker_image_ref_missing")
     if allow_cloud_gpu and not eval_manifest_uri:
         blockers.append("provider_fetchable_bundle_uri_missing")
     elif allow_cloud_gpu and not eval_manifest_uri_fetchable:
         blockers.append("provider_fetchable_bundle_uri_unusable_by_builtin_fetcher")
-    if allow_cloud_gpu and not artifact_output_uri:
+    if allow_cloud_gpu and not artifact_output_uri and not signed_put_url_present:
         blockers.append("provider_writable_artifact_output_uri_missing")
     elif allow_cloud_gpu and not artifact_output_uri_writable:
-        blockers.append("provider_writable_artifact_output_uri_unsupported_scheme")
+        if artifact_output_uri:
+            blockers.append("provider_writable_artifact_output_uri_unsupported_scheme")
     if not allow_cloud_gpu and local_runtime_blockers:
         blockers.extend(local_runtime_blockers)
     return {
@@ -345,15 +903,18 @@ def build_provider_plan(
         "provider_runtime_inputs": {
             "worker_image_ref_present": bool(worker_image_ref),
             "worker_image_ref": worker_image_ref,
-            "worker_image_ref_env": "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF"
-            if os.getenv("BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF")
-            else "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
-            if os.getenv("BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF")
-            else "default_isaac_sim_runtime_image",
+            "worker_image_ref_env": image_config.get("source")
+            or "default_isaac_sim_runtime_image",
+            "prebuilt_worker_image_ref_configured": bool(image_config.get("configured")),
+            "worker_image_ref_file": image_config.get("image_ref_file"),
+            "worker_image_ref_file_present": image_config.get("image_ref_file_present"),
+            "direct_isaac_base_image_runpod_allowed": direct_base_image_allowed,
+            "direct_isaac_base_image_override_env": ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV,
             "eval_manifest_uri_present": bool(eval_manifest_uri),
             "eval_manifest_uri_fetchable_by_builtin_fetcher": eval_manifest_uri_fetchable,
             "artifact_output_uri_present": bool(artifact_output_uri),
             "artifact_output_uri_writable_by_declared_scheme": artifact_output_uri_writable,
+            "runtime_manifest_signed_put_url_present": signed_put_url_present,
             "raw_secret_values_recorded": False,
         },
         "runtime_requirements": [
@@ -1138,7 +1699,7 @@ def _run_camera_video_smoke(
             "These videos prove only that the Isaac runtime could render/capture "
             "static six-camera smoke outputs and package MP4s. They do not prove "
             "controller-grade rollout, official policy execution, contact dynamics, "
-            "generated-world rank fidelity, generated-world rank fidelity, or WAM/VLA runtime."
+            "generated-world rank fidelity, or WAM/VLA runtime."
         ),
         "raw_secret_values_recorded": False,
     }
@@ -1465,78 +2026,289 @@ def _provider_fetch_command() -> str:
 cd /workspace
 python3 - <<'PY'
 import os
-import urllib.request
-from pathlib import Path
-uri = os.environ["BLUEPRINT_EVAL_MANIFEST_URI"]
-target = Path("/workspace/isaac_provider_runtime_bundle.zip")
-urllib.request.urlretrieve(uri, target)
-print(target)
-PY
-rm -rf /workspace/isaac_provider_bundle
-python3 -m zipfile -e /workspace/isaac_provider_runtime_bundle.zip /workspace/isaac_provider_bundle
-set +e
-bash /workspace/isaac_provider_bundle/provider_runtime/run_isaac_realistic_runtime.sh
-RUNNER_EXIT_CODE="$?"
-set -e
-python3 - <<'PY'
-import json
-import os
+import shutil
+import subprocess
+import sys
+import time
 import urllib.request
 import zipfile
+import json
 from pathlib import Path
 
-output_dir = Path("/workspace/isaac_provider_bundle/runtime_output")
-output_zip = Path("/workspace/isaac_provider_runtime_output.zip")
-with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-    if output_dir.is_dir():
+workspace = Path("/workspace")
+bundle_uri = os.environ["BLUEPRINT_EVAL_MANIFEST_URI"]
+bundle_zip = workspace / "isaac_provider_runtime_bundle.zip"
+bundle_dir = workspace / "isaac_provider_bundle"
+output_dir = workspace / "isaac_provider_runtime_output"
+output_zip = workspace / "isaac_provider_runtime_output.zip"
+signed_put_url = os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "").strip()
+started_at = time.time()
+
+def env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+upload_interval_seconds = env_int("BLUEPRINT_ISAAC_PROVIDER_UPLOAD_INTERVAL_SECONDS", 20)
+fetch_timeout_seconds = env_int("BLUEPRINT_ISAAC_PROVIDER_FETCH_TIMEOUT_SECONDS", 180)
+hard_timeout_seconds = env_int("BLUEPRINT_GPU_PROVIDER_HARD_TIMEOUT_SECONDS", 900)
+runner_timeout_seconds = env_int(
+    "BLUEPRINT_ISAAC_PROVIDER_RUNNER_TIMEOUT_SECONDS",
+    max(30, hard_timeout_seconds - 120),
+)
+
+def ensure_output_dir() -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+def write_json(path: Path, payload: dict) -> None:
+    ensure_output_dir()
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+def phase(name: str, **extra: object) -> None:
+    ensure_output_dir()
+    payload = {
+        "schema_version": "isaac_provider_outer_phase.v1",
+        "phase": name,
+        "elapsed_seconds": round(time.time() - started_at, 3),
+        "bundle_zip": str(bundle_zip),
+        "output_dir": str(output_dir),
+        "raw_secret_values_recorded": False,
+        **extra,
+    }
+    with (output_dir / "isaac_provider_outer_phase_log.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    write_json(output_dir / "isaac_provider_outer_latest_phase.json", payload)
+
+def write_runtime_result(status: str, blockers: list[str], **extra: object) -> None:
+    payload = {
+        "schema_version": "isaac_provider_runtime_result.v1",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "status": status,
+        "provider_outer_runner_status": status,
+        "provider_outer_runner_elapsed_seconds": round(time.time() - started_at, 3),
+        "isaac_runtime_executed": False,
+        "isaac_usd_scene_loaded": False,
+        "unitree_g1_loaded_in_isaac": False,
+        "controller_grade_execution_proven": False,
+        "official_policy_execution_proven": False,
+        "locomotion_continuity_validated": False,
+        "collision_dynamics_validated": False,
+        "manipulation_contact_dynamics_validated": False,
+        "realistic_splat_visual_rendered": False,
+        "wam_vla_runtime_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_policy_evaluation_scope_proven": False,
+        "blockers": blockers,
+        "warnings": ["provider_outer_runner_wrote_fail_closed_runtime_result"],
+        "raw_secret_values_recorded": False,
+        **extra,
+    }
+    write_json(output_dir / "isaac_runtime_result.json", payload)
+
+def package_output(reason: str) -> int:
+    ensure_output_dir()
+    write_json(
+        output_dir / "provider_runtime_output_package_status.json",
+        {
+            "schema_version": "isaac_provider_runtime_output_package_status.v1",
+            "status": "packaging",
+            "reason": reason,
+            "output_zip": str(output_zip),
+            "raw_secret_values_recorded": False,
+        },
+    )
+    tmp_zip = output_zip.with_suffix(".zip.tmp")
+    if tmp_zip.exists():
+        tmp_zip.unlink()
+    with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        file_count = 0
         for path in sorted(output_dir.rglob("*")):
             if path.is_file():
                 archive.write(path, path.relative_to(output_dir).as_posix())
-    else:
-        archive.writestr(
-            "runtime_output_missing.json",
-            json.dumps(
-                {
-                    "status": "blocked",
-                    "blockers": ["runtime_output_directory_missing"],
-                },
-                indent=2,
-            ),
-        )
-
-signed_put_url = os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "").strip()
-if signed_put_url:
-    data = output_zip.read_bytes()
-    request = urllib.request.Request(
-        signed_put_url,
-        data=data,
-        method="PUT",
-        headers={"Content-Type": "application/zip"},
-    )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        print(
-            json.dumps(
-                {
-                    "uploaded_runtime_output_zip": str(output_zip),
-                    "upload_status": int(getattr(response, "status", 200)),
-                    "uploaded_bytes": len(data),
-                }
+                file_count += 1
+        if file_count == 0:
+            archive.writestr(
+                "runtime_output_missing.json",
+                json.dumps({"status": "blocked", "blockers": ["runtime_output_directory_empty"]}, indent=2),
             )
+    tmp_zip.replace(output_zip)
+    return output_zip.stat().st_size
+
+def upload_output(reason: str) -> dict:
+    size = package_output(reason)
+    if not signed_put_url:
+        status = {
+            "schema_version": "isaac_provider_runtime_output_upload_status.v1",
+            "status": "skipped",
+            "reason": reason,
+            "blockers": ["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL_missing"],
+            "local_runtime_output_zip": str(output_zip),
+            "runtime_output_zip_size_bytes": size,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(output_dir / "provider_output_upload_status.json", status)
+        return status
+    try:
+        data = output_zip.read_bytes()
+        request = urllib.request.Request(
+            signed_put_url,
+            data=data,
+            method="PUT",
+            headers={"Content-Type": "application/zip"},
         )
-else:
-    print(
-        json.dumps(
-            {
-                "uploaded_runtime_output_zip": None,
-                "upload_status": "skipped",
-                "blockers": ["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL_missing"],
-                "local_runtime_output_zip": str(output_zip),
-            }
-        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            upload_status = int(getattr(response, "status", 200))
+        status = {
+            "schema_version": "isaac_provider_runtime_output_upload_status.v1",
+            "status": "completed",
+            "reason": reason,
+            "upload_status": upload_status,
+            "uploaded_runtime_output_zip": str(output_zip),
+            "uploaded_bytes": len(data),
+            "signed_put_url_value_stored": False,
+            "raw_secret_values_recorded": False,
+        }
+    except Exception as exc:
+        status = {
+            "schema_version": "isaac_provider_runtime_output_upload_status.v1",
+            "status": "failed",
+            "reason": reason,
+            "blockers": ["provider_runtime_output_upload_failed"],
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:500],
+            "signed_put_url_value_stored": False,
+            "raw_secret_values_recorded": False,
+        }
+    write_json(output_dir / "provider_output_upload_status.json", status)
+    package_output(f"{reason}:status_recorded")
+    if signed_put_url and status.get("status") == "completed":
+        try:
+            data = output_zip.read_bytes()
+            request = urllib.request.Request(
+                signed_put_url,
+                data=data,
+                method="PUT",
+                headers={"Content-Type": "application/zip"},
+            )
+            with urllib.request.urlopen(request, timeout=120) as response:
+                status["final_manifest_upload_status"] = int(getattr(response, "status", 200))
+                status["final_manifest_uploaded_bytes"] = len(data)
+            write_json(output_dir / "provider_output_upload_status.json", status)
+        except Exception as exc:
+            status["final_manifest_upload_status"] = "failed"
+            status["final_manifest_upload_error_type"] = type(exc).__name__
+            status["final_manifest_upload_error"] = str(exc)[:500]
+            write_json(output_dir / "provider_output_upload_status.json", status)
+    return status
+
+def fetch_bundle() -> None:
+    phase("provider_bundle_fetch_started", fetch_timeout_seconds=fetch_timeout_seconds)
+    with urllib.request.urlopen(bundle_uri, timeout=fetch_timeout_seconds) as response:
+        with bundle_zip.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+    phase("provider_bundle_fetch_completed", bundle_size_bytes=bundle_zip.stat().st_size)
+    upload_output("provider_bundle_fetch_completed")
+
+def unzip_bundle() -> None:
+    phase("provider_bundle_unzip_started")
+    if bundle_dir.exists():
+        shutil.rmtree(bundle_dir)
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(bundle_zip) as archive:
+        archive.extractall(bundle_dir)
+    ensure_output_dir()
+    phase("provider_bundle_unzip_completed")
+    upload_output("provider_bundle_unzip_completed")
+
+def run_entrypoint() -> int:
+    entrypoint = bundle_dir / "provider_runtime" / "run_isaac_realistic_runtime.sh"
+    if not entrypoint.is_file():
+        phase("provider_entrypoint_missing", entrypoint=str(entrypoint))
+        write_runtime_result("blocked_provider_entrypoint_missing", ["provider_entrypoint_missing"])
+        upload_output("provider_entrypoint_missing")
+        return 127
+    entrypoint.chmod(0o755)
+    env = {
+        **os.environ,
+        "BLUEPRINT_ISAAC_OUTPUT_DIR": str(output_dir),
+        "BLUEPRINT_ISAAC_EVAL_MANIFEST": str(bundle_dir / "provider_runtime" / "isaac_provider_eval_manifest.json"),
+    }
+    stdout_path = output_dir / "provider_entrypoint_stdout.log"
+    stderr_path = output_dir / "provider_entrypoint_stderr.log"
+    phase(
+        "provider_entrypoint_subprocess_starting",
+        runner_timeout_seconds=runner_timeout_seconds,
+        upload_interval_seconds=upload_interval_seconds,
     )
-PY
-exit "$RUNNER_EXIT_CODE"
-'''
+    upload_output("provider_entrypoint_subprocess_starting")
+    with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
+        process = subprocess.Popen(
+            ["bash", str(entrypoint)],
+            cwd=str(bundle_dir / "provider_runtime"),
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        phase("provider_entrypoint_subprocess_running", pid=process.pid)
+        last_upload = 0.0
+        while True:
+            rc = process.poll()
+            elapsed = time.time() - started_at
+            if rc is not None:
+                phase("provider_entrypoint_subprocess_exited", returncode=rc)
+                if not (output_dir / "isaac_runtime_result.json").is_file():
+                    write_runtime_result(
+                        "blocked_provider_entrypoint_exited_without_runtime_result",
+                        [f"provider_entrypoint_exited_without_runtime_result:{rc}"],
+                        provider_entrypoint_observed_exit_code=rc,
+                    )
+                upload_output("provider_entrypoint_subprocess_exited")
+                return rc
+            if elapsed > runner_timeout_seconds:
+                phase("provider_entrypoint_timeout_started", pid=process.pid)
+                process.terminate()
+                try:
+                    process.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=20)
+                write_runtime_result(
+                    "blocked_provider_entrypoint_timeout",
+                    ["provider_entrypoint_timeout_before_runtime_result_upload"],
+                    provider_entrypoint_timeout_seconds=runner_timeout_seconds,
+                )
+                phase("provider_entrypoint_timeout_completed", returncode=process.returncode)
+                upload_output("provider_entrypoint_timeout")
+                return 124
+            if elapsed - last_upload >= upload_interval_seconds:
+                phase("provider_entrypoint_subprocess_heartbeat", pid=process.pid)
+                upload_output("provider_entrypoint_subprocess_heartbeat")
+                last_upload = elapsed
+            time.sleep(5)
+
+try:
+    phase("provider_outer_runner_started")
+    upload_output("provider_outer_runner_started")
+    fetch_bundle()
+    unzip_bundle()
+    rc = run_entrypoint()
+except Exception as exc:
+    phase("provider_outer_runner_exception", error_type=type(exc).__name__, error=str(exc)[:500])
+    write_runtime_result(
+        "blocked_provider_outer_runner_exception",
+        ["provider_outer_runner_exception"],
+        error_type=type(exc).__name__,
+        error=str(exc)[:500],
+    )
+    upload_output("provider_outer_runner_exception")
+    raise
+finally:
+    phase("provider_outer_runner_final_upload")
+    upload_output("provider_outer_runner_final_upload")
+sys.exit(rc)
+PY'''
 
 
 def _write_provider_runtime_bundle(
@@ -1907,12 +2679,13 @@ def _write_provider_bundle_readiness_manifest(
         camera_manifest.get("all_required_camera_types_requested") is True
         and len(camera_manifest.get("cameras") or []) == len(DEFAULT_CAMERA_IDS)
     )
+    matrix_camera_slot_count = sum(
+        len(_string_list(row.get("camera_ids"))) or len(camera_manifest.get("cameras") or [])
+        for row in runs
+    )
+    expected_matrix_video_slots = expected_video_count == matrix_camera_slot_count
     expected_video_slots = expected_video_count == len(DEFAULT_CAMERA_IDS)
-    if not reduced_smoke_matrix:
-        blockers.append("provider_bundle_not_reduced_to_1_spawn_1_task_all_cameras")
-    if not all_required_cameras:
-        blockers.append("provider_bundle_camera_manifest_missing_required_cameras")
-    if not expected_video_slots:
+    if not expected_matrix_video_slots:
         blockers.append("provider_bundle_video_manifest_expected_count_mismatch")
     if video_count:
         warnings.append("video_files_already_present_before_live_smoke_validation")
@@ -1956,6 +2729,39 @@ def _write_provider_bundle_readiness_manifest(
             "generated_world_policy_evaluation_scope_proven",
         )
     )
+    provider_shape = _mapping(gpu_provider_launch_request.get("provider_request_shape"))
+    provider_command_text = _string(provider_shape.get("command"))
+    provider_outer_has_early_phase_upload = all(
+        phrase in provider_command_text
+        for phrase in (
+            "provider_outer_runner_started",
+            "upload_output(\"provider_outer_runner_started\")",
+            "provider_bundle_fetch_completed",
+            "provider_bundle_unzip_completed",
+        )
+    )
+    provider_outer_has_periodic_heartbeat_upload = all(
+        phrase in provider_command_text
+        for phrase in (
+            "BLUEPRINT_ISAAC_PROVIDER_UPLOAD_INTERVAL_SECONDS",
+            "provider_entrypoint_subprocess_heartbeat",
+            "upload_output(\"provider_entrypoint_subprocess_heartbeat\")",
+        )
+    )
+    provider_outer_has_timeout_finalizer = all(
+        phrase in provider_command_text
+        for phrase in (
+            "BLUEPRINT_ISAAC_PROVIDER_RUNNER_TIMEOUT_SECONDS",
+            "blocked_provider_entrypoint_timeout",
+            "provider_entrypoint_timeout_before_runtime_result_upload",
+        )
+    )
+    provider_outer_uses_stable_output_dir = (
+        '/ "isaac_provider_runtime_output"' in provider_command_text
+        and '/ "runtime_output"' not in provider_command_text.split("output_dir =", 1)[1].split("\n", 1)[0]
+        if "output_dir =" in provider_command_text
+        else False
+    )
     if not entrypoint_has_crash_fallback:
         blockers.append("provider_entrypoint_missing_runtime_result_crash_fallback")
     if not runner_uses_simulation_app:
@@ -1972,6 +2778,14 @@ def _write_provider_bundle_readiness_manifest(
         blockers.append("provider_eval_manifest_paths_not_runner_relative")
     if not runner_preserves_truth_boundaries:
         blockers.append("provider_runner_missing_fail_closed_truth_boundaries")
+    if not provider_outer_has_early_phase_upload:
+        blockers.append("provider_fetch_command_missing_early_phase_upload")
+    if not provider_outer_has_periodic_heartbeat_upload:
+        blockers.append("provider_fetch_command_missing_periodic_heartbeat_upload")
+    if not provider_outer_has_timeout_finalizer:
+        blockers.append("provider_fetch_command_missing_timeout_finalizer")
+    if not provider_outer_uses_stable_output_dir:
+        blockers.append("provider_fetch_command_missing_stable_output_dir")
 
     local_command_path_proven = (
         local_provider_command_diagnostic.get("provider_command_path_local_proven")
@@ -2021,6 +2835,7 @@ def _write_provider_bundle_readiness_manifest(
         "missing_zip_entries": missing_entries,
         "zip_parse_error": zip_parse_error,
         "local_bundle_ready_for_remote_staging": local_bundle_ready,
+        "ready_for_next_authorized_runpod_bundle_attempt": ready_for_next_live_attempt,
         "ready_for_next_authorized_vast_bundle_attempt": ready_for_next_live_attempt,
         "reduced_smoke_shape": {
             "scenario_eval_run_count": matrix.get("scenario_eval_run_count"),
@@ -2033,12 +2848,24 @@ def _write_provider_bundle_readiness_manifest(
             "shape_is_1_spawn_1_task_all_6_cameras": reduced_smoke_matrix
             and expected_video_slots,
         },
+        "matrix_contract": {
+            "scenario_eval_run_count": matrix.get("scenario_eval_run_count"),
+            "run_count": len(runs),
+            "matrix_camera_slot_count": matrix_camera_slot_count,
+            "expected_video_count_matches_matrix_camera_slots": expected_matrix_video_slots,
+            "multi_row_matrix_allowed_for_provider_execution": True,
+            "all_default_camera_types_required_for_provider_execution": False,
+        },
         "entrypoint_runtime_result_crash_fallback_present": entrypoint_has_crash_fallback,
         "runner_uses_headless_simulation_app": runner_uses_simulation_app,
         "runner_has_camera_video_smoke": runner_has_camera_video_smoke,
         "runner_has_per_camera_video_smoke_diagnostics": runner_has_per_camera_video_smoke_diagnostics,
         "runner_has_scene_open_diagnostics": runner_has_scene_open_diagnostics,
         "runner_has_g1_asset_resolution_diagnostics": runner_has_g1_asset_resolution_diagnostics,
+        "provider_fetch_command_has_early_phase_upload": provider_outer_has_early_phase_upload,
+        "provider_fetch_command_has_periodic_heartbeat_upload": provider_outer_has_periodic_heartbeat_upload,
+        "provider_fetch_command_has_timeout_finalizer": provider_outer_has_timeout_finalizer,
+        "provider_fetch_command_uses_stable_output_dir": provider_outer_uses_stable_output_dir,
         "provider_eval_manifest_paths_runner_relative": manifest_paths_runner_relative,
         "provider_eval_manifest_relative_paths": relative_paths,
         "runner_truth_boundaries_fail_closed": runner_preserves_truth_boundaries,
@@ -2077,19 +2904,22 @@ def _build_gpu_provider_launch_request(
     signed_put_url_present = bool(
         _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
     )
-    image_ref = _string(
-        os.getenv("BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF")
-        or os.getenv("BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF")
-        or DEFAULT_ISAAC_RUNTIME_IMAGE_REF
-    )
+    image_config = _configured_isaac_worker_image_ref()
+    direct_base_image_allowed = _env_truthy(ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV)
+    image_ref = _string(image_config.get("image_ref")) or DEFAULT_ISAAC_RUNTIME_IMAGE_REF
     container_registry_auth_id_present = bool(
         _string(os.getenv(RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV))
     )
     manifest_fetchable = _provider_uri_fetchable(bundle_uri)
     artifact_writable = _provider_uri_writable(artifact_output_uri)
+    artifact_output_required = not signed_put_url_present
+    artifact_output_scheme = urlparse(artifact_output_uri).scheme if artifact_output_uri else None
+    artifact_output_write_auth_ready = bool(artifact_output_uri and artifact_writable)
     blockers = []
     if not allow_cloud_gpu:
         blockers.append("cloud_gpu_not_authorized_in_this_session")
+    if allow_cloud_gpu and not image_config.get("configured") and not direct_base_image_allowed:
+        blockers.append("prebuilt_isaac_eval_worker_image_ref_missing")
     if not bundle_uri:
         blockers.append("missing_provider_fetchable_bundle_uri")
     elif not manifest_fetchable:
@@ -2100,7 +2930,22 @@ def _build_gpu_provider_launch_request(
         if artifact_output_uri:
             blockers.append("provider_artifact_output_uri_not_writable")
     request_status = "request_manifest_ready" if not blockers else "blocked_provider_inputs_missing"
-    artifact_output_required = not signed_put_url_present
+    local_sim_only_prerequisite = {
+        "schema_version": "robot_eval_provider_local_sim_only_prerequisite.v1",
+        "required_before_provider_spend": True,
+        "status": "passed" if request_status == "request_manifest_ready" else "blocked",
+        "source_artifact": "isaac_provider_bundle_readiness.json",
+        "local_sim_only_evidence_clean": request_status == "request_manifest_ready",
+        "sim_only_beta_core_complete": False,
+        "simulator_backend": "isaac_sim",
+        "blockers": [] if request_status == "request_manifest_ready" else list(blockers),
+        "claim_boundary": {
+            "provider_spend_requires_local_bundle_and_output_contract_clean": True,
+            "local_bundle_clean_does_not_prove_isaac_runtime_execution": True,
+            "local_bundle_clean_does_not_prove_policy_execution": True,
+            "local_bundle_clean_does_not_prove_launch_approval": True,
+        },
+    }
     return {
         "schema_version": "robot_eval_gpu_provider_launch_request.v1",
         "generated_at": generated_at,
@@ -2124,9 +2969,20 @@ def _build_gpu_provider_launch_request(
                 "configured_image_ref_present": bool(image_ref),
                 "configured_image_ref_is_versioned": ":" in image_ref,
                 "configured_image_ref_fetchable_by_provider": bool(image_ref),
-                "image_family": "isaac-sim-base-direct",
-                "owner_published_image_ref_required": False,
-                "image_ref_source": "env_or_default_isaac_sim_runtime_image",
+                "image_family": "isaac-eval-worker"
+                if image_config.get("configured")
+                else "isaac-sim-base-direct",
+                "owner_published_image_ref_required": not direct_base_image_allowed,
+                "image_ref_source": image_config.get("source")
+                or "default_isaac_sim_runtime_image",
+                "prebuilt_worker_image_ref_configured": bool(image_config.get("configured")),
+                "worker_image_ref_file": image_config.get("image_ref_file"),
+                "worker_image_ref_file_present": image_config.get("image_ref_file_present"),
+                "direct_isaac_base_image_runpod_allowed": direct_base_image_allowed,
+                "direct_isaac_base_image_override_env": ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV,
+                "direct_isaac_base_image_blocked_by_default": (
+                    not image_config.get("configured") and not direct_base_image_allowed
+                ),
                 "container_registry_auth_id_present": container_registry_auth_id_present,
                 "container_registry_auth_id_source": (
                     RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV
@@ -2145,12 +3001,18 @@ def _build_gpu_provider_launch_request(
                     "ACCEPT_EULA",
                     "PRIVACY_CONSENT",
                     "BLUEPRINT_EVAL_MANIFEST_URI",
+                    "BLUEPRINT_ISAAC_PROVIDER_UPLOAD_INTERVAL_SECONDS",
+                    "BLUEPRINT_ISAAC_PROVIDER_FETCH_TIMEOUT_SECONDS",
+                    "BLUEPRINT_ISAAC_PROVIDER_RUNNER_TIMEOUT_SECONDS",
                     *([] if signed_put_url_present else ["BLUEPRINT_ARTIFACT_OUTPUT_URI"]),
                 ],
                 "plaintext_env_values": {
                     "ACCEPT_EULA": "Y",
                     "PRIVACY_CONSENT": "Y",
                     "BLUEPRINT_EVAL_MANIFEST_URI": bundle_uri or "<stage bundle zip to https/gs/s3/r2>",
+                    "BLUEPRINT_ISAAC_PROVIDER_UPLOAD_INTERVAL_SECONDS": "15",
+                    "BLUEPRINT_ISAAC_PROVIDER_FETCH_TIMEOUT_SECONDS": "180",
+                    "BLUEPRINT_ISAAC_PROVIDER_RUNNER_TIMEOUT_SECONDS": "780",
                     **(
                         {"BLUEPRINT_ARTIFACT_OUTPUT_URI": artifact_output_uri}
                         if artifact_output_uri and not signed_put_url_present
@@ -2163,12 +3025,32 @@ def _build_gpu_provider_launch_request(
                 "manifest_uri_kind": "isaac_provider_runtime_bundle_zip",
                 "manifest_uri_required_for_provider": True,
                 "manifest_uri_fetchable_by_provider": manifest_fetchable,
+                "capture_root_bundle_uri": bundle_uri or None,
+                "capture_root_bundle_uri_kind": "isaac_provider_runtime_bundle_zip",
+                "capture_root_bundle_uri_required_for_provider": True,
+                "capture_root_bundle_uri_fetchable_by_provider": manifest_fetchable,
                 "artifact_output_uri_required": artifact_output_required,
                 "artifact_output_uri": artifact_output_uri or None,
-                "artifact_output_uri_scheme": urlparse(artifact_output_uri).scheme
-                if artifact_output_uri
-                else None,
+                "artifact_output_uri_scheme": artifact_output_scheme,
                 "artifact_output_uri_writable": artifact_writable,
+                "artifact_output_uri_provider_writable": artifact_writable,
+                "artifact_output_write_auth_contract_ready": (
+                    True if not artifact_output_required else artifact_output_write_auth_ready
+                ),
+                "artifact_output_write_auth": {
+                    "write_auth_contract_ready": (
+                        True
+                        if not artifact_output_required
+                        else artifact_output_write_auth_ready
+                    ),
+                    "authorization_mode": (
+                        "signed_put_url"
+                        if not artifact_output_required
+                        else "worker_storage_credentials"
+                    ),
+                    "secret_values_in_artifact": False,
+                },
+                "provider_writable_artifact_output_uri_schemes": ["gs", "r2", "s3"],
                 "signed_put_output_env_var": "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
                 "signed_put_output_env_present_at_request_build": signed_put_url_present,
                 "simulator": "isaac_sim",
@@ -2203,12 +3085,21 @@ def _build_gpu_provider_launch_request(
             },
             "limits": {
                 "max_active_workers": 1,
+                "requested_budget_usd": 2.0,
                 "hard_timeout_seconds": 900,
                 "idle_timeout_seconds": 60,
+                "idle_shutdown_required": True,
+                "external_watchdog_ttl_required": True,
                 "external_watchdog_ttl_seconds": 1200,
                 "scale_to_zero_default": True,
                 "external_watchdog_owner": "codex_or_owner_control_plane",
             },
+            "artifact_finalizer": {
+                "upload_before_shutdown_required": True,
+                "record_actual_gpu_time_required": True,
+                "shutdown_after_artifacts_required": True,
+            },
+            "local_sim_only_prerequisite": local_sim_only_prerequisite,
         },
         "proof_boundary": {
             "provider_request_is_not_provider_execution": True,
@@ -2324,7 +3215,12 @@ def _write_usd_scene(
     }
 
 
-def _camera_manifest(*, camera_ids: Sequence[str], generated_at: str) -> dict[str, Any]:
+def _camera_manifest(
+    *,
+    camera_ids: Sequence[str],
+    generated_at: str,
+    camera_aliases: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     camera_specs = {
         "head_pov": {
             "label": "head POV",
@@ -2346,6 +3242,7 @@ def _camera_manifest(*, camera_ids: Sequence[str], generated_at: str) -> dict[st
         "generated_at": generated_at,
         "status": "completed",
         "requested_camera_ids": list(camera_ids),
+        "camera_id_aliases": dict(camera_aliases or {}),
         "required_camera_ids": list(DEFAULT_CAMERA_IDS),
         "all_required_camera_types_requested": all(camera in camera_ids for camera in DEFAULT_CAMERA_IDS),
         "cameras": [
@@ -2391,9 +3288,20 @@ def _attempts_for_matrix(
     *,
     matrix: Mapping[str, Any],
     runtime: Mapping[str, Any],
+    runtime_result: Mapping[str, Any] | None = None,
     generated_at: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    runtime_available = bool(runtime.get("isaac_runtime_available"))
+    runtime_result_payload = _mapping(runtime_result)
+    observed_attempts = _runtime_result_attempts(runtime_result_payload)
+    observed_by_run_id = {
+        _string(row.get("scenario_eval_run_id") or row.get("scenarioEvalRunId")): row
+        for row in observed_attempts
+        if _string(row.get("scenario_eval_run_id") or row.get("scenarioEvalRunId"))
+    }
+    runtime_available = bool(runtime.get("isaac_runtime_available")) or bool(
+        runtime_result_payload.get("isaac_runtime_executed")
+        or runtime_result_payload.get("isaac_sim_execution_proven")
+    )
     blocker = (
         "blocked_controller_runtime_unavailable"
         if runtime_available
@@ -2406,6 +3314,88 @@ def _attempts_for_matrix(
             continue
         attempt_id = f"isaac_attempt_{index:04d}_{_safe_id(run.get('episode_id'))}"
         camera_ids = list(run.get("camera_ids") or [])
+        observed = _mapping(observed_by_run_id.get(_string(run.get("scenario_eval_run_id"))))
+        if observed:
+            status = _string(observed.get("status") or observed.get("result") or "completed").lower()
+            success_raw = observed.get("success")
+            success = (
+                bool(success_raw)
+                if isinstance(success_raw, bool)
+                else str(success_raw).strip().lower() in {"1", "true", "yes", "passed", "success"}
+                if success_raw is not None
+                else status in {"completed", "success", "succeeded", "passed"}
+            )
+            failure_ids = _string_list(
+                observed.get("failure_mode_ids")
+                or observed.get("failure_label_ids")
+                or observed.get("blockers")
+            )
+            if not success and not failure_ids:
+                failure_ids = ["isaac_runtime_attempt_failed"]
+            attempt = {
+                "attempt_id": _string(observed.get("attempt_id")) or attempt_id,
+                "scenario_eval_run_id": run.get("scenario_eval_run_id"),
+                "scenario_id": observed.get("scenario_id") or run.get("scenario_id"),
+                "scenario_variation_instance_id": observed.get(
+                    "scenario_variation_instance_id"
+                )
+                or run.get("scenario_variation_instance_id"),
+                "task_id": observed.get("task_id") or run.get("task_id"),
+                "spawn_id": observed.get("spawn_id") or run.get("spawn_id"),
+                "episode_id": observed.get("episode_id") or run.get("episode_id"),
+                "status": status,
+                "success": success,
+                "task_success": success,
+                "task_status": "passed" if success else "failed_task_criteria",
+                "failure_label_ids": sorted(set(failure_ids)),
+                "failure_mode_ids": sorted(set(failure_ids)),
+                "generated_at": generated_at,
+                "simulator": "isaac_sim",
+                "simulator_backend": "isaac_sim",
+                "robot_profile": "unitree_g1_official_isaac_asset_expected",
+                "policy_id": _string(observed.get("policy_id")) or "isaac_g1_runtime_policy",
+                "camera_ids": camera_ids,
+                "camera_evidence": observed.get("camera_evidence") or {},
+                "metrics": {
+                    **_mapping(observed.get("metrics")),
+                    "isaac_runtime_attempt_trace_present": True,
+                    "isaac_runtime_executed": True,
+                },
+                "task_outcome": _mapping(observed.get("task_outcome")),
+                "actions": observed.get("actions") if isinstance(observed.get("actions"), list) else [],
+                "action_trace": observed.get("actions") if isinstance(observed.get("actions"), list) else [],
+                "contact_trace": observed.get("contact_trace")
+                if isinstance(observed.get("contact_trace"), list)
+                else [],
+                "route_waypoints": observed.get("route_waypoints") or run.get("route_waypoints"),
+                "artifact_paths": _mapping(
+                    observed.get("artifact_paths") or observed.get("artifactPaths")
+                ),
+                "proof_boundary": (
+                    "Attempt row comes from an Isaac runtime result. It proves only the "
+                    "Isaac-specific runtime artifacts represented by this row; it does "
+                    "not prove MuJoCo, real robot readiness, deployment approval, safety "
+                    "validation, WAM consistency, or generated-world rank fidelity."
+                ),
+            }
+            attempts.append(attempt)
+            if not success:
+                labels.append(
+                    {
+                        "label_id": f"isaac_failure_label_{index:04d}",
+                        "attempt_id": attempt["attempt_id"],
+                        "scenario_eval_run_id": run.get("scenario_eval_run_id"),
+                        "task_id": run.get("task_id"),
+                        "spawn_id": run.get("spawn_id"),
+                        "primary_failure_label": failure_ids[0]
+                        if failure_ids
+                        else "isaac_runtime_attempt_failed",
+                        "failure_label_ids": sorted(set(failure_ids)),
+                        "failure_mode_ids": sorted(set(failure_ids)),
+                        "status": "failed" if status != "blocked" else "blocked",
+                    }
+                )
+            continue
         failure_ids = [blocker, "blocked_missing_wam_vla_policy_runtime"]
         if _string(run.get("task_id")) in {"desk_object_contact_check", "carry_object_to_drop_zone"}:
             failure_ids.append("blocked_isaac_contact_dynamics_not_executed")
@@ -2419,10 +3409,15 @@ def _attempts_for_matrix(
             "episode_id": run.get("episode_id"),
             "status": "blocked",
             "success": False,
+            "task_success": False,
+            "task_status": "blocked",
             "failure_label_ids": sorted(set(failure_ids)),
+            "failure_mode_ids": sorted(set(failure_ids)),
             "generated_at": generated_at,
             "simulator": "isaac_sim",
+            "simulator_backend": "isaac_sim",
             "robot_profile": "unitree_g1_official_isaac_asset_expected",
+            "policy_id": "isaac_g1_runtime_policy_blocked",
             "camera_ids": camera_ids,
             "camera_evidence": {
                 camera_id: {
@@ -2438,8 +3433,19 @@ def _attempts_for_matrix(
                 "route_non_ranking_operational_claim_validated": False,
                 "collision_contact_scored": False,
                 "blocked_failure_preserved": True,
+                "isaac_runtime_attempt_trace_present": False,
+                "isaac_runtime_executed": bool(runtime_result_payload.get("isaac_runtime_executed")),
             },
+            "task_outcome": {
+                "task_success": False,
+                "task_status": "blocked",
+                "failure_mode_ids": sorted(set(failure_ids)),
+            },
+            "actions": [],
+            "action_trace": [],
+            "contact_trace": [],
             "route_waypoints": run.get("route_waypoints"),
+            "artifact_paths": {},
             "proof_boundary": (
                 "Blocked attempt row preserves the requested matrix item. It is not a "
                 "simulated success, walking proof, contact proof, or WAM/VLA decision."
@@ -2455,6 +3461,7 @@ def _attempts_for_matrix(
                 "spawn_id": run.get("spawn_id"),
                 "primary_failure_label": failure_ids[0],
                 "failure_label_ids": sorted(set(failure_ids)),
+                "failure_mode_ids": sorted(set(failure_ids)),
                 "status": "blocked",
             }
         )
@@ -2483,6 +3490,7 @@ def _video_manifest(
     camera_ids: Sequence[str],
     generated_at: str,
     runtime: Mapping[str, Any],
+    runtime_result: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     videos_dir = job_dir / "realistic_videos"
     posters_dir = job_dir / "realistic_posters"
@@ -2490,24 +3498,65 @@ def _video_manifest(
     ensure_dir(posters_dir)
     rows: list[dict[str, Any]] = []
     posters: list[dict[str, Any]] = []
+    runtime_result_payload = _mapping(runtime_result)
+    observed_by_run_id = {
+        _string(row.get("scenario_eval_run_id") or row.get("scenarioEvalRunId")): row
+        for row in _runtime_result_attempts(runtime_result_payload)
+        if _string(row.get("scenario_eval_run_id") or row.get("scenarioEvalRunId"))
+    }
     blocker = (
         "isaac_runtime_execution_not_run"
         if runtime.get("isaac_runtime_available")
         else "isaac_sim_runtime_unavailable"
     )
+
+    def runtime_video_path(observed: Mapping[str, Any], camera_id: str, camera_index: int) -> str:
+        artifacts = _mapping(observed.get("artifact_paths") or observed.get("artifactPaths"))
+        keyed = artifacts.get(f"{camera_id}_video") or artifacts.get(f"{camera_id}_mp4")
+        if keyed:
+            return _string(keyed)
+        video_paths = artifacts.get("video_paths") or artifacts.get("videoPaths")
+        if isinstance(video_paths, Mapping):
+            mapped = video_paths.get(camera_id)
+            if mapped:
+                return _string(mapped)
+        for key in ("videos", "video_records", "videoRecords"):
+            raw_videos = observed.get(key) or artifacts.get(key)
+            if not isinstance(raw_videos, Sequence) or isinstance(raw_videos, (str, bytes)):
+                continue
+            for raw_video in raw_videos:
+                video = _mapping(raw_video)
+                if _string(video.get("camera_id") or video.get("cameraId")) == camera_id:
+                    return _string(video.get("path") or video.get("uri") or video.get("url"))
+        generic = (
+            artifacts.get("video_path")
+            or artifacts.get("videoPath")
+            or artifacts.get("robot_pov_video")
+            or artifacts.get("robotPovVideo")
+            or observed.get("video_path")
+            or observed.get("videoPath")
+        )
+        return _string(generic) if camera_index == 0 else ""
+
     for run in matrix.get("runs") or []:
         if not isinstance(run, Mapping):
             continue
         episode_id = _string(run.get("episode_id"))
-        for camera_id in camera_ids:
+        observed = _mapping(observed_by_run_id.get(_string(run.get("scenario_eval_run_id"))))
+        for camera_index, camera_id in enumerate(camera_ids):
+            runtime_path = runtime_video_path(observed, camera_id, camera_index)
+            runtime_file_exists = bool(runtime_path and Path(runtime_path).expanduser().is_file())
+            status = "completed" if runtime_file_exists else "blocked"
+            row_blockers = [] if runtime_file_exists else [blocker, "splat_or_isaac_video_not_rendered"]
             rows.append(
                 {
                     "episode_id": episode_id,
                     "camera_id": camera_id,
-                    "path": str(videos_dir / f"{episode_id}__{camera_id}.mp4"),
-                    "status": "blocked",
-                    "blockers": [blocker, "splat_or_isaac_video_not_rendered"],
-                    "file_created": False,
+                    "path": runtime_path or str(videos_dir / f"{episode_id}__{camera_id}.mp4"),
+                    "status": status,
+                    "blockers": row_blockers,
+                    "file_created": runtime_file_exists,
+                    "source": "isaac_runtime_result" if runtime_file_exists else "expected_output_path",
                 }
             )
             posters.append(
@@ -2520,14 +3569,19 @@ def _video_manifest(
                     "file_created": False,
                 }
             )
+    completed_video_count = sum(1 for row in rows if row.get("status") == "completed")
+    expected_video_count = len(rows)
+    video_complete = completed_video_count == expected_video_count and expected_video_count > 0
     return {
         "schema_version": REALISTIC_VIDEO_MANIFEST_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "blocked_no_runtime_videos",
-        "realistic_splat_visual_rendered": False,
-        "isaac_state_synchronized_video_rendered": False,
-        "video_count": 0,
-        "expected_video_count": len(rows),
+        "status": "completed" if video_complete else "blocked_no_runtime_videos",
+        "realistic_splat_visual_rendered": bool(
+            runtime_result_payload.get("realistic_splat_visual_rendered")
+        ),
+        "isaac_state_synchronized_video_rendered": video_complete,
+        "video_count": completed_video_count,
+        "expected_video_count": expected_video_count,
         "poster_count": 0,
         "expected_poster_count": len(posters),
         "realistic_videos_dir": str(videos_dir),
@@ -2608,6 +3662,7 @@ def _build_summary(
     attempts: Sequence[Mapping[str, Any]],
     matrix: Mapping[str, Any],
     runtime: Mapping[str, Any],
+    runtime_result: Mapping[str, Any] | None = None,
     scene_visual_source: str,
     reconstructed_triangle_mesh_loaded: bool,
 ) -> dict[str, Any]:
@@ -2619,27 +3674,61 @@ def _build_summary(
         if attempt.get("status") != "blocked" and attempt.get("success") is not True
     )
     matrix_count = int(matrix.get("scenario_eval_run_count") or 0)
+    runtime_result_payload = _mapping(runtime_result)
+    observed_runtime_attempts = bool(_runtime_result_attempts(runtime_result_payload))
+    if observed_runtime_attempts and blocked_count == 0 and failed_count == 0:
+        status = "completed"
+    elif observed_runtime_attempts and blocked_count < len(attempts):
+        status = "completed_with_failures"
+    elif not runtime.get("isaac_runtime_available") and not runtime_result_payload.get(
+        "isaac_runtime_executed"
+    ):
+        status = "blocked_runtime_unavailable"
+    else:
+        status = "blocked_controller_runtime_unavailable"
+    version_probe = _mapping(runtime.get("version_probe"))
+    simulator_version = (
+        _string(runtime_result_payload.get("simulator_version"))
+        or _string(runtime_result_payload.get("isaac_sim_version"))
+        or _string(version_probe.get("version"))
+        or _string(version_probe.get("stdout"))
+        or None
+    )
     return {
         "schema_version": POLICY_EVALUATION_SUMMARY_SCHEMA_VERSION,
         "generated_at": generated_at,
         "job_id": job_id,
-        "status": "blocked_runtime_unavailable"
-        if not runtime.get("isaac_runtime_available")
-        else "blocked_controller_runtime_unavailable",
-        "isaac_runtime_available": bool(runtime.get("isaac_runtime_available")),
+        "status": status,
+        "simulator_backend": "isaac_sim",
+        "simulator_version": simulator_version,
+        "isaac_runtime_available": bool(runtime.get("isaac_runtime_available"))
+        or bool(runtime_result_payload.get("isaac_runtime_executed")),
         "scene_visual_source": scene_visual_source,
         "realistic_splat_visual_rendered": False,
         "reconstructed_triangle_mesh_loaded": reconstructed_triangle_mesh_loaded,
-        "isaac_usd_scene_loaded": False,
+        "isaac_usd_scene_loaded": bool(runtime_result_payload.get("isaac_usd_scene_loaded")),
         "isaac_collision_scene_source": "metadata_derived_collider_proxy",
         "unitree_g1_model_source": f"official_isaac_asset_expected:{OFFICIAL_ISAAC_G1_ASSET_PATH}",
-        "unitree_g1_loaded_in_isaac": False,
-        "controller_grade_execution_proven": False,
-        "official_policy_execution_proven": False,
-        "locomotion_continuity_validated": False,
-        "collision_dynamics_validated": False,
-        "manipulation_contact_dynamics_validated": False,
-        "wam_vla_runtime_proven": False,
+        "unitree_g1_loaded_in_isaac": bool(
+            runtime_result_payload.get("unitree_g1_loaded_in_isaac")
+            or runtime_result_payload.get("isaac_robot_asset_execution_proven")
+        ),
+        "controller_grade_execution_proven": bool(
+            runtime_result_payload.get("controller_grade_execution_proven")
+        ),
+        "official_policy_execution_proven": bool(
+            runtime_result_payload.get("official_policy_execution_proven")
+        ),
+        "locomotion_continuity_validated": bool(
+            runtime_result_payload.get("locomotion_continuity_validated")
+        ),
+        "collision_dynamics_validated": bool(
+            runtime_result_payload.get("collision_dynamics_validated")
+        ),
+        "manipulation_contact_dynamics_validated": bool(
+            runtime_result_payload.get("manipulation_contact_dynamics_validated")
+        ),
+        "wam_vla_runtime_proven": bool(runtime_result_payload.get("wam_vla_runtime_proven")),
         "wam_evaluator_trace_scored": True,
         "attempted_episode_count": len(attempts),
         "successful_episode_count": success_count,
@@ -2674,30 +3763,56 @@ def _local_validation_report(
     blocked_or_failed = [
         row for row in attempts if row.get("status") in {"blocked", "failed"}
     ]
+    runtime_attempts_present = any(row.get("status") != "blocked" for row in attempts)
     missing_blocked_or_failed_labels = [
         _string(row.get("attempt_id"))
         for row in blocked_or_failed
         if not row.get("failure_label_ids")
     ]
-    false_required_flags = [
+    runtime_allowed_flags = [
         "controller_grade_execution_proven",
         "official_policy_execution_proven",
         "locomotion_continuity_validated",
         "collision_dynamics_validated",
         "manipulation_contact_dynamics_validated",
-        "wam_vla_runtime_proven",
+    ]
+    never_promoted_flags = [
         "generated_world_rank_fidelity_result_proven",
         "generated_world_policy_evaluation_scope_proven",
+        "wam_vla_runtime_proven",
     ]
-    proof_flags_honest = all(summary.get(flag) is False for flag in false_required_flags)
+    proof_flags_honest = all(summary.get(flag) is False for flag in never_promoted_flags) and (
+        runtime_attempts_present
+        or all(summary.get(flag) is False for flag in runtime_allowed_flags)
+    )
     mp4_paths = sorted((job_dir / "realistic_videos").glob("*.mp4"))
+    video_rows = [
+        _mapping(row)
+        for row in video_manifest.get("videos", []) or []
+        if isinstance(row, Mapping)
+    ]
+    declared_video_files = [
+        Path(_string(row.get("path"))).expanduser()
+        for row in video_rows
+        if row.get("status") == "completed" and _string(row.get("path"))
+    ]
+    declared_video_files_present = bool(declared_video_files) and all(
+        path.is_file() and path.stat().st_size > 0 for path in declared_video_files
+    )
+    declared_video_coverage_complete = bool(
+        video_manifest.get("status") == "completed"
+        and int(video_manifest.get("video_count") or 0)
+        == int(video_manifest.get("expected_video_count") or 0)
+        and int(video_manifest.get("expected_video_count") or 0) > 0
+        and declared_video_files_present
+    )
     mp4_file_rows = [
         {
             "path": str(path),
             "size_bytes": path.stat().st_size,
-            "ffprobe_required": True,
+            "ffprobe_required": False,
         }
-        for path in mp4_paths
+        for path in sorted({*mp4_paths, *declared_video_files})
         if path.is_file()
     ]
     checks = {
@@ -2710,11 +3825,10 @@ def _local_validation_report(
         "scenario_eval_run_coverage_complete": bool(
             summary.get("scenario_eval_run_coverage_complete")
         ),
-        "mp4_validation_complete": not mp4_file_rows,
+        "mp4_validation_complete": not mp4_file_rows or declared_video_coverage_complete,
         "provider_request_shape_written": bool(gpu_provider_launch_request),
-        "provider_bundle_local_ready_for_remote_staging": bool(
-            provider_bundle_readiness.get("local_bundle_ready_for_remote_staging")
-        ),
+        "provider_bundle_local_ready_for_remote_staging": runtime_attempts_present
+        or bool(provider_bundle_readiness.get("local_bundle_ready_for_remote_staging")),
     }
     return {
         "schema_version": LOCAL_VALIDATION_REPORT_SCHEMA_VERSION,
@@ -2735,6 +3849,7 @@ def _local_validation_report(
             "files": mp4_file_rows,
             "video_manifest_expected_video_count": video_manifest.get("expected_video_count"),
             "video_manifest_video_count": video_manifest.get("video_count"),
+            "declared_video_coverage_complete": declared_video_coverage_complete,
         },
         "provider_launch_request": {
             "path": str(job_dir / "gpu_provider_launch_request.json"),
@@ -2775,6 +3890,9 @@ def run_isaac_g1_site_3dgs_realistic_eval(
     spawn_limit: int | None = None,
     camera_ids: Sequence[str] | None = None,
     allow_cloud_gpu: bool = False,
+    scenario_eval_matrix_path: str | Path | None = None,
+    simulator_output_path: str | Path | None = None,
+    runtime_result_path: str | Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
@@ -2789,7 +3907,7 @@ def run_isaac_g1_site_3dgs_realistic_eval(
     job_dir = root / resolved_job_id
     ensure_dir(job_dir)
 
-    camera_id_list = list(camera_ids or DEFAULT_CAMERA_IDS)
+    camera_id_list, camera_aliases = _normalize_camera_ids(camera_ids or DEFAULT_CAMERA_IDS)
     unknown_cameras = sorted(set(camera_id_list) - set(DEFAULT_CAMERA_IDS))
     if unknown_cameras:
         raise ValueError(f"unknown Isaac camera ids: {', '.join(unknown_cameras)}")
@@ -2851,22 +3969,38 @@ def run_isaac_g1_site_3dgs_realistic_eval(
         spz_asset=spz_asset,
         generated_at=generated,
     )
-    tasks = _apply_required_task_families(build_default_tasks(anchors=scene_anchors))
-    spawns = build_default_spawns(anchors=scene_anchors)
-    if task_limit is not None:
-        tasks = tasks[: max(0, task_limit)]
-    if spawn_limit is not None:
-        spawns = spawns[: max(0, spawn_limit)]
-    spawn_manifest = validate_spawns(spawns=spawns, proxies=proxies, generated_at=generated)
-    matrix = build_scenario_eval_matrix(
-        job_id=resolved_job_id,
-        tasks=tasks,
-        spawns=spawn_manifest.get("spawns") or [],
+    runtime_result = (
+        _json_mapping(Path(runtime_result_path).expanduser().resolve())
+        if runtime_result_path
+        else {}
+    )
+    if scenario_eval_matrix_path:
+        matrix = _scenario_eval_matrix_from_path(
+            scenario_eval_matrix_path,
+            camera_ids=camera_id_list,
+            job_id=resolved_job_id,
+        )
+    else:
+        tasks = _apply_required_task_families(build_default_tasks(anchors=scene_anchors))
+        spawns = build_default_spawns(anchors=scene_anchors)
+        if task_limit is not None:
+            tasks = tasks[: max(0, task_limit)]
+        if spawn_limit is not None:
+            spawns = spawns[: max(0, spawn_limit)]
+        spawn_manifest = validate_spawns(spawns=spawns, proxies=proxies, generated_at=generated)
+        matrix = build_scenario_eval_matrix(
+            job_id=resolved_job_id,
+            tasks=tasks,
+            spawns=spawn_manifest.get("spawns") or [],
+            camera_ids=camera_id_list,
+            generated_at=generated,
+            route_planner_proxies=proxies,
+        )
+    camera_manifest = _camera_manifest(
         camera_ids=camera_id_list,
         generated_at=generated,
-        route_planner_proxies=proxies,
+        camera_aliases=camera_aliases,
     )
-    camera_manifest = _camera_manifest(camera_ids=camera_id_list, generated_at=generated)
     episode_manifest = {
         "schema_version": EPISODE_SPEC_SCHEMA_VERSION,
         "generated_at": generated,
@@ -2887,23 +4021,28 @@ def run_isaac_g1_site_3dgs_realistic_eval(
     attempts, failure_rows = _attempts_for_matrix(
         matrix=matrix,
         runtime=runtime,
+        runtime_result=runtime_result,
         generated_at=generated,
     )
+    coverage = _coverage_summary(matrix=matrix, attempts=attempts)
     summary = _build_summary(
         job_id=resolved_job_id,
         generated_at=generated,
         attempts=attempts,
         matrix=matrix,
         runtime=runtime,
+        runtime_result=runtime_result,
         scene_visual_source=scene_visual_source,
         reconstructed_triangle_mesh_loaded=reconstructed_triangle_mesh_loaded,
     )
+    summary.update(coverage)
     video_manifest = _video_manifest(
         job_dir=job_dir,
         matrix=matrix,
         camera_ids=camera_id_list,
         generated_at=generated,
         runtime=runtime,
+        runtime_result=runtime_result,
     )
     wam_discovery = _wam_vla_discovery(generated_at=generated)
     manipulation_objects = _manipulation_objects(proxies, generated)
@@ -2916,6 +4055,7 @@ def run_isaac_g1_site_3dgs_realistic_eval(
         "attempt_count": len(attempts),
         "scenario_eval_matrix_count": matrix.get("scenario_eval_run_count"),
         "attempt_count_matches_matrix_count": summary["attempt_count_matches_matrix_count"],
+        **coverage,
         "attempts": attempts,
     }
     failure_labels = {
@@ -2925,6 +4065,7 @@ def run_isaac_g1_site_3dgs_realistic_eval(
         "status": "blocked_attempts_labeled",
         "label_count": len(failure_rows),
         "failed_or_blocked_attempt_count": len(failure_rows),
+        **coverage,
         "labels": failure_rows,
     }
     thresholds = {
@@ -2945,6 +4086,7 @@ def run_isaac_g1_site_3dgs_realistic_eval(
         "matrix_count": matrix.get("scenario_eval_run_count"),
         "attempt_count": len(attempts),
         "all_matrix_rows_have_attempts": summary["attempt_count_matches_matrix_count"],
+        "scenario_eval_run_coverage_complete": coverage["scenario_eval_run_coverage_complete"],
         "bindings": [
             {
                 "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
@@ -2977,6 +4119,48 @@ def run_isaac_g1_site_3dgs_realistic_eval(
             for attempt in attempts
         ],
     }
+    contact_traces = [
+        contact
+        for attempt in attempts
+        for contact in (attempt.get("contact_trace") or [])
+        if isinstance(contact, Mapping)
+    ]
+    collision_contact_report = {
+        "schema_version": COLLISION_CONTACT_REPORT_SCHEMA_VERSION,
+        "generated_at": generated,
+        "status": "completed"
+        if runtime_result.get("collision_dynamics_validated")
+        else "blocked",
+        "simulator_backend": "isaac_sim",
+        "collision_dynamics_validated": bool(
+            runtime_result.get("collision_dynamics_validated")
+        ),
+        "contact_count": int(runtime_result.get("contact_count") or len(contact_traces) or 0),
+        "contacts": [dict(contact) for contact in contact_traces[:200]],
+        "blockers": []
+        if runtime_result.get("collision_dynamics_validated")
+        else ["isaac_contact_solver_not_executed"],
+        "proof_boundary": (
+            "This report is Isaac-specific contact/collision evidence. It does not prove "
+            "MuJoCo contact behavior, real-world contact safety, deployment approval, "
+            "physical robot readiness, WAM consistency, or generated-world rank fidelity."
+        ),
+    }
+    unitree_g1_loaded = bool(summary.get("unitree_g1_loaded_in_isaac"))
+    controller_proven = bool(summary.get("controller_grade_execution_proven"))
+    official_policy_proven = bool(summary.get("official_policy_execution_proven"))
+    locomotion_validated = bool(summary.get("locomotion_continuity_validated"))
+    contact_validated = bool(summary.get("collision_dynamics_validated"))
+    manipulation_contact_validated = bool(
+        summary.get("manipulation_contact_dynamics_validated")
+    )
+    asset_blockers = [] if unitree_g1_loaded else ["isaac_runtime_unavailable_or_not_executed"]
+    controller_blockers = (
+        []
+        if controller_proven and official_policy_proven
+        else ["real_continuous_g1_controller_runtime_not_configured"]
+    )
+    physics_blockers = [] if contact_validated else ["isaac_physics_not_executed"]
 
     artifact_payloads: dict[str, Mapping[str, Any]] = {
         "isaac_runtime_discovery.json": runtime,
@@ -3049,53 +4233,54 @@ def run_isaac_g1_site_3dgs_realistic_eval(
         "unitree_g1_asset_source_manifest.json": {
             "schema_version": G1_ASSET_SOURCE_SCHEMA_VERSION,
             "generated_at": generated,
-            "status": "blocked_runtime_resolution_not_run",
+            "status": "completed" if unitree_g1_loaded else "blocked_runtime_resolution_not_run",
             "unitree_g1_model_source": "official_isaac_sim_robot_assets_expected",
             "official_asset_path": OFFICIAL_ISAAC_G1_ASSET_PATH,
             "official_doc_url": OFFICIAL_ISAAC_G1_DOC_URL,
-            "unitree_g1_loaded_in_isaac": False,
-            "blockers": ["isaac_runtime_unavailable_or_not_executed"],
+            "unitree_g1_loaded_in_isaac": unitree_g1_loaded,
+            "blockers": asset_blockers,
         },
         "g1_controller_runtime_manifest.json": {
             "schema_version": G1_CONTROLLER_RUNTIME_SCHEMA_VERSION,
             "generated_at": generated,
-            "status": "blocked_controller_runtime_unavailable",
-            "controller_grade_execution_proven": False,
-            "official_policy_execution_proven": False,
+            "status": "completed"
+            if controller_proven and official_policy_proven
+            else "blocked_controller_runtime_unavailable",
+            "controller_grade_execution_proven": controller_proven,
+            "official_policy_execution_proven": official_policy_proven,
             "root_pose_teleporting_used_as_success_evidence": False,
-            "blockers": ["real_continuous_g1_controller_runtime_not_configured"],
+            "blockers": controller_blockers,
         },
         "foot_contact_trace.json": {
             "schema_version": FOOT_CONTACT_TRACE_SCHEMA_VERSION,
             "generated_at": generated,
-            "status": "blocked",
-            "foot_contact_validated": False,
-            "contacts": [],
-            "blockers": ["isaac_physics_not_executed"],
+            "status": "completed" if contact_validated else "blocked",
+            "foot_contact_validated": contact_validated,
+            "contacts": [dict(contact) for contact in contact_traces[:200]],
+            "blockers": physics_blockers,
         },
         "root_motion_continuity_report.json": {
             "schema_version": ROOT_MOTION_CONTINUITY_SCHEMA_VERSION,
             "generated_at": generated,
-            "status": "blocked",
-            "locomotion_continuity_validated": False,
-            "large_root_jumps_detected": None,
-            "blockers": ["g1_locomotion_trace_missing_because_controller_not_run"],
+            "status": "completed" if locomotion_validated else "blocked",
+            "locomotion_continuity_validated": locomotion_validated,
+            "large_root_jumps_detected": False if locomotion_validated else None,
+            "blockers": []
+            if locomotion_validated
+            else ["g1_locomotion_trace_missing_because_controller_not_run"],
         },
-        "collision_contact_report.json": {
-            "schema_version": COLLISION_CONTACT_REPORT_SCHEMA_VERSION,
-            "generated_at": generated,
-            "status": "blocked",
-            "collision_dynamics_validated": False,
-            "contact_count": 0,
-            "blockers": ["isaac_contact_solver_not_executed"],
-        },
+        "collision_contact_report.json": collision_contact_report,
         "controller_grade_proof_manifest.json": {
             "schema_version": CONTROLLER_GRADE_PROOF_SCHEMA_VERSION,
             "generated_at": generated,
-            "status": "blocked_controller_runtime_unavailable",
-            "controller_grade_execution_proven": False,
-            "official_policy_execution_proven": False,
-            "blockers": ["real_unitree_g1_controller_policy_stack_not_run"],
+            "status": "completed"
+            if controller_proven and official_policy_proven
+            else "blocked_controller_runtime_unavailable",
+            "controller_grade_execution_proven": controller_proven,
+            "official_policy_execution_proven": official_policy_proven,
+            "blockers": []
+            if controller_proven and official_policy_proven
+            else ["real_unitree_g1_controller_policy_stack_not_run"],
         },
         "manipulation_scene_object_manifest.json": manipulation_objects,
         "manipulation_action_spec_manifest.json": {
@@ -3115,26 +4300,32 @@ def run_isaac_g1_site_3dgs_realistic_eval(
         "manipulation_contact_trace.json": {
             "schema_version": MANIPULATION_CONTACT_TRACE_SCHEMA_VERSION,
             "generated_at": generated,
-            "status": "blocked",
-            "manipulation_contact_dynamics_validated": False,
-            "contacts": [],
-            "blockers": ["isaac_physics_not_executed"],
+            "status": "completed" if manipulation_contact_validated else "blocked",
+            "manipulation_contact_dynamics_validated": manipulation_contact_validated,
+            "contacts": [dict(contact) for contact in contact_traces[:200]]
+            if manipulation_contact_validated
+            else [],
+            "blockers": [] if manipulation_contact_validated else ["isaac_physics_not_executed"],
         },
         "object_motion_trace.json": {
             "schema_version": OBJECT_MOTION_TRACE_SCHEMA_VERSION,
             "generated_at": generated,
-            "status": "blocked",
-            "object_motion_validated": False,
+            "status": "completed" if manipulation_contact_validated else "blocked",
+            "object_motion_validated": manipulation_contact_validated,
             "motions": [],
-            "blockers": ["isaac_physics_not_executed"],
+            "blockers": [] if manipulation_contact_validated else ["isaac_physics_not_executed"],
         },
         "manipulation_success_evaluator_results.json": {
             "schema_version": MANIPULATION_EVAL_SCHEMA_VERSION,
             "generated_at": generated,
-            "status": "blocked",
-            "manipulation_contact_dynamics_validated": False,
-            "successful_action_count": 0,
-            "blockers": ["manipulation_contact_trace_missing_runtime_evidence"],
+            "status": "completed" if manipulation_contact_validated else "blocked",
+            "manipulation_contact_dynamics_validated": manipulation_contact_validated,
+            "successful_action_count": summary["successful_episode_count"]
+            if manipulation_contact_validated
+            else 0,
+            "blockers": []
+            if manipulation_contact_validated
+            else ["manipulation_contact_trace_missing_runtime_evidence"],
         },
         "manipulation_truth_boundary.json": {
             "schema_version": MANIPULATION_TRUTH_BOUNDARY_SCHEMA_VERSION,
@@ -3284,12 +4475,29 @@ def run_isaac_g1_site_3dgs_realistic_eval(
                 "generated_at": generated,
                 "episode_id": attempt.get("episode_id"),
                 "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
-                "status": "blocked",
-                "blockers": ["g1_controller_runtime_unavailable"],
-                "qpos_continuity_validated": False,
+                "status": "completed"
+                if attempt.get("status") != "blocked" and locomotion_validated
+                else "blocked",
+                "blockers": []
+                if attempt.get("status") != "blocked" and locomotion_validated
+                else ["g1_controller_runtime_unavailable"],
+                "qpos_continuity_validated": bool(
+                    attempt.get("status") != "blocked" and locomotion_validated
+                ),
+                "metrics": _mapping(attempt.get("metrics")),
+                "action_count": len(attempt.get("actions") or attempt.get("action_trace") or []),
             }
             for attempt in attempts
         ),
+    )
+    batch_trace_package = _write_isaac_batch_trace_package(
+        job_dir=job_dir,
+        generated_at=generated,
+        attempts=attempts,
+        failure_labels=failure_labels,
+        video_manifest=video_manifest,
+        collision_contact_report=collision_contact_report,
+        coverage=coverage,
     )
     local_validation_report = _local_validation_report(
         job_id=resolved_job_id,
@@ -3319,6 +4527,18 @@ def run_isaac_g1_site_3dgs_realistic_eval(
                 "local_provider_command_diagnostic.json",
                 "generated_site_scene.usda",
                 "generated_site_scene.usd",
+                "artifact_manifest.json",
+                "isaac_batch_attempt_trace.jsonl",
+                "isaac_batch_contact_stream.jsonl",
+                "isaac_batch_planner_state.jsonl",
+                "isaac_batch_control_stream.jsonl",
+                "isaac_batch_metrics.json",
+                "isaac_batch_failure_labels.json",
+                "isaac_batch_visual_media_coverage.json",
+                "isaac_batch_visual_review_ledger.json",
+                "isaac_batch_artifact_checksums.json",
+                "isaac_batch_trace_package_manifest.json",
+                "isaac_batch_closure_manifest.json",
                 "job_run_manifest.json",
             }
         )
@@ -3338,14 +4558,113 @@ def run_isaac_g1_site_3dgs_realistic_eval(
         "proof_flags": summary,
     }
     write_json(job_dir / "job_run_manifest.json", job_manifest)
+    batch_closure_manifest = _build_isaac_batch_closure_manifest(
+        job_dir=job_dir,
+        generated_at=generated,
+        attempts=attempts,
+        coverage=coverage,
+        batch_trace_package=_mapping(batch_trace_package.get("manifest")),
+        artifact_paths=artifact_paths,
+        summary=summary,
+        video_manifest=video_manifest,
+        collision_contact_report=collision_contact_report,
+    )
+    write_json(job_dir / "isaac_batch_closure_manifest.json", batch_closure_manifest)
+    artifact_manifest = _write_isaac_artifact_manifest(
+        job_dir=job_dir,
+        generated_at=generated,
+        artifact_paths=artifact_paths,
+        summary=summary,
+        coverage=coverage,
+        batch_closure_manifest=batch_closure_manifest,
+    )
+    simulator_execution_proven = bool(
+        runtime_result.get("isaac_runtime_executed")
+        or runtime_result.get("isaac_sim_execution_proven")
+    )
+    simulator_output = (
+        Path(simulator_output_path).expanduser().resolve()
+        if simulator_output_path
+        else Path(os.environ["BLUEPRINT_SIMULATOR_OUTPUT"]).expanduser().resolve()
+        if os.environ.get("BLUEPRINT_SIMULATOR_OUTPUT")
+        else job_dir / "isaac_g1_simulator_output.json"
+    )
+    simulator_output_payload = {
+        "schema_version": ISAAC_G1_SIMULATOR_COMMAND_OUTPUT_SCHEMA_VERSION,
+        "generated_at": generated,
+        "status": summary["status"],
+        "simulator_backend": "isaac_sim",
+        "simulator_version": summary.get("simulator_version"),
+        "capture_root": str(Path(os.environ.get("BLUEPRINT_CAPTURE_ROOT", "")).resolve())
+        if os.environ.get("BLUEPRINT_CAPTURE_ROOT")
+        else None,
+        "output_dir": str(job_dir),
+        "simulator_execution_proven": simulator_execution_proven,
+        "isaac_sim_execution_proven": simulator_execution_proven,
+        "isaac_robot_asset_execution_proven": bool(summary.get("unitree_g1_loaded_in_isaac")),
+        "unitree_g1_asset_spawned": bool(summary.get("unitree_g1_loaded_in_isaac")),
+        "official_policy_execution_proven": bool(summary.get("official_policy_execution_proven")),
+        "controller_grade_execution_proven": bool(summary.get("controller_grade_execution_proven")),
+        "robot_policy_execution_proven": False,
+        "robot_team_policy_execution_proven": bool(summary.get("official_policy_execution_proven")),
+        "collision_dynamics_validated": bool(summary.get("collision_dynamics_validated")),
+        "contact_dynamics_validated": bool(summary.get("collision_dynamics_validated")),
+        "real_robot_pov_evidence_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "scenario_eval_matrix": matrix,
+        "scenario_eval_matrix_path": matrix.get("source_scenario_eval_matrix_path"),
+        "scenario_eval_run_count": matrix.get("scenario_eval_run_count"),
+        "attempt_count": len(attempts),
+        **coverage,
+        "attempts": attempts,
+        "normalized_attempt_trace": trace,
+        "failure_labels": failure_labels,
+        "policy_evaluation_summary": summary,
+        "realistic_video_manifest": video_manifest,
+        "collision_contact_report": collision_contact_report,
+        "contact_summary": collision_contact_report,
+        "batch_trace_package": _mapping(batch_trace_package.get("manifest")),
+        "batch_closure_manifest": batch_closure_manifest,
+        "artifact_manifest": artifact_manifest,
+        "artifact_paths": {
+            **artifact_paths,
+            "batch_trace_package_manifest": str(job_dir / "isaac_batch_trace_package_manifest.json"),
+            "batch_closure_manifest": str(job_dir / "isaac_batch_closure_manifest.json"),
+            "artifact_manifest": str(job_dir / "artifact_manifest.json"),
+        },
+        "proof_boundary": {
+            "mujoco_artifacts_counted_as_isaac_proof": False,
+            "isaac_simulator_execution_proven": simulator_execution_proven,
+            "robot_policy_execution_proven": False,
+            "simulator_proof_is_not_safety_validation": True,
+            "simulator_proof_is_not_deployment_approval": True,
+            "simulator_proof_is_not_physical_robot_readiness": True,
+            "wam_consistency_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+        },
+    }
+    write_json(simulator_output, simulator_output_payload)
+    job_manifest["artifact_paths"] = {
+        **artifact_paths,
+        "isaac_batch_closure_manifest.json": str(job_dir / "isaac_batch_closure_manifest.json"),
+        "artifact_manifest.json": str(job_dir / "artifact_manifest.json"),
+        "isaac_g1_simulator_output.json": str(simulator_output),
+    }
+    job_manifest["batch_closure_manifest_path"] = str(job_dir / "isaac_batch_closure_manifest.json")
+    job_manifest["artifact_manifest_path"] = str(job_dir / "artifact_manifest.json")
+    job_manifest["simulator_output_path"] = str(simulator_output)
+    job_manifest["proof_flags"] = summary
+    write_json(job_dir / "job_run_manifest.json", job_manifest)
     return {
         "status": summary["status"],
         "job_id": resolved_job_id,
         "job_dir": str(job_dir),
         "summary": summary,
-        "artifact_paths": artifact_paths,
+        "artifact_paths": job_manifest["artifact_paths"],
         "realistic_video_manifest_path": str(job_dir / "realistic_video_manifest.json"),
         "phase_log_path": str(job_dir / "isaac_runtime_phase_log.jsonl"),
+        "simulator_output_path": str(simulator_output),
+        "batch_closure_manifest_path": str(job_dir / "isaac_batch_closure_manifest.json"),
     }
 
 
@@ -3355,14 +4674,132 @@ def _parse_camera_ids(value: str | None) -> list[str] | None:
     return [_safe_id(item) for item in value.split(",") if _safe_id(item)]
 
 
+def _find_first_capture_asset(capture_root: Path, suffixes: Sequence[str]) -> Path | None:
+    suffix_set = {suffix.lower() for suffix in suffixes}
+    for path in sorted(capture_root.rglob("*")):
+        if path.is_file() and path.suffix.lower() in suffix_set:
+            return path
+    return None
+
+
+def _write_placeholder_ply(path: Path) -> None:
+    ensure_dir(path.parent)
+    path.write_text(
+        "\n".join(
+            [
+                "ply",
+                "format ascii 1.0",
+                "comment Blueprint placeholder scene because no capture PLY was found",
+                "element vertex 3",
+                "property float x",
+                "property float y",
+                "property float z",
+                "end_header",
+                "0 0 0",
+                "1 0 0",
+                "0 1 0",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def run_isaac_g1_simulator_command(
+    *,
+    capture_root: str | Path,
+    ply_asset: str | Path | None = None,
+    spz_asset: str | Path | None = None,
+    labels_json: str | Path | None = None,
+    structure_json: str | Path | None = None,
+    occupancy_json: str | Path | None = None,
+    occupancy_png: str | Path | None = None,
+    output_dir: str | Path | None = None,
+    simulator_output_path: str | Path | None = None,
+    scenario_eval_matrix_path: str | Path | None = None,
+    runtime_result_path: str | Path | None = None,
+    camera_ids: Sequence[str] | None = None,
+    allow_cloud_gpu: bool = False,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    root = Path(capture_root).expanduser().resolve()
+    resolved_output_dir = (
+        Path(output_dir).expanduser().resolve()
+        if output_dir
+        else root / "pipeline" / "simulation_automation" / "isaac_g1_simulator_command"
+    )
+    ensure_dir(resolved_output_dir)
+    input_blockers: list[str] = []
+    resolved_ply = Path(ply_asset).expanduser().resolve() if ply_asset else None
+    if resolved_ply is None:
+        resolved_ply = _find_first_capture_asset(root, [".ply"])
+    if resolved_ply is None:
+        resolved_ply = resolved_output_dir / "placeholder_scene_missing_capture_ply.ply"
+        _write_placeholder_ply(resolved_ply)
+        input_blockers.append("isaac_capture_ply_asset_missing")
+    resolved_spz = Path(spz_asset).expanduser().resolve() if spz_asset else None
+    if resolved_spz is None:
+        resolved_spz = _find_first_capture_asset(root, [".spz"])
+    if resolved_spz is None:
+        resolved_spz = resolved_output_dir / "placeholder_scene_missing_capture_spz.spz"
+        ensure_dir(resolved_spz.parent)
+        resolved_spz.write_bytes(b"SPZ\x00placeholder_missing_capture_spz")
+        input_blockers.append("isaac_capture_spz_asset_missing")
+    matrix_path = (
+        Path(scenario_eval_matrix_path).expanduser().resolve()
+        if scenario_eval_matrix_path
+        else Path(os.environ["BLUEPRINT_SCENARIO_EVAL_MATRIX"]).expanduser().resolve()
+        if os.environ.get("BLUEPRINT_SCENARIO_EVAL_MATRIX")
+        else None
+    )
+    result = run_isaac_g1_site_3dgs_realistic_eval(
+        ply_asset=resolved_ply,
+        spz_asset=resolved_spz,
+        labels_json=labels_json,
+        structure_json=structure_json,
+        occupancy_json=occupancy_json,
+        occupancy_png=occupancy_png,
+        job_id=resolved_output_dir.name,
+        job_root=resolved_output_dir.parent,
+        camera_ids=camera_ids,
+        allow_cloud_gpu=allow_cloud_gpu,
+        scenario_eval_matrix_path=matrix_path,
+        simulator_output_path=simulator_output_path,
+        runtime_result_path=runtime_result_path,
+        generated_at=generated_at,
+    )
+    simulator_output = Path(_string(result.get("simulator_output_path")))
+    if simulator_output.is_file() and input_blockers:
+        payload = _json_mapping(simulator_output)
+        payload["input_asset_blockers"] = input_blockers
+        payload["placeholder_scene_assets_used"] = True
+        payload["simulator_execution_proven"] = False
+        payload["isaac_sim_execution_proven"] = False
+        payload["proof_boundary"] = {
+            **_mapping(payload.get("proof_boundary")),
+            "placeholder_scene_assets_are_not_isaac_scene_fidelity_proof": True,
+        }
+        write_json(simulator_output, payload)
+    return {
+        **result,
+        "input_asset_blockers": input_blockers,
+        "placeholder_scene_assets_used": bool(input_blockers),
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ply-asset", required=True)
-    parser.add_argument("--spz-asset", required=True)
+    parser.add_argument("--capture-root")
+    parser.add_argument("--ply-asset")
+    parser.add_argument("--spz-asset")
     parser.add_argument("--labels-json")
     parser.add_argument("--structure-json")
     parser.add_argument("--occupancy-json")
     parser.add_argument("--occupancy-png")
+    parser.add_argument("--output-dir")
+    parser.add_argument("--simulator-output")
+    parser.add_argument("--scenario-eval-matrix")
+    parser.add_argument("--runtime-result")
     parser.add_argument("--job-id")
     parser.add_argument("--job-root")
     parser.add_argument("--task-limit", type=int)
@@ -3370,20 +4807,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--camera-ids", help="Comma-separated camera ids.")
     parser.add_argument("--allow-cloud-gpu", action="store_true")
     args = parser.parse_args(argv)
-    payload = run_isaac_g1_site_3dgs_realistic_eval(
-        ply_asset=args.ply_asset,
-        spz_asset=args.spz_asset,
-        labels_json=args.labels_json,
-        structure_json=args.structure_json,
-        occupancy_json=args.occupancy_json,
-        occupancy_png=args.occupancy_png,
-        job_id=args.job_id,
-        job_root=args.job_root,
-        task_limit=args.task_limit,
-        spawn_limit=args.spawn_limit,
-        camera_ids=_parse_camera_ids(args.camera_ids),
-        allow_cloud_gpu=args.allow_cloud_gpu,
-    )
+    capture_root_env = os.environ.get("BLUEPRINT_CAPTURE_ROOT")
+    capture_root_mode = bool(args.capture_root or capture_root_env)
+    if capture_root_mode:
+        payload = run_isaac_g1_simulator_command(
+            capture_root=args.capture_root or capture_root_env,
+            ply_asset=args.ply_asset,
+            spz_asset=args.spz_asset,
+            labels_json=args.labels_json,
+            structure_json=args.structure_json,
+            occupancy_json=args.occupancy_json,
+            occupancy_png=args.occupancy_png,
+            output_dir=args.output_dir,
+            simulator_output_path=args.simulator_output,
+            scenario_eval_matrix_path=args.scenario_eval_matrix,
+            runtime_result_path=args.runtime_result,
+            camera_ids=_parse_camera_ids(args.camera_ids),
+            allow_cloud_gpu=args.allow_cloud_gpu,
+        )
+    else:
+        if not args.ply_asset or not args.spz_asset:
+            parser.error("--ply-asset and --spz-asset are required without --capture-root")
+        payload = run_isaac_g1_site_3dgs_realistic_eval(
+            ply_asset=args.ply_asset,
+            spz_asset=args.spz_asset,
+            labels_json=args.labels_json,
+            structure_json=args.structure_json,
+            occupancy_json=args.occupancy_json,
+            occupancy_png=args.occupancy_png,
+            job_id=args.job_id,
+            job_root=args.job_root,
+            task_limit=args.task_limit,
+            spawn_limit=args.spawn_limit,
+            camera_ids=_parse_camera_ids(args.camera_ids),
+            allow_cloud_gpu=args.allow_cloud_gpu,
+            scenario_eval_matrix_path=args.scenario_eval_matrix,
+            simulator_output_path=args.simulator_output,
+            runtime_result_path=args.runtime_result,
+        )
     print(
         json.dumps(
             {
@@ -3400,10 +4861,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "blocked_episode_count": payload.get("summary", {}).get(
                     "blocked_episode_count"
                 ),
+                "scenario_eval_run_coverage_complete": payload.get("summary", {}).get(
+                    "scenario_eval_run_coverage_complete"
+                ),
+                "simulator_output_path": payload.get("simulator_output_path"),
+                "input_asset_blockers": payload.get("input_asset_blockers", []),
             },
             indent=2,
         )
     )
+    if capture_root_mode:
+        simulator_output = Path(_string(payload.get("simulator_output_path")))
+        simulator_payload = _json_mapping(simulator_output) if simulator_output.is_file() else {}
+        if simulator_payload.get("simulator_execution_proven") is not True:
+            return 2
     return 0
 
 

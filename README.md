@@ -168,6 +168,8 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/runpod_provider_adapter_result.json` when
   `blueprint-run-runpod-provider-adapter` is run
 - `robot_eval_jobs/<job_id>/gpu_cost_control_ledger.json`
+- `robot_eval_jobs/<job_id>/provider_closure_audit_report.json` when
+  `blueprint-audit-provider-closure` is run
 - `robot_eval_jobs/<job_id>/gpu_provisioning_result.json`
 - `robot_eval_jobs/<job_id>/simulator_service_request.json`
 - `robot_eval_jobs/<job_id>/simulator_service_result.json`
@@ -291,8 +293,13 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/policy_autoresearch/policy_candidate_package.json`
 - `robot_eval_jobs/<job_id>/policy_autoresearch/heldout_eval_result.json`
 - `robot_eval_jobs/<job_id>/policy_autoresearch/followup_real_world_validation_request.json`
+- `robot_eval_jobs/<job_id>/rl_post_training_handoff_packet.json`
+  when a Policy Improvement Run builds the Task Evaluation Run handoff packet
 - `robot_eval_jobs/<job_id>/policy_improvement_run/policy_improvement_run_offer.json`
 - `robot_eval_jobs/<job_id>/policy_improvement_run/policy_improvement_run_offer.md`
+- `robot_eval_jobs/<job_id>/policy_improvement_run/rl_post_training_handoff_packet.json`
+  with sparse reward, concurrent baseline A/B, bottleneck, speed curriculum,
+  action-chunk QA, and intervention/safety support signals
 - `robot_eval_jobs/<job_id>/policy_adapter_manifest.json` when Arena package
   ingest is run
 - `robot_eval_jobs/<job_id>/training_request.json`
@@ -339,6 +346,28 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/checksums.json`
 - `robot_eval_jobs/<job_id>/archive_manifest.json`
 - `robot_eval_jobs/<job_id>/post_training_data_package_export_manifest.json`
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/oscar_visual_augmentation_packet_manifest.json`
+  when visual augmentation support is prepared
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/visual_augmentation_variant_requests.jsonl`
+  when visual augmentation support is prepared
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/model_backend_registry.json`
+  when visual augmentation support is prepared
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/visual_distribution_shift_eval_protocol.json`
+  when visual augmentation support is prepared
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/claim_boundary.json`
+  when visual augmentation support is prepared
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/visual_augmentation_generation_run_manifest.json`
+  when visual augmentation generation is run
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/visual_augmentation_generation_results.jsonl`
+  when visual augmentation generation is run
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/visual_augmentation_generation_qa_manifest.json`
+  when visual augmentation generation is run
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/visual_augmentation_training_readiness_manifest.json`
+  when visual augmentation generation is run
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/visual_augmentation_training_dataset_manifest.json`
+  when visual augmentation generation is run
+- `robot_eval_jobs/<job_id>/oscar_visual_augmentation_packet/exports/visual_augmentation/episodes.jsonl`
+  when visual augmentation generation is run
 - `robot_eval_jobs/<job_id>/proof_boundary.json`
 - `robot_eval_jobs/<job_id>/startup_architecture_audit.json`
 - `robot_eval_jobs/<job_id>/worker_runtime_manifest.json` when run by
@@ -401,7 +430,7 @@ export BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true
 export BLUEPRINT_MUJOCO_G1_MODEL_ROOT=/path/to/mujoco_menagerie/unitree_g1
 ```
 
-With this profile, uploads without explicit requested outputs default into `qualification`, `evaluation_prep`, and `simulation_automation`; auto-staged `robot_eval_job_request.v1` work uses the MuJoCo runtime profile; and the control plane can drain accepted WebApp-style job requests into the packaged `blueprint_pipeline.mujoco_g1_simulator_command`. `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION` remains an explicit gate, and a MuJoCo G1 asset root or `BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS=true` is required before the packaged command is configured. This proves only sim-only beta execution when the job artifacts contain trace, metric, visual media, and scenario-run coverage evidence. It does not prove generated-world rank fidelity, generated-world rank fidelity, or external robot-team closure. WAM/substrate outputs, when requested, add evaluator-bounded policy comparison only.
+With this profile, uploads without explicit requested outputs default into `qualification`, `evaluation_prep`, and `simulation_automation`; auto-staged `robot_eval_job_request.v1` work uses the MuJoCo runtime profile; and the control plane can drain accepted WebApp-style job requests into the packaged `blueprint_pipeline.mujoco_g1_simulator_command`. `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION` remains an explicit gate, and a MuJoCo G1 asset root or `BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS=true` is required before the packaged command is configured. This proves only sim-only beta execution when the job artifacts contain trace, metric, visual media, and scenario-run coverage evidence. It does not prove generated-world rank fidelity or external robot-team closure. WAM/substrate outputs, when requested, add evaluator-bounded policy comparison only.
 
 Local sim-only beta gate:
 
@@ -449,14 +478,10 @@ blueprint-intake-live-pipeline-inputs \
   --webapp-job-request /path/to/robot_eval_job_request.json \
   --arena-results-dir /path/to/owner-arena-results \
   --policy-package /path/to/robot_team_policy_package.json \
-  --real-robot-pov /path/to/real_robot_pov_manifest.json \
-  --deployment-outcomes /path/to/deployment_outcome_manifest.json \
   --live-closure-evidence /path/to/live_eval_closure_evidence.json \
   --stage-webapp-request \
   --stage-arena-results \
   --stage-policy-package \
-  --stage-real-robot-pov \
-  --stage-deployment-outcomes \
   --stage-live-closure-evidence
 blueprint-run-live-pipeline-control-plane
 blueprint-audit-live-pipeline-proof-boundary \
@@ -468,8 +493,8 @@ That command audits readiness and optionally drains
 `robot_eval_job_request.v1` orchestrator. It writes a blocked/noop manifest plus
 `live_pipeline_external_input_packet.json` and `.md` when capture roots, inboxes,
 live simulator commands, owner Arena result artifacts, vision-labeling commands,
-robot-team policy package references, deployment outcome records, delivery
-commands, closure evidence, or live operator credentials are missing. The packet
+robot-team policy package references, delivery commands, closure evidence, or
+live operator credentials are missing. The packet
 is a handoff contract only; placeholder WebApp IDs or sample job requests are
 never treated as proof. Deployment outcome records can feed prediction-vs-actual
 tracking and calibration, but `real_world_outcome_proven` stays false until each
@@ -502,15 +527,13 @@ trace, teleop demo, and sim controller plugin modalities, but policy proof still
 requires the gated policy execution bundle to produce attempts. The final closure
 audit also revalidates selected modality status and required fields, so a
 hand-authored manifest cannot pass by naming a modality while leaving its
-reference blocked or incomplete. Add
-`--real-robot-pov` plus `--stage-real-robot-pov` to validate and copy
-owner-supplied robot camera/action evidence to
-`pipeline/robot_eval_inputs/real_robot_pov_manifest.json`. Each record must
-carry exact `scenario_eval_run_id` and `scenario_variation_instance_id` keys,
-camera video, action log, timestamp alignment, and owner evidence or operator
-attestation. Generated POV storyboards remain support artifacts only; real POV
-proof is allowed only after the robot-eval job ingests matching real robot
-evidence for every required scenario eval run. Add
+reference blocked or incomplete. For an explicitly requested hardware-proof
+diagnostic, add `--real-robot-pov` plus `--stage-real-robot-pov` to validate and
+copy owner-supplied robot camera/action evidence to
+`pipeline/robot_eval_inputs/real_robot_pov_manifest.json`. The control plane does
+not require this for sim-only work; missing exact keys, camera/action evidence,
+timestamp alignment, or owner evidence are recorded as real-POV diagnostics.
+Generated POV storyboards remain support artifacts only. Add
 `--deployment-outcomes` plus `--stage-deployment-outcomes` to validate and copy
 job-specific actual pilot/deployment records into
 `pipeline/robot_eval_inputs/<job_id>/deployment_outcomes/inbox/`; the robot-eval
@@ -518,10 +541,9 @@ job still has to pair those records with predictions before sim-vs-real
 calibration is proven. Records with task/scenario IDs and actual-result signals
 can be staged as real-world validation inputs before proof, but they are only
 calibration-ready when each staged record includes `scenario_eval_run_id` or
-`scenario_variation_instance_id` for an exact prediction join. Otherwise the
-control-plane packet keeps `predicted_vs_actual_exact_match_keys` open. It also
-keeps `real_world_deployment_outcome_owner_evidence` open until every staged
-record has owner evidence. Add
+`scenario_variation_instance_id` for an exact prediction join. Missing exact
+join keys or owner evidence are recorded as calibration diagnostics, not
+control-plane required inputs for sim-only work. Add
 `--live-closure-evidence` plus `--stage-live-closure-evidence` to validate and
 copy job-specific review, delivery, rights/privacy, and safety/contact/physics
 evidence into
@@ -534,6 +556,54 @@ For live WebApp-to-droplet handoff, run the authenticated intake service:
 BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN=<redacted> \
 blueprint-live-pipeline-intake-service --host 127.0.0.1 --port 8765
 ```
+
+The forwarding token is not enabled by default because it is a live bearer
+secret shared by the WebApp forwarding layer and the Pipeline intake service.
+Do not hardcode it in source, generated reports, or checked-in env files. To
+create a local ignored env file with matching WebApp and Pipeline variables:
+
+```bash
+python -m blueprint_pipeline.live_pipeline_forwarding_secret_setup \
+  --env-file "$HOME/.blueprint-secrets/live_pipeline_forwarding.env" \
+  --forward-url "https://paperclip.tryblueprint.io/api/live-pipeline/job-requests" \
+  --capture-root "$CAPTURE_ROOT" \
+  --site-slug "$WEBAPP_SITE_SLUG"
+```
+
+Use that file on the Pipeline host before starting the intake service:
+
+```bash
+set -a
+source "$HOME/.blueprint-secrets/live_pipeline_forwarding.env"
+set +a
+blueprint-live-pipeline-intake-service --host 127.0.0.1 --port 8765
+```
+
+Use the same file from the WebApp repo for the read-only forwarding preflight:
+
+```bash
+npm run pipeline:forwarding:preflight -- \
+  --require-forwarding \
+  --probe-intake-audit \
+  --forwarding-env-file "$HOME/.blueprint-secrets/live_pipeline_forwarding.env"
+```
+
+The sim-only beta deployment proof can read the same file:
+
+```bash
+python scripts/run_sim_only_beta_deployment_parity_proof.py \
+  --capture-root "$CAPTURE_ROOT" \
+  --route-forwarding-proof /absolute/path/to/production_route_forwarding_proof.json \
+  --webapp-url https://www.tryblueprint.io \
+  --pipeline-intake-url https://paperclip.tryblueprint.io/api/live-pipeline/job-requests \
+  --forwarding-env-file "$HOME/.blueprint-secrets/live_pipeline_forwarding.env"
+```
+
+For production, install the same token value into the deployment secret store as
+`ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN` for the WebApp and
+`BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN` for the Pipeline intake service. A local
+env file alone cannot make a remote endpoint authenticate unless the remote
+service has the same token configured.
 
 `POST /api/live-pipeline/job-requests` accepts either the direct
 `robot_eval_job_request.v1` body or the WebApp queue envelope, validates the
@@ -960,7 +1030,7 @@ skeleton support in `wam_generated_next_observations.jsonl`, then re-queries
 the selected Unitree policy on those generated frames. Those artifacts are labeled
 `default_local_wam_generator_used=true` and
 `learned_oscar_or_cosmos_model_ran=false`; they are useful loop evidence, not a
-claim that a learned OSCAR/Cosmos checkpoint or physical robot sensor loop ran.
+claim that a learned OSCAR/Cosmos checkpoint ran.
 The loop also writes the WAM-derived perception/observation harness artifact
 family under `robot_policy_wam_closed_loop/wam_derived_observation_harness/`.
 The harness derives support masks/boxes, tracks, relative depth, pose, contact
@@ -1000,8 +1070,8 @@ policy adapter field gating, and claim-bounded scoring/requery status. It also
 works with `--provider-mode fixture` for deterministic tests. If no
 `--generated-frame` is supplied, it discovers an existing generated frame under
 `robot_eval_jobs/` or writes a local synthetic AI-style start frame. The manifest
-keeps `perception_accuracy_validated=false`; labeled validation rows are not
-required for this sim-only proof.
+records that optional truth-label validation was not requested; labeled
+validation rows are not required and do not block this sim-only proof.
 
 The default depth provider for this smoke path is Transformers Depth Anything
 V2 small. Depth Anything 3 is optional and selectable with
@@ -1205,8 +1275,8 @@ must set `BLUEPRINT_PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST` to a passed
 short-sanity manifest for the same policy observation; the legacy
 `BLUEPRINT_ALLOW_PERSISTENT_WAM_LONG_REVIEW_ROLLOUT` flag alone is not enough to
 unlock the long run. These artifacts prove only reviewability of model-derived
-support media, not task success, safety, generated-world rank fidelity, physical robot
-readiness, or raw capture truth.
+support media, not task success, safety, generated-world rank fidelity, or raw
+capture truth.
 
 Synthetic fallback initial observations and synthetic 2D WAM seeds are blocked
 from live or review-quality WAM provider bundles by default. Use
@@ -1299,7 +1369,13 @@ or `BLUEPRINT_MUJOCO_EVAL_WORKER_IMAGE_REF=...`; the generic fallback is
 `BLUEPRINT_EVAL_MANIFEST_URI` for the queued worker manifest and
 `BLUEPRINT_ARTIFACT_OUTPUT_URI` for the finalizer destination. A Dockerfile path
 alone is build scaffolding, and a local `worker_manifest.json` path alone is not
-a provider-launchable input.
+a provider-launchable input. Isaac RunPod requests also block before spend with
+`prebuilt_isaac_eval_worker_image_ref_missing` when no prebuilt Isaac worker
+image is configured. The raw Isaac Sim base image is not the fast production
+path because it can spend bounded startup time without reaching the Blueprint
+fetch/finalizer wrapper or uploading `isaac_provider_runtime_output.zip`; only
+use `BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD=true` for an intentional
+debug run.
 Each job also writes `gpu_startup_pipeline_plan.json`. This is the managed-GPU
 startup policy for website-origin jobs: the WebApp queues and forwards only,
 BlueprintCapturePipeline owns provider selection and spend gates, and customer
@@ -1377,6 +1453,15 @@ requirements, concrete idle timeout, concrete external watchdog TTL, estimated
 GPU seconds, actual GPU seconds when owner-runtime evidence exists, and the
 blockers preventing allocation. A blocked scheduler or missing provider gate
 records zero estimated GPU seconds and no live provider calls.
+
+Run `blueprint-audit-provider-closure --job-dir
+<capture-root>/pipeline/robot_eval_jobs/<job_id>` to verify optional provider
+closure artifacts without provider API calls. The report checks local watchdog,
+spend-ledger, artifact-output finalizer/upload, and teardown evidence, then
+writes `provider_closure_audit_report.json`. Missing credentials or provider
+artifacts are recorded as `blocked_optional_provider_closure`. This audit is
+not required for local sim-only beta and does not prove rank fidelity, physical
+readiness, safety validation, or field success.
 
 Run `blueprint-audit-robot-eval-startup-architecture --job-dir
 <capture-root>/pipeline/robot_eval_jobs/<job_id>` after a job pass to verify the
@@ -1505,9 +1590,9 @@ Blueprint sends a least-privilege task/scenario/eval packet and receives
 normalized owner proof. Blueprint does not export raw capture bundles, full
 scene assets, full scoring harnesses, or sealed audit seeds by default. If the
 customer shares a private Robot Embodiment Pack under NDA, use
-`private_asset_hosted_by_blueprint`; if the customer runs a physical robot, use
-`physical_robot_evidence_bridge` and require camera/action/outcome evidence
-joined to exact `scenario_eval_run_id` values.
+`private_asset_hosted_by_blueprint`; if the customer keeps execution in its own
+environment, use `owner_evidence_bridge` and require camera/action/outcome
+evidence joined to exact `scenario_eval_run_id` values.
 
 ```bash
 blueprint-build-policy-improvement-run \
@@ -1528,18 +1613,25 @@ blueprint-build-policy-improvement-run \
 ```
 
 The builder writes `policy_improvement_run_offer.json`,
-`private_hardware_integration_plan.json`, `policy_improvement_run_offer.md`, and
-`policy_improvement_run_webapp_summary.json` under `policy_improvement_run/`.
+`private_hardware_integration_plan.json`, `rl_post_training_handoff_packet.json`,
+`policy_improvement_run_offer.md`, and `policy_improvement_run_webapp_summary.json`
+under `policy_improvement_run/`.
 The manifest binds together the scenario matrix, normalized baseline attempts,
 standard evaluation scorecard projection, failure labels, Post-Training Data
 Package export, policy-autoresearch candidate package, heldout result, staged
-readiness ladder, WebApp-safe summary projection, and proof boundary. It can say
-the run is ready for baseline evaluation, failure diagnosis, post-training
-package build, policy-autoresearch, candidate promotion, or customer review. It
-cannot turn sim heldout success into generated-world rank-fidelity result: sealed audit scenarios
-must remain outside training, and generated-world rank fidelity, physical off-scope validation,
-policy-ranking outcome, and public claim upgrades remain false until separately
-proven by accepted live evidence.
+readiness ladder, RL/post-training handoff packet, WebApp-safe summary projection,
+and proof boundary. The handoff packet carries the success definition, sparse
+reward signal, recoverable failure labels, intervention labels, timing/throughput
+metrics, policy baseline fingerprint, same-condition frozen-baseline A/B plan,
+bottleneck stage detection, speed curriculum plan, action-chunk continuity QA,
+and intervention/safety ledger. It can say the run is ready for baseline
+evaluation, failure diagnosis, post-training package build, policy-autoresearch,
+candidate promotion, or customer review. It cannot turn sim heldout success into
+generated-world rank-fidelity result: sealed audit scenarios must remain outside
+training, old-run-only comparisons are not enough for candidate-improvement
+claims, and generated-world rank fidelity, physical off-scope validation,
+policy-ranking outcome, safety validation, and public claim upgrades remain false
+until separately proven by accepted live evidence.
 
 When `--arena-results-dir` points at existing Isaac Lab-Arena rollout artifacts,
 the job ingests those local results into normalized traces, labels, clips,
@@ -1579,12 +1671,12 @@ requirement-by-requirement closure audit for the full neutral harness:
 site capture, task definitions, scenario library, robot POV generation,
 scenario/eval suite, failure labels, standard scorecard methodology, robot-team
 policy modalities, simulator engine plugins, WebApp upstream truth, rights and
-privacy scope, live simulator execution, live policy execution, real-world
-outcomes, predicted-vs-actual calibration, review acceptance, signed delivery,
-and safety/contact/physics readiness. The closure remains
-`local_artifacts_ready_live_external_blocked` until all live gates have accepted
-evidence. Robot POV closure requires coverage of every `scenario_eval_run_id` in
-the job matrix, not only a matching observation count. Scenario-library and
+privacy scope, live simulator execution, live policy execution, optional
+real-world outcome diagnostics, optional predicted-vs-actual calibration, review
+acceptance, signed delivery, and optional safety/contact/physics diagnostics.
+Missing optional real-world outcome, real-POV, calibration, or
+safety/contact/physics evidence does not block sim-only closure and does not
+upgrade real-world proof. Scenario-library and
 scenario/eval-suite closure require each claimed variation row to include
 concrete mutation details and engine-adapter mutation operations, or a linked
 scenario variation instance that carries them. Failure-label closure
@@ -1609,11 +1701,11 @@ match the report. A section-complete report stub is not enough.
 The simulator-engine plugin gate requires every supported engine in
 `simulator_engine_plugin_registry.json` to have a ready adapter contract and
 managed execution support; a partial or blocked registry remains a closure
-blocker. Predicted-vs-actual closure also blocks when deployment outcome records
-carry run-level identifiers that do not match a prediction. Real-world
+blocker. Predicted-vs-actual closure records diagnostics when deployment outcome
+records carry run-level identifiers that do not match a prediction. Real-world
 validation closure recomputes owner evidence and actual-outcome signals from
-each ledger row; aggregate `real_world_outcome_proven` booleans alone cannot
-upgrade the gate. Live-simulator closure also re-audits owner GPU proof
+each ledger row as optional proof evidence; aggregate `real_world_outcome_proven`
+booleans alone cannot upgrade a real-world claim. Live-simulator closure also re-audits owner GPU proof
 manifests for required identity/runtime fields, zero exit code, empty
 blockers/missing inputs, and all validator-emitted evidence flags; an aggregate
 `owner_gpu_simulator_execution_proven` boolean alone cannot upgrade simulator
@@ -1736,6 +1828,61 @@ blueprint-build-post-training-data-package \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
   --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id>
 ```
+
+The export also writes `rl_post_training_handoff_packet.json` into the package
+and archive so robot teams receive the same sparse reward, A/B reservation,
+bottleneck, speed curriculum, action-chunk QA, and intervention/safety support
+signals alongside the curated traces and labels. This is a post-training support
+contract, not proof that Blueprint trained the policy or validated physical robot
+safety.
+
+Visual augmentation support packet for Post-Training Data Packages and
+distribution-shift review:
+
+```bash
+blueprint-build-oscar-visual-augmentation-packet \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
+  --first-frame /path/to/first_frame.png \
+  --skeleton-video /path/to/skeleton_conditioning.mp4 \
+  --camera-provenance /path/to/camera_calibration_quality_gate.json \
+  --skeleton-provenance /path/to/g1_projected_skeleton_trace.jsonl
+```
+
+Then run one generation job per variant through a visual-augmentation backend:
+
+```bash
+blueprint-run-oscar-visual-augmentation-generation \
+  --packet-manifest /path/to/<job-dir>/oscar_visual_augmentation_packet/oscar_visual_augmentation_packet_manifest.json \
+  --backend-id oscar_wam \
+  --backend-mode auto
+```
+
+For local artifact/QA testing without a learned backend:
+
+```bash
+blueprint-run-oscar-visual-augmentation-generation \
+  --packet-manifest /path/to/<job-dir>/oscar_visual_augmentation_packet/oscar_visual_augmentation_packet_manifest.json \
+  --backend-mode fixture \
+  --allow-fixture-backend
+```
+
+The real backend command contract is
+`BLUEPRINT_OSCAR_VISUAL_AUGMENTATION_COMMAND` or
+`BLUEPRINT_VISUAL_AUGMENTATION_BACKEND_COMMAND`. Existing
+`BLUEPRINT_OSCAR_WAM_COMMAND`/`BLUEPRINT_OSCAR_WAM_PROVIDER_COMMAND` values use
+the older WAM-rollout contract and should be wrapped before being used here.
+The checked OSCAR Docker image is
+`docker.io/nijelhunt/blueprint-oscar-wam:20260622-cu128-shim`; it contains
+`/opt/oscar-public` according to registry metadata. The older
+`20260621-cu128-shim` tag was not present during the registry check.
+
+This prepares OSCAR/Cosmos/future-backend visual variant requests from fixed
+camera/skeleton provenance and can attach reviewed backend outputs. Generated
+videos from this packet are support assets only; they do not prove contact
+physics, physical robot readiness, deployment approval, safety validation, or
+real-world task success.
+See [`docs/OSCAR_VISUAL_AUGMENTATION_PACKET.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/OSCAR_VISUAL_AUGMENTATION_PACKET.md).
 
 Site/capture batch registry with retry/resume status:
 

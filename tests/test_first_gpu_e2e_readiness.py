@@ -15,7 +15,6 @@ from blueprint_pipeline.first_gpu_e2e_readiness import (
     _path_matches,
     _pipeline_handoff_stage,
     _request_from_webapp_payload,
-    _simulator_runtime_stage,
     _string_list,
     _webapp_forwarding_preflight_stage,
     _webapp_forwarding_stage,

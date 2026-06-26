@@ -4,6 +4,10 @@ Status: fail-closed local orchestration lane.
 
 Owner repo: `BlueprintCapturePipeline`
 
+See also: `docs/simulator-agnostic-g1-execution-contract.md` for the shared
+MuJoCo/Isaac Unitree G1 command contract, proof boundaries, env contract, and
+exact run commands.
+
 ## Purpose
 
 The simulation automation lane turns persisted capture/package/World Labs and
@@ -281,7 +285,12 @@ deterministic manifests that are safe to sync to WebApp as advisory status:
   names only, GPU class constraints, max-worker and timeout controls,
   idle-shutdown posture, and artifact-finalizer requirements. It is the request
   shape a future launcher can consume, but it never performs a live provider
-  call and never stores provider secret values.
+  call and never stores provider secret values. Isaac RunPod envelopes require a
+  prebuilt worker image ref; without `BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF`,
+  `BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE`, or
+  `BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF`, they block before spend with
+  `prebuilt_isaac_eval_worker_image_ref_missing` instead of falling back to a
+  slow direct Isaac Sim base image startup.
 - Per-job `gpu_cost_control_ledger.json` records requested budget, maximum
   billable GPU seconds, max workers, customer-concurrency requirement,
   idle-shutdown/watchdog requirements, estimated GPU seconds, actual GPU seconds

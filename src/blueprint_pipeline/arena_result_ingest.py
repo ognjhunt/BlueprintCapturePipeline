@@ -84,6 +84,15 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "agents_sdk_operator_performed": False,
     "codex_sdk_operator_performed": False,
     "vision_model_labeling_performed": False,
+    "review_acceptance_proven": False,
+    "rights_privacy_scope_proven": False,
+    "signed_delivery_access_proven": False,
+    "customer_handoff_ready": False,
+    "delivery_access_is_deployment_approval": False,
+    "package_delivery_is_deployment_approval": False,
+    "deployment_approval_proven": False,
+    "physical_robot_readiness_proven": False,
+    "safety_validation_proven": False,
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
     "rank_fidelity_result_proven": False,
@@ -1460,6 +1469,12 @@ def _build_delivery_artifacts(
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "storage_upload_performed": storage_upload_performed,
+            "signed_delivery_access_proven": signed_access_status == "signed_access_ready",
+            "delivery_access_is_deployment_approval": False,
+            "package_delivery_is_deployment_approval": False,
+            "deployment_approval_proven": False,
+            "physical_robot_readiness_proven": False,
+            "safety_validation_proven": False,
         },
     }
     delivery = {
@@ -1473,7 +1488,15 @@ def _build_delivery_artifacts(
         "egress_estimate": "egress_estimate.json",
         "signed_access_manifest": "signed_access_manifest.json",
         "storage_upload_performed": signed_access["storage_upload_performed"],
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "signed_delivery_access_proven": signed_access_status == "signed_access_ready",
+            "delivery_access_is_deployment_approval": False,
+            "package_delivery_is_deployment_approval": False,
+            "deployment_approval_proven": False,
+            "physical_robot_readiness_proven": False,
+            "safety_validation_proven": False,
+        },
     }
     write_json(output_dir / "entitlement_check.json", entitlement)
     write_json(output_dir / "retention_policy.json", retention)

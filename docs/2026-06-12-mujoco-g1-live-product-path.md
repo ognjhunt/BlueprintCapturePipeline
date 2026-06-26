@@ -58,7 +58,7 @@ The MuJoCo path still cannot prove:
 - live WebApp forwarding or upstream truth without real non-placeholder
   `site_submission_id`, `request_id`, `buyer_request_id`, and `capture_job_id`
 - robot-team policy quality beyond the default smoke policy
-- physical robot POV
+- owner-run POV
 - physical generated-world rank fidelity
 - safety/contact validity
 - signed customer delivery

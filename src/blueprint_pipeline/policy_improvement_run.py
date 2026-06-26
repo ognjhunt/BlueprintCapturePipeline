@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .local_capture import resolve_local_capture_context
+from .rl_post_training_handoff import build_rl_post_training_handoff_packet
 
 
 POLICY_IMPROVEMENT_RUN_SCHEMA_VERSION = "policy_improvement_run_offer.v2"
@@ -765,6 +766,12 @@ def _markdown_brief(manifest: Mapping[str, Any]) -> str:
     boundary = _mapping(manifest.get("claim_boundary"))
     private_hardware = _mapping(manifest.get("private_hardware_integration"))
     ip_controls = _mapping(private_hardware.get("blueprint_ip_controls"))
+    handoff = _mapping(manifest.get("rl_post_training_handoff"))
+    concurrent_ab = _mapping(handoff.get("concurrent_baseline_ab"))
+    bottleneck = _mapping(handoff.get("bottleneck_stage_detection"))
+    speed_plan = _mapping(handoff.get("speed_curriculum_plan"))
+    action_chunk_qa = _mapping(handoff.get("action_chunk_continuity_qa"))
+    safety_ledger = _mapping(handoff.get("intervention_safety_ledger"))
     lines = [
         "# Policy Improvement Run",
         "",
@@ -793,6 +800,11 @@ def _markdown_brief(manifest: Mapping[str, Any]) -> str:
         f"- Best heldout success: `{summary.get('best_heldout_success_rate')}`",
         f"- Heldout delta: `{summary.get('heldout_success_rate_delta')}`",
         f"- Safety/contact gate passed: `{summary.get('safety_contact_gate_passed')}`",
+        f"- Concurrent baseline A/B: `{concurrent_ab.get('status')}`",
+        f"- Dominant bottleneck stage: `{bottleneck.get('dominant_stage')}`",
+        f"- Speed curriculum: `{speed_plan.get('status')}`",
+        f"- Action-chunk continuity QA: `{action_chunk_qa.get('status')}`",
+        f"- Intervention/safety ledger events: `{safety_ledger.get('event_count')}`",
         "",
         "## Boundary",
         "",
@@ -879,6 +891,8 @@ def build_policy_improvement_run_offer(
         "budget_ledger": "policy_autoresearch/budget_ledger.json",
         "live_eval_closure_manifest": "live_eval_closure_manifest.json",
         "proof_boundary": "proof_boundary.json",
+        "intervention_safety_ledger": "intervention_safety_ledger.json",
+        "safety_events_ledger": "safety_events_ledger.json",
     }
     for key, relative_path in job_artifacts.items():
         _include_if_file(
@@ -926,6 +940,11 @@ def build_policy_improvement_run_offer(
         resolved_job_dir / "candidate_selection_report.json"
     )
     evaluation_result = _read_optional_mapping(resolved_job_dir / "evaluation_result.json")
+    normalized_trace = _read_optional_mapping(resolved_job_dir / "normalized_attempt_trace.json")
+    policy_execution_trace = _read_optional_mapping(resolved_job_dir / "policy_execution_trace.json")
+    safety_events = _read_optional_mapping(resolved_job_dir / "intervention_safety_ledger.json")
+    if not safety_events:
+        safety_events = _read_optional_mapping(resolved_job_dir / "safety_events_ledger.json")
 
     customer_input_summary = _customer_inputs(
         job_request=job_request,
@@ -987,6 +1006,39 @@ def build_policy_improvement_run_offer(
     boundary["blueprint_full_scoring_harness_exported_to_customer_by_default"] = False
     boundary["customer_hosted_connector_outputs_are_owner_evidence"] = True
 
+    rl_handoff = build_rl_post_training_handoff_packet(
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        job_id=resolved_job_dir.name,
+        generated_at=generated,
+        job_request=job_request,
+        scenario_matrix=scenario_matrix,
+        trace=normalized_trace,
+        labels=labels,
+        evaluation_result=evaluation_result,
+        policy_package=policy_package,
+        policy_report=policy_report,
+        candidate_package=candidate_package,
+        heldout_result=heldout_result,
+        policy_execution_trace=policy_execution_trace,
+        safety_events=safety_events,
+        source_artifacts=included_artifacts,
+    )
+    task_eval_handoff_path = resolved_job_dir / "rl_post_training_handoff_packet.json"
+    write_json(task_eval_handoff_path, rl_handoff)
+    write_json(resolved_output_dir / "rl_post_training_handoff_packet.json", rl_handoff)
+    included_artifacts["rl_post_training_handoff_packet"] = "rl_post_training_handoff_packet.json"
+    included_artifacts["task_eval_rl_post_training_handoff_packet"] = _relative_to(
+        resolved_output_dir,
+        task_eval_handoff_path,
+    )
+    boundary["concurrent_ab_required_for_candidate_improvement_claim"] = True
+    boundary["candidate_improvement_claim_allowed"] = (
+        _mapping(rl_handoff.get("concurrent_baseline_ab")).get("candidate_claim_allowed")
+        is True
+    )
+    boundary["rl_post_training_handoff_included"] = True
+
     manifest: dict[str, Any] = {
         "schema_version": POLICY_IMPROVEMENT_RUN_SCHEMA_VERSION,
         "generated_at": generated,
@@ -1020,8 +1072,13 @@ def build_policy_improvement_run_offer(
         "improvement_targets": list(targets),
         "workflow": [
             "baseline_evaluation",
+            "concurrent_frozen_baseline_ab_reservation",
             "substrate_selection_or_wam_fixture_evaluation",
             "dominant_failure_mode_diagnosis",
+            "bottleneck_substage_detection",
+            "speed_curriculum_planning",
+            "action_chunk_continuity_qa",
+            "intervention_safety_ledger_review",
             "digital_twin_and_cousin_scenario_generation",
             "curriculum_build",
             "candidate_post_training_or_policy_lift",
@@ -1052,6 +1109,7 @@ def build_policy_improvement_run_offer(
             "manifest_counts": post_training_package.get("manifest_counts") or {},
         },
         "policy_autoresearch_summary": policy_summary,
+        "rl_post_training_handoff": rl_handoff,
         "wam_evaluation_summary": {
             "status": wam_scorecard.get("status") or "missing",
             "evaluation_substrate": wam_scorecard.get("evaluation_substrate")
@@ -1089,6 +1147,12 @@ def build_policy_improvement_run_offer(
         "readiness_ladder": readiness_ladder,
         "deliverables": [
             "baseline_eval_report",
+            "rl_post_training_handoff_packet",
+            "concurrent_baseline_ab_plan",
+            "bottleneck_stage_detection",
+            "speed_curriculum_plan",
+            "action_chunk_continuity_qa",
+            "intervention_safety_ledger",
             "private_hardware_integration_plan",
             "wam_rollout_and_policy_ranking_scorecard_when_requested",
             "failure_mode_report",

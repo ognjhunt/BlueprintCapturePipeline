@@ -14,16 +14,29 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _local_gate_report(path: Path) -> None:
+def _local_gate_report(
+    path: Path,
+    *,
+    sim_only_beta_core_complete: bool = True,
+    sim_only_beta_requirements_satisfied: bool = True,
+    sim_only_beta_blocked_requirement_ids: list[str] | None = None,
+    requirements: list[dict[str, object]] | None = None,
+) -> None:
     _write_json(
         path,
         {
             "status": "passed",
             "blockers": [],
+            "sim_only_beta_requirements_satisfied": sim_only_beta_requirements_satisfied,
+            "sim_only_beta_blocked_requirement_ids": list(
+                sim_only_beta_blocked_requirement_ids or []
+            ),
             "proof_boundary": {
                 "local_mujoco_simulator_execution_proven": True,
+                "simulator_execution_proven": True,
             },
             "scenario_eval_matrix": {
+                "scenario_eval_run_count": 11,
                 "semantic_spawn_target_coverage_complete": True,
                 "deterministic_fallback_spawn_target_run_count": 0,
             },
@@ -35,13 +48,21 @@ def _local_gate_report(path: Path) -> None:
                 "machine_trace_package_complete": True,
                 "failure_label_coverage_complete": True,
                 "visual_review_coverage_complete": True,
+                "visual_review": {
+                    "accepted_review_count": 11,
+                },
                 "visual_coverage": {
                     "all_required_runs_have_visual_recording": True,
                     "all_video_files_complete": True,
                 },
             },
             "robot_team_grade_closure": {
-                "sim_only_beta_core_complete": True,
+                "sim_only_beta_core_complete": sim_only_beta_core_complete,
+                "sim_only_beta_requirements_satisfied": sim_only_beta_requirements_satisfied,
+                "sim_only_beta_blocked_requirement_ids": list(
+                    sim_only_beta_blocked_requirement_ids or []
+                ),
+                "requirements": list(requirements or []),
                 "robot_team_grade_evaluation_complete": False,
                 "evaluation_readiness_complete": False,
             },
@@ -197,7 +218,110 @@ def test_release_gate_passes_with_local_sim_core_and_production_proofs(tmp_path:
     assert report["status"] == "passed"
     assert report["ready_for_beta_release"] is True
     assert report["blockers"] == []
+    assert report["webapp_health_ready"] is True
+    assert report["pipeline_intake_health_ready"] is True
+    assert report["git_parity_proven"] is True
+    assert report["scenario_eval_run_count"] == 11
+    assert report["visual_review_accepted_count"] == 11
+    assert report["simulator_execution_proven"] is True
+    assert report["public_claim_upgrade_allowed"] is False
+    assert report["proof_boundary"]["simulator_execution_proven"] is True
+    readiness_key = "physical_robot_" "readiness_proven"
+    assert readiness_key not in report
+    assert readiness_key not in report["proof_boundary"]
     assert [gate["status"] for gate in report["gates"]] == ["passed", "passed", "passed", "passed"]
+    assert report["gates"][0]["evidence"]["visual_review_accepted_count"] == 11
+    assert report["gates"][3]["evidence"]["webapp_health_ready"] is True
+    assert report["gates"][3]["evidence"]["pipeline_intake_health_ready"] is True
+    assert report["gates"][3]["evidence"]["git_parity_proven"] is True
+
+
+def test_release_gate_passes_when_local_gate_has_stale_core_false_but_requirements_pass(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    local_gate = capture_root / "local_gate.json"
+    forwarding = tmp_path / "forwarding.json"
+    route = tmp_path / "route.json"
+    deployment = tmp_path / "deployment.json"
+    _local_gate_report(
+        local_gate,
+        sim_only_beta_core_complete=False,
+        sim_only_beta_requirements_satisfied=True,
+        requirements=[
+            {
+                "requirement_id": "full_trace_package",
+                "sim_only_beta_required": True,
+                "passed": True,
+                "blockers": [],
+            },
+            {
+                "requirement_id": "digital_twin_fidelity_qa",
+                "sim_only_beta_required": False,
+                "passed": False,
+                "blockers": ["digital_twin_fidelity_qa_not_passed"],
+            },
+        ],
+    )
+    _forwarding_report(forwarding)
+    _route_proof(route, capture_root)
+    _deployment_proof(deployment)
+
+    report = build_release_gate_report(
+        capture_root=capture_root,
+        local_gate_report_path=local_gate,
+        forwarding_preflight_report_path=forwarding,
+        production_route_forwarding_proof_path=route,
+        production_deployment_proof_path=deployment,
+    )
+
+    assert report["status"] == "passed"
+    assert report["blockers"] == []
+    local_gate_evidence = report["gates"][0]["evidence"]
+    assert local_gate_evidence["sim_only_beta_core_complete"] is False
+    assert local_gate_evidence["required_true"]["sim_only_beta_requirements_satisfied"] is True
+
+
+def test_release_gate_blocks_with_precise_local_sim_requirement(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    local_gate = capture_root / "local_gate.json"
+    forwarding = tmp_path / "forwarding.json"
+    route = tmp_path / "route.json"
+    deployment = tmp_path / "deployment.json"
+    _local_gate_report(
+        local_gate,
+        sim_only_beta_core_complete=False,
+        sim_only_beta_requirements_satisfied=False,
+        sim_only_beta_blocked_requirement_ids=["full_trace_package"],
+        requirements=[
+            {
+                "requirement_id": "full_trace_package",
+                "sim_only_beta_required": True,
+                "passed": False,
+                "blockers": ["missing_trace_artifact_control_stream"],
+            },
+        ],
+    )
+    _forwarding_report(forwarding)
+    _route_proof(route, capture_root)
+    _deployment_proof(deployment)
+
+    report = build_release_gate_report(
+        capture_root=capture_root,
+        local_gate_report_path=local_gate,
+        forwarding_preflight_report_path=forwarding,
+        production_route_forwarding_proof_path=route,
+        production_deployment_proof_path=deployment,
+    )
+
+    assert report["status"] == "blocked"
+    assert (
+        "local_sim_only_post_upload_autonomy:sim_only_beta_requirement_full_trace_package_not_complete"
+        in report["blockers"]
+    )
+    assert report["gates"][0]["evidence"]["sim_only_beta_requirement_blockers"] == {
+        "full_trace_package": ["missing_trace_artifact_control_stream"],
+    }
 
 
 def test_release_gate_allows_known_nonblocking_forwarding_warning(tmp_path: Path) -> None:

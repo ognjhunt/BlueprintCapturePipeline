@@ -239,7 +239,7 @@ endpoint response may set `unitree_endpoint_hand_policy_output_observed=true`,
 but it must also set `unitree_endpoint_provider_output_replay_used=true` and
 must keep `unitree_endpoint_hand_policy_used=false`. Even a fresh action-command
 proof remains separate from task success, dexterous grasp success, WAM
-closed-loop proof, generated-world rank fidelity, generated-world rank fidelity, and safety
+closed-loop proof, generated-world rank fidelity, and safety
 validation.
 
 When `BLUEPRINT_UNITREE_LEROBOT_ROOT` exists and `eval_g1_sim.py` is present,
@@ -350,7 +350,7 @@ interpreter and prepends the local Unitree LeRobot checkout plus its pinned
 bound for fresh Python 3.10/Pinocchio/Torch environments; the default is 60
 seconds. A passing smoke probe only means the source runtime can import and
 start; it is still not a trained manipulation checkpoint, action-command
-adapter, task-success, or physical-robot proof.
+adapter, task-success, or deployment proof.
 
 That checkout is pinned to Unitree `unitree_lerobot` commit
 `41c2805742de879ddab2d8d6beaeaf215f876395` and contains
@@ -408,9 +408,9 @@ blueprint-run-unitree-groot-n17-sonic-policy-provider-smoke \
   --frame-path <simulated-policy-frame>
 ```
 
-These commands are simulator/proof-lane commands. They must not be pointed at a
-physical robot path, and a dry run or provider-output import is not fresh model
-execution.
+These commands are simulator/proof-lane commands. They must use the configured
+simulation/provider lane, and a dry run or provider-output import is not fresh
+model execution.
 
 When using repository checkpoints, keep Hugging Face auth file-based. The runtime
 and preflight audits record whether `BLUEPRINT_UNITREE_GROOT_N17_SONIC_HF_TOKEN_FILE`
@@ -778,8 +778,8 @@ The current repo has adapter contracts, a default local action/skeleton
 conditioned support generator, and fail-closed manifests for this loop. It must
 continue to block rather than fake success when a runnable Unitree hand-policy
 command or checkpoint is missing. A default local WAM completion is not a live
-learned OSCAR/Cosmos completion, generated-world rank fidelity, off-scope validation, or
-physical robot task proof.
+learned OSCAR/Cosmos completion, generated-world rank fidelity, off-scope
+validation, or task-success proof.
 
 The WAM-derived harness can recommend early termination when generated media is
 too weak for reliable policy requery, target identity is lost, the target is
@@ -807,5 +807,5 @@ For a sim-only architecture proof of the provider path, run
 generated frame and optional SAM3/depth/pose configuration. That proves the
 generated-frame -> provider -> harness -> adapter -> gated-requery artifact
 path, but it does not change the default Unitree policy interface or prove
-perception accuracy, generated-world rank fidelity, off-scope validation, physical-robot
-readiness, or real-world task success.
+perception accuracy, generated-world rank fidelity, off-scope validation, or
+real-world task success.

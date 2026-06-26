@@ -927,6 +927,23 @@ def test_digital_twin_fidelity_qa_blocks_proxy_only_visual_physics_parity() -> N
             "images_count": 0,
             "has_embedded_or_referenced_image_textures": False,
         },
+        "visual_object_semantics_summary": {
+            "status": "missing",
+            "visible_object_count": 1,
+            "named_visible_object_count": 0,
+            "semantic_labeled_visible_object_count": 0,
+            "visible_objects": [
+                {
+                    "object_id": "visible_object_0000_geometry_0",
+                    "source_component_index": 0,
+                    "name": "geometry_0",
+                    "semantic_label_available": False,
+                    "geometry_name": "geometry_0",
+                    "gltf_mesh_name": "geometry_0",
+                }
+            ],
+            "blockers": ["visible_geometry_object_names_missing"],
+        },
         "obj_vertex_color_summary": {
             "has_vertex_rgb": True,
             "vertex_rgb_fraction": 1.0,
@@ -950,6 +967,11 @@ def test_digital_twin_fidelity_qa_blocks_proxy_only_visual_physics_parity() -> N
         mesh_info=mesh_info,
         collision_summary=collision_summary,
         visual_artifacts=visual_artifacts,
+        artifact_refs={
+            "scene_load_trace": "scene_load_trace.json",
+            "source_scene_glb": "scene.glb",
+            "converted_scene_obj": "scene.obj",
+        },
     )
 
     assert qa["machine_fidelity_audit_complete"] is False
@@ -960,6 +982,22 @@ def test_digital_twin_fidelity_qa_blocks_proxy_only_visual_physics_parity() -> N
     assert "digital_twin_object_semantics_missing" in qa["blockers"]
     assert "visible_objects_without_physics_coverage" in qa["blockers"]
     assert "visual_collision_alignment_not_validated" in qa["blockers"]
+    gaps = qa["object_level_fidelity_gaps"]
+    missing_semantics = gaps["missing_semantic_objects"]
+    missing_physics = gaps["visible_objects_without_physics_coverage"]
+    assert missing_semantics[0]["object_id"] == "visible_object_0000_geometry_0"
+    assert missing_semantics[0]["reason"] == (
+        "visible_glb_object_has_only_generated_or_missing_semantic_name"
+    )
+    assert missing_semantics[0]["evidence_refs"][0]["path"] == "scene_load_trace.json"
+    assert missing_physics[0]["object_id"] == "visible_object_0000_geometry_0"
+    assert missing_physics[0]["coverage_reason"] == (
+        "visible_object_proxy_component_mapping_not_one_to_one"
+    )
+    assert (
+        missing_physics[0]["component_coverage_summary"]["component_mapping_status"]
+        == "not_one_to_one"
+    )
 
 
 def test_digital_twin_fidelity_qa_passes_component_mapped_proxy_physics_coverage() -> None:
@@ -1033,6 +1071,8 @@ def test_digital_twin_fidelity_qa_passes_component_mapped_proxy_physics_coverage
     assert qa["gates"]["visible_objects_have_physics_coverage"]["passed"] is True
     assert qa["gates"]["visual_object_has_matching_physics"]["passed"] is True
     assert qa["visual_collision_parity"]["visible_scene_collision_alignment_validated"] is False
+    assert qa["object_level_fidelity_gaps"]["missing_semantic_objects"] == []
+    assert qa["object_level_fidelity_gaps"]["visible_objects_without_physics_coverage"] == []
     assert qa["blockers"] == []
 
 
@@ -1105,6 +1145,13 @@ def test_digital_twin_fidelity_qa_blocks_uncovered_visible_object_component() ->
     assert qa["gates"]["object_semantics_available"]["passed"] is True
     assert qa["gates"]["visible_objects_have_physics_coverage"]["passed"] is False
     assert "visible_object_0001_test_shelf" in coverage["missing_physics_object_ids"]
+    assert coverage["missing_physics_objects"][0]["object_id"] == (
+        "visible_object_0001_test_shelf"
+    )
+    assert coverage["missing_physics_objects"][0]["coverage_reason"] == (
+        "source_component_uncovered_by_proxy_generation"
+    )
+    assert coverage["component_coverage_summary"]["component_mapping_status"] == "one_to_one"
     assert "visible_objects_without_physics_coverage" in qa["blockers"]
 
 

@@ -4,17 +4,78 @@
 
 ### User-Facing
 
+- Hardened WAM provider rollout review for generated-video support artifacts.
+  RunPod/Vast WAM paths now carry review queues, synthetic seed metadata, and
+  provider artifact handling through the pipeline, but generated videos remain
+  review/support evidence only, not raw capture truth, live-robot proof,
+  deployment proof, safety validation, or generated-world rank-fidelity proof.
 - Connected scene WAM episode packets to capture-derived robot POV synthesis.
   For each task and robot profile, the packet can now write source QA,
   coverage/quality reports, contact sheets, and recapture guidance when no
   depth-splat candidate passes. Passing synthesized/splatted frames can seed the
   WAM initial-observation lane, but remain explicitly labeled as support
-  artifacts, not raw capture truth, physical robot POV evidence, safety
+  artifacts, not raw capture truth, owner-run POV evidence, safety
   validation, or generated-world rank-fidelity result.
+- Added a WAM-derived observation/perception harness lane for policy/WAM loops.
+  The new harness can package WAM-derived observations, perception checks,
+  adapter reports, step traces, and optional external perception backend
+  requests/results, while keeping those artifacts downstream of capture
+  provenance and separate from deployment-readiness claims.
 - Clarified WAM/substrate evaluation as evaluator-bounded policy comparison:
   policy ranking scorecards can compare policy A/B/C inside the configured
   evaluator, while MMRV/Pearson/Spearman require real-world anchors and do not
   create deployment-readiness or physical-readiness claims.
+
+### Employee-Facing
+
+- Added and documented new runtime modules and tests for generated-video review,
+  synthetic WAM seeding, persistent short visual sanity checks, capture-derived
+  initial policy observations, WAM auxiliary observations, WAM-derived
+  observation harnesses, WAM perception harness GPU image packaging, real
+  provider validation probes, and sim-provider E2E support. Key paths include
+  `src/blueprint_pipeline/wam_generated_video_review.py`,
+  `src/blueprint_pipeline/synthetic_2d_wam_seed.py`,
+  `src/blueprint_pipeline/persistent_wam_short_visual_sanity.py`,
+  `src/blueprint_pipeline/robot_initial_observation.py`,
+  `src/blueprint_pipeline/wam_auxiliary_observation.py`,
+  `src/blueprint_pipeline/wam_derived_observation_harness.py`,
+  `src/blueprint_pipeline/wam_perception_harness_gpu_image.py`,
+  `src/blueprint_pipeline/wam_real_provider_validation_probe.py`, and
+  `src/blueprint_pipeline/wam_sim_provider_e2e.py`.
+- Added CLI entrypoints in `pyproject.toml` for short WAM visual sanity,
+  WAM real-provider validation, WAM sim-provider E2E, WAM perception harness GPU
+  image builds, rollout vision labeling, post-training data package builds, and
+  several live-pipeline / arena package audit and delivery commands.
+- Expanded release/local gate scripts and live-robot closure paths so rollout
+  review, failure diagnosis, image remediation, visual labels, simulator
+  command artifacts, and webapp status projections stay explicit instead of
+  being collapsed into a single readiness claim.
+
+### Future-Agent-Facing
+
+- Contract changes: WAM jobs can now emit
+  `robot_policy_wam_closed_loop/wam_derived_observation_harness/*`,
+  `vision_success_labels.json`, `wam_vision_success_review_queue.json`,
+  `wam_episode_consistency_request.json`, and short visual sanity manifests.
+  Treat these as support/review artifacts unless a separate accepted scorer,
+  provider runtime output, or real-world anchor upgrades the claim.
+- Runtime behavior changes: capture-derived initial observations and WAM-derived
+  observations may seed policy loops, but raw capture/provenance, rights, and
+  privacy metadata still outrank downstream generated frames, labels, and
+  review queues.
+- Launch/readiness gate changes: short learned-WAM visual sanity is now a
+  first-class precondition before longer review-quality learned-WAM rollout
+  claims. Provider probes and sim-provider E2E outputs remain opt-in runtime
+  evidence, not deployment approval.
+- Proof boundary: the repo-wide claim language was aligned to rank-fidelity
+  scope. Evaluator-bounded policy comparisons can be recorded, but
+  MMRV/Pearson/Spearman, public readiness, simulator
+  validity, and generated-world rank fidelity require separate accepted
+  evidence.
+- Local caveat: this June 25 entry predates the June 26 stabilization pass. The
+  current checkout has broad uncommitted docs, scripts, source, tests, and
+  untracked support files; use `docs/last_24h_launch_audit_2026-06-26.md` for
+  current worktree evidence.
 
 ## 2026-06-24
 
@@ -79,7 +140,7 @@
   and policy-command artifacts are startup/runtime support artifacts unless they
   are paired with accepted provider execution outputs and downstream eval
   evidence. They do not supersede raw capture/provenance evidence and do not
-  prove generated-world rank fidelity, generated-world rank fidelity, off-scope validation, or
+  prove generated-world rank fidelity, off-scope validation, or
   real-world manipulation success.
 
 ## 2026-06-23
@@ -139,8 +200,8 @@
 - Proof boundary: eval-ready grounding, projected skeleton traces, generated
   visual MJCFs, and prediction/outcome correlation records are support layers.
   They do not supersede raw capture/provenance evidence and do not prove live
-  provider execution, public readiness, off-scope validation, physical robot
-  readiness, or real-world manipulation success without separate accepted proof.
+  provider execution, public readiness, off-scope validation, or real-world
+  manipulation success without separate accepted proof.
 - Uncommitted caveat: local Unitree GR00T/SONIC Vast/provider packaging work
   touches `src/blueprint_pipeline/vast_provider_adapter.py`,
   `src/blueprint_pipeline/oscar_wam_provider_bundle.py`,
@@ -233,7 +294,7 @@
   `src/blueprint_pipeline/wam_vla_policy_endpoint_setup.py`,
   `src/blueprint_pipeline/wam_vla_policy_endpoint_server.py`, and
   `src/blueprint_pipeline/g1_endpoint_reference_adapter.py`, keeping the lane
-  simulator/provider-bound rather than physical-robot proof.
+  simulator/provider-bound rather than deployment proof.
 - Committed OSCAR/Cosmos WAM support through
   `src/blueprint_pipeline/oscar_cosmos_wam_evaluator.py`,
   `src/blueprint_pipeline/oscar_wam_command_adapter.py`, and
@@ -267,8 +328,8 @@
   `src/blueprint_pipeline/wam_generated_video_success_label_gemini.py`, and
   `src/blueprint_pipeline/wam_episode_consistency_label_gemini.py`.
 - Proof boundary: June 21 work does not by itself prove live provider runtime
-  success, public generated-world rank fidelity, off-scope validation, physical robot
-  readiness, or customer-specific sim-to-real correlation. Generated videos,
+  success, public generated-world rank fidelity, off-scope validation, or
+  customer-specific sim-to-real correlation. Generated videos,
   VLM labels, endpoint probes, and owner-hosted connector outputs remain support
   evidence unless paired with accepted runtime and real-world validation proof.
 

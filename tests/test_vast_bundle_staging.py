@@ -369,8 +369,6 @@ def test_public_staging_probe_helper_edges(
 ) -> None:
     bundle = tmp_path / "bundle.zip"
     bundle.write_bytes(b"zip bundle")
-    output = tmp_path / "output.zip"
-
     http_error = urllib.error.HTTPError("https://example.test", 503, "nope", {}, None)
     assert staging._probe_exception(http_error)["http_status_code"] == 503
 

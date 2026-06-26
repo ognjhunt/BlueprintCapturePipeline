@@ -598,6 +598,72 @@ json.dump(
     assert result["policy_candidate_package"]["simulator_execution_proven"] is False
 
 
+def test_policy_autoresearch_does_not_count_isaac_without_specific_proof(
+    tmp_path: Path,
+) -> None:
+    capture_root, job_dir = _job_dir(tmp_path)
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "runs": [
+                {
+                    "scenario_eval_run_id": "run_isaac_heldout",
+                    "task_id": "walk_to_target",
+                    "scenario_id": "owner_isaac_route",
+                    "split": "heldout",
+                }
+            ],
+        },
+    )
+    evaluator = tmp_path / "isaac_no_specific_proof_evaluator.py"
+    evaluator.write_text(
+        """
+import json
+import os
+
+matrix = json.loads(open(os.environ["BLUEPRINT_POLICY_AUTORESEARCH_MATRIX"]).read())
+attempts = []
+for run in matrix["runs"]:
+    attempts.append({
+        "scenario_eval_run_id": run["scenario_eval_run_id"],
+        "simulator_engine": "isaac_sim",
+        "success": True,
+        "task_success": True,
+        "metrics": {
+            "simulator_execution_performed": True,
+            "safety_event_count": 0,
+            "contact_event_count": 0,
+        },
+        "claim_boundary": {"simulator_execution_performed": True},
+    })
+json.dump(
+    {"simulator_engine": "isaac_sim", "attempts": attempts},
+    open(os.environ["BLUEPRINT_POLICY_AUTORESEARCH_OUTPUT"], "w"),
+)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = run_policy_autoresearch(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        policy_recipe_path=_seed_recipe(tmp_path),
+        max_iterations=1,
+        agent_count=1,
+        target_success_rate=1.0,
+        simulator_engines=("isaac_sim",),
+        evaluator_commands_by_engine={"isaac_sim": f"{sys.executable} {evaluator}"},
+        generated_at="2026-06-18T00:00:00+00:00",
+    )
+
+    assert result["report"]["proven_simulator_engines"] == []
+    assert result["policy_candidate_package"]["simulator_execution_proven"] is False
+    assert result["heldout_eval_result"]["attempts"][0]["metrics"][
+        "isaac_simulator_execution_not_proven"
+    ] is True
+
+
 def _owner_capture_root(tmp_path: Path) -> Path:
     capture_root = (
         tmp_path

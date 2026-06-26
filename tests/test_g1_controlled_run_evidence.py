@@ -145,10 +145,19 @@ def _seed_evidence_drop(evidence_dir: Path) -> None:
 
 
 def _ready_config(job_id: str) -> dict[str, object]:
+    task_id = "walk_to_target"
+    scenario_id = "site-a_walk_to_target_pose"
+    scenario_eval_run_id = f"{job_id}-{scenario_id}"
+    variation_id = scenario_id
     return {
         "schema_version": "g1_controlled_run_inputs.v1",
         "job_id": job_id,
         "run_id": "unitree-g1-controlled-run-001",
+        "policy_id": "unitree_rl_gym_g1_mujoco_policy_candidate",
+        "task_id": task_id,
+        "scenario_id": scenario_id,
+        "scenario_eval_run_id": scenario_eval_run_id,
+        "scenario_variation_instance_id": variation_id,
         "robot_serial_or_fleet_id": "unitree-g1-lab-001",
         "site_or_lab_location_id": "lab-a",
         "operator_id": "operator-a",
@@ -159,8 +168,47 @@ def _ready_config(job_id: str) -> dict[str, object]:
         "end_time_utc": "2026-06-12T14:02:00Z",
         "actual_status": "passed",
         "actual_success": True,
+        "actual_outcome": {
+            "actual_status": "passed",
+            "actual_success": True,
+            "failure_mode_ids": [],
+            "cycle_time_seconds": 42.0,
+            "intervention_count": 0,
+        },
         "cycle_time_seconds": 42.0,
         "intervention_count": 0,
+        "operator_site_checklist": {
+            "controlled_area_verified": True,
+            "floor_clear_for_g1_walk": True,
+            "bystander_exclusion_zone_marked": True,
+            "emergency_stop_operator_present": True,
+            "site_or_lab_location_id": "lab-a",
+        },
+        "allowed_task_set": [
+            {
+                "task_id": task_id,
+                "scenario_id": scenario_id,
+                "scenario_eval_run_id": scenario_eval_run_id,
+                "scenario_variation_instance_id": variation_id,
+                "policy_id": "unitree_rl_gym_g1_mujoco_policy_candidate",
+                "allowed": True,
+            }
+        ],
+        "exclusion_and_abort_criteria": {
+            "excluded_task_ids": ["unscoped-task"],
+            "abort_conditions": ["operator_estop", "unexpected_human_entry"],
+            "loose_or_inferred_anchor_matches_allowed": False,
+        },
+        "robot_calibration_refs": {
+            "robot_state_log": "robot_state_log.jsonl",
+            "hardware_validation": "hardware_validation.json",
+            "contact_collision_log": "contact_collision_log.json",
+        },
+        "camera_calibration_refs": {
+            "robot_camera_video": "robot_camera_video.mp4",
+            "timestamp_alignment": "timestamp_alignment.json",
+            "camera_mount_or_sensor_ids": ["g1-head-camera"],
+        },
         "accepted_safety_thresholds": {
             "max_speed_mps": 0.4,
             "min_human_clearance_m": 2.0,
@@ -168,6 +216,14 @@ def _ready_config(job_id: str) -> dict[str, object]:
             "emergency_stop_required": True,
         },
         "review_decision": "accepted",
+        "reviewer_decision": {
+            "safety_review_decision": "accepted",
+            "policy_review_decision": "accepted",
+            "accepted_for_calibration": True,
+        },
+        "owner_evidence_refs": {
+            "owner_log": "owner://controlled-g1/run-001",
+        },
         "storage_upload_performed": True,
         "entitlement_verified": True,
         "signed_customer_delivery_url": "https://signed.example.test/g1-run",
@@ -179,18 +235,35 @@ def _ready_config(job_id: str) -> dict[str, object]:
         "webapp_response_status_code": "202",
         "sync_status": "succeeded",
         "operator_statement": "Operator signed the physical G1 evidence package.",
+        "operator_attestation_signed": True,
+        "operator_attestation_signed_at_utc": "2026-06-12T14:03:00Z",
         "hardware_owner_statement": "Hardware owner signed the G1 identity and run.",
+        "hardware_owner_attestation_signed": True,
+        "hardware_owner_attestation_signed_at_utc": "2026-06-12T14:03:10Z",
         "safety_reviewer_statement": "Safety reviewer accepted this controlled G1 run.",
+        "safety_reviewer_attestation_signed": True,
+        "safety_reviewer_attestation_signed_at_utc": "2026-06-12T14:03:20Z",
         "robot_team_review_statement": "Robot team accepted the non-default G1 policy package.",
+        "robot_team_review_attestation_signed": True,
+        "robot_team_review_attestation_signed_at_utc": "2026-06-12T14:03:30Z",
     }
 
 
-def test_g1_evidence_assembly_blocks_missing_files(tmp_path: Path) -> None:
+def test_g1_evidence_assembly_ignores_missing_files_when_physical_not_requested(
+    tmp_path: Path,
+) -> None:
     capture_root = tmp_path / "capture"
     job_id = "robot-eval-test"
     _seed_job_request(capture_root, job_id)
     evidence_dir = tmp_path / "evidence"
-    _write_json(evidence_dir / "g1_controlled_run_inputs.json", _ready_config(job_id))
+    config = _ready_config(job_id)
+    config["physical_evidence_required"] = False
+    config["reviewer_decision"] = {
+        "safety_review_decision": "not_reviewed",
+        "policy_review_decision": "not_reviewed",
+        "accepted_for_calibration": False,
+    }
+    _write_json(evidence_dir / "g1_controlled_run_inputs.json", config)
 
     manifest = assemble_g1_controlled_run_evidence(
         capture_root=capture_root,
@@ -199,8 +272,10 @@ def test_g1_evidence_assembly_blocks_missing_files(tmp_path: Path) -> None:
     )
 
     assert manifest["schema_version"] == G1_CONTROLLED_RUN_EVIDENCE_SCHEMA_VERSION
-    assert manifest["status"] == "blocked_missing_evidence"
-    assert "missing_evidence_file:robot_camera_video" in manifest["blockers"]
+    assert manifest["status"] == "not_requested_for_sim_only"
+    assert manifest["blockers"] == []
+    assert manifest["physical_evidence_required"] is False
+    assert manifest["sim_only_beta_ranking_blocked"] is False
     assert Path(manifest["artifacts"]["real_robot_pov_manifest"]).is_file()  # type: ignore[index]
     assert manifest["proof_boundary"]["generated_world_rank_fidelity_result_proven"] is False  # type: ignore[index]
 
@@ -243,6 +318,28 @@ def test_g1_evidence_assembly_blocks_review_required_content(tmp_path: Path) -> 
     assert "robot_team_review_not_accepted" in manifest["content_blockers"]
 
 
+def test_g1_evidence_assembly_blocks_missing_required_physical_files(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    job_id = "robot-eval-test"
+    _seed_job_request(capture_root, job_id)
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_drop(evidence_dir)
+    (evidence_dir / "robot_camera_video.mp4").unlink()
+    (evidence_dir / "policy_metrics.json").unlink()
+    _write_json(evidence_dir / "g1_controlled_run_inputs.json", _ready_config(job_id))
+
+    manifest = assemble_g1_controlled_run_evidence(
+        capture_root=capture_root,
+        evidence_dir=evidence_dir,
+        job_id=job_id,
+    )
+
+    assert manifest["status"] == "blocked_missing_evidence"
+    assert "missing_evidence_file:robot_camera_video" in manifest["file_blockers"]
+    assert "missing_evidence_file:policy_metrics" in manifest["file_blockers"]
+    assert manifest["owner_evidence_ready_for_physical_claim"] is False
+
+
 def test_g1_evidence_assembly_blocks_action_log_without_robot_action_record(tmp_path: Path) -> None:
     capture_root = tmp_path / "capture"
     job_id = "robot-eval-test"
@@ -271,6 +368,199 @@ def test_g1_evidence_assembly_blocks_action_log_without_robot_action_record(tmp_
     assert "action_log_missing_robot_action_record" in manifest["content_blockers"]
 
 
+def test_g1_evidence_assembly_blocks_placeholder_evidence_values(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    job_id = "robot-eval-test"
+    _seed_job_request(capture_root, job_id)
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_drop(evidence_dir)
+    _write_json(
+        evidence_dir / "timestamp_alignment.json",
+        {
+            "schema_version": "g1_timestamp_alignment.v1",
+            "max_alignment_error_ms": 50,
+            "operator_clock_ref": "<replace-with-physical-clock-ref>",
+        },
+    )
+    (evidence_dir / "action_log.jsonl").write_text(
+        json.dumps({"kind": "action", "action_id": "<placeholder-action>"}) + "\n",
+        encoding="utf-8",
+    )
+    _write_json(evidence_dir / "g1_controlled_run_inputs.json", _ready_config(job_id))
+
+    manifest = assemble_g1_controlled_run_evidence(
+        capture_root=capture_root,
+        evidence_dir=evidence_dir,
+        job_id=job_id,
+    )
+
+    assert manifest["status"] == "blocked_missing_evidence"
+    assert "placeholder_evidence_value:timestamp_alignment" in manifest["content_blockers"]
+    assert "placeholder_evidence_value:action_log" in manifest["content_blockers"]
+
+
+def test_g1_evidence_assembly_blocks_missing_anchor_join_keys(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    job_id = "robot-eval-test"
+    _seed_job_request(capture_root, job_id)
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_drop(evidence_dir)
+    config = _ready_config(job_id)
+    config.pop("policy_id")
+    config.pop("scenario_variation_instance_id")
+    _write_json(evidence_dir / "g1_controlled_run_inputs.json", config)
+
+    manifest = assemble_g1_controlled_run_evidence(
+        capture_root=capture_root,
+        evidence_dir=evidence_dir,
+        job_id=job_id,
+    )
+
+    assert manifest["status"] == "blocked_missing_evidence"
+    assert "missing_or_placeholder_config:policy_id" in manifest["config_blockers"]
+    assert (
+        "missing_or_placeholder_config:scenario_variation_instance_id"
+        in manifest["config_blockers"]
+    )
+    packet = _read_json(
+        Path(manifest["artifacts"]["controlled_field_anchor_request_packet"])  # type: ignore[index]
+    )
+    assert packet["status"] == "blocked_missing_evidence"
+    deployment = _read_json(Path(manifest["artifacts"]["deployment_outcome_manifest"]))  # type: ignore[index]
+    assert deployment["records"][0]["review_status"] == "blocked"  # type: ignore[index]
+    assert deployment["records"][0]["owner_evidence_present"] is False  # type: ignore[index]
+
+
+def test_g1_evidence_assembly_blocks_mismatched_policy_and_task_ids(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    job_id = "robot-eval-test"
+    _seed_job_request(capture_root, job_id)
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_drop(evidence_dir)
+    config = _ready_config(job_id)
+    config["policy_id"] = "other-policy"
+    config["task_id"] = "other-task"
+    config["scenario_eval_run_id"] = "other-scenario-eval-run"
+    config["scenario_variation_instance_id"] = "other-variation"
+    config["allowed_task_set"] = [
+        {
+            "task_id": "other-task",
+            "scenario_id": "site-a_walk_to_target_pose",
+            "scenario_eval_run_id": "other-scenario-eval-run",
+            "scenario_variation_instance_id": "other-variation",
+            "policy_id": "other-policy",
+            "allowed": True,
+        }
+    ]
+    _write_json(evidence_dir / "g1_controlled_run_inputs.json", config)
+
+    manifest = assemble_g1_controlled_run_evidence(
+        capture_root=capture_root,
+        evidence_dir=evidence_dir,
+        job_id=job_id,
+    )
+
+    assert manifest["status"] == "blocked_missing_evidence"
+    assert "mismatched_anchor_join_key:policy_id" in manifest["config_blockers"]
+    assert "mismatched_anchor_join_key:task_id" in manifest["config_blockers"]
+    assert "mismatched_anchor_join_key:scenario_eval_run_id" in manifest["config_blockers"]
+    assert (
+        "mismatched_anchor_join_key:scenario_variation_instance_id"
+        in manifest["config_blockers"]
+    )
+    assert "policy_execution_trace_policy_id_mismatch" in manifest["content_blockers"]
+
+
+def test_g1_evidence_assembly_blocks_missing_reviewer_acceptance(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    job_id = "robot-eval-test"
+    _seed_job_request(capture_root, job_id)
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_drop(evidence_dir)
+    _write_json(
+        evidence_dir / "robot_team_review.json",
+        {
+            "schema_version": "g1_robot_team_review.v1",
+            "review_decision": "not_reviewed",
+            "accepted": False,
+            "reviewer_id": "",
+        },
+    )
+    _write_json(evidence_dir / "g1_controlled_run_inputs.json", _ready_config(job_id))
+
+    manifest = assemble_g1_controlled_run_evidence(
+        capture_root=capture_root,
+        evidence_dir=evidence_dir,
+        job_id=job_id,
+    )
+
+    assert manifest["status"] == "blocked_missing_evidence"
+    assert "robot_team_review_not_accepted" in manifest["content_blockers"]
+    assert "robot_team_review_decision_not_accepted" in manifest["content_blockers"]
+    assert "robot_team_review_missing_reviewer_id" in manifest["content_blockers"]
+
+
+def test_g1_evidence_assembly_blocks_missing_owner_evidence(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    job_id = "robot-eval-test"
+    _seed_job_request(capture_root, job_id)
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_drop(evidence_dir)
+    config = _ready_config(job_id)
+    config["operator_statement"] = ""
+    config["hardware_owner_statement"] = ""
+    config["operator_attestation_signed"] = False
+    config["hardware_owner_attestation_signed"] = False
+    _write_json(evidence_dir / "g1_controlled_run_inputs.json", config)
+
+    manifest = assemble_g1_controlled_run_evidence(
+        capture_root=capture_root,
+        evidence_dir=evidence_dir,
+        job_id=job_id,
+    )
+
+    assert manifest["status"] == "blocked_missing_evidence"
+    assert "missing_or_placeholder_config:operator_statement" in manifest["config_blockers"]
+    assert (
+        "missing_or_placeholder_config:hardware_owner_statement"
+        in manifest["config_blockers"]
+    )
+    assert "unsigned_attestation:operator" in manifest["config_blockers"]
+    assert "unsigned_attestation:hardware_owner" in manifest["config_blockers"]
+    deployment = _read_json(Path(manifest["artifacts"]["deployment_outcome_manifest"]))  # type: ignore[index]
+    record = deployment["records"][0]  # type: ignore[index]
+    assert record["owner_evidence_present"] is False
+    assert record["owner_evidence_refs"] == {}
+    assert record["operator_attestation"] == {}
+
+
+def test_g1_evidence_assembly_blocks_unsigned_attestations(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    job_id = "robot-eval-test"
+    _seed_job_request(capture_root, job_id)
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_drop(evidence_dir)
+    config = _ready_config(job_id)
+    config["operator_attestation_signed"] = False
+    config["robot_team_review_attestation_signed_at_utc"] = "<unsigned>"
+    _write_json(evidence_dir / "g1_controlled_run_inputs.json", config)
+
+    manifest = assemble_g1_controlled_run_evidence(
+        capture_root=capture_root,
+        evidence_dir=evidence_dir,
+        job_id=job_id,
+    )
+
+    assert manifest["status"] == "blocked_missing_evidence"
+    assert "unsigned_attestation:operator" in manifest["config_blockers"]
+    assert (
+        "missing_or_placeholder_attestation_signed_at:robot_team_reviewer"
+        in manifest["config_blockers"]
+    )
+    assert manifest["attestations_signed"]["operator"] is False
+    assert manifest["owner_evidence_ready_for_physical_claim"] is False
+
+
 def test_g1_evidence_assembly_outputs_live_intake_ready_manifests(tmp_path: Path) -> None:
     capture_root = tmp_path / "capture"
     job_id = "robot-eval-test"
@@ -286,7 +576,50 @@ def test_g1_evidence_assembly_outputs_live_intake_ready_manifests(tmp_path: Path
     )
 
     assert manifest["status"] == "ready_for_live_input_staging"
+    assert manifest["required_exact_join_keys"] == [
+        "scenario_eval_run_id",
+        "policy_id",
+        "task_id",
+        "scenario_variation_instance_id",
+    ]
+    assert manifest["anchor_join_key"] == {
+        "scenario_eval_run_id": "robot-eval-test-site-a_walk_to_target_pose",
+        "policy_id": "unitree_rl_gym_g1_mujoco_policy_candidate",
+        "task_id": "walk_to_target",
+        "scenario_variation_instance_id": "site-a_walk_to_target_pose",
+    }
+    assert manifest["loose_or_inferred_matches_allowed_for_calibration"] is False
     output_dir = Path(manifest["output_dir"])
+    request_packet = _read_json(output_dir / "controlled_field_anchor_request_packet.json")
+    assert request_packet["status"] == "ready_for_calibration_intake"
+    assert request_packet["anchor_join_key"] == manifest["anchor_join_key"]
+    assert request_packet["allowed_task_set"][0]["allowed"] is True  # type: ignore[index]
+    deployment = _read_json(output_dir / "deployment_outcome_manifest.json")
+    record = deployment["records"][0]  # type: ignore[index]
+    assert record["policy_id"] == "unitree_rl_gym_g1_mujoco_policy_candidate"
+    assert record["anchor_schema_version"] == "accepted_real_world_anchor.v1"
+    assert record["anchor_join_key"] == manifest["anchor_join_key"]
+    assert record["review_status"] == "accepted"
+    assert record["owner_evidence_present"] is True
+    assert record["attestations_signed"] == {
+        "operator": True,
+        "hardware_owner": True,
+        "safety_reviewer": True,
+        "robot_team_reviewer": True,
+    }
+    assert set(record["required_owner_evidence"]) == {
+        "robot_camera_video",
+        "action_log",
+        "timestamp_alignment",
+        "hardware_validation",
+        "contact_collision_log",
+        "policy_metrics",
+        "robot_team_review",
+    }
+    assert record["reviewer_decision"]["accepted_for_calibration"] is True
+    assert record["artifact_provenance"]["physical_robot_run_manifest"].endswith(  # type: ignore[index]
+        "physical_robot_run_manifest.json"
+    )
     pov = _read_json(output_dir / "real_robot_pov_manifest.json")
     assert pov["records"][0]["robot_camera_video_uri"].endswith("robot_camera_video.mp4")  # type: ignore[index]
     assert pov["records"][0]["scenario_eval_run_id"]  # type: ignore[index]
@@ -295,6 +628,9 @@ def test_g1_evidence_assembly_outputs_live_intake_ready_manifests(tmp_path: Path
     assert policy["policy_package"]["recorded_action_trace"]["trace_manifest_uri"].endswith(  # type: ignore[index]
         "policy_execution_trace.jsonl"
     )
+    closure = _read_json(output_dir / "live_eval_closure_evidence.json")
+    assert closure["safety_contact_physics"]["rank_fidelity_result_proven"] is False
+    assert manifest["owner_evidence_ready_for_physical_claim"] is True
 
     control_plane_manifest = capture_root / "pipeline" / "live_pipeline_control_plane" / "live_pipeline_control_plane_manifest.json"
     _write_json(

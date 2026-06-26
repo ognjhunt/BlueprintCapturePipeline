@@ -223,8 +223,7 @@ It still will not prove:
 - Isaac Sim execution when the backend proof is MuJoCo/PyBullet/fixture only
 - Unitree G1 asset execution when the spawn trace uses a generated humanoid proxy
 - robot-team policy quality beyond the default smoke policy
-- real robot POV evidence from physical robot hardware; simulator POV is intentionally
-  a separate proof field
+- owner-run POV evidence; simulator POV is intentionally a separate proof field
 - robot-team policy quality or robot-team policy package execution; the generated
   `live_policy_execution_contract.md` defines the separate job-level
   `policy_execution_manifest.json` and `policy_execution_trace.json` evidence

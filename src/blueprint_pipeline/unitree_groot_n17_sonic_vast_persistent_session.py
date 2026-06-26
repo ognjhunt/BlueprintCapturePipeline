@@ -80,6 +80,10 @@ PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV = (
 PERSISTENT_WAM_SHORT_VISUAL_SANITY_SCHEMA_VERSION = "persistent_wam_short_visual_sanity.v1"
 PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_WIDTH = 320
 PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_HEIGHT = 256
+PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_FPS = REVIEW_QUALITY_MIN_FPS
+PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_NUM_FRAMES = (
+    REVIEW_QUALITY_MIN_NUM_FRAMES
+)
 PERSISTENT_WAM_REVIEW_QUALITY_MAX_UNGATED_LOOP_STEPS_ENV = (
     "BLUEPRINT_PERSISTENT_WAM_REVIEW_QUALITY_MAX_UNGATED_LOOP_STEPS"
 )
@@ -219,11 +223,28 @@ def _existing_artifact_path_blocker(
     payload: Mapping[str, Any],
     key: str,
     blocker: str,
+    empty_blocker: str | None = None,
 ) -> str | None:
     path = _resolve_optional_path(payload.get(key))
     if path is None or not path.is_file():
         return blocker
+    if path.stat().st_size <= 0:
+        return empty_blocker or blocker
     return None
+
+
+def _read_manifest_artifact_json(
+    payload: Mapping[str, Any],
+    key: str,
+    unreadable_blocker: str,
+) -> tuple[dict[str, Any], list[str]]:
+    path = _resolve_optional_path(payload.get(key))
+    if path is None or not path.is_file():
+        return {}, []
+    try:
+        return _read_json(path), []
+    except Exception as exc:
+        return {}, [f"{unreadable_blocker}:{type(exc).__name__}"]
 
 
 def _first_ffprobe_video_stream(metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -234,6 +255,50 @@ def _first_ffprobe_video_stream(metadata: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(stream, Mapping):
             return dict(stream)
     return {}
+
+
+def _rationalish_float(value: Any) -> float:
+    text = _string(value)
+    if "/" in text:
+        numerator, denominator = text.split("/", 1)
+        try:
+            return float(numerator) / float(denominator)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return 0.0
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _ffprobe_review_media_profile(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    stream = _first_ffprobe_video_stream(metadata)
+    width = _intish(stream.get("width")) or 0
+    height = _intish(stream.get("height")) or 0
+    fps = _rationalish_float(stream.get("avg_frame_rate") or stream.get("r_frame_rate"))
+    frame_count = _intish(stream.get("nb_frames")) or 0
+    resolution_passed = bool(
+        width >= PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_WIDTH
+        and height >= PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_HEIGHT
+    )
+    fps_passed = bool(fps >= PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_FPS)
+    frame_count_passed = bool(
+        frame_count >= PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_NUM_FRAMES
+    )
+    return {
+        "width": width,
+        "height": height,
+        "fps": round(fps, 6),
+        "frame_count": frame_count,
+        "minimum_width": PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_WIDTH,
+        "minimum_height": PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_HEIGHT,
+        "minimum_fps": PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_FPS,
+        "minimum_num_frames": PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_NUM_FRAMES,
+        "resolution_passed": resolution_passed,
+        "fps_passed": fps_passed,
+        "frame_count_passed": frame_count_passed,
+        "passed": bool(resolution_passed and fps_passed and frame_count_passed),
+    }
 
 
 def _intish(value: Any) -> int | None:
@@ -312,30 +377,123 @@ def validate_persistent_wam_short_visual_sanity_manifest(
         if not ffprobe_metadata:
             blockers.append("short_visual_sanity_ffprobe_metadata_missing")
         else:
-            stream = _first_ffprobe_video_stream(ffprobe_metadata)
-            width = _intish(stream.get("width")) or 0
-            height = _intish(stream.get("height")) or 0
-            if (
-                width < PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_WIDTH
-                or height < PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_HEIGHT
-            ):
+            media_profile = _ffprobe_review_media_profile(ffprobe_metadata)
+            if not media_profile["resolution_passed"]:
                 blockers.append("short_visual_sanity_review_video_below_minimum_resolution")
-        for key, blocker in (
+            if not media_profile["fps_passed"]:
+                blockers.append(
+                    "short_visual_sanity_review_video_fps_below_review_quality_minimum"
+                )
+            if not media_profile["frame_count_passed"]:
+                blockers.append(
+                    "short_visual_sanity_review_video_frame_count_below_review_quality_minimum"
+                )
+        for key, blocker, empty_blocker in (
             (
                 "source_policy_observation_visual_qa_path",
                 "short_visual_sanity_source_qa_artifact_missing",
+                "short_visual_sanity_source_qa_artifact_empty",
             ),
             (
                 "wam_rollout_visual_quality_report_path",
                 "short_visual_sanity_quality_report_missing",
+                "short_visual_sanity_quality_report_empty",
             ),
-            ("wam_rollout_contact_sheet_path", "short_visual_sanity_contact_sheet_missing"),
-            ("video_review_status_path", "short_visual_sanity_video_status_missing"),
-            ("review_video_path", "short_visual_sanity_review_video_missing"),
+            (
+                "wam_rollout_contact_sheet_path",
+                "short_visual_sanity_contact_sheet_missing",
+                "short_visual_sanity_contact_sheet_empty",
+            ),
+            (
+                "video_review_status_path",
+                "short_visual_sanity_video_status_missing",
+                "short_visual_sanity_video_status_empty",
+            ),
+            (
+                "review_video_path",
+                "short_visual_sanity_review_video_missing",
+                "short_visual_sanity_review_video_empty",
+            ),
         ):
-            artifact_blocker = _existing_artifact_path_blocker(payload, key, blocker)
+            artifact_blocker = _existing_artifact_path_blocker(
+                payload,
+                key,
+                blocker,
+                empty_blocker,
+            )
             if artifact_blocker:
                 blockers.append(artifact_blocker)
+        source_qa_artifact, source_qa_artifact_blockers = _read_manifest_artifact_json(
+            payload,
+            "source_policy_observation_visual_qa_path",
+            "short_visual_sanity_source_qa_artifact_unreadable",
+        )
+        blockers.extend(source_qa_artifact_blockers)
+        if source_qa_artifact:
+            if source_qa_artifact.get("status") != "passed_visual_quality_gate":
+                blockers.append("short_visual_sanity_source_qa_artifact_not_passed")
+                blockers.extend(str(item) for item in source_qa_artifact.get("blockers") or [])
+        visual_report_artifact, visual_report_artifact_blockers = _read_manifest_artifact_json(
+            payload,
+            "wam_rollout_visual_quality_report_path",
+            "short_visual_sanity_quality_report_unreadable",
+        )
+        blockers.extend(visual_report_artifact_blockers)
+        if visual_report_artifact:
+            if visual_report_artifact.get("status") not in {
+                None,
+                "passed_visual_quality_gate",
+            }:
+                blockers.append("short_visual_sanity_quality_report_status_not_passed")
+            profile_contract = _mapping(visual_report_artifact.get("profile_contract"))
+            if _string(visual_report_artifact.get("visual_profile")) != "review_quality":
+                blockers.append("short_visual_sanity_quality_report_not_review_quality_profile")
+            if profile_contract.get("smoke_only") is True:
+                blockers.append("short_visual_sanity_quality_report_smoke_only")
+            if (
+                profile_contract
+                and profile_contract.get("review_quality_minimum_satisfied") is not True
+            ):
+                blockers.append(
+                    "short_visual_sanity_quality_report_review_quality_minimum_not_satisfied"
+                )
+            if visual_report_artifact.get("visual_success") is not True:
+                blockers.append("short_visual_sanity_quality_report_visual_success_not_passed")
+                blockers.extend(
+                    str(item) for item in visual_report_artifact.get("blockers") or []
+                )
+            if visual_report_artifact.get("structural_fallback_used") is True:
+                blockers.append("short_visual_sanity_quality_report_structural_fallback_used")
+        video_status_artifact, video_status_artifact_blockers = _read_manifest_artifact_json(
+            payload,
+            "video_review_status_path",
+            "short_visual_sanity_video_status_unreadable",
+        )
+        blockers.extend(video_status_artifact_blockers)
+        if video_status_artifact:
+            if video_status_artifact.get("status") != "completed":
+                blockers.append("short_visual_sanity_video_status_not_completed")
+            if video_status_artifact.get("ffprobe_command_ran") is not True:
+                blockers.append("short_visual_sanity_video_status_ffprobe_command_not_ran")
+            if _intish(video_status_artifact.get("ffprobe_returncode")) != 0:
+                blockers.append("short_visual_sanity_video_status_ffprobe_returncode_not_zero")
+            video_ffprobe_metadata = _mapping(video_status_artifact.get("ffprobe_metadata"))
+            if not video_ffprobe_metadata:
+                blockers.append("short_visual_sanity_video_status_ffprobe_metadata_missing")
+            else:
+                media_profile = _ffprobe_review_media_profile(video_ffprobe_metadata)
+                if not media_profile["resolution_passed"]:
+                    blockers.append(
+                        "short_visual_sanity_video_status_review_video_below_minimum_resolution"
+                    )
+                if not media_profile["fps_passed"]:
+                    blockers.append(
+                        "short_visual_sanity_video_status_review_video_fps_below_review_quality_minimum"
+                    )
+                if not media_profile["frame_count_passed"]:
+                    blockers.append(
+                        "short_visual_sanity_video_status_review_video_frame_count_below_review_quality_minimum"
+                    )
         if policy_observation_path is not None:
             expected = Path(policy_observation_path).expanduser().resolve()
             observed = _resolve_optional_path(payload.get("policy_observation_path"))
@@ -354,6 +512,30 @@ def validate_persistent_wam_short_visual_sanity_manifest(
             teardown_path = _resolve_optional_path(paid_provider.get("teardown_manifest_path"))
             if teardown_path is None or not teardown_path.is_file():
                 blockers.append("short_visual_sanity_paid_provider_teardown_manifest_missing")
+            elif teardown_path.stat().st_size <= 0:
+                blockers.append("short_visual_sanity_paid_provider_teardown_manifest_empty")
+            else:
+                try:
+                    teardown_artifact = _read_json(teardown_path)
+                except Exception as exc:
+                    blockers.append(
+                        "short_visual_sanity_paid_provider_teardown_manifest_unreadable:"
+                        f"{type(exc).__name__}"
+                    )
+                else:
+                    teardown_status = _string(teardown_artifact.get("status"))
+                    teardown_completed = bool(
+                        teardown_status == "completed"
+                        or teardown_artifact.get("runner_gpu_teardown_completed") is True
+                    )
+                    if not teardown_completed:
+                        blockers.append(
+                            "short_visual_sanity_paid_provider_teardown_artifact_not_completed"
+                        )
+                    if teardown_artifact.get("continuing_spend_from_this_run") is not False:
+                        blockers.append(
+                            "short_visual_sanity_paid_provider_teardown_artifact_not_zero_spend"
+                        )
 
     return {
         "schema_version": "persistent_wam_short_visual_sanity_gate_validation.v1",

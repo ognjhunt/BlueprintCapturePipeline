@@ -1006,7 +1006,7 @@ Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload
         loop["wam_perception_harness_backend_config"]["raw_credentials_written_to_artifacts"]
         is False
     )
-    assert loop["wam_perception_harness_validation_status"] == "blocked_no_validation_set"
+    assert loop["wam_perception_harness_validation_status"] == "not_requested"
     adapter_report = json.loads(
         Path(loop["wam_policy_observation_adapter_report"]).read_text(encoding="utf-8")
     )
@@ -1659,6 +1659,132 @@ def test_policy_runtime_records_vla_provider_output_provenance(
     assert selected["model_provider_output_path"] == str(provider_output)
     assert auth["raw_token_values_persisted"] is False
     assert runtime["endpoint_runtimes"][1]["model_provenance_recorded"] is True
+
+
+def test_policy_endpoint_boundary_manifest_fixture_credentials_and_real_trace_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "WAM_POLICY_ENDPOINT_URL",
+        "WAM_POLICY_AUTH_TOKEN_FILE",
+        "VLA_POLICY_ENDPOINT_URL",
+        "VLA_POLICY_AUTH_TOKEN_FILE",
+        "TEAM_POLICY_ENDPOINT_URL",
+        "TEAM_POLICY_AUTH_TOKEN_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    discovery, _runtime, _auth, _probe = lane.discover_policy_runtime(generated_at="now")
+    fixture_boundary = lane.build_policy_endpoint_boundary_manifest(
+        generated_at="now",
+        endpoint_discovery=discovery,
+        selected_runtime=lane.selected_endpoint(discovery),
+        fixture_policy_used=True,
+        policy_execution_manifest_path=tmp_path / "missing_policy_execution_manifest.json",
+    )
+
+    assert fixture_boundary["status"] == "fixture_boundary_only"
+    assert fixture_boundary["endpoint_integration_skipped"] is True
+    assert fixture_boundary["fixture_policy_used"] is True
+    assert fixture_boundary["robot_policy_execution_proven"] is False
+    assert (
+        "blocked_fixture_policy_is_not_robot_policy_execution_proof"
+        in fixture_boundary["blockers"]
+    )
+    assert (
+        fixture_boundary["claim_boundary"][
+            "fixture_policy_is_not_robot_policy_execution"
+        ]
+        is True
+    )
+
+    monkeypatch.setenv("VLA_POLICY_ENDPOINT_URL", "http://127.0.0.1:8768/policy/action")
+    no_auth_discovery, _runtime, _auth, _probe = lane.discover_policy_runtime(
+        generated_at="now"
+    )
+    no_auth_boundary = lane.build_policy_endpoint_boundary_manifest(
+        generated_at="now",
+        endpoint_discovery=no_auth_discovery,
+        selected_runtime=lane.selected_endpoint(no_auth_discovery),
+        fixture_policy_used=True,
+    )
+
+    assert no_auth_boundary["status"] == "decision_needed_missing_policy_credentials"
+    assert no_auth_boundary["endpoint_integration_status"] == "configured_missing_credentials"
+    assert no_auth_boundary["missing_credentials_decision_needed"] is True
+    assert no_auth_boundary["robot_policy_execution_proven"] is False
+    assert "blocked_missing_policy_auth_token_file" in no_auth_boundary["blockers"]
+    assert "decision_needed_policy_auth_token_file" in no_auth_boundary["blockers"]
+    assert (
+        no_auth_boundary["claim_boundary"]["missing_credentials_do_not_upgrade_proof"]
+        is True
+    )
+
+    trace_path = tmp_path / "policy_execution_trace.json"
+    trace_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "robot_policy_execution_trace.v1",
+                "robot_policy_execution_proven": True,
+                "attempt_count": 1,
+                "attempts": [{"scenario_eval_run_id": "run-1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "policy_execution_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "robot_policy_execution_manifest.v1",
+                "status": "completed",
+                "env_BLUEPRINT_ALLOW_POLICY_EXECUTION": True,
+                "allow_policy_execution_flag": True,
+                "robot_policy_execution_proven": True,
+                "robot_team_policy_execution_proven": True,
+                "default_test_policy_execution_proven": False,
+                "attempt_count": 1,
+                "policy_execution_trace_path": "policy_execution_trace.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+    real_trace_boundary = lane.build_policy_endpoint_boundary_manifest(
+        generated_at="now",
+        endpoint_discovery=no_auth_discovery,
+        selected_runtime=lane.selected_endpoint(no_auth_discovery),
+        fixture_policy_used=True,
+        policy_execution_manifest_path=manifest_path,
+    )
+
+    assert real_trace_boundary["status"] == "completed_robot_policy_execution_trace_proven"
+    assert real_trace_boundary["robot_policy_execution_proven"] is True
+    assert (
+        real_trace_boundary["robot_policy_execution_proof_source"]
+        == "gated_policy_execution_manifest"
+    )
+    assert real_trace_boundary["real_trace_gate"]["gated_real_trace_exists"] is True
+    assert real_trace_boundary["claim_boundary"]["robot_policy_execution_proven"] is True
+    assert (
+        real_trace_boundary["claim_boundary"][
+            "endpoint_invocation_is_not_robot_policy_execution"
+        ]
+        is True
+    )
+    assert (
+        real_trace_boundary["claim_boundary"]["endpoint_setup_is_not_real_world_success"]
+        is True
+    )
+    assert (
+        real_trace_boundary["claim_boundary"]["endpoint_setup_is_not_safety_validation"]
+        is True
+    )
+    assert (
+        real_trace_boundary["claim_boundary"][
+            "endpoint_setup_is_not_deployment_approval"
+        ]
+        is True
+    )
 
 
 def test_unitree_endpoint_policy_response_summary_keeps_replay_separate() -> None:
@@ -2580,6 +2706,7 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
     assert (tmp_path / "job" / "policy_model_candidate_matrix.json").is_file()
     assert (tmp_path / "job" / "policy_model_truth_boundary.json").is_file()
     assert (tmp_path / "job" / "policy_endpoint_runtime_manifest.json").is_file()
+    assert (tmp_path / "job" / "policy_endpoint_boundary_manifest.json").is_file()
     assert (tmp_path / "job" / "policy_endpoint_invocation_trace.jsonl").is_file()
     assert (tmp_path / "job" / "realistic_navigation_policy_discovery.json").is_file()
     assert (tmp_path / "job" / "unitree_g1_manipulation_policy_discovery.json").is_file()
@@ -2593,6 +2720,18 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
     assert runtime_manifest["unitree_endpoint_provider_output_replay_used"] is False
     assert runtime_manifest["openvla_selected_as_g1_robot_policy"] is False
     assert runtime_manifest["wam_rollout_selected_as_g1_robot_policy"] is False
+    endpoint_boundary = json.loads(
+        (tmp_path / "job" / "policy_endpoint_boundary_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert endpoint_boundary["fixture_policy_used"] is True
+    assert endpoint_boundary["robot_policy_execution_proven"] is False
+    assert endpoint_boundary["claim_boundary"]["endpoint_setup_is_not_safety_validation"] is True
+    assert (
+        endpoint_boundary["claim_boundary"]["endpoint_setup_is_not_deployment_approval"]
+        is True
+    )
     asset_manifest = json.loads(
         (tmp_path / "job" / "unitree_g1_mujoco_asset_source_manifest.json").read_text(
             encoding="utf-8"
@@ -2721,6 +2860,17 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
     assert endpoint_summary["endpoint_policy_used"] is True
     assert endpoint_summary["fixture_policy_used"] is False
     assert endpoint_summary["endpoint_invocation_count"] == 1
+    endpoint_boundary = json.loads(
+        (tmp_path / "endpoint-job" / "policy_endpoint_boundary_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert endpoint_boundary["endpoint_policy_used"] is True
+    assert endpoint_boundary["robot_policy_execution_proven"] is False
+    assert (
+        endpoint_boundary["status"]
+        == "endpoint_integration_configured_not_robot_policy_execution"
+    )
     endpoint_attempts = json.loads(
         (tmp_path / "endpoint-job" / "normalized_attempt_trace.json").read_text(
             encoding="utf-8"

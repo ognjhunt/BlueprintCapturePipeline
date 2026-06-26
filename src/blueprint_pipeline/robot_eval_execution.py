@@ -675,6 +675,201 @@ def _requested_scenario_eval_run_target_count(
     return None, None
 
 
+def _policy_candidate_rows(job_request: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    execution_request = _mapping(
+        job_request.get("execution_request") or job_request.get("executionRequest")
+    )
+    wam_request = _mapping(
+        job_request.get("wam_evaluation")
+        or job_request.get("wamEvaluation")
+        or execution_request.get("wam_evaluation")
+        or execution_request.get("wamEvaluation")
+    )
+    raw = (
+        job_request.get("policy_candidates")
+        or job_request.get("policyCandidates")
+        or job_request.get("policies")
+        or job_request.get("checkpoints")
+        or execution_request.get("policy_candidates")
+        or execution_request.get("policyCandidates")
+        or wam_request.get("policy_candidates")
+        or wam_request.get("policyCandidates")
+        or wam_request.get("policies")
+        or wam_request.get("checkpoints")
+    )
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        return []
+    candidates: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw, start=1):
+        payload = _mapping(item)
+        policy_id = (
+            _string(
+                payload.get("policy_id")
+                or payload.get("policyId")
+                or payload.get("candidate_id")
+                or payload.get("candidateId")
+                or payload.get("id")
+            )
+            or f"policy_candidate_{index:02d}"
+        )
+        if policy_id in seen:
+            continue
+        seen.add(policy_id)
+        candidates.append(
+            {
+                **payload,
+                "policy_id": policy_id,
+                "display_name": _string(payload.get("display_name") or payload.get("name"))
+                or policy_id,
+                "candidate_index": index,
+                "observation_protocol_id": (
+                    _string(
+                        payload.get("observation_protocol_id")
+                        or payload.get("observationProtocolId")
+                    )
+                    or POLICY_OBSERVATION_SCHEMA_ID
+                ),
+                "action_protocol_id": (
+                    _string(
+                        payload.get("action_protocol_id")
+                        or payload.get("actionProtocolId")
+                    )
+                    or POLICY_ACTION_SCHEMA_ID
+                ),
+            }
+        )
+    return candidates
+
+
+def _policy_comparison_flag(job_request: Mapping[str, Any]) -> bool | None:
+    execution_request = _mapping(
+        job_request.get("execution_request") or job_request.get("executionRequest")
+    )
+    containers = (job_request, execution_request)
+    keys = (
+        "policy_comparison_mode",
+        "policyComparisonMode",
+        "compare_policies",
+        "comparePolicies",
+        "candidate_policy_comparison",
+        "candidatePolicyComparison",
+    )
+    for container in containers:
+        for key in keys:
+            if key in container:
+                return _boolish(container.get(key))
+    return None
+
+
+def _wam_matrix_policy_expansion_blocked(job_request: Mapping[str, Any]) -> bool:
+    execution_request = _mapping(
+        job_request.get("execution_request") or job_request.get("executionRequest")
+    )
+    substrate = _string(
+        job_request.get("evaluation_substrate")
+        or job_request.get("evaluationSubstrate")
+        or execution_request.get("evaluation_substrate")
+        or execution_request.get("evaluationSubstrate")
+    ).lower().replace("-", "_").replace(" ", "_")
+    return substrate in {
+        "fixture_wam",
+        "wam_fixture",
+        "local_wam",
+        "cosmos3_wam",
+        "cosmos_wam",
+        "oscar_wam",
+    }
+
+
+def _policy_comparison_rows(
+    runs: Sequence[Mapping[str, Any]],
+    *,
+    candidates: Sequence[Mapping[str, Any]],
+    job_request: Mapping[str, Any],
+) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
+    flag = _policy_comparison_flag(job_request)
+    requested = bool(flag) if flag is not None else len(candidates) >= 2
+    disabled_for_wam = _wam_matrix_policy_expansion_blocked(job_request)
+    candidate_ids = [_string(candidate.get("policy_id")) for candidate in candidates]
+    base_run_ids = [
+        _string(run.get("scenario_eval_run_id"))
+        for run in runs
+        if _string(run.get("scenario_eval_run_id"))
+    ]
+    if not requested or disabled_for_wam or len(candidates) < 2 or not runs:
+        blockers: list[str] = []
+        if requested and len(candidates) < 2:
+            blockers.append("policy_comparison_requires_at_least_two_candidates")
+        if requested and disabled_for_wam:
+            blockers.append("wam_substrate_uses_internal_policy_candidate_loop")
+        return [dict(run) for run in runs], {
+            "enabled": False,
+            "requested": requested,
+            "disabled_for_wam_substrate": disabled_for_wam,
+            "candidate_count": len(candidates),
+            "candidate_ids": candidate_ids,
+            "base_scenario_eval_run_count": len(base_run_ids),
+            "base_scenario_eval_run_ids": base_run_ids,
+            "expanded_scenario_eval_run_ids": base_run_ids,
+            "blockers": blockers,
+        }
+
+    observation_protocol_id = POLICY_OBSERVATION_SCHEMA_ID
+    action_protocol_id = POLICY_ACTION_SCHEMA_ID
+    expanded: list[Dict[str, Any]] = []
+    for base_index, run in enumerate(runs, start=1):
+        base = dict(run)
+        base_run_id = _string(base.get("base_scenario_eval_run_id")) or _string(
+            base.get("scenario_eval_run_id")
+        )
+        for candidate_index, candidate in enumerate(candidates, start=1):
+            policy_id = _string(candidate.get("policy_id")) or f"policy_candidate_{candidate_index:02d}"
+            candidate_run_id = f"{base_run_id}__policy_{_safe_id(policy_id)}"
+            expanded.append(
+                {
+                    **base,
+                    "scenario_eval_run_id": candidate_run_id,
+                    "base_scenario_eval_run_id": base_run_id,
+                    "policy_id": policy_id,
+                    "policy_candidate_id": policy_id,
+                    "policy_candidate_display_name": _string(candidate.get("display_name"))
+                    or policy_id,
+                    "policy_candidate_index": candidate_index,
+                    "policy_comparison_base_run_index": base_index,
+                    "policy_comparison_candidate_run": True,
+                    "policy_comparison_reference_only": bool(
+                        candidate.get("reference_only") or candidate.get("referenceOnly")
+                    ),
+                    "observation_protocol_id": observation_protocol_id,
+                    "action_protocol_id": action_protocol_id,
+                    "policy_observation_protocol_id": observation_protocol_id,
+                    "policy_action_protocol_id": action_protocol_id,
+                    "same_observation_action_protocol_required": True,
+                }
+            )
+    return expanded, {
+        "enabled": True,
+        "requested": requested,
+        "disabled_for_wam_substrate": False,
+        "candidate_count": len(candidates),
+        "candidate_ids": candidate_ids,
+        "base_scenario_eval_run_count": len(base_run_ids),
+        "base_scenario_eval_run_ids": base_run_ids,
+        "expanded_scenario_eval_run_ids": [
+            _string(run.get("scenario_eval_run_id"))
+            for run in expanded
+            if _string(run.get("scenario_eval_run_id"))
+        ],
+        "observation_protocol_id": observation_protocol_id,
+        "action_protocol_id": action_protocol_id,
+        "same_observation_protocol_required": True,
+        "same_action_protocol_required": True,
+        "same_observation_action_protocol_required": True,
+        "blockers": [],
+    }
+
+
 def _pose_triplet(value: Any) -> list[float] | None:
     if isinstance(value, Mapping):
         xyz = value.get("xyz") or value.get("pose") or value.get("position")
@@ -1135,6 +1330,12 @@ def build_scenario_eval_matrix(
         target_count=target_scenario_eval_run_count,
         exact_filters_requested=bool(requested_eval_run_filters),
     )
+    policy_candidates = _policy_candidate_rows(job_request)
+    runs, policy_comparison_expansion = _policy_comparison_rows(
+        runs,
+        candidates=policy_candidates,
+        job_request=job_request,
+    )
 
     required_names = _string_list(variation_payload.get("required_variation_names"))
     covered_names = sorted(
@@ -1197,6 +1398,43 @@ def build_scenario_eval_matrix(
             "target_scenario_eval_run_count_satisfied"
         ],
         "scenario_eval_batch_expansion": batch_expansion,
+        "policy_comparison_mode": bool(policy_comparison_expansion.get("enabled")),
+        "policy_comparison_requested": bool(
+            policy_comparison_expansion.get("requested")
+        ),
+        "policy_comparison_candidate_count": int(
+            policy_comparison_expansion.get("candidate_count") or 0
+        ),
+        "policy_comparison_candidate_ids": _string_list(
+            policy_comparison_expansion.get("candidate_ids")
+        ),
+        "policy_comparison_base_scenario_eval_run_count": int(
+            policy_comparison_expansion.get("base_scenario_eval_run_count") or 0
+        ),
+        "policy_comparison_base_scenario_eval_run_ids": _string_list(
+            policy_comparison_expansion.get("base_scenario_eval_run_ids")
+        ),
+        "policy_comparison_expanded_scenario_eval_run_ids": _string_list(
+            policy_comparison_expansion.get("expanded_scenario_eval_run_ids")
+        ),
+        "policy_comparison_observation_protocol_id": policy_comparison_expansion.get(
+            "observation_protocol_id"
+        ),
+        "policy_comparison_action_protocol_id": policy_comparison_expansion.get(
+            "action_protocol_id"
+        ),
+        "policy_comparison_same_observation_protocol_required": bool(
+            policy_comparison_expansion.get("same_observation_protocol_required")
+        ),
+        "policy_comparison_same_action_protocol_required": bool(
+            policy_comparison_expansion.get("same_action_protocol_required")
+        ),
+        "policy_comparison_same_observation_action_protocol_required": bool(
+            policy_comparison_expansion.get(
+                "same_observation_action_protocol_required"
+            )
+        ),
+        "policy_comparison_expansion": policy_comparison_expansion,
         "unmatched_requested_scenario_eval_run_filter_count": len(
             unmatched_requested_eval_run_filters
         ),
@@ -1660,9 +1898,15 @@ def build_robot_pov_observation_bundle(
             "camera_profile_launch_readiness_path": (
                 "robot_camera_profile_launch_readiness.json"
             ),
+            "owner_robot_camera_calibration_request_path": (
+                "owner_robot_camera_calibration_request.json"
+            ),
             "camera_profile_count": camera_profile_registry.get("profile_count"),
             "camera_profile_launch_readiness_status": camera_profile_launch_readiness.get(
                 "status"
+            ),
+            "camera_profile_ready_for_launch": camera_profile_launch_readiness.get(
+                "ready_for_launch"
             ),
             "camera_profile_launch_ready_profile_count": camera_profile_launch_readiness.get(
                 "launch_ready_profile_count"
@@ -1683,8 +1927,12 @@ def build_robot_pov_observation_bundle(
             "path": "robot_camera_profile_launch_readiness.json",
             "status": camera_profile_launch_readiness.get("status"),
             "launch_mode": camera_profile_launch_readiness.get("launch_mode"),
+            "ready_for_launch": camera_profile_launch_readiness.get("ready_for_launch"),
             "all_profiles_launch_ready": camera_profile_launch_readiness.get(
                 "all_profiles_launch_ready"
+            ),
+            "owner_calibration_request_packet_path": camera_profile_launch_readiness.get(
+                "owner_calibration_request_packet_path"
             ),
             "blockers": camera_profile_launch_readiness.get("blockers") or [],
         },
@@ -2706,6 +2954,12 @@ def build_simulator_command_artifacts(
         generated_at=generated_at,
     )
     simulator_payload = _mapping(simulator_output)
+    simulator_output_execution_proven = simulator_payload.get("simulator_execution_proven")
+    simulator_execution_proven = (
+        simulator_output_execution_proven is True
+        if simulator_output_execution_proven is not None
+        else bool(attempts)
+    )
     required_scenario_eval_run_ids = _string_list(
         simulator_payload.get("required_scenario_eval_run_ids")
     )
@@ -2768,6 +3022,8 @@ def build_simulator_command_artifacts(
     status = "completed" if attempts else "blocked_missing_simulator_attempts"
     if attempts and required_scenario_eval_run_ids and not scenario_eval_run_coverage_complete:
         status = "blocked_incomplete_scenario_eval_run_coverage"
+    if attempts and not simulator_execution_proven:
+        status = "blocked_simulator_execution_not_proven"
     failures = [attempt for attempt in attempts if not bool(attempt.get("success"))]
     task_success_summary = _task_success_summary_from_attempts(attempts)
     failed_attempt_ids = sorted(
@@ -2800,7 +3056,7 @@ def build_simulator_command_artifacts(
         "task_success_rate": task_success_summary["task_success_rate"],
         "attempts": attempts,
         "result_ingested": bool(attempts),
-        "simulator_execution_proven": bool(attempts),
+        "simulator_execution_proven": simulator_execution_proven,
         "robot_policy_execution_proven": False,
         "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
@@ -3154,6 +3410,7 @@ def build_simulator_command_artifacts(
         "generated_at": generated_at,
         "status": status,
         "simulator": simulator,
+        "simulator_execution_proven": simulator_execution_proven,
         "attempt_count": len(attempts),
         "required_scenario_eval_run_count": len(required_scenario_eval_run_ids),
         "covered_scenario_eval_run_count": len(covered_scenario_eval_run_ids),
@@ -3511,6 +3768,105 @@ def _anchor_record_is_stale(record: Mapping[str, Any]) -> bool:
     return _anchor_record_status(record) in {"stale", "expired", "superseded"}
 
 
+def _accepted_review_value(value: Any) -> bool:
+    return _string(value).lower() in {
+        "accepted",
+        "approved",
+        "passed",
+        "succeeded",
+        "complete",
+        "completed",
+    }
+
+
+def _anchor_review_accepted(record: Mapping[str, Any]) -> bool:
+    reviewer_decision = _mapping(record.get("reviewer_decision") or record.get("reviewerDecision"))
+    if _boolish(
+        record.get("accepted_for_calibration")
+        or record.get("acceptedForCalibration")
+        or reviewer_decision.get("accepted_for_calibration")
+        or reviewer_decision.get("acceptedForCalibration")
+    ):
+        return True
+    for key in (
+        "calibration_review_decision",
+        "calibrationReviewDecision",
+        "policy_review_decision",
+        "policyReviewDecision",
+        "review_decision",
+        "reviewDecision",
+        "status",
+    ):
+        if _accepted_review_value(reviewer_decision.get(key)):
+            return True
+    return _accepted_review_value(_anchor_record_status(record))
+
+
+def _attestation_signed(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    actor_id = _string(
+        value.get("attested_by")
+        or value.get("attestedBy")
+        or value.get("operator_id")
+        or value.get("operatorId")
+        or value.get("owner_id")
+        or value.get("ownerId")
+    )
+    statement = _string(
+        value.get("statement")
+        or value.get("attestation")
+        or value.get("accepted_claim_boundary")
+        or value.get("acceptedClaimBoundary")
+    )
+    status = _string(value.get("status") or value.get("signature_status") or value.get("signatureStatus"))
+    signature_ref = _string(
+        value.get("signature")
+        or value.get("signature_ref")
+        or value.get("signatureRef")
+        or value.get("signed_at_utc")
+        or value.get("signedAtUtc")
+    )
+    return bool(actor_id and statement and (status == "signed" or signature_ref))
+
+
+def _physical_evidence_requested(record: Mapping[str, Any]) -> bool:
+    reviewer_decision = _mapping(record.get("reviewer_decision") or record.get("reviewerDecision"))
+    return bool(
+        _boolish(record.get("physical_evidence_required"))
+        or _boolish(record.get("physicalEvidenceRequired"))
+        or _boolish(record.get("field_evidence_required"))
+        or _boolish(record.get("fieldEvidenceRequired"))
+        or _boolish(reviewer_decision.get("physical_evidence_required"))
+        or _boolish(reviewer_decision.get("physicalEvidenceRequired"))
+    )
+
+
+def _physical_evidence_present(record: Mapping[str, Any]) -> bool:
+    refs = _mapping(record.get("physical_evidence_refs") or record.get("physicalEvidenceRefs"))
+    owner_refs = _mapping(record.get("owner_evidence_refs") or record.get("ownerEvidenceRefs"))
+    evidence_refs = _mapping(record.get("evidence_refs") or record.get("evidenceRefs"))
+    if refs:
+        return True
+    physical_keys = {
+        "physical_robot_run_manifest",
+        "robot_camera_video",
+        "robot_pov_video",
+        "video_review",
+        "action_log",
+        "robot_state_log",
+        "timestamp_alignment",
+        "operator_log",
+    }
+    if physical_keys.intersection(owner_refs) or physical_keys.intersection(evidence_refs):
+        return True
+    return bool(
+        _string(record.get("robot_camera_video_uri") or record.get("robotCameraVideoUri"))
+        or _string(record.get("robot_pov_video_uri") or record.get("robotPovVideoUri"))
+        or _string(record.get("physical_robot_run_manifest_uri") or record.get("physicalRobotRunManifestUri"))
+    )
+
+
 def _prediction_anchor_rows(
     prediction_ledger: Mapping[str, Any],
     attempt_trace: Mapping[str, Any],
@@ -3788,6 +4144,67 @@ def _accepted_anchor_calibration(
     prediction_conflict_ids: Sequence[str],
     prediction_incomplete_rows: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Any]:
+    if not rows:
+        complete_prediction_keys = sorted(
+            {
+                _anchor_key(row)
+                for row in prediction_rows
+                if not _missing_anchor_key_fields(_anchor_key(row))
+                and _predicted_success(row) is not None
+            }
+        )
+        unmatched_prediction_rows = [_anchor_key_dict(key) for key in complete_prediction_keys]
+        blockers = ["insufficient_anchor_count", "insufficient_policy_group_count"]
+        if unmatched_prediction_rows:
+            blockers.append("unmatched_prediction_rows")
+        return {
+            "status": "not_measured",
+            "blockers": sorted(set(blockers)),
+            "accepted_anchor_schema": {
+                "schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
+                "join_keys": list(ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS),
+                "required_prediction_fields": [
+                    *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
+                    "predicted_success",
+                ],
+                "required_actual_fields": [
+                    *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
+                    "actual_success",
+                    "owner_evidence_or_operator_attestation",
+                ],
+                "accepted_anchor_status": "accepted",
+                "claim_boundary": (
+                    "Accepted anchors are paired prediction/actual records. They are "
+                    "inputs for external accuracy calibration, not generated-world "
+                    "rank-fidelity result."
+                ),
+            },
+            "accepted_anchor_count": 0,
+            "minimum_accepted_anchor_count": MIN_ACCEPTED_ANCHOR_COUNT_FOR_CALIBRATION,
+            "policy_group_count": 0,
+            "minimum_policy_group_count": MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION,
+            "accepted_anchors": [],
+            "rejected_anchors": [],
+            "policy_success_rate_rows": [],
+            "unmatched_prediction_row_count": len(unmatched_prediction_rows),
+            "unmatched_prediction_rows": unmatched_prediction_rows,
+            "unmatched_actual_row_count": 0,
+            "unmatched_actual_row_ids": [],
+            "stale_anchor_row_count": 0,
+            "stale_anchor_row_ids": [],
+            "conflicting_anchor_row_count": 0,
+            "conflicting_anchor_row_ids": [],
+            "prediction_incomplete_row_count": len(prediction_incomplete_rows),
+            "prediction_incomplete_rows": list(prediction_incomplete_rows),
+            "confidence_intervals": {},
+            "spearman_rank_correlation": None,
+            "pearson_success_rate_correlation": None,
+            "mean_maximum_rank_violation": None,
+            "mmrv": None,
+            "maximum_rank_violation": None,
+            "mean_absolute_success_rate_error": None,
+            "sim_vs_real_calibration_score": None,
+        }
     actual_keys: Dict[tuple[str, str, str, str], List[Mapping[str, Any]]] = {}
     for row in rows:
         key = _anchor_key(row)
@@ -3816,8 +4233,14 @@ def _accepted_anchor_calibration(
             anchor_blockers.append("missing_actual_success")
         if not row.get("owner_evidence_present"):
             anchor_blockers.append("missing_owner_evidence_or_operator_attestation")
+        if not row.get("signed_operator_attestation_present"):
+            anchor_blockers.append("owner_or_operator_attestation_not_signed")
+        if _physical_evidence_requested(row) and not row.get("physical_evidence_present"):
+            anchor_blockers.append("missing_required_physical_evidence")
         if not row.get("actual_result_signal_present"):
             anchor_blockers.append("missing_actual_result_signal")
+        if not _anchor_review_accepted(row):
+            anchor_blockers.append("anchor_review_not_accepted")
         if _anchor_record_is_stale(row):
             anchor_blockers.append("stale_anchor_row")
             stale_anchor_row_ids.append(record_id)
@@ -3826,6 +4249,8 @@ def _accepted_anchor_calibration(
         if key not in prediction_anchor_index:
             anchor_blockers.append("unmatched_actual_row")
             unmatched_actual_row_ids.append(record_id)
+        if row.get("matched_prediction") and not row.get("strict_anchor_prediction_match"):
+            anchor_blockers.append("loose_or_inferred_anchor_match_rejected")
         if anchor_blockers:
             rejected_anchors.append(
                 {
@@ -3983,6 +4408,12 @@ def _outcome_owner_evidence(actual: Mapping[str, Any]) -> Dict[str, Any]:
         or actual.get("owner_attestation")
         or actual.get("ownerAttestation")
     )
+    owner_attestation = _mapping(
+        actual.get("hardware_owner_attestation")
+        or actual.get("hardwareOwnerAttestation")
+        or actual.get("owner_attestation")
+        or actual.get("ownerAttestation")
+    )
     return {
         "owner_evidence_present": bool(
             evidence_refs or owner_evidence_uri or _attestation_present(attestation)
@@ -3990,6 +4421,9 @@ def _outcome_owner_evidence(actual: Mapping[str, Any]) -> Dict[str, Any]:
         "owner_evidence_refs": evidence_refs,
         "owner_evidence_uri": owner_evidence_uri or None,
         "operator_attestation": attestation,
+        "owner_attestation": owner_attestation,
+        "signed_operator_attestation_present": _attestation_signed(attestation)
+        or _attestation_signed(owner_attestation),
     }
 
 
@@ -4022,8 +4456,6 @@ def _build_real_world_validation_followup_plan(
 ) -> Dict[str, Any]:
     actions: List[Dict[str, Any]] = []
     blockers: List[str] = []
-    if not rows:
-        blockers.append("missing_real_world_outcome_records")
 
     def add_action(
         row: Mapping[str, Any],
@@ -4170,7 +4602,7 @@ def _build_real_world_validation_followup_plan(
         ),
     }
     status = (
-        "blocked_missing_real_world_outcomes"
+        "not_requested"
         if not rows
         else "review_required"
         if actions
@@ -4197,6 +4629,8 @@ def _build_real_world_validation_followup_plan(
             "artifact_purpose": "real_world_validation_loop_followup_plan",
             "followup_plan_is_not_proof_of_rerun_tuning_or_site_modification_success": True,
             "requires_owner_review_before_public_claim_upgrade": True,
+            "sim_only_beta_ranking_blocked": False,
+            "external_real_world_calibration_not_requested": not bool(rows),
         },
     }
 
@@ -4225,7 +4659,7 @@ def build_deployment_validation_bundle(
         {
             "schema_version": "deployment_outcome_intake_manifest.v1",
             "generated_at": generated_at,
-            "status": "completed" if actual_records else "blocked_missing_real_world_outcomes",
+            "status": "completed" if actual_records else "not_requested",
             "outcome_source": outcome_source,
             "record_count": len(actual_records),
             "real_world_outcome_records_present": bool(actual_records),
@@ -4359,7 +4793,13 @@ def build_deployment_validation_bundle(
             "owner_evidence_refs": owner_evidence["owner_evidence_refs"],
             "owner_evidence_uri": owner_evidence["owner_evidence_uri"],
             "operator_attestation": owner_evidence["operator_attestation"],
+            "owner_attestation": owner_evidence["owner_attestation"],
             "owner_evidence_present": owner_evidence["owner_evidence_present"],
+            "signed_operator_attestation_present": owner_evidence[
+                "signed_operator_attestation_present"
+            ],
+            "physical_evidence_required": _physical_evidence_requested(actual),
+            "physical_evidence_present": _physical_evidence_present(actual),
             "matched_prediction": bool(prediction),
             "prediction_match_level": prediction_match_level,
             "exact_prediction_join_key_present": exact_prediction_join_key_present,
@@ -4376,7 +4816,7 @@ def build_deployment_validation_bundle(
         prediction_incomplete_rows=prediction_incomplete_rows,
     )
     score = anchor_calibration.get("sim_vs_real_calibration_score")
-    status = "completed" if rows else "blocked_missing_real_world_outcomes"
+    status = "completed" if rows else "not_requested"
     owner_evidence_record_count = sum(1 for row in rows if row.get("owner_evidence_present"))
     missing_owner_evidence_record_ids = [
         _string(row.get("record_id")) for row in rows if not row.get("owner_evidence_present")
@@ -4422,9 +4862,7 @@ def build_deployment_validation_bundle(
         and not missing_actual_signal_record_ids
     )
     outcome_blockers: List[str] = []
-    if not rows:
-        outcome_blockers.append("missing_real_world_outcome_records")
-    elif missing_owner_evidence_record_ids:
+    if rows and missing_owner_evidence_record_ids:
         outcome_blockers.append("deployment_outcomes_missing_owner_evidence")
     if missing_actual_signal_record_ids:
         outcome_blockers.append("deployment_outcomes_missing_actual_result_signal")
@@ -4435,6 +4873,7 @@ def build_deployment_validation_bundle(
     calibration_status = _string(anchor_calibration.get("status")) or (
         "not_measured" if not rows else "blocked_insufficient_anchor_count"
     )
+    calibration_blockers = _string_list(anchor_calibration.get("blockers"))
     if (
         calibration_status == "blocked_anchor_quality"
         and weak_prediction_match_record_ids
@@ -4468,19 +4907,22 @@ def build_deployment_validation_bundle(
         "unmatched_actual_record_count": len(unmatched_actual_record_ids),
         "unmatched_actual_record_ids": unmatched_actual_record_ids,
         "accepted_anchor_count": anchor_calibration.get("accepted_anchor_count"),
-        "accepted_anchor_blockers": _string_list(anchor_calibration.get("blockers")),
+        "accepted_anchor_blockers": calibration_blockers,
         "prediction_match_counts": prediction_match_counts,
         "real_world_outcome_records_present": real_world_outcome_records_present,
         "owner_evidence_record_count": owner_evidence_record_count,
         "missing_owner_evidence_record_ids": missing_owner_evidence_record_ids,
         "missing_actual_result_signal_record_ids": missing_actual_signal_record_ids,
         "real_world_outcome_proven": real_world_outcome_proven,
-        "blockers": outcome_blockers,
+        "blockers": [],
+        "diagnostic_blockers": outcome_blockers,
         "public_claim_upgrade_allowed": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "real_world_outcome_records_present": real_world_outcome_records_present,
             "real_world_outcome_proven": real_world_outcome_proven,
+            "sim_only_beta_ranking_blocked": False,
+            "external_real_world_calibration_not_requested": not real_world_outcome_records_present,
         },
     }
     report = {
@@ -4545,7 +4987,8 @@ def build_deployment_validation_bundle(
             "conflicting_anchor_row_ids"
         )
         or [],
-        "blockers": _string_list(anchor_calibration.get("blockers")),
+        "blockers": [],
+        "diagnostic_blockers": calibration_blockers,
         "prediction_match_counts": prediction_match_counts,
         "missed_failure_count": sum(len(_string_list(row.get("missed_failures"))) for row in rows),
         "false_alarm_failure_count": sum(
@@ -4570,12 +5013,13 @@ def build_deployment_validation_bundle(
             "real_world_outcome_proven": real_world_outcome_proven,
             "deployment_accuracy_claim_allowed": bool(score is not None),
             "sim_only_beta_ranking_blocked": False,
+            "external_real_world_calibration_not_requested": not real_world_outcome_records_present,
         },
     }
     summary = {
         "schema_version": PREDICTION_VS_ACTUAL_DEPLOYMENT_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": calibration_status if rows else "blocked_missing_real_world_outcomes",
+        "status": calibration_status,
         "outcome_source": outcome_source,
         "what_eval_predicted": [
             {
@@ -4685,7 +5129,8 @@ def build_deployment_validation_bundle(
             "conflicting_anchor_row_ids"
         )
         or [],
-        "blockers": _string_list(anchor_calibration.get("blockers")),
+        "blockers": [],
+        "diagnostic_blockers": calibration_blockers,
         "prediction_match_counts": prediction_match_counts,
         "real_world_outcome_records_present": real_world_outcome_records_present,
         "owner_evidence_record_count": owner_evidence_record_count,

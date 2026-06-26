@@ -26,8 +26,8 @@ foundation model." The sales promise is:
 - Action interface: command schema, frequency, units, limits, and reset
   behavior.
 - Private hardware integration mode: reference/public robot, private asset
-  hosted by Blueprint, customer-hosted sealed eval capsule, or physical robot
-  evidence bridge.
+  hosted by Blueprint, customer-hosted sealed eval capsule, or owner evidence
+  bridge.
 - Target task: task statement, operating envelope, fixtures, objects, and
   allowed recovery behavior.
 - Required success threshold: for example `0.95`.
@@ -50,21 +50,35 @@ Source code is optional by default. The access ladder is:
    `oscar_wam`, `classical_sim_mujoco`, `classical_sim_isaac`, or
    `recorded_trace`.
 3. Evaluate the baseline policy.
-4. Identify dominant failure modes from normalized attempts, clips, labels, and
+4. Reserve same-condition frozen-baseline A/B episodes so candidate comparisons
+   are not old-run-only.
+5. Identify dominant failure modes from normalized attempts, clips, labels, and
    review ledgers.
-5. Generate twin and cousin scenarios from the site/task distribution.
-6. Build a curriculum with development, validation, heldout, and sealed audit
+6. Build an RL/post-training handoff packet with sparse reward, recoverable
+   failure labels, timing/throughput metrics, bottleneck stages, speed
+   curriculum gates, action-chunk continuity QA, and intervention/safety events.
+7. Generate twin and cousin scenarios from the site/task distribution.
+8. Build a curriculum with development, validation, heldout, and sealed audit
    splits.
-7. Post-train or lift a candidate artifact.
-8. Test candidate versions on heldout or sealed scenarios that were not used as
+9. Post-train or lift a candidate artifact.
+10. Test candidate versions on heldout or sealed scenarios that were not used as
    training data.
-9. Deliver the improved artifact, WebApp-safe summary projection, and evidence report.
+11. Deliver the improved artifact, WebApp-safe summary projection, and evidence report.
 
 The run now mirrors the Task Evaluation Run shape instead of being only a thin
 offer wrapper: it carries a baseline evaluation scorecard projection, a staged
-readiness ladder, and a `policy_improvement_run_webapp_summary.json` document
-that WebApp can store without dense traces, secrets, training payloads, or raw
-policy artifacts.
+readiness ladder, an `rl_post_training_handoff_packet.json` document, and a
+`policy_improvement_run_webapp_summary.json` document that WebApp can store
+without dense traces, secrets, training payloads, or raw policy artifacts.
+
+The RL/post-training handoff packet is a support contract for robot teams. It
+contains the success definition, sparse reward signal, recoverable failure
+labels, intervention labels, timing and throughput metrics, a redacted policy
+baseline fingerprint, concurrent frozen-baseline A/B reservation status,
+bottleneck stage detection, speed curriculum plan, action-chunk continuity QA,
+and intervention/safety ledger. It does not prove that Blueprint trained a
+policy, validated safety, approved deployment, or proved physical robot
+readiness.
 
 ## Scenario Split Contract
 
@@ -118,8 +132,8 @@ The Policy Improvement Run manifest writes
 - `customer_hosted_sealed_eval_capsule`: the default for closed hardware. The
   customer keeps its robot model, simulator, and controller private; Blueprint
   sends a least-privilege eval packet and expects normalized owner proof back.
-- `physical_robot_evidence_bridge`: the customer runs a hardware bridge and
-  returns camera/action/outcome evidence joined to exact
+- `owner_evidence_bridge`: the customer runs an evidence bridge and returns
+  camera/action/outcome evidence joined to exact
   `scenario_eval_run_id` values.
 
 The default IP posture is least privilege: no raw capture bundle, no full

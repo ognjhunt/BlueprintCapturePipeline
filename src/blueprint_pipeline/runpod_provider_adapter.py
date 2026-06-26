@@ -21,6 +21,8 @@ from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_ma
 
 
 RUNPOD_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "runpod_provider_adapter_result.v1"
+RUNPOD_PROVIDER_READINESS_MANIFEST_SCHEMA_VERSION = "runpod_provider_readiness_manifest.v1"
+RUNPOD_PROVIDER_READINESS_MANIFEST_NAME = "runpod_provider_readiness_manifest.json"
 RUNPOD_API_KEY_ENV = "RUNPOD_API_KEY"
 RUNPOD_API_KEY_FILE_ENV = "RUNPOD_API_KEY_FILE"
 RUNPOD_CONFIG_FILE_ENV = "RUNPOD_CONFIG_FILE"
@@ -38,6 +40,11 @@ PROVIDER_ADAPTER_OUTPUT_ENV = "BLUEPRINT_GPU_PROVIDER_ADAPTER_OUTPUT"
 RUNPOD_FORWARD_SECRET_ENV_VARS_ENV = "BLUEPRINT_RUNPOD_FORWARD_SECRET_ENV_VARS"
 GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
 SENSITIVE_ENV_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+REMOTE_PROVIDER_ARTIFACT_OUTPUT_URI_SCHEMES = {"gs", "s3", "r2"}
+SECRET_ENV_NAME_LIST_KEYS = {
+    "env_names_declared",
+    "secret_env_var_names",
+}
 logger = logging.getLogger(__name__)
 WORKER_IMAGE_REF_ENV_BY_SIMULATOR = {
     "isaac_sim": "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
@@ -168,6 +175,14 @@ def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
 
 def _provider_shape(request: Mapping[str, Any]) -> Dict[str, Any]:
     return _mapping(request.get("provider_request_shape"))
+
+
+def _local_sim_only_prerequisite(request: Mapping[str, Any]) -> Dict[str, Any]:
+    provider_shape = _provider_shape(request)
+    return _mapping(
+        provider_shape.get("local_sim_only_prerequisite")
+        or request.get("local_sim_only_prerequisite")
+    )
 
 
 def _limits(request: Mapping[str, Any]) -> Dict[str, Any]:
@@ -303,6 +318,25 @@ def _redact_runtime_value(value: Any) -> Any:
     return value
 
 
+def _redact_secret_env_name_lists(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        redacted: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in SECRET_ENV_NAME_LIST_KEYS:
+                redacted[key_text] = [
+                    "<redacted:secret-env-var-name>" for _ in _string_list(item)
+                ]
+                continue
+            redacted[key_text] = _redact_secret_env_name_lists(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_secret_env_name_lists(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_secret_env_name_lists(item) for item in value]
+    return value
+
+
 def _request_summary(request: Mapping[str, Any]) -> Dict[str, Any]:
     inputs = _inputs(request)
     image = _image(request)
@@ -327,12 +361,220 @@ def _request_summary(request: Mapping[str, Any]) -> Dict[str, Any]:
         "manifest_uri_present": bool(_string(inputs.get("manifest_uri"))),
         "manifest_uri_fetchable_by_provider": inputs.get("manifest_uri_fetchable_by_provider")
         is True,
+        "capture_root_bundle_uri_present": bool(
+            _string(inputs.get("capture_root_bundle_uri"))
+        ),
+        "capture_root_bundle_uri_fetchable_by_provider": inputs.get(
+            "capture_root_bundle_uri_fetchable_by_provider"
+        )
+        is True,
         "artifact_output_uri_present": bool(_string(inputs.get("artifact_output_uri"))),
+        "local_sim_only_prerequisite_status": _local_sim_only_prerequisite(
+            request
+        ).get("status"),
+        "local_sim_only_evidence_clean": _local_sim_only_prerequisite(request).get(
+            "local_sim_only_evidence_clean"
+        )
+        is True,
         "hard_timeout_seconds": limits.get("hard_timeout_seconds"),
         "idle_timeout_seconds": limits.get("idle_timeout_seconds"),
         "external_watchdog_ttl_seconds": limits.get("external_watchdog_ttl_seconds"),
         "max_active_workers": limits.get("max_active_workers"),
     }
+
+
+def _readiness_manifest_path(output_path: Path) -> Path:
+    return output_path.with_name(RUNPOD_PROVIDER_READINESS_MANIFEST_NAME)
+
+
+def _provider_readiness_manifest(
+    *,
+    request_path: Path,
+    output_path: Path,
+    request: Mapping[str, Any],
+    mode: str,
+    request_blockers: Sequence[str],
+    endpoint_manifest_path: Path,
+    api_key_meta: Mapping[str, Any],
+) -> Dict[str, Any]:
+    provider_shape = _provider_shape(request)
+    inputs = _inputs(request)
+    local_sim_only_prerequisite = _local_sim_only_prerequisite(request)
+    limits = _limits(request)
+    environment = _environment(request)
+    artifact_finalizer = _mapping(provider_shape.get("artifact_finalizer"))
+    cost_policy = _cost_control_policy(request)
+    artifact_output_uri = _string(inputs.get("artifact_output_uri"))
+    artifact_output_scheme = urlparse(artifact_output_uri).scheme if artifact_output_uri else ""
+    hard_timeout_seconds = int(_number(limits.get("hard_timeout_seconds")) or 0)
+    idle_timeout_seconds = int(_number(limits.get("idle_timeout_seconds")) or 0)
+    external_watchdog_ttl_seconds = int(
+        _number(limits.get("external_watchdog_ttl_seconds")) or 0
+    )
+    requested_budget_usd = _number(limits.get("requested_budget_usd"))
+    artifact_output_uri_provider_writable = bool(
+        inputs.get("artifact_output_uri_provider_writable")
+    )
+    artifact_output_write_auth = _mapping(inputs.get("artifact_output_write_auth"))
+    artifact_output_write_auth_ready = bool(
+        inputs.get("artifact_output_write_auth_contract_ready")
+        or artifact_output_write_auth.get("write_auth_contract_ready")
+    )
+    signed_put_url_present = bool(
+        _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
+    )
+    readiness_blockers = _dedupe(request_blockers)
+    return {
+        "schema_version": RUNPOD_PROVIDER_READINESS_MANIFEST_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": (
+            "ready_for_explicit_paid_provider_attempt"
+            if not readiness_blockers
+            else "blocked_before_paid_provider_attempt"
+        ),
+        "provider": _string(request.get("provider")) or "runpod",
+        "mode": mode,
+        "job_id": _string(request.get("job_id")),
+        "source_artifacts": {
+            "provider_launch_request_path": str(request_path),
+            "runpod_provider_adapter_result_path": str(output_path),
+            "provider_worker_endpoint_manifest_path": str(endpoint_manifest_path),
+        },
+        "api_call_performed": False,
+        "live_provider_call_authorized": False,
+        "spend_limits": {
+            "requested_budget_usd": requested_budget_usd,
+            "requested_budget_declared": requested_budget_usd is not None,
+            "max_active_workers": cost_policy.get("max_active_workers"),
+            "bounded_single_worker_attempt": cost_policy.get("max_active_workers") == 1,
+            "hard_timeout_seconds": hard_timeout_seconds,
+            "idle_timeout_seconds": idle_timeout_seconds,
+            "external_watchdog_ttl_seconds": external_watchdog_ttl_seconds,
+            "external_watchdog_ttl_exceeds_hard_timeout": (
+                external_watchdog_ttl_seconds > hard_timeout_seconds > 0
+            ),
+            "scale_to_zero_default": _mapping(
+                cost_policy.get("warm_pool_policy")
+            ).get("scale_to_zero_default"),
+            "warm_pool_policy": cost_policy.get("warm_pool_policy"),
+        },
+        "provider_inputs": {
+            "manifest_uri_present": bool(_string(inputs.get("manifest_uri"))),
+            "manifest_uri": _redact_runtime_value(_string(inputs.get("manifest_uri"))),
+            "manifest_uri_fetchable_by_provider": inputs.get(
+                "manifest_uri_fetchable_by_provider"
+            )
+            is True,
+            "capture_root_bundle_uri_present": bool(
+                _string(inputs.get("capture_root_bundle_uri"))
+            ),
+            "capture_root_bundle_uri": _redact_runtime_value(
+                _string(inputs.get("capture_root_bundle_uri"))
+            ),
+            "capture_root_bundle_uri_fetchable_by_provider": inputs.get(
+                "capture_root_bundle_uri_fetchable_by_provider"
+            )
+            is True,
+        },
+        "local_sim_only_prerequisite": {
+            "present": bool(local_sim_only_prerequisite),
+            **local_sim_only_prerequisite,
+        },
+        "artifact_output": {
+            "artifact_output_uri_required": _bool(
+                inputs.get("artifact_output_uri_required")
+            )
+            is not False,
+            "artifact_output_uri_present": bool(artifact_output_uri),
+            "artifact_output_uri": _redact_runtime_value(artifact_output_uri),
+            "artifact_output_uri_scheme": artifact_output_scheme or None,
+            "artifact_output_uri_scheme_provider_writable": artifact_output_scheme
+            in REMOTE_PROVIDER_ARTIFACT_OUTPUT_URI_SCHEMES,
+            "artifact_output_uri_provider_writable": artifact_output_uri_provider_writable,
+            "artifact_output_write_auth_contract_ready": artifact_output_write_auth_ready,
+            "runtime_manifest_signed_put_url_present": signed_put_url_present,
+            "runtime_manifest_signed_put_url_value_stored": False,
+        },
+        "watchdog_and_teardown": {
+            "idle_shutdown_required": _bool(limits.get("idle_shutdown_required")) is True,
+            "idle_timeout_seconds": idle_timeout_seconds,
+            "external_watchdog_ttl_required": _bool(
+                limits.get("external_watchdog_ttl_required")
+            )
+            is True,
+            "external_watchdog_ttl_seconds": external_watchdog_ttl_seconds,
+            "external_watchdog_owner": _string(limits.get("external_watchdog_owner"))
+            or None,
+            "external_watchdog_ttl_exceeds_hard_timeout": (
+                external_watchdog_ttl_seconds > hard_timeout_seconds > 0
+            ),
+            "upload_before_shutdown_required": artifact_finalizer.get(
+                "upload_before_shutdown_required"
+            )
+            is True,
+            "record_actual_gpu_time_required": artifact_finalizer.get(
+                "record_actual_gpu_time_required"
+            )
+            is True,
+            "provider_shutdown_evidence_required_after_live_attempt": True,
+            "continuing_spend_from_this_run_must_be_false_after_teardown": True,
+            "expected_post_run_artifacts": [
+                "provider_runtime_finalizer_proof.json",
+                "worker_runtime_manifest.json",
+                "provider_shutdown_proof.json or provider lifecycle zero-active-worker evidence",
+            ],
+        },
+        "no_secret_artifact_policy": {
+            "secret_values_in_artifact": environment.get("secret_values_in_artifact"),
+            "customer_visible_secret_values_allowed": environment.get(
+                "customer_visible_secret_values_allowed"
+            ),
+            "secret_env_var_names_declared_count": len(
+                _string_list(environment.get("secret_env_var_names"))
+            ),
+            "secret_env_var_names_stored": False,
+            "api_key_configured": api_key_meta.get("api_key_configured"),
+            "api_key_source": api_key_meta.get("api_key_source"),
+            "raw_api_key_stored": False,
+            "signed_url_values_in_artifact": False,
+            "secret_values_forwarded_only_by_explicit_allowlist": True,
+        },
+        "blockers": readiness_blockers,
+        "claim_boundary": {
+            "optional_provider_runtime_evidence_only": True,
+            "not_sim_only_launch_proof_until_artifacts_imported_and_reviewed": True,
+            "runpod_api_called": False,
+            "provider_allocation_proven": False,
+            "provider_job_submitted": False,
+            "simulator_execution_proven": False,
+            "rank_fidelity_result_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+
+
+def _write_provider_readiness_manifest(
+    *,
+    request_path: Path,
+    output_path: Path,
+    request: Mapping[str, Any],
+    mode: str,
+    request_blockers: Sequence[str],
+    endpoint_manifest_path: Path,
+    api_key_meta: Mapping[str, Any],
+) -> Dict[str, Any]:
+    manifest_path = _readiness_manifest_path(output_path)
+    manifest = _provider_readiness_manifest(
+        request_path=request_path,
+        output_path=output_path,
+        request=request,
+        mode=mode,
+        request_blockers=request_blockers,
+        endpoint_manifest_path=endpoint_manifest_path,
+        api_key_meta=api_key_meta,
+    )
+    write_json(manifest_path, manifest)
+    return manifest
 
 
 def _base_result(
@@ -375,7 +617,7 @@ def _adapter_event_name(status: str) -> str:
 
 
 def _persist_result(output_path: Path, result: Mapping[str, Any]) -> Dict[str, Any]:
-    persisted = dict(result)
+    persisted = _redact_secret_env_name_lists(dict(result))
     write_json(output_path, persisted)
     blockers = _string_list(persisted.get("blockers"))
     status = _string(persisted.get("status"))
@@ -419,6 +661,7 @@ def _serverless_payload(
             "input": {
                 "job_id": _string(request.get("job_id")),
                 "worker_manifest_uri": _string(inputs.get("manifest_uri")),
+                "capture_root_bundle_uri": _string(inputs.get("capture_root_bundle_uri")),
                 "artifact_output_uri": _string(inputs.get("artifact_output_uri")),
                 "provider_launch_request_status": _string(request.get("status")),
                 "cost_control_policy": {
@@ -568,9 +811,12 @@ def _pod_payload(
             start_cmd = [command]
         else:
             parts = shlex.split(command)
-            start_cmd = parts[1:] if parts and parts[0] == "blueprint-run-robot-eval-worker" else parts
+            if parts and parts[0] == "blueprint-run-robot-eval-worker":
+                start_cmd = parts[1:]
+            else:
+                start_cmd = parts
     if start_cmd == ["--manifest", "${BLUEPRINT_EVAL_MANIFEST_URI}"]:
-            start_cmd = []
+        start_cmd = []
     input_payload = {
         "cloudType": _string(os.getenv("BLUEPRINT_RUNPOD_CLOUD_TYPE")) or "SECURE",
         "computeType": "GPU",
@@ -627,9 +873,17 @@ def _request_blockers(
             blockers.extend(setup_blockers)
     inputs = _inputs(request)
     image = _image(request)
+    provider_shape = _provider_shape(request)
+    local_sim_only_prerequisite = _local_sim_only_prerequisite(request)
+    artifact_finalizer = _mapping(provider_shape.get("artifact_finalizer"))
     artifact_output_uri = _string(inputs.get("artifact_output_uri"))
     artifact_output_required = _bool(inputs.get("artifact_output_uri_required"))
     artifact_output_scheme = urlparse(artifact_output_uri).scheme or "local"
+    artifact_output_write_auth = _mapping(inputs.get("artifact_output_write_auth"))
+    artifact_output_write_auth_ready = bool(
+        inputs.get("artifact_output_write_auth_contract_ready")
+        or artifact_output_write_auth.get("write_auth_contract_ready")
+    )
     signed_put_url = _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
     if mode == "serverless-run" and not endpoint_id:
         blockers.append(f"missing_env_{RUNPOD_ENDPOINT_ID_ENV}")
@@ -645,12 +899,43 @@ def _request_blockers(
         blockers.append("missing_provider_worker_manifest_uri")
     if inputs.get("manifest_uri_fetchable_by_provider") is not True:
         blockers.append("provider_worker_manifest_uri_not_fetchable")
+    if not _string(inputs.get("capture_root_bundle_uri")):
+        blockers.append("missing_provider_capture_root_bundle_uri")
+    if inputs.get("capture_root_bundle_uri_fetchable_by_provider") is not True:
+        blockers.append("provider_capture_root_bundle_uri_not_fetchable")
     if not artifact_output_uri and artifact_output_required is not False:
         blockers.append("missing_provider_artifact_output_uri")
     if artifact_output_required is False and not signed_put_url:
         blockers.append("missing_runtime_manifest_signed_put_url_for_artifact_output_optional")
-    if artifact_output_uri and artifact_output_scheme not in {"gs", "s3", "r2", "file", "local"}:
+    if (
+        artifact_output_uri
+        and artifact_output_required is not False
+        and artifact_output_scheme not in REMOTE_PROVIDER_ARTIFACT_OUTPUT_URI_SCHEMES
+    ):
         blockers.append("provider_artifact_output_uri_not_writable")
+    if (
+        artifact_output_uri
+        and artifact_output_required is not False
+        and artifact_output_scheme in REMOTE_PROVIDER_ARTIFACT_OUTPUT_URI_SCHEMES
+        and inputs.get("artifact_output_uri_provider_writable") is not True
+    ):
+        blockers.append("provider_artifact_output_uri_not_marked_writable")
+    if (
+        artifact_output_uri
+        and artifact_output_required is not False
+        and inputs.get("artifact_output_uri_provider_writable") is True
+        and not artifact_output_write_auth_ready
+    ):
+        blockers.append("provider_artifact_output_write_auth_contract_missing")
+    if _string(request.get("provider")) == "runpod":
+        if not local_sim_only_prerequisite:
+            blockers.append("missing_local_sim_only_provider_prerequisite")
+        elif (
+            local_sim_only_prerequisite.get("status") != "passed"
+            or local_sim_only_prerequisite.get("local_sim_only_evidence_clean") is not True
+        ):
+            blockers.append("local_sim_only_provider_prerequisite_not_passed")
+            blockers.extend(_string_list(local_sim_only_prerequisite.get("blockers")))
     if not hard_timeout_seconds or hard_timeout_seconds <= 0:
         blockers.append("missing_provider_hard_timeout_seconds")
     if not idle_timeout_seconds or idle_timeout_seconds <= 0:
@@ -661,6 +946,18 @@ def _request_blockers(
         blockers.append("provider_external_watchdog_ttl_must_exceed_hard_timeout")
     if not max_active_workers or max_active_workers <= 0:
         blockers.append("missing_provider_max_active_workers")
+    if limits.get("requested_budget_usd") is None:
+        blockers.append("missing_provider_requested_budget_usd")
+    elif _number(limits.get("requested_budget_usd")) is None or (
+        _number(limits.get("requested_budget_usd")) or 0
+    ) < 0:
+        blockers.append("invalid_provider_requested_budget_usd")
+    if _bool(limits.get("idle_shutdown_required")) is not True:
+        blockers.append("provider_idle_shutdown_not_required")
+    if not _string(limits.get("external_watchdog_owner")):
+        blockers.append("provider_external_watchdog_owner_missing")
+    if artifact_finalizer.get("upload_before_shutdown_required") is not True:
+        blockers.append("provider_artifact_upload_before_shutdown_not_required")
     if _environment(request).get("secret_values_in_artifact") is not False:
         blockers.append("provider_launch_request_secret_values_in_artifact")
     return _dedupe(blockers)
@@ -674,7 +971,8 @@ def _api_gate_blockers(*, allow_runpod_api_call: bool, api_key: str) -> list[str
         blockers.append("missing_cli_allow_runpod_api_call")
     if not api_key:
         blockers.append(
-            f"missing_env_{RUNPOD_API_KEY_ENV}_or_{RUNPOD_API_KEY_FILE_ENV}_or_{RUNPOD_CONFIG_FILE_ENV}"
+            f"missing_env_{RUNPOD_API_KEY_ENV}_or_{RUNPOD_API_KEY_FILE_ENV}_or_"
+            f"{RUNPOD_CONFIG_FILE_ENV}"
         )
     return blockers
 
@@ -780,6 +1078,7 @@ def run_runpod_provider_adapter(
             "provider_worker_endpoint_manifest": provider_worker_endpoint_manifest,
         }
     )
+    endpoint_manifest_path = request_path.parent / "provider_worker_endpoint_manifest.json"
     request_blockers = _request_blockers(
         request=request,
         mode=mode,
@@ -811,6 +1110,19 @@ def run_runpod_provider_adapter(
 
     result["runpod_request"] = _redact_runtime_value(runpod_request)
     result["request_blockers"] = request_blockers
+    provider_readiness_manifest = _write_provider_readiness_manifest(
+        request_path=request_path,
+        output_path=resolved_output,
+        request=request,
+        mode=mode,
+        request_blockers=request_blockers,
+        endpoint_manifest_path=endpoint_manifest_path,
+        api_key_meta=api_key_meta,
+    )
+    result["provider_readiness_manifest_path"] = str(
+        _readiness_manifest_path(resolved_output)
+    )
+    result["provider_readiness_manifest"] = provider_readiness_manifest
     if request_blockers:
         result.update(
             {

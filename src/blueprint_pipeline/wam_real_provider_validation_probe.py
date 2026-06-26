@@ -73,6 +73,58 @@ VALIDATION_SOURCE_KEYS = (
     "capture_id",
     "capture_bundle_id",
 )
+VALIDATION_TARGET_KEYS = (
+    "target_prompt",
+    "target_prompts",
+    "target_object_prompt",
+    "target_object_prompts",
+)
+VALIDATION_FRAME_ID_KEYS = (
+    "frame_id",
+    "source_frame_id",
+    "generated_frame_id",
+    "validation_frame_id",
+)
+VALIDATION_FRAME_PATH_KEYS = (
+    "source_generated_frame_path",
+    "generated_frame_path",
+    "source_frame_path",
+    "frame_path",
+    "validation_frame_path",
+)
+VALIDATION_PROVENANCE_KEYS = (
+    "reviewer_id",
+    "reviewer",
+    "reviewed_by",
+    "review_decision",
+    "review_status",
+    "source_label_path",
+    "operator_attestation_path",
+    "label_provenance",
+)
+PROVIDER_ONLY_SOURCE_MARKERS = (
+    "wam_perception_backend",
+    "provider_result",
+    "sam3_semantic_predictor",
+    "depth_provider",
+    "pose_provider",
+    "generated_pixels",
+    "model_output",
+)
+PLACEHOLDER_VALUES = {
+    "",
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "todo",
+    "tbd",
+    "unknown",
+    "<reviewer>",
+    "<reviewer-id>",
+    "<source>",
+    "<path>",
+}
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -85,6 +137,12 @@ def _sequence(value: Any) -> list[Any]:
 
 def _string(value: Any) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _subprocess_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -133,11 +191,107 @@ def _row_has_label(row: Mapping[str, Any]) -> bool:
 
 
 def _row_has_source_ref(row: Mapping[str, Any]) -> bool:
-    for key in VALIDATION_SOURCE_KEYS:
-        value = row.get(key)
-        if _string(value):
+    return bool(_valid_ref_strings(row, VALIDATION_SOURCE_KEYS))
+
+
+def _is_placeholder(value: Any) -> bool:
+    text = _string(value)
+    return text.lower() in PLACEHOLDER_VALUES or (text.startswith("<") and text.endswith(">"))
+
+
+def _strings_from_value(value: Any) -> list[str]:
+    if isinstance(value, Mapping):
+        values: list[str] = []
+        for item in value.values():
+            values.extend(_strings_from_value(item))
+        return values
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        values = []
+        for item in value:
+            values.extend(_strings_from_value(item))
+        return values
+    text = _string(value)
+    return [text] if text else []
+
+
+def _valid_ref_strings(row: Mapping[str, Any], keys: Sequence[str]) -> list[str]:
+    refs: list[str] = []
+    for key in keys:
+        for value in _strings_from_value(row.get(key)):
+            if not _is_placeholder(value):
+                refs.append(value)
+    return refs
+
+
+def _target_strings(row: Mapping[str, Any]) -> list[str]:
+    return _valid_ref_strings(row, VALIDATION_TARGET_KEYS)
+
+
+def _row_has_empty_target_field(row: Mapping[str, Any]) -> bool:
+    for key in VALIDATION_TARGET_KEYS:
+        if key in row and not _target_strings({key: row.get(key)}):
             return True
-        if isinstance(value, (Mapping, Sequence)) and not isinstance(value, (str, bytes)) and value:
+    return False
+
+
+def _row_has_label_provenance(row: Mapping[str, Any]) -> bool:
+    return bool(_valid_ref_strings(row, VALIDATION_PROVENANCE_KEYS))
+
+
+def _row_has_provider_only_source(row: Mapping[str, Any]) -> bool:
+    if _truthy(row.get("provider_output_only")) or _truthy(row.get("model_output_only")):
+        return True
+    refs = _valid_ref_strings(row, VALIDATION_SOURCE_KEYS)
+    if not refs:
+        return False
+    provider_refs = [
+        ref
+        for ref in refs
+        if any(marker in ref.lower() for marker in PROVIDER_ONLY_SOURCE_MARKERS)
+    ]
+    return bool(provider_refs) and len(provider_refs) == len(refs)
+
+
+def _frame_ref_strings(row: Mapping[str, Any]) -> list[str]:
+    return [
+        *_valid_ref_strings(row, VALIDATION_FRAME_ID_KEYS),
+        *_valid_ref_strings(row, VALIDATION_FRAME_PATH_KEYS),
+    ]
+
+
+def _expected_frame_tokens(expected_frame_path: Path | None) -> set[str]:
+    if expected_frame_path is None:
+        return set()
+    path = expected_frame_path.expanduser()
+    tokens = {str(path), path.name, path.stem}
+    try:
+        resolved = path.resolve()
+        tokens.update({str(resolved), resolved.name, resolved.stem})
+    except OSError:
+        pass
+    return {token for token in tokens if token}
+
+
+def _row_matches_expected_frame(
+    row: Mapping[str, Any],
+    expected_frame_path: Path | None,
+) -> bool:
+    refs = _frame_ref_strings(row)
+    if not refs or expected_frame_path is None:
+        return True
+    expected = _expected_frame_tokens(expected_frame_path)
+    expected_path = str(expected_frame_path)
+    for ref in refs:
+        ref_path = Path(ref).expanduser()
+        ref_tokens = {ref, ref_path.name, ref_path.stem}
+        try:
+            resolved = ref_path.resolve()
+            ref_tokens.update({str(resolved), resolved.name, resolved.stem})
+        except OSError:
+            pass
+        if expected.intersection(token for token in ref_tokens if token):
+            return True
+        if ref.endswith(expected_path) or expected_path.endswith(ref):
             return True
     return False
 
@@ -332,8 +486,14 @@ def _run_command_provider(
         )
     except subprocess.TimeoutExpired as exc:
         status["blockers"] = [f"{provider}_provider_command_timed_out"]
-        (job_dir / f"{provider}_provider.stdout.log").write_text(exc.stdout or "", encoding="utf-8")
-        (job_dir / f"{provider}_provider.stderr.log").write_text(exc.stderr or "", encoding="utf-8")
+        (job_dir / f"{provider}_provider.stdout.log").write_text(
+            _subprocess_text(exc.stdout),
+            encoding="utf-8",
+        )
+        (job_dir / f"{provider}_provider.stderr.log").write_text(
+            _subprocess_text(exc.stderr),
+            encoding="utf-8",
+        )
         return {}, status
     (job_dir / f"{provider}_provider.stdout.log").write_text(completed.stdout or "", encoding="utf-8")
     (job_dir / f"{provider}_provider.stderr.log").write_text(completed.stderr or "", encoding="utf-8")
@@ -733,21 +893,31 @@ def _default_output_dir() -> Path:
     return Path("robot_eval_jobs") / f"{DEFAULT_JOB_PREFIX}_{stamp}Z"
 
 
-def _validation_status(path: Path | None) -> dict[str, Any]:
+def _validation_status(
+    path: Path | None,
+    *,
+    expected_frame_path: Path | None = None,
+    target_prompts: Sequence[str] | None = None,
+) -> dict[str, Any]:
     if path is None:
         return {
-            "validation_set_supplied": False,
-            "status": "blocked",
-            "blockers": ["validation_set_path_not_supplied"],
+            "status": "not_requested",
+            "optional_validation_requested": False,
+            "required_for_sim_only": False,
+            "diagnostic_issues": [],
         }
     if not path.is_file():
         return {
-            "validation_set_supplied": True,
-            "status": "blocked",
+            "status": "diagnostic_issues",
+            "optional_validation_requested": True,
+            "required_for_sim_only": False,
             "path": str(path),
-            "blockers": ["validation_set_file_missing"],
+            "diagnostic_issues": ["validation_set_file_missing"],
         }
     rows = _validation_rows_from_value(_load_json_value(path))
+    supplied_target_prompts = [
+        prompt for prompt in (_string(item) for item in _sequence(target_prompts)) if prompt
+    ]
     capture_backed_rows = [
         row for row in rows if _row_has_truthy_key(row, REAL_VALIDATION_FLAG_KEYS)
     ]
@@ -757,32 +927,118 @@ def _validation_status(path: Path | None) -> dict[str, Any]:
     sourced_real_labeled_rows = [
         row for row in real_labeled_rows if _row_has_source_ref(row)
     ]
-    blockers: list[str] = []
+    row_results: list[dict[str, Any]] = []
+    accepted_contract_rows = 0
+    frame_matched_rows = 0
+    target_prompt_rows = 0
+    provenance_rows = 0
+    provider_only_rows = 0
+    empty_target_rows = 0
+    for index, row in enumerate(rows):
+        row_issues: list[str] = []
+        has_capture_backing = _row_has_truthy_key(row, REAL_VALIDATION_FLAG_KEYS)
+        has_label = _row_has_label(row)
+        has_source = _row_has_source_ref(row)
+        has_target = bool(_target_strings(row) or supplied_target_prompts)
+        has_provenance = _row_has_label_provenance(row)
+        frame_matches = _row_matches_expected_frame(row, expected_frame_path)
+        provider_only_source = _row_has_provider_only_source(row)
+        empty_target = _row_has_empty_target_field(row)
+        target_prompt_rows += int(has_target and not empty_target)
+        provenance_rows += int(has_provenance)
+        frame_matched_rows += int(frame_matches)
+        provider_only_rows += int(provider_only_source)
+        empty_target_rows += int(empty_target)
+        if not has_capture_backing:
+            row_issues.append("row_not_capture_backed_or_real_anchor")
+        if not has_label:
+            row_issues.append("row_validation_label_missing")
+        if not has_source:
+            row_issues.append("row_source_reference_missing")
+        if provider_only_source:
+            row_issues.append("row_source_is_provider_only_output")
+        if empty_target:
+            row_issues.append("row_target_prompt_empty")
+        elif not has_target:
+            row_issues.append("row_target_prompt_missing")
+        if not has_provenance:
+            row_issues.append("row_reviewer_or_label_provenance_missing")
+        if not frame_matches:
+            row_issues.append("row_frame_id_or_path_mismatch")
+        if not row_issues:
+            accepted_contract_rows += 1
+        row_results.append(
+            {
+                "row_index": index,
+                "step_index": row.get("step_index"),
+                "frame_refs": _frame_ref_strings(row),
+                "target_prompts": _target_strings(row) or supplied_target_prompts,
+                "accepted_for_probe_validation": not row_issues,
+                "diagnostic_issues": row_issues,
+            }
+        )
+    diagnostic_issues: list[str] = []
     if not rows:
-        blockers.append("validation_set_rows_missing")
+        diagnostic_issues.append("validation_set_rows_missing")
+    row_level_issues = sorted(
+        {
+            str(issue)
+            for result in row_results
+            for issue in _sequence(result.get("diagnostic_issues"))
+            if issue
+        }
+    )
     if not capture_backed_rows:
-        blockers.append("capture_backed_validation_rows_missing")
+        diagnostic_issues.append("capture_backed_validation_rows_missing")
     if not real_labeled_rows:
-        blockers.append("real_labeled_validation_rows_missing")
+        diagnostic_issues.append("real_labeled_validation_rows_missing")
     if real_labeled_rows and not sourced_real_labeled_rows:
-        blockers.append("real_labeled_validation_source_missing")
+        diagnostic_issues.append("real_labeled_validation_source_missing")
+    if rows and not target_prompt_rows:
+        diagnostic_issues.append("validation_target_prompt_missing")
+    if empty_target_rows:
+        diagnostic_issues.append("validation_target_prompt_empty")
+    if real_labeled_rows and not provenance_rows:
+        diagnostic_issues.append("real_labeled_validation_provenance_missing")
+    if provider_only_rows:
+        diagnostic_issues.append("provider_only_validation_source_not_accepted")
+    if rows and not frame_matched_rows:
+        diagnostic_issues.append("validation_frame_id_or_path_mismatch")
+    if rows and not accepted_contract_rows:
+        diagnostic_issues.append("validation_rows_do_not_satisfy_probe_contract")
+    diagnostic_issues.extend(row_level_issues)
     return {
-        "validation_set_supplied": True,
-        "status": "available" if not blockers else "blocked",
+        "status": "available" if not diagnostic_issues else "diagnostic_issues",
+        "optional_validation_requested": True,
+        "required_for_sim_only": False,
         "path": str(path),
         "row_count": len(rows),
         "capture_backed_row_count": len(capture_backed_rows),
         "real_labeled_row_count": len(real_labeled_rows),
         "sourced_real_labeled_row_count": len(sourced_real_labeled_rows),
-        "required_row_contract": {
-            "must_be_capture_backed_or_real_anchor": True,
+        "target_prompt_row_count": target_prompt_rows,
+        "frame_matched_row_count": frame_matched_rows,
+        "provenance_row_count": provenance_rows,
+        "provider_only_row_count": provider_only_rows,
+        "accepted_contract_row_count": accepted_contract_rows,
+        "row_results": row_results,
+        "optional_validation_row_contract": {
+            "accepts_capture_backed_or_real_anchor": True,
             "must_include_validation_label": True,
             "must_include_source_reference": True,
+            "must_include_target_prompt_or_cli_target_prompt": True,
+            "must_match_probe_frame_when_frame_id_or_path_is_supplied": True,
+            "must_include_reviewer_or_label_provenance": True,
+            "provider_only_outputs_are_not_validation_sources": True,
             "accepted_capture_truth_flags": list(REAL_VALIDATION_FLAG_KEYS),
             "accepted_label_fields": list(VALIDATION_LABEL_KEYS),
             "accepted_source_fields": list(VALIDATION_SOURCE_KEYS),
+            "accepted_target_fields": list(VALIDATION_TARGET_KEYS),
+            "accepted_frame_id_fields": list(VALIDATION_FRAME_ID_KEYS),
+            "accepted_frame_path_fields": list(VALIDATION_FRAME_PATH_KEYS),
+            "accepted_provenance_fields": list(VALIDATION_PROVENANCE_KEYS),
         },
-        "blockers": blockers,
+        "diagnostic_issues": sorted(set(diagnostic_issues)),
     }
 
 
@@ -845,10 +1101,14 @@ def run_probe(
         frame_source = "synthetic_probe_frame"
         synthetic_frame_used = True
 
-    validation_snapshot = _validation_status(validation_set_path)
     cleaned_target_prompts = [
         prompt for prompt in (_string(item) for item in _sequence(target_prompts)) if prompt
     ]
+    validation_snapshot = _validation_status(
+        validation_set_path,
+        expected_frame_path=selected_frame,
+        target_prompts=cleaned_target_prompts,
+    )
     backend_command = [
         sys.executable,
         "-m",
@@ -903,10 +1163,23 @@ def run_probe(
     blockers = list(_sequence(backend.get("blockers")))
     if synthetic_frame_used:
         blockers.append("synthetic_probe_frame_used_no_wam_frame_supplied_or_discovered")
-    if validation_snapshot.get("blockers"):
-        blockers.extend(_sequence(validation_snapshot.get("blockers")))
-    if validation_report.get("status") != "completed":
-        blockers.extend(_sequence(validation_report.get("blockers")))
+    if not cleaned_target_prompts:
+        blockers.append("target_prompt_not_supplied")
+    optional_validation_diagnostic_issues = [
+        *[
+            str(issue)
+            for issue in _sequence(validation_snapshot.get("diagnostic_issues"))
+            if issue
+        ],
+        *[
+            str(issue)
+            for issue in (
+                _sequence(validation_report.get("diagnostic_issues"))
+                or _sequence(validation_report.get("blockers"))
+            )
+            if issue
+        ],
+    ]
 
     provider_statuses = _sequence(backend.get("provider_statuses"))
     sam3_completed = _provider_completed(provider_statuses, "sam3")
@@ -914,24 +1187,26 @@ def run_probe(
     pose_completed = _provider_completed(provider_statuses, "pose")
     provider_triplet_completed = sam3_completed and depth_completed and pose_completed
     validation_contract_available = validation_snapshot.get("status") == "available"
+    validation_requested = validation_snapshot.get("status") != "not_requested"
     backend_completed = backend.get("status") == "completed"
     manifest = {
         "schema_version": PROOF_MANIFEST_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
         "status": "completed" if not blockers and backend_completed else "blocked",
         "proof_scope": {
-            "requested": "real_sam3_depth_pose_providers_with_labeled_validation_data",
+            "requested": "real_sam3_depth_pose_providers_with_optional_labeled_validation_data",
             "real_sam3_provider_completed": sam3_completed,
             "real_depth_provider_completed": depth_completed,
             "real_pose_provider_completed": pose_completed,
             "real_sam3_depth_pose_provider_triplet_completed": provider_triplet_completed,
             "real_sam3_depth_pose_proof_complete": provider_triplet_completed,
-            "real_provider_plus_labeled_validation_proof_complete": bool(
-                provider_triplet_completed and not blockers and backend_completed
+            "optional_labeled_validation_requested": validation_requested,
+            "optional_labeled_validation_completed": bool(
+                validation_requested
+                and validation_report.get("status") == "completed"
+                and validation_contract_available
+                and backend_completed
             ),
-            "perception_accuracy_validated": validation_report.get("status") == "completed"
-            and validation_contract_available
-            and backend_completed,
             "non_ranking_operational_claim_proven": False,
             "generated_world_rank_fidelity_result_proven": False,
         },
@@ -945,6 +1220,9 @@ def run_probe(
         "harness_backend": backend,
         "harness_artifact_paths": harness_result.get("artifact_paths"),
         "validation_report": validation_report,
+        "optional_validation_diagnostic_issues": sorted(
+            set(optional_validation_diagnostic_issues)
+        ),
         "false_success_reduction_metrics": harness_result.get("false_success_reduction_metrics"),
         "blockers": sorted(set(str(item) for item in blockers if item)),
         "claim_boundary": {

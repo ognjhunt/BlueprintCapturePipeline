@@ -675,6 +675,9 @@ def _normalize_external_attempts(
         payload_substrate = _string(
             payload.get("evaluation_substrate") or payload.get("evaluationSubstrate")
         )
+        payload_isaac_sim_execution_proven = bool(payload.get("isaac_sim_execution_proven"))
+    else:
+        payload_isaac_sim_execution_proven = False
     run_by_id = {_string(run.get("scenario_eval_run_id")): dict(run) for run in runs}
     normalized: list[dict[str, Any]] = []
     for index, raw in enumerate(raw_attempts, start=1):
@@ -683,6 +686,39 @@ def _normalize_external_attempts(
         run_id = _string(raw.get("scenario_eval_run_id") or raw.get("scenarioEvalRunId"))
         run = run_by_id.get(run_id, {})
         metrics = _mapping(raw.get("metrics"))
+        raw_boundary = raw.get("claim_boundary") or raw.get("claimBoundary")
+        claim_boundary = (
+            dict(raw_boundary)
+            if isinstance(raw_boundary, Mapping)
+            else raw_boundary
+            or "external_policy_autoresearch_eval_output_not_rank_fidelity_proof"
+        )
+        normalized_engine = _string(
+            raw.get("simulator_engine")
+            or raw.get("simulatorEngine")
+            or raw.get("simulator_backend")
+            or raw.get("simulatorBackend")
+            or payload_engine
+        ) or engine
+        raw_isaac_proof = bool(
+            raw.get("isaac_sim_execution_proven")
+            or metrics.get("isaac_sim_execution_proven")
+            or _mapping(raw_boundary).get("isaac_sim_execution_proven")
+            or payload_isaac_sim_execution_proven
+        )
+        if _engine_key(normalized_engine) == "isaac_sim" and not raw_isaac_proof:
+            metrics = {
+                **metrics,
+                "simulator_execution_performed": False,
+                "isaac_sim_execution_proven": False,
+                "isaac_simulator_execution_not_proven": True,
+            }
+            if isinstance(claim_boundary, Mapping):
+                claim_boundary = {
+                    **dict(claim_boundary),
+                    "simulator_execution_performed": False,
+                    "isaac_sim_execution_proven": False,
+                }
         success = bool(raw.get("task_success") if "task_success" in raw else raw.get("success"))
         normalized.append(
             {
@@ -702,14 +738,7 @@ def _normalize_external_attempts(
                 or _string(recipe.get("policy_id")),
                 "policy_kind": _string(raw.get("policy_kind") or raw.get("policyKind"))
                 or _string(recipe.get("policy_kind")),
-                "simulator_engine": _string(
-                    raw.get("simulator_engine")
-                    or raw.get("simulatorEngine")
-                    or raw.get("simulator_backend")
-                    or raw.get("simulatorBackend")
-                    or payload_engine
-                )
-                or engine,
+                "simulator_engine": normalized_engine,
                 "evaluation_substrate": _string(
                     raw.get("evaluation_substrate")
                     or raw.get("evaluationSubstrate")
@@ -737,8 +766,7 @@ def _normalize_external_attempts(
                 "source_attempt_trace_path": raw.get("source_attempt_trace_path"),
                 "initial_failure_mode_ids": _string_list(raw.get("initial_failure_mode_ids")),
                 "generated_at": generated_at,
-                "claim_boundary": raw.get("claim_boundary")
-                or "external_policy_autoresearch_eval_output_not_rank_fidelity_proof",
+                "claim_boundary": claim_boundary,
             }
         )
     return normalized

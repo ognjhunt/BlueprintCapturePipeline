@@ -590,7 +590,7 @@ def test_arena_result_ingest_command_output_and_delivery_edges(
         delivery_cli_missing["storage_upload_performed"] is False
         and _read_json(tmp_path / "delivery-cli-missing" / "signed_access_manifest.json")["blockers"]
     )
-    delivery_command_missing = arena._build_delivery_artifacts(
+    arena._build_delivery_artifacts(
         output_dir=tmp_path / "delivery-command-missing",
         allow_delivery_upload=True,
         delivery_command=None,
