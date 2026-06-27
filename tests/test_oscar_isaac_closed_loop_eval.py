@@ -246,6 +246,25 @@ def test_local_oscar_subprocess_generate_blocks_on_nonzero(tmp_path: Path) -> No
     assert any("returncode" in b for b in out["blockers"])
 
 
+def test_extract_last_frame_via_opencv_roundtrip(tmp_path: Path) -> None:
+    import cv2
+    import numpy as np
+
+    video = tmp_path / "clip.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (32, 24))
+    # 4 distinct frames; the last is solid-ish so we can verify it's the one extracted
+    for i in range(4):
+        frame = np.full((24, 32, 3), i * 60, dtype=np.uint8)
+        writer.write(frame)
+    writer.release()
+
+    out = L.extract_last_frame_via_opencv(video, tmp_path / "extracted")
+    assert out is not None and out.is_file()
+    got = cv2.imread(str(out))
+    assert got is not None and got.shape == (24, 32, 3)
+    assert int(got.mean()) > 120  # the brightest (last) frame, not an earlier dark one
+
+
 def test_closed_loop_blocks_on_empty_route(tmp_path: Path) -> None:
     start = _write_frame(tmp_path / "start.png", seed=1)
     manifest = L.run_oscar_isaac_closed_loop(

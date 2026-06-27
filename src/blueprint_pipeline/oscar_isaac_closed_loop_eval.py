@@ -139,6 +139,33 @@ def make_oscar_per_step_wam_backend(
     return _generate_next
 
 
+def extract_last_frame_via_opencv(video_path: str | Path, out_dir: str | Path) -> Path | None:
+    """Default ``extract_next_frame``: the last frame of an OSCAR clip is the next observation.
+
+    Uses OpenCV so it works on the pod next to OSCAR. Returns the saved PNG path or None.
+    """
+    import cv2  # local import: only needed where a real clip is produced (the GPU pod)
+
+    resolved_out = Path(out_dir).expanduser()
+    resolved_out.mkdir(parents=True, exist_ok=True)
+    capture = cv2.VideoCapture(str(video_path))
+    last_frame = None
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            last_frame = frame
+    finally:
+        capture.release()
+    if last_frame is None:
+        return None
+    frame_path = resolved_out / "next_observation.png"
+    if not cv2.imwrite(str(frame_path), last_frame):
+        return None
+    return frame_path
+
+
 def build_oscar_inference_argv(
     *,
     python: str,
