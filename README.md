@@ -931,6 +931,45 @@ and writes `pipeline/worldlabs_export_manifest.json` with checksums and source
 URLs. It does not start a new World Labs generation, run simulators, or prove
 generated-world rank fidelity.
 
+To also download local PLY/SPZ splats for object-index enrichment:
+
+```bash
+blueprint-materialize-worldlabs-assets \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --include-visual-assets
+```
+
+Optional Splat Analyzer object-index backend:
+
+```bash
+export SPLAT_ANALYZER_REPO=/opt/splat_analyzer
+# or:
+export SPLAT_ANALYZER_RUN_LOCAL=/opt/splat_analyzer/run_local.py
+# or provide a custom command template:
+export SPLAT_ANALYZER_COMMAND='python /opt/splat_analyzer/run_local.py --ply {SPLAT_PATH} --prompt {PROMPT} --quality medium --job_dir {JOB_DIR}'
+
+python -m blueprint_pipeline.object_index_stage \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --force-rebuild
+```
+
+The object-index stage runs `scripts/object_index_splat_analyzer_runner.py`
+after the existing YOLO-World, Grounding-DINO, and SAM3 backends. The runner
+discovers local `.ply` or `.spz` splats from
+`pipeline/worldlabs_assets/materialized_assets_manifest.json`,
+`pipeline/worldlabs_export_manifest.json`, `pipeline/worldlabs_world_manifest.json`,
+`pipeline/simulation_automation/scene_asset_inventory.json`, or local scans.
+It writes backend IO under `raw/object_index_artifacts/` and normalizes
+Splat Analyzer `interactions.json` output into `raw/object_index.json` objects,
+`raw/object_index_build_report.json` provider counts, and advisory
+`raw/object_grounding_hints.json.scene_relationship_candidates`.
+
+Those objects and relationships are model-derived candidates for task creation,
+object geometry prep, and reviewer triage. They are not raw capture truth,
+collision/contact proof, articulation-state proof, robot spawn validation,
+simulator execution proof, policy execution proof, physical-robot readiness, or
+public-claim support.
+
 Fail-closed simulation automation plan:
 
 ```bash

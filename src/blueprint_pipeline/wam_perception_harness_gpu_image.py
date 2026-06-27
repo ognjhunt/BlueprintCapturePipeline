@@ -389,7 +389,9 @@ RUN python -m pip install --upgrade pip setuptools wheel \\
   && python -m pip install "huggingface_hub[cli]" safetensors timm
 
 RUN if [ "$INSTALL_DA3" = "true" ]; then \\
-      python -m pip install "git+https://github.com/ByteDance-Seed/depth-anything-3.git"; \\
+      echo "Installing optional DA3 runtime from https://github.com/ByteDance-Seed/depth-anything-3"; \\
+      python -m pip install omegaconf addict e3nn evo "moviepy==1.0.3" pycolmap pillow-heif plyfile \\
+      && python -m pip install --no-deps "depth-anything-3==0.1.1"; \\
     else \\
       echo "Depth Anything 3 install skipped; enable with --build-arg INSTALL_DA3=true"; \\
     fi

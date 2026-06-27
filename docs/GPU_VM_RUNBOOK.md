@@ -61,6 +61,13 @@ Optional installs:
 
 SAM3 is optional. If it is not installed or `SAM3_WEIGHTS_PATH` does not point to weights, the SAM3 backend is skipped explicitly and the supported object-index path remains YOLO-World plus Grounding-DINO fallback.
 
+Splat Analyzer is also optional. It can enrich object indexing from local
+World Labs/Marble `.ply` or `.spz` splats after visual assets have been
+materialized, but it is a model-derived support path only. It may help propose
+task objects, geometry hints, and advisory object relationships; it does not
+prove raw capture truth, collision/contact, robot spawn validity, simulator
+execution, policy execution, or physical readiness.
+
 `install_colmap_cuda.sh` is not part of this narrowed path and is not required for the supported GPU VM bootstrap.
 
 ## Reusable WAM Perception Harness Image
@@ -114,6 +121,11 @@ export HF_TOKEN=""
 export HUGGINGFACE_HUB_TOKEN="$HF_TOKEN"
 export NGC_API_KEY=""
 export SAM3_WEIGHTS_PATH="/opt/sam3_weights/sam3.pt"
+export SPLAT_ANALYZER_REPO="/opt/splat_analyzer"
+# or:
+export SPLAT_ANALYZER_RUN_LOCAL="/opt/splat_analyzer/run_local.py"
+# or:
+export SPLAT_ANALYZER_COMMAND='python /opt/splat_analyzer/run_local.py --ply {SPLAT_PATH} --prompt {PROMPT} --quality medium --job_dir {JOB_DIR}'
 export COSMOS_MODEL_ID="nvidia/Cosmos-Predict2.5-2B"
 export COSMOS_OFFICIAL_REPO_ROOT="$HOME/workspace/cosmos-predict2.5"
 export COSMOS_OFFICIAL_REPO_REF="main"
@@ -252,6 +264,8 @@ Common blockers:
 - `ultralytics_missing:...`
 - `sam3_not_installed`
 - `sam3_weights_missing:...`
+- `missing_local_splat_asset`
+- `splat_analyzer_command_not_configured`
 - `missing_runtime_service_url`
 - `qualification_state:not_ready_yet`
 
@@ -309,5 +323,6 @@ PYTHONPATH=src python -m blueprint_pipeline.object_index_stage \
 
 Success criteria:
 
-- `raw/object_index_build_report.json` shows YOLO-World `status=ok` or Grounding-DINO fallback `status=ok`
+- `raw/object_index_build_report.json` shows YOLO-World `status=ok`, Grounding-DINO fallback `status=ok`, or optional Splat Analyzer `status=ok`
 - `raw/object_index.json` contains non-empty `objects` when visible manipulable objects exist
+- optional Splat Analyzer relationships, if produced, appear in `raw/object_grounding_hints.json.scene_relationship_candidates` and remain review-required advisory candidates

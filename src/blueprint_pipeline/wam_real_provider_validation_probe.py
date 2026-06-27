@@ -32,11 +32,16 @@ DEPTH_MODEL_ENV = "BLUEPRINT_WAM_DEPTH_MODEL_ID"
 DEFAULT_DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
 AUTO_DA3_ENV = "BLUEPRINT_ALLOW_WAM_AUTO_DA3_PROVIDER"
 DA3_MODEL_ENV = "BLUEPRINT_WAM_DA3_MODEL_ID"
+DA3_PROCESS_RES_ENV = "BLUEPRINT_WAM_DA3_PROCESS_RES"
 DEFAULT_DA3_MODEL_ID = "depth-anything/DA3-BASE"
 SAM3_CONFIDENCE_ENV = "BLUEPRINT_WAM_SAM3_CONFIDENCE"
+SAM3_DEVICE_ENV = "BLUEPRINT_WAM_SAM3_DEVICE"
+DA3_DEVICE_ENV = "BLUEPRINT_WAM_DA3_DEVICE"
+TORCH_DEVICE_ENV = "BLUEPRINT_WAM_TORCH_DEVICE"
 POSE_COMMAND_ENV = "BLUEPRINT_WAM_POSE_PROVIDER_COMMAND"
 POSE_MODEL_ENV = "BLUEPRINT_WAM_POSE_MODEL_PATH"
 AUTO_POSE_ENV = "BLUEPRINT_ALLOW_WAM_AUTO_POSE_PROVIDER"
+REQUIRE_POSE_ENV = "BLUEPRINT_WAM_REQUIRE_POSE_PROVIDER"
 DEFAULT_POSE_MODEL_PATH = "yolo11n-pose.pt"
 HF_TOKEN_ENVS = ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 REAL_VALIDATION_FLAG_KEYS = (
@@ -319,6 +324,30 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(_string(os.environ.get(name)) or default)
+    except ValueError:
+        return default
+
+
+def _select_torch_device(env_name: str) -> str:
+    requested = _string(os.environ.get(env_name)) or _string(os.environ.get(TORCH_DEVICE_ENV))
+    if requested:
+        return requested
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return "mps"
+    except Exception:
+        return "cpu"
+    return "cpu"
+
+
 def _resolve_sam3_weights() -> Path | None:
     for name in (SAM3_WEIGHTS_ENV, ALT_SAM3_WEIGHTS_ENV):
         raw = _string(os.environ.get(name))
@@ -372,9 +401,13 @@ def _bbox_from_result(result: Any) -> tuple[list[float] | None, float | None]:
 def _run_sam3_provider(request: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     weights = _resolve_sam3_weights()
     confidence_threshold = max(0.0, min(1.0, _float_env(SAM3_CONFIDENCE_ENV, 0.05)))
+    device_name = _select_torch_device(SAM3_DEVICE_ENV)
     status = {
         "provider": "sam3",
+        "kind": "sam3_semantic_segmentation",
         "ran": False,
+        "device": device_name,
+        "device_env": SAM3_DEVICE_ENV,
         "confidence_threshold": confidence_threshold,
         "confidence_env": SAM3_CONFIDENCE_ENV,
         "weights_path_present": bool(weights),
@@ -382,6 +415,9 @@ def _run_sam3_provider(request: Mapping[str, Any]) -> tuple[list[dict[str, Any]]
         "hf_token_present": any(_env_present(name) for name in HF_TOKEN_ENVS),
         "module_sam3_available": _module_available("sam3"),
         "module_ultralytics_available": _module_available("ultralytics"),
+        "runtime_package": None,
+        "runtime_class": None,
+        "model_family": "sam3",
         "blockers": [],
     }
     if weights is None:
@@ -399,11 +435,14 @@ def _run_sam3_provider(request: Mapping[str, Any]) -> tuple[list[dict[str, Any]]
     try:
         from ultralytics.models.sam import SAM3SemanticPredictor
 
+        status["runtime_package"] = "ultralytics.models.sam"
+        status["runtime_class"] = "SAM3SemanticPredictor"
         overrides = {
             "conf": confidence_threshold,
             "task": "segment",
             "mode": "predict",
             "model": str(weights),
+            "device": device_name,
             "half": False,
             "verbose": False,
             "save": False,
@@ -593,11 +632,17 @@ def _run_da3_depth_provider(
     job_dir: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     model_id = _string(os.environ.get(DA3_MODEL_ENV)) or DEFAULT_DA3_MODEL_ID
+    process_res = max(32, _int_env(DA3_PROCESS_RES_ENV, 504))
+    device_name = _select_torch_device(DA3_DEVICE_ENV)
     status: dict[str, Any] = {
         "provider": "depth",
         "kind": "depth_anything_3",
         "ran": False,
         "model_id": model_id,
+        "device": device_name,
+        "device_env": DA3_DEVICE_ENV,
+        "process_res": process_res,
+        "process_res_env": DA3_PROCESS_RES_ENV,
         "auto_provider_env": AUTO_DA3_ENV,
         "auto_provider_enabled": _truthy(os.environ.get(AUTO_DA3_ENV)),
         "depth_provider_kind_env": DEPTH_PROVIDER_KIND_ENV,
@@ -620,9 +665,9 @@ def _run_da3_depth_provider(
         import torch
         from depth_anything_3.api import DepthAnything3
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device(device_name)
         model = DepthAnything3.from_pretrained(model_id).to(device=device)
-        prediction = model.inference([str(source_frame)])
+        prediction = model.inference([str(source_frame)], process_res=process_res)
         depth = np.asarray(prediction.depth[0], dtype=np.float32)
         finite = depth[np.isfinite(depth)]
         if finite.size == 0:
@@ -800,6 +845,7 @@ def run_external_backend_from_env() -> int:
         depth_payload, depth_status = _run_da3_depth_provider(request, job_dir)
     else:
         depth_payload, depth_status = _run_transformers_depth_provider(request, job_dir)
+    pose_required = _truthy(os.environ.get(REQUIRE_POSE_ENV))
     if _env_present(POSE_COMMAND_ENV):
         pose_payload, pose_command_status = _run_command_provider(
             env_name=POSE_COMMAND_ENV,
@@ -810,6 +856,18 @@ def run_external_backend_from_env() -> int:
         pose_model_status = {}
     elif _truthy(os.environ.get(AUTO_POSE_ENV)):
         pose_payload, pose_command_status = _run_pose_model_provider(request, job_dir)
+        pose_model_status = {}
+    elif not pose_required:
+        pose_payload = {}
+        pose_command_status = {
+            "provider": "pose",
+            "ran": False,
+            "required": False,
+            "status": "not_requested",
+            "env_name": POSE_COMMAND_ENV,
+            "command_configured": False,
+            "blockers": [],
+        }
         pose_model_status = {}
     else:
         pose_payload, pose_command_status = {}, _provider_command_status(
@@ -1116,48 +1174,56 @@ def run_probe(
         "backend",
     ]
     harness_dir = output_dir / "wam_derived_observation_harness"
-    harness_result = run_wam_derived_observation_harness_step(
-        output_dir=harness_dir,
-        step_index=1,
-        source_generated_frame_path=selected_frame,
-        source_wam_rollout_id=output_dir.name,
-        transition_id="real_provider_validation_probe_step_0001",
-        source_policy_action={
-            "action_type": "perception_validation_probe",
-            "task_prompt": cleaned_target_prompts[0] if cleaned_target_prompts else None,
-        },
-        current_policy_observation={
-            "schema_version": "blueprint_policy_observation.v1",
-            "camera_frame_path": str(selected_frame),
-            "visual_observation": {
+    previous_pose_required = os.environ.get(REQUIRE_POSE_ENV)
+    os.environ[REQUIRE_POSE_ENV] = "true"
+    try:
+        harness_result = run_wam_derived_observation_harness_step(
+            output_dir=harness_dir,
+            step_index=1,
+            source_generated_frame_path=selected_frame,
+            source_wam_rollout_id=output_dir.name,
+            transition_id="real_provider_validation_probe_step_0001",
+            source_policy_action={
+                "action_type": "perception_validation_probe",
+                "task_prompt": cleaned_target_prompts[0] if cleaned_target_prompts else None,
+            },
+            current_policy_observation={
+                "schema_version": "blueprint_policy_observation.v1",
                 "camera_frame_path": str(selected_frame),
-                "wam_generated_observation": True,
+                "visual_observation": {
+                    "camera_frame_path": str(selected_frame),
+                    "wam_generated_observation": True,
+                },
             },
-        },
-        eval_ready_task_grounding={
-            "schema_version": "eval_ready_task_grounding.v1",
-            "status": "probe_prompt_only" if cleaned_target_prompts else "not_supplied",
-            "task": {
-                "task_id": "real_provider_validation_probe",
-                "target_prompts_for_object_index_backends": cleaned_target_prompts,
+            eval_ready_task_grounding={
+                "schema_version": "eval_ready_task_grounding.v1",
+                "status": "probe_prompt_only" if cleaned_target_prompts else "not_supplied",
+                "task": {
+                    "task_id": "real_provider_validation_probe",
+                    "target_prompts_for_object_index_backends": cleaned_target_prompts,
+                },
+                "selected_task_target": {
+                    "object_id": "sam3_prompt_target",
+                    "label": cleaned_target_prompts[0],
+                    "source_prompt": cleaned_target_prompts[0],
+                    "source": "probe_cli_target_prompt",
+                }
+                if cleaned_target_prompts
+                else {},
             },
-            "selected_task_target": {
-                "object_id": "sam3_prompt_target",
-                "label": cleaned_target_prompts[0],
-                "source_prompt": cleaned_target_prompts[0],
-                "source": "probe_cli_target_prompt",
-            }
-            if cleaned_target_prompts
-            else {},
-        },
-        backend_kind="real_provider_probe",
-        backend_command=backend_command,
-        allow_external_backend=True,
-        backend_timeout_seconds=600,
-        policy_id=policy_id,
-        declared_policy_observation_schema=policy_observation_schema,
-        validation_set_path=validation_set_path,
-    )
+            backend_kind="real_provider_probe",
+            backend_command=backend_command,
+            allow_external_backend=True,
+            backend_timeout_seconds=600,
+            policy_id=policy_id,
+            declared_policy_observation_schema=policy_observation_schema,
+            validation_set_path=validation_set_path,
+        )
+    finally:
+        if previous_pose_required is None:
+            os.environ.pop(REQUIRE_POSE_ENV, None)
+        else:
+            os.environ[REQUIRE_POSE_ENV] = previous_pose_required
     backend = _mapping(harness_result["step_record"].get("harness_backend"))
     validation_report = _mapping(harness_result.get("validation_report"))
     blockers = list(_sequence(backend.get("blockers")))

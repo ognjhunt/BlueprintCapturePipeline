@@ -80,14 +80,29 @@ def check_repo_package() -> CheckResult:
 
 
 def check_torch() -> CheckResult:
+    probe = (
+        "import json\n"
+        "import torch\n"
+        "payload = {'version': torch.__version__, 'cuda': torch.version.cuda, "
+        "'cuda_available': torch.cuda.is_available(), 'device_name': ''}\n"
+        "if payload['cuda_available']:\n"
+        "    payload['device_name'] = torch.cuda.get_device_name(0)\n"
+        "print(json.dumps(payload))\n"
+    )
+    result = run_command([sys.executable, "-c", probe])
+    if result is None:
+        return False, "torch probe could not be launched"
+    if result.returncode != 0:
+        stderr_tail = result.stderr.strip().splitlines()[-1:] if result.stderr.strip() else []
+        reason = stderr_tail[0] if stderr_tail else f"probe exited {result.returncode}"
+        return False, f"torch unavailable: {reason}"
     try:
-        import torch
-
-        if torch.cuda.is_available():
-            return True, f"torch {torch.__version__} CUDA {torch.version.cuda} ({torch.cuda.get_device_name(0)})"
-        return False, f"torch {torch.__version__} installed but CUDA is not available"
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
     except Exception as exc:
-        return False, f"torch unavailable: {exc}"
+        return False, f"torch probe returned invalid output: {exc}"
+    if payload.get("cuda_available"):
+        return True, f"torch {payload.get('version')} CUDA {payload.get('cuda')} ({payload.get('device_name')})"
+    return False, f"torch {payload.get('version')} installed but CUDA is not available"
 
 
 def check_nvidia_smi() -> CheckResult:
@@ -135,6 +150,7 @@ def backend_checks() -> Dict[str, Mapping[str, object]]:
         "yolo_world": _command_from_env("OBJECT_INDEX_YOLO_WORLD_COMMAND"),
         "grounding_dino": _command_from_env("OBJECT_INDEX_GROUNDING_DINO_COMMAND"),
         "sam3": _command_from_env("OBJECT_INDEX_SAM3_COMMAND"),
+        "splat_analyzer": _command_from_env("OBJECT_INDEX_SPLAT_ANALYZER_COMMAND"),
     }
     return {
         name: _backend_preflight_status(backend_name=name, command_template=template)
@@ -189,7 +205,7 @@ def run_checks() -> Dict[str, CheckResult]:
         message = f"{backend}: status={status}"
         if reason:
             message += f" reason={reason}"
-        severity = "ok" if status == "ready" else "warn" if backend == "sam3" else "error"
+        severity = "ok" if status == "ready" else "warn" if backend in {"sam3", "splat_analyzer"} else "error"
         print_status(message, severity)
 
     return checks

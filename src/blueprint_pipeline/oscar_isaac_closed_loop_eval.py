@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .isaac_g1_policy import (
@@ -30,6 +32,7 @@ from .isaac_g1_policy import (
     action_record,
     interpolate_route,
 )
+from .oscar_wam_provider_command_adapter import run as run_oscar_wam_provider_adapter
 from .wam_derived_observation_harness import run_wam_derived_observation_harness_step
 
 LOOP_SCHEMA_VERSION = "oscar_isaac_closed_loop_eval.v1"
@@ -92,6 +95,197 @@ def build_oscar_per_step_request(
     }
 
 
+def build_wam_generation_step_input(
+    *,
+    current_frame_path: str | Path,
+    action: Mapping[str, Any],
+    step_index: int,
+    output_dir: str | Path,
+    task_prompt: str,
+    next_observation_frame_path: str | Path | None = None,
+    target_object_id: str = "task_target",
+) -> dict[str, Any]:
+    """Build the provider-bundle input for one per-step OSCAR WAM call."""
+    frame = Path(current_frame_path).expanduser().resolve()
+    visual = {
+        "camera_id": "head_pov",
+        "camera_frame_path": str(frame),
+        "wam_generated_observation": step_index > 1,
+    }
+    out = Path(output_dir).expanduser().resolve()
+    requested_next = (
+        Path(next_observation_frame_path).expanduser()
+        if next_observation_frame_path
+        else out / "generated_next_observation.png"
+    )
+    return {
+        "schema_version": "wam_generation_step_input.v1",
+        "step_index": int(step_index),
+        "source_policy_observation_frame_path": str(frame),
+        "source_policy_action": {
+            **dict(action),
+            "task_prompt": _string(task_prompt),
+            "action_type": _string(action.get("action_type"))
+            or _string(action.get("policy_action"))
+            or "isaac_g1_policy_action",
+        },
+        "current_policy_observation": {
+            "schema_version": "blueprint_policy_observation.v1",
+            "task_id": "isaac_g1_oscar_per_step_closed_loop",
+            "target_object_id": target_object_id,
+            "robot_profile_id": "unitree_g1",
+            "policy_source": "isaac_g1_policy",
+            "camera_frame_path": str(frame),
+            "visual_observation": visual,
+            "claim_boundary": {
+                "simulator_generated_world_observation_only": True,
+                "generated_wam_frame_is_support_artifact": step_index > 1,
+                "physical_robot_sensor_proof": False,
+                "deployment_readiness_proven": False,
+            },
+        },
+        "requested_output": {
+            "next_observation_frame_path": str(requested_next),
+            "action_conditioned_generation_required": True,
+        },
+        "claim_boundary": {
+            "isaac_policy_action_is_sim_policy_action": True,
+            "wam_generation_is_not_robot_policy": True,
+            "physical_robot_sensor_proof": False,
+        },
+    }
+
+
+@contextmanager
+def _temporary_environ(updates: Mapping[str, str | None]) -> Iterator[None]:
+    previous: dict[str, str | None] = {}
+    for key, value in updates.items():
+        previous[key] = os.environ.get(key)
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _provider_video_path(payload: Mapping[str, Any]) -> str:
+    for rollout in payload.get("rollouts", []) or []:
+        if not isinstance(rollout, Mapping):
+            continue
+        video = _string(rollout.get("generated_video_path"))
+        if video and Path(video).expanduser().is_file():
+            return video
+    return ""
+
+
+def _provider_payload_proves_fresh_model(payload: Mapping[str, Any]) -> bool:
+    return bool(
+        payload.get("status") == "completed"
+        and payload.get("fresh_provider_model_run_claimed")
+        and payload.get("provider_learned_wam_model_ran")
+        and payload.get("provider_generated_video_is_model_output")
+    )
+
+
+def make_oscar_provider_command_wam_backend(
+    *,
+    work_dir: str | Path,
+    task_prompt: str,
+    provider: str = "runpod",
+    allow_paid_provider_launch: bool = False,
+    timeout_seconds: float = 3600.0,
+    adapter_run: Callable[[Sequence[str] | None], Mapping[str, Any]] = run_oscar_wam_provider_adapter,
+    extract_next_frame: Callable[[str | Path, str | Path], Path | None] | None = None,
+) -> WamGenerateNext:
+    """Drive one fresh OSCAR provider run per closed-loop step."""
+    resolved_work = Path(work_dir).expanduser().resolve()
+    ensure_dir(resolved_work)
+
+    def _generate_next(
+        current_frame: str,
+        action: Mapping[str, Any],
+        step_index: int,
+        history: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        step_dir = resolved_work / f"step_{step_index:04d}"
+        ensure_dir(step_dir)
+        step_input = build_wam_generation_step_input(
+            current_frame_path=current_frame,
+            action=action,
+            step_index=step_index,
+            output_dir=step_dir,
+            task_prompt=task_prompt,
+        )
+        step_input_path = step_dir / "wam_generation_step_input.json"
+        write_json(step_input_path, step_input)
+        output_path = step_dir / "wam_provider_output.json"
+        adapter_args = [
+            "--mode",
+            "auto",
+            "--provider",
+            provider,
+            "--work-dir",
+            str(step_dir / "provider_workspace"),
+            "--timeout-seconds",
+            str(float(timeout_seconds)),
+        ]
+        if allow_paid_provider_launch:
+            adapter_args.append("--allow-paid-provider-launch")
+        with _temporary_environ(
+            {
+                "BLUEPRINT_WAM_ROLLOUT_INPUT": str(step_input_path),
+                "BLUEPRINT_WAM_ROLLOUT_OUTPUT": str(output_path),
+            }
+        ):
+            payload = dict(adapter_run(adapter_args) or {})
+        if not output_path.is_file():
+            write_json(output_path, payload)
+        video = _provider_video_path(payload)
+        if not video:
+            return {
+                "status": "blocked",
+                "wam_backend": "oscar_2b_per_step_provider",
+                "generated_frame_path": "",
+                "generated_video_path": "",
+                "provider_payload": payload,
+                "provider_output_path": str(output_path),
+                "fresh_provider_model_run_claimed": False,
+                "blockers": payload.get("blockers") or ["oscar_provider_video_missing"],
+            }
+        extractor = extract_next_frame or extract_last_frame_via_opencv
+        next_frame = extractor(video, step_dir / "next_observation")
+        if next_frame is None or not Path(next_frame).is_file():
+            return {
+                "status": "blocked",
+                "wam_backend": "oscar_2b_per_step_provider",
+                "generated_frame_path": "",
+                "generated_video_path": video,
+                "provider_payload": payload,
+                "provider_output_path": str(output_path),
+                "fresh_provider_model_run_claimed": _provider_payload_proves_fresh_model(payload),
+                "blockers": ["oscar_provider_next_observation_frame_extraction_failed"],
+            }
+        return {
+            "status": "completed" if payload.get("status") == "completed" else "blocked",
+            "wam_backend": "oscar_2b_per_step_provider",
+            "generated_frame_path": str(next_frame),
+            "generated_video_path": video,
+            "provider_payload": payload,
+            "provider_output_path": str(output_path),
+            "fresh_provider_model_run_claimed": _provider_payload_proves_fresh_model(payload),
+            "blockers": payload.get("blockers") or [],
+        }
+
+    return _generate_next
+
+
 def make_oscar_per_step_wam_backend(
     *,
     oscar_generate: Callable[[Mapping[str, Any]], Mapping[str, Any]],
@@ -140,6 +334,48 @@ def make_oscar_per_step_wam_backend(
         }
 
     return _generate_next
+
+
+def _provider_completed(provider_statuses: Sequence[Any], provider: str) -> bool:
+    for status_value in provider_statuses:
+        if not isinstance(status_value, Mapping):
+            continue
+        if status_value.get("provider") != provider:
+            continue
+        return bool(status_value.get("ran")) and not bool(status_value.get("blockers") or [])
+    return False
+
+
+def _da3_completed(provider_statuses: Sequence[Any]) -> bool:
+    for status_value in provider_statuses:
+        if not isinstance(status_value, Mapping):
+            continue
+        if status_value.get("provider") != "depth":
+            continue
+        kind = _string(status_value.get("kind")).lower()
+        return bool(
+            status_value.get("ran")
+            and kind in {"depth_anything_3", "da3", "depth-anything-3"}
+            and not bool(status_value.get("blockers") or [])
+        )
+    return False
+
+
+def _step_backend_status(step_record: Mapping[str, Any]) -> dict[str, Any]:
+    backend = step_record.get("harness_backend")
+    if not isinstance(backend, Mapping):
+        backend = step_record.get("backend") if isinstance(step_record.get("backend"), Mapping) else {}
+    provider_statuses = list(backend.get("provider_statuses") or []) if isinstance(backend, Mapping) else []
+    return {
+        "backend_status": backend.get("status") if isinstance(backend, Mapping) else None,
+        "real_model_ran": bool(
+            isinstance(backend, Mapping) and backend.get("real_sam_or_depth_model_ran")
+        ),
+        "provider_statuses": provider_statuses,
+        "sam3_completed": _provider_completed(provider_statuses, "sam3"),
+        "depth_completed": _provider_completed(provider_statuses, "depth"),
+        "da3_completed": _da3_completed(provider_statuses),
+    }
 
 
 def extract_last_frame_via_opencv(video_path: str | Path, out_dir: str | Path) -> Path | None:
@@ -314,6 +550,11 @@ def run_oscar_isaac_closed_loop(
     backend_timeout_seconds: int = 600,
     policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
     generated_at: str | None = None,
+    require_fresh_oscar_provider: bool = False,
+    require_real_perception_backend: bool = False,
+    require_sam3_completed: bool = False,
+    require_da3_completed: bool = False,
+    perception_target_prompts: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     resolved_out = Path(output_dir).expanduser().resolve()
@@ -328,6 +569,9 @@ def run_oscar_isaac_closed_loop(
             "blockers": ["blocked_empty_route"],
         }
     target = route[-1]
+    cleaned_target_prompts = [
+        prompt for prompt in (_string(item) for item in (perception_target_prompts or [])) if prompt
+    ]
     bounded_steps = max(1, int(steps))
 
     policy = DeterministicWalkToTargetPolicy()
@@ -339,6 +583,7 @@ def run_oscar_isaac_closed_loop(
     step_records: list[dict[str, Any]] = []
     adapter_reports: list[dict[str, Any]] = []
     trace_rows: list[dict[str, Any]] = []
+    proof_rows: list[dict[str, Any]] = []
     blockers: list[str] = []
 
     for step_index in range(1, bounded_steps + 1):
@@ -360,6 +605,17 @@ def run_oscar_isaac_closed_loop(
         if not generated_frame or not Path(generated_frame).is_file():
             blockers.append(f"blocked_wam_generation_missing_frame_at_step_{step_index}")
             break
+        wam_provider_payload = (
+            wam_output.get("provider_payload")
+            if isinstance(wam_output.get("provider_payload"), Mapping)
+            else {}
+        )
+        fresh_oscar_provider = bool(
+            wam_output.get("fresh_provider_model_run_claimed")
+            or _provider_payload_proves_fresh_model(wam_provider_payload)
+        )
+        if require_fresh_oscar_provider and not fresh_oscar_provider:
+            blockers.append(f"fresh_oscar_provider_model_run_not_proven_at_step_{step_index}")
 
         # 3. perception harness (SAM3/DA3) analyses the generated frame immediately
         result = run_wam_derived_observation_harness_step(
@@ -370,10 +626,31 @@ def run_oscar_isaac_closed_loop(
             source_generated_video_path=wam_output.get("generated_video_path"),
             source_wam_rollout_id=f"oscar_isaac_closed_loop_step_{step_index:04d}",
             transition_id=f"oscar_isaac_transition_{step_index:04d}",
-            source_policy_action=action,
+            source_policy_action={
+                **action,
+                **({"task_prompt": cleaned_target_prompts[0]} if cleaned_target_prompts else {}),
+            },
             action_history=action_history,
             current_policy_observation=_policy_observation(current_frame, target, step_index),
             skeleton_conditioning=wam_output.get("skeleton_conditioning"),
+            eval_ready_task_grounding={
+                "schema_version": "eval_ready_task_grounding.v1",
+                "status": "prompt_only_for_generated_frame_perception"
+                if cleaned_target_prompts
+                else "not_supplied",
+                "task": {
+                    "task_id": "isaac_g1_oscar_per_step_closed_loop",
+                    "target_prompts_for_object_index_backends": cleaned_target_prompts,
+                },
+                "selected_task_target": {
+                    "object_id": "perception_target",
+                    "label": cleaned_target_prompts[0],
+                    "source_prompt": cleaned_target_prompts[0],
+                    "source": "closed_loop_cli_target_prompt",
+                }
+                if cleaned_target_prompts
+                else {},
+            },
             previous_steps=step_records,
             previous_adapter_reports=adapter_reports,
             backend_kind=harness_backend_kind,
@@ -384,17 +661,47 @@ def run_oscar_isaac_closed_loop(
         )
         step_record = dict(result.get("step_record") or {})
         adapter_report = dict(result.get("policy_adapter_report") or {})
+        backend_status = _step_backend_status(step_record)
+        if require_real_perception_backend and not backend_status["real_model_ran"]:
+            blockers.append(f"real_perception_backend_not_proven_at_step_{step_index}")
+        if require_sam3_completed and not backend_status["sam3_completed"]:
+            blockers.append(f"sam3_provider_not_completed_at_step_{step_index}")
+        if require_da3_completed and not backend_status["da3_completed"]:
+            blockers.append(f"da3_provider_not_completed_at_step_{step_index}")
         step_records.append(step_record)
         adapter_reports.append(adapter_report)
-        trace_rows.append(
+        trace_row = {
+            "step_index": step_index,
+            "policy_action": action.get("policy_action"),
+            "root_position": action.get("root_position"),
+            "source_observation_frame": current_frame,
+            "wam_generated_frame": generated_frame,
+            "wam_generated_video": wam_output.get("generated_video_path"),
+            "wam_backend": wam_output.get("wam_backend"),
+            "wam_generation_status": wam_output.get("status") or wam_output.get("wam_generation_status"),
+            "fresh_oscar_provider_model_run_claimed": fresh_oscar_provider,
+            "provider_output_path": wam_output.get("provider_output_path"),
+            "harness_step_status": step_record.get("status"),
+            "harness_backend_kind": harness_backend_kind,
+            "real_perception_backend_model_ran": backend_status["real_model_ran"],
+            "sam3_completed": backend_status["sam3_completed"],
+            "depth_completed": backend_status["depth_completed"],
+            "da3_completed": backend_status["da3_completed"],
+        }
+        trace_rows.append(trace_row)
+        proof_rows.append(
             {
                 "step_index": step_index,
-                "policy_action": action.get("policy_action"),
-                "root_position": action.get("root_position"),
+                "policy_action_recorded": bool(action.get("policy_action")),
                 "source_observation_frame": current_frame,
                 "wam_generated_frame": generated_frame,
-                "harness_step_status": step_record.get("status"),
-                "harness_backend_kind": harness_backend_kind,
+                "wam_generated_video": wam_output.get("generated_video_path"),
+                "oscar_per_step_backend": wam_output.get("wam_backend"),
+                "fresh_oscar_provider_model_run_claimed": fresh_oscar_provider,
+                "real_perception_backend_model_ran": backend_status["real_model_ran"],
+                "sam3_completed": backend_status["sam3_completed"],
+                "depth_completed": backend_status["depth_completed"],
+                "da3_completed": backend_status["da3_completed"],
             }
         )
 
@@ -413,6 +720,35 @@ def run_oscar_isaac_closed_loop(
         and sum((a - b) ** 2 for a, b in zip(final_pose, target)) ** 0.5 < 0.25
     )
     status = "completed" if trace_rows and not blockers else "blocked"
+    feed_forward_verified = all(
+        trace_rows[index]["source_observation_frame"]
+        == trace_rows[index - 1]["wam_generated_frame"]
+        for index in range(1, len(trace_rows))
+    )
+    proof = {
+        "policy_source": "isaac_g1_policy.DeterministicWalkToTargetPolicy",
+        "isaac_policy_actions_recorded": len(action_history),
+        "oscar_per_step_generation_calls": sum(
+            1 for row in proof_rows if row.get("oscar_per_step_backend")
+        ),
+        "fresh_oscar_provider_model_run_steps": sum(
+            1 for row in proof_rows if row.get("fresh_oscar_provider_model_run_claimed")
+        ),
+        "real_perception_backend_steps": sum(
+            1 for row in proof_rows if row.get("real_perception_backend_model_ran")
+        ),
+        "sam3_completed_steps": sum(1 for row in proof_rows if row.get("sam3_completed")),
+        "depth_completed_steps": sum(1 for row in proof_rows if row.get("depth_completed")),
+        "da3_completed_steps": sum(1 for row in proof_rows if row.get("da3_completed")),
+        "feed_forward_verified": feed_forward_verified,
+        "requirements": {
+            "fresh_oscar_provider_required": bool(require_fresh_oscar_provider),
+            "real_perception_backend_required": bool(require_real_perception_backend),
+            "sam3_completed_required": bool(require_sam3_completed),
+            "da3_completed_required": bool(require_da3_completed),
+        },
+        "per_step": proof_rows,
+    }
     manifest = {
         "schema_version": LOOP_SCHEMA_VERSION,
         "generated_at": generated,
@@ -423,10 +759,12 @@ def run_oscar_isaac_closed_loop(
         "harness_backend_kind": harness_backend_kind,
         "real_perception_backend_used": harness_backend_kind != "fixture",
         "task_target_position_xyz": [round(float(c), 6) for c in target],
+        "perception_target_prompts": cleaned_target_prompts,
         "final_root_position": final_pose,
         "task_target_reached": reached,
         "trace_path": str(trace_path),
         "harness_dir": str(harness_dir),
+        "proof": proof,
         "blockers": blockers,
         "claim_boundary": (
             "Per-step closed loop: policy action -> WAM-generated next observation -> SAM3/DA3 "
@@ -461,9 +799,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--num-frames", type=int, default=8, help="OSCAR clip length per step")
     parser.add_argument("--oscar-repo")
     parser.add_argument("--checkpoint")
+    parser.add_argument("--use-provider-command", action="store_true")
+    parser.add_argument("--oscar-provider", choices=("auto", "vast", "runpod"), default="runpod")
+    parser.add_argument("--provider-timeout-seconds", type=float, default=3600.0)
+    parser.add_argument("--allow-paid-provider-launch", action="store_true")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--harness-backend-kind", default="real_provider_probe")
     parser.add_argument("--harness-backend-command", default=None)
+    parser.add_argument("--perception-target-prompt", action="append", default=[])
+    parser.add_argument("--require-fresh-oscar-provider", action="store_true")
+    parser.add_argument("--require-real-perception-backend", action="store_true")
+    parser.add_argument("--require-sam3-completed", action="store_true")
+    parser.add_argument("--require-da3-completed", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -475,7 +822,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.harness_backend_command
         else DEFAULT_SAM3_HARNESS_BACKEND_COMMAND
     )
-    oscar_ready = bool(args.oscar_repo and args.checkpoint)
+    oscar_ready = bool(args.use_provider_command or (args.oscar_repo and args.checkpoint))
 
     if args.dry_run or not oscar_ready:
         plan = {
@@ -489,30 +836,49 @@ def main(argv: Sequence[str] | None = None) -> int:
             "steps": int(args.steps),
             "task_prompt": args.task_prompt,
             "num_frames_per_step": int(args.num_frames),
+            "use_provider_command": bool(args.use_provider_command),
+            "oscar_provider": args.oscar_provider,
+            "allow_paid_provider_launch": bool(args.allow_paid_provider_launch),
             "oscar_repo": args.oscar_repo,
             "checkpoint_configured": bool(args.checkpoint),
             "harness_backend_kind": args.harness_backend_kind,
             "harness_backend_command_argv0": harness_command[0] if harness_command else None,
+            "perception_target_prompts": list(args.perception_target_prompt or []),
+            "requirements": {
+                "fresh_oscar_provider_required": bool(args.require_fresh_oscar_provider),
+                "real_perception_backend_required": bool(args.require_real_perception_backend),
+                "sam3_completed_required": bool(args.require_sam3_completed),
+                "da3_completed_required": bool(args.require_da3_completed),
+            },
             "blockers": [] if oscar_ready else ["blocked_missing_oscar_repo_or_checkpoint"],
         }
         write_json(out_dir / "oscar_isaac_closed_loop_plan.json", plan)
         print(json.dumps({"status": plan["status"], "mode": plan["mode"]}, sort_keys=True))
         return 0 if plan["status"] in {"prepared"} else 2
 
-    import subprocess
+    if args.use_provider_command:
+        backend = make_oscar_provider_command_wam_backend(
+            work_dir=out_dir / "oscar_generation",
+            task_prompt=args.task_prompt,
+            provider=args.oscar_provider,
+            allow_paid_provider_launch=bool(args.allow_paid_provider_launch),
+            timeout_seconds=float(args.provider_timeout_seconds),
+        )
+    else:
+        import subprocess
 
-    oscar_generate = make_local_oscar_subprocess_generate(
-        oscar_repo=args.oscar_repo,
-        checkpoint=args.checkpoint,
-        run=subprocess.run,
-        extract_next_frame=extract_last_frame_via_opencv,
-    )
-    backend = make_oscar_per_step_wam_backend(
-        oscar_generate=oscar_generate,
-        work_dir=out_dir / "oscar_generation",
-        task_prompt=args.task_prompt,
-        num_frames=int(args.num_frames),
-    )
+        oscar_generate = make_local_oscar_subprocess_generate(
+            oscar_repo=args.oscar_repo,
+            checkpoint=args.checkpoint,
+            run=subprocess.run,
+            extract_next_frame=extract_last_frame_via_opencv,
+        )
+        backend = make_oscar_per_step_wam_backend(
+            oscar_generate=oscar_generate,
+            work_dir=out_dir / "oscar_generation",
+            task_prompt=args.task_prompt,
+            num_frames=int(args.num_frames),
+        )
     manifest = run_oscar_isaac_closed_loop(
         output_dir=out_dir,
         start_frame_path=args.start_frame,
@@ -522,6 +888,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         harness_backend_kind=args.harness_backend_kind,
         harness_backend_command=harness_command,
         allow_external_backend=args.harness_backend_kind != "fixture",
+        require_fresh_oscar_provider=bool(args.require_fresh_oscar_provider),
+        require_real_perception_backend=bool(args.require_real_perception_backend),
+        require_sam3_completed=bool(args.require_sam3_completed),
+        require_da3_completed=bool(args.require_da3_completed),
+        perception_target_prompts=list(args.perception_target_prompt or []),
     )
     print(json.dumps({"status": manifest["status"], "steps_executed": manifest.get("steps_executed")}, sort_keys=True))
     return 0 if manifest["status"] == "completed" else 2

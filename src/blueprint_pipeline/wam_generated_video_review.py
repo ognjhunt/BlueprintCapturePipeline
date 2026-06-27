@@ -1594,6 +1594,7 @@ def visual_smoke_generated_rollouts_for_review(
                 quality_blockers.append(
                     "generated_rollout_later_frames_lost_scene_structure"
                 )
+            review_usefulness_blockers = list(media_profile_blockers)
             if require_review_quality_profile:
                 quality_blockers.extend(media_profile_blockers)
             result.update(
@@ -1610,11 +1611,15 @@ def visual_smoke_generated_rollouts_for_review(
                         "media_profile_reviewable_for_task_success": (
                             media_profile_reviewable
                         ),
+                        "visual_rollout_useful_for_task_success_review": bool(
+                            not quality_blockers and not review_usefulness_blockers
+                        ),
                         "success_review_not_reliable_from_this_rollout": bool(
-                            quality_blockers
+                            quality_blockers or review_usefulness_blockers
                         ),
                     },
                     "blockers": quality_blockers,
+                    "review_usefulness_blockers": review_usefulness_blockers,
                 }
             )
             blockers.extend(quality_blockers)
@@ -1622,14 +1627,29 @@ def visual_smoke_generated_rollouts_for_review(
             capture.release()
         rollout_results.append(result)
 
-    useful = bool(rollout_results) and all(
+    smoke_passed = bool(rollout_results) and all(
         row.get("status") == "passed_visual_quality_smoke" for row in rollout_results
+    )
+    review_usefulness_blockers = sorted(
+        {
+            str(item)
+            for row in rollout_results
+            for item in row.get("review_usefulness_blockers", []) or []
+            if str(item)
+        }
+    )
+    useful = bool(smoke_passed) and all(
+        row.get("visual_quality_flags", {}).get(
+            "visual_rollout_useful_for_task_success_review"
+        )
+        is True
+        for row in rollout_results
     )
     status = (
         "not_applicable_missing_rollouts"
         if not rollouts
         else "passed_visual_quality_smoke"
-        if useful
+        if smoke_passed
         else "failed_visual_quality_smoke"
         if {
             "generated_rollout_first_frame_not_scene_like",
@@ -1648,6 +1668,12 @@ def visual_smoke_generated_rollouts_for_review(
         "rollout_count": len(rollouts),
         "rollouts": rollout_results,
         "blockers": sorted(set(blockers)),
+        "review_usefulness_status": (
+            "reviewable_for_task_success"
+            if useful
+            else "not_reviewable_for_task_success"
+        ),
+        "review_usefulness_blockers": review_usefulness_blockers,
         "claim_boundary": {
             "valid_mp4_file_generated": bool(rollouts),
             "visual_rollout_useful_for_task_success_review": useful,

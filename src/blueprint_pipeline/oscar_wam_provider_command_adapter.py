@@ -3,8 +3,8 @@
 This adapter implements the same command contract as the local OSCAR adapter:
 the WAM evaluator sets ``BLUEPRINT_WAM_ROLLOUT_INPUT`` and
 ``BLUEPRINT_WAM_ROLLOUT_OUTPUT``. The adapter either imports a completed
-provider output zip or, with explicit paid-provider gates, launches the existing
-Vast WAM provider runner and writes Blueprint-compatible rollout JSON.
+provider output zip or, with explicit paid-provider gates, launches the selected
+WAM compute provider runner and writes Blueprint-compatible rollout JSON.
 """
 
 from __future__ import annotations
@@ -26,25 +26,38 @@ from .oscar_wam_command_adapter import (
 )
 from .oscar_wam_provider_bundle import build_oscar_wam_provider_bundle
 from .oscar_wam_gpu_image import IMAGE_REF_ENV as OSCAR_WAM_GPU_IMAGE_REF_ENV
+from .runpod_provider_adapter import RUNPOD_API_GATE_ENV
+from .runpod_wam_async_runner import RUNPOD_POD_LAUNCH_GATE_ENV
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
-from .vast_wam_async_runner import create_async_vast_wam_run, poll_async_vast_wam_run
 from .wam_generated_video_review import (
     validate_generated_mp4_for_review,
     visual_smoke_generated_rollouts_for_review,
+)
+from .wam_compute_providers import (
+    PROVIDER_ORDER_ENV as WAM_COMPUTE_PROVIDER_ORDER_ENV,
+    VAST_WAM_PAID_LAUNCH_GATE_ENV,
+    WamComputeLaunchSpec,
+    run_wam_compute_job,
 )
 from .wam_provider_object_store import stage_wam_provider_bundle_object_store
 
 
 SCHEMA_VERSION = "oscar_wam_provider_command_adapter.v1"
 ADAPTER_ID = "blueprint_oscar_wam_provider_command_adapter"
-ALLOW_VAST_PROVIDER_LAUNCH_ENV = "BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH"
+ALLOW_VAST_PROVIDER_LAUNCH_ENV = VAST_WAM_PAID_LAUNCH_GATE_ENV
+OSCAR_WAM_COMPUTE_PROVIDER_ENV = "BLUEPRINT_OSCAR_WAM_COMPUTE_PROVIDER"
 USE_OBJECT_STORE_ENV = "BLUEPRINT_OSCAR_WAM_PROVIDER_USE_OBJECT_STORE"
 COMPLETED_PROVIDER_JOB_ENV = "BLUEPRINT_OSCAR_WAM_PROVIDER_COMPLETED_JOB_DIR"
 PROVIDER_JOB_DIR_ENV = "BLUEPRINT_OSCAR_WAM_PROVIDER_JOB_DIR"
 VAST_WAM_PUBLIC_IMAGE_ENV = "BLUEPRINT_VAST_WAM_PUBLIC_IMAGE"
+RUNPOD_WAM_PUBLIC_IMAGE_ENV = "BLUEPRINT_RUNPOD_WAM_PUBLIC_IMAGE"
 VAST_WAM_MIN_GPU_RAM_MB_ENV = "BLUEPRINT_VAST_WAM_MIN_GPU_RAM_MB"
 VAST_WAM_EXCLUDED_MACHINE_ID_ENV = "BLUEPRINT_VAST_WAM_EXCLUDED_MACHINE_ID"
 VAST_WAM_POLL_MAX_WAIT_SECONDS_ENV = "BLUEPRINT_VAST_WAM_POLL_MAX_WAIT_SECONDS"
+RUNPOD_WAM_CONTAINER_DISK_GB_ENV = "BLUEPRINT_RUNPOD_WAM_CONTAINER_DISK_GB"
+RUNPOD_WAM_VOLUME_GB_ENV = "BLUEPRINT_RUNPOD_WAM_VOLUME_GB"
+RUNPOD_WAM_MIN_VCPU_PER_GPU_ENV = "BLUEPRINT_RUNPOD_WAM_MIN_VCPU_PER_GPU"
+RUNPOD_WAM_MIN_RAM_PER_GPU_ENV = "BLUEPRINT_RUNPOD_WAM_MIN_RAM_PER_GPU"
 REDACTED_PROVIDER_TRANSPORT_URL = "REDACTED_COMPLETED_PROVIDER_TRANSPORT_URL"
 
 
@@ -351,17 +364,23 @@ def _extract_provider_payload(
         payload["generated_rollout_visual_quality_blockers"] = [
             str(item) for item in visual_smoke.get("blockers", []) or []
         ]
+        payload["generated_rollout_review_usefulness_status"] = visual_smoke.get(
+            "review_usefulness_status"
+        )
+        payload["generated_rollout_review_usefulness_blockers"] = [
+            str(item) for item in visual_smoke.get("review_usefulness_blockers", []) or []
+        ]
         is_replay = mode == "replay_existing_provider_output"
-        is_current_vast_provider = mode == "vast_provider"
+        is_current_provider = mode in {"vast_provider", "runpod_provider", "wam_compute_provider"}
         if imported_truth_claims:
             payload["imported_provider_payload_truth_claims"] = imported_truth_claims
         payload["provider_output_replayed"] = bool(is_replay)
         payload["provider_output_imported_from_current_provider_run"] = bool(
-            is_current_vast_provider
+            is_current_provider
         )
-        payload["fresh_provider_launch_attempted"] = bool(is_current_vast_provider)
+        payload["fresh_provider_launch_attempted"] = bool(is_current_provider)
         fresh_completed_model_output = bool(
-            is_current_vast_provider
+            is_current_provider
             and payload.get("status") == "completed"
             and provider_runtime_proves_model_output
         )
@@ -466,6 +485,17 @@ def _vast_public_image_from_env() -> str:
     )
 
 
+def _public_image_for_provider(provider: str) -> str:
+    if provider == "runpod":
+        return (
+            _string(os.getenv(RUNPOD_WAM_PUBLIC_IMAGE_ENV))
+            or _string(os.getenv(OSCAR_WAM_GPU_IMAGE_REF_ENV))
+            or _string(os.getenv(VAST_WAM_PUBLIC_IMAGE_ENV))
+            or DEFAULT_WAM_PUBLIC_IMAGE
+        )
+    return _vast_public_image_from_env()
+
+
 def _excluded_machine_ids_from_env() -> list[int]:
     values: list[int] = []
     for chunk in _string(os.getenv(VAST_WAM_EXCLUDED_MACHINE_ID_ENV)).replace(",", " ").split():
@@ -496,17 +526,33 @@ def _poll_max_wait_seconds(timeout_seconds: float) -> int:
     return max(1, _env_int(VAST_WAM_POLL_MAX_WAIT_SECONDS_ENV, int(timeout_seconds)))
 
 
-def run_vast_provider(
+def _provider_order_from_cli(provider: str) -> list[str]:
+    key = _string(provider).lower() or "vast"
+    if key == "auto":
+        configured = _string(os.getenv(WAM_COMPUTE_PROVIDER_ORDER_ENV))
+        values = [
+            item.strip().lower()
+            for item in configured.replace(";", ",").split(",")
+            if item.strip()
+        ]
+        return values or ["runpod", "vast"]
+    return [key]
+
+
+def run_compute_provider(
     *,
     rollout_input_path: Path,
     output_path: Path,
     work_dir: Path,
-    allow_paid_vast_launch: bool,
+    provider: str,
+    allow_paid_launch: bool,
     timeout_seconds: float,
     generated_at: str,
 ) -> dict[str, Any]:
+    provider_order = _provider_order_from_cli(provider)
+    primary_provider = provider_order[0]
     bundle_job_dir = work_dir / "bundle"
-    provider_job_dir = work_dir / "vast_provider_run"
+    provider_job_dir = work_dir / f"{primary_provider}_provider_run"
     bundle = build_oscar_wam_provider_bundle(
         job_dir=bundle_job_dir,
         wam_rollout_input_manifest=rollout_input_path,
@@ -523,7 +569,7 @@ def run_vast_provider(
     if bundle.get("status") != "completed":
         return _blocked_payload(
             blockers=bundle.get("blockers") or ["oscar_wam_provider_bundle_blocked"],
-            mode="vast_provider",
+            mode=f"{primary_provider}_provider",
             output_path=output_path,
             details={"bundle_manifest": bundle},
         )
@@ -546,7 +592,7 @@ def run_vast_provider(
             return _blocked_payload(
                 blockers=object_store_manifest.get("blockers")
                 or ["wam_provider_object_store_staging_blocked"],
-                mode="vast_provider",
+                mode=f"{primary_provider}_provider",
                 output_path=output_path,
                 details={"object_store_staging_manifest": object_store_manifest},
             )
@@ -560,15 +606,19 @@ def run_vast_provider(
             object_store_manifest.get("provider_output_get_url_file", {}).get("path")
         )
     public_base_url = _string(os.getenv("BLUEPRINT_WAM_PROVIDER_PUBLIC_BASE_URL"))
-    create_manifest = create_async_vast_wam_run(
-        job_dir=provider_job_dir,
+    spec = WamComputeLaunchSpec(
+        name="blueprint-oscar-wam-provider",
         bundle_path=bundle_path,
+        provider_bundle_kind="wam",
+        image=_public_image_for_provider(primary_provider),
         public_base_url=public_base_url,
         provider_bundle_url_file=provider_bundle_url_file,
         provider_output_put_url_file=provider_output_put_url_file,
         provider_output_get_url_file=provider_output_get_url_file,
-        allow_paid_vast_launch=allow_paid_vast_launch,
-        max_hourly_rate=float(os.getenv("BLUEPRINT_VAST_WAM_MAX_HOURLY_RATE", "0.35")),
+        expected_video_count=1,
+        max_wait_seconds=_poll_max_wait_seconds(timeout_seconds),
+        retry_interval_seconds=_env_int("BLUEPRINT_VAST_WAM_POLL_INTERVAL_SECONDS", 15),
+        max_hourly_rate_usd=float(os.getenv("BLUEPRINT_VAST_WAM_MAX_HOURLY_RATE", "0.35")),
         target_spend_usd=float(os.getenv("BLUEPRINT_VAST_WAM_TARGET_SPEND_USD", "3.0")),
         hard_cap_usd=float(os.getenv("BLUEPRINT_VAST_WAM_HARD_CAP_USD", "3.0")),
         max_live_minutes=int(os.getenv("BLUEPRINT_VAST_WAM_MAX_LIVE_MINUTES", "30")),
@@ -576,78 +626,124 @@ def run_vast_provider(
         startup_poll_seconds=int(os.getenv("BLUEPRINT_VAST_WAM_STARTUP_POLL_SECONDS", "120")),
         min_gpu_ram_mb=int(os.getenv(VAST_WAM_MIN_GPU_RAM_MB_ENV, "0")),
         excluded_machine_ids=_excluded_machine_ids_from_env(),
-        public_image=_vast_public_image_from_env(),
-        generated_at=generated_at,
+        container_disk_gb=_env_int(RUNPOD_WAM_CONTAINER_DISK_GB_ENV, 100),
+        volume_gb=_env_int(RUNPOD_WAM_VOLUME_GB_ENV, 30),
+        min_vcpu_per_gpu=_env_int(RUNPOD_WAM_MIN_VCPU_PER_GPU_ENV, 8),
+        min_ram_per_gpu=_env_int(RUNPOD_WAM_MIN_RAM_PER_GPU_ENV, 40),
+        skip_public_staging_verification=True,
     )
-    if create_manifest.get("status") != "instance_created":
-        provider_url_file_scrub = _scrub_object_store_provider_url_files(
-            object_store_manifest
-        )
-        return _blocked_payload(
-            blockers=create_manifest.get("blockers") or ["vast_wam_provider_create_blocked"],
-            mode="vast_provider",
-            output_path=output_path,
-            details={
-                "bundle_manifest": bundle,
-                "object_store_staging_manifest": object_store_manifest,
-                "vast_create_manifest": create_manifest,
-                "provider_url_file_scrub": provider_url_file_scrub,
-            },
-        )
-    poll_manifest = poll_async_vast_wam_run(
-        job_dir=provider_job_dir,
-        max_wait_seconds=_poll_max_wait_seconds(timeout_seconds),
-        retry_interval_seconds=float(os.getenv("BLUEPRINT_VAST_WAM_POLL_INTERVAL_SECONDS", "15")),
+
+    compute_result = run_wam_compute_job(
+        spec=spec,
+        job_dir=work_dir,
+        provider_order=provider_order,
+        allow_paid_launch=allow_paid_launch,
+        failover_on_blockers=(
+            "no_vast_offer",
+            "provider_runtime_output_zip_missing_or_empty",
+            "runpod_provider_runtime_output_zip_not_received_locally",
+            "provider_completed_without_valid_output_zip",
+        ),
         teardown=True,
-        generated_at=generated_at,
     )
     provider_url_file_scrub = _scrub_object_store_provider_url_files(object_store_manifest)
-    if poll_manifest.get("status") != "completed":
+    provider_job_dir = work_dir / f"{compute_result.provider}_provider_run"
+    if compute_result.status != "completed":
         return _blocked_payload(
-            blockers=poll_manifest.get("blockers") or ["vast_wam_provider_poll_blocked"],
-            mode="vast_provider",
+            blockers=compute_result.blockers or [f"{compute_result.provider}_wam_provider_blocked"],
+            mode=f"{compute_result.provider}_provider",
             output_path=output_path,
             details={
                 "bundle_manifest": bundle,
                 "object_store_staging_manifest": object_store_manifest,
-                "vast_create_manifest": create_manifest,
-                "vast_poll_manifest": poll_manifest,
+                "wam_compute_result": compute_result.to_dict(),
                 "provider_url_file_scrub": provider_url_file_scrub,
             },
         )
     provider_zip = _find_provider_output_zip(provider_job_dir)
     if provider_zip is None:
         return _blocked_payload(
-            blockers=["vast_provider_completed_without_output_zip"],
-            mode="vast_provider",
+            blockers=[f"{compute_result.provider}_provider_completed_without_output_zip"],
+            mode=f"{compute_result.provider}_provider",
             output_path=output_path,
-            details={"vast_poll_manifest": poll_manifest},
+            details={"wam_compute_result": compute_result.to_dict()},
         )
     payload = _extract_provider_payload(
         provider_output_zip=provider_zip,
         output_path=output_path,
-        extraction_dir=work_dir / "vast_provider_output_videos",
-        mode="vast_provider",
+        extraction_dir=work_dir / f"{compute_result.provider}_provider_output_videos",
+        mode=f"{compute_result.provider}_provider",
         source_provider_job_dir=provider_job_dir,
     )
     payload["details"] = {
         "bundle_manifest_path": str(bundle_job_dir / "oscar_wam_provider_bundle_manifest.json"),
-        "vast_provider_job_dir": str(provider_job_dir),
-        "vast_create_manifest_path": str(provider_job_dir / "vast_wam_async_create_manifest.json"),
-        "vast_poll_manifest_path": str(provider_job_dir / "vast_wam_async_poll_manifest.json"),
+        "wam_compute_provider": compute_result.provider,
+        "wam_compute_result_path": str(work_dir / "wam_compute_run_result.json"),
+        "provider_job_dir": str(provider_job_dir),
+        "vast_provider_job_dir": str(provider_job_dir)
+        if compute_result.provider == "vast"
+        else None,
+        "runpod_provider_job_dir": str(provider_job_dir)
+        if compute_result.provider == "runpod"
+        else None,
+        "vast_create_manifest_path": str(provider_job_dir / "vast_wam_async_create_manifest.json")
+        if compute_result.provider == "vast"
+        else None,
+        "vast_poll_manifest_path": str(provider_job_dir / "vast_wam_async_poll_manifest.json")
+        if compute_result.provider == "vast"
+        else None,
+        "runpod_create_manifest_path": str(
+            provider_job_dir / "runpod_wam_async_create_manifest.json"
+        )
+        if compute_result.provider == "runpod"
+        else None,
+        "runpod_poll_manifest_path": str(
+            provider_job_dir / "runpod_wam_async_poll_manifest.json"
+        )
+        if compute_result.provider == "runpod"
+        else None,
+        "wam_compute_result": compute_result.to_dict(),
         "provider_url_file_scrub": provider_url_file_scrub,
     }
     write_json(output_path, payload)
     return payload
 
 
+def run_vast_provider(
+    *,
+    rollout_input_path: Path,
+    output_path: Path,
+    work_dir: Path,
+    allow_paid_vast_launch: bool,
+    timeout_seconds: float,
+    generated_at: str,
+) -> dict[str, Any]:
+    return run_compute_provider(
+        rollout_input_path=rollout_input_path,
+        output_path=output_path,
+        work_dir=work_dir,
+        provider="vast",
+        allow_paid_launch=allow_paid_vast_launch,
+        timeout_seconds=timeout_seconds,
+        generated_at=generated_at,
+    )
+
+
 def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("auto", "replay-existing-provider-output", "vast-provider"), default=os.getenv("BLUEPRINT_OSCAR_WAM_PROVIDER_MODE", "auto"))
+    parser.add_argument(
+        "--provider",
+        choices=("auto", "vast", "runpod"),
+        default=os.getenv(OSCAR_WAM_COMPUTE_PROVIDER_ENV, "vast"),
+        help="Fresh provider-launch backend. --mode vast-provider forces Vast for compatibility.",
+    )
     parser.add_argument("--completed-provider-job-dir")
     parser.add_argument("--work-dir")
     parser.add_argument("--timeout-seconds", type=float, default=float(os.getenv("BLUEPRINT_OSCAR_WAM_PROVIDER_TIMEOUT_SECONDS", "3600")))
+    parser.add_argument("--allow-paid-provider-launch", action="store_true")
     parser.add_argument("--allow-paid-vast-launch", action="store_true")
+    parser.add_argument("--allow-paid-runpod-launch", action="store_true")
     args = parser.parse_args(argv)
     output_path = Path(os.getenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", "wam_provider_output.json")).expanduser().resolve()
     rollout_input = Path(os.getenv("BLUEPRINT_WAM_ROLLOUT_INPUT", "")).expanduser()
@@ -659,11 +755,20 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
     ensure_dir(work_dir)
     generated = utc_now_iso()
     blockers: list[str] = []
-    allow_paid_vast_launch = bool(
-        args.allow_paid_vast_launch or _env_truthy(ALLOW_VAST_PROVIDER_LAUNCH_ENV)
+    effective_provider = "vast" if args.mode == "vast-provider" else args.provider
+    provider_order = _provider_order_from_cli(effective_provider)
+    paid_cli_authorized = bool(
+        args.allow_paid_provider_launch
+        or ("vast" in provider_order and args.allow_paid_vast_launch)
+        or ("runpod" in provider_order and args.allow_paid_runpod_launch)
     )
+    paid_gate_blockers: list[str] = []
+    if not paid_cli_authorized:
+        paid_gate_blockers.append("missing_cli_paid_wam_compute_provider_launch_flag")
+    if "vast" in provider_order and not _env_truthy(ALLOW_VAST_PROVIDER_LAUNCH_ENV):
+        paid_gate_blockers.append(f"missing_env_{ALLOW_VAST_PROVIDER_LAUNCH_ENV}")
     provider_remote_checkpoint_allowed = bool(
-        allow_paid_vast_launch and args.mode in {"auto", "vast-provider"}
+        not paid_gate_blockers and args.mode in {"auto", "vast-provider"}
     )
     completed_provider_job_dir = _string(
         args.completed_provider_job_dir or os.getenv(COMPLETED_PROVIDER_JOB_ENV)
@@ -710,24 +815,30 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             details={"env": COMPLETED_PROVIDER_JOB_ENV},
         )
     if args.mode in {"auto", "vast-provider"}:
-        if not allow_paid_vast_launch:
+        if paid_gate_blockers:
             return _blocked_payload(
-                blockers=[f"missing_env_{ALLOW_VAST_PROVIDER_LAUNCH_ENV}"],
-                mode="vast_provider",
+                blockers=paid_gate_blockers,
+                mode=f"{provider_order[0]}_provider",
                 output_path=output_path,
                 details={
+                    "provider": effective_provider,
+                    "provider_order": provider_order,
                     "required_for_paid_launch": [
-                        ALLOW_VAST_PROVIDER_LAUNCH_ENV,
-                        "VAST_API_KEY_FILE",
+                        "one of --allow-paid-provider-launch, --allow-paid-vast-launch, --allow-paid-runpod-launch",
+                        f"{ALLOW_VAST_PROVIDER_LAUNCH_ENV} when Vast is in provider order",
+                        f"{RUNPOD_API_GATE_ENV} when RunPod is selected",
+                        f"{RUNPOD_POD_LAUNCH_GATE_ENV} when RunPod is selected",
+                        "VAST_API_KEY_FILE for Vast or RUNPOD_API_KEY/RUNPOD_API_KEY_FILE for RunPod",
                         "BLUEPRINT_WAM_PROVIDER_*_URL_FILE or object-store staging envs",
                     ]
                 },
             )
-        return run_vast_provider(
+        return run_compute_provider(
             rollout_input_path=rollout_input.resolve(),
             output_path=output_path,
             work_dir=work_dir,
-            allow_paid_vast_launch=allow_paid_vast_launch,
+            provider=effective_provider,
+            allow_paid_launch=True,
             timeout_seconds=args.timeout_seconds,
             generated_at=generated,
         )

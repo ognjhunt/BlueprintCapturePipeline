@@ -8,6 +8,8 @@ along the same code path.
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 
 from PIL import Image
@@ -160,6 +162,159 @@ def test_oscar_per_step_backend_drives_the_loop(tmp_path: Path) -> None:
     assert calls[0]["task_prompt"] == "walk to the sink"
     assert all(c["projected_landmark_count"] == 1 for c in calls)
     assert [c["step_index"] for c in calls] == [1, 2, 3]
+
+
+def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_path: Path) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=4)
+    captured: dict[str, object] = {}
+
+    def _fake_adapter(argv):
+        captured["argv"] = list(argv or [])
+        input_path = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_INPUT"])
+        output_path = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"])
+        captured["input_path"] = str(input_path)
+        video = output_path.parent / "oscar_generated_rollout.mp4"
+        video.write_bytes(b"fake mp4")
+        payload = {
+            "status": "completed",
+            "fresh_provider_model_run_claimed": True,
+            "provider_learned_wam_model_ran": True,
+            "provider_generated_video_is_model_output": True,
+            "rollouts": [{"generated_video_path": str(video)}],
+            "blockers": [],
+        }
+        output_path.write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    def _extract(video_path, out_dir):
+        assert Path(video_path).is_file()
+        return _write_frame(Path(out_dir) / "next.png", seed=19)
+
+    backend = L.make_oscar_provider_command_wam_backend(
+        work_dir=tmp_path / "provider_loop",
+        task_prompt="walk to the sink",
+        provider="runpod",
+        allow_paid_provider_launch=True,
+        adapter_run=_fake_adapter,
+        extract_next_frame=_extract,
+    )
+    result = backend(
+        str(start),
+        {"policy_action": "accepted_direct_collision_checked_motion", "root_position": [0, 0, 0.79]},
+        1,
+        [],
+    )
+
+    assert result["status"] == "completed"
+    assert result["wam_backend"] == "oscar_2b_per_step_provider"
+    assert result["fresh_provider_model_run_claimed"] is True
+    assert Path(result["generated_frame_path"]).is_file()
+    assert "--allow-paid-provider-launch" in captured["argv"]
+    step_input = json.loads(Path(str(captured["input_path"])).read_text(encoding="utf-8"))
+    assert step_input["schema_version"] == "wam_generation_step_input.v1"
+    assert step_input["source_policy_action"]["task_prompt"] == "walk to the sink"
+
+
+def _real_backend_command(*, depth_kind: str = "depth_anything_3"):
+    code = f"""
+import json, os
+out = os.environ["BLUEPRINT_WAM_PERCEPTION_BACKEND_OUTPUT"]
+payload = {{
+  "schema_version": "wam_perception_backend_result.v1",
+  "status": "completed",
+  "backend": {{
+    "kind": "real_provider_probe",
+    "status": "completed",
+    "real_sam_or_depth_model_ran": True,
+    "blockers": [],
+    "provider_statuses": [
+      {{"provider": "sam3", "ran": True, "blockers": [], "object_count": 1}},
+      {{"provider": "depth", "kind": {depth_kind!r}, "ran": True, "blockers": []}}
+    ]
+  }},
+  "objects": [{{"object_id": "sam3_target_0000", "label": "sink", "bbox": [1, 2, 10, 20], "confidence": 0.8}}],
+  "depth_estimates": [{{"object_id": "generated_frame", "relative_depth": 0.5, "confidence": 0.7}}],
+  "pose_estimates": [],
+  "claim_boundary": {{"harness_outputs_are_derived_from_generated_pixels": True}}
+}}
+open(out, "w", encoding="utf-8").write(json.dumps(payload))
+"""
+    return [sys.executable, "-c", code]
+
+
+def test_closed_loop_proof_requirements_pass_with_fresh_oscar_sam3_da3(tmp_path: Path) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=6)
+
+    def _fresh_oscar(current_frame, action, step_index, history):
+        frame = _write_frame(tmp_path / "oscar" / f"step_{step_index:04d}.png", seed=step_index * 31)
+        video = tmp_path / "oscar" / f"step_{step_index:04d}.mp4"
+        video.write_bytes(b"fake mp4")
+        return {
+            "status": "completed",
+            "wam_backend": "oscar_2b_per_step_provider",
+            "generated_frame_path": str(frame),
+            "generated_video_path": str(video),
+            "fresh_provider_model_run_claimed": True,
+            "provider_payload": {
+                "status": "completed",
+                "fresh_provider_model_run_claimed": True,
+                "provider_learned_wam_model_ran": True,
+                "provider_generated_video_is_model_output": True,
+            },
+        }
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_fresh_oscar,
+        steps=2,
+        harness_backend_kind="real_provider_probe",
+        harness_backend_command=_real_backend_command(depth_kind="depth_anything_3"),
+        allow_external_backend=True,
+        require_fresh_oscar_provider=True,
+        require_real_perception_backend=True,
+        require_sam3_completed=True,
+        require_da3_completed=True,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["proof"]["fresh_oscar_provider_model_run_steps"] == 2
+    assert manifest["proof"]["sam3_completed_steps"] == 2
+    assert manifest["proof"]["da3_completed_steps"] == 2
+    assert manifest["proof"]["feed_forward_verified"] is True
+
+
+def test_closed_loop_proof_does_not_count_depth_v2_as_da3(tmp_path: Path) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=7)
+
+    def _fresh_oscar(current_frame, action, step_index, history):
+        frame = _write_frame(tmp_path / "oscar" / f"step_{step_index:04d}.png", seed=step_index * 33)
+        return {
+            "status": "completed",
+            "wam_backend": "oscar_2b_per_step_provider",
+            "generated_frame_path": str(frame),
+            "fresh_provider_model_run_claimed": True,
+        }
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_fresh_oscar,
+        steps=1,
+        harness_backend_kind="real_provider_probe",
+        harness_backend_command=_real_backend_command(depth_kind="transformers_depth_anything_v2"),
+        allow_external_backend=True,
+        require_da3_completed=True,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert "da3_provider_not_completed_at_step_1" in manifest["blockers"]
+    assert manifest["proof"]["depth_completed_steps"] == 1
+    assert manifest["proof"]["da3_completed_steps"] == 0
 
 
 def test_build_oscar_inference_argv_mirrors_entrypoint(tmp_path: Path) -> None:

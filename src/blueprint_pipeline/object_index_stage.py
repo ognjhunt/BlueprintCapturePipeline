@@ -528,6 +528,7 @@ def _command_from_env(name: str) -> str:
         "OBJECT_INDEX_YOLO_WORLD_COMMAND": repo_root / "scripts" / "object_index_yolo_world_runner.py",
         "OBJECT_INDEX_GROUNDING_DINO_COMMAND": repo_root / "scripts" / "object_index_grounding_dino_runner.py",
         "OBJECT_INDEX_SAM3_COMMAND": repo_root / "scripts" / "object_index_sam3_runner.py",
+        "OBJECT_INDEX_SPLAT_ANALYZER_COMMAND": repo_root / "scripts" / "object_index_splat_analyzer_runner.py",
     }
     script_path = defaults.get(name)
     if script_path is not None and script_path.is_file():
@@ -556,6 +557,9 @@ def _backend_runtime_requirements(backend_name: str) -> Dict[str, Any]:
         support_level = "optional"
         required_modules = ["torch", "sam3"]
         required_paths = [str(_default_sam3_weights_path())]
+    elif backend_name == "splat_analyzer":
+        support_level = "optional"
+        required_modules = []
     else:
         required_modules = []
     missing_modules = [name for name in required_modules if not _module_available(name)]
@@ -852,6 +856,31 @@ def _normalize_existing_objects(payload: Mapping[str, Any]) -> List[Dict[str, An
             }
         )
     return objects
+
+
+def _normalize_relationship_payload(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    raw_relationships = payload.get("scene_relationship_candidates")
+    if not isinstance(raw_relationships, list):
+        raw_relationships = payload.get("relationships")
+    if not isinstance(raw_relationships, list):
+        return []
+    relationships: List[Dict[str, Any]] = []
+    for item in raw_relationships:
+        if not isinstance(item, Mapping):
+            continue
+        subject_id = str(item.get("subject_id") or item.get("subject") or "").strip()
+        object_id = str(item.get("object_id") or item.get("target_id") or item.get("object") or "").strip()
+        relationship = str(item.get("relationship") or item.get("predicate") or "").strip()
+        if not subject_id or not object_id or not relationship:
+            continue
+        normalized = dict(item)
+        normalized["subject_id"] = subject_id
+        normalized["object_id"] = object_id
+        normalized["relationship"] = relationship
+        normalized.setdefault("review_required", True)
+        normalized.setdefault("claim_boundary", "relationship_is_model_derived_candidate_not_capture_truth")
+        relationships.append(normalized)
+    return relationships
 
 
 def _iou2d(a: Sequence[float], b: Sequence[float]) -> float:
@@ -1531,12 +1560,30 @@ def run_object_index_stage(
         "yolo_world": _command_from_env("OBJECT_INDEX_YOLO_WORLD_COMMAND"),
         "grounding_dino": _command_from_env("OBJECT_INDEX_GROUNDING_DINO_COMMAND"),
         "sam3": _command_from_env("OBJECT_INDEX_SAM3_COMMAND"),
+        "splat_analyzer": _command_from_env("OBJECT_INDEX_SPLAT_ANALYZER_COMMAND"),
     }
     runtime_preflight = {
         "dependencies": {
             "torch": {"available": _module_available("torch")},
             "ultralytics": {"available": _module_available("ultralytics")},
             "sam3": {"available": _module_available("sam3")},
+            "splat_analyzer": {
+                "available": bool(
+                    os.getenv("SPLAT_ANALYZER_COMMAND")
+                    or os.getenv("SPLAT_ANALYZER_REPO")
+                    or os.getenv("SPLAT_ANALYZER_RUN_LOCAL")
+                    or os.getenv("SPLAT_ANALYZER_INTERACTIONS_JSON")
+                ),
+                "mode": (
+                    "interactions_fixture"
+                    if os.getenv("SPLAT_ANALYZER_INTERACTIONS_JSON")
+                    else "command"
+                    if os.getenv("SPLAT_ANALYZER_COMMAND")
+                    else "run_local"
+                    if os.getenv("SPLAT_ANALYZER_REPO") or os.getenv("SPLAT_ANALYZER_RUN_LOCAL")
+                    else "not_configured"
+                ),
+            },
         },
         "backends": {
             name: _backend_preflight_status(backend_name=name, command_template=command_template)
@@ -1546,23 +1593,12 @@ def run_object_index_stage(
 
     backend_reports = [
         _run_backend_command(
-            backend_name="yolo_world",
-            command_template=backend_commands["yolo_world"],
+            backend_name=backend_name,
+            command_template=backend_commands[backend_name],
             input_payload=input_payload,
             output_dir=artifact_root,
-        ),
-        _run_backend_command(
-            backend_name="grounding_dino",
-            command_template=backend_commands["grounding_dino"],
-            input_payload=input_payload,
-            output_dir=artifact_root,
-        ),
-        _run_backend_command(
-            backend_name="sam3",
-            command_template=backend_commands["sam3"],
-            input_payload=input_payload,
-            output_dir=artifact_root,
-        ),
+        )
+        for backend_name in ("yolo_world", "grounding_dino", "sam3", "splat_analyzer")
     ]
     keyframes_by_index = {item.frame_index: item for item in keyframes}
 
@@ -1573,19 +1609,27 @@ def run_object_index_stage(
     manipulation_candidates: List[Dict[str, Any]] = []
     articulation_candidates: List[Dict[str, Any]] = []
     task_candidates: List[Dict[str, Any]] = []
+    scene_relationship_candidates: List[Dict[str, Any]] = []
     for report in backend_reports:
         payload = report.get("payload")
         backend_name = str(report.get("backend") or "unknown")
         detections_per_backend[backend_name] = 0
         if not isinstance(payload, Mapping):
             continue
-        existing_objects.extend(_normalize_existing_objects(payload))
+        normalized_existing = _normalize_existing_objects(payload)
+        existing_objects.extend(normalized_existing)
         parsed_detections, manip, artic, tasks = _normalize_detection_payload(
             backend_name=backend_name,
             payload=payload,
             keyframes_by_index=keyframes_by_index,
         )
-        detections_per_backend[backend_name] = len(parsed_detections)
+        relationships = _normalize_relationship_payload(payload)
+        scene_relationship_candidates.extend(relationships)
+        detections_per_backend[backend_name] = max(
+            len(parsed_detections),
+            len(normalized_existing),
+            len(relationships),
+        )
         for item in parsed_detections:
             frame_index = str(_safe_int(item.get("frame_index"), -1))
             detections_per_keyframe[frame_index] = detections_per_keyframe.get(frame_index, 0) + 1
@@ -1617,18 +1661,35 @@ def run_object_index_stage(
         objects=objects,
     )
 
+    preflight_backends = runtime_preflight.get("backends")
+
+    def _backend_support_level(backend_name: str) -> str:
+        if not isinstance(preflight_backends, Mapping):
+            return "required"
+        preflight = preflight_backends.get(backend_name)
+        if not isinstance(preflight, Mapping):
+            return "required"
+        return str(preflight.get("support_level") or "required")
+
     backend_summary = {
         "providers": [
             {
                 "backend": str(report.get("backend") or ""),
                 "status": str(report.get("status") or "unknown"),
                 "reason": str(report.get("reason") or ""),
+                "support_level": _backend_support_level(str(report.get("backend") or "")),
                 "detection_count": detections_per_backend.get(str(report.get("backend") or ""), 0),
+                "relationship_candidate_count": len(
+                    _normalize_relationship_payload(report.get("payload"))
+                    if isinstance(report.get("payload"), Mapping)
+                    else []
+                ),
             }
             for report in backend_reports
         ],
         "detection_count": len(detections),
         "object_count": len(objects),
+        "relationship_candidate_count": len(scene_relationship_candidates),
     }
     grounding_payload = _grounding_payload_from_objects(objects, descriptor, backend_summary)
     if manipulation_candidates:
@@ -1637,6 +1698,8 @@ def run_object_index_stage(
         grounding_payload["articulation_hints"] = articulation_candidates
     if task_candidates:
         grounding_payload["tasks"] = task_candidates
+    if scene_relationship_candidates:
+        grounding_payload["scene_relationship_candidates"] = scene_relationship_candidates
     llm_target_resolution = _llm_target_resolution(
         runner=enrichment_runner,
         descriptor=descriptor,
@@ -1687,11 +1750,16 @@ def run_object_index_stage(
     filtered_detection_count = max(0, len(detections) - len(objects))
     clustered_object_count = len(existing_objects) if existing_objects else len(merged_clusters)
     empty_index_cause = None
-    provider_reasons = [str(report.get("reason") or "") for report in backend_reports]
+
+    def _is_required_report(report: Mapping[str, Any]) -> bool:
+        return _backend_support_level(str(report.get("backend") or "")) != "optional"
+
+    required_reports = [report for report in backend_reports if _is_required_report(report)]
+    provider_reasons = [str(report.get("reason") or "") for report in required_reports]
     if not objects:
         if any(_backend_reason_indicates_runtime_missing(reason) for reason in provider_reasons if reason):
             empty_index_cause = "runtime_missing"
-        elif any(str(report.get("status") or "") == "skipped" for report in backend_reports):
+        elif any(str(report.get("status") or "") == "skipped" for report in required_reports):
             empty_index_cause = "backend_skipped"
         elif len(detections) == 0:
             empty_index_cause = "zero_detections"

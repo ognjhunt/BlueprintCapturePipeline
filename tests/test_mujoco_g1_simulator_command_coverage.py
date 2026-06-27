@@ -521,6 +521,70 @@ def test_mujoco_task_preview_contact_video_and_manifest_helpers(
     )
     assert candidate["accepted"] is True
 
+    qpos = np.zeros(40)
+    base_qpos = np.ones(40)
+    arm_addresses = {
+        "left_shoulder_pitch_joint": 22,
+        "left_elbow_joint": 25,
+        "left_wrist_pitch_joint": 27,
+        "right_shoulder_pitch_joint": 29,
+        "right_elbow_joint": 32,
+        "right_wrist_pitch_joint": 34,
+    }
+    data_with_arms = SimpleNamespace(qpos=qpos, qvel=np.ones(40))
+    mg._set_preview_pose(
+        data=data_with_arms,
+        base_qpos=base_qpos,
+        root_qpos=0,
+        pose=[1, 2, 0.79],
+        yaw=0.0,
+        joint_addresses=arm_addresses,
+        phase=0.0,
+        moving=False,
+        manipulation_ready_arms=True,
+        manipulation_reach_arm="both",
+    )
+    assert data_with_arms.qpos[22] == pytest.approx(base_qpos[22] - 0.85)
+    assert data_with_arms.qpos[25] == pytest.approx(base_qpos[25] - 0.23)
+    assert data_with_arms.qpos[29] == pytest.approx(base_qpos[29] - 0.85)
+    assert data_with_arms.qpos[32] == pytest.approx(base_qpos[32] - 0.23)
+    assert np.all(data_with_arms.qvel == 0)
+
+    right_only = np.zeros(40)
+    applied = mg._apply_manipulation_ready_arm_pose(
+        qpos=right_only,
+        base_qpos=base_qpos,
+        joint_addresses=arm_addresses,
+        arm="right",
+    )
+    assert "right_shoulder_pitch_joint" in applied
+    assert "left_shoulder_pitch_joint" not in applied
+    assert right_only[29] == pytest.approx(base_qpos[29] - 0.85)
+    assert right_only[22] == 0.0
+
+    camera = SimpleNamespace(lookat=[0.0, 0.0, 0.0], distance=0.0, azimuth=0.0, elevation=0.0)
+    selected = mg._configure_robot_pov_camera(
+        camera,
+        pose=[1, 2, 0.79],
+        yaw=0.0,
+        manipulation_ready_arms=True,
+    )
+    assert selected["camera_mode"] == "virtual_manipulation_pov_near_head_aimed_at_workspace"
+    assert selected["azimuth"] == pytest.approx(0.0)
+    assert camera.lookat[0] > 1.0
+    assert camera.distance < 1.0
+    assert mg._is_robot_pov_self_occluding_body_name("torso_link") is True
+    assert mg._is_robot_pov_self_occluding_body_name("left_wrist_yaw_link") is False
+    fake_model = SimpleNamespace(geom_rgba=np.ones((3, 4)))
+    previous_alpha = mg._set_geom_alpha(fake_model, [0, 2], 0.0)
+    assert fake_model.geom_rgba[0, 3] == 0.0
+    assert fake_model.geom_rgba[1, 3] == 1.0
+    mg._restore_geom_alpha(fake_model, previous_alpha)
+    assert np.all(fake_model.geom_rgba[:, 3] == 1.0)
+
+    with pytest.raises(ValueError):
+        mg._manipulation_ready_arm_joint_deltas("center")
+
     monkeypatch.undo()
     data = SimpleNamespace(
         ncon=3,

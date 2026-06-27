@@ -379,6 +379,43 @@ def test_128px_4fps_mp4_is_valid_media_but_not_reviewable_success_evidence(
     assert smoke["claim_boundary"]["generated_observation_review_support_only"] is True
 
 
+def test_low_res_smoke_profile_passes_decode_but_not_success_review_usefulness(
+    tmp_path: Path,
+) -> None:
+    cv2 = pytest.importorskip("cv2")
+    video = tmp_path / "low_res_smoke.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 4.0, (128, 128))
+    assert writer.isOpened()
+    for index in range(9):
+        frame = np.zeros((128, 128, 3), dtype=np.uint8)
+        frame[:, :64, 0] = (index * 17) % 255
+        frame[:, 64:, 1] = (180 + index * 3) % 255
+        frame[index % 64 : index % 64 + 32, 40:88, 2] = 255
+        writer.write(frame)
+    writer.release()
+
+    smoke = visual_smoke_generated_rollouts_for_review(
+        rollouts=[{"rollout_id": "rollout_low_res", "generated_video_path": str(video)}],
+        output_dir=tmp_path,
+        generated_at="now",
+        require_review_quality_profile=False,
+    )
+
+    assert smoke["status"] == "passed_visual_quality_smoke"
+    assert smoke["review_usefulness_status"] == "not_reviewable_for_task_success"
+    assert smoke["claim_boundary"]["valid_mp4_file_generated"] is True
+    assert (
+        smoke["claim_boundary"]["visual_rollout_useful_for_task_success_review"]
+        is False
+    )
+    assert "generated_rollout_video_resolution_too_low_for_task_success_review" in smoke[
+        "review_usefulness_blockers"
+    ]
+    assert smoke["rollouts"][0]["visual_quality_flags"][
+        "media_profile_reviewable_for_task_success"
+    ] is False
+
+
 def test_provider_completed_but_visual_quality_fails_on_dark_generated_frame(
     tmp_path: Path,
 ) -> None:

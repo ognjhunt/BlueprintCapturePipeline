@@ -166,6 +166,9 @@ def test_wam_perception_harness_gpu_image_context_can_request_da3_without_prefet
     )
     assert "ARG INSTALL_DA3=true" in dockerfile
     assert "ARG PREFETCH_WAM_PERCEPTION_MODELS=false" in dockerfile
+    assert "depth-anything-3==0.1.1" in dockerfile
+    assert "--no-deps" in dockerfile
+    assert "xformers" not in dockerfile
     assert "--build-arg INSTALL_DA3=true" in build_script
     assert "--build-arg PREFETCH_WAM_PERCEPTION_MODELS=false" in build_script
 

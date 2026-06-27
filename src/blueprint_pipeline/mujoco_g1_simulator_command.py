@@ -67,6 +67,26 @@ RENDER_CAMERA_CONTRACT = [
         "proof_boundary": "virtual_mujoco_renderer_camera_not_physical_sensor",
     },
 ]
+MANIPULATION_READY_ARM_SELECTIONS = ("right", "left", "both")
+MANIPULATION_READY_ARM_JOINT_DELTAS = {
+    "left": {
+        "left_shoulder_pitch_joint": -0.85,
+        "left_shoulder_roll_joint": 0.15,
+        "left_shoulder_yaw_joint": 0.10,
+        "left_elbow_joint": -0.23,
+        "left_wrist_roll_joint": -0.10,
+        "left_wrist_pitch_joint": -0.15,
+    },
+    "right": {
+        "right_shoulder_pitch_joint": -0.85,
+        "right_shoulder_roll_joint": -0.15,
+        "right_shoulder_yaw_joint": -0.10,
+        "right_elbow_joint": -0.23,
+        "right_wrist_roll_joint": 0.10,
+        "right_wrist_pitch_joint": -0.15,
+    },
+}
+ROBOT_POV_VISIBLE_SELF_BODY_PARTS = ("shoulder", "elbow", "wrist", "hand")
 
 
 def _string(value: Any) -> str:
@@ -742,6 +762,8 @@ def _write_mjcf_wrapper(
     wrapper_path: Path,
     *,
     collision_proxies: Sequence[Mapping[str, Any]] | None = None,
+    render_width: int = 640,
+    render_height: int = 360,
 ) -> None:
     proxy_geoms = []
     for index, proxy in enumerate(collision_proxies or []):
@@ -770,11 +792,13 @@ def _write_mjcf_wrapper(
             '    <geom name="blueprint_scene_collision" type="mesh" mesh="blueprint_scene_mesh"\n'
             '      material="blueprint_scene_collision_mat" contype="1" conaffinity="1" group="3"/>'
         )
+    offwidth = max(1, int(render_width))
+    offheight = max(1, int(render_height))
     wrapper = f"""<mujoco model="blueprint_mujoco_g1_simulator_command">
   <include file="{_xml_escape(g1_xml)}"/>
   <visual>
     <headlight diffuse="0.8 0.8 0.8" ambient="0.25 0.25 0.25" specular="0.6 0.6 0.6"/>
-    <global offwidth="640" offheight="360" azimuth="140" elevation="-20"/>
+    <global offwidth="{offwidth}" offheight="{offheight}" azimuth="140" elevation="-20"/>
     <map znear="0.01" zfar="200"/>
   </visual>
   <asset>
@@ -1383,9 +1407,19 @@ def _g1_preview_joint_addresses(model: Any, mujoco_module: Any) -> dict[str, int
         "right_ankle_pitch_joint",
         "waist_yaw_joint",
         "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
         "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
         "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
         "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
     ]
     addresses: dict[str, int] = {}
     for name in names:
@@ -1430,6 +1464,69 @@ def _apply_preview_gait_pose(
     set_joint("waist_yaw_joint", 0.04 * math.sin(phase * 0.5))
 
 
+def _manipulation_ready_arm_joint_deltas(arm: str = "both") -> dict[str, float]:
+    selection = str(arm or "both").strip().lower()
+    if selection not in MANIPULATION_READY_ARM_SELECTIONS:
+        raise ValueError(f"unknown manipulation arm selection: {arm!r}")
+    sides = ("left", "right") if selection == "both" else (selection,)
+    out: dict[str, float] = {}
+    for side in sides:
+        out.update(MANIPULATION_READY_ARM_JOINT_DELTAS[side])
+    return out
+
+
+def _apply_manipulation_ready_arm_pose(
+    *,
+    qpos: Any,
+    base_qpos: Any,
+    joint_addresses: Mapping[str, int],
+    arm: str = "both",
+) -> list[str]:
+    applied: list[str] = []
+    for name, delta in _manipulation_ready_arm_joint_deltas(arm).items():
+        address = joint_addresses.get(name)
+        if address is None or address >= len(qpos) or address >= len(base_qpos):
+            continue
+        qpos[address] = base_qpos[address] + float(delta)
+        applied.append(name)
+    return applied
+
+
+def _is_robot_pov_self_occluding_body_name(body_name: str) -> bool:
+    name = str(body_name or "").lower()
+    if not name or name == "world":
+        return False
+    return not any(part in name for part in ROBOT_POV_VISIBLE_SELF_BODY_PARTS)
+
+
+def _robot_pov_self_occluding_geom_ids(model: Any, mujoco_module: Any) -> list[int]:
+    ids: list[int] = []
+    for geom_id in range(int(getattr(model, "ngeom", 0) or 0)):
+        body_id = int(model.geom_bodyid[geom_id])
+        body_name = (
+            mujoco_module.mj_id2name(model, mujoco_module.mjtObj.mjOBJ_BODY, body_id)
+            or ""
+        )
+        if _is_robot_pov_self_occluding_body_name(body_name):
+            ids.append(geom_id)
+    return ids
+
+
+def _set_geom_alpha(model: Any, geom_ids: Sequence[int], alpha: float) -> list[tuple[int, float]]:
+    previous: list[tuple[int, float]] = []
+    for geom_id in geom_ids:
+        if 0 <= int(geom_id) < len(model.geom_rgba):
+            previous.append((int(geom_id), float(model.geom_rgba[int(geom_id), 3])))
+            model.geom_rgba[int(geom_id), 3] = float(alpha)
+    return previous
+
+
+def _restore_geom_alpha(model: Any, previous: Sequence[tuple[int, float]]) -> None:
+    for geom_id, alpha in previous:
+        if 0 <= int(geom_id) < len(model.geom_rgba):
+            model.geom_rgba[int(geom_id), 3] = float(alpha)
+
+
 def _set_preview_pose(
     *,
     data: Any,
@@ -1440,6 +1537,8 @@ def _set_preview_pose(
     joint_addresses: Mapping[str, int],
     phase: float,
     moving: bool,
+    manipulation_ready_arms: bool = False,
+    manipulation_reach_arm: str = "both",
 ) -> None:
     data.qpos[:] = base_qpos
     data.qvel[:] = 0
@@ -1452,6 +1551,48 @@ def _set_preview_pose(
         phase=phase,
         moving=moving,
     )
+    if manipulation_ready_arms:
+        _apply_manipulation_ready_arm_pose(
+            qpos=data.qpos,
+            base_qpos=base_qpos,
+            joint_addresses=joint_addresses,
+            arm=manipulation_reach_arm,
+        )
+
+
+def _configure_robot_pov_camera(
+    camera: Any,
+    *,
+    pose: Sequence[float],
+    yaw: float,
+    manipulation_ready_arms: bool = False,
+) -> dict[str, Any]:
+    x, y, z = float(pose[0]), float(pose[1]), float(pose[2])
+    if manipulation_ready_arms:
+        forward_x = math.cos(float(yaw))
+        forward_y = math.sin(float(yaw))
+        camera.lookat[:] = [x + forward_x * 0.85, y + forward_y * 0.85, z + 0.20]
+        camera.distance = 0.92
+        camera.azimuth = math.degrees(float(yaw))
+        camera.elevation = -18
+        return {
+            "camera_mode": "virtual_manipulation_pov_near_head_aimed_at_workspace",
+            "azimuth": camera.azimuth,
+            "distance": camera.distance,
+            "elevation": camera.elevation,
+            "fallback_used": False,
+        }
+    camera.lookat[:] = [x, y, z + 0.75]
+    camera.distance = 2.15
+    camera.azimuth = math.degrees(float(yaw)) + 180.0
+    camera.elevation = -14
+    return {
+        "camera_mode": "virtual_free_camera_following_g1_root_not_physical_robot_sensor",
+        "azimuth": camera.azimuth,
+        "distance": camera.distance,
+        "elevation": camera.elevation,
+        "fallback_used": False,
+    }
 
 
 def _candidate_pose_specs(
@@ -1522,6 +1663,8 @@ def _evaluate_preview_candidate(
     yaw: float,
     phase: float,
     moving: bool,
+    manipulation_ready_arms: bool = False,
+    manipulation_reach_arm: str = "both",
 ) -> dict[str, Any]:
     pose = candidate["pose"]
     candidate_yaw = float(candidate.get("yaw", yaw))
@@ -1536,6 +1679,8 @@ def _evaluate_preview_candidate(
         joint_addresses=joint_addresses,
         phase=candidate_phase,
         moving=candidate_moving,
+        manipulation_ready_arms=manipulation_ready_arms,
+        manipulation_reach_arm=manipulation_reach_arm,
     )
     mujoco_module.mj_forward(model, data)
     contacts = _contact_records(model, data, mujoco_module)
@@ -3645,10 +3790,14 @@ def run_mujoco_g1_simulator_command(
     duration_seconds: float | None = None,
     render_frames: bool = True,
     render_every_step: bool = False,
+    render_width: int = 640,
+    render_height: int = 360,
     max_rendered_episodes: int = 3,
     max_rendered_steps: int = 24,
     allow_fetch_g1_assets: bool = False,
     menagerie_ref: str = DEFAULT_MENAGERIE_REF,
+    manipulation_ready_arms: bool = False,
+    manipulation_reach_arm: str = "both",
 ) -> dict[str, Any]:
     if platform.system().lower() == "linux":
         os.environ.setdefault("MUJOCO_GL", "egl")
@@ -3710,6 +3859,8 @@ def run_mujoco_g1_simulator_command(
         generated_g1_xml,
         wrapper_xml,
         collision_proxies=collision_proxies if isinstance(collision_proxies, Sequence) else None,
+        render_width=render_width,
+        render_height=render_height,
     )
 
     try:
@@ -3731,7 +3882,11 @@ def run_mujoco_g1_simulator_command(
     if render_frames:
         from PIL import Image
 
-        renderer = mujoco.Renderer(model, height=360, width=640)
+        renderer = mujoco.Renderer(
+            model,
+            height=max(1, int(render_height)),
+            width=max(1, int(render_width)),
+        )
     else:
         Image = None  # type: ignore[assignment]
 
@@ -3800,18 +3955,29 @@ def run_mujoco_g1_simulator_command(
             )
             records.append(overview_record)
 
-            robot_camera.lookat[:] = [x, y, z + 0.75]
-            robot_camera.distance = 2.6
-            robot_camera.azimuth = math.degrees(float(yaw)) + 180.0
-            robot_camera.elevation = -16
-            renderer.update_scene(data, camera=robot_camera)
+            diagnostic_camera_selected = _configure_robot_pov_camera(
+                robot_camera,
+                pose=pose,
+                yaw=yaw,
+                manipulation_ready_arms=manipulation_ready_arms,
+            )
+            alpha_restore = (
+                _set_geom_alpha(model, robot_pov_self_occluding_geom_ids, 0.0)
+                if manipulation_ready_arms
+                else []
+            )
+            try:
+                renderer.update_scene(data, camera=robot_camera)
+                robot_pixels = renderer.render()
+            finally:
+                _restore_geom_alpha(model, alpha_restore)
             robot_path = frames_dir / f"{attempt_id}_sim_robot_follow_pov_diagnostic_{offset:04d}.png"
-            Image.fromarray(renderer.render()).save(robot_path)
+            Image.fromarray(robot_pixels).save(robot_path)
             robot_record = _camera_record_with_time(
                 "sim_robot_follow_pov",
                 robot_path,
                 frame_step,
-                "diagnostic_route_follow_camera",
+                diagnostic_camera_selected["camera_mode"],
                 sim_time_s=sim_time_s,
             )
             robot_record.update(
@@ -3820,6 +3986,7 @@ def run_mujoco_g1_simulator_command(
                     "episode_id": episode_id,
                     "scenario_eval_run_id": scenario_eval_run_id or None,
                     "diagnostic_reason": reason,
+                    "robot_camera_selected": diagnostic_camera_selected,
                 }
             )
             records.append(robot_record)
@@ -3850,6 +4017,26 @@ def run_mujoco_g1_simulator_command(
         return records
 
     preview_joint_addresses = _g1_preview_joint_addresses(model, mujoco)
+    robot_pov_self_occluding_geom_ids = _robot_pov_self_occluding_geom_ids(model, mujoco)
+    manipulation_ready_pose = {
+        "enabled": bool(manipulation_ready_arms),
+        "arm_selection": str(manipulation_reach_arm or "both"),
+        "applied_joint_names": sorted(
+            name
+            for name in _manipulation_ready_arm_joint_deltas(manipulation_reach_arm)
+            if name in preview_joint_addresses
+        )
+        if manipulation_ready_arms
+        else [],
+        "robot_pov_hidden_self_geom_count": (
+            len(robot_pov_self_occluding_geom_ids) if manipulation_ready_arms else 0
+        ),
+        "pose_semantics": (
+            "poses the visible simulated G1 forearms into the first-person workspace "
+            "for review media; not contact success, manipulation success, real robot "
+            "camera proof, or deployment readiness"
+        ),
+    }
     for episode_index, matrix_run in enumerate(matrix_runs):
         navigation = _episode_navigation_spec(
             run=matrix_run,
@@ -3912,6 +4099,8 @@ def run_mujoco_g1_simulator_command(
                     yaw=yaw,
                     phase=phase,
                     moving=route_distance > 0.05,
+                    manipulation_ready_arms=manipulation_ready_arms,
+                    manipulation_reach_arm=manipulation_reach_arm,
                 )
                 candidate_results.append(candidate_result)
                 if candidate_result["accepted"]:
@@ -4040,6 +4229,8 @@ def run_mujoco_g1_simulator_command(
                 joint_addresses=preview_joint_addresses,
                 phase=selected_phase,
                 moving=selected_moving,
+                manipulation_ready_arms=manipulation_ready_arms,
+                manipulation_reach_arm=manipulation_reach_arm,
             )
             mujoco.mj_forward(model, data)
             step_contacts = _contact_records(model, data, mujoco)
@@ -4107,50 +4298,59 @@ def run_mujoco_g1_simulator_command(
                 frames.append(overview_record)
                 episode_frames.append(overview_record)
 
-                robot_camera.lookat[:] = [x, y, z + 0.75]
-                robot_camera.distance = 2.15
-                robot_camera.azimuth = math.degrees(selected_yaw) + 180.0
-                robot_camera.elevation = -14
-                renderer.update_scene(data, camera=robot_camera)
-                robot_render = renderer.render()
-                robot_camera_selected = {
-                    "azimuth": robot_camera.azimuth,
-                    "distance": robot_camera.distance,
-                    "elevation": robot_camera.elevation,
-                    "fallback_used": False,
-                    "scene_detail_score": round(_rendered_array_scene_score(robot_render), 3),
-                }
-                if robot_camera_selected["scene_detail_score"] <= 0:
-                    robot_render = None
-                    best_robot_score = -1.0
-                    for option_index, (azimuth_offset, distance, elevation) in enumerate(
-                        (
-                            (180.0, 2.15, -14),
-                            (135.0, 2.6, -16),
-                            (225.0, 2.6, -16),
-                            (90.0, 3.0, -18),
-                            (270.0, 3.0, -18),
-                            (0.0, 3.4, -20),
-                        )
-                    ):
-                        robot_camera.distance = distance
-                        robot_camera.azimuth = math.degrees(selected_yaw) + azimuth_offset
-                        robot_camera.elevation = elevation
-                        renderer.update_scene(data, camera=robot_camera)
-                        candidate = renderer.render()
-                        candidate_score = _rendered_array_scene_score(candidate)
-                        if robot_render is None or candidate_score > best_robot_score:
-                            robot_render = candidate
-                            best_robot_score = candidate_score
-                            robot_camera_selected = {
-                                "azimuth": robot_camera.azimuth,
-                                "distance": distance,
-                                "elevation": elevation,
-                                "fallback_used": True,
-                                "fallback_reason": "route_follow_camera_frame_blank",
-                                "fallback_option_index": option_index,
-                                "scene_detail_score": round(candidate_score, 3),
-                            }
+                robot_camera_selected = _configure_robot_pov_camera(
+                    robot_camera,
+                    pose=selected_pose,
+                    yaw=selected_yaw,
+                    manipulation_ready_arms=manipulation_ready_arms,
+                )
+                alpha_restore = (
+                    _set_geom_alpha(model, robot_pov_self_occluding_geom_ids, 0.0)
+                    if manipulation_ready_arms
+                    else []
+                )
+                try:
+                    renderer.update_scene(data, camera=robot_camera)
+                    robot_render = renderer.render()
+                    robot_camera_selected["scene_detail_score"] = round(
+                        _rendered_array_scene_score(robot_render), 3
+                    )
+                    if robot_camera_selected["scene_detail_score"] <= 0:
+                        robot_render = None
+                        best_robot_score = -1.0
+                        for option_index, (azimuth_offset, distance, elevation) in enumerate(
+                            (
+                                (180.0, 2.15, -14),
+                                (135.0, 2.6, -16),
+                                (225.0, 2.6, -16),
+                                (90.0, 3.0, -18),
+                                (270.0, 3.0, -18),
+                                (0.0, 3.4, -20),
+                            )
+                        ):
+                            robot_camera.distance = distance
+                            robot_camera.azimuth = math.degrees(selected_yaw) + azimuth_offset
+                            robot_camera.elevation = elevation
+                            renderer.update_scene(data, camera=robot_camera)
+                            candidate = renderer.render()
+                            candidate_score = _rendered_array_scene_score(candidate)
+                            if robot_render is None or candidate_score > best_robot_score:
+                                robot_render = candidate
+                                best_robot_score = candidate_score
+                                robot_camera_selected = {
+                                    "camera_mode": (
+                                        "virtual_free_camera_following_g1_root_not_physical_robot_sensor"
+                                    ),
+                                    "azimuth": robot_camera.azimuth,
+                                    "distance": distance,
+                                    "elevation": elevation,
+                                    "fallback_used": True,
+                                    "fallback_reason": "route_follow_camera_frame_blank",
+                                    "fallback_option_index": option_index,
+                                    "scene_detail_score": round(candidate_score, 3),
+                                }
+                finally:
+                    _restore_geom_alpha(model, alpha_restore)
                 if len(matrix_runs) == 1:
                     robot_path = frames_dir / f"sim_robot_follow_pov_{step:04d}.png"
                 else:
@@ -4160,7 +4360,7 @@ def run_mujoco_g1_simulator_command(
                     "sim_robot_follow_pov",
                     robot_path,
                     step,
-                    "virtual_free_camera_following_g1_root_not_physical_robot_sensor",
+                    robot_camera_selected["camera_mode"],
                     sim_time_s=float(data.time),
                 )
                 robot_record.update(
@@ -4384,6 +4584,8 @@ def run_mujoco_g1_simulator_command(
             "locomotion_controller_integrated": False,
             "walking_motion_proven": False,
             "walking_style_preview_animation_rendered": bool(preview_joint_addresses),
+            "manipulation_ready_arms_pose_applied": bool(manipulation_ready_arms),
+            "manipulation_ready_pose": manipulation_ready_pose,
             "training_grade_policy_rollout_proven": False,
             "collision_probe_blocked": blocked_collision_probe,
             "metrics": {
@@ -4689,6 +4891,8 @@ def run_mujoco_g1_simulator_command(
         "locomotion_controller_integrated": False,
         "walking_motion_proven": False,
         "walking_style_preview_animation_rendered": bool(preview_joint_addresses),
+        "manipulation_ready_arms_pose_applied": bool(manipulation_ready_arms),
+        "manipulation_ready_pose_is_review_media_not_success_proof": bool(manipulation_ready_arms),
         "training_grade_policy_rollout_proven": False,
         "generated_world_rank_fidelity_result_proven": False,
         "non_ranking_operational_claim_validated": False,
@@ -4737,8 +4941,13 @@ def run_mujoco_g1_simulator_command(
         "schema_version": MUJOCO_G1_SIMULATOR_COMMAND_ARTIFACT_SCHEMA_VERSION,
         "generated_at": generated_at,
         "simulator_backend": "mujoco",
+        "render_resolution": {
+            "width": max(1, int(render_width)),
+            "height": max(1, int(render_height)),
+        },
         "robot_asset": robot_asset,
         "asset_source_manifest": source_manifest,
+        "manipulation_ready_pose": manipulation_ready_pose,
         "claim_boundary": claim_boundary,
         **claim_boundary,
     }
@@ -4803,6 +5012,8 @@ def run_mujoco_g1_simulator_command(
         "locomotion_controller_integrated": False,
         "walking_motion_proven": False,
         "walking_style_preview_animation_rendered": bool(preview_joint_addresses),
+        "manipulation_ready_arms_pose_applied": bool(manipulation_ready_arms),
+        "manipulation_ready_pose": manipulation_ready_pose,
         "training_grade_policy_rollout_proven": False,
         "policy_semantics": (
             "mujoco_contact_governed_waypoint_preview_with_joint_pose_animation_"
@@ -5125,6 +5336,10 @@ def run_mujoco_g1_simulator_command(
         "mujoco_version": _string(getattr(mujoco, "__version__", "")),
         "capture_root": str(root),
         "output_dir": str(output_root),
+        "render_resolution": {
+            "width": max(1, int(render_width)),
+            "height": max(1, int(render_height)),
+        },
         "robot_asset": robot_asset,
         "asset_source_manifest": source_manifest,
         "scene_loaded": True,
@@ -5143,6 +5358,8 @@ def run_mujoco_g1_simulator_command(
         "locomotion_controller_integrated": False,
         "walking_motion_proven": False,
         "walking_style_preview_animation_rendered": bool(preview_joint_addresses),
+        "manipulation_ready_arms_pose_applied": bool(manipulation_ready_arms),
+        "manipulation_ready_pose": manipulation_ready_pose,
         "training_grade_policy_rollout_proven": False,
         "collision_geometry_loaded": collision_summary["collision_geometry_loaded"],
         "scene_collision_mesh_geom_enabled": collision_summary[
@@ -5291,11 +5508,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Render every simulated step for selected episodes instead of sampled review frames.",
     )
+    parser.add_argument("--render-width", type=int, default=640)
+    parser.add_argument("--render-height", type=int, default=360)
     parser.add_argument("--max-rendered-episodes", type=int, default=3)
     parser.add_argument("--max-rendered-steps", type=int, default=24)
     parser.add_argument("--allow-fetch-g1-assets", action="store_true")
     parser.add_argument("--no-fetch-g1-assets", action="store_true")
     parser.add_argument("--menagerie-ref", default=DEFAULT_MENAGERIE_REF)
+    parser.add_argument(
+        "--manipulation-ready-arms",
+        action="store_true",
+        help=(
+            "Pose simulated G1 forearms into the robot-POV workspace for review media; "
+            "this does not prove manipulation success."
+        ),
+    )
+    parser.add_argument(
+        "--manipulation-reach-arm",
+        default="both",
+        choices=["right", "left", "both"],
+        help="Which simulated arm is posed when --manipulation-ready-arms is enabled.",
+    )
     args = parser.parse_args(argv)
 
     capture_root_env = os.environ.get("BLUEPRINT_CAPTURE_ROOT")
@@ -5313,10 +5546,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         duration_seconds=args.duration_seconds,
         render_frames=not args.skip_render_frames,
         render_every_step=args.render_every_step,
+        render_width=args.render_width,
+        render_height=args.render_height,
         max_rendered_episodes=args.max_rendered_episodes,
         max_rendered_steps=args.max_rendered_steps,
         allow_fetch_g1_assets=allow_fetch,
         menagerie_ref=args.menagerie_ref,
+        manipulation_ready_arms=args.manipulation_ready_arms,
+        manipulation_reach_arm=args.manipulation_reach_arm,
     )
     print(
         json.dumps(

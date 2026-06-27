@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw
 
+from blueprint_pipeline import wam_real_provider_validation_probe as real_probe
 from blueprint_pipeline.wam_derived_observation_harness import (
     build_wam_derived_observation_step,
     run_wam_derived_observation_harness_step,
@@ -1107,3 +1109,78 @@ def test_real_provider_backend_contract_records_missing_provider_blockers(
     assert "depth_provider_command_not_configured" in payload["backend"]["blockers"]
     assert "no_real_sam3_depth_or_pose_provider_ran" in payload["backend"]["blockers"]
     assert payload["claim_boundary"]["estimated_depth_is_not_sensor_depth"] is True
+
+
+def test_real_provider_backend_records_ultralytics_sam3_runtime(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    frame = _write_frame(tmp_path / "generated.jpg")
+    weights = tmp_path / "sam3.pt"
+    weights.write_bytes(b"fake-weights")
+    request_path = tmp_path / "request.json"
+    output_path = tmp_path / "backend_result.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "source_generated_frame_path": str(frame),
+                "eval_ready_task_grounding": {
+                    "task": {"target_prompts_for_object_index_backends": ["red block"]}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeSAM3SemanticPredictor:
+        def __init__(self, overrides: dict[str, Any]) -> None:
+            self.overrides = overrides
+
+        def set_image(self, path: str) -> None:
+            assert Path(path).is_file()
+
+        def __call__(self, text: list[str]) -> list[Any]:
+            assert text == ["red block"]
+            boxes = types.SimpleNamespace(
+                xyxy=np.array([[1.0, 2.0, 30.0, 40.0]], dtype=np.float32),
+                conf=np.array([0.82], dtype=np.float32),
+            )
+            return [types.SimpleNamespace(boxes=boxes)]
+
+    ultralytics_module = types.ModuleType("ultralytics")
+    models_module = types.ModuleType("ultralytics.models")
+    sam_module = types.ModuleType("ultralytics.models.sam")
+    sam_module.SAM3SemanticPredictor = FakeSAM3SemanticPredictor
+    monkeypatch.setitem(sys.modules, "ultralytics", ultralytics_module)
+    monkeypatch.setitem(sys.modules, "ultralytics.models", models_module)
+    monkeypatch.setitem(sys.modules, "ultralytics.models.sam", sam_module)
+    monkeypatch.setattr(
+        real_probe,
+        "_module_available",
+        lambda name: name == "ultralytics",
+    )
+    depth_code = (
+        "import json, os; "
+        "json.dump({'depth_estimates':[{'object_id':'generated_frame','relative_depth':0.4}]}, "
+        "open(os.environ['BLUEPRINT_WAM_PROVIDER_OUTPUT'], 'w', encoding='utf-8'))"
+    )
+    monkeypatch.setenv("SAM3_WEIGHTS_PATH", str(weights))
+    monkeypatch.setenv("BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND", f"{sys.executable} -c {depth_code!r}")
+    monkeypatch.setenv("BLUEPRINT_WAM_PERCEPTION_BACKEND_INPUT", str(request_path))
+    monkeypatch.setenv("BLUEPRINT_WAM_PERCEPTION_BACKEND_OUTPUT", str(output_path))
+    monkeypatch.setenv("BLUEPRINT_WAM_PERCEPTION_BACKEND_JOB_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUEPRINT_WAM_POSE_PROVIDER_COMMAND", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_WAM_AUTO_POSE_PROVIDER", raising=False)
+
+    assert run_external_backend_from_env() == 0
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    sam3_status = payload["backend"]["provider_statuses"][0]
+    assert payload["status"] == "completed"
+    assert sam3_status["provider"] == "sam3"
+    assert sam3_status["kind"] == "sam3_semantic_segmentation"
+    assert sam3_status["model_family"] == "sam3"
+    assert sam3_status["runtime_package"] == "ultralytics.models.sam"
+    assert sam3_status["runtime_class"] == "SAM3SemanticPredictor"
+    assert sam3_status["ran"] is True
+    assert sam3_status["blockers"] == []

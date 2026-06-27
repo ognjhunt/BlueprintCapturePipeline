@@ -358,6 +358,7 @@ def test_object_index_subprocess_backend_and_detection_helpers(
     assert oi._command_from_env("OBJECT_INDEX_YOLO_WORLD_COMMAND") == "custom {INPUT_JSON}"
     monkeypatch.delenv("OBJECT_INDEX_YOLO_WORLD_COMMAND")
     assert "object_index_yolo_world_runner.py" in oi._command_from_env("OBJECT_INDEX_YOLO_WORLD_COMMAND")
+    assert "object_index_splat_analyzer_runner.py" in oi._command_from_env("OBJECT_INDEX_SPLAT_ANALYZER_COMMAND")
     assert oi._command_from_env("UNKNOWN_COMMAND") == ""
     assert oi._module_available("json") is True
     monkeypatch.setattr(oi.importlib.util, "find_spec", lambda _name: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -371,6 +372,9 @@ def test_object_index_subprocess_backend_and_detection_helpers(
     sam_requirements = oi._backend_runtime_requirements("sam3")
     assert sam_requirements["support_level"] == "optional"
     assert str(tmp_path / "sam.pt") in sam_requirements["missing_paths"]
+    splat_requirements = oi._backend_runtime_requirements("splat_analyzer")
+    assert splat_requirements["support_level"] == "optional"
+    assert splat_requirements["required_modules"] == []
     assert oi._backend_runtime_requirements("other")["required_modules"] == []
 
     monkeypatch.setattr(
@@ -826,7 +830,14 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
     monkeypatch.setattr(oi, "_extract_keyframe_images", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(oi, "_resolve_video_path", lambda *_args, **_kwargs: stage_context.raw_root / "walkthrough.mp4")
     monkeypatch.setattr(oi, "_command_from_env", lambda name: f"{name.lower()} {{INPUT_JSON}} {{OUTPUT_JSON}}")
-    monkeypatch.setattr(oi, "_backend_preflight_status", lambda backend_name, command_template: {"status": "ready", "support_level": "required"})
+    monkeypatch.setattr(
+        oi,
+        "_backend_preflight_status",
+        lambda backend_name, command_template: {
+            "status": "ready",
+            "support_level": "optional" if backend_name in {"sam3", "splat_analyzer"} else "required",
+        },
+    )
 
     def fake_backend(backend_name: str, **_kwargs):
         if backend_name == "yolo_world":
@@ -879,7 +890,7 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
     assert grounding["tasks"][0]["task_id"] == "llm-task"
 
     def existing_object_backend(backend_name: str, **_kwargs):
-        if backend_name == "yolo_world":
+        if backend_name == "splat_analyzer":
             return {
                 "status": "ok",
                 "backend": backend_name,
@@ -892,7 +903,15 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
                             "task_relevance": {"score": 0.9},
                             "articulation_hints": {"interactive": True, "kind": "door", "confidence": 0.8},
                         }
-                    ]
+                    ],
+                    "scene_relationship_candidates": [
+                        {
+                            "subject_id": "existing",
+                            "object_id": "target",
+                            "relationship": "near",
+                            "confidence": 0.6,
+                        }
+                    ],
                 },
             }
         return {"status": "ok", "backend": backend_name, "payload": {"detections": []}}
@@ -900,6 +919,8 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
     monkeypatch.setattr(oi, "_run_backend_command", existing_object_backend)
     existing_result = oi.run_object_index_stage(capture_root=capture_root, force_rebuild=True)
     assert existing_result["object_count"] == 1
+    existing_grounding = json.loads((stage_context.raw_root / "object_grounding_hints.json").read_text(encoding="utf-8"))
+    assert existing_grounding["scene_relationship_candidates"][0]["relationship"] == "near"
 
     empty_cases = [
         (
@@ -929,7 +950,14 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
     ]
     original_build_objects = oi._build_objects
     for suffix, reports, build_objects, expected in empty_cases:
-        report_iter = iter([*reports, {"status": "ok", "backend": "grounding_dino", "payload": {"detections": []}}, {"status": "ok", "backend": "sam3", "payload": {"detections": []}}])
+        report_iter = iter(
+            [
+                *reports,
+                {"status": "ok", "backend": "grounding_dino", "payload": {"detections": []}},
+                {"status": "skipped", "backend": "sam3", "reason": "sam3_not_installed"},
+                {"status": "skipped", "backend": "splat_analyzer", "reason": "missing_local_splat_asset"},
+            ]
+        )
         monkeypatch.setattr(oi, "_run_backend_command", lambda **_kwargs: next(report_iter))
         monkeypatch.setattr(oi, "_build_objects", build_objects or original_build_objects)
         empty_result = oi.run_object_index_stage(capture_root=capture_root, force_rebuild=True)

@@ -92,7 +92,9 @@ def test_da3_sample_frames_runtime_loading_and_inference(tmp_path: Path, monkeyp
 
     runtime, runtime_warnings = da3._load_da3_runtime("metric")
     assert runtime is None
-    assert runtime_warnings[0].startswith("da3_runtime_unavailable:")
+    assert runtime_warnings[0].startswith(
+        ("da3_runtime_unavailable:", "da3_model_load_failed:")
+    )
 
     fake_module = types.ModuleType("depth_anything_3.api")
 

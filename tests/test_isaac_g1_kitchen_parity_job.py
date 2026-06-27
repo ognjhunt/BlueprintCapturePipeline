@@ -82,6 +82,17 @@ def test_manipulation_cam_flag_threads_env_and_bootstrap(tmp_path: Path) -> None
     body = J.docker_start_cmd()[1]
     assert 'PARITY_MANIPULATION_CAM' in body and '--manipulation-cam' in body
 
+    reach = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="p",
+        steps=8,
+        manipulation_reach=True,
+    )
+    assert reach.env["PARITY_MANIPULATION_REACH"] == "1"
+    assert reach.env["PARITY_MANIPULATION_REACH_ARM"] == "both"
+    assert 'PARITY_MANIPULATION_REACH_ARM' in body and '--manipulation-reach-arm' in body
+
 
 def test_build_harness_package_is_wam_ready_and_honest(tmp_path: Path) -> None:
     result = {

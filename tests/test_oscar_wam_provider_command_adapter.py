@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from blueprint_pipeline import oscar_wam_provider_command_adapter as adapter
+from blueprint_pipeline import wam_compute_providers as compute_providers
 
 
 _PROVIDER_ENV_VARS = (
@@ -16,9 +17,12 @@ _PROVIDER_ENV_VARS = (
     "BLUEPRINT_OSCAR_WAM_CHECKPOINT",
     "BLUEPRINT_WAM_MODEL_CHECKPOINT",
     adapter.VAST_WAM_PUBLIC_IMAGE_ENV,
+    adapter.RUNPOD_WAM_PUBLIC_IMAGE_ENV,
     adapter.VAST_WAM_MIN_GPU_RAM_MB_ENV,
     adapter.VAST_WAM_EXCLUDED_MACHINE_ID_ENV,
     adapter.ALLOW_VAST_PROVIDER_LAUNCH_ENV,
+    adapter.OSCAR_WAM_COMPUTE_PROVIDER_ENV,
+    compute_providers.PROVIDER_ORDER_ENV,
 )
 
 
@@ -171,6 +175,39 @@ def test_provider_command_adapter_imports_completed_provider_output_zip(
     ]
 
 
+def test_provider_command_adapter_imports_completed_runpod_provider_output_zip(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    _write_json(rollout_input, {"schema_version": "wam_rollout_input_manifest.v1"})
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    provider_job = tmp_path / "provider-job"
+    _write_provider_zip(provider_job / "runpod_provider_runtime_output.zip")
+    output = tmp_path / "wam_provider_output.json"
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_INPUT", str(rollout_input))
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(output))
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT", str(checkpoint))
+
+    payload = adapter.run(
+        [
+            "--mode",
+            "replay-existing-provider-output",
+            "--completed-provider-job-dir",
+            str(provider_job),
+            "--work-dir",
+            str(tmp_path / "work"),
+        ]
+    )
+
+    assert payload["status"] == "completed"
+    assert payload["mode"] == "replay_existing_provider_output"
+    assert payload["provider_output_zip_name"] == "runpod_provider_runtime_output.zip"
+    assert payload["provider_output_replayed"] is True
+    assert payload["fresh_provider_launch_attempted"] is False
+
+
 def test_provider_command_adapter_backfills_rollout_context_from_input_manifest(
     tmp_path: Path,
     monkeypatch,
@@ -280,6 +317,37 @@ def test_provider_command_adapter_vast_mode_is_gated(
 
     assert payload["status"] == "blocked"
     assert f"missing_env_{adapter.ALLOW_VAST_PROVIDER_LAUNCH_ENV}" in payload["blockers"]
+    assert "missing_cli_paid_wam_compute_provider_launch_flag" in payload["blockers"]
+
+
+def test_provider_command_adapter_runpod_provider_no_spend_plan_is_gated(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    _write_json(rollout_input, {"schema_version": "wam_rollout_input_manifest.v1"})
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    output = tmp_path / "wam_provider_output.json"
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_INPUT", str(rollout_input))
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(output))
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT", str(checkpoint))
+
+    payload = adapter.run(
+        [
+            "--mode",
+            "auto",
+            "--provider",
+            "runpod",
+            "--work-dir",
+            str(tmp_path / "work"),
+        ]
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["mode"] == "runpod_provider"
+    assert "missing_cli_paid_wam_compute_provider_launch_flag" in payload["blockers"]
+    assert payload["fresh_provider_launch_attempted"] is False
 
 
 def test_provider_command_adapter_launches_and_imports_vast_provider_result(
@@ -340,10 +408,18 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
         return {"status": "completed", "job_dir": str(provider_job), "blockers": []}
 
     monkeypatch.setattr(adapter, "build_oscar_wam_provider_bundle", fake_build_bundle)
-    monkeypatch.setattr(adapter, "create_async_vast_wam_run", fake_create)
-    monkeypatch.setattr(adapter, "poll_async_vast_wam_run", fake_poll)
+    monkeypatch.setattr(compute_providers, "create_async_vast_wam_run", fake_create)
+    monkeypatch.setattr(compute_providers, "poll_async_vast_wam_run", fake_poll)
 
-    payload = adapter.run(["--mode", "vast-provider", "--work-dir", str(work_dir)])
+    payload = adapter.run(
+        [
+            "--mode",
+            "vast-provider",
+            "--allow-paid-vast-launch",
+            "--work-dir",
+            str(work_dir),
+        ]
+    )
 
     assert payload["status"] == "completed"
     assert payload["mode"] == "vast_provider"
@@ -353,8 +429,25 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
     assert payload["fresh_provider_launch_attempted"] is True
     assert payload["fresh_model_run_claimed"] is True
     assert payload["generated_rollout_visual_smoke_status"] == "passed_visual_quality_smoke"
-    assert payload["generated_rollout_visually_useful_for_success_review"] is True
+    assert payload["generated_rollout_visually_useful_for_success_review"] is False
+    assert (
+        payload["generated_rollout_review_usefulness_status"]
+        == "not_reviewable_for_task_success"
+    )
+    assert (
+        "generated_rollout_video_resolution_too_low_for_task_success_review"
+        in payload["generated_rollout_review_usefulness_blockers"]
+    )
+    assert (
+        "generated_rollout_video_fps_too_low_for_task_success_review"
+        in payload["generated_rollout_review_usefulness_blockers"]
+    )
+    assert (
+        "generated_rollout_video_too_short_for_task_success_review"
+        in payload["generated_rollout_review_usefulness_blockers"]
+    )
     assert payload["details"]["vast_provider_job_dir"] == str(work_dir / "vast_provider_run")
+    assert payload["details"]["wam_compute_provider"] == "vast"
     assert Path(payload["rollouts"][0]["generated_video_path"]).is_file()
     assert (
         captured_create["public_image"]
@@ -370,6 +463,99 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
     assert captured_bundle["guidance"] == 4.5
     assert captured_bundle["seed"] == 123
     assert captured_poll["max_wait_seconds"] == 900
+    assert captured_poll["teardown"] is True
+
+
+def test_provider_command_adapter_launches_and_imports_runpod_provider_result(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _clear_provider_env(monkeypatch)
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    _write_json(rollout_input, {"schema_version": "wam_rollout_input_manifest.v1"})
+    output = tmp_path / "wam_provider_output.json"
+    work_dir = tmp_path / "work"
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_INPUT", str(rollout_input))
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(output))
+    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT", raising=False)
+    monkeypatch.delenv("BLUEPRINT_WAM_MODEL_CHECKPOINT", raising=False)
+    monkeypatch.setenv(
+        adapter.RUNPOD_WAM_PUBLIC_IMAGE_ENV,
+        "docker.io/nijelhunt/blueprint-oscar-wam:runpod-test",
+    )
+    captured_create: dict[str, Any] = {}
+    captured_bundle: dict[str, Any] = {}
+    captured_poll: dict[str, Any] = {}
+
+    def fake_build_bundle(**kwargs: Any) -> dict[str, Any]:
+        captured_bundle.update(kwargs)
+        bundle = Path(kwargs["job_dir"]) / "provider_bundle.zip"
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        bundle.write_bytes(b"bundle")
+        return {"status": "completed", "bundle_path": str(bundle), "blockers": []}
+
+    def fake_create(**kwargs: Any) -> dict[str, Any]:
+        captured_create.update(kwargs)
+        return {
+            "status": "pod_created",
+            "pod_id": "pod-123",
+            "job_dir": str(kwargs["job_dir"]),
+            "output_path": str(kwargs["output_path"]),
+            "blockers": [],
+        }
+
+    def fake_poll(**kwargs: Any) -> dict[str, Any]:
+        captured_poll.update(kwargs)
+        provider_job = Path(kwargs["job_dir"])
+        _write_provider_zip(provider_job / "runpod_provider_runtime_output.zip")
+        return {
+            "status": "completed",
+            "pod_id": "pod-123",
+            "provider_runtime_output_zip_path": str(
+                provider_job / "runpod_provider_runtime_output.zip"
+            ),
+            "provider_command_status": "completed",
+            "provider_command_blockers": [],
+            "output_zip_present": True,
+            "runtime_result_status": "completed",
+            "runtime_result_blockers": [],
+            "mp4_count": 1,
+            "teardown_performed": True,
+            "continuing_spend_from_this_run": False,
+        }
+
+    monkeypatch.setattr(adapter, "build_oscar_wam_provider_bundle", fake_build_bundle)
+    monkeypatch.setattr(compute_providers, "create_runpod_wam_async_run", fake_create)
+    monkeypatch.setattr(compute_providers, "poll_runpod_wam_async_run", fake_poll)
+
+    payload = adapter.run(
+        [
+            "--mode",
+            "auto",
+            "--provider",
+            "runpod",
+            "--allow-paid-runpod-launch",
+            "--work-dir",
+            str(work_dir),
+        ]
+    )
+
+    assert payload["status"] == "completed"
+    assert payload["mode"] == "runpod_provider"
+    assert payload["provider_output_zip_imported"] is True
+    assert payload["provider_output_replayed"] is False
+    assert payload["provider_output_imported_from_current_provider_run"] is True
+    assert payload["fresh_provider_launch_attempted"] is True
+    assert payload["fresh_model_run_claimed"] is True
+    assert payload["details"]["runpod_provider_job_dir"] == str(work_dir / "runpod_provider_run")
+    assert payload["details"]["wam_compute_provider"] == "runpod"
+    assert captured_create["allow_paid_runpod_launch"] is True
+    assert captured_create["image_name"] == "docker.io/nijelhunt/blueprint-oscar-wam:runpod-test"
+    assert captured_create["container_disk_gb"] == 100
+    assert captured_create["volume_gb"] == 30
+    assert captured_create["min_vcpu_per_gpu"] == 8
+    assert captured_create["min_ram_per_gpu"] == 40
+    assert captured_bundle["wam_rollout_input_manifest"] == rollout_input.resolve()
     assert captured_poll["teardown"] is True
 
 
@@ -405,10 +591,18 @@ def test_provider_command_adapter_current_vast_run_requires_runtime_model_truth(
         return {"status": "completed", "job_dir": str(provider_job), "blockers": []}
 
     monkeypatch.setattr(adapter, "build_oscar_wam_provider_bundle", fake_build_bundle)
-    monkeypatch.setattr(adapter, "create_async_vast_wam_run", fake_create)
-    monkeypatch.setattr(adapter, "poll_async_vast_wam_run", fake_poll)
+    monkeypatch.setattr(compute_providers, "create_async_vast_wam_run", fake_create)
+    monkeypatch.setattr(compute_providers, "poll_async_vast_wam_run", fake_poll)
 
-    payload = adapter.run(["--mode", "vast-provider", "--work-dir", str(work_dir)])
+    payload = adapter.run(
+        [
+            "--mode",
+            "vast-provider",
+            "--allow-paid-vast-launch",
+            "--work-dir",
+            str(work_dir),
+        ]
+    )
 
     assert payload["status"] == "completed"
     assert payload["provider_output_imported_from_current_provider_run"] is True
@@ -470,8 +664,8 @@ def test_provider_command_adapter_auto_prefers_replay_without_paid_launch(
     def fail_poll(**_kwargs: Any) -> dict[str, Any]:
         raise AssertionError("auto replay should not poll a fresh provider run")
 
-    monkeypatch.setattr(adapter, "create_async_vast_wam_run", fail_create)
-    monkeypatch.setattr(adapter, "poll_async_vast_wam_run", fail_poll)
+    monkeypatch.setattr(compute_providers, "create_async_vast_wam_run", fail_create)
+    monkeypatch.setattr(compute_providers, "poll_async_vast_wam_run", fail_poll)
 
     payload = adapter.run(["--mode", "auto", "--work-dir", str(tmp_path / "work")])
 
