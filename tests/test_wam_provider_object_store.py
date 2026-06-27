@@ -54,6 +54,10 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
     class FakeClient:
         def __init__(self) -> None:
             self.uploads: list[tuple[str, str, str]] = []
+            self.deletes: list[tuple[str, str]] = []
+
+        def delete_object(self, *, Bucket: str, Key: str) -> None:
+            self.deletes.append((Bucket, Key))
 
         def upload_file(self, source: str, bucket: str, key: str) -> None:
             self.uploads.append((source, bucket, key))
@@ -102,6 +106,9 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
         f"blueprint/wam-test/{object_store._job_key_component((tmp_path / 'job').resolve())}"
         "/runpod_provider_runtime_output.zip"
     )
+    # a fresh run clears any stale output object at the key so the poll cannot grab a
+    # pre-existing object and falsely report a completed fresh model run
+    assert ("blueprint-wam", manifest["output_key"]) in fake_client.deletes
     assert manifest["provider_bundle_url_redacted"].endswith("?REDACTED_QUERY")
     persisted = (tmp_path / "job" / "wam_provider_object_store_staging_manifest.json").read_text(
         encoding="utf-8"

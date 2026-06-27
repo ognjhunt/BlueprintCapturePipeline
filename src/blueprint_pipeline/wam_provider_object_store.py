@@ -272,6 +272,15 @@ def stage_wam_provider_bundle_object_store(
             client_kwargs["endpoint_url"] = endpoint
         try:
             client = boto3.client("s3", **client_kwargs)
+            # A fresh run must not inherit a prior run's output object at this key. The output key
+            # is not run-unique, so without this the poll's GET returns a stale pre-existing object
+            # instantly and falsely reports a completed fresh model run (observed: a per-step
+            # provider run grabbed a 128x128 placeholder in 0.72s while the real worker never ran).
+            # Clear any stale output so the GET 404s until THIS run's worker uploads its result.
+            try:
+                client.delete_object(Bucket=bucket_value, Key=output_key)
+            except Exception:  # pragma: no cover - best-effort cleanup, never blocks staging
+                pass
             client.upload_file(str(resolved_bundle), bucket_value, bundle_key)
             bundle_url = client.generate_presigned_url(
                 "get_object",
