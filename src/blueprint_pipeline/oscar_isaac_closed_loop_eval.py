@@ -16,7 +16,10 @@ validated end-to-end with zero GPU spend and the same code path then runs the re
 """
 from __future__ import annotations
 
+import argparse
 import json
+import shlex
+import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -434,3 +437,95 @@ def run_oscar_isaac_closed_loop(
     }
     write_json(resolved_out / "oscar_isaac_closed_loop_manifest.json", manifest)
     return manifest
+
+
+DEFAULT_SAM3_HARNESS_BACKEND_COMMAND = [
+    sys.executable,
+    "-m",
+    "blueprint_pipeline.wam_real_provider_validation_probe",
+    "backend",
+]
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the per-step OSCAR-2B <-> SAM3 closed loop. Intended to run ON a GPU pod that has the
+    OSCAR repo + checkpoint and the SAM3/DA3 perception backend. ``--dry-run`` validates the full
+    assembly (paths, backends, route) and writes the plan without any inference, so the wiring is
+    verifiable with zero GPU.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--start-frame", required=True, help="initial robot-POV observation frame")
+    parser.add_argument("--route-file", required=True, help='JSON: {"route_points": [[x,y,z],...]}')
+    parser.add_argument("--steps", type=int, default=4)
+    parser.add_argument("--task-prompt", default="walk to the sink")
+    parser.add_argument("--num-frames", type=int, default=8, help="OSCAR clip length per step")
+    parser.add_argument("--oscar-repo")
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--harness-backend-kind", default="real_provider_probe")
+    parser.add_argument("--harness-backend-command", default=None)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+
+    out_dir = Path(args.output_dir).expanduser().resolve()
+    ensure_dir(out_dir)
+    route = list(json.loads(Path(args.route_file).read_text(encoding="utf-8")).get("route_points") or [])
+    harness_command = (
+        shlex.split(args.harness_backend_command)
+        if args.harness_backend_command
+        else DEFAULT_SAM3_HARNESS_BACKEND_COMMAND
+    )
+    oscar_ready = bool(args.oscar_repo and args.checkpoint)
+
+    if args.dry_run or not oscar_ready:
+        plan = {
+            "schema_version": "oscar_isaac_closed_loop_plan.v1",
+            "generated_at": utc_now_iso(),
+            "status": "prepared" if oscar_ready else "blocked",
+            "mode": "dry_run" if args.dry_run else "prepared",
+            "start_frame": args.start_frame,
+            "start_frame_present": Path(args.start_frame).expanduser().is_file(),
+            "route_point_count": len(route),
+            "steps": int(args.steps),
+            "task_prompt": args.task_prompt,
+            "num_frames_per_step": int(args.num_frames),
+            "oscar_repo": args.oscar_repo,
+            "checkpoint_configured": bool(args.checkpoint),
+            "harness_backend_kind": args.harness_backend_kind,
+            "harness_backend_command_argv0": harness_command[0] if harness_command else None,
+            "blockers": [] if oscar_ready else ["blocked_missing_oscar_repo_or_checkpoint"],
+        }
+        write_json(out_dir / "oscar_isaac_closed_loop_plan.json", plan)
+        print(json.dumps({"status": plan["status"], "mode": plan["mode"]}, sort_keys=True))
+        return 0 if plan["status"] in {"prepared"} else 2
+
+    import subprocess
+
+    oscar_generate = make_local_oscar_subprocess_generate(
+        oscar_repo=args.oscar_repo,
+        checkpoint=args.checkpoint,
+        run=subprocess.run,
+        extract_next_frame=extract_last_frame_via_opencv,
+    )
+    backend = make_oscar_per_step_wam_backend(
+        oscar_generate=oscar_generate,
+        work_dir=out_dir / "oscar_generation",
+        task_prompt=args.task_prompt,
+        num_frames=int(args.num_frames),
+    )
+    manifest = run_oscar_isaac_closed_loop(
+        output_dir=out_dir,
+        start_frame_path=args.start_frame,
+        route_points=route,
+        wam_generate_next=backend,
+        steps=int(args.steps),
+        harness_backend_kind=args.harness_backend_kind,
+        harness_backend_command=harness_command,
+        allow_external_backend=args.harness_backend_kind != "fixture",
+    )
+    print(json.dumps({"status": manifest["status"], "steps_executed": manifest.get("steps_executed")}, sort_keys=True))
+    return 0 if manifest["status"] == "completed" else 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
