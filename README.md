@@ -1376,6 +1376,40 @@ path because it can spend bounded startup time without reaching the Blueprint
 fetch/finalizer wrapper or uploading `isaac_provider_runtime_output.zip`; only
 use `BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD=true` for an intentional
 debug run.
+For RunPod Isaac pods, use
+`blueprint-collect-runpod-live-execution-proof --runtime-output-zip <path> --startup-artifact-timeout-seconds 360 --stop-on-startup-artifact-timeout`
+after submission. A missing first output zip records
+`provider_pod_startup_or_image_pull_timeout` and can still prove teardown, but
+it is not Isaac Sim execution proof; an empty zip left by a staging PUT probe is
+rejected. For image/container startup triage, run
+`blueprint-run-runpod-provider-adapter --mode image-startup-canary-pod` against
+the same launch request and poll the canary output zip with the live-proof
+collector. If that canary also times out, the blocker is before user-command
+execution; artifacts record `image_startup_canary_artifact_timeout` and, when
+image metadata shows oversized layers, `prebuilt_isaac_image_layer_pull_exceeded_watchdog`.
+Set `BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS=<seconds>` only when you
+intend to keep the canary pod warm briefly for an immediate same-host reuse
+attempt, and still collect teardown proof afterward. If image-size metadata
+already shows an oversized worker layer, fresh `on-demand-pod` launches block
+before spend with `large_worker_image_requires_canary_or_warm_provider` unless
+`BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START=true` is set for an intentional
+debug retry.
+Prefer S3-compatible object-store staging for the canary bundle and callback
+URL, for example `blueprint-stage-wam-provider-object-store --job-dir
+<job-dir>/object_store_canary --bundle-path <job-dir>/isaac_provider_runtime_bundle.zip`.
+The helper name is historical; the signed GET/PUT transport is
+simulator-agnostic. Export the signed PUT value with `$(cat
+<provider_output_put_url.txt>)` or another shell-safe assignment instead of
+unquoted sourcing, because presigned URLs contain `&` separators.
+The outer fetch/upload wrapper uses `BLUEPRINT_ISAAC_PROVIDER_PYTHON`
+when set, otherwise a normal `python3`/`python`, and falls back to
+`/isaac-sim/python.sh` only when needed so first phase uploads do not
+intentionally wait on Isaac Sim Python bootstrap. To reuse a stopped pod that
+already references the prepared image, run
+`blueprint-run-runpod-provider-adapter --mode existing-pod-start --existing-pod-id <pod-id> --allow-runpod-api-call`.
+If RunPod reports no free GPU on that stopped pod's host, use a fresh on-demand
+pod and keep that provider host-capacity error separate from Isaac runtime
+proof.
 Each job also writes `gpu_startup_pipeline_plan.json`. This is the managed-GPU
 startup policy for website-origin jobs: the WebApp queues and forwards only,
 BlueprintCapturePipeline owns provider selection and spend gates, and customer

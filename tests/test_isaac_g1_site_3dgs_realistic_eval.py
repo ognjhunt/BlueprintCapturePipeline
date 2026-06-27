@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import types
 import zipfile
@@ -58,7 +60,15 @@ def test_detect_isaac_runtime_records_no_proof_boundary() -> None:
     assert "scene loading" in discovery["proof_boundary"].lower()
 
 
-def test_realistic_isaac_lane_writes_fail_closed_artifacts(tmp_path: Path) -> None:
+def test_realistic_isaac_lane_writes_fail_closed_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF", raising=False)
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE",
+        str(tmp_path / "missing-isaac-worker-image-ref"),
+    )
     ply = tmp_path / "scene.ply"
     spz = tmp_path / "scene.spz"
     _write_gaussian_ply(ply)
@@ -141,6 +151,12 @@ def test_realistic_isaac_lane_writes_fail_closed_artifacts(tmp_path: Path) -> No
     assert provider_request["provider_request_shape"]["image"][
         "configured_image_ref"
     ] == DEFAULT_ISAAC_RUNTIME_IMAGE_REF
+    assert provider_request["provider_request_shape"]["limits"][
+        "startup_artifact_watchdog_required"
+    ] is True
+    assert provider_request["provider_request_shape"]["limits"][
+        "startup_artifact_timeout_seconds"
+    ] == 360
     assert provider_request["provider_request_shape"]["environment"][
         "secret_values_in_artifact"
     ] is False
@@ -166,6 +182,7 @@ def test_realistic_isaac_lane_writes_fail_closed_artifacts(tmp_path: Path) -> No
     assert bundle_readiness["provider_fetch_command_has_periodic_heartbeat_upload"] is True
     assert bundle_readiness["provider_fetch_command_has_timeout_finalizer"] is True
     assert bundle_readiness["provider_fetch_command_uses_stable_output_dir"] is True
+    assert bundle_readiness["provider_fetch_command_uses_python_selector"] is True
     assert bundle_readiness["provider_eval_manifest_paths_runner_relative"] is True
     assert bundle_readiness["provider_eval_manifest_relative_paths"][
         "generated_site_scene_usda"
@@ -206,6 +223,7 @@ def test_realistic_isaac_lane_writes_fail_closed_artifacts(tmp_path: Path) -> No
     with zipfile.ZipFile(job_dir / "isaac_provider_runtime_bundle.zip") as archive:
         names = set(archive.namelist())
     assert "provider_runtime/isaac_realistic_runtime_runner.py" in names
+    assert "provider_runtime/isaac_provider_outer_runner.py" in names
     assert "provider_runtime/run_isaac_realistic_runtime.sh" in names
     assert "provider_runtime/isaac_provider_eval_manifest.json" in names
     assert "provider_runtime/generated_site_scene.usda" in names
@@ -419,6 +437,7 @@ def test_isaac_provider_readiness_accepts_multi_row_matrix_and_camera_alias(
     assert readiness["provider_fetch_command_has_periodic_heartbeat_upload"] is True
     assert readiness["provider_fetch_command_has_timeout_finalizer"] is True
     assert readiness["provider_fetch_command_uses_stable_output_dir"] is True
+    assert readiness["provider_fetch_command_uses_python_selector"] is True
     assert readiness["matrix_contract"]["scenario_eval_run_count"] == 2
     assert readiness["matrix_contract"]["matrix_camera_slot_count"] == 4
     assert readiness["matrix_contract"][
@@ -540,6 +559,65 @@ def test_isaac_runtime_runner_writes_result_before_simulation_app_close() -> Non
     close_marker = "simulation_app.close()"
     assert preclose_marker in source
     assert source.index(preclose_marker) < source.index(close_marker)
+
+
+def test_provider_fetch_command_short_bootstrap_executes_fake_bundle(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "fake_provider_bundle.zip"
+    entrypoint = """#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "$BLUEPRINT_ISAAC_OUTPUT_DIR"
+cat > "$BLUEPRINT_ISAAC_OUTPUT_DIR/isaac_runtime_result.json" <<'JSON'
+{"schema_version":"isaac_provider_runtime_result.v1","status":"completed_fake_local_command_path","isaac_runtime_executed":false,"blockers":[],"raw_secret_values_recorded":false}
+JSON
+"""
+    with zipfile.ZipFile(bundle_path, "w") as archive:
+        archive.writestr(
+            "provider_runtime/isaac_provider_outer_runner.py",
+            isaac_eval._provider_outer_runner_source(),
+        )
+        archive.writestr("provider_runtime/run_isaac_realistic_runtime.sh", entrypoint)
+        archive.writestr("provider_runtime/isaac_provider_eval_manifest.json", "{}\n")
+
+    command = isaac_eval._provider_fetch_command()
+    assert len(command) < 8500
+    workspace = tmp_path / "workspace"
+    stale_output_dir = workspace / "isaac_provider_runtime_output"
+    stale_output_dir.mkdir(parents=True)
+    (stale_output_dir / "stale_runtime_result.json").write_text(
+        '{"status":"stale_previous_warm_pod_run"}\n', encoding="utf-8"
+    )
+    result = subprocess.run(
+        ["bash", "-lc", command],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "BLUEPRINT_PROVIDER_WORKSPACE": str(workspace),
+            "BLUEPRINT_EVAL_MANIFEST_URI": bundle_path.as_uri(),
+            "BLUEPRINT_ISAAC_PROVIDER_RUNNER_TIMEOUT_SECONDS": "20",
+            "BLUEPRINT_ISAAC_PROVIDER_UPLOAD_INTERVAL_SECONDS": "2",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    output_zip = workspace / "isaac_provider_runtime_output.zip"
+    assert output_zip.is_file()
+    with zipfile.ZipFile(output_zip) as archive:
+        names = set(archive.namelist())
+        assert "isaac_provider_outer_phase_log.jsonl" in names
+        assert "stale_runtime_result.json" not in names
+        latest = json.loads(archive.read("isaac_provider_outer_latest_phase.json"))
+        runtime_result = json.loads(archive.read("isaac_runtime_result.json"))
+    assert latest["phase"] == "provider_outer_runner_final_upload"
+    assert runtime_result["status"] == "completed_fake_local_command_path"
+    assert (
+        "BLUEPRINT_ISAAC_PROVIDER_OUTPUT_RESET_DONE" in command
+        and "reset_output_dir()" in command
+    )
 
 
 def test_isaac_runtime_runner_contains_fail_closed_six_camera_video_smoke() -> None:
@@ -905,6 +983,29 @@ def test_signed_url_provider_request_can_be_launch_ready(
         "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
         PREBUILT_ISAAC_WORKER_IMAGE_REF,
     )
+    image_diagnostic_path = tmp_path / "isaac_worker_image_manifest_diagnostic.json"
+    image_diagnostic_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "isaac_worker_image_manifest_diagnostic.v1",
+                "status": "completed",
+                "image_ref": PREBUILT_ISAAC_WORKER_IMAGE_REF,
+                "total_compressed_size_bytes": 13_500_000_000,
+                "largest_layer_size_bytes": 10_600_000_000,
+                "layer_count": 2,
+                "large_image_pull_risk": True,
+                "layers": [
+                    {"digest": "sha256:small", "size": 120_000_000},
+                    {"digest": "sha256:large", "size": 10_600_000_000},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC",
+        str(image_diagnostic_path),
+    )
 
     result = run_isaac_g1_site_3dgs_realistic_eval(
         ply_asset=ply,
@@ -929,10 +1030,20 @@ def test_signed_url_provider_request_can_be_launch_ready(
     assert shape["image"]["configured_image_ref"] == PREBUILT_ISAAC_WORKER_IMAGE_REF
     assert shape["image"]["image_family"] == "isaac-eval-worker"
     assert shape["image"]["prebuilt_worker_image_ref_configured"] is True
+    assert shape["image"]["image_size_diagnostic"][
+        "metadata_available_for_selected_image"
+    ] is True
+    assert shape["image"]["image_size_diagnostic"][
+        "largest_compressed_layer_size_bytes"
+    ] == 10_600_000_000
+    assert shape["image"]["image_size_diagnostic"]["large_image_pull_risk"] is True
     assert shape["image"]["direct_isaac_base_image_blocked_by_default"] is False
     assert bundle_readiness["status"] == "ready"
     assert provider_plan["status"] == "ready_for_authorized_provider_execution"
     assert provider_plan["blockers"] == []
+    assert provider_plan["provider_runtime_inputs"][
+        "worker_image_manifest_diagnostic"
+    ]["source_artifact"] == str(image_diagnostic_path)
     assert bundle_readiness["local_bundle_ready_for_remote_staging"] is True
     assert bundle_readiness["ready_for_next_authorized_runpod_bundle_attempt"] is True
     assert bundle_readiness["ready_for_next_authorized_vast_bundle_attempt"] is True
@@ -1326,6 +1437,7 @@ def test_isaac_bundle_diagnostic_readiness_and_summary_edges(
 
         def namelist(self) -> list[str]:
             return [
+                "provider_runtime/isaac_provider_outer_runner.py",
                 "provider_runtime/isaac_realistic_runtime_runner.py",
                 "provider_runtime/run_isaac_realistic_runtime.sh",
                 "provider_runtime/isaac_provider_eval_manifest.json",
@@ -1342,6 +1454,8 @@ def test_isaac_bundle_diagnostic_readiness_and_summary_edges(
         def read(self, name: str) -> bytes:
             if name.endswith("isaac_provider_eval_manifest.json"):
                 return b'{"relative_paths": {"runtime_runner": "provider_runtime/runner.py"}}'
+            if name.endswith("isaac_provider_outer_runner.py"):
+                return b"provider_entrypoint_subprocess_heartbeat\nprovider_outer_runner_final_upload\n"
             return b"missing expected runtime markers"
 
     def zip_factory(path: object, mode: str = "r", *args: object, **kwargs: object) -> object:

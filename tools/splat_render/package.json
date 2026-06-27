@@ -1,0 +1,13 @@
+{
+  "name": "blueprint-splat-render",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Headless Spark.js renderer + splat-transform decode oracle for Blueprint Isaac splat parity",
+  "dependencies": {
+    "@playcanvas/splat-transform": "^2.7.0",
+    "@sparkjsdev/spark": "^2.1.0",
+    "playwright": "^1.61.1",
+    "three": "^0.185.0"
+  }
+}

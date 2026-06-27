@@ -118,6 +118,12 @@ DEFAULT_ISAAC_RUNTIME_IMAGE_REF = "nvcr.io/nvidia/isaac-sim:6.0.0"
 ISAAC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF"
 ISAAC_WORKER_IMAGE_REF_FILE_ENV = "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE"
 DEFAULT_ISAAC_WORKER_IMAGE_REF_FILE = "~/.blueprint-secrets/isaac_eval_worker_image_ref"
+ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV = (
+    "BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC"
+)
+DEFAULT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC = (
+    "output/isaac_worker_image_manifest_diagnostic.json"
+)
 ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV = "BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD"
 RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV = "BLUEPRINT_RUNPOD_CONTAINER_REGISTRY_AUTH_ID"
 
@@ -835,6 +841,72 @@ def _configured_isaac_worker_image_ref() -> dict[str, Any]:
     }
 
 
+def _isaac_worker_image_size_diagnostic(image_ref: str) -> dict[str, Any]:
+    explicit = _string(os.getenv(ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV))
+    selected = explicit or DEFAULT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC
+    path = Path(selected).expanduser()
+    base = {
+        "env_var": ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV,
+        "path": str(path),
+        "path_source": "env" if explicit else "default_output_path",
+        "path_present": path.is_file(),
+        "raw_secret_values_recorded": False,
+    }
+    if not path.is_file():
+        return {
+            **base,
+            "status": "missing",
+            "metadata_available_for_selected_image": False,
+        }
+    try:
+        payload = read_json_any(path)
+    except Exception as exc:
+        return {
+            **base,
+            "status": "unreadable",
+            "metadata_available_for_selected_image": False,
+            "error_type": type(exc).__name__,
+        }
+    manifest = dict(payload) if isinstance(payload, Mapping) else {}
+    manifest_image_ref = _string(manifest.get("image_ref"))
+    if manifest_image_ref and image_ref and manifest_image_ref != image_ref:
+        return {
+            **base,
+            "status": "ignored_image_ref_mismatch",
+            "metadata_available_for_selected_image": False,
+            "manifest_image_ref": manifest_image_ref,
+        }
+    if manifest.get("status") != "completed":
+        return {
+            **base,
+            "status": _string(manifest.get("status")) or "not_completed",
+            "metadata_available_for_selected_image": False,
+            "blockers": _string_list(manifest.get("blockers")),
+        }
+    diagnostic = {
+        **base,
+        "status": "completed",
+        "metadata_available_for_selected_image": True,
+        "source_artifact": str(path),
+        "image_ref": image_ref or manifest_image_ref,
+        "total_compressed_size_bytes": manifest.get("total_compressed_size_bytes"),
+        "largest_compressed_layer_size_bytes": (
+            manifest.get("largest_layer_size_bytes")
+            or manifest.get("largest_compressed_layer_size_bytes")
+        ),
+        "large_image_pull_risk": bool(manifest.get("large_image_pull_risk")),
+        "layer_count": manifest.get("layer_count"),
+        "proof_boundary": (
+            "Worker image manifest metadata only. This does not prove container "
+            "startup, Isaac Sim execution, policy execution, safety, or robot readiness."
+        ),
+    }
+    layers = manifest.get("layers")
+    if isinstance(layers, list):
+        diagnostic["layers"] = layers
+    return diagnostic
+
+
 def build_provider_plan(
     *,
     runtime: Mapping[str, Any],
@@ -853,6 +925,7 @@ def build_provider_plan(
     image_config = _configured_isaac_worker_image_ref()
     direct_base_image_allowed = _env_truthy(ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV)
     worker_image_ref = _string(image_config.get("image_ref")) or DEFAULT_ISAAC_RUNTIME_IMAGE_REF
+    image_size_diagnostic = _isaac_worker_image_size_diagnostic(worker_image_ref)
     eval_manifest_uri = _string(
         os.getenv("BLUEPRINT_EVAL_MANIFEST_URI")
         or os.getenv("BLUEPRINT_ISAAC_PROVIDER_BUNDLE_URI")
@@ -908,6 +981,7 @@ def build_provider_plan(
             "prebuilt_worker_image_ref_configured": bool(image_config.get("configured")),
             "worker_image_ref_file": image_config.get("image_ref_file"),
             "worker_image_ref_file_present": image_config.get("image_ref_file_present"),
+            "worker_image_manifest_diagnostic": image_size_diagnostic,
             "direct_isaac_base_image_runpod_allowed": direct_base_image_allowed,
             "direct_isaac_base_image_override_env": ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV,
             "eval_manifest_uri_present": bool(eval_manifest_uri),
@@ -2023,19 +2097,25 @@ exit 127
 
 def _provider_fetch_command() -> str:
     return r'''set -euo pipefail
-cd /workspace
-python3 - <<'PY'
-import os
-import shutil
-import subprocess
-import sys
-import time
-import urllib.request
-import zipfile
-import json
+WORKSPACE="${BLUEPRINT_PROVIDER_WORKSPACE:-/workspace}"
+mkdir -p "$WORKSPACE"
+cd "$WORKSPACE"
+PYTHON_BIN="${BLUEPRINT_ISAAC_PROVIDER_PYTHON:-}"
+if [ -z "$PYTHON_BIN" ]; then
+  PYTHON_BIN="$(command -v python3 || command -v python || true)"
+fi
+if [ -z "$PYTHON_BIN" ] && [ -x /isaac-sim/python.sh ]; then
+  PYTHON_BIN="/isaac-sim/python.sh"
+fi
+if [ -z "$PYTHON_BIN" ]; then
+  echo "No Python executable found for Isaac provider fetch wrapper" >&2
+  exit 127
+fi
+"$PYTHON_BIN" - <<'PY'
+import json, os, shutil, subprocess, sys, time, urllib.request, zipfile
 from pathlib import Path
 
-workspace = Path("/workspace")
+workspace = Path(os.environ.get("BLUEPRINT_PROVIDER_WORKSPACE", "/workspace"))
 bundle_uri = os.environ["BLUEPRINT_EVAL_MANIFEST_URI"]
 bundle_zip = workspace / "isaac_provider_runtime_bundle.zip"
 bundle_dir = workspace / "isaac_provider_bundle"
@@ -2044,36 +2124,32 @@ output_zip = workspace / "isaac_provider_runtime_output.zip"
 signed_put_url = os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "").strip()
 started_at = time.time()
 
-def env_int(name: str, default: int) -> int:
+def env_int(name, default):
     try:
         value = int(os.environ.get(name, "").strip() or default)
     except ValueError:
         return default
     return value if value > 0 else default
 
-upload_interval_seconds = env_int("BLUEPRINT_ISAAC_PROVIDER_UPLOAD_INTERVAL_SECONDS", 20)
 fetch_timeout_seconds = env_int("BLUEPRINT_ISAAC_PROVIDER_FETCH_TIMEOUT_SECONDS", 180)
-hard_timeout_seconds = env_int("BLUEPRINT_GPU_PROVIDER_HARD_TIMEOUT_SECONDS", 900)
-runner_timeout_seconds = env_int(
-    "BLUEPRINT_ISAAC_PROVIDER_RUNNER_TIMEOUT_SECONDS",
-    max(30, hard_timeout_seconds - 120),
-)
 
-def ensure_output_dir() -> None:
+def write_json(path, payload):
     output_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
-def write_json(path: Path, payload: dict) -> None:
-    ensure_output_dir()
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def reset_output_dir():
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_zip.exists():
+        output_zip.unlink()
 
-def phase(name: str, **extra: object) -> None:
-    ensure_output_dir()
+def phase(name, **extra):
+    output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": "isaac_provider_outer_phase.v1",
         "phase": name,
         "elapsed_seconds": round(time.time() - started_at, 3),
-        "bundle_zip": str(bundle_zip),
-        "output_dir": str(output_dir),
         "raw_secret_values_recorded": False,
         **extra,
     }
@@ -2081,44 +2157,12 @@ def phase(name: str, **extra: object) -> None:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
     write_json(output_dir / "isaac_provider_outer_latest_phase.json", payload)
 
-def write_runtime_result(status: str, blockers: list[str], **extra: object) -> None:
-    payload = {
-        "schema_version": "isaac_provider_runtime_result.v1",
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "status": status,
-        "provider_outer_runner_status": status,
-        "provider_outer_runner_elapsed_seconds": round(time.time() - started_at, 3),
-        "isaac_runtime_executed": False,
-        "isaac_usd_scene_loaded": False,
-        "unitree_g1_loaded_in_isaac": False,
-        "controller_grade_execution_proven": False,
-        "official_policy_execution_proven": False,
-        "locomotion_continuity_validated": False,
-        "collision_dynamics_validated": False,
-        "manipulation_contact_dynamics_validated": False,
-        "realistic_splat_visual_rendered": False,
-        "wam_vla_runtime_proven": False,
-        "generated_world_rank_fidelity_result_proven": False,
-        "generated_world_policy_evaluation_scope_proven": False,
-        "blockers": blockers,
-        "warnings": ["provider_outer_runner_wrote_fail_closed_runtime_result"],
-        "raw_secret_values_recorded": False,
-        **extra,
-    }
+def write_runtime_result(status, blockers, **extra):
+    payload = {"schema_version": "isaac_provider_runtime_result.v1", "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "status": status, "provider_outer_runner_status": status, "provider_outer_runner_elapsed_seconds": round(time.time() - started_at, 3), "isaac_runtime_executed": False, "isaac_usd_scene_loaded": False, "unitree_g1_loaded_in_isaac": False, "controller_grade_execution_proven": False, "official_policy_execution_proven": False, "locomotion_continuity_validated": False, "collision_dynamics_validated": False, "manipulation_contact_dynamics_validated": False, "realistic_splat_visual_rendered": False, "wam_vla_runtime_proven": False, "generated_world_rank_fidelity_result_proven": False, "generated_world_policy_evaluation_scope_proven": False, "blockers": blockers, "raw_secret_values_recorded": False, **extra}
     write_json(output_dir / "isaac_runtime_result.json", payload)
 
-def package_output(reason: str) -> int:
-    ensure_output_dir()
-    write_json(
-        output_dir / "provider_runtime_output_package_status.json",
-        {
-            "schema_version": "isaac_provider_runtime_output_package_status.v1",
-            "status": "packaging",
-            "reason": reason,
-            "output_zip": str(output_zip),
-            "raw_secret_values_recorded": False,
-        },
-    )
+def package_output(reason):
+    output_dir.mkdir(parents=True, exist_ok=True)
     tmp_zip = output_zip.with_suffix(".zip.tmp")
     if tmp_zip.exists():
         tmp_zip.unlink()
@@ -2129,81 +2173,41 @@ def package_output(reason: str) -> int:
                 archive.write(path, path.relative_to(output_dir).as_posix())
                 file_count += 1
         if file_count == 0:
-            archive.writestr(
-                "runtime_output_missing.json",
-                json.dumps({"status": "blocked", "blockers": ["runtime_output_directory_empty"]}, indent=2),
-            )
+            archive.writestr("runtime_output_missing.json", '{"status":"blocked","blockers":["runtime_output_directory_empty"]}\n')
     tmp_zip.replace(output_zip)
     return output_zip.stat().st_size
 
-def upload_output(reason: str) -> dict:
+def upload_output(reason):
     size = package_output(reason)
+    status = {"schema_version": "isaac_provider_runtime_output_upload_status.v1", "reason": reason, "runtime_output_zip_size_bytes": size, "signed_put_url_value_stored": False, "raw_secret_values_recorded": False}
     if not signed_put_url:
-        status = {
-            "schema_version": "isaac_provider_runtime_output_upload_status.v1",
-            "status": "skipped",
-            "reason": reason,
-            "blockers": ["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL_missing"],
-            "local_runtime_output_zip": str(output_zip),
-            "runtime_output_zip_size_bytes": size,
-            "raw_secret_values_recorded": False,
-        }
+        status.update({"status": "skipped", "blockers": ["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL_missing"]})
         write_json(output_dir / "provider_output_upload_status.json", status)
         return status
     try:
         data = output_zip.read_bytes()
-        request = urllib.request.Request(
-            signed_put_url,
-            data=data,
-            method="PUT",
-            headers={"Content-Type": "application/zip"},
-        )
+        request = urllib.request.Request(signed_put_url, data=data, method="PUT", headers={"Content-Type": "application/zip"})
         with urllib.request.urlopen(request, timeout=120) as response:
-            upload_status = int(getattr(response, "status", 200))
-        status = {
-            "schema_version": "isaac_provider_runtime_output_upload_status.v1",
-            "status": "completed",
-            "reason": reason,
-            "upload_status": upload_status,
-            "uploaded_runtime_output_zip": str(output_zip),
-            "uploaded_bytes": len(data),
-            "signed_put_url_value_stored": False,
-            "raw_secret_values_recorded": False,
-        }
+            status.update({"status": "completed", "upload_status": int(getattr(response, "status", 200)), "uploaded_bytes": len(data)})
     except Exception as exc:
-        status = {
-            "schema_version": "isaac_provider_runtime_output_upload_status.v1",
-            "status": "failed",
-            "reason": reason,
-            "blockers": ["provider_runtime_output_upload_failed"],
-            "error_type": type(exc).__name__,
-            "error": str(exc)[:500],
-            "signed_put_url_value_stored": False,
-            "raw_secret_values_recorded": False,
-        }
+        status.update({"status": "failed", "blockers": ["provider_runtime_output_upload_failed"], "error_type": type(exc).__name__, "error": str(exc)[:500]})
     write_json(output_dir / "provider_output_upload_status.json", status)
     package_output(f"{reason}:status_recorded")
-    if signed_put_url and status.get("status") == "completed":
+    if status.get("status") == "completed":
         try:
             data = output_zip.read_bytes()
-            request = urllib.request.Request(
-                signed_put_url,
-                data=data,
-                method="PUT",
-                headers={"Content-Type": "application/zip"},
-            )
+            request = urllib.request.Request(signed_put_url, data=data, method="PUT", headers={"Content-Type": "application/zip"})
             with urllib.request.urlopen(request, timeout=120) as response:
                 status["final_manifest_upload_status"] = int(getattr(response, "status", 200))
                 status["final_manifest_uploaded_bytes"] = len(data)
-            write_json(output_dir / "provider_output_upload_status.json", status)
         except Exception as exc:
             status["final_manifest_upload_status"] = "failed"
             status["final_manifest_upload_error_type"] = type(exc).__name__
             status["final_manifest_upload_error"] = str(exc)[:500]
-            write_json(output_dir / "provider_output_upload_status.json", status)
+        write_json(output_dir / "provider_output_upload_status.json", status)
     return status
 
-def fetch_bundle() -> None:
+def fetch_bundle():
     phase("provider_bundle_fetch_started", fetch_timeout_seconds=fetch_timeout_seconds)
     with urllib.request.urlopen(bundle_uri, timeout=fetch_timeout_seconds) as response:
         with bundle_zip.open("wb") as handle:
@@ -2211,18 +2215,126 @@ def fetch_bundle() -> None:
     phase("provider_bundle_fetch_completed", bundle_size_bytes=bundle_zip.stat().st_size)
     upload_output("provider_bundle_fetch_completed")
 
-def unzip_bundle() -> None:
+def unzip_bundle():
     phase("provider_bundle_unzip_started")
     if bundle_dir.exists():
         shutil.rmtree(bundle_dir)
     bundle_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(bundle_zip) as archive:
         archive.extractall(bundle_dir)
-    ensure_output_dir()
     phase("provider_bundle_unzip_completed")
     upload_output("provider_bundle_unzip_completed")
 
-def run_entrypoint() -> int:
+try:
+    reset_output_dir()
+    os.environ["BLUEPRINT_ISAAC_PROVIDER_OUTPUT_RESET_DONE"] = "1"
+    phase("provider_outer_runner_started", python_executable=sys.executable)
+    upload_output("provider_outer_runner_started")
+    fetch_bundle()
+    unzip_bundle()
+    runner = bundle_dir / "provider_runtime" / "isaac_provider_outer_runner.py"
+    if not runner.is_file():
+        phase("provider_outer_runner_missing", runner=str(runner))
+        write_runtime_result("blocked_provider_outer_runner_missing", ["provider_outer_runner_missing"])
+        upload_output("provider_outer_runner_missing")
+        sys.exit(127)
+    env = {**os.environ, "BLUEPRINT_ISAAC_PROVIDER_STARTED_AT": str(started_at), "BLUEPRINT_ISAAC_PROVIDER_OUTPUT_RESET_DONE": "1"}
+    rc = subprocess.call([sys.executable, str(runner)], cwd=str(bundle_dir / "provider_runtime"), env=env)
+except Exception as exc:
+    phase("provider_outer_runner_exception", error_type=type(exc).__name__, error=str(exc)[:500])
+    write_runtime_result("blocked_provider_outer_runner_exception", ["provider_outer_runner_exception"], error_type=type(exc).__name__, error=str(exc)[:500])
+    upload_output("provider_outer_runner_exception")
+    raise
+finally:
+    phase("provider_outer_runner_final_upload")
+    upload_output("provider_outer_runner_final_upload")
+sys.exit(rc)
+PY'''
+
+
+def _provider_outer_runner_source() -> str:
+    return r'''#!/usr/bin/env python3
+import json, os, subprocess, sys, time, urllib.request, zipfile
+from pathlib import Path
+
+workspace = Path(os.environ.get("BLUEPRINT_PROVIDER_WORKSPACE", "/workspace"))
+bundle_dir = workspace / "isaac_provider_bundle"
+output_dir = workspace / "isaac_provider_runtime_output"
+output_zip = workspace / "isaac_provider_runtime_output.zip"
+signed_put_url = os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "").strip()
+started_at = float(os.environ.get("BLUEPRINT_ISAAC_PROVIDER_STARTED_AT") or time.time())
+
+def env_int(name, default):
+    try:
+        value = int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+upload_interval_seconds = env_int("BLUEPRINT_ISAAC_PROVIDER_UPLOAD_INTERVAL_SECONDS", 20)
+hard_timeout_seconds = env_int("BLUEPRINT_GPU_PROVIDER_HARD_TIMEOUT_SECONDS", 900)
+runner_timeout_seconds = env_int("BLUEPRINT_ISAAC_PROVIDER_RUNNER_TIMEOUT_SECONDS", max(30, hard_timeout_seconds - 120))
+
+def write_json(path, payload):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+def reset_output_dir():
+    if output_dir.exists():
+        for path in sorted(output_dir.rglob("*"), reverse=True):
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+            elif path.is_dir():
+                path.rmdir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_zip.exists():
+        output_zip.unlink()
+
+def phase(name, **extra):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"schema_version": "isaac_provider_outer_phase.v1", "phase": name, "elapsed_seconds": round(time.time() - started_at, 3), "raw_secret_values_recorded": False, **extra}
+    with (output_dir / "isaac_provider_outer_phase_log.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    write_json(output_dir / "isaac_provider_outer_latest_phase.json", payload)
+
+def write_runtime_result(status, blockers, **extra):
+    payload = {"schema_version": "isaac_provider_runtime_result.v1", "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "status": status, "provider_outer_runner_status": status, "provider_outer_runner_elapsed_seconds": round(time.time() - started_at, 3), "isaac_runtime_executed": False, "isaac_usd_scene_loaded": False, "unitree_g1_loaded_in_isaac": False, "controller_grade_execution_proven": False, "official_policy_execution_proven": False, "locomotion_continuity_validated": False, "collision_dynamics_validated": False, "manipulation_contact_dynamics_validated": False, "realistic_splat_visual_rendered": False, "wam_vla_runtime_proven": False, "generated_world_rank_fidelity_result_proven": False, "generated_world_policy_evaluation_scope_proven": False, "blockers": blockers, "warnings": ["provider_outer_runner_wrote_fail_closed_runtime_result"], "raw_secret_values_recorded": False, **extra}
+    write_json(output_dir / "isaac_runtime_result.json", payload)
+
+def package_output(reason):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tmp_zip = output_zip.with_suffix(".zip.tmp")
+    if tmp_zip.exists():
+        tmp_zip.unlink()
+    with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        file_count = 0
+        for path in sorted(output_dir.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(output_dir).as_posix())
+                file_count += 1
+        if file_count == 0:
+            archive.writestr("runtime_output_missing.json", '{"status":"blocked","blockers":["runtime_output_directory_empty"]}\n')
+    tmp_zip.replace(output_zip)
+    return output_zip.stat().st_size
+
+def upload_output(reason):
+    size = package_output(reason)
+    status = {"schema_version": "isaac_provider_runtime_output_upload_status.v1", "reason": reason, "runtime_output_zip_size_bytes": size, "signed_put_url_value_stored": False, "raw_secret_values_recorded": False}
+    if not signed_put_url:
+        status.update({"status": "skipped", "blockers": ["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL_missing"]})
+        write_json(output_dir / "provider_output_upload_status.json", status)
+        return status
+    try:
+        data = output_zip.read_bytes()
+        request = urllib.request.Request(signed_put_url, data=data, method="PUT", headers={"Content-Type": "application/zip"})
+        with urllib.request.urlopen(request, timeout=120) as response:
+            status.update({"status": "completed", "upload_status": int(getattr(response, "status", 200)), "uploaded_bytes": len(data)})
+    except Exception as exc:
+        status.update({"status": "failed", "blockers": ["provider_runtime_output_upload_failed"], "error_type": type(exc).__name__, "error": str(exc)[:500]})
+    write_json(output_dir / "provider_output_upload_status.json", status)
+    return status
+
+def run_entrypoint():
     entrypoint = bundle_dir / "provider_runtime" / "run_isaac_realistic_runtime.sh"
     if not entrypoint.is_file():
         phase("provider_entrypoint_missing", entrypoint=str(entrypoint))
@@ -2230,27 +2342,11 @@ def run_entrypoint() -> int:
         upload_output("provider_entrypoint_missing")
         return 127
     entrypoint.chmod(0o755)
-    env = {
-        **os.environ,
-        "BLUEPRINT_ISAAC_OUTPUT_DIR": str(output_dir),
-        "BLUEPRINT_ISAAC_EVAL_MANIFEST": str(bundle_dir / "provider_runtime" / "isaac_provider_eval_manifest.json"),
-    }
-    stdout_path = output_dir / "provider_entrypoint_stdout.log"
-    stderr_path = output_dir / "provider_entrypoint_stderr.log"
-    phase(
-        "provider_entrypoint_subprocess_starting",
-        runner_timeout_seconds=runner_timeout_seconds,
-        upload_interval_seconds=upload_interval_seconds,
-    )
+    env = {**os.environ, "BLUEPRINT_ISAAC_OUTPUT_DIR": str(output_dir), "BLUEPRINT_ISAAC_EVAL_MANIFEST": str(bundle_dir / "provider_runtime" / "isaac_provider_eval_manifest.json")}
+    phase("provider_entrypoint_subprocess_starting", runner_timeout_seconds=runner_timeout_seconds, upload_interval_seconds=upload_interval_seconds)
     upload_output("provider_entrypoint_subprocess_starting")
-    with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
-        process = subprocess.Popen(
-            ["bash", str(entrypoint)],
-            cwd=str(bundle_dir / "provider_runtime"),
-            env=env,
-            stdout=stdout,
-            stderr=stderr,
-        )
+    with (output_dir / "provider_entrypoint_stdout.log").open("ab") as stdout, (output_dir / "provider_entrypoint_stderr.log").open("ab") as stderr:
+        process = subprocess.Popen(["bash", str(entrypoint)], cwd=str(bundle_dir / "provider_runtime"), env=env, stdout=stdout, stderr=stderr)
         phase("provider_entrypoint_subprocess_running", pid=process.pid)
         last_upload = 0.0
         while True:
@@ -2259,11 +2355,7 @@ def run_entrypoint() -> int:
             if rc is not None:
                 phase("provider_entrypoint_subprocess_exited", returncode=rc)
                 if not (output_dir / "isaac_runtime_result.json").is_file():
-                    write_runtime_result(
-                        "blocked_provider_entrypoint_exited_without_runtime_result",
-                        [f"provider_entrypoint_exited_without_runtime_result:{rc}"],
-                        provider_entrypoint_observed_exit_code=rc,
-                    )
+                    write_runtime_result("blocked_provider_entrypoint_exited_without_runtime_result", [f"provider_entrypoint_exited_without_runtime_result:{rc}"], provider_entrypoint_observed_exit_code=rc)
                 upload_output("provider_entrypoint_subprocess_exited")
                 return rc
             if elapsed > runner_timeout_seconds:
@@ -2274,11 +2366,7 @@ def run_entrypoint() -> int:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=20)
-                write_runtime_result(
-                    "blocked_provider_entrypoint_timeout",
-                    ["provider_entrypoint_timeout_before_runtime_result_upload"],
-                    provider_entrypoint_timeout_seconds=runner_timeout_seconds,
-                )
+                write_runtime_result("blocked_provider_entrypoint_timeout", ["provider_entrypoint_timeout_before_runtime_result_upload"], provider_entrypoint_timeout_seconds=runner_timeout_seconds)
                 phase("provider_entrypoint_timeout_completed", returncode=process.returncode)
                 upload_output("provider_entrypoint_timeout")
                 return 124
@@ -2289,26 +2377,19 @@ def run_entrypoint() -> int:
             time.sleep(5)
 
 try:
-    phase("provider_outer_runner_started")
-    upload_output("provider_outer_runner_started")
-    fetch_bundle()
-    unzip_bundle()
+    if os.environ.get("BLUEPRINT_ISAAC_PROVIDER_OUTPUT_RESET_DONE") != "1":
+        reset_output_dir()
     rc = run_entrypoint()
 except Exception as exc:
     phase("provider_outer_runner_exception", error_type=type(exc).__name__, error=str(exc)[:500])
-    write_runtime_result(
-        "blocked_provider_outer_runner_exception",
-        ["provider_outer_runner_exception"],
-        error_type=type(exc).__name__,
-        error=str(exc)[:500],
-    )
+    write_runtime_result("blocked_provider_outer_runner_exception", ["provider_outer_runner_exception"], error_type=type(exc).__name__, error=str(exc)[:500])
     upload_output("provider_outer_runner_exception")
     raise
 finally:
     phase("provider_outer_runner_final_upload")
     upload_output("provider_outer_runner_final_upload")
 sys.exit(rc)
-PY'''
+'''
 
 
 def _write_provider_runtime_bundle(
@@ -2357,10 +2438,13 @@ def _write_provider_runtime_bundle(
         ),
     }
     runner_path = provider_dir / "isaac_realistic_runtime_runner.py"
+    outer_runner_path = provider_dir / "isaac_provider_outer_runner.py"
     entrypoint_path = provider_dir / "run_isaac_realistic_runtime.sh"
     runner_path.write_text(_isaac_runtime_runner_source(), encoding="utf-8")
+    outer_runner_path.write_text(_provider_outer_runner_source(), encoding="utf-8")
     entrypoint_path.write_text(_provider_entrypoint_source(), encoding="utf-8")
     runner_path.chmod(0o755)
+    outer_runner_path.chmod(0o755)
     entrypoint_path.chmod(0o755)
     eval_manifest = {
         "schema_version": ISAAC_PROVIDER_EVAL_MANIFEST_SCHEMA_VERSION,
@@ -2375,6 +2459,7 @@ def _write_provider_runtime_bundle(
             "episode_spec_manifest": "episode_spec_manifest.json",
             "input_assets_dir": "input_assets",
             "runtime_runner": "isaac_realistic_runtime_runner.py",
+            "provider_outer_runner": "isaac_provider_outer_runner.py",
             "entrypoint": "run_isaac_realistic_runtime.sh",
         },
         "unitree_g1_asset_candidates": [
@@ -2616,6 +2701,7 @@ def _write_provider_bundle_readiness_manifest(
 ) -> dict[str, Any]:
     bundle_path = Path(_string(bundle_manifest.get("bundle_path"))).expanduser()
     required_entries = {
+        "provider_runtime/isaac_provider_outer_runner.py",
         "provider_runtime/isaac_realistic_runtime_runner.py",
         "provider_runtime/run_isaac_realistic_runtime.sh",
         "provider_runtime/isaac_provider_eval_manifest.json",
@@ -2630,6 +2716,7 @@ def _write_provider_bundle_readiness_manifest(
     zip_entries: list[str] = []
     entrypoint_text = ""
     runner_text = ""
+    outer_runner_text = ""
     eval_manifest: dict[str, Any] = {}
     zip_parse_error = None
     zip_testzip_result: str | None = None
@@ -2646,6 +2733,9 @@ def _write_provider_bundle_readiness_manifest(
                 ).decode("utf-8", errors="replace")
                 runner_text = archive.read(
                     "provider_runtime/isaac_realistic_runtime_runner.py"
+                ).decode("utf-8", errors="replace")
+                outer_runner_text = archive.read(
+                    "provider_runtime/isaac_provider_outer_runner.py"
                 ).decode("utf-8", errors="replace")
                 eval_manifest = _mapping(
                     json.loads(
@@ -2741,7 +2831,7 @@ def _write_provider_bundle_readiness_manifest(
         )
     )
     provider_outer_has_periodic_heartbeat_upload = all(
-        phrase in provider_command_text
+        phrase in outer_runner_text
         for phrase in (
             "BLUEPRINT_ISAAC_PROVIDER_UPLOAD_INTERVAL_SECONDS",
             "provider_entrypoint_subprocess_heartbeat",
@@ -2749,7 +2839,7 @@ def _write_provider_bundle_readiness_manifest(
         )
     )
     provider_outer_has_timeout_finalizer = all(
-        phrase in provider_command_text
+        phrase in outer_runner_text
         for phrase in (
             "BLUEPRINT_ISAAC_PROVIDER_RUNNER_TIMEOUT_SECONDS",
             "blocked_provider_entrypoint_timeout",
@@ -2761,6 +2851,20 @@ def _write_provider_bundle_readiness_manifest(
         and '/ "runtime_output"' not in provider_command_text.split("output_dir =", 1)[1].split("\n", 1)[0]
         if "output_dir =" in provider_command_text
         else False
+    )
+    provider_outer_uses_python_selector = all(
+        phrase in provider_command_text
+        for phrase in (
+            'PYTHON_BIN="${BLUEPRINT_ISAAC_PROVIDER_PYTHON:-}"',
+            "command -v python3",
+            'PYTHON_BIN="/isaac-sim/python.sh"',
+            '"$PYTHON_BIN" - <<',
+        )
+    )
+    provider_outer_runner_bundled = (
+        "provider_runtime/isaac_provider_outer_runner.py" in zip_entries
+        and "def run_entrypoint" in outer_runner_text
+        and "provider_outer_runner_final_upload" in outer_runner_text
     )
     if not entrypoint_has_crash_fallback:
         blockers.append("provider_entrypoint_missing_runtime_result_crash_fallback")
@@ -2786,6 +2890,10 @@ def _write_provider_bundle_readiness_manifest(
         blockers.append("provider_fetch_command_missing_timeout_finalizer")
     if not provider_outer_uses_stable_output_dir:
         blockers.append("provider_fetch_command_missing_stable_output_dir")
+    if not provider_outer_uses_python_selector:
+        blockers.append("provider_fetch_command_missing_python_selector")
+    if not provider_outer_runner_bundled:
+        blockers.append("provider_outer_runner_not_bundled")
 
     local_command_path_proven = (
         local_provider_command_diagnostic.get("provider_command_path_local_proven")
@@ -2866,6 +2974,8 @@ def _write_provider_bundle_readiness_manifest(
         "provider_fetch_command_has_periodic_heartbeat_upload": provider_outer_has_periodic_heartbeat_upload,
         "provider_fetch_command_has_timeout_finalizer": provider_outer_has_timeout_finalizer,
         "provider_fetch_command_uses_stable_output_dir": provider_outer_uses_stable_output_dir,
+        "provider_fetch_command_uses_python_selector": provider_outer_uses_python_selector,
+        "provider_outer_runner_bundled": provider_outer_runner_bundled,
         "provider_eval_manifest_paths_runner_relative": manifest_paths_runner_relative,
         "provider_eval_manifest_relative_paths": relative_paths,
         "runner_truth_boundaries_fail_closed": runner_preserves_truth_boundaries,
@@ -2907,6 +3017,7 @@ def _build_gpu_provider_launch_request(
     image_config = _configured_isaac_worker_image_ref()
     direct_base_image_allowed = _env_truthy(ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV)
     image_ref = _string(image_config.get("image_ref")) or DEFAULT_ISAAC_RUNTIME_IMAGE_REF
+    image_size_diagnostic = _isaac_worker_image_size_diagnostic(image_ref)
     container_registry_auth_id_present = bool(
         _string(os.getenv(RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV))
     )
@@ -2978,6 +3089,7 @@ def _build_gpu_provider_launch_request(
                 "prebuilt_worker_image_ref_configured": bool(image_config.get("configured")),
                 "worker_image_ref_file": image_config.get("image_ref_file"),
                 "worker_image_ref_file_present": image_config.get("image_ref_file_present"),
+                "image_size_diagnostic": image_size_diagnostic,
                 "direct_isaac_base_image_runpod_allowed": direct_base_image_allowed,
                 "direct_isaac_base_image_override_env": ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV,
                 "direct_isaac_base_image_blocked_by_default": (
@@ -3088,6 +3200,9 @@ def _build_gpu_provider_launch_request(
                 "requested_budget_usd": 2.0,
                 "hard_timeout_seconds": 900,
                 "idle_timeout_seconds": 60,
+                "startup_artifact_watchdog_required": True,
+                "startup_artifact_timeout_seconds": 360,
+                "startup_artifact_poll_interval_seconds": 15,
                 "idle_shutdown_required": True,
                 "external_watchdog_ttl_required": True,
                 "external_watchdog_ttl_seconds": 1200,
@@ -3543,7 +3658,8 @@ def _video_manifest(
             continue
         episode_id = _string(run.get("episode_id"))
         observed = _mapping(observed_by_run_id.get(_string(run.get("scenario_eval_run_id"))))
-        for camera_index, camera_id in enumerate(camera_ids):
+        run_camera_ids = _string_list(run.get("camera_ids")) or list(camera_ids)
+        for camera_index, camera_id in enumerate(run_camera_ids):
             runtime_path = runtime_video_path(observed, camera_id, camera_index)
             runtime_file_exists = bool(runtime_path and Path(runtime_path).expanduser().is_file())
             status = "completed" if runtime_file_exists else "blocked"
@@ -3557,6 +3673,9 @@ def _video_manifest(
                     "blockers": row_blockers,
                     "file_created": runtime_file_exists,
                     "source": "isaac_runtime_result" if runtime_file_exists else "expected_output_path",
+                    "camera_ids_source": "scenario_eval_matrix_row"
+                    if _string_list(run.get("camera_ids"))
+                    else "requested_camera_manifest",
                 }
             )
             posters.append(

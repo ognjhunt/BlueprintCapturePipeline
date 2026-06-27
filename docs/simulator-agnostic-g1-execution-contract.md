@@ -85,11 +85,14 @@ The local/provider path detects these variables when present:
 - `BLUEPRINT_ISAAC_UNITREE_G1_USD`
 - `BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF`
 - `BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE`
+- `BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC`
 - `BLUEPRINT_ISAAC_PROVIDER_BUNDLE_URI`
 - `BLUEPRINT_ARTIFACT_OUTPUT_URI`
 - `BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL`
 - `NGC_API_KEY_FILE`
 - `RUNPOD_API_KEY_FILE`
+- `BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS`
+- `BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START`
 
 `BLUEPRINT_ARTIFACT_OUTPUT_URI` or
 `BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL` is required before paid
@@ -107,6 +110,25 @@ zip. Missing image configuration blocks before spend with
 `prebuilt_isaac_eval_worker_image_ref_missing`. Only set
 `BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD=true` for a deliberate debug
 run with a wider manual observation window.
+
+For RunPod Isaac image-startup triage, `blueprint-run-runpod-provider-adapter
+--mode image-startup-canary-pod` uses the same configured image but writes only
+`runpod_image_startup_canary_output.zip`. A successful canary proves container
+user-command execution and artifact upload only. A canary timeout records
+`image_startup_canary_artifact_timeout`; if image-size metadata shows oversized
+layers, the live proof also records
+`prebuilt_isaac_image_layer_pull_exceeded_watchdog`. Use
+`BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS` only for a bounded warm-host
+reuse window, followed by teardown proof. With image-size metadata present,
+fresh RunPod `on-demand-pod` launches block before spend with
+`large_worker_image_requires_canary_or_warm_provider` unless
+`BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START=true` is set for an explicit
+debug retry.
+For durable canary staging, prefer S3-compatible object-store signed GET/PUT
+URLs from `blueprint-stage-wam-provider-object-store` over quick public tunnels.
+The helper name is historical; the staging transport is simulator-agnostic. Use
+a shell-safe export such as `export BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL="$(cat
+<provider_output_put_url.txt>)"` because presigned URLs contain `&` separators.
 
 ## Provider Closeout Requirements
 

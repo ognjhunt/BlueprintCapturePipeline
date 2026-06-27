@@ -451,6 +451,14 @@ export BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF="registry.example/blueprint/isaac-e
 ./scripts/build_push_isaac_worker_image.sh
 ```
 
+Set `BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_OUTPUT=<path>` when you want the
+build/push script to write the image layer-size diagnostic somewhere other than
+`output/isaac_worker_image_manifest_diagnostic.json`. Large layer diagnostics
+are provider-startup risk only; they do not prove or disprove Isaac execution.
+Isaac launch request generation reads the matching diagnostic from
+`BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC` or that default output path
+and includes it in `gpu_provider_launch_request.json`.
+
 For unattended RunPod Isaac runs, do not rely on the raw
 `nvcr.io/nvidia/isaac-sim:6.0.0` base image. The provider request now blocks
 before spend with `prebuilt_isaac_eval_worker_image_ref_missing` unless the
@@ -459,6 +467,60 @@ image ref is configured directly, via
 `BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF`. The direct base-image path requires
 `BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD=true` and should be used only
 for manual debug runs with a wider observation window.
+
+Before repeating a slow Isaac RunPod attempt, run a same-image startup canary:
+
+```bash
+blueprint-stage-wam-provider-object-store \
+  --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/object_store_canary" \
+  --bundle-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/isaac_provider_runtime_bundle.zip" \
+  --key-prefix "blueprint/isaac-runpod-startup-canary" \
+  --expiration-seconds 14400
+
+export BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL="$(cat "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/object_store_canary/provider_output_put_url.txt")"
+
+BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true \
+RUNPOD_API_KEY_FILE="$HOME/.blueprint-secrets/runpod_api_key" \
+blueprint-run-runpod-provider-adapter \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --mode image-startup-canary-pod \
+  --allow-runpod-api-call \
+  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_provider_adapter_result.canary.json"
+```
+
+The object-store helper has historical WAM naming but is simulator-agnostic
+S3-compatible staging. Prefer this route for RunPod canaries over quick tunnel
+URLs; it provides durable presigned GET/PUT URLs and avoids tunnel startup
+failures being misread as Isaac image startup failures. Do not source raw
+presigned URL files unless they shell-quote the value; use `export
+BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL="$(cat <provider_output_put_url.txt>)"`
+or an equivalent command-local env assignment.
+
+Poll and close the pod with:
+
+```bash
+BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true \
+BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
+RUNPOD_API_KEY_FILE="$HOME/.blueprint-secrets/runpod_api_key" \
+blueprint-collect-runpod-live-execution-proof \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --adapter-result "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_provider_adapter_result.canary.json" \
+  --runtime-output-zip "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_image_startup_canary_output.zip" \
+  --startup-artifact-timeout-seconds 360 \
+  --stop-on-startup-artifact-timeout \
+  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_live_execution_canary_proof.json" \
+  --allow-runpod-api-call
+```
+
+A canary timeout proves only that the selected image did not reach user-command
+artifact upload within the watchdog. It is not Isaac Sim execution proof. To
+hold a canary briefly for an immediate warm-host retry, set
+`BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS=<seconds>` and still collect
+zero-active-pod shutdown proof after the retry. If the launch request includes
+image-size metadata showing a large worker layer, fresh `on-demand-pod` attempts
+block before spend with `large_worker_image_requires_canary_or_warm_provider`.
+Set `BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START=true` only for an intentional
+debug retry with a wider observation window.
 
 From the WebApp repo, write the redacted forwarding preflight report before
 submitting a request:
@@ -847,12 +909,57 @@ Use `--mode serverless-run --endpoint-id "$BLUEPRINT_RUNPOD_ENDPOINT_ID"` only
 when an existing RunPod Serverless endpoint already points at the prepared
 worker image. For first simulator bring-up, prefer `--mode on-demand-pod` or an
 interactive GPU VM/pod so Vulkan/RTX/Isaac failures can be inspected directly.
+If a stopped on-demand pod already uses the prepared image, the adapter can
+refresh its image/start command/env and start it instead of creating a new pod:
+
+```bash
+BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true \
+RUNPOD_API_KEY_FILE="$HOME/.blueprint-secrets/runpod_api_key" \
+blueprint-run-runpod-provider-adapter \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --mode existing-pod-start \
+  --existing-pod-id "$BLUEPRINT_RUNPOD_EXISTING_POD_ID" \
+  --allow-runpod-api-call
+```
+
+This path still needs the startup-artifact watchdog and can fail before start if
+the stopped pod's host has no free GPU. In that case, fall back to a fresh
+on-demand pod and keep the original host-capacity blocker as provider evidence.
 The adapter writes `runpod_provider_adapter_result.json`; that artifact proves
 request submission shape or API submission only, not simulator execution. Its
 `cost_control_policy` separates RunPod `/run` request policy
 (`executionTimeout`, `ttl`, `lowPriority`) from endpoint-level controls
 (active workers, max workers, idle timeout) and from on-demand Pod shutdown,
 which still needs a worker finalizer plus external watchdog/owner terminator.
+For Isaac on-demand pods, monitor the first provider output zip separately from
+the full Isaac runtime. The Blueprint wrapper uploads
+`isaac_provider_runtime_output.zip` as soon as it starts; if that zip never
+appears in the startup window, stop the pod and record the blocker as startup or
+image-pull time rather than Isaac execution proof. The zip must be a valid
+non-empty zip; empty staging PUT probes do not count as runtime output:
+The outer fetch/upload wrapper prefers `BLUEPRINT_ISAAC_PROVIDER_PYTHON`, then a
+normal `python3`/`python`, and only falls back to `/isaac-sim/python.sh` when no
+normal Python exists, so early phase uploads do not intentionally wait for Isaac
+Sim Python bootstrap.
+
+```bash
+BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
+BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true \
+RUNPOD_API_KEY_FILE="$HOME/.blueprint-secrets/runpod_api_key" \
+blueprint-collect-runpod-live-execution-proof \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --adapter-result "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_provider_adapter_result.live.json" \
+  --runtime-output-zip "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/isaac_provider_runtime_output.zip" \
+  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_live_execution_teardown_proof.json" \
+  --startup-artifact-timeout-seconds 360 \
+  --poll-interval-seconds 15 \
+  --stop-on-startup-artifact-timeout \
+  --allow-runpod-api-call
+```
+
+That proof can show provider allocation and shutdown, but it must keep
+`simulator_execution_proven=false` unless the returned runtime manifest and
+Isaac artifacts prove execution.
 
 Then verify the startup architecture contract:
 

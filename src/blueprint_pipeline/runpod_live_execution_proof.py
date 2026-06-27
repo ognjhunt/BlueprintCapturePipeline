@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -33,6 +35,19 @@ def _string(value: Any) -> str:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _env_truthy(name: str) -> bool:
@@ -200,14 +215,103 @@ def _active_pod_count(pods: Sequence[Mapping[str, Any]]) -> int:
     return count
 
 
+def _provider_limits(provider_request: Mapping[str, Any]) -> dict[str, Any]:
+    provider_shape = _mapping(provider_request.get("provider_request_shape"))
+    return _mapping(provider_shape.get("limits"))
+
+
+def _runtime_output_zip_status(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {
+            "runtime_output_zip_path": None,
+            "runtime_output_zip_present": False,
+            "runtime_output_zip_size_bytes": None,
+            "runtime_output_zip_valid": False,
+            "runtime_output_zip_entry_count": None,
+            "runtime_output_zip_error": None,
+        }
+    try:
+        stat = path.stat()
+    except OSError:
+        return {
+            "runtime_output_zip_path": str(path),
+            "runtime_output_zip_present": False,
+            "runtime_output_zip_size_bytes": None,
+            "runtime_output_zip_valid": False,
+            "runtime_output_zip_entry_count": None,
+            "runtime_output_zip_error": None,
+        }
+    valid = False
+    entry_count = 0
+    error = None
+    if path.is_file() and stat.st_size > 0:
+        try:
+            with zipfile.ZipFile(path) as archive:
+                entries = [name for name in archive.namelist() if name and not name.endswith("/")]
+            entry_count = len(entries)
+            valid = entry_count > 0
+            if not valid:
+                error = "runtime_output_zip_empty"
+        except zipfile.BadZipFile:
+            error = "runtime_output_zip_bad_zip"
+    return {
+        "runtime_output_zip_path": str(path),
+        "runtime_output_zip_present": valid,
+        "runtime_output_zip_size_bytes": stat.st_size,
+        "runtime_output_zip_valid": valid,
+        "runtime_output_zip_entry_count": entry_count,
+        "runtime_output_zip_error": error,
+    }
+
+
+def _poll_runtime_output_zip(
+    *,
+    path: Path | None,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> dict[str, Any]:
+    started_at = utc_now_iso()
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    attempts = 0
+    while True:
+        attempts += 1
+        status = _runtime_output_zip_status(path)
+        if status["runtime_output_zip_present"]:
+            return {
+                **status,
+                "runtime_output_zip_poll_started_at": started_at,
+                "runtime_output_zip_poll_completed_at": utc_now_iso(),
+                "runtime_output_zip_poll_attempts": attempts,
+                "runtime_output_zip_poll_timeout_seconds": timeout_seconds,
+                "runtime_output_zip_poll_interval_seconds": poll_interval_seconds,
+                "runtime_output_zip_poll_timed_out": False,
+            }
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or poll_interval_seconds <= 0:
+            return {
+                **status,
+                "runtime_output_zip_poll_started_at": started_at,
+                "runtime_output_zip_poll_completed_at": utc_now_iso(),
+                "runtime_output_zip_poll_attempts": attempts,
+                "runtime_output_zip_poll_timeout_seconds": timeout_seconds,
+                "runtime_output_zip_poll_interval_seconds": poll_interval_seconds,
+                "runtime_output_zip_poll_timed_out": True,
+            }
+        time.sleep(min(poll_interval_seconds, remaining))
+
+
 def collect_runpod_live_execution_proof(
     *,
     provider_launch_request_path: str | Path,
     adapter_result_path: str | Path | None = None,
     runtime_manifest_path: str | Path | None = None,
+    runtime_output_zip_path: str | Path | None = None,
     output_path: str | Path | None = None,
     pod_id: str | None = None,
     stop_pod: bool = False,
+    stop_on_startup_artifact_timeout: bool = False,
+    startup_artifact_timeout_seconds: float | None = None,
+    poll_interval_seconds: float = 15.0,
     allow_runpod_api_call: bool = False,
     timeout_seconds: int = 30,
 ) -> dict[str, Any]:
@@ -215,6 +319,11 @@ def collect_runpod_live_execution_proof(
     adapter_path = Path(adapter_result_path).expanduser().resolve() if adapter_result_path else None
     runtime_path = (
         Path(runtime_manifest_path).expanduser().resolve() if runtime_manifest_path else None
+    )
+    runtime_output_zip = (
+        Path(runtime_output_zip_path).expanduser().resolve()
+        if runtime_output_zip_path
+        else None
     )
     resolved_output = (
         Path(output_path).expanduser().resolve()
@@ -228,12 +337,21 @@ def collect_runpod_live_execution_proof(
     api_key, api_key_meta = _read_runpod_api_key()
     resolved_pod_id = _derive_pod_id(adapter_result, pod_id)
     runtime_proof = _runtime_manifest_proof(runtime_manifest) if runtime_manifest else {}
+    provider_limits = _provider_limits(provider_request)
+    if startup_artifact_timeout_seconds is None:
+        startup_artifact_timeout_seconds = _number(
+            provider_limits.get("startup_artifact_timeout_seconds")
+        )
+    startup_artifact_poll_requested = (
+        runtime_output_zip is not None and startup_artifact_timeout_seconds is not None
+    )
     result: dict[str, Any] = {
         "schema_version": RUNPOD_LIVE_EXECUTION_PROOF_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
         "provider_launch_request_path": str(request_path),
         "adapter_result_path": str(adapter_path) if adapter_path else None,
         "runtime_manifest_path": str(runtime_path) if runtime_path else None,
+        "runtime_output_zip_path": str(runtime_output_zip) if runtime_output_zip else None,
         "output_path": str(resolved_output),
         "job_id": _string(provider_request.get("job_id")) or _string(adapter_result.get("job_id")),
         "pod_id": resolved_pod_id or None,
@@ -245,6 +363,13 @@ def collect_runpod_live_execution_proof(
         "active_pod_count_before": None,
         "active_pod_count_after": None,
         "pod_stop_performed": False,
+        "stop_on_startup_artifact_timeout": stop_on_startup_artifact_timeout,
+        "startup_artifact_timeout_seconds": startup_artifact_timeout_seconds,
+        "runtime_output_zip_poll_requested": startup_artifact_poll_requested,
+        **_runtime_output_zip_status(runtime_output_zip),
+        "startup_artifact_timeout_phase": None,
+        "image_startup_canary_timeout_proven": False,
+        "fresh_worker_image_startup_timeout_proven": False,
         "shutdown_or_termination_proof": False,
         "production_runpod_worker_execution_proven": False,
         "simulator_execution_proven": False,
@@ -269,6 +394,57 @@ def collect_runpod_live_execution_proof(
         write_json(resolved_output, result)
         return result
     try:
+        startup_artifact_blockers: list[str] = []
+        if startup_artifact_poll_requested:
+            image_startup_canary_mode = (
+                _string(adapter_result.get("mode")) == "image-startup-canary-pod"
+            )
+            image_startup_diagnostic = _mapping(
+                adapter_result.get("image_startup_diagnostic")
+            )
+            poll_result = _poll_runtime_output_zip(
+                path=runtime_output_zip,
+                timeout_seconds=float(startup_artifact_timeout_seconds or 0),
+                poll_interval_seconds=max(0.0, float(poll_interval_seconds)),
+            )
+            result.update(
+                {
+                    **poll_result,
+                    "provider_pod_startup_or_image_pull_timeout_suspected": (
+                        poll_result.get("runtime_output_zip_poll_timed_out") is True
+                        and poll_result.get("runtime_output_zip_present") is not True
+                    ),
+                }
+            )
+            if result["provider_pod_startup_or_image_pull_timeout_suspected"]:
+                startup_artifact_blockers.append(
+                    "provider_pod_startup_or_image_pull_timeout"
+                )
+                result["startup_artifact_timeout_phase"] = (
+                    "image_container_startup_before_user_command"
+                    if image_startup_canary_mode
+                    else "provider_startup_before_runtime_output_upload"
+                )
+                if image_startup_canary_mode:
+                    result["image_startup_canary_timeout_proven"] = True
+                    startup_artifact_blockers.append(
+                        "image_startup_canary_artifact_timeout"
+                    )
+                else:
+                    result["fresh_worker_image_startup_timeout_proven"] = bool(
+                        image_startup_diagnostic.get("large_image_pull_risk") is True
+                    )
+                diagnostic_blocker = _string(
+                    image_startup_diagnostic.get(
+                        "diagnostic_blocker_if_canary_times_out"
+                    )
+                )
+                if diagnostic_blocker and diagnostic_blocker not in startup_artifact_blockers:
+                    startup_artifact_blockers.append(diagnostic_blocker)
+                if stop_on_startup_artifact_timeout:
+                    stop_pod = True
+                    result["stop_pod_requested"] = True
+                    result["startup_artifact_timeout_stop_requested"] = True
         before_status, before_response = _http_json(
             url=f"{RUNPOD_REST_API_BASE}/pods",
             payload=None,
@@ -321,7 +497,9 @@ def collect_runpod_live_execution_proof(
                 "active_pod_count_after": _active_pod_count(after_pods),
             }
         )
+        result.update(_runtime_output_zip_status(runtime_output_zip))
         blockers = list(result.get("blockers") or [])
+        blockers.extend(startup_artifact_blockers)
         if runtime_path and not runtime_manifest:
             blockers.append("runtime_manifest_missing")
         if result["active_pod_count_before"] is None or result["active_pod_count_after"] is None:
@@ -332,7 +510,16 @@ def collect_runpod_live_execution_proof(
             "active_pod_count_before", 0
         ):
             blockers.append("active_pod_count_increased_after_stop")
-        shutdown_proof = bool(stop_pod and result.get("pod_stop_performed") and not blockers)
+        shutdown_blockers = {
+            "active_pod_counts_not_verified",
+            "pod_stop_not_performed",
+            "active_pod_count_increased_after_stop",
+        }
+        shutdown_proof = bool(
+            stop_pod
+            and result.get("pod_stop_performed")
+            and not any(blocker in shutdown_blockers for blocker in blockers)
+        )
         adapter_submitted_pod = (
             adapter_result.get("status") == "submitted"
             and adapter_result.get("api_call_performed") is True
@@ -391,9 +578,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--provider-launch-request", required=True)
     parser.add_argument("--adapter-result")
     parser.add_argument("--runtime-manifest")
+    parser.add_argument("--runtime-output-zip")
     parser.add_argument("--output-path")
     parser.add_argument("--pod-id")
     parser.add_argument("--stop-pod", action="store_true")
+    parser.add_argument("--stop-on-startup-artifact-timeout", action="store_true")
+    parser.add_argument("--startup-artifact-timeout-seconds", type=float)
+    parser.add_argument("--poll-interval-seconds", type=float, default=15.0)
     parser.add_argument("--timeout-seconds", type=int, default=30)
     parser.add_argument(
         "--allow-runpod-api-call",
@@ -408,9 +599,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         provider_launch_request_path=args.provider_launch_request,
         adapter_result_path=args.adapter_result,
         runtime_manifest_path=args.runtime_manifest,
+        runtime_output_zip_path=args.runtime_output_zip,
         output_path=args.output_path,
         pod_id=args.pod_id,
         stop_pod=args.stop_pod,
+        stop_on_startup_artifact_timeout=args.stop_on_startup_artifact_timeout,
+        startup_artifact_timeout_seconds=args.startup_artifact_timeout_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
         allow_runpod_api_call=args.allow_runpod_api_call,
         timeout_seconds=args.timeout_seconds,
     )

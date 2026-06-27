@@ -35,10 +35,20 @@ RUNPOD_REST_API_BASE_ENV = "RUNPOD_REST_API_BASE"
 RUNPOD_REST_API_BASE = os.getenv(RUNPOD_REST_API_BASE_ENV, "https://rest.runpod.io/v1").rstrip("/")
 RUNPOD_SERVERLESS_API_BASE = "https://api.runpod.ai/v2"
 RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV = "BLUEPRINT_RUNPOD_CONTAINER_REGISTRY_AUTH_ID"
+RUNPOD_EXISTING_POD_ID_ENV = "BLUEPRINT_RUNPOD_EXISTING_POD_ID"
 PROVIDER_LAUNCH_REQUEST_ENV = "BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST"
 PROVIDER_ADAPTER_OUTPUT_ENV = "BLUEPRINT_GPU_PROVIDER_ADAPTER_OUTPUT"
 RUNPOD_FORWARD_SECRET_ENV_VARS_ENV = "BLUEPRINT_RUNPOD_FORWARD_SECRET_ENV_VARS"
 GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
+RUNPOD_IMAGE_STARTUP_CANARY_MODE = "image-startup-canary-pod"
+RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS_ENV = (
+    "BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS"
+)
+RUNPOD_ALLOW_LARGE_IMAGE_FRESH_START_ENV = (
+    "BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START"
+)
+RUNPOD_LARGE_IMAGE_TOTAL_WARN_BYTES = 12_000_000_000
+RUNPOD_LARGE_IMAGE_LAYER_WARN_BYTES = 8_000_000_000
 SENSITIVE_ENV_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 REMOTE_PROVIDER_ARTIFACT_OUTPUT_URI_SCHEMES = {"gs", "s3", "r2"}
 SECRET_ENV_NAME_LIST_KEYS = {
@@ -219,6 +229,10 @@ def _cost_control_policy(request: Mapping[str, Any]) -> Dict[str, Any]:
     warm_pool = _mapping(limits.get("warm_pool_policy"))
     hard_timeout_seconds = int(_number(limits.get("hard_timeout_seconds")) or 600)
     idle_timeout_seconds = int(_number(limits.get("idle_timeout_seconds")) or 60)
+    startup_artifact_timeout_seconds = int(
+        _number(limits.get("startup_artifact_timeout_seconds"))
+        or min(360, max(60, hard_timeout_seconds // 2))
+    )
     watchdog_ttl_seconds = int(
         _number(limits.get("external_watchdog_ttl_seconds")) or max(900, hard_timeout_seconds)
     )
@@ -227,6 +241,7 @@ def _cost_control_policy(request: Mapping[str, Any]) -> Dict[str, Any]:
         "source": "gpu_provider_launch_request.provider_request_shape.limits",
         "hard_timeout_seconds": hard_timeout_seconds,
         "idle_timeout_seconds": idle_timeout_seconds,
+        "startup_artifact_timeout_seconds": startup_artifact_timeout_seconds,
         "external_watchdog_ttl_seconds": watchdog_ttl_seconds,
         "max_active_workers": max_active_workers,
         "warm_pool_policy": {
@@ -255,10 +270,13 @@ def _cost_control_policy(request: Mapping[str, Any]) -> Dict[str, Any]:
             else 1,
             "recommended_max_workers": max_active_workers,
             "recommended_idle_timeout_seconds": idle_timeout_seconds,
+            "recommended_startup_artifact_timeout_seconds": startup_artifact_timeout_seconds,
         },
         "on_demand_pod_controls": {
             "pod_idle_timeout_is_not_provider_native": True,
             "external_watchdog_or_owner_terminator_required": True,
+            "startup_artifact_watchdog_required": True,
+            "startup_artifact_timeout_seconds": startup_artifact_timeout_seconds,
             "external_watchdog_owner": _string(limits.get("external_watchdog_owner"))
             or "provider_launcher_or_owner_control_plane",
             "worker_env_shutdown_controls": [
@@ -337,10 +355,149 @@ def _redact_secret_env_name_lists(value: Any) -> Any:
     return value
 
 
+def _bytes_value(value: Any) -> int | None:
+    number = _number(value)
+    if number is None or number < 0:
+        return None
+    return int(number)
+
+
+def _image_size_metadata(image: Mapping[str, Any]) -> Dict[str, Any]:
+    for key in (
+        "image_size_diagnostic",
+        "image_size_metadata",
+        "image_manifest",
+        "registry_manifest",
+        "manifest_inspection",
+    ):
+        metadata = _mapping(image.get(key))
+        if metadata:
+            return metadata
+    return {}
+
+
+def _image_layer_sizes_bytes(image: Mapping[str, Any]) -> list[int]:
+    metadata = _image_size_metadata(image)
+    sizes: list[int] = []
+    for source in (image, metadata):
+        for key in (
+            "compressed_layer_sizes_bytes",
+            "layer_sizes_bytes",
+            "layers_size_bytes",
+            "layer_size_bytes",
+        ):
+            value = source.get(key)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+                for item in value:
+                    size = _bytes_value(item)
+                    if size is not None:
+                        sizes.append(size)
+            else:
+                size = _bytes_value(value)
+                if size is not None:
+                    sizes.append(size)
+        layers = source.get("layers")
+        if isinstance(layers, Sequence) and not isinstance(layers, (str, bytes, bytearray)):
+            for layer in layers:
+                layer_mapping = _mapping(layer)
+                for key in ("compressed_size_bytes", "size_bytes", "size"):
+                    size = _bytes_value(layer_mapping.get(key))
+                    if size is not None:
+                        sizes.append(size)
+                        break
+    return sizes
+
+
+def _image_startup_diagnostic(request: Mapping[str, Any]) -> Dict[str, Any]:
+    image = _image(request)
+    limits = _limits(request)
+    metadata = _image_size_metadata(image)
+    layer_sizes = _image_layer_sizes_bytes(image)
+    explicit_largest = next(
+        (
+            _bytes_value(source.get(key))
+            for source in (image, metadata)
+            for key in (
+                "largest_compressed_layer_size_bytes",
+                "largest_layer_size_bytes",
+                "max_layer_size_bytes",
+            )
+            if _bytes_value(source.get(key)) is not None
+        ),
+        None,
+    )
+    largest_layer_size = explicit_largest if explicit_largest is not None else (
+        max(layer_sizes) if layer_sizes else None
+    )
+    explicit_total = next(
+        (
+            _bytes_value(source.get(key))
+            for source in (image, metadata)
+            for key in (
+                "total_compressed_size_bytes",
+                "compressed_size_bytes",
+                "manifest_total_size_bytes",
+                "total_layer_size_bytes",
+            )
+            if _bytes_value(source.get(key)) is not None
+        ),
+        None,
+    )
+    total_size = explicit_total if explicit_total is not None else (
+        sum(layer_sizes) if layer_sizes else None
+    )
+    large_total = (
+        total_size is not None and total_size >= RUNPOD_LARGE_IMAGE_TOTAL_WARN_BYTES
+    )
+    large_layer = (
+        largest_layer_size is not None
+        and largest_layer_size >= RUNPOD_LARGE_IMAGE_LAYER_WARN_BYTES
+    )
+    warnings: list[str] = []
+    if large_total:
+        warnings.append("large_worker_image_total_size_may_exceed_startup_watchdog")
+    if large_layer:
+        warnings.append("large_worker_image_layer_may_exceed_startup_watchdog")
+    startup_timeout = int(
+        _number(limits.get("startup_artifact_timeout_seconds"))
+        or _number(_cost_control_policy(request).get("startup_artifact_timeout_seconds"))
+        or 0
+    )
+    return {
+        "image_ref": _string(image.get("configured_image_ref")) or None,
+        "metadata_present": bool(metadata or layer_sizes),
+        "total_compressed_size_bytes": total_size,
+        "largest_layer_size_bytes": largest_layer_size,
+        "large_image_pull_risk": bool(large_total or large_layer),
+        "warnings": warnings,
+        "startup_artifact_timeout_seconds": startup_timeout,
+        "startup_artifact_watchdog_required": _bool(
+            limits.get("startup_artifact_watchdog_required")
+        )
+        is True,
+        "same_image_canary_recommended": bool(large_total or large_layer),
+        "warm_existing_pod_mode_available": True,
+        "image_startup_canary_mode_available": True,
+        "canary_hold_seconds_env": RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS_ENV,
+        "large_image_fresh_start_override_env": RUNPOD_ALLOW_LARGE_IMAGE_FRESH_START_ENV,
+        "diagnostic_blocker_if_canary_times_out": (
+            "prebuilt_isaac_image_layer_pull_exceeded_watchdog"
+            if large_total or large_layer
+            else "provider_pod_startup_or_image_pull_timeout"
+        ),
+        "proof_boundary": (
+            "Image metadata and canary artifacts only diagnose container startup. "
+            "They do not prove Isaac Sim execution, policy execution, safety, or "
+            "robot readiness."
+        ),
+    }
+
+
 def _request_summary(request: Mapping[str, Any]) -> Dict[str, Any]:
     inputs = _inputs(request)
     image = _image(request)
     limits = _limits(request)
+    startup_diagnostic = _image_startup_diagnostic(request)
     return {
         "job_id": _string(request.get("job_id")),
         "provider": _string(request.get("provider")),
@@ -378,6 +535,12 @@ def _request_summary(request: Mapping[str, Any]) -> Dict[str, Any]:
         is True,
         "hard_timeout_seconds": limits.get("hard_timeout_seconds"),
         "idle_timeout_seconds": limits.get("idle_timeout_seconds"),
+        "startup_artifact_timeout_seconds": limits.get(
+            "startup_artifact_timeout_seconds"
+        ),
+        "worker_image_startup_large_image_pull_risk": startup_diagnostic.get(
+            "large_image_pull_risk"
+        ),
         "external_watchdog_ttl_seconds": limits.get("external_watchdog_ttl_seconds"),
         "max_active_workers": limits.get("max_active_workers"),
     }
@@ -408,6 +571,11 @@ def _provider_readiness_manifest(
     artifact_output_scheme = urlparse(artifact_output_uri).scheme if artifact_output_uri else ""
     hard_timeout_seconds = int(_number(limits.get("hard_timeout_seconds")) or 0)
     idle_timeout_seconds = int(_number(limits.get("idle_timeout_seconds")) or 0)
+    startup_artifact_timeout_seconds = int(
+        _number(limits.get("startup_artifact_timeout_seconds"))
+        or _number(cost_policy.get("startup_artifact_timeout_seconds"))
+        or 0
+    )
     external_watchdog_ttl_seconds = int(
         _number(limits.get("external_watchdog_ttl_seconds")) or 0
     )
@@ -420,6 +588,7 @@ def _provider_readiness_manifest(
         inputs.get("artifact_output_write_auth_contract_ready")
         or artifact_output_write_auth.get("write_auth_contract_ready")
     )
+    image_startup_diagnostic = _image_startup_diagnostic(request)
     signed_put_url_present = bool(
         _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
     )
@@ -449,6 +618,7 @@ def _provider_readiness_manifest(
             "bounded_single_worker_attempt": cost_policy.get("max_active_workers") == 1,
             "hard_timeout_seconds": hard_timeout_seconds,
             "idle_timeout_seconds": idle_timeout_seconds,
+            "startup_artifact_timeout_seconds": startup_artifact_timeout_seconds,
             "external_watchdog_ttl_seconds": external_watchdog_ttl_seconds,
             "external_watchdog_ttl_exceeds_hard_timeout": (
                 external_watchdog_ttl_seconds > hard_timeout_seconds > 0
@@ -498,6 +668,11 @@ def _provider_readiness_manifest(
         "watchdog_and_teardown": {
             "idle_shutdown_required": _bool(limits.get("idle_shutdown_required")) is True,
             "idle_timeout_seconds": idle_timeout_seconds,
+            "startup_artifact_watchdog_required": _bool(
+                limits.get("startup_artifact_watchdog_required")
+            )
+            is True,
+            "startup_artifact_timeout_seconds": startup_artifact_timeout_seconds,
             "external_watchdog_ttl_required": _bool(
                 limits.get("external_watchdog_ttl_required")
             )
@@ -524,6 +699,7 @@ def _provider_readiness_manifest(
                 "provider_shutdown_proof.json or provider lifecycle zero-active-worker evidence",
             ],
         },
+        "image_startup_diagnostic": image_startup_diagnostic,
         "no_secret_artifact_policy": {
             "secret_values_in_artifact": environment.get("secret_values_in_artifact"),
             "customer_visible_secret_values_allowed": environment.get(
@@ -605,6 +781,7 @@ def _base_result(
         "public_claim_upgrade_allowed": False,
         "request_summary": _request_summary(request),
         "cost_control_policy": _cost_control_policy(request),
+        "image_startup_diagnostic": _image_startup_diagnostic(request),
     }
 
 
@@ -737,6 +914,8 @@ def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
         env_value = _string(value)
         if not env_key or not env_value or env_key in secret_names:
             continue
+        if env_key in env:
+            continue
         if plaintext_names and env_key not in plaintext_names:
             continue
         if SIGNED_URL_SIGNATURE_PARAM in env_value.lower():
@@ -847,11 +1026,179 @@ def _pod_payload(
     }
 
 
+def _image_startup_canary_command() -> str:
+    return r'''set -euo pipefail
+OUT_DIR="${BLUEPRINT_CANARY_OUTPUT_DIR:-/workspace/blueprint_canary_output}"
+mkdir -p "$OUT_DIR"
+PYTHON_BIN="${BLUEPRINT_CANARY_PYTHON:-/isaac-sim/python.sh}"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="$(command -v python3 || command -v python || true)"
+fi
+if [ -z "$PYTHON_BIN" ]; then
+  echo "blueprint canary blocked: no python runtime" >&2
+  exit 127
+fi
+"$PYTHON_BIN" - <<'PY'
+import json
+import os
+import platform
+import shutil
+import socket
+import time
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+out_dir = Path(os.environ.get("BLUEPRINT_CANARY_OUTPUT_DIR", "/workspace/blueprint_canary_output"))
+out_dir.mkdir(parents=True, exist_ok=True)
+payload = {
+    "schema_version": "runpod_image_startup_canary.v1",
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "status": "container_started",
+    "job_id": os.environ.get("BLUEPRINT_ROBOT_EVAL_JOB_ID"),
+    "hostname": socket.gethostname(),
+    "python_executable": os.environ.get("BLUEPRINT_CANARY_PYTHON") or "/isaac-sim/python.sh",
+    "platform": platform.platform(),
+    "image_ref": os.environ.get("BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF")
+    or os.environ.get("BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF"),
+    "isaac_python_exists": Path("/isaac-sim/python.sh").exists(),
+    "isaac_root_exists": Path("/isaac-sim").exists(),
+    "python3_path": shutil.which("python3"),
+    "python_path": shutil.which("python"),
+    "curl_path": shutil.which("curl"),
+    "proof_boundary": (
+        "This canary proves the RunPod image container reached user command execution "
+        "and uploaded an artifact. It does not prove Isaac Sim boot, scenario execution, "
+        "policy execution, safety validation, or robot readiness."
+    ),
+}
+json_path = out_dir / "runpod_image_startup_canary.json"
+json_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+zip_path = out_dir / "runpod_image_startup_canary_output.zip"
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    archive.write(json_path, json_path.name)
+upload_url = os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL")
+if not upload_url:
+    raise SystemExit("missing_BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL")
+data = zip_path.read_bytes()
+request = urllib.request.Request(
+    upload_url,
+    data=data,
+    method="PUT",
+    headers={"Content-Type": "application/zip", "Content-Length": str(len(data))},
+)
+with urllib.request.urlopen(request, timeout=120) as response:
+    upload_status = int(getattr(response, "status", 200))
+(out_dir / "runpod_image_startup_canary_upload_status.json").write_text(
+    json.dumps(
+        {
+            "schema_version": "runpod_image_startup_canary_upload_status.v1",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "status": "uploaded",
+            "upload_status": upload_status,
+            "uploaded_bytes": len(data),
+            "zip_path": str(zip_path),
+        },
+        indent=2,
+        sort_keys=True,
+    ),
+    encoding="utf-8",
+)
+time.sleep(float(os.environ.get("BLUEPRINT_CANARY_POST_UPLOAD_SLEEP_SECONDS", "5")))
+PY'''
+
+
+def _image_startup_canary_pod_payload(
+    request: Mapping[str, Any],
+    *,
+    pod_name: str | None = None,
+    gpu_type_id: str | None = None,
+) -> Dict[str, Any]:
+    pod_payload = _pod_payload(
+        request,
+        pod_name=pod_name,
+        gpu_type_id=gpu_type_id,
+    )
+    body = _mapping(pod_payload.get("body"))
+    env = _mapping(body.get("env"))
+    env["BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY"] = "true"
+    canary_hold_seconds = _string(os.getenv(RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS_ENV))
+    if canary_hold_seconds:
+        env["BLUEPRINT_CANARY_POST_UPLOAD_SLEEP_SECONDS"] = canary_hold_seconds
+    else:
+        env.setdefault("BLUEPRINT_CANARY_POST_UPLOAD_SLEEP_SECONDS", "5")
+    body.update(
+        {
+            "dockerEntrypoint": ["bash"],
+            "dockerStartCmd": ["-lc", _image_startup_canary_command()],
+            "env": env,
+        }
+    )
+    return {
+        **pod_payload,
+        "body": body,
+        "api_surface": "rest_pods_image_startup_canary",
+        "proof_boundary": {
+            "image_container_startup_only": True,
+            "simulator_execution_proven": False,
+            "policy_execution_proven": False,
+        },
+    }
+
+
+def _existing_pod_start_payload(
+    request: Mapping[str, Any],
+    *,
+    pod_id: str,
+    pod_name: str | None = None,
+    gpu_type_id: str | None = None,
+) -> Dict[str, Any]:
+    pod_payload = _pod_payload(
+        request,
+        pod_name=pod_name,
+        gpu_type_id=gpu_type_id,
+    )
+    pod_body = _mapping(pod_payload.get("body"))
+    update_keys = {
+        "containerDiskInGb",
+        "containerRegistryAuthId",
+        "dockerEntrypoint",
+        "dockerStartCmd",
+        "env",
+        "imageName",
+        "name",
+        "ports",
+        "volumeInGb",
+        "volumeMountPath",
+    }
+    update_body = {key: pod_body[key] for key in update_keys if key in pod_body}
+    return {
+        "update": {
+            "url": f"{RUNPOD_REST_API_BASE}/pods/{pod_id}/update",
+            "method": "POST",
+            "body": update_body,
+            "api_surface": "rest_pods_update_existing",
+        },
+        "start": {
+            "url": f"{RUNPOD_REST_API_BASE}/pods/{pod_id}/start",
+            "method": "POST",
+            "body": {},
+            "api_surface": "rest_pods_start_existing",
+        },
+        "existing_pod_id": pod_id,
+        "idle_shutdown_expected_seconds": pod_payload.get(
+            "idle_shutdown_expected_seconds"
+        ),
+    }
+
+
 def _request_blockers(
     *,
     request: Mapping[str, Any],
     mode: str,
     endpoint_id: str,
+    existing_pod_id: str = "",
 ) -> list[str]:
     blockers: list[str] = []
     limits = _limits(request)
@@ -887,14 +1234,29 @@ def _request_blockers(
     signed_put_url = _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
     if mode == "serverless-run" and not endpoint_id:
         blockers.append(f"missing_env_{RUNPOD_ENDPOINT_ID_ENV}")
-    if mode == "on-demand-pod" and not _string(image.get("configured_image_ref")):
+    if mode in {
+        "on-demand-pod",
+        "existing-pod-start",
+        RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+    } and not _string(image.get("configured_image_ref")):
         blockers.append("missing_provider_worker_image_ref")
+    if mode == "existing-pod-start" and not (
+        _string(existing_pod_id) or _string(os.getenv(RUNPOD_EXISTING_POD_ID_ENV))
+    ):
+        blockers.append(f"missing_env_{RUNPOD_EXISTING_POD_ID_ENV}")
     if _string(image.get("configured_image_ref")) and (
         image.get("configured_image_ref_is_versioned") is not True
     ):
         blockers.append("prebuilt_worker_image_ref_not_versioned")
     if image.get("configured_image_ref_fetchable_by_provider") is False:
         blockers.append("prebuilt_worker_image_ref_not_provider_fetchable")
+    image_startup_diagnostic = _image_startup_diagnostic(request)
+    if (
+        mode == "on-demand-pod"
+        and image_startup_diagnostic.get("large_image_pull_risk") is True
+        and not _env_truthy(RUNPOD_ALLOW_LARGE_IMAGE_FRESH_START_ENV)
+    ):
+        blockers.append("large_worker_image_requires_canary_or_warm_provider")
     if not _string(inputs.get("manifest_uri")):
         blockers.append("missing_provider_worker_manifest_uri")
     if inputs.get("manifest_uri_fetchable_by_provider") is not True:
@@ -907,6 +1269,8 @@ def _request_blockers(
         blockers.append("missing_provider_artifact_output_uri")
     if artifact_output_required is False and not signed_put_url:
         blockers.append("missing_runtime_manifest_signed_put_url_for_artifact_output_optional")
+    if mode == RUNPOD_IMAGE_STARTUP_CANARY_MODE and not signed_put_url:
+        blockers.append("missing_runtime_manifest_signed_put_url_for_image_startup_canary")
     if (
         artifact_output_uri
         and artifact_output_required is not False
@@ -927,7 +1291,8 @@ def _request_blockers(
         and not artifact_output_write_auth_ready
     ):
         blockers.append("provider_artifact_output_write_auth_contract_missing")
-    if _string(request.get("provider")) == "runpod":
+    canary_startup_probe = mode == RUNPOD_IMAGE_STARTUP_CANARY_MODE
+    if _string(request.get("provider")) == "runpod" and not canary_startup_probe:
         if not local_sim_only_prerequisite:
             blockers.append("missing_local_sim_only_provider_prerequisite")
         elif (
@@ -980,15 +1345,16 @@ def _api_gate_blockers(*, allow_runpod_api_call: bool, api_key: str) -> list[str
 def _http_json(
     *,
     url: str,
-    payload: Mapping[str, Any],
+    payload: Mapping[str, Any] | None,
     api_key: str,
     timeout_seconds: int,
+    method: str = "POST",
 ) -> tuple[int, Dict[str, Any]]:
-    body = json.dumps(payload).encode("utf-8")
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = urllib.request.Request(
         url,
         data=body,
-        method="POST",
+        method=method,
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -1011,6 +1377,7 @@ def run_runpod_provider_adapter(
     allow_runpod_api_call: bool = False,
     endpoint_id: str | None = None,
     pod_name: str | None = None,
+    existing_pod_id: str | None = None,
     gpu_type_id: str | None = None,
     timeout_seconds: int = 30,
 ) -> Dict[str, Any]:
@@ -1056,6 +1423,9 @@ def run_runpod_provider_adapter(
     api_key, api_key_meta = _read_runpod_api_key()
     result.update(api_key_meta)
     selected_endpoint_id = _string(endpoint_id) or _string(os.getenv(RUNPOD_ENDPOINT_ID_ENV))
+    selected_existing_pod_id = _string(existing_pod_id) or _string(
+        os.getenv(RUNPOD_EXISTING_POD_ID_ENV)
+    )
     if mode == "auto":
         mode = "serverless-run" if selected_endpoint_id else "on-demand-pod"
         result["mode"] = mode
@@ -1083,12 +1453,26 @@ def run_runpod_provider_adapter(
         request=request,
         mode=mode,
         endpoint_id=selected_endpoint_id,
+        existing_pod_id=selected_existing_pod_id,
     )
     if mode == "serverless-run":
         runpod_request = _serverless_payload(request, endpoint_id=selected_endpoint_id)
     elif mode == "on-demand-pod":
         runpod_request = _pod_payload(
             request,
+            pod_name=pod_name,
+            gpu_type_id=gpu_type_id,
+        )
+    elif mode == RUNPOD_IMAGE_STARTUP_CANARY_MODE:
+        runpod_request = _image_startup_canary_pod_payload(
+            request,
+            pod_name=pod_name,
+            gpu_type_id=gpu_type_id,
+        )
+    elif mode == "existing-pod-start":
+        runpod_request = _existing_pod_start_payload(
+            request,
+            pod_id=selected_existing_pod_id,
             pod_name=pod_name,
             gpu_type_id=gpu_type_id,
         )
@@ -1166,6 +1550,32 @@ def run_runpod_provider_adapter(
                 api_key=api_key,
                 timeout_seconds=timeout_seconds,
             )
+        elif mode == "existing-pod-start":
+            update_request = _mapping(runpod_request.get("update"))
+            start_request = _mapping(runpod_request.get("start"))
+            update_status_code, update_response = _http_json(
+                url=str(update_request["url"]),
+                payload=dict(_mapping(update_request.get("body"))),
+                api_key=api_key,
+                timeout_seconds=timeout_seconds,
+                method=_string(update_request.get("method")) or "POST",
+            )
+            start_status_code, start_response = _http_json(
+                url=str(start_request["url"]),
+                payload=dict(_mapping(start_request.get("body"))),
+                api_key=api_key,
+                timeout_seconds=timeout_seconds,
+                method=_string(start_request.get("method")) or "POST",
+            )
+            status_code = start_status_code
+            response = {
+                "id": selected_existing_pod_id,
+                "existing_pod_id": selected_existing_pod_id,
+                "update_http_status_code": update_status_code,
+                "start_http_status_code": start_status_code,
+                "update_response": update_response,
+                "start_response": start_response,
+            }
         else:
             status_code, response = _http_json(
                 url=str(runpod_request["url"]),
@@ -1237,11 +1647,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-path")
     parser.add_argument(
         "--mode",
-        choices=["dry-run", "auto", "serverless-run", "on-demand-pod"],
+        choices=[
+            "dry-run",
+            "auto",
+            "serverless-run",
+            "on-demand-pod",
+            "existing-pod-start",
+            RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+        ],
         default="dry-run",
     )
     parser.add_argument("--endpoint-id")
     parser.add_argument("--pod-name")
+    parser.add_argument("--existing-pod-id")
     parser.add_argument("--gpu-type-id")
     parser.add_argument("--timeout-seconds", type=int, default=30)
     parser.add_argument(
@@ -1261,6 +1679,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_runpod_api_call=args.allow_runpod_api_call,
         endpoint_id=args.endpoint_id,
         pod_name=args.pod_name,
+        existing_pod_id=args.existing_pod_id,
         gpu_type_id=args.gpu_type_id,
         timeout_seconds=args.timeout_seconds,
     )

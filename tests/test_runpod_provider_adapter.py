@@ -15,6 +15,7 @@ from blueprint_pipeline.runpod_provider_adapter import (
     RUNPOD_CONFIG_FILE_ENV,
     RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV,
     RUNPOD_ENDPOINT_ID_ENV,
+    RUNPOD_EXISTING_POD_ID_ENV,
     main as runpod_adapter_main,
     run_runpod_provider_adapter,
 )
@@ -92,6 +93,8 @@ def _ready_runpod_request(path: Path) -> Path:
                     "requested_budget_usd": 0.25,
                     "hard_timeout_seconds": 120,
                     "idle_timeout_seconds": 60,
+                    "startup_artifact_watchdog_required": True,
+                    "startup_artifact_timeout_seconds": 90,
                     "idle_shutdown_required": True,
                     "external_watchdog_ttl_required": True,
                     "external_watchdog_ttl_seconds": 180,
@@ -165,6 +168,9 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
     assert readiness["live_provider_call_authorized"] is False
     assert readiness["spend_limits"]["requested_budget_usd"] == 0.25  # type: ignore[index]
     assert readiness["spend_limits"]["bounded_single_worker_attempt"] is True  # type: ignore[index]
+    assert readiness["spend_limits"]["startup_artifact_timeout_seconds"] == 90  # type: ignore[index]
+    assert readiness["image_startup_diagnostic"]["large_image_pull_risk"] is False  # type: ignore[index]
+    assert readiness["image_startup_diagnostic"]["metadata_present"] is False  # type: ignore[index]
     provider_inputs = readiness["provider_inputs"]  # type: ignore[index]
     assert provider_inputs["manifest_uri_present"] is True
     assert provider_inputs["manifest_uri_fetchable_by_provider"] is True
@@ -187,6 +193,15 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
         readiness["watchdog_and_teardown"]["idle_shutdown_required"]  # type: ignore[index]
         is True
     )
+    assert (
+        readiness["watchdog_and_teardown"][  # type: ignore[index]
+            "startup_artifact_watchdog_required"
+        ]
+        is True
+    )
+    assert readiness["watchdog_and_teardown"][  # type: ignore[index]
+        "startup_artifact_timeout_seconds"
+    ] == 90
     assert readiness["watchdog_and_teardown"][  # type: ignore[index]
         "external_watchdog_ttl_exceeds_hard_timeout"
     ] is True
@@ -209,6 +224,7 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
     cost_policy = result["cost_control_policy"]
     assert cost_policy["hard_timeout_seconds"] == 120  # type: ignore[index]
     assert cost_policy["idle_timeout_seconds"] == 60  # type: ignore[index]
+    assert cost_policy["startup_artifact_timeout_seconds"] == 90  # type: ignore[index]
     assert cost_policy["external_watchdog_ttl_seconds"] == 180  # type: ignore[index]
     assert cost_policy["max_active_workers"] == 1  # type: ignore[index]
     assert cost_policy["serverless_endpoint_controls"][  # type: ignore[index]
@@ -226,6 +242,10 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
     assert cost_policy["on_demand_pod_controls"][  # type: ignore[index]
         "external_watchdog_or_owner_terminator_required"
     ] is True
+    assert cost_policy["on_demand_pod_controls"][  # type: ignore[index]
+        "startup_artifact_watchdog_required"
+    ] is True
+    assert result["image_startup_diagnostic"]["large_image_pull_risk"] is False  # type: ignore[index]
     serverless = result["runpod_request"]["serverless_run"]  # type: ignore[index]
     assert serverless["url"] == "https://api.runpod.ai/v2/endpoint-123/run"
     assert serverless["body"]["input"][  # type: ignore[index]
@@ -1240,6 +1260,231 @@ def test_runpod_adapter_empty_http_response_is_submitted_with_empty_body(
     assert result["status"] == "submitted"
     assert result["http_status_code"] == 202
     assert result["runpod_response"] == {}
+
+
+def test_runpod_adapter_surfaces_large_worker_image_startup_risk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    image = request["provider_request_shape"]["image"]  # type: ignore[index]
+    assert isinstance(image, dict)
+    image["image_size_diagnostic"] = {
+        "total_compressed_size_bytes": 13_500_000_000,
+        "layers": [
+            {"digest": "sha256:small", "size": 120_000_000},
+            {"digest": "sha256:isaac-layer", "size": 10_600_000_000},
+        ],
+    }
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "large-image.json",
+        mode="dry-run",
+    )
+
+    diagnostic = result["image_startup_diagnostic"]
+    assert diagnostic["metadata_present"] is True  # type: ignore[index]
+    assert diagnostic["large_image_pull_risk"] is True  # type: ignore[index]
+    assert diagnostic["total_compressed_size_bytes"] == 13_500_000_000  # type: ignore[index]
+    assert diagnostic["largest_layer_size_bytes"] == 10_600_000_000  # type: ignore[index]
+    assert diagnostic["same_image_canary_recommended"] is True  # type: ignore[index]
+    assert diagnostic["warm_existing_pod_mode_available"] is True  # type: ignore[index]
+    assert diagnostic["diagnostic_blocker_if_canary_times_out"] == (  # type: ignore[index]
+        "prebuilt_isaac_image_layer_pull_exceeded_watchdog"
+    )
+    readiness = _read_json(tmp_path / "runpod_provider_readiness_manifest.json")
+    assert readiness["image_startup_diagnostic"] == diagnostic
+
+    blocked = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "large-image-live.json",
+        mode="on-demand-pod",
+    )
+
+    assert blocked["status"] == "blocked"
+    assert (
+        "large_worker_image_requires_canary_or_warm_provider"
+        in blocked["blockers"]
+    )
+
+    monkeypatch.setenv(adapter.RUNPOD_ALLOW_LARGE_IMAGE_FRESH_START_ENV, "true")
+    override = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "large-image-live-override.json",
+        mode="on-demand-pod",
+    )
+    assert "large_worker_image_requires_canary_or_warm_provider" not in override[
+        "request_blockers"
+    ]
+
+
+def test_runpod_adapter_plaintext_env_does_not_override_core_provider_inputs(
+    tmp_path: Path,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    provider_shape = request["provider_request_shape"]  # type: ignore[index]
+    assert isinstance(provider_shape, dict)
+    environment = provider_shape["environment"]
+    assert isinstance(environment, dict)
+    environment["plaintext_env_var_names"] = [
+        "BLUEPRINT_EVAL_MANIFEST_URI",
+        "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI",
+        "BLUEPRINT_ISAAC_PROVIDER_PYTHON",
+    ]
+    environment["plaintext_env_values"] = {
+        "BLUEPRINT_EVAL_MANIFEST_URI": "<stage bundle zip to https/gs/s3/r2>",
+        "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI": "<stage bundle zip to https/gs/s3/r2>",
+        "BLUEPRINT_ISAAC_PROVIDER_PYTHON": "/isaac-sim/python.sh",
+    }
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "plaintext-env.json",
+        mode="dry-run",
+    )
+
+    body = result["runpod_request"]["on_demand_pod"]["body"]  # type: ignore[index]
+    env = body["env"]
+    assert env["BLUEPRINT_EVAL_MANIFEST_URI"].endswith("worker_manifest.json")
+    assert env["BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI"].endswith("capture-root.zip")
+    assert env["BLUEPRINT_ISAAC_PROVIDER_PYTHON"] == "/isaac-sim/python.sh"
+    assert "<stage bundle zip to https/gs/s3/r2>" not in json.dumps(result)
+
+
+def test_runpod_adapter_updates_and_starts_existing_pod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+    monkeypatch.delenv(RUNPOD_EXISTING_POD_ID_ENV, raising=False)
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __init__(self, status: int, body: dict[str, object]) -> None:
+            self.status = status
+            self.body = body
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(self.body).encode("utf-8")
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        body = json.loads(request.data.decode("utf-8")) if request.data else None
+        calls.append(
+            {
+                "url": request.full_url,
+                "method": request.get_method(),
+                "body": body,
+            }
+        )
+        if request.full_url.endswith("/pods/pod-123/update"):
+            return FakeResponse(200, {"id": "pod-123", "desiredStatus": "EXITED"})
+        if request.full_url.endswith("/pods/pod-123/start"):
+            return FakeResponse(200, {"id": "pod-123", "desiredStatus": "RUNNING"})
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "existing.json",
+        mode="existing-pod-start",
+        existing_pod_id="pod-123",
+        pod_name="reused-pod",
+        allow_runpod_api_call=True,
+    )
+
+    assert result["status"] == "submitted"
+    assert result["provider_job_submitted"] is True
+    assert result["runpod_response"]["id"] == "pod-123"  # type: ignore[index]
+    assert result["runpod_response"]["update_http_status_code"] == 200  # type: ignore[index]
+    assert result["runpod_response"]["start_http_status_code"] == 200  # type: ignore[index]
+    assert [call["url"] for call in calls] == [
+        "https://rest.runpod.io/v1/pods/pod-123/update",
+        "https://rest.runpod.io/v1/pods/pod-123/start",
+    ]
+    update_body = calls[0]["body"]
+    assert isinstance(update_body, dict)
+    assert update_body["name"] == "reused-pod"
+    assert update_body["imageName"].endswith(":2026-06-12")
+    assert update_body["dockerStartCmd"] == []
+    assert update_body["env"]["BLUEPRINT_ROBOT_EVAL_JOB_ID"] == "runpod-adapter-job-1"
+    assert "gpuTypeIds" not in update_body
+    assert "gpuCount" not in update_body
+    assert "computeType" not in update_body
+    persisted = _read_json(tmp_path / "existing.json")
+    assert "secret-runpod-key" not in json.dumps(persisted)
+
+
+def test_runpod_adapter_builds_image_startup_canary_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    monkeypatch.delenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", raising=False)
+
+    missing_signed_put = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "canary-missing-signed-put.json",
+        mode=adapter.RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+    )
+
+    assert missing_signed_put["status"] == "blocked"
+    assert (
+        "missing_runtime_manifest_signed_put_url_for_image_startup_canary"
+        in missing_signed_put["blockers"]
+    )
+
+    signed_put = "https://example.test/upload?x-goog-signature=secret-signature"
+    monkeypatch.setenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", signed_put)
+    monkeypatch.setenv(
+        adapter.RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS_ENV,
+        "300",
+    )
+    request = _read_json(request_path)
+    provider_shape = request["provider_request_shape"]  # type: ignore[index]
+    assert isinstance(provider_shape, dict)
+    provider_shape.pop("local_sim_only_prerequisite")
+    _write_json(request_path, request)
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+    shaped = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "canary-shaped.json",
+        mode=adapter.RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+        pod_name="canary-pod",
+    )
+    persisted = (tmp_path / "canary-shaped.json").read_text(encoding="utf-8")
+
+    assert shaped["status"] == "blocked"
+    assert shaped["reason"] == "runpod_api_gate_blocked"
+    assert shaped["request_blockers"] == []
+    body = shaped["runpod_request"]["body"]  # type: ignore[index]
+    assert body["name"] == "canary-pod"
+    assert body["dockerEntrypoint"] == ["bash"]
+    assert body["dockerStartCmd"][0] == "-lc"
+    assert "runpod_image_startup_canary.v1" in body["dockerStartCmd"][1]
+    assert '"python3_path": shutil.which("python3")' in body["dockerStartCmd"][1]
+    assert '"curl_path": shutil.which("curl")' in body["dockerStartCmd"][1]
+    assert body["env"]["BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY"] == "true"
+    assert body["env"]["BLUEPRINT_CANARY_POST_UPLOAD_SLEEP_SECONDS"] == "300"
+    assert body["env"]["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"] == (
+        "<redacted:signed-url>"
+    )
+    assert "secret-signature" not in persisted
+    assert "secret-runpod-key" not in persisted
 
 
 def test_runpod_adapter_main_errors_and_env_request_path(

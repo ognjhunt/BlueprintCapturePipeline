@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; background: #0b0b10; overflow: hidden; }
+      #c { display: block; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/node_modules/three/build/three.module.js",
+          "three/addons/": "/node_modules/three/examples/jsm/",
+          "@sparkjsdev/spark": "/node_modules/@sparkjsdev/spark/dist/spark.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <script type="module" src="/src/render_entry.mjs"></script>
+  </body>
+</html>

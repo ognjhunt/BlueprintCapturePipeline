@@ -290,7 +290,39 @@ deterministic manifests that are safe to sync to WebApp as advisory status:
   `BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE`, or
   `BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF`, they block before spend with
   `prebuilt_isaac_eval_worker_image_ref_missing` instead of falling back to a
-  slow direct Isaac Sim base image startup.
+  slow direct Isaac Sim base image startup. Isaac RunPod requests also declare a
+  first-artifact startup watchdog (`startup_artifact_timeout_seconds`, default
+  `360` in the Isaac command path). `blueprint-collect-runpod-live-execution-proof`
+  can poll the staged `isaac_provider_runtime_output.zip` and stop the pod with
+  `provider_pod_startup_or_image_pull_timeout` when the Blueprint wrapper never
+  starts or the image pull/startup path exceeds that window. The runtime output
+  zip must be a valid non-empty zip; empty staging PUT probes are recorded as
+  absent startup evidence. `blueprint-run-runpod-provider-adapter --mode
+  image-startup-canary-pod` submits a same-image canary whose only proof claim is
+  container user-command startup plus artifact upload. If the canary misses the
+  same first-artifact watchdog, live proof records
+  `image_startup_canary_artifact_timeout`; when image-size metadata shows a large
+  worker layer it also records
+  `prebuilt_isaac_image_layer_pull_exceeded_watchdog`. Use
+  `BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS=<seconds>` only for a
+  bounded warm-host retry window, and still prove zero active pods after the
+  follow-up attempt. When image-size metadata already shows a large layer,
+  fresh `on-demand-pod` launches block before spend with
+  `large_worker_image_requires_canary_or_warm_provider` unless
+  `BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START=true` is set for an intentional
+  debug retry.
+  Prefer S3-compatible object-store staging for RunPod canary bundle/callback
+  URLs. `blueprint-stage-wam-provider-object-store` has historical WAM naming
+  but stages a simulator-agnostic provider bundle and signed output PUT URL;
+  use `export BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL="$(cat
+  <provider_output_put_url.txt>)"` or another shell-safe assignment because
+  presigned URLs contain `&` separators. A quick tunnel failure is staging
+  evidence, not Isaac image startup evidence.
+  `blueprint-run-runpod-provider-adapter --mode
+  existing-pod-start` can refresh and start a stopped pod using the same request
+  shape, but a provider host-capacity failure for that pod is not Isaac runtime
+  proof and should fall back to a fresh on-demand attempt when spend is
+  authorized.
 - Per-job `gpu_cost_control_ledger.json` records requested budget, maximum
   billable GPU seconds, max workers, customer-concurrency requirement,
   idle-shutdown/watchdog requirements, estimated GPU seconds, actual GPU seconds
