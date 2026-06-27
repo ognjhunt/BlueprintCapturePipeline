@@ -229,17 +229,24 @@ def follow_cam_pose(root_pose, yaw, *, back: float = 2.2, up: float = 1.6):
 
 
 def manipulation_cam_pose(root_pose, yaw, *, eye_forward: float = 0.15, eye_height: float = 1.35,
-                          target_forward: float = 0.6, target_height: float = 0.9):
+                          target_forward: float = 0.6, target_height: float = 0.9, look_at=None):
     """Eye + target for an EGOCENTRIC manipulation POV: from the robot's head, looking down-forward
     at the workspace directly in front (the sink/faucet and the robot's hands).
 
     Unlike ``follow_cam_pose`` (a chase shot behind+above, framing the whole robot walking across the
     room) this frames the local task region. Heights are absolute so the view sits at head level and
     looks at counter level — the in-distribution, coherent view a manipulation WAM can actually
-    predict, instead of a room-scale navigation scene it collapses to blur on."""
+    predict, instead of a room-scale navigation scene it collapses to blur on.
+
+    ``look_at`` (a fixed world x,y,z — e.g. the faucet's known position) pins the target so the
+    workspace stays centered regardless of the policy's noisy final yaw; without it the target is
+    derived yaw-relative (forward of the robot)."""
     fx, fy = math.cos(yaw), math.sin(yaw)
     eye = (root_pose[0] + fx * eye_forward, root_pose[1] + fy * eye_forward, eye_height)
-    target = (root_pose[0] + fx * target_forward, root_pose[1] + fy * target_forward, target_height)
+    if look_at is not None:
+        target = (float(look_at[0]), float(look_at[1]), float(look_at[2]))
+    else:
+        target = (root_pose[0] + fx * target_forward, root_pose[1] + fy * target_forward, target_height)
     return eye, target
 
 
@@ -557,7 +564,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   keep_substrings: Sequence[str] = ("room", "floor", "wall", "ground", "ceiling", "light"),
                   disable_physx: bool = False, settle_seconds: int = 0,
                   cheap_collision: bool = False, articulated: bool = False,
-                  camera_vfov_deg: float = 50.0, manipulation_cam: bool = False) -> dict:
+                  camera_vfov_deg: float = 50.0, manipulation_cam: bool = False,
+                  manipulation_look_at=None, render_subframes: int = 1) -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
     flushed progress + a per-scenario wall-clock cap so it cannot hang silently."""
@@ -666,7 +674,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 actions.append(rec)
                 trace.write(json.dumps(rec) + "\n")
                 if step % max(1, capture_every) == 0:
-                    eye, tgt = (manipulation_cam_pose(decision.root_pose, decision.yaw)
+                    eye, tgt = (manipulation_cam_pose(decision.root_pose, decision.yaw,
+                                                      look_at=manipulation_look_at)
                                 if manipulation_cam
                                 else follow_cam_pose(decision.root_pose, decision.yaw))
                     _place_camera(stage, pov_cam, eye, tgt)  # POV camera (manipulation egocentric or follow)
@@ -683,7 +692,11 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             "camera": "robot_pov", "landmarks": lms,  # OSCAR reads row["landmarks"]
                             "projected_landmark_count": len(lms)})
                     ts = time.time()
-                    rep.orchestrator.step()
+                    # Accumulate N RTX subframes on the static (robot placed) frame to drain the
+                    # RayTracedLighting denoiser's grain — a single step leaves heavy noise that an
+                    # OSCAR start frame should not inherit.
+                    for _ in range(max(1, render_subframes)):
+                        rep.orchestrator.step()
                     rdt = time.time() - ts
                     over_ok = _save_rgb(over_annot, sdir / "frames" / f"overview_{cap:04d}.png")
                     _save_rgb(pov_annot, sdir / "frames" / f"robot_pov_{cap:04d}.png")
@@ -758,7 +771,18 @@ def main(argv=None) -> int:
     ap.add_argument("--manipulation-cam", action="store_true",
                     help="egocentric manipulation POV (head looking down-forward at the sink/hands) "
                          "instead of the behind-and-above follow cam — for WAM-ing the task, not navigation")
+    ap.add_argument("--manipulation-look-at", default=None,
+                    help="fixed world 'x,y,z' the manipulation cam aims at (e.g. the faucet) — pins the "
+                         "framing to the known workspace instead of the policy's noisy final yaw")
+    ap.add_argument("--render-subframes", type=int, default=1,
+                    help="RTX orchestrator steps accumulated per captured frame to denoise grain (e.g. 16)")
     args = ap.parse_args(argv)
+
+    manip_look_at = None
+    if args.manipulation_look_at:
+        parts = [float(v) for v in str(args.manipulation_look_at).replace(" ", "").split(",") if v]
+        if len(parts) == 3:
+            manip_look_at = (parts[0], parts[1], parts[2])
 
     request = load_request(args.request) if args.request else {}
     scenarios = parse_scenarios(request)
@@ -786,7 +810,8 @@ def main(argv=None) -> int:
         keep_substrings=tuple(s for s in args.keep_objects.split(",") if s.strip()),
         disable_physx=args.disable_physx, settle_seconds=args.settle_seconds,
         cheap_collision=args.cheap_collision, articulated=args.articulated,
-        camera_vfov_deg=args.camera_vfov, manipulation_cam=args.manipulation_cam)
+        camera_vfov_deg=args.camera_vfov, manipulation_cam=args.manipulation_cam,
+        manipulation_look_at=manip_look_at, render_subframes=args.render_subframes)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))

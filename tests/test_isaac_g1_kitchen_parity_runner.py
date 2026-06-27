@@ -40,6 +40,22 @@ def test_manipulation_cam_is_egocentric_vs_follow_chase() -> None:
     assert mt[2] < 1.0
 
 
+def test_manipulation_cam_fixed_look_at_pins_faucet_regardless_of_yaw() -> None:
+    # robot standing in front of the sink; faucet world point is known
+    faucet = (2.28, 1.33, 0.9)
+    e1, t1 = M.manipulation_cam_pose((2.28, 0.73, 0.79), math.pi / 2, look_at=faucet)
+    # target is pinned to the faucet, eye sits at head height (egocentric)
+    assert t1 == faucet
+    assert e1[2] > 1.0
+    # a wrong/noisy final yaw must NOT move the framing off the faucet
+    _, t2 = M.manipulation_cam_pose((2.28, 0.73, 0.79), -math.pi / 2, look_at=faucet)
+    assert t2 == faucet
+    # without look_at it falls back to the yaw-relative target (forward of the robot) — a robot
+    # standing elsewhere/facing elsewhere then frames its own front, NOT the faucet
+    _, t3 = M.manipulation_cam_pose((1.0, 0.0, 0.79), 0.0)  # at [1,0] facing +x
+    assert t3 != faucet and t3[0] > 1.0  # forward (+x) of the root, not the sink
+
+
 def test_parse_scenarios_normalizes_to_pelvis_height_route() -> None:
     req = {"scenarios": [
         {"scenario_id": "s1", "spawn_position_xyz": [-4.25, -3.35, 0.05],
