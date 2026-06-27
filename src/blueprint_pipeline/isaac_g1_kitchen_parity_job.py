@@ -409,7 +409,10 @@ def run_isaac_g1_kitchen_parity_job(
     if not avail.get("available"):
         manifest["blockers"].append(avail.get("reason") or "provider_credentials_missing")
         return manifest
-    launch = launch_with_marker_retry(prov, job_dir, request_body)
+    # cold ~10-15GB Isaac image pulls on congested nodes routinely exceed 150s before the container
+    # starts bash; give the early marker a generous window (+ an extra attempt) so a slow pull is not
+    # mistaken for a dead pod (which caused all-dud batches on both providers).
+    launch = launch_with_marker_retry(prov, job_dir, request_body, marker_timeout=420, max_attempts=4)
     manifest["launch"] = launch
     if launch.get("status") != "launched":
         manifest["blockers"].append("launch_failed_all_attempts_flaky")
