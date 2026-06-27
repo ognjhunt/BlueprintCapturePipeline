@@ -56,6 +56,37 @@ def test_manipulation_cam_fixed_look_at_pins_faucet_regardless_of_yaw() -> None:
     assert t3 != faucet and t3[0] > 1.0  # forward (+x) of the root, not the sink
 
 
+def test_arm_reach_skeleton_moves_hand_toward_faucet_and_into_view() -> None:
+    # a minimal right-arm chain at rest: arm hangs forward-low at the body (y ~ 0), hand at y=0.25
+    rest = [
+        ("torso_link", (2.28, 0.73, 1.1)),
+        ("right_shoulder_link", (2.18, 0.73, 1.10)),
+        ("right_elbow_link", (2.18, 0.78, 0.95)),
+        ("right_wrist_link", (2.18, 0.83, 0.85)),
+        ("right_hand_palm_link", (2.18, 0.88, 0.80)),
+    ]
+    faucet = (2.28, 1.33, 0.95)
+    rest_hand = rest[-1][1]
+    # at reach_frac=0 nothing moves
+    assert M.compute_arm_reach_skeleton(rest, faucet, 0.0) == rest
+    # at full reach the hand is much closer to the faucet than at rest
+    full = dict(M.compute_arm_reach_skeleton(rest, faucet, 1.0))
+    import math
+    d = lambda a, b: math.dist(a, b)
+    assert d(full["right_hand_palm_link"], faucet) < d(rest_hand, faucet)
+    # the hand advances toward the faucet in +y (into the camera's forward view)
+    assert full["right_hand_palm_link"][1] > rest_hand[1]
+    # the arm never overstretches beyond its rest length from the shoulder
+    sh = full["right_shoulder_link"]
+    arm_len = d(rest[1][1], rest_hand)
+    assert d(full["right_hand_palm_link"], sh) <= arm_len + 1e-6
+    # non-arm links (torso) are untouched
+    assert full["torso_link"] == (2.28, 0.73, 1.1)
+    # the reach is monotonic: half-reach hand sits between rest and full
+    half = dict(M.compute_arm_reach_skeleton(rest, faucet, 0.5))
+    assert rest_hand[1] < half["right_hand_palm_link"][1] < full["right_hand_palm_link"][1]
+
+
 def test_parse_scenarios_normalizes_to_pelvis_height_route() -> None:
     req = {"scenarios": [
         {"scenario_id": "s1", "spawn_position_xyz": [-4.25, -3.35, 0.05],

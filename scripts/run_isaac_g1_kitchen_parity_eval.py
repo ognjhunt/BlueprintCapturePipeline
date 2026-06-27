@@ -420,6 +420,61 @@ def _rest_skeleton_world(offsets, root_pose, yaw):
     return out
 
 
+def compute_arm_reach_skeleton(skeleton, target, reach_frac, *, arm: str = "right"):
+    """Re-pose one arm of a world-space skeleton so its hand reaches toward ``target`` (the faucet).
+
+    The walk policy never moves the arms, so the skeleton (OSCAR's action conditioning) just shows a
+    rigid robot. This rotates the arm chain about the shoulder so the hand travels from its rest spot
+    to the target as ``reach_frac`` goes 0->1 — turning the skeleton-video into an actual reach. Each
+    arm link keeps its rest fractional distance from the shoulder (rigid straight-arm reach), and the
+    reach is clamped to the arm's length so it never overstretches. Pure geometry, GPU-independent.
+
+    ``skeleton`` is ``[(name, (x,y,z)), ...]``; returns the same shape with the arm links re-placed.
+    """
+    if target is None or reach_frac <= 0.0:
+        return skeleton
+    arm_keys = ("shoulder", "elbow", "wrist", "hand")
+    prefix = f"{arm}_"
+    arm_pts = [(n, p) for n, p in skeleton if n.startswith(prefix) and any(k in n for k in arm_keys)]
+    sh = [p for n, p in arm_pts if "shoulder" in n]
+    hand = [p for n, p in arm_pts if "hand" in n]
+    if not sh or not hand:
+        return skeleton
+
+    def centroid(ps):
+        return tuple(sum(c) / len(ps) for c in zip(*ps))
+
+    def sub(a, b):
+        return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+    def add(a, b):
+        return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+    def scale(a, s):
+        return (a[0] * s, a[1] * s, a[2] * s)
+
+    def length(a):
+        return math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+
+    shoulder = centroid(sh)
+    hand_rest = centroid(hand)
+    arm_len = length(sub(hand_rest, shoulder)) or 1e-6
+    to_target = sub(target, shoulder)
+    tlen = length(to_target) or 1e-6
+    reach_dist = min(arm_len, tlen)
+    hand_reach = add(shoulder, scale(to_target, reach_dist / tlen))  # clamped along shoulder->target
+    frac = max(0.0, min(1.0, float(reach_frac)))
+    hand_now = add(scale(hand_rest, 1.0 - frac), scale(hand_reach, frac))
+    out = []
+    for n, p in skeleton:
+        if n.startswith(prefix) and any(k in n for k in arm_keys):
+            f = length(sub(p, shoulder)) / arm_len  # rest fractional distance along the arm
+            out.append((n, add(shoulder, scale(sub(hand_now, shoulder), f))))
+        else:
+            out.append((n, p))
+    return out
+
+
 def _setup_articulated_g1(prim_path: str):
     """Create a physics SimulationContext (gravity OFF, so the kinematic walk pose holds without the
     G1 collapsing), play it, and initialize the G1 articulation for joint driving + link readback.
@@ -565,7 +620,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   disable_physx: bool = False, settle_seconds: int = 0,
                   cheap_collision: bool = False, articulated: bool = False,
                   camera_vfov_deg: float = 50.0, manipulation_cam: bool = False,
-                  manipulation_look_at=None, render_subframes: int = 1) -> dict:
+                  manipulation_look_at=None, render_subframes: int = 1,
+                  manipulation_reach: bool = False, manipulation_reach_arm: str = "right") -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
     flushed progress + a per-scenario wall-clock cap so it cannot hang silently."""
@@ -681,6 +737,12 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     _place_camera(stage, pov_cam, eye, tgt)  # POV camera (manipulation egocentric or follow)
                     if articulated and rest_offsets is not None:
                         skel = _rest_skeleton_world(rest_offsets, decision.root_pose, decision.yaw)
+                        if manipulation_reach and manipulation_look_at is not None:
+                            # arm reaches the faucet as the episode progresses (0 -> 1) so the
+                            # skeleton-video OSCAR conditions on encodes the manipulation, not a walk
+                            reach_frac = step / float(max(1, steps - 1))
+                            skel = compute_arm_reach_skeleton(skel, manipulation_look_at, reach_frac,
+                                                              arm=manipulation_reach_arm)
                         lms = _project_skeleton(skel, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
                                                 vfov_deg=camera_vfov_deg, width=width, height=height)
                         if cap == 0:
@@ -776,6 +838,11 @@ def main(argv=None) -> int:
                          "framing to the known workspace instead of the policy's noisy final yaw")
     ap.add_argument("--render-subframes", type=int, default=1,
                     help="RTX orchestrator steps accumulated per captured frame to denoise grain (e.g. 16)")
+    ap.add_argument("--manipulation-reach", action="store_true",
+                    help="animate the arm reaching toward --manipulation-look-at over the episode so the "
+                         "skeleton-video encodes the manipulation (the faucet turn), not the walk gait")
+    ap.add_argument("--manipulation-reach-arm", default="right", choices=["right", "left"],
+                    help="which arm reaches for the task")
     args = ap.parse_args(argv)
 
     manip_look_at = None
@@ -811,7 +878,8 @@ def main(argv=None) -> int:
         disable_physx=args.disable_physx, settle_seconds=args.settle_seconds,
         cheap_collision=args.cheap_collision, articulated=args.articulated,
         camera_vfov_deg=args.camera_vfov, manipulation_cam=args.manipulation_cam,
-        manipulation_look_at=manip_look_at, render_subframes=args.render_subframes)
+        manipulation_look_at=manip_look_at, render_subframes=args.render_subframes,
+        manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))
