@@ -1034,6 +1034,17 @@ def create_runpod_wam_async_run(
         else Path(DEFAULT_SECRET_ENV_FILE).expanduser().resolve()
     )
     ensure_dir(resolved_job_dir)
+    # A fresh run must not inherit a prior run's output zip: the poll treats a pre-existing
+    # output file as this run's result and short-circuits before the worker uploads anything,
+    # so clear any stale terminal/nonterminal output left over from an earlier run in this dir.
+    for _stale_output in (
+        resolved_output,
+        resolved_output.with_name(f"{resolved_output.stem}_nonterminal{resolved_output.suffix}"),
+    ):
+        try:
+            _stale_output.unlink()
+        except FileNotFoundError:
+            pass
     full_loop_guard = _unitree_groot_sonic_full_loop_create_guard(
         bundle_path=resolved_bundle,
         provider_bundle_kind=provider_bundle_kind,
@@ -1440,6 +1451,27 @@ def _download_provider_output_zip(
     return manifest
 
 
+def _zip_wam_provider_output_status(zip_path: Path) -> str:
+    """Status from ``wam_provider_output.json`` inside a runtime-output zip, or '' if absent.
+
+    The OSCAR provider's RunPod outer wrapper uploads an early heartbeat zip containing only
+    ``wam_provider_output.json`` (status=running) before any ``wam_runtime_result.json`` exists.
+    ``_inspect_provider_runtime_output_zip`` only reads the runtime-result files, so without this
+    the poll mistakes that first heartbeat for completion and tears the pod down before the model
+    can install deps, download the checkpoint, and run inference.
+    """
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            if "wam_provider_output.json" not in archive.namelist():
+                return ""
+            payload = json.loads(archive.read("wam_provider_output.json").decode("utf-8"))
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return ""
+    if not isinstance(payload, Mapping):
+        return ""
+    return _string(payload.get("status"))
+
+
 def poll_runpod_wam_async_run(
     *,
     job_dir: str | Path,
@@ -1501,7 +1533,15 @@ def poll_runpod_wam_async_run(
                     expected_video_count=0,
                 )
                 runtime_status = _string(downloaded_inspection.get("runtime_result_status"))
-                if runtime_status in {"running", "starting", "in_progress"}:
+                nonterminal_statuses = {"running", "starting", "in_progress"}
+                # The OSCAR outer wrapper heartbeats via wam_provider_output.json (status=running)
+                # with no wam_runtime_result.json yet, so runtime_result_status is empty for it.
+                # Fall back to the provider-output status so the first heartbeat is recognized as
+                # nonterminal and the poll keeps waiting for the model to finish.
+                heartbeat_status = runtime_status
+                if heartbeat_status not in nonterminal_statuses:
+                    heartbeat_status = _zip_wam_provider_output_status(output_path)
+                if heartbeat_status in nonterminal_statuses:
                     nonterminal_path = output_path.with_name(
                         f"{output_path.stem}_nonterminal{output_path.suffix}"
                     )
@@ -1510,7 +1550,7 @@ def poll_runpod_wam_async_run(
                         "schema_version": "runpod_wam_nonterminal_output.v1",
                         "generated_at": generated,
                         "status": "running",
-                        "runtime_result_status": runtime_status,
+                        "runtime_result_status": heartbeat_status,
                         "runtime_result": downloaded_inspection.get("runtime_result"),
                         "nonterminal_zip_path": str(nonterminal_path),
                         "nonterminal_zip_size_bytes": nonterminal_path.stat().st_size,

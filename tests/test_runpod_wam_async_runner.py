@@ -287,6 +287,51 @@ def test_runpod_create_allows_unitree_groot_sonic_full_loop_bundle_without_overr
     assert "output-secret" not in persisted
 
 
+def test_runpod_create_clears_stale_output_from_prior_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A re-fire over an existing job dir must clear the prior run's output zip; otherwise the
+    poll treats the stale file as this run's result and short-circuits before the worker uploads.
+    """
+    bundle = tmp_path / "wam_bundle.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_runtime/run_wam_provider_runtime.sh", "echo hi\n")
+    job = tmp_path / "job"
+    job.mkdir()
+    stale = job / "runpod_provider_runtime_output.zip"
+    stale.write_bytes(b"stale-terminal-from-prior-run")
+    stale_nonterminal = job / "runpod_provider_runtime_output_nonterminal.zip"
+    stale_nonterminal.write_bytes(b"stale-nonterminal-from-prior-run")
+
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setattr(runner, "_runpod_request", lambda **kwargs: (200, {"id": "pod-xyz"}))
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+
+    runner.create_runpod_wam_async_run(
+        job_dir=job,
+        bundle_path=bundle,
+        output_path=stale,
+        provider_bundle_url="https://spaces.example/bundle.zip?X-Amz-Signature=bundle-secret",
+        provider_output_put_url="https://spaces.example/output.zip?X-Amz-Signature=output-secret",
+        allow_paid_runpod_launch=True,
+        skip_public_staging_verification=True,
+        generated_at="now",
+    )
+
+    # cleanup runs at create start (before launch), so stale output is gone regardless of outcome
+    assert not stale.exists()
+    assert not stale_nonterminal.exists()
+
+
 def test_runpod_poll_downloads_provider_output_get_url_file(
     tmp_path: Path,
     monkeypatch,
@@ -891,6 +936,104 @@ def test_runpod_poll_ignores_unitree_groot_sonic_nonterminal_heartbeat(
     assert read_count["value"] == 2
     assert (tmp_path / "job" / "runpod_provider_runtime_output_nonterminal.zip").is_file()
     assert (tmp_path / "job" / "runpod_wam_nonterminal_output_manifest.json").is_file()
+
+
+def test_runpod_poll_recognizes_oscar_wam_provider_output_heartbeat(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """OSCAR's first heartbeat zip holds only wam_provider_output.json (status=running) with no
+    wam_runtime_result.json. The poll must treat it as nonterminal and keep waiting, not mistake
+    it for completion and tear the pod down before deps/checkpoint/inference can run.
+    """
+    output_get_url_file = tmp_path / "provider_output_get_url.txt"
+    output_get_url_file.write_text(
+        "https://spaces.example/oscar-output.zip?X-Amz-Signature=download-secret\n",
+        encoding="utf-8",
+    )
+    output_get_url_file.chmod(0o600)
+    output_zip = tmp_path / "job" / "runpod_provider_runtime_output.zip"
+    (tmp_path / "job").mkdir()
+    running_zip = tmp_path / "running.zip"
+    completed_zip = tmp_path / "completed.zip"
+    with zipfile.ZipFile(running_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "wam_provider_output.json",
+            json.dumps(
+                {
+                    "schema_version": "wam_provider_output.v1",
+                    "status": "running",
+                    "runtime_phase": "runpod_wam_system_dependency_install_started",
+                    "blockers": [],
+                }
+            ),
+        )
+    with zipfile.ZipFile(completed_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "wam_runtime_result.json",
+            json.dumps(
+                {
+                    "status": "completed",
+                    "blockers": [],
+                    "generated_video_path": "oscar_generated_rollout.mp4",
+                    "learned_wam_model_ran": True,
+                }
+            ),
+        )
+        archive.writestr("oscar_generated_rollout.mp4", b"\x00\x00fakemp4")
+    (tmp_path / "job" / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-oscar-1",
+                "output_path": str(output_zip),
+                "provider_output_get_url_file": {
+                    "path": str(output_get_url_file),
+                    "raw_secret_values_recorded": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    zip_sequence = [running_zip, completed_zip]
+    read_count = {"value": 0}
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            index = min(read_count["value"], len(zip_sequence) - 1)
+            read_count["value"] += 1
+            return zip_sequence[index].read_bytes()
+
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_runpod_request",
+        lambda **kwargs: (200, {"desiredStatus": "RUNNING"}),
+    )
+    monkeypatch.setattr(runner.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        max_wait_seconds=2,
+        retry_interval_seconds=1,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["runtime_result_status"] == "completed"
+    # the wam_provider_output.json running heartbeat was recognized as nonterminal (kept polling)
+    assert manifest["last_nonterminal_output"]["runtime_result_status"] == "running"
+    assert read_count["value"] == 2
 
 
 def test_runpod_poll_preserves_running_nonterminal_output(
