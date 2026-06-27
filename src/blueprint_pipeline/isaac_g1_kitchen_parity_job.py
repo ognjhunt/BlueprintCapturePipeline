@@ -119,6 +119,7 @@ if os.environ.get("PARITY_MANIPULATION_LOOK_AT",""): cmd += ["--manipulation-loo
 if os.environ.get("PARITY_RENDER_SUBFRAMES",""): cmd += ["--render-subframes", os.environ["PARITY_RENDER_SUBFRAMES"]]
 if os.environ.get("PARITY_MANIPULATION_REACH","")=="1": cmd.append("--manipulation-reach")
 if os.environ.get("PARITY_MANIPULATION_REACH_ARM",""): cmd += ["--manipulation-reach-arm", os.environ["PARITY_MANIPULATION_REACH_ARM"]]
+if os.environ.get("PARITY_FILL_LIGHT_INTENSITY",""): cmd += ["--fill-light-intensity", os.environ["PARITY_FILL_LIGHT_INTENSITY"]]
 mark("runner_starting", cmd=cmd)
 rc=subprocess.call(cmd)
 mark("runner_done", rc=rc)
@@ -204,7 +205,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       cheap_collision: bool = False, articulated: bool = False,
                       manipulation_cam: bool = False, manipulation_look_at: str = "",
                       render_subframes: int = 0, manipulation_reach: bool = False,
-                      manipulation_reach_arm: str = "") -> RenderLaunchSpec:
+                      manipulation_reach_arm: str = "both",
+                      fill_light_intensity: float = 0.0) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -236,8 +238,10 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_RENDER_SUBFRAMES"] = str(render_subframes)
     if manipulation_reach:
         env["PARITY_MANIPULATION_REACH"] = "1"
-    if manipulation_reach_arm:
+    if manipulation_reach and manipulation_reach_arm:
         env["PARITY_MANIPULATION_REACH_ARM"] = str(manipulation_reach_arm)
+    if fill_light_intensity and fill_light_intensity > 0:
+        env["PARITY_FILL_LIGHT_INTENSITY"] = str(fill_light_intensity)
     if kitchen_url:
         env["KITCHEN_BUNDLE_URL"] = kitchen_url
     return RenderLaunchSpec(
@@ -337,7 +341,8 @@ def run_isaac_g1_kitchen_parity_job(
     no_collision_probe: bool = False, focus_radius: float = 0.0, keep_objects: str = "",
     settle_seconds: int = 0, cheap_collision: bool = False, articulated: bool = False,
     manipulation_cam: bool = False, manipulation_look_at: str = "", render_subframes: int = 0,
-    manipulation_reach: bool = False, manipulation_reach_arm: str = "",
+    manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
+    fill_light_intensity: float = 0.0,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan."""
     out_dir = Path(out_dir)
@@ -391,7 +396,8 @@ def run_isaac_g1_kitchen_parity_job(
                              cheap_collision=cheap_collision, articulated=articulated,
                              manipulation_cam=manipulation_cam, manipulation_look_at=manipulation_look_at,
                              render_subframes=render_subframes, manipulation_reach=manipulation_reach,
-                             manipulation_reach_arm=manipulation_reach_arm)
+                             manipulation_reach_arm=manipulation_reach_arm,
+                             fill_light_intensity=fill_light_intensity)
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
                                         "policy_id": policy_id, "steps": steps}
@@ -454,7 +460,9 @@ def main(argv=None) -> int:
                     help="RTX subframes accumulated per captured frame to denoise grain (e.g. 16)")
     ap.add_argument("--manipulation-reach", action="store_true",
                     help="animate the arm reaching the faucet so the skeleton-video encodes the task")
-    ap.add_argument("--manipulation-reach-arm", default="", choices=["", "right", "left"])
+    ap.add_argument("--manipulation-reach-arm", default="both", choices=["right", "left", "both"])
+    ap.add_argument("--fill-light-intensity", type=float, default=0.0,
+                    help="sphere fill light over the faucet workspace to lift the dark basin (0=off)")
     args = ap.parse_args(argv)
     scenarios = json.loads(Path(args.scenarios).read_text())
     if isinstance(scenarios, dict):
@@ -466,7 +474,8 @@ def main(argv=None) -> int:
         articulated=args.articulated, cheap_collision=args.cheap_collision,
         settle_seconds=args.settle_seconds, manipulation_cam=args.manipulation_cam,
         manipulation_look_at=args.manipulation_look_at, render_subframes=args.render_subframes,
-        manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm)
+        manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
+        fill_light_intensity=args.fill_light_intensity)
     print(json.dumps(m, indent=2, default=str))
     return 0 if m.get("status") in ("completed", "prepared") else 1
 

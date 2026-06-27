@@ -47,6 +47,25 @@ RESULT_SCHEMA_VERSION = "isaac_g1_kitchen_parity_result.v1"
 # robot footprint half-extent (m) for the PhysX overlap probe (approx G1 standing bbox)
 ROBOT_FOOTPRINT_HALF_EXTENT = (0.28, 0.28, 0.62)
 ROBOT_PELVIS_HEIGHT_M = 0.79
+MANIPULATION_READY_ARM_SELECTIONS = ("right", "left", "both")
+MANIPULATION_READY_ARM_JOINT_DELTAS = {
+    "left": {
+        "left_shoulder_pitch_joint": -0.85,
+        "left_shoulder_roll_joint": 0.15,
+        "left_shoulder_yaw_joint": 0.10,
+        "left_elbow_joint": -0.23,
+        "left_wrist_roll_joint": -0.10,
+        "left_wrist_pitch_joint": -0.15,
+    },
+    "right": {
+        "right_shoulder_pitch_joint": -0.85,
+        "right_shoulder_roll_joint": -0.15,
+        "right_shoulder_yaw_joint": -0.10,
+        "right_elbow_joint": -0.23,
+        "right_wrist_roll_joint": 0.10,
+        "right_wrist_pitch_joint": -0.15,
+    },
+}
 
 
 # ============================ testable helpers (no isaacsim) ============================
@@ -351,17 +370,58 @@ def _setup_g1_articulation(prim_path: str):
     return art, dof_index, default, link_names
 
 
-def _drive_g1_walk(art, dof_index, default, *, root_pose, yaw, phase, moving):
+def manipulation_ready_arm_joint_deltas(arm: str = "both") -> dict[str, float]:
+    """Joint deltas that raise G1 forearms into a first-person manipulation-ready pose.
+
+    The values are relative to the standing keyframe, so the pose is portable across Isaac and
+    MuJoCo G1 assets without hard-coding absolute default qpos values.
+    """
+    selection = str(arm or "both").strip().lower()
+    if selection not in MANIPULATION_READY_ARM_SELECTIONS:
+        raise ValueError(f"unknown manipulation arm selection: {arm!r}")
+    sides = ("left", "right") if selection == "both" else (selection,)
+    out: dict[str, float] = {}
+    for side in sides:
+        out.update(MANIPULATION_READY_ARM_JOINT_DELTAS[side])
+    return out
+
+
+def _apply_joint_deltas(targets, default, dof_index, deltas: Mapping[str, float]) -> list[str]:
+    applied: list[str] = []
+    for name, delta in deltas.items():
+        idx = dof_index.get(name)
+        if idx is not None and idx < len(targets) and idx < len(default):
+            targets[idx] = default[idx] + float(delta)
+            applied.append(name)
+    return applied
+
+
+def _drive_g1_walk(
+    art,
+    dof_index,
+    default,
+    *,
+    root_pose,
+    yaw,
+    phase,
+    moving,
+    manipulation_ready: bool = False,
+    manipulation_reach_arm: str = "both",
+):
     """Set the G1 root world pose + joint positions = standing + gait deltas (kinematic pose)."""
     import numpy as np  # type: ignore
     w, x, y, z = yaw_to_quat(float(yaw))
     art.set_world_pose(position=np.asarray(root_pose, dtype="float32"),
                        orientation=np.asarray([w, x, y, z], dtype="float32"))
     targets = np.array(default, dtype="float32", copy=True)
-    for name, delta in policy_mod.gait_joint_deltas(phase, moving).items():
-        idx = dof_index.get(name)
-        if idx is not None and idx < len(targets):
-            targets[idx] = default[idx] + float(delta)
+    _apply_joint_deltas(targets, default, dof_index, policy_mod.gait_joint_deltas(phase, moving))
+    if manipulation_ready:
+        _apply_joint_deltas(
+            targets,
+            default,
+            dof_index,
+            manipulation_ready_arm_joint_deltas(manipulation_reach_arm),
+        )
     art.set_joint_positions(targets)
     return targets
 
@@ -433,6 +493,11 @@ def compute_arm_reach_skeleton(skeleton, target, reach_frac, *, arm: str = "righ
     """
     if target is None or reach_frac <= 0.0:
         return skeleton
+    if str(arm).lower() == "both":
+        out = skeleton
+        for side in ("left", "right"):
+            out = compute_arm_reach_skeleton(out, target, reach_frac, arm=side)
+        return out
     arm_keys = ("shoulder", "elbow", "wrist", "hand")
     prefix = f"{arm}_"
     arm_pts = [(n, p) for n, p in skeleton if n.startswith(prefix) and any(k in n for k in arm_keys)]
@@ -612,6 +677,41 @@ def _save_rgb(annot, out_path: Path) -> bool:
     return True
 
 
+def camera_aperture_for_fov(vfov_deg: float, width: int, height: int, focal_mm: float = 20.0):
+    """Focal length + (horizontal, vertical) aperture that give a camera a vertical FOV of
+    ``vfov_deg`` at the render aspect ratio. USD's default 50mm/20.955mm camera is a ~24deg
+    telephoto — far too zoomed for the manipulation POV (it fills the frame with the dark sink
+    basin) and it does NOT match the FOV the skeleton projection assumes, so the projected
+    landmarks misalign with the render. Pure trig (no USD) so it is unit-testable."""
+    vap = 2.0 * float(focal_mm) * math.tan(math.radians(float(vfov_deg)) / 2.0)
+    hap = vap * (float(width) / float(height))
+    return float(focal_mm), hap, vap
+
+
+def _set_camera_fov(stage, cam_path: str, vfov_deg: float, width: int, height: int) -> None:
+    """Set a USD camera's focal length + apertures so its vertical FOV == ``vfov_deg`` (matching the
+    skeleton-projection FOV) instead of the narrow ~17deg default. GPU/USD only."""
+    from pxr import UsdGeom  # type: ignore
+    focal, hap, vap = camera_aperture_for_fov(vfov_deg, width, height)
+    cam = UsdGeom.Camera(stage.GetPrimAtPath(cam_path))
+    cam.GetFocalLengthAttr().Set(focal)
+    cam.GetHorizontalApertureAttr().Set(hap)
+    cam.GetVerticalApertureAttr().Set(vap)
+
+
+def _add_workspace_fill_light(stage, target, *, intensity: float, height: float = 2.0,
+                              path: str = "/World/WorkspaceFill") -> None:
+    """Add a local sphere fill light above the manipulation workspace (the faucet) so the dark sink
+    basin + the reaching arm are lit. Intensity is configurable (blind-tunable via re-render). The
+    default scene has a single distant key light that leaves the basin interior in shadow. GPU/USD."""
+    from pxr import UsdLux, UsdGeom, Gf  # type: ignore
+    light = UsdLux.SphereLight.Define(stage, path)
+    light.CreateIntensityAttr(float(intensity))
+    light.CreateRadiusAttr(0.4)
+    UsdGeom.Xformable(light.GetPrim()).AddTranslateOp().Set(
+        Gf.Vec3d(float(target[0]), float(target[1]) - 0.25, float(height)))
+
+
 def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], out_dir: Path,
                   policy_id: str, steps: int, width: int, height: int, fps: int,
                   warmup_frames: int, capture_every: int, no_collision_probe: bool = False,
@@ -621,7 +721,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   cheap_collision: bool = False, articulated: bool = False,
                   camera_vfov_deg: float = 50.0, manipulation_cam: bool = False,
                   manipulation_look_at=None, render_subframes: int = 1,
-                  manipulation_reach: bool = False, manipulation_reach_arm: str = "right") -> dict:
+                  manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
+                  fill_light_intensity: float = 0.0) -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
     flushed progress + a per-scenario wall-clock cap so it cannot hang silently."""
@@ -657,17 +758,39 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             _log(f"focus prune (r={focus_radius}m): kept {pr['kept']} objects, deactivated {pr['pruned']}")
             (out_dir / "focus_prune.json").write_text(json.dumps(pr, indent=2))
         rest_offsets = None
+        art_ctx = None
         if articulated:
-            # Pure-USD G1 skeleton (no physics tensor view — it gets invalidated on this G1 USD).
+            try:
+                art_ctx = _setup_articulated_g1(binding["prim_path"])
+                _log(
+                    "G1 articulation drive ready: "
+                    f"{art_ctx['dof_count']} joints, {len(art_ctx['link_names'])} links"
+                )
+            except Exception as exc:  # noqa: BLE001
+                blockers.append("official_isaac_unitree_g1_joint_drive_unavailable")
+                _log(f"G1 articulation drive unavailable ({exc!r}); using USD skeleton fallback")
             rest_offsets = _g1_link_rest_offsets(stage, binding["prim_path"])
-            _log(f"G1 skeleton: {len(rest_offsets)} link landmarks (rest-pose, kinematic)")
+            _log(f"G1 skeleton fallback: {len(rest_offsets)} link landmarks (rest-pose, kinematic)")
         from pxr import UsdGeom, UsdLux  # type: ignore
         UsdGeom.Scope.Define(stage, "/World")
         over_cam = "/World/Cameras/overview"
         pov_cam = "/World/Cameras/robot_pov"
         UsdGeom.Camera.Define(stage, over_cam)
         UsdGeom.Camera.Define(stage, pov_cam)
-        UsdLux.DistantLight.Define(stage, "/World/Key")
+        key = UsdLux.DistantLight.Define(stage, "/World/Key")
+        try:
+            key.CreateIntensityAttr(3000.0)  # lift the global key so the workspace is not crushed dark
+        except Exception:  # noqa: BLE001
+            pass
+        # POV camera: widen from USD's ~17deg telephoto default to the projection FOV so the frame
+        # shows the lit workspace (not a zoomed crop of the dark basin) AND the rendered view matches
+        # the skeleton projection. Overview gets a wide FOV so it frames the whole scene.
+        _set_camera_fov(stage, pov_cam, camera_vfov_deg, width, height)
+        _set_camera_fov(stage, over_cam, 60.0, width, height)
+        if manipulation_cam and fill_light_intensity > 0 and manipulation_look_at is not None:
+            _add_workspace_fill_light(stage, manipulation_look_at, intensity=fill_light_intensity)
+            _log(f"workspace fill light @ {tuple(round(float(c),2) for c in manipulation_look_at)} "
+                 f"intensity={fill_light_intensity}")
         _log(f"creating render products ({width}x{height})")
         over_annot = _make_render_product(over_cam, width, height)
         pov_annot = _make_render_product(pov_cam, width, height)
@@ -723,7 +846,24 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 rejected_total += decision.rejected_collision_probe_count
                 if decision.policy_action != "accepted_direct_collision_checked_motion":
                     response_total += 1
-                _place_root(stage, binding["prim_path"], decision.root_pose, decision.yaw)
+                route_distance_m = policy_mod.route_distance(sc["route_points"])
+                alpha = 0.0 if steps <= 1 else step / float(steps - 1)
+                phase = policy_mod.gait_phase(alpha, route_distance_m)
+                moving = route_distance_m > 0.05 and step < max(1, steps - 1)
+                if art_ctx is not None:
+                    _drive_g1_walk(
+                        art_ctx["art"],
+                        art_ctx["dof_index"],
+                        art_ctx["default"],
+                        root_pose=decision.root_pose,
+                        yaw=decision.yaw,
+                        phase=phase,
+                        moving=moving,
+                        manipulation_ready=bool(manipulation_reach),
+                        manipulation_reach_arm=manipulation_reach_arm,
+                    )
+                else:
+                    _place_root(stage, binding["prim_path"], decision.root_pose, decision.yaw)
                 rec = policy_mod.action_record(
                     decision=decision, step=step, sim_time_s=step / float(fps), target=sc["target"],
                     scenario_eval_run_id=sc.get("scenario_eval_run_id"))
@@ -735,12 +875,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 if manipulation_cam
                                 else follow_cam_pose(decision.root_pose, decision.yaw))
                     _place_camera(stage, pov_cam, eye, tgt)  # POV camera (manipulation egocentric or follow)
-                    if articulated and rest_offsets is not None:
-                        skel = _rest_skeleton_world(rest_offsets, decision.root_pose, decision.yaw)
+                    if articulated and (art_ctx is not None or rest_offsets is not None):
+                        if art_ctx is not None:
+                            skel = _g1_skeleton_world_positions(art_ctx["art"], art_ctx["link_names"])
+                        else:
+                            skel = _rest_skeleton_world(rest_offsets, decision.root_pose, decision.yaw)
                         if manipulation_reach and manipulation_look_at is not None:
-                            # arm reaches the faucet as the episode progresses (0 -> 1) so the
-                            # skeleton-video OSCAR conditions on encodes the manipulation, not a walk
-                            reach_frac = step / float(max(1, steps - 1))
+                            # For manipulation POVs the first frame is already "task started": arms
+                            # visible in the workspace. Navigation/follow shots can still ramp.
+                            reach_frac = 1.0 if manipulation_cam else alpha
                             skel = compute_arm_reach_skeleton(skel, manipulation_look_at, reach_frac,
                                                               arm=manipulation_reach_arm)
                         lms = _project_skeleton(skel, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
@@ -839,10 +982,13 @@ def main(argv=None) -> int:
     ap.add_argument("--render-subframes", type=int, default=1,
                     help="RTX orchestrator steps accumulated per captured frame to denoise grain (e.g. 16)")
     ap.add_argument("--manipulation-reach", action="store_true",
-                    help="animate the arm reaching toward --manipulation-look-at over the episode so the "
-                         "skeleton-video encodes the manipulation (the faucet turn), not the walk gait")
-    ap.add_argument("--manipulation-reach-arm", default="right", choices=["right", "left"],
-                    help="which arm reaches for the task")
+                    help="pose the visible G1 arms into the workspace for manipulation POV review; "
+                         "this is posed simulator media, not manipulation-success proof")
+    ap.add_argument("--manipulation-reach-arm", default="both", choices=["right", "left", "both"],
+                    help="which arm is posed for the task")
+    ap.add_argument("--fill-light-intensity", type=float, default=0.0,
+                    help="add a sphere fill light over the manipulation workspace (the faucet) at this "
+                         "intensity to lift the dark sink basin; 0 disables")
     args = ap.parse_args(argv)
 
     manip_look_at = None
@@ -879,7 +1025,8 @@ def main(argv=None) -> int:
         cheap_collision=args.cheap_collision, articulated=args.articulated,
         camera_vfov_deg=args.camera_vfov, manipulation_cam=args.manipulation_cam,
         manipulation_look_at=manip_look_at, render_subframes=args.render_subframes,
-        manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm)
+        manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
+        fill_light_intensity=args.fill_light_intensity)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))

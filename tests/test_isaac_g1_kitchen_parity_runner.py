@@ -87,6 +87,67 @@ def test_arm_reach_skeleton_moves_hand_toward_faucet_and_into_view() -> None:
     assert rest_hand[1] < half["right_hand_palm_link"][1] < full["right_hand_palm_link"][1]
 
 
+def test_manipulation_ready_arm_pose_defaults_to_both_arms() -> None:
+    deltas = M.manipulation_ready_arm_joint_deltas()
+    assert deltas["left_shoulder_pitch_joint"] < 0
+    assert deltas["right_shoulder_pitch_joint"] < 0
+    assert deltas["left_elbow_joint"] < 0
+    assert deltas["right_elbow_joint"] < 0
+    assert "left_wrist_pitch_joint" in deltas
+    assert "right_wrist_pitch_joint" in deltas
+
+    right_only = M.manipulation_ready_arm_joint_deltas("right")
+    assert "right_shoulder_pitch_joint" in right_only
+    assert "left_shoulder_pitch_joint" not in right_only
+
+    with pytest.raises(ValueError):
+        M.manipulation_ready_arm_joint_deltas("center")
+
+
+def test_apply_joint_deltas_updates_only_available_joint_targets() -> None:
+    targets = [0.0, 0.0, 0.0]
+    default = [1.0, 2.0, 3.0]
+    applied = M._apply_joint_deltas(
+        targets,
+        default,
+        {"right_shoulder_pitch_joint": 0, "right_elbow_joint": 2},
+        {
+            "right_shoulder_pitch_joint": -0.85,
+            "missing_joint": 99.0,
+            "right_elbow_joint": -0.23,
+        },
+    )
+    assert applied == ["right_shoulder_pitch_joint", "right_elbow_joint"]
+    assert targets == pytest.approx([0.15, 0.0, 2.77])
+
+
+def test_arm_reach_skeleton_can_pose_both_arms_for_first_frame() -> None:
+    rest = [
+        ("left_shoulder_link", (0.0, -0.2, 1.1)),
+        ("left_hand_palm_link", (0.0, -0.45, 0.8)),
+        ("right_shoulder_link", (0.0, 0.2, 1.1)),
+        ("right_hand_palm_link", (0.0, 0.45, 0.8)),
+    ]
+    target = (0.5, 0.0, 0.95)
+    full = dict(M.compute_arm_reach_skeleton(rest, target, 1.0, arm="both"))
+    assert full["left_hand_palm_link"][0] > rest[1][1][0]
+    assert full["right_hand_palm_link"][0] > rest[3][1][0]
+    assert full["left_hand_palm_link"] != rest[1][1]
+    assert full["right_hand_palm_link"] != rest[3][1]
+
+
+def test_camera_aperture_widens_fov_vs_default_telephoto() -> None:
+    # the POV camera was rendering at USD's ~17deg-vertical default (focal 50 / vap 15.29),
+    # which zooms into the dark basin; we widen it to the projection FOV
+    focal, hap, vap = M.camera_aperture_for_fov(50.0, 1280, 960)
+    got_vfov = 2 * math.degrees(math.atan(vap / (2 * focal)))
+    assert got_vfov == pytest.approx(50.0, abs=1e-6)          # vertical FOV matches the request
+    assert hap / vap == pytest.approx(1280 / 960, abs=1e-6)   # horizontal aperture matches aspect
+    # default telephoto would be ~17deg vertical -> the new FOV is much wider (less zoomed)
+    default_vfov = 2 * math.degrees(math.atan(15.2908 / (2 * 50.0)))
+    assert got_vfov > default_vfov + 25
+
+
 def test_parse_scenarios_normalizes_to_pelvis_height_route() -> None:
     req = {"scenarios": [
         {"scenario_id": "s1", "spawn_position_xyz": [-4.25, -3.35, 0.05],
