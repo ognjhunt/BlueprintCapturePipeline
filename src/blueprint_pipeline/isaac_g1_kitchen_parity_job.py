@@ -114,6 +114,7 @@ if os.environ.get("PARITY_KEEP_OBJECTS",""): cmd += ["--keep-objects", os.enviro
 if os.environ.get("PARITY_NO_PROBE","")=="1": cmd.append("--no-collision-probe")
 if os.environ.get("PARITY_CHEAP_COLLISION","")=="1": cmd.append("--cheap-collision")
 if os.environ.get("PARITY_ARTICULATED","")=="1": cmd.append("--articulated")
+if os.environ.get("PARITY_MANIPULATION_CAM","")=="1": cmd.append("--manipulation-cam")
 mark("runner_starting", cmd=cmd)
 rc=subprocess.call(cmd)
 mark("runner_done", rc=rc)
@@ -196,7 +197,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       volume_gb: int = 80, kitchen_url: str | None = None, warmup: int = 6,
                       per_scenario_seconds: int = 420, no_collision_probe: bool = False,
                       focus_radius: float = 0.0, keep_objects: str = "", settle_seconds: int = 0,
-                      cheap_collision: bool = False, articulated: bool = False) -> RenderLaunchSpec:
+                      cheap_collision: bool = False, articulated: bool = False,
+                      manipulation_cam: bool = False) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -220,6 +222,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_CHEAP_COLLISION"] = "1"
     if articulated:
         env["PARITY_ARTICULATED"] = "1"
+    if manipulation_cam:
+        env["PARITY_MANIPULATION_CAM"] = "1"
     if kitchen_url:
         env["KITCHEN_BUNDLE_URL"] = kitchen_url
     return RenderLaunchSpec(
@@ -318,6 +322,7 @@ def run_isaac_g1_kitchen_parity_job(
     width: int = 1280, height: int = 960, warmup: int = 6, per_scenario_seconds: int = 420,
     no_collision_probe: bool = False, focus_radius: float = 0.0, keep_objects: str = "",
     settle_seconds: int = 0, cheap_collision: bool = False, articulated: bool = False,
+    manipulation_cam: bool = False,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan."""
     out_dir = Path(out_dir)
@@ -368,7 +373,8 @@ def run_isaac_g1_kitchen_parity_job(
                              warmup=warmup, per_scenario_seconds=per_scenario_seconds,
                              no_collision_probe=no_collision_probe, focus_radius=focus_radius,
                              keep_objects=keep_objects, settle_seconds=settle_seconds,
-                             cheap_collision=cheap_collision, articulated=articulated)
+                             cheap_collision=cheap_collision, articulated=articulated,
+                             manipulation_cam=manipulation_cam)
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
                                         "policy_id": policy_id, "steps": steps}
@@ -420,6 +426,11 @@ def main(argv=None) -> int:
     ap.add_argument("--cold", action="store_true")
     ap.add_argument("--image", default=None)
     ap.add_argument("--max-seconds", type=int, default=1500)
+    ap.add_argument("--articulated", action="store_true")
+    ap.add_argument("--cheap-collision", action="store_true")
+    ap.add_argument("--settle-seconds", type=int, default=0)
+    ap.add_argument("--manipulation-cam", action="store_true",
+                    help="egocentric at-sink POV (manipulation framing) instead of the navigation chase cam")
     args = ap.parse_args(argv)
     scenarios = json.loads(Path(args.scenarios).read_text())
     if isinstance(scenarios, dict):
@@ -427,7 +438,9 @@ def main(argv=None) -> int:
     m = run_isaac_g1_kitchen_parity_job(
         scenarios=scenarios, out_dir=args.out_dir, kitchen_asset_dir=args.kitchen_asset_dir,
         g1_usd=args.g1_usd, policy_id=args.policy, steps=args.steps, provider=args.provider,
-        allow_paid=args.allow_paid, cold=args.cold, image=args.image, max_seconds=args.max_seconds)
+        allow_paid=args.allow_paid, cold=args.cold, image=args.image, max_seconds=args.max_seconds,
+        articulated=args.articulated, cheap_collision=args.cheap_collision,
+        settle_seconds=args.settle_seconds, manipulation_cam=args.manipulation_cam)
     print(json.dumps(m, indent=2, default=str))
     return 0 if m.get("status") in ("completed", "prepared") else 1
 

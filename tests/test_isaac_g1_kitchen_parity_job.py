@@ -68,6 +68,21 @@ def test_build_launch_spec_carries_policy_and_signed_urls(tmp_path: Path) -> Non
     assert spec.container_disk_gb >= 120
 
 
+def test_manipulation_cam_flag_threads_env_and_bootstrap(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+    # off by default -> no env, no flag baked into the runner cmd
+    off = J.build_launch_spec(jd, image="img:tag", policy_id="p", steps=8)
+    assert "PARITY_MANIPULATION_CAM" not in off.env
+    # on -> env set; the bootstrap only appends --manipulation-cam when that env == "1"
+    on = J.build_launch_spec(jd, image="img:tag", policy_id="p", steps=8, manipulation_cam=True)
+    assert on.env["PARITY_MANIPULATION_CAM"] == "1"
+    body = J.docker_start_cmd()[1]
+    assert 'PARITY_MANIPULATION_CAM' in body and '--manipulation-cam' in body
+
+
 def test_build_harness_package_is_wam_ready_and_honest(tmp_path: Path) -> None:
     result = {
         "policy_id": "blueprint_default_walk_to_target_smoke_policy",
