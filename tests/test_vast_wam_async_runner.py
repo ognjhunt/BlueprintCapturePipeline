@@ -612,6 +612,7 @@ def _install_poll_harness(
     monkeypatch.setattr(runner, "_append_session_budget_attempt", lambda **_kwargs: None)
     monkeypatch.setattr(runner, "_final_validation", lambda **kwargs: {"status": "completed" if not kwargs["continuing_spend"] else "blocked"})
     monkeypatch.setattr(runner.time, "time", lambda: 100.0)
+    monkeypatch.setattr(runner.time, "sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         runner,
         "_inspect_provider_runtime_output_zip",
@@ -751,7 +752,66 @@ def test_poll_extends_missing_container_retry_count_with_wait_window(
     )
 
     assert result["status"] == "blocked"
-    assert observed["container_missing_retry_attempts"] == 60
+    # The missing-container tolerance is capped at the bounded boot/pull window (default 720s)
+    # rather than the full live window, so a dud offer is torn down quickly: 720s / 15s = 48
+    # (not 900s / 15s = 60). This is what stops a never-booting container idling the deadline.
+    assert observed["container_missing_retry_attempts"] == 48
+
+
+def test_poll_missing_container_cap_is_env_configurable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = tmp_path / "missing-container-retry-env"
+    _write_state(job, max_live_deadline_epoch=1_000.0)
+    observed: dict[str, Any] = {}
+    monkeypatch.setenv(runner.VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV, "300")
+    monkeypatch.setattr(runner, "_read_secret_file", lambda *_args, **_kwargs: ("secret-vast-key", {}))
+    monkeypatch.setattr(runner, "_forwarded_secret_values", lambda: [])
+    monkeypatch.setattr(runner, "_append_phase", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_fill_missing_phase_rows", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_instance_status", lambda _payload: "running")
+    monkeypatch.setattr(runner, "_redact_runtime_value", lambda value, _secrets: value)
+    monkeypatch.setattr(runner, "_budget_ledger", lambda **_kwargs: {"estimated_cost_usd": 0.01})
+    monkeypatch.setattr(runner, "_append_session_budget_attempt", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "_final_validation", lambda **_kwargs: {"status": "completed"})
+    monkeypatch.setattr(runner.time, "time", lambda: 100.0)
+    monkeypatch.setattr(
+        runner,
+        "_inspect_provider_runtime_output_zip",
+        lambda *_args, **_kwargs: {
+            "zip_present": False,
+            "runtime_result_present": False,
+            "runtime_result": {},
+            "mp4_validation": {},
+            "video_smoke_proven": False,
+        },
+    )
+
+    def fake_logs(**kwargs: Any) -> dict[str, Any]:
+        observed.update(kwargs)
+        Path(kwargs["output_log_path"]).write_text("No such container: C.123", encoding="utf-8")
+        return {"output_log_path": str(kwargs["output_log_path"]), "status": "blocked"}
+
+    monkeypatch.setattr(runner, "_request_logs_and_fetch", fake_logs)
+    monkeypatch.setattr(
+        runner,
+        "_api_json",
+        lambda **kwargs: (200, {"success": True})
+        if kwargs["method"] == "DELETE"
+        else (200, {"instances": {"actual_status": "running"}}),
+    )
+
+    runner.poll_async_vast_wam_run(
+        job_dir=job,
+        max_wait_seconds=900,
+        retry_interval_seconds=15,
+        teardown=True,
+        generated_at="now",
+    )
+
+    # 300s override / 15s interval = 20 (well under the full-window 60)
+    assert observed["container_missing_retry_attempts"] == 20
 
 
 def test_poll_caps_log_wait_to_remaining_live_deadline(
@@ -974,6 +1034,50 @@ def test_poll_teardown_http_and_generic_failures(
     assert generic_failure["instance_status"] == "status_probe_failed:RuntimeError"
     teardown = json.loads((generic_failure_job / "vast_teardown_manifest.json").read_text())
     assert teardown["teardown_actions_performed"][0]["error_type"] == "RuntimeError"
+
+
+def test_poll_teardown_retries_transient_destroy_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A destroy that fails transiently on the first attempt (e.g. instance still ``loading``)
+    must be retried so the instance does not keep billing — the exact leak observed on a dud
+    offer whose first DELETE was rejected.
+    """
+    output_zip = {
+        "zip_present": False,
+        "runtime_result_present": False,
+        "runtime_result": {},
+        "mp4_validation": {},
+        "video_smoke_proven": False,
+    }
+    attempts = {"n": 0}
+
+    def flaky_delete() -> tuple[int, dict[str, Any]]:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise urllib.error.HTTPError(
+                url="https://vast.ai", code=500, msg="still loading", hdrs=None, fp=None
+            )
+        return (200, {"success": True})
+
+    job = tmp_path / "retry-destroy"
+    _write_state(job)
+    _install_poll_harness(
+        monkeypatch,
+        heartbeat_text="BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED",
+        output_zip_inspection=output_zip,
+        delete_effect=flaky_delete,
+    )
+
+    result = runner.poll_async_vast_wam_run(job_dir=job, teardown=True, generated_at="now")
+
+    assert result["continuing_spend_from_this_run"] is False  # retry succeeded -> no spend leak
+    assert attempts["n"] == 2  # one failure then one success
+    teardown = json.loads((job / "vast_teardown_manifest.json").read_text())
+    actions = teardown["teardown_actions_performed"]
+    assert actions[0]["status"] == "failed" and actions[0]["attempt"] == 1
+    assert actions[-1]["status"] == "completed" and actions[-1]["attempt"] == 2
 
 
 def test_direct_destroy_async_vast_wam_run_skips_log_fetch(

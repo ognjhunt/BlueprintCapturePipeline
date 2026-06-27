@@ -960,6 +960,53 @@ def test_request_logs_breaks_on_no_progress_timeout(
     assert (tmp_path / "onstart.log").read_text(encoding="utf-8") == ""
 
 
+def test_request_logs_dud_container_flicker_is_not_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dud offer whose container never materializes flickers between empty logs and a
+    Docker 'No such container' error. That changing text must NOT be counted as progress —
+    otherwise the no-progress watchdog never fires and the dud idles the whole live window.
+    """
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    flicker = iter(
+        ["", "Error response from daemon: No such container: C.123"] * 50
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: next(flicker))
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        # high container-missing tolerance so the win must come from the no-progress path,
+        # proving the flicker no longer fakes progress (the actual bug we fixed)
+        container_missing_retry_attempts=999,
+        no_progress_seconds=4,
+    )
+
+    assert result["break_reason"] == "no_log_progress_timeout"
+    assert result["no_progress_timeout_reached"] is True
+    # none of the flickering error/empty polls counted as progress
+    assert all(a["progress_observed"] is False for a in result["log_poll_attempts"])
+
+
 def test_vast_adapter_dry_run_writes_required_artifacts(tmp_path: Path) -> None:
     result = run_vast_provider_adapter(job_dir=tmp_path, mode="dry-run")
 

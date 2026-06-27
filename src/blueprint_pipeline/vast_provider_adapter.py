@@ -3352,8 +3352,17 @@ def _request_logs_and_fetch(
         runtime_phase_count = attempt_text.count("BLUEPRINT_WAM_RUNTIME_PHASE:")
         output_changed = previous_output_text is None or attempt_text != previous_output_text
         runtime_phase_progress = runtime_phase_count > previous_runtime_phase_count
+        # A container that never materializes often flickers between empty logs and a Docker
+        # "No such container" / daemon error. That text changing between polls must NOT count
+        # as progress, or it keeps the no-progress watchdog alive for the entire live window on
+        # a dud offer (observed: a dud idled the full deadline instead of bailing). Genuine
+        # worker phase markers always count as progress regardless of any error text.
+        container_or_daemon_error_only = container_missing or (
+            "Error response from daemon" in attempt_text
+        )
         progress_observed = bool(attempt_text.strip()) and (
-            output_changed or runtime_phase_progress
+            runtime_phase_progress
+            or (output_changed and not container_or_daemon_error_only)
         )
         if progress_observed:
             last_progress_monotonic = time.monotonic()

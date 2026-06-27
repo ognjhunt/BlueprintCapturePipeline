@@ -2324,15 +2324,23 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
             "commands": commands,
             "blockers": blockers,
         }
-    base_packages = [
+    # Packages that must import for checkpoint download + a single inference. hf_transfer is
+    # required because the runtime enables HF_HUB_ENABLE_HF_TRANSFER (downloads fail without it).
+    required_packages = [
         "huggingface_hub",
         "hf_transfer",
         "opencv-python-headless",
         "imageio",
         "imageio-ffmpeg",
         "ffmpegcv",
-        "nvidia-resiliency-ext>=0.6.0",
         "peft",
+    ]
+    # Best-effort extras: distributed fault-tolerance and test tooling are not needed to download
+    # the checkpoint or run one inference. They build native/CUDA code and occasionally fail on a
+    # given offer (observed: a 12.8 min install failed mid-run and blocked the whole rollout). Keep
+    # them out of the fail-hard path so a flaky optional package never blocks the model run.
+    optional_packages = [
+        "nvidia-resiliency-ext>=0.6.0",
         "pytest",
     ]
     allow_break_system_packages = os.environ.get(
@@ -2340,7 +2348,16 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
         "true",
     ).strip().lower() in {"1", "true", "yes", "on"}
     commands.append(_run(_pip_install_argv(python, "--upgrade", "pip"), timeout=600))
-    commands.append(_run(_pip_install_argv(python, *base_packages), timeout=900))
+    # Required install with one retry: long pip installs over a fresh-offer network occasionally
+    # fail transiently mid-way and succeed on a second attempt.
+    required_install = _run(_pip_install_argv(python, *required_packages), timeout=900)
+    if required_install.get("returncode") != 0:
+        required_install = _run(_pip_install_argv(python, *required_packages), timeout=900)
+    commands.append(required_install)
+    # Optional extras are recorded but never contribute a dependency_command_failed blocker.
+    optional_install = _run(_pip_install_argv(python, *optional_packages), timeout=900)
+    optional_install["optional_best_effort"] = True
+    commands.append(optional_install)
     req = source_root / "requirements.txt"
     if not req.is_file():
         req = source_root / "requirements_minimal.txt"
@@ -2422,7 +2439,11 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
             )
         )
     framework_after_transformer_engine = _framework_probe(python, source_root)
-    blockers = [f"dependency_command_failed:{index}" for index, row in enumerate(commands) if row.get("returncode") != 0]
+    blockers = [
+        f"dependency_command_failed:{index}"
+        for index, row in enumerate(commands)
+        if row.get("returncode") != 0 and not row.get("optional_best_effort")
+    ]
     framework_after_transformer_engine_payload = _mapping(framework_after_transformer_engine.get("payload"))
     if (
         not transformer_engine_optional

@@ -328,6 +328,12 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
     assert "nvidia-resiliency-ext>=0.6.0" in runner_text
     assert '"pytest"' in runner_text
     assert '"hf_transfer"' in runner_text
+    # required vs best-effort optional dependency split (a flaky optional package must not block
+    # the model run) plus a transient retry on the required install
+    assert "required_packages" in runner_text
+    assert "optional_packages" in runner_text
+    assert "optional_best_effort" in runner_text
+    assert 'not row.get("optional_best_effort")' in runner_text
     assert "BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL" in runner_text
     assert "BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS" in runner_text
     assert "BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER" in runner_text
