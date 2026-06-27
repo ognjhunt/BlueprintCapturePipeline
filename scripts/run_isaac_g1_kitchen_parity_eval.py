@@ -228,6 +228,21 @@ def follow_cam_pose(root_pose, yaw, *, back: float = 2.2, up: float = 1.6):
     return eye, target
 
 
+def manipulation_cam_pose(root_pose, yaw, *, eye_forward: float = 0.15, eye_height: float = 1.35,
+                          target_forward: float = 0.6, target_height: float = 0.9):
+    """Eye + target for an EGOCENTRIC manipulation POV: from the robot's head, looking down-forward
+    at the workspace directly in front (the sink/faucet and the robot's hands).
+
+    Unlike ``follow_cam_pose`` (a chase shot behind+above, framing the whole robot walking across the
+    room) this frames the local task region. Heights are absolute so the view sits at head level and
+    looks at counter level — the in-distribution, coherent view a manipulation WAM can actually
+    predict, instead of a room-scale navigation scene it collapses to blur on."""
+    fx, fy = math.cos(yaw), math.sin(yaw)
+    eye = (root_pose[0] + fx * eye_forward, root_pose[1] + fy * eye_forward, eye_height)
+    target = (root_pose[0] + fx * target_forward, root_pose[1] + fy * target_forward, target_height)
+    return eye, target
+
+
 # ============================ Isaac-only (GPU worker) ============================
 
 def _boot_sim(headless: bool = True):
@@ -542,7 +557,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   keep_substrings: Sequence[str] = ("room", "floor", "wall", "ground", "ceiling", "light"),
                   disable_physx: bool = False, settle_seconds: int = 0,
                   cheap_collision: bool = False, articulated: bool = False,
-                  camera_vfov_deg: float = 50.0) -> dict:
+                  camera_vfov_deg: float = 50.0, manipulation_cam: bool = False) -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
     flushed progress + a per-scenario wall-clock cap so it cannot hang silently."""
@@ -651,8 +666,10 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 actions.append(rec)
                 trace.write(json.dumps(rec) + "\n")
                 if step % max(1, capture_every) == 0:
-                    eye, tgt = follow_cam_pose(decision.root_pose, decision.yaw)
-                    _place_camera(stage, pov_cam, eye, tgt)  # follow-cam tracks the robot
+                    eye, tgt = (manipulation_cam_pose(decision.root_pose, decision.yaw)
+                                if manipulation_cam
+                                else follow_cam_pose(decision.root_pose, decision.yaw))
+                    _place_camera(stage, pov_cam, eye, tgt)  # POV camera (manipulation egocentric or follow)
                     if articulated and rest_offsets is not None:
                         skel = _rest_skeleton_world(rest_offsets, decision.root_pose, decision.yaw)
                         lms = _project_skeleton(skel, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
@@ -738,6 +755,9 @@ def main(argv=None) -> int:
     ap.add_argument("--articulated", action="store_true",
                     help="drive the G1 joints with the walk gait + emit g1_projected_skeleton_trace.jsonl (for OSCAR)")
     ap.add_argument("--camera-vfov", type=float, default=50.0, help="POV camera vertical FOV (deg) for skeleton projection")
+    ap.add_argument("--manipulation-cam", action="store_true",
+                    help="egocentric manipulation POV (head looking down-forward at the sink/hands) "
+                         "instead of the behind-and-above follow cam — for WAM-ing the task, not navigation")
     args = ap.parse_args(argv)
 
     request = load_request(args.request) if args.request else {}
@@ -766,7 +786,7 @@ def main(argv=None) -> int:
         keep_substrings=tuple(s for s in args.keep_objects.split(",") if s.strip()),
         disable_physx=args.disable_physx, settle_seconds=args.settle_seconds,
         cheap_collision=args.cheap_collision, articulated=args.articulated,
-        camera_vfov_deg=args.camera_vfov)
+        camera_vfov_deg=args.camera_vfov, manipulation_cam=args.manipulation_cam)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))

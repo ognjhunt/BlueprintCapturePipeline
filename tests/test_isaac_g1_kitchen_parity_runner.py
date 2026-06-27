@@ -25,6 +25,21 @@ def test_runner_imports_without_isaacsim() -> None:
     assert hasattr(M, "run_scenarios") and hasattr(M, "parse_scenarios")
 
 
+def test_manipulation_cam_is_egocentric_vs_follow_chase() -> None:
+    root, yaw = (1.75, 1.25, 0.79), 0.0  # robot at the sink, facing +x
+    me, mt = M.manipulation_cam_pose(root, yaw)
+    fe, ft = M.follow_cam_pose(root, yaw)
+    # manipulation eye: head height + slightly FORWARD of the root (egocentric)
+    assert me[2] > root[2] + 0.4
+    assert me[0] >= root[0]
+    # follow eye: BEHIND the root (the chase shot that gave OSCAR a room-scale navigation view)
+    assert fe[0] < root[0]
+    # manipulation looks DOWN-forward at the workspace (target ahead of root, below eye, counter level)
+    assert mt[0] > root[0]
+    assert mt[2] < me[2]
+    assert mt[2] < 1.0
+
+
 def test_parse_scenarios_normalizes_to_pelvis_height_route() -> None:
     req = {"scenarios": [
         {"scenario_id": "s1", "spawn_position_xyz": [-4.25, -3.35, 0.05],
