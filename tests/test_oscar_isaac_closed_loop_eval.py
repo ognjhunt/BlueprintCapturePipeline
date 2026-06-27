@@ -90,6 +90,78 @@ def test_closed_loop_blocks_on_missing_wam_frame(tmp_path: Path) -> None:
     assert any("wam_generation_missing_frame" in b for b in manifest["blockers"])
 
 
+def test_build_oscar_per_step_request_shapes_conditioning(tmp_path: Path) -> None:
+    action = {
+        "policy_action": "accepted_direct_collision_checked_motion",
+        "root_position": [1.0, 2.0, 0.79],
+        "root_yaw_radians": 0.5,
+    }
+    landmarks = [{"landmark_id": "pelvis", "image_projection": {"available": True, "u_px": 1, "v_px": 2}}]
+    req = L.build_oscar_per_step_request(
+        current_frame_path="/frames/cur.png",
+        action=action,
+        step_index=3,
+        task_prompt="walk to the sink",
+        num_frames=8,
+        output_dir=tmp_path,
+        skeleton_landmarks=landmarks,
+        seed=42,
+    )
+    assert req["reference_frame_path"] == "/frames/cur.png"
+    assert req["task_prompt"] == "walk to the sink"
+    assert req["num_frames"] == 8
+    assert req["seed"] == 45  # base seed + step_index
+    assert req["projected_landmark_count"] == 1
+    assert req["skeleton_landmarks"] == landmarks
+    assert req["output_dir"].endswith("oscar_step_0003")
+
+
+def test_oscar_per_step_backend_drives_the_loop(tmp_path: Path) -> None:
+    """The real GPU path with OSCAR mocked: each step calls per-step OSCAR generation, the
+    harness runs on the generated frame. Swapping the mock for a real OSCAR pod + real SAM3
+    backend is the only change for the GPU run.
+    """
+    calls: list[dict] = []
+
+    def _fake_oscar_generate(request):
+        calls.append(dict(request))
+        frame = tmp_path / "oscar_out" / f"step_{request['step_index']:04d}.png"
+        _write_frame(frame, seed=request["step_index"] * 23 + 5)
+        return {
+            "status": "completed",
+            "generated_frame_path": str(frame),
+            "generated_video_path": str(frame.with_suffix(".mp4")),
+        }
+
+    def _skeleton_for_action(action, step_index):
+        return [{"landmark_id": "pelvis", "image_projection": {"available": True, "u_px": step_index, "v_px": 1}}]
+
+    backend = L.make_oscar_per_step_wam_backend(
+        oscar_generate=_fake_oscar_generate,
+        work_dir=tmp_path / "oscar_work",
+        task_prompt="walk to the sink",
+        num_frames=8,
+        skeleton_for_action=_skeleton_for_action,
+    )
+    start = _write_frame(tmp_path / "start.png", seed=2)
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(-4.25, -3.35, 0.79), (1.75, 1.25, 0.79)],
+        wam_generate_next=backend,
+        steps=3,
+        harness_backend_kind="fixture",
+        generated_at="now",
+    )
+    assert manifest["status"] == "completed"
+    assert manifest["steps_executed"] == 3
+    assert len(calls) == 3  # OSCAR called once per step
+    # each per-step request carried the step's action + projected skeleton conditioning
+    assert calls[0]["task_prompt"] == "walk to the sink"
+    assert all(c["projected_landmark_count"] == 1 for c in calls)
+    assert [c["step_index"] for c in calls] == [1, 2, 3]
+
+
 def test_closed_loop_blocks_on_empty_route(tmp_path: Path) -> None:
     start = _write_frame(tmp_path / "start.png", seed=1)
     manifest = L.run_oscar_isaac_closed_loop(

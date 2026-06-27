@@ -54,6 +54,91 @@ def _policy_observation(frame_path: str, target: Sequence[float], step_index: in
     }
 
 
+def build_oscar_per_step_request(
+    *,
+    current_frame_path: str,
+    action: Mapping[str, Any],
+    step_index: int,
+    task_prompt: str,
+    num_frames: int,
+    output_dir: str | Path,
+    skeleton_landmarks: Sequence[Mapping[str, Any]] | None = None,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """Shape one per-step OSCAR-2B next-observation generation request.
+
+    OSCAR generates a short clip forward from the current observation (``current_frame_path``),
+    conditioned on the task prompt and the projected G1 skeleton for this step's action. The
+    NEXT observation is the last frame of that clip. This is pure request shaping with no GPU or
+    OSCAR import, so it is fully unit-testable; the actual inference is the injected callable in
+    :func:`make_oscar_per_step_wam_backend`.
+    """
+    return {
+        "schema_version": "oscar_per_step_generation_request.v1",
+        "step_index": int(step_index),
+        "reference_frame_path": _string(current_frame_path),
+        "task_prompt": _string(task_prompt),
+        "num_frames": max(1, int(num_frames)),
+        "seed": int(seed) + int(step_index),
+        "output_dir": str(Path(output_dir).expanduser() / f"oscar_step_{step_index:04d}"),
+        "policy_action": dict(action),
+        "root_position": list(action.get("root_position") or []),
+        "root_yaw_radians": action.get("root_yaw_radians"),
+        "projected_landmark_count": len(skeleton_landmarks or []),
+        "skeleton_landmarks": [dict(landmark) for landmark in (skeleton_landmarks or [])],
+    }
+
+
+def make_oscar_per_step_wam_backend(
+    *,
+    oscar_generate: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    work_dir: str | Path,
+    task_prompt: str,
+    num_frames: int = 8,
+    skeleton_for_action: Callable[[Mapping[str, Any], int], Sequence[Mapping[str, Any]]] | None = None,
+    seed: int = 42,
+) -> WamGenerateNext:
+    """A ``wam_generate_next`` backend that drives real per-step OSCAR-2B generation.
+
+    ``oscar_generate`` is the injected inference call — it receives a per-step request (see
+    :func:`build_oscar_per_step_request`) and must return a mapping with a ``generated_frame_path``
+    (the next observation) and optionally ``generated_video_path``. On GPU this is a thin call into
+    a persistent OSCAR-2B pod; in tests it is mocked. ``skeleton_for_action`` projects the G1
+    skeleton landmarks for an action (the Isaac projector at run time; ``None`` omits conditioning).
+    """
+    resolved_work = Path(work_dir).expanduser().resolve()
+
+    def _generate_next(
+        current_frame: str,
+        action: Mapping[str, Any],
+        step_index: int,
+        history: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        skeleton = list(skeleton_for_action(action, step_index)) if skeleton_for_action else []
+        request = build_oscar_per_step_request(
+            current_frame_path=current_frame,
+            action=action,
+            step_index=step_index,
+            task_prompt=task_prompt,
+            num_frames=num_frames,
+            output_dir=resolved_work,
+            skeleton_landmarks=skeleton,
+            seed=seed,
+        )
+        result = dict(oscar_generate(request) or {})
+        generated_frame = _string(result.get("generated_frame_path"))
+        return {
+            "generated_frame_path": generated_frame,
+            "generated_video_path": result.get("generated_video_path"),
+            "skeleton_conditioning": {"landmarks": skeleton} if skeleton else None,
+            "wam_backend": "oscar_2b_per_step",
+            "wam_generation_status": result.get("status"),
+            "wam_generation_blockers": list(result.get("blockers") or []),
+        }
+
+    return _generate_next
+
+
 def run_oscar_isaac_closed_loop(
     *,
     output_dir: str | Path,
