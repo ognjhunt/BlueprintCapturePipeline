@@ -139,6 +139,137 @@ def make_oscar_per_step_wam_backend(
     return _generate_next
 
 
+def build_oscar_inference_argv(
+    *,
+    python: str,
+    oscar_repo: str | Path,
+    checkpoint: str | Path,
+    first_frame_path: str,
+    prompt: str,
+    num_frames: int,
+    num_steps: int,
+    guidance: float,
+    seed: int,
+    height: int,
+    width: int,
+    fps: float,
+    output_video: str | Path,
+    skeleton_video: str | Path | None = None,
+) -> list[str]:
+    """The OSCAR inference argv for one per-step next-observation generation.
+
+    Mirrors oscar_wam_command_adapter's invocation: torch.distributed.run inference_oscar.py with
+    the current observation as --first-frame and (optionally) the action's projected skeleton as
+    --skeleton-video. Pure argv construction so the real backend below stays unit-testable.
+    """
+    repo = Path(oscar_repo).expanduser()
+    argv = [
+        python,
+        "-m",
+        "torch.distributed.run",
+        "--nproc_per_node=1",
+        str(repo / "inference" / "inference_oscar.py"),
+        "--checkpoint",
+        str(checkpoint),
+        "--first-frame",
+        _string(first_frame_path),
+        "--start-frame",
+        "0",
+        "--prompt",
+        _string(prompt),
+        "--num-steps",
+        str(int(num_steps)),
+        "--guidance",
+        str(float(guidance)),
+        "--seed",
+        str(int(seed)),
+        "--num-frames",
+        str(max(1, int(num_frames))),
+        "--height",
+        str(int(height)),
+        "--width",
+        str(int(width)),
+        "--fps",
+        str(float(fps)),
+        "--output",
+        str(output_video),
+    ]
+    if skeleton_video is not None:
+        argv.extend(["--skeleton-video", str(skeleton_video)])
+    return argv
+
+
+def make_local_oscar_subprocess_generate(
+    *,
+    oscar_repo: str | Path,
+    checkpoint: str | Path,
+    python: str = "python",
+    num_steps: int = 35,
+    guidance: float = 6.0,
+    height: int = 480,
+    width: int = 640,
+    fps: float = 15.0,
+    run: Callable[..., Any],
+    build_skeleton_video: Callable[[Sequence[Mapping[str, Any]], Path], Path | None] | None = None,
+    extract_next_frame: Callable[[Path, Path], Path | None],
+) -> Callable[[Mapping[str, Any]], dict[str, Any]]:
+    """Real per-step OSCAR-2B inference, for running ON a GPU pod that has the OSCAR repo +
+    checkpoint. ``run`` (subprocess.run), ``build_skeleton_video`` (landmarks -> conditioning
+    video), and ``extract_next_frame`` (output clip -> next-observation frame, e.g. via ffmpeg)
+    are injected, so the whole wrapper is unit-testable without GPU or OSCAR installed.
+    """
+    repo = Path(oscar_repo).expanduser()
+
+    def _oscar_generate(request: Mapping[str, Any]) -> dict[str, Any]:
+        out_dir = Path(_string(request.get("output_dir"))).expanduser()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_video = out_dir / "oscar_next_observation.mp4"
+        landmarks = request.get("skeleton_landmarks") or []
+        skeleton_video = (
+            build_skeleton_video(landmarks, out_dir) if (build_skeleton_video and landmarks) else None
+        )
+        argv = build_oscar_inference_argv(
+            python=python,
+            oscar_repo=repo,
+            checkpoint=checkpoint,
+            first_frame_path=_string(request.get("reference_frame_path")),
+            prompt=_string(request.get("task_prompt")),
+            num_frames=int(request.get("num_frames") or 8),
+            num_steps=num_steps,
+            guidance=guidance,
+            seed=int(request.get("seed") or 42),
+            height=height,
+            width=width,
+            fps=fps,
+            output_video=output_video,
+            skeleton_video=skeleton_video,
+        )
+        completed = run(argv, cwd=str(repo), capture_output=True, text=True, check=False)
+        returncode = getattr(completed, "returncode", 1)
+        if returncode != 0 or not output_video.is_file():
+            return {
+                "status": "blocked",
+                "blockers": [f"oscar_per_step_inference_returncode_{returncode}"],
+                "generated_frame_path": "",
+                "generated_video_path": str(output_video) if output_video.is_file() else "",
+            }
+        next_frame = extract_next_frame(output_video, out_dir)
+        if not next_frame or not Path(next_frame).is_file():
+            return {
+                "status": "blocked",
+                "blockers": ["oscar_per_step_next_frame_extraction_failed"],
+                "generated_frame_path": "",
+                "generated_video_path": str(output_video),
+            }
+        return {
+            "status": "completed",
+            "generated_frame_path": str(next_frame),
+            "generated_video_path": str(output_video),
+        }
+
+    return _oscar_generate
+
+
 def run_oscar_isaac_closed_loop(
     *,
     output_dir: str | Path,

@@ -162,6 +162,90 @@ def test_oscar_per_step_backend_drives_the_loop(tmp_path: Path) -> None:
     assert [c["step_index"] for c in calls] == [1, 2, 3]
 
 
+def test_build_oscar_inference_argv_mirrors_entrypoint(tmp_path: Path) -> None:
+    argv = L.build_oscar_inference_argv(
+        python="python",
+        oscar_repo="/opt/oscar",
+        checkpoint="/models/oscar/ckpt",
+        first_frame_path="/frames/cur.png",
+        prompt="walk to the sink",
+        num_frames=8,
+        num_steps=35,
+        guidance=6.0,
+        seed=45,
+        height=480,
+        width=640,
+        fps=15.0,
+        output_video=tmp_path / "out.mp4",
+        skeleton_video=tmp_path / "skel.mp4",
+    )
+    assert any("inference_oscar.py" in a for a in argv)
+    assert argv[argv.index("--first-frame") + 1] == "/frames/cur.png"
+    assert argv[argv.index("--prompt") + 1] == "walk to the sink"
+    assert argv[argv.index("--num-frames") + 1] == "8"
+    assert argv[argv.index("--skeleton-video") + 1].endswith("skel.mp4")
+
+
+def test_local_oscar_subprocess_generate_runs_and_extracts(tmp_path: Path) -> None:
+    seen_argv: list[list[str]] = []
+
+    class _Done:
+        returncode = 0
+
+    def _fake_run(argv, **kwargs):
+        seen_argv.append(list(argv))
+        # simulate inference_oscar.py writing the output clip
+        out = argv[argv.index("--output") + 1]
+        Path(out).write_bytes(b"\x00fakeclip")
+        return _Done()
+
+    def _fake_extract(video_path: Path, out_dir: Path):
+        frame = out_dir / "next_obs.png"
+        _write_frame(frame, seed=11)
+        return frame
+
+    def _fake_skeleton_video(landmarks, out_dir: Path):
+        v = out_dir / "skel.mp4"
+        v.write_bytes(b"\x00skel")
+        return v
+
+    gen = L.make_local_oscar_subprocess_generate(
+        oscar_repo="/opt/oscar",
+        checkpoint="/models/oscar/ckpt",
+        run=_fake_run,
+        build_skeleton_video=_fake_skeleton_video,
+        extract_next_frame=_fake_extract,
+    )
+    request = L.build_oscar_per_step_request(
+        current_frame_path="/frames/cur.png",
+        action={"root_position": [1, 2, 0.79]},
+        step_index=1,
+        task_prompt="walk to the sink",
+        num_frames=8,
+        output_dir=tmp_path,
+        skeleton_landmarks=[{"landmark_id": "pelvis"}],
+    )
+    out = gen(request)
+    assert out["status"] == "completed"
+    assert Path(out["generated_frame_path"]).is_file()
+    assert "--skeleton-video" in seen_argv[0]  # skeleton conditioning passed to OSCAR
+
+
+def test_local_oscar_subprocess_generate_blocks_on_nonzero(tmp_path: Path) -> None:
+    class _Fail:
+        returncode = 1
+
+    gen = L.make_local_oscar_subprocess_generate(
+        oscar_repo="/opt/oscar",
+        checkpoint="/c",
+        run=lambda argv, **k: _Fail(),
+        extract_next_frame=lambda v, d: None,
+    )
+    out = gen({"output_dir": str(tmp_path), "reference_frame_path": "/f.png", "task_prompt": "t", "num_frames": 8, "seed": 1})
+    assert out["status"] == "blocked"
+    assert any("returncode" in b for b in out["blockers"])
+
+
 def test_closed_loop_blocks_on_empty_route(tmp_path: Path) -> None:
     start = _write_frame(tmp_path / "start.png", seed=1)
     manifest = L.run_oscar_isaac_closed_loop(
