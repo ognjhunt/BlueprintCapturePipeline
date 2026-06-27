@@ -1,5 +1,80 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-06-26
+
+### User-Facing
+
+- Hardened the sim-only policy-comparison launch path with clearer local-gate,
+  release-gate, deployment-parity, and live-pipeline intake evidence. The June
+  26 audit records that simulator execution is proven for the local sample path,
+  while beta release, production forwarding, and sim-only closure still remain
+  blocked by failure-diagnosis / closure-audit and intake-health evidence gaps.
+- Expanded Task Evaluation Run and Post-Training Data Package support through
+  policy/package contract work, provider closure auditing, RL post-training
+  handoff artifacts, OSCAR visual augmentation packets, and failure/scorecard
+  guardrails. These are package and evaluator support artifacts; they do not
+  upgrade generated media, simulator outputs, or WAM labels into raw capture
+  truth, physical robot readiness, safety validation, or deployment approval.
+- Added Isaac/RunPod startup proof and Gaussian-splat rendering support so
+  captured 3DGS scenes can be decoded, analyzed, and rendered as reference
+  review media. Reference Spark renders show the captured splat can display,
+  but they are not Isaac RTX/NuRec proof, physics proof, navigation proof, or
+  public readiness proof.
+
+### Employee-Facing
+
+- Added or updated runtime/docs/tests for live-pipeline forwarding setup,
+  sim-only beta local/release/deployment gates, G1 controlled-run evidence
+  assembly, robot-eval orchestration, policy endpoint boundaries,
+  provider-closure audits, RL post-training handoff, OSCAR visual augmentation,
+  WAM/perception harnesses, and post-training package generation. Key paths
+  include `docs/last_24h_launch_audit_2026-06-26.md`,
+  `docs/OSCAR_VISUAL_AUGMENTATION_PACKET.md`,
+  `src/blueprint_pipeline/live_pipeline_forwarding_secret_setup.py`,
+  `src/blueprint_pipeline/provider_closure_audit.py`,
+  `src/blueprint_pipeline/rl_post_training_handoff.py`,
+  `src/blueprint_pipeline/oscar_visual_augmentation_packet.py`, and
+  `src/blueprint_pipeline/oscar_visual_augmentation_generation_runner.py`.
+- Added simulator-agnostic G1/Isaac contracts and splat tooling through
+  `docs/simulator-agnostic-g1-execution-contract.md`,
+  `docs/superpowers/specs/2026-06-26-isaac-splat-render-parity-design.md`,
+  `src/blueprint_pipeline/gaussian_splat_decode.py`,
+  `src/blueprint_pipeline/splat_scene_analysis.py`,
+  `src/blueprint_pipeline/splat_scene_render.py`, and
+  `tools/splat_render/`, with focused tests for decode, scene analysis, render
+  wiring, RunPod adapter behavior, and live execution proof handling.
+- Added CLI/script surfaces for Isaac worker image builds and support flows,
+  including `scripts/build_push_isaac_worker_image.sh` plus `pyproject.toml`
+  entrypoints for provider closure, live-pipeline forwarding setup, OSCAR
+  augmentation, rollout labeling, post-training packages, and splat rendering.
+
+### Future-Agent-Facing
+
+- Contract changes: sim-only launch evidence now distinguishes local simulator
+  execution, beta release closure, production forwarding, Pipeline intake
+  health, robot-team-grade blockers, and optional physical/deployment claim
+  upgrades. Use `docs/last_24h_launch_audit_2026-06-26.md` for the current
+  blocker hierarchy instead of stale generated audit JSON.
+- Runtime behavior changes: reference splat rendering can attach display
+  evidence to Isaac/G1 evaluation artifacts, but the proof boundary must keep
+  `rendered_by: reference_spark_renderer` separate from Isaac RTX/NuRec,
+  physics, navigation, provider runtime, and readiness proof.
+- Launch/readiness gate changes: production beta is still blocked on Pipeline
+  intake token/health and forwarding proof; broader robot-team-grade paths still
+  require remote/cloud execution, digital-twin fidelity, failure-diagnosis, and
+  closure-audit evidence.
+- Uncommitted local June 26 carryover: `.gitignore`,
+  `src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py`,
+  `src/blueprint_pipeline/splat_scene_analysis.py`,
+  `src/blueprint_pipeline/splat_scene_render.py`,
+  `scripts/run_isaac_splat_nurec_render.py`,
+  `src/blueprint_pipeline/isaac_nurec_export.py`,
+  `src/blueprint_pipeline/particlefield_usd.py`,
+  `src/blueprint_pipeline/splat_backends.py`, and related tests had June 26
+  mtimes in the current dirty worktree. Treat them as local follow-on state
+  until committed; adjacent kitchen-parity/provider work continued after
+  midnight on June 27 and is intentionally excluded from this June 26 entry.
+
 ## 2026-06-25
 
 ### User-Facing

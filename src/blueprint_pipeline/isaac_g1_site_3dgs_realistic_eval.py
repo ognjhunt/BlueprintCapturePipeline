@@ -4012,6 +4012,8 @@ def run_isaac_g1_site_3dgs_realistic_eval(
     scenario_eval_matrix_path: str | Path | None = None,
     simulator_output_path: str | Path | None = None,
     runtime_result_path: str | Path | None = None,
+    render_splat_views: bool = False,
+    splat_render_options: Mapping[str, Any] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
@@ -4119,6 +4121,36 @@ def run_isaac_g1_site_3dgs_realistic_eval(
         camera_ids=camera_id_list,
         generated_at=generated,
         camera_aliases=camera_aliases,
+    )
+    # Optional local splat render: actually display the captured Gaussian-splat scene
+    # (reference Spark renderer, not Isaac RTX) so the eval emits real per-camera frames
+    # of the real environment instead of metadata-only placeholders. Off by default;
+    # the Isaac RTX/NuRec render remains the Phase-2 GPU proof.
+    splat_render_manifest: dict | None = None
+    if render_splat_views:
+        from .splat_scene_render import attach_splat_render_to_eval
+
+        splat_render_manifest = attach_splat_render_to_eval(
+            job_dir=job_dir,
+            ply_asset=ply_asset,
+            spz_asset=spz_asset,
+            camera_ids=camera_id_list,
+            generated_at=generated,
+            options=dict(splat_render_options or {}),
+        )
+        if splat_render_manifest.get("status") == "completed":
+            camera_manifest["camera_evidence_status"] = (
+                "rendered_by_reference_spark_renderer_isaac_rtx_pending"
+            )
+            camera_manifest["reference_splat_render"] = {
+                "rendered_by": splat_render_manifest.get("rendered_by"),
+                "rendered_by_isaac_rtx": False,
+                "nonblank_camera_count": splat_render_manifest.get("nonblank_camera_count"),
+                "frames": [cam.get("path") for cam in splat_render_manifest.get("cameras", [])],
+                "robot_start_pose": splat_render_manifest.get("robot_start_pose"),
+            }
+    realistic_splat_visual_rendered = bool(
+        splat_render_manifest and splat_render_manifest.get("status") == "completed"
     )
     episode_manifest = {
         "schema_version": EPISODE_SPEC_SCHEMA_VERSION,
@@ -4281,6 +4313,35 @@ def run_isaac_g1_site_3dgs_realistic_eval(
     )
     physics_blockers = [] if contact_validated else ["isaac_physics_not_executed"]
 
+    if realistic_splat_visual_rendered:
+        splat_visual_render_payload: dict[str, Any] = {
+            "schema_version": SPLAT_VISUAL_RENDER_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "completed_reference_render",
+            "realistic_splat_visual_rendered": True,
+            "rendered_by": (splat_render_manifest or {}).get("rendered_by"),
+            "rendered_by_isaac_rtx": False,
+            "visual_source_preserved": True,
+            "nonblank_camera_count": (splat_render_manifest or {}).get("nonblank_camera_count"),
+            "reference_render_manifest_path": "splat_scene_render/manifest.json",
+            "scene_geometry": (splat_render_manifest or {}).get("scene_geometry"),
+            "robot_start_pose": (splat_render_manifest or {}).get("robot_start_pose"),
+            "blockers": [],
+            "proof_boundary": (
+                "Reference Spark (three.js) Gaussian render of the real captured scene. "
+                "It proves the splat displays, NOT that Isaac RTX/NuRec rendered it "
+                "(that is the Phase-2 GPU proof), and not physics, navigation, or readiness."
+            ),
+        }
+    else:
+        splat_visual_render_payload = {
+            "schema_version": SPLAT_VISUAL_RENDER_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "realistic_splat_visual_rendered": False,
+            "visual_source_preserved": True,
+            "blockers": ["splat_renderer_or_isaac_composite_runtime_not_executed"],
+        }
     artifact_payloads: dict[str, Mapping[str, Any]] = {
         "isaac_runtime_discovery.json": runtime,
         "isaac_provider_plan.json": provider_plan,
@@ -4294,14 +4355,7 @@ def run_isaac_g1_site_3dgs_realistic_eval(
             "optional_scene_metadata": optional_metadata,
             "scene_visual_source": scene_visual_source,
         },
-        "splat_visual_render_manifest.json": {
-            "schema_version": SPLAT_VISUAL_RENDER_SCHEMA_VERSION,
-            "generated_at": generated,
-            "status": "blocked",
-            "realistic_splat_visual_rendered": False,
-            "visual_source_preserved": True,
-            "blockers": ["splat_renderer_or_isaac_composite_runtime_not_executed"],
-        },
+        "splat_visual_render_manifest.json": splat_visual_render_payload,
         "usd_scene_assembly_manifest.json": {
             "schema_version": USD_SCENE_ASSEMBLY_SCHEMA_VERSION,
             "generated_at": generated,
@@ -4344,7 +4398,8 @@ def run_isaac_g1_site_3dgs_realistic_eval(
             "schema_version": VISUAL_TRUTH_BOUNDARY_SCHEMA_VERSION,
             "generated_at": generated,
             "splat_visual_source_preserved": True,
-            "realistic_splat_visual_rendered": False,
+            "realistic_splat_visual_rendered": realistic_splat_visual_rendered,
+            "realistic_splat_visual_rendered_by_isaac_rtx": False,
             "colliders_are_metadata_derived_proxy": True,
             "direct_splat_collision_claimed": False,
             "triangle_mesh_reconstruction_claimed": reconstructed_triangle_mesh_loaded,

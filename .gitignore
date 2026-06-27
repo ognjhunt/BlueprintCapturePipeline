@@ -79,3 +79,6 @@ policy_endpoint_setups/
 frame_*.png
 MUJOCO_LOG.TXT
 uv.lock
+
+# Splat render tool (node deps installed locally)
+tools/splat_render/node_modules/

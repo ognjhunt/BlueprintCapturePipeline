@@ -4,10 +4,13 @@ from __future__ import annotations
 import numpy as np
 
 from blueprint_pipeline.gaussian_splat_decode import SplatData
+import math
+
 from blueprint_pipeline.splat_scene_analysis import (
     DEFAULT_CAMERA_IDS,
     analyze_scene,
     derive_eval_cameras,
+    suggest_robot_start,
 )
 
 
@@ -89,3 +92,36 @@ def test_up_axis_override() -> None:
     geom = analyze_scene(_box_room(), up_axis=1)
     assert geom.up_axis == 1
     assert set(geom.horizontal_axes) == {0, 2}
+
+
+def test_task_aware_start_faces_target() -> None:
+    room = _box_room()
+    geom = analyze_scene(room)
+    target = [5.0, 4.0, 0.6]  # near the +x wall, mid-room
+    start = suggest_robot_start(room, geom, task_target=target, standoff=1.5)
+    assert start["task_target"] == [5.0, 4.0, 0.6]
+    assert start["standoff_distance"] == 1.5
+    pos = start["position"]
+    expected = math.degrees(math.atan2(target[1] - pos[1], target[0] - pos[0]))
+    # facing yaw aims at the target (equal modulo 360)
+    assert abs(((start["facing_yaw_deg"] - expected + 180) % 360) - 180) < 1e-3
+    # the start stands roughly a standoff away from the target horizontally
+    d = math.hypot(target[0] - pos[0], target[1] - pos[1])
+    assert 0.4 < d < 4.0
+
+
+def test_focus_point_aims_task_cameras() -> None:
+    import numpy as np
+
+    geom = analyze_scene(_box_room())
+    focus = [5.0, 4.0, 0.8]
+    cams = {c["id"]: c for c in derive_eval_cameras(geom, focus_point=focus)}
+    np.testing.assert_allclose(cams["task_focus"]["spec"]["target"], focus, atol=1e-6)
+    # wrist aims at the focus point in the horizontal plane (its up-coord is floor-biased)
+    wt = cams["wrist"]["spec"]["target"]
+    np.testing.assert_allclose([wt[0], wt[1]], [focus[0], focus[1]], atol=1e-6)
+    # without a focus point, task cameras default to the scene center (unchanged behavior)
+    default_cams = {c["id"]: c for c in derive_eval_cameras(geom)}
+    np.testing.assert_allclose(
+        default_cams["task_focus"]["spec"]["target"], geom.center, atol=1e-6
+    )

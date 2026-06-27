@@ -73,6 +73,9 @@ dev = [
 
 [project.scripts]
 blueprint-capture-pipeline = "blueprint_pipeline.capture_orchestrator:main"
+blueprint-render-splat-scene = "blueprint_pipeline.splat_scene_render:main"
+blueprint-render-splat-isaac = "blueprint_pipeline.isaac_particlefield_render_job:main"
+blueprint-isaac-g1-kitchen-parity = "blueprint_pipeline.isaac_g1_kitchen_parity_job:main"
 blueprint-preflight-capture = "blueprint_pipeline.preflight_capture:main"
 blueprint-agent-review = "blueprint_pipeline.agent_review_cli:main"
 blueprint-run-e2e = "blueprint_pipeline.run_e2e:main"

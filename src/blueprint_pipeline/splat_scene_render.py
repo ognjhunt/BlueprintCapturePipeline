@@ -190,10 +190,16 @@ def render_splat_scene(
     except subprocess.TimeoutExpired:
         manifest["blockers"].append("render_timeout")
         return manifest
-    try:
-        render_result = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.stdout.strip() else {}
-    except Exception:  # noqa: BLE001
-        render_result = {}
+    render_result = {}
+    out = (proc.stdout or "").strip()
+    if out:
+        try:
+            render_result = json.loads(out)
+        except Exception:  # noqa: BLE001 - tolerate leading noise, parse trailing object
+            try:
+                render_result = json.loads(out[out.index("{"):])
+            except Exception:  # noqa: BLE001
+                render_result = {}
     manifest["render"] = {
         "returncode": proc.returncode,
         "status": render_result.get("status"),
@@ -236,3 +242,97 @@ def render_splat_scene(
     manifest["proof_boundary"]["captured_scene_displayed"] = True
     manifest["robot_start_pose"] = geom.suggested_start
     return manifest
+
+
+def _pick_splat_source(*candidates) -> Path | None:
+    for cand in candidates:
+        if not cand:
+            continue
+        p = Path(cand).expanduser()
+        if p.is_file() and p.suffix.lower() in _SPLAT_SUFFIXES:
+            return p
+    return None
+
+
+def attach_splat_render_to_eval(
+    *,
+    job_dir: str | Path,
+    ply_asset: str | Path | None,
+    spz_asset: str | Path | None,
+    camera_ids: Sequence[str] = DEFAULT_CAMERA_IDS,
+    generated_at: str | None = None,
+    repo_root: str | Path | None = None,
+    options: dict | None = None,
+) -> dict:
+    """Run the local splat render for an Isaac eval job and persist its manifest under
+    ``<job_dir>/splat_scene_render/manifest.json``. Returns the manifest. Always
+    fail-closed; never raises into the eval."""
+    job_dir = Path(job_dir)
+    out_dir = job_dir / "splat_scene_render"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    source = _pick_splat_source(ply_asset, spz_asset)
+    if source is None:
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "blocked",
+            "rendered_by": RENDERED_BY,
+            "blockers": ["splat_source_unavailable_for_render"],
+            "proof_boundary": {"captured_scene_displayed": False, "rendered_by_isaac_rtx": False},
+        }
+    else:
+        try:
+            manifest = render_splat_scene(
+                source, out_dir, camera_ids=camera_ids, repo_root=repo_root, **(options or {})
+            )
+        except Exception as exc:  # noqa: BLE001 - never break the eval
+            manifest = {
+                "schema_version": SCHEMA_VERSION,
+                "status": "blocked",
+                "rendered_by": RENDERED_BY,
+                "blockers": ["splat_render_exception"],
+                "error": repr(exc),
+                "proof_boundary": {"captured_scene_displayed": False, "rendered_by_isaac_rtx": False},
+            }
+    if generated_at:
+        manifest["generated_at"] = generated_at
+    try:
+        (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    return manifest
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Render a Gaussian-splat capture (.ply/.spz) into per-camera images "
+        "+ MP4 of the real scene via the reference Spark renderer (local, no GPU)."
+    )
+    ap.add_argument("--splat", required=True, help="compressed PLY / SPZ / standard PLY")
+    ap.add_argument("--out", required=True, help="output directory")
+    ap.add_argument("--width", type=int, default=1280)
+    ap.add_argument("--height", type=int, default=960)
+    ap.add_argument("--decimate", type=int, default=200000, help="0 to disable")
+    ap.add_argument("--settle-frames", type=int, default=6)
+    ap.add_argument("--warmup-ms", type=int, default=2000)
+    ap.add_argument("--up-axis", type=int, default=None, choices=[0, 1, 2])
+    ap.add_argument("--no-mp4", action="store_true")
+    args = ap.parse_args(argv)
+    manifest = render_splat_scene(
+        args.splat,
+        args.out,
+        width=args.width,
+        height=args.height,
+        decimate=args.decimate,
+        settle_frames=args.settle_frames,
+        warmup_ms=args.warmup_ms,
+        up_axis=args.up_axis,
+        encode_mp4=not args.no_mp4,
+    )
+    print(json.dumps(manifest, indent=2))
+    return 0 if manifest.get("status") == "completed" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

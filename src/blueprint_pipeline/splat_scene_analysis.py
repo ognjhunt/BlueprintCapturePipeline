@@ -112,7 +112,10 @@ def analyze_scene(
     span = max(up_hi - up_lo, 1e-6)
     bottom = float((up_vals <= up_lo + 0.2 * span).mean())
     top = float((up_vals >= up_hi - 0.2 * span).mean())
-    up_sign = 1.0 if bottom >= top else -1.0
+    # Default to floor-at-min (up = +axis), the common gravity-aligned capture convention.
+    # Only flip when the upper band is *clearly* denser than the lower (strong evidence the
+    # dense floor plane sits at the high end); density alone is a weak signal otherwise.
+    up_sign = -1.0 if top > 1.6 * bottom else 1.0
     floor, ceiling = (up_lo, up_hi) if up_sign > 0 else (up_hi, up_lo)
 
     median = np.median(pts, axis=0)
@@ -156,12 +159,18 @@ def suggest_robot_start(
     robot_height: float = 1.3,
     cell: float | None = None,
     clearance_radius: float = 0.45,
+    task_target: Sequence[float] | None = None,
+    standoff: float = 1.6,
 ) -> dict:
     """Find a free standing spot on the floor: a coarse 2D occupancy grid over the
     footprint, counting splats in the standing volume [floor, floor+robot_height];
-    pick the lowest-occupancy cell nearest the center as the robot start pose.
+    pick a low-occupancy cell as the robot start pose.
 
-    Returns position (3,), facing yaw toward center, and the chosen up-axis — enough for
+    When ``task_target`` (a 3D point, e.g. a task anchor/object) is given, the spot is
+    biased toward a comfortable ``standoff`` distance from the target and the robot faces
+    the target — i.e. a *task-specific* start. Without it, a central free spot is chosen.
+
+    Returns position (3,), facing yaw, eye position, and the chosen up-axis — enough for
     the task layer to place the robot. Heuristic only; not a navigability guarantee.
     """
     h0, h1 = geom.horizontal_axes
@@ -195,15 +204,24 @@ def suggest_robot_start(
     thresh = max(1, int(np.percentile(grid, 35)))
     cx = (geom.center[h0] - lo0) / cell
     cy = (geom.center[h1] - lo1) / cell
+    has_task = task_target is not None
+    if has_task:
+        tt = np.asarray(task_target, dtype=np.float64)
+        tcx = (tt[h0] - lo0) / cell
+        tcy = (tt[h1] - lo1) / cell
+        ideal = standoff / cell
     best = None
     best_score = None
     for i in range(nx):
         for j in range(ny):
             if grid[i, j] > thresh:
                 continue
-            # distance to center (prefer central, open spots)
-            d = math.hypot(i - cx, j - cy)
-            score = grid[i, j] * 3.0 + d
+            if has_task:
+                # prefer free cells ~standoff from the task target, lightly central
+                d_target = math.hypot(i - tcx, j - tcy)
+                score = grid[i, j] * 3.0 + abs(d_target - ideal) + 0.1 * math.hypot(i - cx, j - cy)
+            else:
+                score = grid[i, j] * 3.0 + math.hypot(i - cx, j - cy)
             if best_score is None or score < best_score:
                 best_score = score
                 best = (i, j)
@@ -214,12 +232,15 @@ def suggest_robot_start(
     pos[h0] = lo0 + (bi + 0.5) * cell
     pos[h1] = lo1 + (bj + 0.5) * cell
     pos[up] = geom.floor
-    # facing: yaw toward center in the horizontal plane
-    facing = geom.center - pos
+    # facing: toward the task target when given, else toward the scene center
+    look_at = np.asarray(task_target, dtype=np.float64) if has_task else geom.center
+    facing = look_at - pos
     yaw = math.degrees(math.atan2(facing[h1], facing[h0]))
     return {
         "position": [float(x) for x in pos],
         "facing_yaw_deg": float(yaw),
+        "task_target": [float(x) for x in tt] if has_task else None,
+        "standoff_distance": float(standoff) if has_task else None,
         "up_axis": int(up),
         "eye_position": [
             float(pos[a] + (DEFAULT_EYE_HEIGHT * geom.up_sign if a == up else 0.0))
@@ -254,71 +275,81 @@ def _orbit_position(
 def derive_eval_cameras(
     geom: SceneGeometry,
     camera_ids: Sequence[str] = DEFAULT_CAMERA_IDS,
+    focus_point: Sequence[float] | None = None,
 ) -> list[dict]:
     """Produce render specs for the eval's named cameras, framed to the real scene.
 
     A blend of inside first-person (head_pov/torso/wrist) and elevated establishing
-    (third_person/overhead/task_focus) views, all up-axis-aware. Each spec is
+    (third_person/overhead/task_focus) views, all up-axis-aware. When ``focus_point``
+    (a 3D task region, e.g. a task anchor/object) is given, the ``task_focus`` and
+    ``wrist`` cameras aim at it for a *task-specific* view. Each spec is
     ``{"id", "spec": {"pos", "target", "fov", "up"}}`` for the headless renderer.
     """
     up = geom.up_axis
     up_sign = geom.up_sign
     h0, h1 = geom.horizontal_axes
     center = geom.center.astype(np.float64)
-    radius = max(geom.radius, 1e-3)
-    up_vec = [float(geom.up_sign if a == up else 0.0) for a in range(3)]
-    # an in-plane vector to use as image-up for a straight-down overhead
-    plane_up = [1.0 if a == h1 else 0.0 for a in range(3)]
-    height = abs(geom.ceiling - geom.floor)
-    eye = geom.floor + up_sign * min(DEFAULT_EYE_HEIGHT, max(0.4 * height, 0.6))
+    focus = np.asarray(focus_point, dtype=np.float64) if focus_point is not None else center
+    up_vec = [float(up_sign if a == up else 0.0) for a in range(3)]
+    plane_up = [1.0 if a == h1 else 0.0 for a in range(3)]  # image-up for straight-down overhead
+    fmin = geom.aabb_min.astype(np.float64)
+    fmax = geom.aabb_max.astype(np.float64)
+    w0 = max(float(fmax[h0] - fmin[h0]), 1e-3)
+    w1 = max(float(fmax[h1] - fmin[h1]), 1e-3)
+    lo0, hi0, lo1, hi1 = float(fmin[h0]), float(fmax[h0]), float(fmin[h1]), float(fmax[h1])
+    c0, c1 = float(center[h0]), float(center[h1])
+    f0, f1 = float(focus[h0]), float(focus[h1])
+    height = max(abs(geom.ceiling - geom.floor), 1e-3)
+    eye = geom.floor + up_sign * min(DEFAULT_EYE_HEIGHT, max(0.5 * height, 0.6))
 
-    start = geom.suggested_start.get("position") or [float(x) for x in center]
-    start = np.asarray(start, dtype=np.float64)
+    def P(a0: float, a1: float, u: float) -> np.ndarray:
+        v = np.zeros(3, dtype=np.float64)
+        v[h0], v[h1], v[up] = a0, a1, u
+        return v
 
-    def eye_pos(base: np.ndarray, e: float) -> list[float]:
-        p = base.astype(np.float64).copy()
-        p[up] = e
-        return [float(x) for x in p]
+    # INTERIOR-FIRST framing: stations stand INSIDE the footprint looking across the room,
+    # because interior captures read clearly from within, not from an outside orbit.
+    # head_pov: near one wall at eye height, looking across to the far wall.
+    head = P(lo0 + 0.22 * w0, c1, eye)
+    head_t = P(hi0 - 0.04 * w0, c1, eye - up_sign * 0.06 * height)
+    # torso: near the orthogonal wall, chest height, looking across the other axis.
+    torso = P(c0, lo1 + 0.22 * w1, eye - up_sign * 0.12)
+    torso_t = P(c0, hi1 - 0.04 * w1, eye - up_sign * 0.08 * height)
+    # third_person: stand in an interior corner, eye-or-higher, look diagonally across the
+    # whole room — a wide *interior* establishing shot (not an exterior dollhouse).
+    tp = P(lo0 + 0.16 * w0, lo1 + 0.16 * w1, geom.floor + up_sign * min(0.8 * height, 2.0))
+    tp_t = P(hi0 - 0.2 * w0, hi1 - 0.2 * w1, geom.floor + up_sign * 0.4 * height)
+    # wrist: low, near the task/contact zone, looking at the focus point.
+    wrist = P(f0 - 0.16 * w0, f1 - 0.16 * w1, geom.floor + up_sign * 0.7)
+    wrist_t = P(f0, f1, geom.floor + up_sign * 0.25)
+    # overhead: just under the ceiling at center, straight down — interior top-down layout.
+    over = P(c0, c1, geom.ceiling - up_sign * 0.1 * height)
+    over_t = P(c0, c1, geom.floor)
+    # task_focus: stand a standoff back from the focus (toward room center), look at it.
+    standoff = 0.32 * max(w0, w1)
+    dx, dy = c0 - f0, c1 - f1
+    norm = math.hypot(dx, dy)
+    if norm < 1e-6:  # focus at center -> back toward an interior corner instead of degenerate
+        dx, dy, norm = -1.0, -1.0, math.sqrt(2.0)
+    tf = P(f0 + dx / norm * standoff, f1 + dy / norm * standoff, eye - up_sign * 0.1)
 
-    # head_pov: stand at the free start spot, eye height, look across the room at center
-    head = eye_pos(start, eye)
-    head_target = center.copy()
-    head_target[up] = eye
-    # torso: a bit behind/lower than head, wider fov
-    torso_base = start + (center - start) * (-0.18)
-    torso = eye_pos(torso_base, eye - up_sign * 0.25)
-    torso_target = center.copy()
-    torso_target[up] = eye - up_sign * 0.2
-    # wrist: low, near the floor close to center (task/contact zone)
-    wrist_base = start + (center - start) * 0.45
-    wrist = eye_pos(wrist_base, geom.floor + up_sign * 0.55)
-    wrist_target = center.copy()
-    wrist_target[up] = geom.floor + up_sign * 0.25
+    def spec(pos: np.ndarray, target: np.ndarray, fov: float, up_v: list = up_vec) -> dict:
+        return {
+            "pos": [float(x) for x in pos],
+            "target": [float(x) for x in target],
+            "fov": fov,
+            "up": up_v,
+        }
 
     specs = {
-        "head_pov": {"pos": head, "target": [float(x) for x in head_target], "fov": 70, "up": up_vec},
-        "torso": {"pos": torso, "target": [float(x) for x in torso_target], "fov": 64, "up": up_vec},
-        "wrist": {"pos": wrist, "target": [float(x) for x in wrist_target], "fov": 60, "up": up_vec},
-        "third_person": {
-            "pos": _orbit_position(center, up, (h0, h1), 225, 22, radius * 1.7, up_sign),
-            "target": [float(x) for x in center], "fov": 52, "up": up_vec,
-        },
-        "overhead": {
-            "pos": eye_pos(center, geom.ceiling + up_sign * max(0.9 * height, radius * 0.6)),
-            "target": [float(x) for x in center], "fov": 62, "up": plane_up,
-        },
-        "task_focus": {
-            "pos": _orbit_position(center, up, (h0, h1), 60, 28, radius * 1.35, up_sign),
-            "target": [float(x) for x in (center + 0.0)], "fov": 48, "up": up_vec,
-        },
+        "head_pov": spec(head, head_t, 70),
+        "torso": spec(torso, torso_t, 66),
+        "wrist": spec(wrist, wrist_t, 60),
+        "third_person": spec(tp, tp_t, 66),
+        "overhead": spec(over, over_t, 72, plane_up),
+        "task_focus": spec(tf, focus, 52),
     }
     out = []
     for cid in camera_ids:
-        spec = specs.get(cid)
-        if spec is None:
-            spec = {
-                "pos": _orbit_position(center, up, (h0, h1), 200, 20, radius * 1.6, up_sign),
-                "target": [float(x) for x in center], "fov": 55, "up": up_vec,
-            }
-        out.append({"id": cid, "spec": spec})
+        out.append({"id": cid, "spec": specs.get(cid) or spec(head, head_t, 64)})
     return out
