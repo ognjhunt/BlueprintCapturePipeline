@@ -300,6 +300,15 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         if last.get("status") in ("completed", "blocked") or boot.get("phase") == "runner_done":
             done = True
             break
+    if done:
+        # one more fetch so the runner's FINAL upload (result json, skeleton trace, last frames)
+        # lands before we delete the pod — the heartbeat that flips to runner_done races teardown.
+        time.sleep(min(poll, 15))
+        try:
+            data = urllib.request.urlopen(get_url, timeout=60).read()
+            zipfile.ZipFile(io.BytesIO(data)).extractall(out_dir)
+        except Exception:  # noqa: BLE001
+            pass
     teardown = provider.terminate(instance_id)  # DELETE the pod (stopped pods still bill for disk)
     return {"status": "completed" if (done and last.get("status") == "completed") else "blocked",
             "runner_result": last, "teardown": teardown, "elapsed_seconds": round(time.time() - t0, 1)}

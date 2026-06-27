@@ -355,14 +355,64 @@ def _g1_skeleton_world_positions(art, link_names):
 
 
 def _project_skeleton(skeleton_world, *, eye, target, up, vfov_deg, width, height):
-    """Project G1 link world positions into the camera -> landmark rows (OSCAR conditioning)."""
+    """Project G1 link world positions into the camera -> OSCAR-schema landmark list. Each landmark
+    is {landmark_id, image_projection:{available,u_px,v_px,depth_m}} (the exact shape the OSCAR WAM
+    input-package materialization reads)."""
     landmarks = []
     for name, wp in skeleton_world:
         px = project_point_to_pixel(wp, eye, target, up, vfov_deg, width, height)
         if px is not None:
-            landmarks.append({"name": name, "u": round(px[0], 2), "v": round(px[1], 2),
-                              "depth_m": round(px[2], 4)})
+            landmarks.append({"landmark_id": name, "image_projection": {
+                "available": True, "u_px": round(px[0], 2), "v_px": round(px[1], 2),
+                "depth_m": round(px[2], 4)}})
     return landmarks
+
+
+def _g1_link_rest_offsets(stage, prim_path: str):
+    """Pure-USD G1 skeleton: rest-pose offset (in the root frame) of each link prim under the G1.
+    No physics/tensor-view (which gets invalidated on this G1 USD) — just the link transforms.
+    Returns [(name, (dx,dy,dz)), ...]. Per-step world = root_pose + Rz(yaw) @ offset."""
+    from pxr import Usd, UsdGeom  # type: ignore
+    xc = UsdGeom.XformCache()
+    root_prim = stage.GetPrimAtPath(prim_path)
+    rt = xc.GetLocalToWorldTransform(root_prim).ExtractTranslation()
+    root = (float(rt[0]), float(rt[1]), float(rt[2]))
+    offs = []
+    for prim in Usd.PrimRange(root_prim):
+        name = prim.GetName()
+        if "link" not in name.lower() or not prim.IsA(UsdGeom.Xformable):
+            continue
+        t = xc.GetLocalToWorldTransform(prim).ExtractTranslation()
+        offs.append((name, (float(t[0]) - root[0], float(t[1]) - root[1], float(t[2]) - root[2])))
+    return offs
+
+
+def _rest_skeleton_world(offsets, root_pose, yaw):
+    """Place the rest-pose link offsets at the robot's per-step root pose (translate + Z-rotate)."""
+    cy, sy = math.cos(float(yaw)), math.sin(float(yaw))
+    out = []
+    for name, (ox, oy, oz) in offsets:
+        out.append((name, (root_pose[0] + cy * ox - sy * oy,
+                           root_pose[1] + sy * ox + cy * oy,
+                           root_pose[2] + oz)))
+    return out
+
+
+def _setup_articulated_g1(prim_path: str):
+    """Create a physics SimulationContext (gravity OFF, so the kinematic walk pose holds without the
+    G1 collapsing), play it, and initialize the G1 articulation for joint driving + link readback.
+    Returns a context dict. GPU-only."""
+    from isaacsim.core.api import SimulationContext  # type: ignore
+    ctx = SimulationContext(physics_dt=1.0 / 60.0, rendering_dt=1.0 / 60.0, stage_units_in_meters=1.0)
+    ctx.initialize_physics()
+    try:
+        ctx.get_physics_context().set_gravity(0.0)  # kinematic preview: no falling
+    except Exception:  # noqa: BLE001
+        pass
+    art, dof_index, default, link_names = _setup_g1_articulation(prim_path)
+    ctx.play()
+    return {"ctx": ctx, "art": art, "dof_index": dof_index, "default": default,
+            "link_names": link_names, "dof_count": len(dof_index)}
 
 
 def _overlap_probe(robot_prim_path: str, ground_prim_path: str = "/World/GroundPlane"):
@@ -491,7 +541,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   per_scenario_seconds: int = 480, focus_radius: float = 0.0,
                   keep_substrings: Sequence[str] = ("room", "floor", "wall", "ground", "ceiling", "light"),
                   disable_physx: bool = False, settle_seconds: int = 0,
-                  cheap_collision: bool = False) -> dict:
+                  cheap_collision: bool = False, articulated: bool = False,
+                  camera_vfov_deg: float = 50.0) -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
     flushed progress + a per-scenario wall-clock cap so it cannot hang silently."""
@@ -526,6 +577,11 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             pr = _prune_to_focus(stage, route_pts, focus_radius, keep_substrings)
             _log(f"focus prune (r={focus_radius}m): kept {pr['kept']} objects, deactivated {pr['pruned']}")
             (out_dir / "focus_prune.json").write_text(json.dumps(pr, indent=2))
+        rest_offsets = None
+        if articulated:
+            # Pure-USD G1 skeleton (no physics tensor view — it gets invalidated on this G1 USD).
+            rest_offsets = _g1_link_rest_offsets(stage, binding["prim_path"])
+            _log(f"G1 skeleton: {len(rest_offsets)} link landmarks (rest-pose, kinematic)")
         from pxr import UsdGeom, UsdLux  # type: ignore
         UsdGeom.Scope.Define(stage, "/World")
         over_cam = "/World/Cameras/overview"
@@ -572,6 +628,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 rep.orchestrator.step()
                 _log(f"warmup frame {wi} render took {time.time() - ts:.1f}s")
             actions: list[dict] = []
+            skel_rows: list[dict] = []
             trace = (sdir / "trace.jsonl").open("w")
             rejected_total = response_total = 0
             cap = 0
@@ -596,6 +653,18 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 if step % max(1, capture_every) == 0:
                     eye, tgt = follow_cam_pose(decision.root_pose, decision.yaw)
                     _place_camera(stage, pov_cam, eye, tgt)  # follow-cam tracks the robot
+                    if articulated and rest_offsets is not None:
+                        skel = _rest_skeleton_world(rest_offsets, decision.root_pose, decision.yaw)
+                        lms = _project_skeleton(skel, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
+                                                vfov_deg=camera_vfov_deg, width=width, height=height)
+                        if cap == 0:
+                            _log(f"step {step}: skeleton {len(skel)} links -> {len(lms)} landmarks in POV frame")
+                        skel_rows.append({
+                            "episode_id": sid,
+                            "scenario_eval_run_id": sc.get("scenario_eval_run_id") or sid,
+                            "step": step, "sim_time_s": round(step / float(fps), 6),
+                            "camera": "robot_pov", "landmarks": lms,  # OSCAR reads row["landmarks"]
+                            "projected_landmark_count": len(lms)})
                     ts = time.time()
                     rep.orchestrator.step()
                     rdt = time.time() - ts
@@ -605,6 +674,12 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         _log(f"scenario {sid}: frame {cap} captured (render {rdt:.1f}s, overview_ok={over_ok})")
                     cap += 1
             trace.close()
+            if articulated and skel_rows:
+                with (sdir / "g1_projected_skeleton_trace.jsonl").open("w") as sf:
+                    for r in skel_rows:
+                        sf.write(json.dumps(r) + "\n")
+                total_lm = sum(r["projected_landmark_count"] for r in skel_rows)
+                _log(f"scenario {sid}: skeleton trace {len(skel_rows)} frames, {total_lm} total landmarks")
             _log(f"scenario {sid}: {cap} frames captured, truncated={truncated}; assembling MP4 + outcome")
             summary = assemble_collision_summary(actions=actions, rejected_probe_total=rejected_total,
                                                  response_event_total=response_total)
@@ -660,6 +735,9 @@ def main(argv=None) -> int:
                     help="(experiment only) disable physx cooking — known to break the renderer")
     ap.add_argument("--cheap-collision", action="store_true",
                     help="force bounding-box collision on all meshes (fast cooking; keeps full scene)")
+    ap.add_argument("--articulated", action="store_true",
+                    help="drive the G1 joints with the walk gait + emit g1_projected_skeleton_trace.jsonl (for OSCAR)")
+    ap.add_argument("--camera-vfov", type=float, default=50.0, help="POV camera vertical FOV (deg) for skeleton projection")
     args = ap.parse_args(argv)
 
     request = load_request(args.request) if args.request else {}
@@ -687,7 +765,8 @@ def main(argv=None) -> int:
         focus_radius=args.focus_radius,
         keep_substrings=tuple(s for s in args.keep_objects.split(",") if s.strip()),
         disable_physx=args.disable_physx, settle_seconds=args.settle_seconds,
-        cheap_collision=args.cheap_collision)
+        cheap_collision=args.cheap_collision, articulated=args.articulated,
+        camera_vfov_deg=args.camera_vfov)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))
