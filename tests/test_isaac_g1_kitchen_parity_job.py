@@ -50,6 +50,15 @@ def test_build_parity_bundle_contains_runner_policy_request_and_assets(tmp_path:
     assert req["steps"] == 32 and len(req["scenarios"]) == 2
 
 
+def test_marker_timeout_default_covers_large_image_pull() -> None:
+    import inspect
+    sig = inspect.signature(J.run_isaac_g1_kitchen_parity_job)
+    # The worker image is ~10.7 GB; 420s reaped slow nodes mid-pull before they could boot.
+    # The boot window must comfortably exceed the pull time on a slow (~150 Mbps) node.
+    assert sig.parameters["marker_timeout"].default >= 900
+    assert sig.parameters["max_attempts"].default >= 2
+
+
 def test_docker_start_cmd_runs_parity_runner() -> None:
     dsc = J.docker_start_cmd()
     assert dsc[0] == "-lc"

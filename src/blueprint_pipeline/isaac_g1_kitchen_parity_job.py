@@ -380,6 +380,7 @@ def run_isaac_g1_kitchen_parity_job(
     g1_usd: str = DEFAULT_G1_USD_RELATIVE, policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
     steps: int = 64, provider: str = "runpod", allow_paid: bool = False, cold: bool = False,
     image: str | None = None, key_prefix: str = "blueprint/isaac-g1-parity", max_seconds: int = 1500,
+    marker_timeout: int = 900, max_attempts: int = 3,
     width: int = 1280, height: int = 960, warmup: int = 6, per_scenario_seconds: int = 420,
     no_collision_probe: bool = False, focus_radius: float = 0.0, keep_objects: str = "",
     settle_seconds: int = 0, cheap_collision: bool = False, articulated: bool = False,
@@ -475,7 +476,11 @@ def run_isaac_g1_kitchen_parity_job(
     # cold ~10-15GB Isaac image pulls on congested nodes routinely exceed 150s before the container
     # starts bash; give the early marker a generous window (+ an extra attempt) so a slow pull is not
     # mistaken for a dead pod (which caused all-dud batches on both providers).
-    launch = launch_with_marker_retry(prov, job_dir, request_body, marker_timeout=420, max_attempts=4)
+    # The worker image is ~10.7 GB (one 10.6 GB layer); a slow node needs >7 min just to pull it
+    # before its container can write the bootstrap marker. Default the boot window to 900s so we
+    # stop reaping nodes mid-pull (the 420s default lost every <~200 Mbps node). Configurable.
+    launch = launch_with_marker_retry(prov, job_dir, request_body,
+                                      marker_timeout=marker_timeout, max_attempts=max_attempts)
     manifest["launch"] = launch
     if launch.get("status") != "launched":
         manifest["blockers"].append("launch_failed_all_attempts_flaky")
@@ -522,6 +527,11 @@ def main(argv=None) -> int:
     ap.add_argument("--cold", action="store_true")
     ap.add_argument("--image", default=None)
     ap.add_argument("--max-seconds", type=int, default=1500)
+    ap.add_argument("--marker-timeout", type=int, default=900,
+                    help="seconds to wait for a pod's boot marker before reaping it as a dud "
+                         "(must exceed the worker image pull time on a slow node)")
+    ap.add_argument("--max-attempts", type=int, default=3,
+                    help="cold-launch attempts before giving up")
     ap.add_argument("--articulated", action="store_true")
     ap.add_argument("--physics-articulation-drive", action="store_true")
     ap.add_argument("--dynamic-standing-contact-steps", type=int, default=0)
@@ -558,6 +568,7 @@ def main(argv=None) -> int:
         scenarios=scenarios, out_dir=args.out_dir, kitchen_asset_dir=args.kitchen_asset_dir,
         g1_usd=args.g1_usd, policy_id=args.policy, steps=args.steps, provider=args.provider,
         allow_paid=args.allow_paid, cold=args.cold, image=args.image, max_seconds=args.max_seconds,
+        marker_timeout=args.marker_timeout, max_attempts=args.max_attempts,
         articulated=args.articulated, cheap_collision=args.cheap_collision,
         physics_articulation_drive=args.physics_articulation_drive,
         dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
