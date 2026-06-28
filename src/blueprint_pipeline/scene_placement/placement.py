@@ -24,7 +24,7 @@ marks occupied cells, which is exactly how the real PhysX overlap query behaves.
 from __future__ import annotations
 
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .types import Probe, SceneObject, StandPose, Vec3
 
@@ -137,6 +137,14 @@ def _candidate_along(
     return last_pose, standoff, False, openness
 
 
+def _normalize2(v: Tuple[float, float]) -> Tuple[float, float]:
+    """Unit-normalize a 2D vector; return (0, 0) for a ~zero vector (no preference)."""
+    n = math.hypot(v[0], v[1])
+    if n <= 1e-9:
+        return (0.0, 0.0)
+    return (v[0] / n, v[1] / n)
+
+
 def compute_stand_pose(
     target: SceneObject,
     *,
@@ -148,6 +156,7 @@ def compute_stand_pose(
     max_out: float = 2.5,
     clearance: float = 0.10,
     include_diagonals: bool = False,
+    preferred_direction: Optional[Tuple[float, float]] = None,
 ) -> StandPose:
     """Resolve the pelvis pose that stands the robot on the target's open side.
 
@@ -178,7 +187,6 @@ def compute_stand_pose(
     """
     directions = list(_CARDINALS) + (list(_DIAGONALS) if include_diagonals else [])
     centroid_xy = (target.centroid[0], target.centroid[1])
-    fp_center = target.footprint_center()
 
     clear_candidates: List[Tuple[float, Vec3, float, Tuple[float, float]]] = []
     # Fallback tuple: (openness, pose, standoff, direction). ``openness`` is the
@@ -209,8 +217,20 @@ def compute_stand_pose(
                 fallback = (score, pose, standoff, direction)
 
     if clear_candidates:
-        # Closest clear spot wins so the robot stands near enough to manipulate.
-        clear_candidates.sort(key=lambda c: c[0])
+        pref = _normalize2(preferred_direction) if preferred_direction is not None else (0.0, 0.0)
+        if pref != (0.0, 0.0):
+            # Bias toward the approach/open-room side: a clear spot whose direction aligns with
+            # `preferred_direction` beats a closer one on, say, a wall side. Crucial because kitchen
+            # walls often lack collision, so the probe reports the wall side as "clear" and the
+            # closest-spot heuristic alone parks the robot against the wall. Tie-break by distance.
+            clear_candidates.sort(
+                key=lambda c: (-(c[3][0] * pref[0] + c[3][1] * pref[1]), c[0])
+            )
+            note = (f"open side found (approach-biased); standoff %.2f m from '{target.label}'")
+        else:
+            # No preference: closest clear spot so the robot stands near enough to manipulate.
+            clear_candidates.sort(key=lambda c: c[0])
+            note = f"open side found; standoff %.2f m from '{target.label}'"
         _dist, pose, standoff, _direction = clear_candidates[0]
         yaw = _yaw_towards((pose[0], pose[1]), centroid_xy)
         return StandPose(
@@ -219,7 +239,7 @@ def compute_stand_pose(
             target_id=target.id,
             clear=True,
             standoff_m=standoff,
-            notes=f"open side found; standoff {standoff:.2f} m from '{target.label}'",
+            notes=note % standoff,
         )
 
     # Boxed in on every probed side: best-effort on the genuinely most-open direction.

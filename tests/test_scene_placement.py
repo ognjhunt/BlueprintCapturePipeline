@@ -880,6 +880,26 @@ def test_compute_stand_pose_picks_open_side_of_l_counter():
     assert abs(pz - 0.79) < 1e-9
 
 
+def test_compute_stand_pose_preferred_direction_beats_closest_clear():
+    # Every side reads as clear (e.g. walls with no collision). Without a preference the solver
+    # would pick whatever direction sorts first; with preferred_direction it must stand on the
+    # side aligned with that hint (the open room / approach side), not against a wall.
+    tgt = _target(cx=2.28, cy=1.33)
+
+    pose = compute_stand_pose(
+        tgt, probe=lambda p, y: 0, include_diagonals=True,
+        preferred_direction=(0.0, -1.0),   # prefer the -y (room/approach) side
+    )
+    assert pose.clear is True
+    assert pose.position[1] < 1.33          # stood on the -y side, in front of the target
+    assert pose.position[0] == pytest.approx(2.28, abs=1e-6)  # aligned, not off on +x/-x
+    assert math.sin(pose.yaw) > 0.5         # faces +y toward the target
+    # the opposite hint flips it to the +y side
+    pose2 = compute_stand_pose(tgt, probe=lambda p, y: 0, include_diagonals=True,
+                               preferred_direction=(0.0, 1.0))
+    assert pose2.position[1] > 1.33
+
+
 def test_compute_stand_pose_faces_the_target():
     # target offset from origin; whatever open side is chosen, yaw must point the
     # pelvis forward axis at the target centroid (atan2 of the delta).

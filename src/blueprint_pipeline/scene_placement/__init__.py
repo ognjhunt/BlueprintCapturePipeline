@@ -34,6 +34,11 @@ from .perception_adapter import (
     detections_from_sam3,
 )
 from .placement import compute_stand_pose
+from .validation import (
+    PlacementVerdict,
+    validate_placement,
+    validate_stand_pose,
+)
 from .target_resolver import (
     GenerateFn,
     resolve_target,
@@ -68,6 +73,9 @@ __all__ = [
     "resolve_target",
     "resolve_target_by_label",
     "compute_stand_pose",
+    "validate_stand_pose",
+    "validate_placement",
+    "PlacementVerdict",
     "build_scene_index",
     "place_robot_for_task",
     # pure helpers re-exported for tests / advanced callers
