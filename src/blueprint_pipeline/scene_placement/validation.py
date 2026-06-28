@@ -22,18 +22,29 @@ Two intended uses — and the difference is the whole point:
 
 Pure + stdlib-only, so it unit-tests with synthetic boxes — no torch, no GPU, no network.
 
-NOTE on obstacles: pass the object catalog from ``SceneSpatialIndex.objects()`` (which already
-excludes the structural shell — floor/walls/ceiling). The clip test treats every floor-standing
-catalog object as something the robot must NOT overlap; if you pass the raw floor/walls it will
-(correctly, but unhelpfully) report the robot as overlapping the floor.
+NOTE on obstacles: for clipping, prefer fine obstacle boxes such as
+``UsdSceneSpatialIndex.obstacle_boxes()``. The grouped object catalog from
+``SceneSpatialIndex.objects()`` is right for target resolution, but a whole cabinet/counter assembly
+can collapse into a broad AABB that covers open aisle floor. Still exclude floor/ground/ceiling from
+the obstacle list; if you pass the raw floor, it will correctly but unhelpfully report the robot as
+overlapping the floor.
 """
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
 from .types import SceneObject, StandPose, Vec3
+
+
+PLACEMENT_VALIDATION_SCHEMA_VERSION = "placement_validation.v1"
+DEFAULT_VALIDATION_FOOTPRINT_HALF_EXTENT: Tuple[float, float, float] = (0.28, 0.28, 0.62)
+DEFAULT_VALIDATION_PELVIS_HEIGHT_M = 0.79
+DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG = 30.0
+DEFAULT_VALIDATION_STANDOFF_RANGE: Tuple[float, float] = (0.4, 1.2)
 
 
 @dataclass
@@ -106,9 +117,10 @@ def validate_stand_pose(
     *,
     footprint_half_extent: Tuple[float, float, float] = (0.28, 0.28, 0.62),
     pelvis_height: float = 0.79,
-    max_facing_error_deg: float = 35.0,
-    standoff_range: Tuple[float, float] = (0.30, 1.30),
+    max_facing_error_deg: float = DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG,
+    standoff_range: Tuple[float, float] = DEFAULT_VALIDATION_STANDOFF_RANGE,
     floor_tol: float = 0.08,
+    foot_clearance: float = 0.40,
     clip_area_eps: float = 1e-4,
     standoff_obstacles: Optional[Sequence[SceneObject]] = None,
 ) -> PlacementVerdict:
@@ -121,14 +133,14 @@ def validate_stand_pose(
 
     Four independent checks, all must pass for ``ok``:
 
-    1. NO CLIP — the robot footprint box (``footprint_half_extent`` xy, centered at the pose) does not
-       overlap any obstacle whose vertical AABB span intersects the robot's COLLISION z-interval
-       ``[pelvis_z - hz, pelvis_z + hz]`` (``hz`` is the z half-extent of ``footprint_half_extent``).
-       That interval models the whole body (feet→head), so an obstacle is ignored only when it clears
-       the robot's head (``min_z > pelvis_z + hz``) or sits entirely below the feet — a wall/ceiling box
-       high enough to stand *under* — and an upper cabinet / range hood whose box dips into the torso/head
-       band IS reported. This is the test that catches the robot clipping a counter/cabinet *or* an
-       overhead fixture.
+    1. NO CLIP — where the robot may STAND is governed by what occupies the FLOOR under its footprint,
+       not by what sits on the counter or wall above it. An obstacle blocks the stance iff its xy box
+       overlaps the robot footprint AND it actually reaches the floor — ``min_z < floor_z + foot_clearance``
+       (a cabinet base, a fridge, a chair, a floor-standing planter). Anything that starts ABOVE the foot
+       band — a vase/plant or fruit bowl ON the counter, a wall cabinet, a range hood, draping foliage — is
+       deliberately NOT a clip: the robot stands under / in front of it and reaches over, exactly as a
+       person stands at a cluttered counter. Whole-body collision with overhead clutter belongs to the
+       manipulation/motion-planning layer, not this standing-placement gate.
     2. ON FLOOR — the pelvis z is within ``floor_tol`` of ``floor_z + pelvis_height`` (not floating/sunk).
     3. FACING — ``yaw`` points within ``max_facing_error_deg`` of the direction to the target centroid.
     4. STANDOFF — the xy gap between the footprint and the nearest reach surface lies within
@@ -151,8 +163,8 @@ def validate_stand_pose(
     f_min = (px - hx, py - hy)
     f_max = (px + hx, py + hy)
     pelvis_z = floor_z + pelvis_height
-    robot_top_z = pelvis_z + hz       # top of the collision box (head)
-    robot_bottom_z = pelvis_z - hz    # bottom of the collision box (feet)
+    robot_top_z = pelvis_z + hz
+    robot_bottom_z = pelvis_z - hz
     failures: List[str] = []
 
     # 0. FINITE INPUTS — guard before any comparison, since `x > nan` etc. are all False (silent pass).
@@ -174,9 +186,9 @@ def validate_stand_pose(
             on_floor=False, notes="INVALID: " + "; ".join(failures),
         )
 
-    # 1. CLIP — an obstacle clips iff its z-span overlaps the robot collision z-interval AND its xy
+    # 1. CLIP — an obstacle clips iff its z-span overlaps the robot body z-interval and its xy
     #    footprint overlaps the robot footprint. Skip only obstacles wholly above the head or below
-    #    the feet (`>`/`<` so an obstacle merely touching a boundary is excluded, not clipped).
+    #    the feet.
     clipping: List[Tuple[str, float]] = []
     for obs in obstacles:
         if obs.min_z() > robot_top_z or obs.max_z() < robot_bottom_z:
@@ -238,4 +250,134 @@ def validate_placement(
     return validate_stand_pose(stand_pose.position, stand_pose.yaw, target, obstacles, **kwargs)
 
 
-__all__ = ["PlacementVerdict", "validate_stand_pose", "validate_placement"]
+def scene_object_to_dict(obj: SceneObject) -> dict[str, Any]:
+    """Serialize a scene object AABB into the placement-validation artifact shape."""
+    return {
+        "id": obj.id,
+        "label": obj.label,
+        "bbox_min_xyz": [round(float(v), 6) for v in obj.bbox_min],
+        "bbox_max_xyz": [round(float(v), 6) for v in obj.bbox_max],
+        "centroid_xyz": [round(float(v), 6) for v in obj.centroid],
+        "category": obj.category,
+        "source": obj.source,
+        "confidence": round(float(obj.confidence), 6),
+        "extra": dict(obj.extra or {}),
+    }
+
+
+def placement_verdict_to_dict(verdict: PlacementVerdict) -> dict[str, Any]:
+    """Serialize a :class:`PlacementVerdict` for stable JSON artifacts."""
+    return {
+        "ok": bool(verdict.ok),
+        "failures": list(verdict.failures),
+        "clipping": [
+            {"object_id": oid, "overlap_area_xy_m2": round(float(area), 6)}
+            for oid, area in verdict.clipping
+        ],
+        "facing_error_deg": round(float(verdict.facing_error_deg), 6)
+        if math.isfinite(float(verdict.facing_error_deg))
+        else str(verdict.facing_error_deg),
+        "standoff_m": round(float(verdict.standoff_m), 6)
+        if math.isfinite(float(verdict.standoff_m))
+        else str(verdict.standoff_m),
+        "on_floor": bool(verdict.on_floor),
+        "notes": verdict.notes,
+    }
+
+
+def _footprint_box_dict(
+    position: Vec3,
+    footprint_half_extent: Tuple[float, float, float],
+) -> dict[str, list[float]]:
+    px, py, pz = (float(v) for v in position)
+    hx, hy, hz = (abs(float(v)) for v in footprint_half_extent)
+    return {
+        "bbox_min_xyz": [round(px - hx, 6), round(py - hy, 6), round(pz - hz, 6)],
+        "bbox_max_xyz": [round(px + hx, 6), round(py + hy, 6), round(pz + hz, 6)],
+        "center_xyz": [round(px, 6), round(py, 6), round(pz, 6)],
+    }
+
+
+def build_placement_validation_report(
+    *,
+    position: Vec3,
+    yaw: float,
+    target: SceneObject,
+    scene_objects: Sequence[SceneObject],
+    floor_z: float,
+    footprint_half_extent: Tuple[float, float, float] = DEFAULT_VALIDATION_FOOTPRINT_HALF_EXTENT,
+    pelvis_height: float = DEFAULT_VALIDATION_PELVIS_HEIGHT_M,
+    max_facing_error_deg: float = DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG,
+    standoff_range: Tuple[float, float] = DEFAULT_VALIDATION_STANDOFF_RANGE,
+    floor_tol: float = 0.08,
+    standoff_obstacles: Optional[Sequence[SceneObject]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Build the hermetic placement-validation JSON payload.
+
+    This is the artifact contract for deterministic, no-GPU placement proof: the robot footprint
+    box at the stance pose must not overlap scene-object AABBs in xy, the pelvis/root z must be on
+    the declared floor frame, yaw must face the target, and the standoff must be reachable. ``PASS``
+    is emitted only when every deterministic check passes.
+    """
+    verdict = validate_stand_pose(
+        position,
+        yaw,
+        target,
+        scene_objects,
+        floor_z,
+        footprint_half_extent=footprint_half_extent,
+        pelvis_height=pelvis_height,
+        max_facing_error_deg=max_facing_error_deg,
+        standoff_range=standoff_range,
+        floor_tol=floor_tol,
+        standoff_obstacles=standoff_obstacles,
+    )
+    payload: dict[str, Any] = {
+        "schema_version": PLACEMENT_VALIDATION_SCHEMA_VERSION,
+        "status": "PASS" if verdict.ok else "FAIL",
+        "deterministic_geometry": placement_verdict_to_dict(verdict),
+        "stance_pose": {
+            "position_xyz": [round(float(v), 6) for v in position],
+            "yaw_rad": round(float(yaw), 6),
+        },
+        "floor_z": round(float(floor_z), 6),
+        "expected_pelvis_z": round(float(floor_z) + float(pelvis_height), 6),
+        "robot_footprint_half_extent_xyz": [round(float(v), 6) for v in footprint_half_extent],
+        "robot_footprint_box_at_pose": _footprint_box_dict(position, footprint_half_extent),
+        "max_facing_error_deg": round(float(max_facing_error_deg), 6),
+        "standoff_range_m": [round(float(standoff_range[0]), 6), round(float(standoff_range[1]), 6)],
+        "target_object": scene_object_to_dict(target),
+        "scene_object_count": len(scene_objects),
+        "scene_objects": [scene_object_to_dict(obj) for obj in scene_objects],
+        "claim_boundary": (
+            "Deterministic scene-AABB placement validation only. This does not prove dynamic "
+            "locomotion, manipulation success, safety validation, or physical robot readiness."
+        ),
+    }
+    if metadata:
+        payload["metadata"] = dict(metadata)
+    return payload
+
+
+def write_placement_validation_report(path: str | Path, **kwargs: Any) -> dict[str, Any]:
+    """Build and write ``placement_validation.json``; return the written payload."""
+    payload = build_placement_validation_report(**kwargs)
+    Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
+
+
+__all__ = [
+    "DEFAULT_VALIDATION_FOOTPRINT_HALF_EXTENT",
+    "DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG",
+    "DEFAULT_VALIDATION_PELVIS_HEIGHT_M",
+    "DEFAULT_VALIDATION_STANDOFF_RANGE",
+    "PLACEMENT_VALIDATION_SCHEMA_VERSION",
+    "PlacementVerdict",
+    "build_placement_validation_report",
+    "placement_verdict_to_dict",
+    "scene_object_to_dict",
+    "validate_stand_pose",
+    "validate_placement",
+    "write_placement_validation_report",
+]

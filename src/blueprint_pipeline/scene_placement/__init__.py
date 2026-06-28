@@ -35,9 +35,18 @@ from .perception_adapter import (
 )
 from .placement import compute_stand_pose
 from .validation import (
+    DEFAULT_VALIDATION_FOOTPRINT_HALF_EXTENT,
+    DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG,
+    DEFAULT_VALIDATION_PELVIS_HEIGHT_M,
+    DEFAULT_VALIDATION_STANDOFF_RANGE,
+    PLACEMENT_VALIDATION_SCHEMA_VERSION,
     PlacementVerdict,
+    build_placement_validation_report,
+    placement_verdict_to_dict,
+    scene_object_to_dict,
     validate_placement,
     validate_stand_pose,
+    write_placement_validation_report,
 )
 from .target_resolver import (
     GenerateFn,
@@ -76,6 +85,15 @@ __all__ = [
     "validate_stand_pose",
     "validate_placement",
     "PlacementVerdict",
+    "PLACEMENT_VALIDATION_SCHEMA_VERSION",
+    "DEFAULT_VALIDATION_FOOTPRINT_HALF_EXTENT",
+    "DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG",
+    "DEFAULT_VALIDATION_PELVIS_HEIGHT_M",
+    "DEFAULT_VALIDATION_STANDOFF_RANGE",
+    "build_placement_validation_report",
+    "placement_verdict_to_dict",
+    "scene_object_to_dict",
+    "write_placement_validation_report",
     "build_scene_index",
     "place_robot_for_task",
     "place_and_validate_robot_for_task",
