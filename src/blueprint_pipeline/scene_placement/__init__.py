@@ -13,7 +13,7 @@ callers want.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 from .perception_index import PerceptionSceneSpatialIndex
 from .perception_fusion import (
@@ -78,6 +78,7 @@ __all__ = [
     "PlacementVerdict",
     "build_scene_index",
     "place_robot_for_task",
+    "place_and_validate_robot_for_task",
     # pure helpers re-exported for tests / advanced callers
     "_clean_label",
     "_is_excluded",
@@ -133,3 +134,37 @@ def place_robot_for_task(
     if target is None:
         raise LookupError(f"no scene object matched task: {task!r}")
     return compute_stand_pose(target, probe=probe, **place_kw)
+
+
+def place_and_validate_robot_for_task(
+    index: SceneSpatialIndex,
+    task: str,
+    *,
+    probe: Probe,
+    floor_z: float,
+    generate: Optional[GenerateFn] = None,
+    validation_kw: Optional[dict] = None,
+    **place_kw,
+) -> Tuple[StandPose, PlacementVerdict]:
+    """:func:`place_robot_for_task` + geometric self-validation of the solved pose.
+
+    Returns ``(pose, verdict)``. The verdict checks the SOLVED pose against the same scene
+    object catalog used to place it (clip / on-floor / facing / standoff), so a caller knows
+    immediately whether the pose is usable — instead of discovering a clip in a render. The
+    object catalog is enumerated once and feeds both placement and validation.
+
+    ``floor_z`` is required (both the solver and the validator work in the floor frame). Do NOT
+    also pass ``floor_z`` in ``place_kw``. ``validation_kw`` forwards extra args to
+    :func:`validate_stand_pose` (e.g. ``footprint_half_extent``, ``standoff_range``,
+    ``standoff_obstacles``). Raises ``LookupError`` when no object matches the task.
+    """
+    objects = list(index.objects())
+    if generate is None:
+        target = resolve_target_by_label(task, objects)
+    else:
+        target = resolve_target(task, objects, generate=generate)
+    if target is None:
+        raise LookupError(f"no scene object matched task: {task!r}")
+    pose = compute_stand_pose(target, probe=probe, floor_z=floor_z, **place_kw)
+    verdict = validate_placement(pose, target, objects, floor_z=floor_z, **(validation_kw or {}))
+    return pose, verdict

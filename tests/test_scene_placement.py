@@ -1198,6 +1198,30 @@ def test_place_robot_for_task_faucet_against_wall_stands_on_open_side():
     assert abs(pose.position[2] - 0.79) < 1e-9
 
 
+def test_place_and_validate_robot_for_task_returns_pose_and_verdict():
+    # The self-validating orchestrator: place the robot AND geometrically validate the pose against
+    # the scene catalog in one call, so a caller knows it's clean without rendering.
+    faucet = _target(cx=1.0, cy=2.0, cz=1.0, id_="faucet_1", label="kitchen_faucet")
+    counter = _target(cx=1.0, cy=2.0, cz=0.45, hx=0.6, hy=0.3, id_="counter", label="counter")
+    scene = [faucet, _target(cx=1.0, cy=2.0, cz=0.85, id_="sink_1", label="sink"), counter]
+    index = _FakeIndex(scene)
+    fcx, fcy = faucet.footprint_center()
+
+    def probe(pose, yaw):
+        x, y, _z = pose
+        return 4 if (y >= fcy - 1e-6 and abs(x - fcx) < 1.2) else 0   # counter/wall band occupied
+
+    pose, verdict = sp.place_and_validate_robot_for_task(
+        index, "turn on the faucet", probe=probe, floor_z=0.0, standing_distance=0.85,
+    )
+    assert isinstance(pose, StandPose) and isinstance(verdict, sp.PlacementVerdict)
+    assert pose.target_id == "faucet_1"
+    assert pose.position[1] < fcy            # stood on the open side, in front
+    assert verdict.ok is True                # self-validated: on floor, facing, no clip, in standoff
+    assert verdict.clipping == [] and verdict.on_floor is True
+    assert 0.30 <= verdict.standoff_m <= 1.30 and verdict.facing_error_deg < 5
+
+
 def test_place_robot_for_task_uses_label_fallback_when_no_generate():
     index = _FakeIndex(_scene_for_orchestrator())
     # generate=None -> pure label resolver finds the faucet by label
