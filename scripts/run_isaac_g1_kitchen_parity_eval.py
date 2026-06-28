@@ -629,21 +629,28 @@ def _resolve_task_target_via_scene_placement(stage, scenario: Mapping[str, Any])
     task = _task_description_for_scenario(scenario)
     if not task:
         return None
+    # The bundle dir (where scene_placement is shipped) is added to sys.path at module load, but
+    # Isaac's SimulationApp boot rewrites sys.path and drops it — and this resolver runs AFTER boot.
+    # Re-add the runner's own dir so the bundle-first import below can still find the package.
+    bundle_dir = str(Path(__file__).resolve().parent)
+    if bundle_dir not in sys.path:
+        sys.path.insert(0, bundle_dir)
     try:
+        from scene_placement import (  # type: ignore # worker: flat package in the bundle dir
+            UsdSceneSpatialIndex,
+            resolve_target_by_label,
+        )
+    except Exception as inner_exc:  # noqa: BLE001
         try:
-            # On the worker the package is shipped flat into the bundle dir (already on sys.path).
-            from scene_placement import (  # type: ignore
+            from blueprint_pipeline.scene_placement import (  # type: ignore # repo / tests
                 UsdSceneSpatialIndex,
                 resolve_target_by_label,
             )
         except Exception:  # noqa: BLE001
-            # In the repo / tests it lives under the blueprint_pipeline package.
-            from blueprint_pipeline.scene_placement import (  # type: ignore
-                UsdSceneSpatialIndex,
-                resolve_target_by_label,
-            )
-    except Exception as exc:  # noqa: BLE001
-        return {"status": "blocked", "blockers": ["scene_placement_unavailable"], "error": repr(exc)}
+            # Surface the INNER (bundle) import error, not the repo-fallback's — that's the one
+            # that matters on the worker. Include sys.path head for diagnosis.
+            return {"status": "blocked", "blockers": ["scene_placement_unavailable"],
+                    "error": repr(inner_exc), "bundle_dir": bundle_dir, "sys_path_head": sys.path[:6]}
     try:
         index = UsdSceneSpatialIndex(stage=stage)
         objects = list(index.objects())
