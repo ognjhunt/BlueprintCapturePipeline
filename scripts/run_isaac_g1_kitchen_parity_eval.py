@@ -123,10 +123,26 @@ def mp4_command(frames_glob: str, fps: int, out_path: str) -> list[str]:
 
 
 def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[Mapping[str, Any]],
-                 policy_id: str, kitchen_usd: str, g1_usd: str | None, blockers: Sequence[str]) -> dict:
+                 policy_id: str, kitchen_usd: str, g1_usd: str | None,
+                 blockers: Sequence[str],
+                 physics_articulation_contact_reports: Sequence[Mapping[str, Any]] | None = None) -> dict:
     passed = sum(1 for o in outcomes if o.get("task_success"))
     status = "completed" if outcomes and not blockers else "blocked"
-    return {
+    contact_summary = summarize_physics_articulation_contact_reports(
+        physics_articulation_contact_reports or []
+    )
+    proof_boundary = (
+        "Isaac RTX-rendered kinematic walk-to-target preview (parity with the MuJoCo preview "
+        "controller). Not dynamic locomotion, not a learned policy, not deployment readiness."
+    )
+    if contact_summary["scenario_count"] > 0:
+        proof_boundary = (
+            "Isaac RTX-rendered kinematic walk-to-target preview plus opt-in PhysX articulation "
+            "standing/contact settle samples. This upgrades the standing placement evidence to "
+            "physics-stepped support/contact evidence, but it is still not full dynamic locomotion, "
+            "not a learned balance controller, and not deployment readiness."
+        )
+    result = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": status,
         "policy_id": policy_id,
@@ -141,9 +157,38 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
             {"scenario_id": s.get("scenario_id"), **o}
             for s, o in zip(scenarios, outcomes)
         ],
-        "proof_boundary": (
-            "Isaac RTX-rendered kinematic walk-to-target preview (parity with the MuJoCo preview "
-            "controller). Not dynamic locomotion, not a learned policy, not deployment readiness."
+        "proof_boundary": proof_boundary,
+    }
+    if contact_summary["scenario_count"] > 0:
+        result["physics_articulation_standing_contact_summary"] = contact_summary
+        result["physics_articulation_standing_contact_reports"] = [
+            dict(report) for report in physics_articulation_contact_reports or []
+        ]
+    return result
+
+
+def summarize_physics_articulation_contact_reports(
+    reports: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    scenario_count = len(reports)
+    completed = [r for r in reports if r.get("status") == "completed"]
+    contact_records = sum(int(r.get("contact_event_count") or 0) for r in reports)
+    support_records = sum(int(r.get("support_contact_event_count") or 0) for r in reports)
+    return {
+        "scenario_count": scenario_count,
+        "completed_scenario_count": len(completed),
+        "contact_event_count": contact_records,
+        "support_contact_event_count": support_records,
+        "all_completed": bool(scenario_count and len(completed) == scenario_count),
+        "all_have_support_contact_evidence": bool(
+            scenario_count and all(int(r.get("support_contact_event_count") or 0) > 0 for r in reports)
+        ),
+        "root_pose_teleport_during_physics_settle": any(
+            bool(r.get("root_pose_teleport_during_physics_settle")) for r in reports
+        ),
+        "claim_boundary": (
+            "PhysX articulation standing/contact settle evidence only. This does not prove full "
+            "dynamic locomotion, learned balance, task manipulation success, or deployment readiness."
         ),
     }
 
@@ -192,16 +237,28 @@ def look_at_quat(eye, target, up=(0.0, 0.0, 1.0)) -> tuple[float, float, float, 
     tr = m00 + m11 + m22
     if tr > 0:
         s = math.sqrt(tr + 1.0) * 2
-        w = 0.25 * s; x = (m21 - m12) / s; y = (m02 - m20) / s; z = (m10 - m01) / s
+        w = 0.25 * s
+        x = (m21 - m12) / s
+        y = (m02 - m20) / s
+        z = (m10 - m01) / s
     elif m00 > m11 and m00 > m22:
         s = math.sqrt(1.0 + m00 - m11 - m22) * 2
-        w = (m21 - m12) / s; x = 0.25 * s; y = (m01 + m10) / s; z = (m02 + m20) / s
+        w = (m21 - m12) / s
+        x = 0.25 * s
+        y = (m01 + m10) / s
+        z = (m02 + m20) / s
     elif m11 > m22:
         s = math.sqrt(1.0 + m11 - m00 - m22) * 2
-        w = (m02 - m20) / s; x = (m01 + m10) / s; y = 0.25 * s; z = (m12 + m21) / s
+        w = (m02 - m20) / s
+        x = (m01 + m10) / s
+        y = 0.25 * s
+        z = (m12 + m21) / s
     else:
         s = math.sqrt(1.0 + m22 - m00 - m11) * 2
-        w = (m10 - m01) / s; x = (m02 + m20) / s; y = (m12 + m21) / s; z = 0.25 * s
+        w = (m10 - m01) / s
+        x = (m02 + m20) / s
+        y = (m12 + m21) / s
+        z = 0.25 * s
     return (w, x, y, z)
 
 
@@ -244,6 +301,17 @@ def follow_cam_pose(root_pose, yaw, *, back: float = 2.2, up: float = 1.6):
     fx, fy = math.cos(yaw), math.sin(yaw)
     eye = (root_pose[0] - fx * back, root_pose[1] - fy * back, root_pose[2] + up)
     target = (root_pose[0] + fx * 1.5, root_pose[1] + fy * 1.5, root_pose[2] + 0.2)
+    return eye, target
+
+
+def verify_cam_pose(root_pose, yaw, *, back: float = 2.4, up: float = 1.5, side: float = 1.2):
+    """3rd-person VERIFICATION camera: pulled back behind + above + to the side so the WHOLE robot AND
+    the workspace it faces are both in frame — proves where the robot is actually standing (vs the
+    egocentric POV, which shows only what the robot looks at)."""
+    fx, fy = math.cos(yaw), math.sin(yaw)
+    px, py = -fy, fx  # perpendicular (left of facing) for a 3/4 angle that reveals body-vs-counter gap
+    eye = (root_pose[0] - fx * back + px * side, root_pose[1] - fy * back + py * side, root_pose[2] + up)
+    target = (root_pose[0] + fx * 0.45, root_pose[1] + fy * 0.45, root_pose[2] + 0.25)  # robot torso/front
     return eye, target
 
 
@@ -396,6 +464,40 @@ def _apply_joint_deltas(targets, default, dof_index, deltas: Mapping[str, float]
     return applied
 
 
+def _joint_targets_for_pose(
+    default,
+    dof_index,
+    *,
+    phase,
+    moving,
+    manipulation_ready: bool = False,
+    manipulation_reach_arm: str = "both",
+):
+    import numpy as np  # type: ignore
+    targets = np.array(default, dtype="float32", copy=True)
+    _apply_joint_deltas(targets, default, dof_index, policy_mod.gait_joint_deltas(phase, moving))
+    if manipulation_ready:
+        _apply_joint_deltas(
+            targets,
+            default,
+            dof_index,
+            manipulation_ready_arm_joint_deltas(manipulation_reach_arm),
+        )
+    return targets
+
+
+def _apply_articulation_joint_targets(art, targets):
+    """Prefer Isaac's articulation action path, falling back to direct joint state writes on older
+    worker images. The return value is persisted in the contact report for auditability."""
+    try:
+        from isaacsim.core.utils.types import ArticulationAction  # type: ignore
+        art.apply_action(ArticulationAction(joint_positions=targets))
+        return "articulation_action_position_targets"
+    except Exception:  # noqa: BLE001
+        art.set_joint_positions(targets)
+        return "direct_joint_state_position_set"
+
+
 def _drive_g1_walk(
     art,
     dof_index,
@@ -413,15 +515,14 @@ def _drive_g1_walk(
     w, x, y, z = yaw_to_quat(float(yaw))
     art.set_world_pose(position=np.asarray(root_pose, dtype="float32"),
                        orientation=np.asarray([w, x, y, z], dtype="float32"))
-    targets = np.array(default, dtype="float32", copy=True)
-    _apply_joint_deltas(targets, default, dof_index, policy_mod.gait_joint_deltas(phase, moving))
-    if manipulation_ready:
-        _apply_joint_deltas(
-            targets,
-            default,
-            dof_index,
-            manipulation_ready_arm_joint_deltas(manipulation_reach_arm),
-        )
+    targets = _joint_targets_for_pose(
+        default,
+        dof_index,
+        phase=phase,
+        moving=moving,
+        manipulation_ready=manipulation_ready,
+        manipulation_reach_arm=manipulation_reach_arm,
+    )
     art.set_joint_positions(targets)
     return targets
 
@@ -640,7 +741,7 @@ def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right"
     return posed
 
 
-def _setup_articulated_g1(prim_path: str):
+def _setup_articulated_g1(prim_path: str, *, gravity_z: float = 0.0):
     """Create a physics SimulationContext (gravity OFF, so the kinematic walk pose holds without the
     G1 collapsing), play it, and initialize the G1 articulation for joint driving + link readback.
     Returns a context dict. GPU-only."""
@@ -648,13 +749,226 @@ def _setup_articulated_g1(prim_path: str):
     ctx = SimulationContext(physics_dt=1.0 / 60.0, rendering_dt=1.0 / 60.0, stage_units_in_meters=1.0)
     ctx.initialize_physics()
     try:
-        ctx.get_physics_context().set_gravity(0.0)  # kinematic preview: no falling
+        ctx.get_physics_context().set_gravity(float(gravity_z))
     except Exception:  # noqa: BLE001
         pass
     art, dof_index, default, link_names = _setup_g1_articulation(prim_path)
     ctx.play()
     return {"ctx": ctx, "art": art, "dof_index": dof_index, "default": default,
-            "link_names": link_names, "dof_count": len(dof_index)}
+            "link_names": link_names, "dof_count": len(dof_index), "gravity_z": float(gravity_z)}
+
+
+def _sim_step(ctx, *, render: bool = False) -> None:
+    try:
+        ctx.step(render=render)
+    except TypeError:
+        ctx.step()
+
+
+def _safe_articulation_world_pose(art) -> dict[str, Any]:
+    try:
+        pos, quat = art.get_world_pose()
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": repr(exc)}
+    try:
+        return {
+            "available": True,
+            "position_xyz": [round(float(v), 6) for v in pos],
+            "orientation_wxyz": [round(float(v), 6) for v in quat],
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": repr(exc)}
+
+
+def _path_from_encoded_sdf(value) -> str:
+    try:
+        from pxr import PhysicsSchemaTools  # type: ignore
+        return str(PhysicsSchemaTools.intToSdfPath(int(value)))
+    except Exception:  # noqa: BLE001
+        return str(value)
+
+
+def _vec3_to_list(value) -> list[float] | None:
+    try:
+        return [round(float(value[i]), 6) for i in range(3)]
+    except Exception:  # noqa: BLE001
+        try:
+            return [round(float(getattr(value, axis)), 6) for axis in ("x", "y", "z")]
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def _enable_contact_reports(stage, robot_prim_path: str, *, threshold: float = 0.0) -> dict[str, Any]:
+    """Apply PhysX contact-report API to the articulation/root and likely foot links.
+
+    This is best-effort because Isaac worker images and G1 USD variants differ. A failure should
+    block only the contact report, not the render path.
+    """
+    try:
+        from pxr import PhysxSchema, Usd, UsdPhysics  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "unavailable", "error": repr(exc), "enabled_paths": []}
+    root = stage.GetPrimAtPath(robot_prim_path)
+    if not root or not root.IsValid():
+        return {"status": "unavailable", "error": "robot_prim_not_found", "enabled_paths": []}
+    enabled: list[str] = []
+    candidates = []
+    for prim in Usd.PrimRange(root):
+        name = prim.GetName().lower()
+        if (
+            prim.GetPath() == root.GetPath()
+            or prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+            or prim.HasAPI(UsdPhysics.RigidBodyAPI)
+            or ("foot" in name and prim.HasAPI(UsdPhysics.CollisionAPI))
+        ):
+            candidates.append(prim)
+    for prim in candidates:
+        try:
+            api = PhysxSchema.PhysxContactReportAPI.Apply(prim)
+            api.CreateThresholdAttr().Set(float(threshold))
+            enabled.append(str(prim.GetPath()))
+        except Exception:  # noqa: BLE001
+            continue
+    return {"status": "enabled" if enabled else "unavailable", "enabled_paths": enabled}
+
+
+def _contact_report_records(robot_prim_path: str, *, max_records: int = 40) -> list[dict[str, Any]]:
+    try:
+        from omni.physx import get_physx_simulation_interface  # type: ignore
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        report = get_physx_simulation_interface().get_contact_report()
+    except Exception:  # noqa: BLE001
+        return []
+    if not report:
+        return []
+    try:
+        headers, data = report[0], report[1] if len(report) > 1 else []
+    except Exception:  # noqa: BLE001
+        return []
+    records: list[dict[str, Any]] = []
+    for header in list(headers)[:max_records]:
+        actor0 = _path_from_encoded_sdf(getattr(header, "actor0", ""))
+        actor1 = _path_from_encoded_sdf(getattr(header, "actor1", ""))
+        collider0 = _path_from_encoded_sdf(getattr(header, "collider0", actor0))
+        collider1 = _path_from_encoded_sdf(getattr(header, "collider1", actor1))
+        joined = " ".join((actor0, actor1, collider0, collider1)).lower()
+        if robot_prim_path.lower() not in joined and "/world/g1" not in joined:
+            continue
+        offset = int(getattr(header, "contact_data_offset", 0) or 0)
+        count = int(getattr(header, "num_contact_data", 0) or 0)
+        samples = []
+        for sample in list(data)[offset: offset + min(count, 3)]:
+            samples.append({
+                "position_xyz": _vec3_to_list(getattr(sample, "position", None)),
+                "normal_xyz": _vec3_to_list(getattr(sample, "normal", None)),
+                "impulse": (
+                    round(float(getattr(sample, "impulse", 0.0) or 0.0), 6)
+                    if hasattr(sample, "impulse") else None
+                ),
+            })
+        records.append({
+            "actor0": actor0,
+            "actor1": actor1,
+            "collider0": collider0,
+            "collider1": collider1,
+            "contact_data_count": count,
+            "samples": samples,
+        })
+    return records
+
+
+def _is_support_contact(record: Mapping[str, Any]) -> bool:
+    text = " ".join(
+        str(record.get(key) or "").lower()
+        for key in ("actor0", "actor1", "collider0", "collider1")
+    )
+    return ("foot" in text or "ankle" in text or "toe" in text) and (
+        "floor" in text or "ground" in text or "room" in text or "kitchen" in text
+    )
+
+
+def _settle_dynamic_standing_contacts(
+    *,
+    stage,
+    art_ctx,
+    robot_prim_path: str,
+    root_pose,
+    yaw,
+    phase,
+    moving,
+    settle_steps: int,
+    scenario_id: str,
+    manipulation_ready: bool = False,
+    manipulation_reach_arm: str = "both",
+) -> dict[str, Any]:
+    """Run a bounded PhysX standing/contact settle without mutating the G1 USD xform after the
+    articulation tensor view exists.
+
+    The policy route remains kinematic. This mode upgrades each sampled placement by stepping the
+    real articulation against the scene with gravity and contact reporting; it is not a full dynamic
+    walking controller.
+    """
+    import numpy as np  # type: ignore
+
+    art = art_ctx["art"]
+    ctx = art_ctx["ctx"]
+    targets = _joint_targets_for_pose(
+        art_ctx["default"],
+        art_ctx["dof_index"],
+        phase=phase,
+        moving=moving,
+        manipulation_ready=manipulation_ready,
+        manipulation_reach_arm=manipulation_reach_arm,
+    )
+    w, x, y, z = yaw_to_quat(float(yaw))
+    art.set_world_pose(
+        position=np.asarray(root_pose, dtype="float32"),
+        orientation=np.asarray([w, x, y, z], dtype="float32"),
+    )
+    command_mode = _apply_articulation_joint_targets(art, targets)
+    before = _safe_articulation_world_pose(art)
+    contact_setup = _enable_contact_reports(stage, robot_prim_path)
+    records: list[dict[str, Any]] = []
+    errors: list[str] = []
+    executed = 0
+    for _ in range(max(0, int(settle_steps))):
+        try:
+            _apply_articulation_joint_targets(art, targets)
+            _sim_step(ctx, render=False)
+            executed += 1
+            if len(records) < 80:
+                records.extend(_contact_report_records(robot_prim_path, max_records=20))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(repr(exc))
+            break
+    after = _safe_articulation_world_pose(art)
+    support_records = [r for r in records if _is_support_contact(r)]
+    return {
+        "schema_version": "isaac_g1_physics_articulation_standing_contact_report.v1",
+        "status": "completed" if executed == max(0, int(settle_steps)) and not errors else "blocked",
+        "scenario_id": scenario_id,
+        "gravity_z": art_ctx.get("gravity_z"),
+        "requested_settle_steps": int(settle_steps),
+        "executed_settle_steps": executed,
+        "root_pose_seeded_once_before_settle": True,
+        "root_pose_teleport_during_physics_settle": False,
+        "usd_root_xform_mutated_after_tensor_view": False,
+        "joint_command_mode": command_mode,
+        "contact_report_setup": contact_setup,
+        "contact_event_count": len(records),
+        "support_contact_event_count": len(support_records),
+        "sample_contact_records": records[:20],
+        "root_pose_before_settle": before,
+        "root_pose_after_settle": after,
+        "errors": errors,
+        "claim_boundary": (
+            "Physics articulation standing/contact settle for this sampled placement only; not "
+            "full dynamic walking, learned balance control, task success, safety validation, or "
+            "deployment readiness."
+        ),
+    }
 
 
 def _overlap_probe(robot_prim_path: str, ground_prim_path: str = "/World/GroundPlane"):
@@ -704,17 +1018,24 @@ def _place_camera(stage, cam_path: str, eye, target) -> None:
     xform.AddOrientOp().Set(Gf.Quatf(float(w), float(x), float(y), float(z)))
 
 
-def _force_cheap_collision(stage) -> int:
-    """Override every mesh collision approximation to a cheap bounding box. The 47-object kitchen's
-    default SDF cooking on non-watertight meshes takes >4 min and blocks the RTX render the whole
-    time; box collision cooks ~instantly. Visual geometry is untouched (only collision changes), and
-    the kinematic preview doesn't use collision anyway. Keeps the FULL scene — nothing removed."""
+def _force_cheap_collision(stage, approximation: str = "boundingCube") -> int:
+    """Override every mesh collision approximation. The 47-object kitchen's default SDF cooking on
+    non-watertight meshes takes >4 min and blocks the RTX render; ``boundingCube`` cooks ~instantly
+    but is coarse (collision volumes far bigger than the visual shape, which shoves the robot off a
+    head-on approach). ``convexHull`` is shape-accurate enough for the robot to stand centered + close
+    and still cooks far faster than SDF (a watertight convex per mesh). Visual geometry is untouched.
+    Returns the number of meshes overridden."""
     from pxr import UsdPhysics  # type: ignore
-    box = UsdPhysics.Tokens.boundingCube
+    tokens = {
+        "boundingCube": UsdPhysics.Tokens.boundingCube,
+        "convexHull": UsdPhysics.Tokens.convexHull,
+        "convexDecomposition": UsdPhysics.Tokens.convexDecomposition,
+    }
+    approx = tokens.get(approximation, UsdPhysics.Tokens.boundingCube)
     n = 0
     for prim in stage.Traverse():
         if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
-            UsdPhysics.MeshCollisionAPI(prim).CreateApproximationAttr().Set(box)
+            UsdPhysics.MeshCollisionAPI(prim).CreateApproximationAttr().Set(approx)
             n += 1
     return n
 
@@ -854,13 +1175,16 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
                   fill_light_intensity: float = 0.0,
                   physics_articulation_drive: bool = False,
+                  dynamic_standing_contact_steps: int = 0,
                   neutral_environment: bool = False,
-                  kinematic_arm_pose: bool = False) -> dict:
+                  kinematic_arm_pose: bool = False,
+                  collision_approximation: str = "boundingCube",
+                  verify_cam: bool = False) -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
     flushed progress + a per-scenario wall-clock cap so it cannot hang silently."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    _log(f"booting Isaac (headless RTX) ...")
+    _log("booting Isaac (headless RTX) ...")
     sim = _boot_sim(headless=True)
     _log("Isaac booted; enabling Replicator")
     rep = _enable_and_import_replicator()  # after boot: omni.* now importable + extension enabled
@@ -872,13 +1196,17 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         _log("PhysX cooking disabled (WARNING: breaks the renderer on this image)")
     blockers: list[str] = []
     outcomes: list[dict] = []
+    physics_contact_reports: list[dict[str, Any]] = []
     result = None
+    if dynamic_standing_contact_steps > 0:
+        articulated = True
+        physics_articulation_drive = True
     try:
         _log(f"opening kitchen USD: {kitchen_usd}")
         stage = _open_stage(_resolve_asset_uri(kitchen_usd))
         if cheap_collision:
-            nc = _force_cheap_collision(stage)
-            _log(f"forced cheap bounding-box collision on {nc} mesh-collision prims (fast cooking)")
+            nc = _force_cheap_collision(stage, approximation=collision_approximation)
+            _log(f"forced {collision_approximation} collision on {nc} mesh-collision prims")
         _log("kitchen stage open; binding G1 articulation")
         binding = _bind_g1(stage, _resolve_asset_uri(g1_usd))
         _log(f"G1 binding: articulation={binding['controllable_articulation_detected']} "
@@ -894,33 +1222,35 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         rest_offsets = None
         art_ctx = None
         if articulated:
+            rest_offsets = _g1_link_rest_offsets(stage, binding["prim_path"])
             # The physics articulation drive (SimulationContext + SingleArticulation tensor view) is
-            # OPT-IN and default-OFF. On this G1 USD it invalidates the tensor view the instant the
-            # kinematic _place_root mutates the G1 root xform during rendering ("prim '/World/G1/
-            # waist_yaw_link' was deleted while being used by a link in a tensor view"), shutting the
-            # sim down at the first rollout step -> 0 frames. The default is the pure-USD kinematic
-            # path: root pose + arm-reach skeleton with NO physics tensor, which renders crash-free.
+            # OPT-IN and default-OFF. The crash pattern to avoid is mutating the G1 USD root xform
+            # after the tensor view exists. In the physics path, all root seeds go through the
+            # articulation API; the pure-USD _place_root fallback is used only when art_ctx is None.
             if physics_articulation_drive:
                 try:
-                    art_ctx = _setup_articulated_g1(binding["prim_path"])
+                    gravity_z = -9.81 if dynamic_standing_contact_steps > 0 else 0.0
+                    art_ctx = _setup_articulated_g1(binding["prim_path"], gravity_z=gravity_z)
                     _log(
                         "G1 articulation drive ready: "
-                        f"{art_ctx['dof_count']} joints, {len(art_ctx['link_names'])} links"
+                        f"{art_ctx['dof_count']} joints, {len(art_ctx['link_names'])} links, "
+                        f"gravity_z={gravity_z}"
                     )
                 except Exception as exc:  # noqa: BLE001
                     blockers.append("official_isaac_unitree_g1_joint_drive_unavailable")
                     _log(f"G1 articulation drive unavailable ({exc!r}); using USD skeleton fallback")
                 if art_ctx is not None and not art_ctx.get("link_names"):
-                    _log("G1 articulation body/link names unavailable; using USD root/skeleton fallback")
-                    art_ctx = None
-            rest_offsets = _g1_link_rest_offsets(stage, binding["prim_path"])
-            _log(f"G1 skeleton (pure-USD kinematic, crash-free): {len(rest_offsets)} link landmarks")
+                    _log("G1 articulation body/link names unavailable; using USD skeleton fallback for landmarks")
+            _log(f"G1 skeleton (USD rest offsets): {len(rest_offsets)} link landmarks")
         from pxr import UsdGeom, UsdLux  # type: ignore
         UsdGeom.Scope.Define(stage, "/World")
         over_cam = "/World/Cameras/overview"
         pov_cam = "/World/Cameras/robot_pov"
+        verify_cam_path = "/World/Cameras/verify"
         UsdGeom.Camera.Define(stage, over_cam)
         UsdGeom.Camera.Define(stage, pov_cam)
+        if verify_cam:
+            UsdGeom.Camera.Define(stage, verify_cam_path)
         key = UsdLux.DistantLight.Define(stage, "/World/Key")
         try:
             key.CreateIntensityAttr(3000.0)  # lift the global key so the workspace is not crushed dark
@@ -931,6 +1261,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         # the skeleton projection. Overview gets a wide FOV so it frames the whole scene.
         _set_camera_fov(stage, pov_cam, camera_vfov_deg, width, height)
         _set_camera_fov(stage, over_cam, 60.0, width, height)
+        if verify_cam:
+            _set_camera_fov(stage, verify_cam_path, 55.0, width, height)
         if manipulation_cam and fill_light_intensity > 0 and manipulation_look_at is not None:
             _add_workspace_fill_light(stage, manipulation_look_at, intensity=fill_light_intensity)
             _log(f"workspace fill light @ {tuple(round(float(c),2) for c in manipulation_look_at)} "
@@ -944,6 +1276,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         _log(f"creating render products ({width}x{height})")
         over_annot = _make_render_product(over_cam, width, height)
         pov_annot = _make_render_product(pov_cam, width, height)
+        verify_annot = _make_render_product(verify_cam_path, width, height) if verify_cam else None
         center, radius = scene_framing(scenarios)
         _place_camera(stage, over_cam,
                       (center[0] + radius * 1.4, center[1] - radius * 1.4, center[2] + radius * 1.1),
@@ -1001,17 +1334,37 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 phase = policy_mod.gait_phase(alpha, route_distance_m)
                 moving = route_distance_m > 0.05 and step < max(1, steps - 1)
                 if art_ctx is not None:
-                    _drive_g1_walk(
-                        art_ctx["art"],
-                        art_ctx["dof_index"],
-                        art_ctx["default"],
-                        root_pose=decision.root_pose,
-                        yaw=decision.yaw,
-                        phase=phase,
-                        moving=moving,
-                        manipulation_ready=bool(manipulation_reach),
-                        manipulation_reach_arm=manipulation_reach_arm,
-                    )
+                    if dynamic_standing_contact_steps > 0:
+                        report = _settle_dynamic_standing_contacts(
+                            stage=stage,
+                            art_ctx=art_ctx,
+                            robot_prim_path=binding["prim_path"],
+                            root_pose=decision.root_pose,
+                            yaw=decision.yaw,
+                            phase=phase,
+                            moving=moving,
+                            settle_steps=dynamic_standing_contact_steps,
+                            scenario_id=sid,
+                            manipulation_ready=bool(manipulation_reach),
+                            manipulation_reach_arm=manipulation_reach_arm,
+                        )
+                        report["step"] = step
+                        physics_contact_reports.append(report)
+                        if report["status"] != "completed":
+                            blockers.append("physics_articulation_standing_contact_settle_failed")
+                            _log(f"dynamic standing/contact settle failed at step {step}: {report['errors']}")
+                    else:
+                        _drive_g1_walk(
+                            art_ctx["art"],
+                            art_ctx["dof_index"],
+                            art_ctx["default"],
+                            root_pose=decision.root_pose,
+                            yaw=decision.yaw,
+                            phase=phase,
+                            moving=moving,
+                            manipulation_ready=bool(manipulation_reach),
+                            manipulation_reach_arm=manipulation_reach_arm,
+                        )
                 else:
                     _place_root(stage, binding["prim_path"], decision.root_pose, decision.yaw)
                     # Show the arm reaching in the RENDERED frame (pure USD, no physics tensor -> no
@@ -1036,6 +1389,9 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 if manipulation_cam
                                 else follow_cam_pose(decision.root_pose, decision.yaw))
                     _place_camera(stage, pov_cam, eye, tgt)  # POV camera (manipulation egocentric or follow)
+                    if verify_annot is not None:
+                        v_eye, v_tgt = verify_cam_pose(decision.root_pose, decision.yaw)
+                        _place_camera(stage, verify_cam_path, v_eye, v_tgt)  # 3rd-person: SHOW the robot
                     if articulated and (art_ctx is not None or rest_offsets is not None):
                         skel = skeleton_world_for_frame(
                             art_ctx=art_ctx,
@@ -1068,6 +1424,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     rdt = time.time() - ts
                     over_ok = _save_rgb(over_annot, sdir / "frames" / f"overview_{cap:04d}.png")
                     _save_rgb(pov_annot, sdir / "frames" / f"robot_pov_{cap:04d}.png")
+                    if verify_annot is not None:
+                        _save_rgb(verify_annot, sdir / "frames" / f"verify_{cap:04d}.png")
                     if cap == 0 or rdt > 5:
                         _log(f"scenario {sid}: frame {cap} captured (render {rdt:.1f}s, overview_ok={over_ok})")
                     cap += 1
@@ -1078,6 +1436,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         sf.write(json.dumps(r) + "\n")
                 total_lm = sum(r["projected_landmark_count"] for r in skel_rows)
                 _log(f"scenario {sid}: skeleton trace {len(skel_rows)} frames, {total_lm} total landmarks")
+            scenario_contact_reports = [
+                r for r in physics_contact_reports if r.get("scenario_id") == sid
+            ]
+            if scenario_contact_reports:
+                (sdir / "physics_articulation_standing_contact_reports.json").write_text(
+                    json.dumps(scenario_contact_reports, indent=2)
+                )
             _log(f"scenario {sid}: {cap} frames captured, truncated={truncated}; assembling MP4 + outcome")
             summary = assemble_collision_summary(actions=actions, rejected_probe_total=rejected_total,
                                                  response_event_total=response_total)
@@ -1100,7 +1465,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             # SimulationApp.close() can terminate or stall the worker process on some
             # remote runtimes, so persist the collector-visible result before closing Isaac.
             result = build_result(scenarios=scenarios, outcomes=outcomes, policy_id=policy_id,
-                                  kitchen_usd=kitchen_usd, g1_usd=g1_usd, blockers=blockers)
+                                  kitchen_usd=kitchen_usd, g1_usd=g1_usd, blockers=blockers,
+                                  physics_articulation_contact_reports=physics_contact_reports)
             (out_dir / "isaac_g1_kitchen_parity_result.json").write_text(json.dumps(result, indent=2))
         finally:
             try:
@@ -1159,14 +1525,26 @@ def main(argv=None) -> int:
                          "intensity to lift the dark sink basin; 0 disables")
     ap.add_argument("--physics-articulation-drive", action="store_true",
                     help="(opt-in, default off) drive the G1 via the physics articulation tensor view. "
-                         "On the current G1 USD this invalidates the tensor view during rendering and "
-                         "crashes the sim at step 1; leave OFF to use the crash-free pure-USD path")
+                         "All root seeds stay on the articulation API; the pure-USD root xform fallback "
+                         "is used only when this is off.")
+    ap.add_argument("--dynamic-standing-contact-steps", type=int, default=0,
+                    help="opt-in PhysX standing/contact settle steps per sampled placement. This "
+                         "forces --articulated and --physics-articulation-drive, enables gravity, "
+                         "and records physics_articulation_standing_contact_reports.json. It is "
+                         "standing/contact evidence, not full dynamic walking.")
     ap.add_argument("--neutral-environment", action="store_true",
                     help="replace the kitchen asset's outdoor-HDRI dome light with a neutral bright "
                          "environment (no cityscape through the windows + lifts shadowed surfaces)")
     ap.add_argument("--kinematic-arm-pose", action="store_true",
                     help="pose the RENDERED arm reaching the workspace target via pure-USD shoulder "
                          "rotation (no physics tensor -> crash-safe); needs --manipulation-reach")
+    ap.add_argument("--collision-approximation", default="boundingCube",
+                    choices=["boundingCube", "convexHull", "convexDecomposition"],
+                    help="mesh collision shape: boundingCube (fast, coarse) vs convexHull (shape-"
+                         "accurate enough to stand centered + close at the sink, still fast)")
+    ap.add_argument("--verify-cam", action="store_true",
+                    help="render a 3rd-person verify_*.png that frames the whole robot at the workspace "
+                         "(proves where it stands vs the egocentric POV)")
     args = ap.parse_args(argv)
 
     manip_look_at = None
@@ -1206,8 +1584,10 @@ def main(argv=None) -> int:
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
         fill_light_intensity=args.fill_light_intensity,
         physics_articulation_drive=args.physics_articulation_drive,
+        dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
         neutral_environment=args.neutral_environment,
-        kinematic_arm_pose=args.kinematic_arm_pose)
+        kinematic_arm_pose=args.kinematic_arm_pose,
+        collision_approximation=args.collision_approximation, verify_cam=args.verify_cam)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))

@@ -114,6 +114,8 @@ if os.environ.get("PARITY_KEEP_OBJECTS",""): cmd += ["--keep-objects", os.enviro
 if os.environ.get("PARITY_NO_PROBE","")=="1": cmd.append("--no-collision-probe")
 if os.environ.get("PARITY_CHEAP_COLLISION","")=="1": cmd.append("--cheap-collision")
 if os.environ.get("PARITY_ARTICULATED","")=="1": cmd.append("--articulated")
+if os.environ.get("PARITY_PHYSICS_ARTICULATION_DRIVE","")=="1": cmd.append("--physics-articulation-drive")
+if os.environ.get("PARITY_DYNAMIC_STANDING_CONTACT_STEPS",""): cmd += ["--dynamic-standing-contact-steps", os.environ["PARITY_DYNAMIC_STANDING_CONTACT_STEPS"]]
 if os.environ.get("PARITY_MANIPULATION_CAM","")=="1": cmd.append("--manipulation-cam")
 if os.environ.get("PARITY_MANIPULATION_LOOK_AT",""): cmd += ["--manipulation-look-at", os.environ["PARITY_MANIPULATION_LOOK_AT"]]
 if os.environ.get("PARITY_RENDER_SUBFRAMES",""): cmd += ["--render-subframes", os.environ["PARITY_RENDER_SUBFRAMES"]]
@@ -121,6 +123,8 @@ if os.environ.get("PARITY_MANIPULATION_REACH","")=="1": cmd.append("--manipulati
 if os.environ.get("PARITY_MANIPULATION_REACH_ARM",""): cmd += ["--manipulation-reach-arm", os.environ["PARITY_MANIPULATION_REACH_ARM"]]
 if os.environ.get("PARITY_FILL_LIGHT_INTENSITY",""): cmd += ["--fill-light-intensity", os.environ["PARITY_FILL_LIGHT_INTENSITY"]]
 if os.environ.get("PARITY_NEUTRAL_ENVIRONMENT","")=="1": cmd.append("--neutral-environment")
+if os.environ.get("PARITY_COLLISION_APPROXIMATION",""): cmd += ["--collision-approximation", os.environ["PARITY_COLLISION_APPROXIMATION"]]
+if os.environ.get("PARITY_VERIFY_CAM","")=="1": cmd.append("--verify-cam")
 if os.environ.get("PARITY_KINEMATIC_ARM_POSE","")=="1": cmd.append("--kinematic-arm-pose")
 mark("runner_starting", cmd=cmd)
 rc=subprocess.call(cmd)
@@ -209,12 +213,16 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       per_scenario_seconds: int = 420, no_collision_probe: bool = False,
                       focus_radius: float = 0.0, keep_objects: str = "", settle_seconds: int = 0,
                       cheap_collision: bool = False, articulated: bool = False,
+                      physics_articulation_drive: bool = False,
+                      dynamic_standing_contact_steps: int = 0,
                       manipulation_cam: bool = False, manipulation_look_at: str = "",
                       render_subframes: int = 0, manipulation_reach: bool = False,
                       manipulation_reach_arm: str = "both",
                       fill_light_intensity: float = 0.0,
                       neutral_environment: bool = False,
-                      kinematic_arm_pose: bool = False) -> RenderLaunchSpec:
+                      kinematic_arm_pose: bool = False,
+                      collision_approximation: str = "",
+                      verify_cam: bool = False) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -236,8 +244,12 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_SETTLE_SECONDS"] = str(settle_seconds)
     if cheap_collision:
         env["PARITY_CHEAP_COLLISION"] = "1"
-    if articulated:
+    if articulated or physics_articulation_drive or dynamic_standing_contact_steps > 0:
         env["PARITY_ARTICULATED"] = "1"
+    if physics_articulation_drive or dynamic_standing_contact_steps > 0:
+        env["PARITY_PHYSICS_ARTICULATION_DRIVE"] = "1"
+    if dynamic_standing_contact_steps > 0:
+        env["PARITY_DYNAMIC_STANDING_CONTACT_STEPS"] = str(int(dynamic_standing_contact_steps))
     if manipulation_cam:
         env["PARITY_MANIPULATION_CAM"] = "1"
     if manipulation_look_at:
@@ -254,6 +266,10 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_NEUTRAL_ENVIRONMENT"] = "1"
     if kinematic_arm_pose:
         env["PARITY_KINEMATIC_ARM_POSE"] = "1"
+    if collision_approximation:
+        env["PARITY_COLLISION_APPROXIMATION"] = str(collision_approximation)
+    if verify_cam:
+        env["PARITY_VERIFY_CAM"] = "1"
     if kitchen_url:
         env["KITCHEN_BUNDLE_URL"] = kitchen_url
     return RenderLaunchSpec(
@@ -352,11 +368,15 @@ def run_isaac_g1_kitchen_parity_job(
     width: int = 1280, height: int = 960, warmup: int = 6, per_scenario_seconds: int = 420,
     no_collision_probe: bool = False, focus_radius: float = 0.0, keep_objects: str = "",
     settle_seconds: int = 0, cheap_collision: bool = False, articulated: bool = False,
+    physics_articulation_drive: bool = False,
+    dynamic_standing_contact_steps: int = 0,
     manipulation_cam: bool = False, manipulation_look_at: str = "", render_subframes: int = 0,
     manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
     fill_light_intensity: float = 0.0,
     neutral_environment: bool = False,
     kinematic_arm_pose: bool = False,
+    collision_approximation: str = "",
+    verify_cam: bool = False,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan."""
     out_dir = Path(out_dir)
@@ -408,15 +428,25 @@ def run_isaac_g1_kitchen_parity_job(
                              no_collision_probe=no_collision_probe, focus_radius=focus_radius,
                              keep_objects=keep_objects, settle_seconds=settle_seconds,
                              cheap_collision=cheap_collision, articulated=articulated,
+                             physics_articulation_drive=physics_articulation_drive,
+                             dynamic_standing_contact_steps=dynamic_standing_contact_steps,
                              manipulation_cam=manipulation_cam, manipulation_look_at=manipulation_look_at,
                              render_subframes=render_subframes, manipulation_reach=manipulation_reach,
                              manipulation_reach_arm=manipulation_reach_arm,
                              fill_light_intensity=fill_light_intensity,
                              neutral_environment=neutral_environment,
-                             kinematic_arm_pose=kinematic_arm_pose)
+                             kinematic_arm_pose=kinematic_arm_pose,
+                             collision_approximation=collision_approximation, verify_cam=verify_cam)
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
-                                        "policy_id": policy_id, "steps": steps}
+                                        "policy_id": policy_id, "steps": steps,
+                                        "physics_articulation_drive": bool(
+                                            physics_articulation_drive
+                                            or dynamic_standing_contact_steps > 0
+                                        ),
+                                        "dynamic_standing_contact_steps": int(
+                                            dynamic_standing_contact_steps
+                                        )}
     if not allow_paid:
         manifest["status"] = "prepared"
         manifest["note"] = f"bundled + staged + launchable on {prov.name}; re-run with allow_paid=True to spend GPU"
@@ -469,6 +499,8 @@ def main(argv=None) -> int:
     ap.add_argument("--image", default=None)
     ap.add_argument("--max-seconds", type=int, default=1500)
     ap.add_argument("--articulated", action="store_true")
+    ap.add_argument("--physics-articulation-drive", action="store_true")
+    ap.add_argument("--dynamic-standing-contact-steps", type=int, default=0)
     ap.add_argument("--cheap-collision", action="store_true")
     ap.add_argument("--settle-seconds", type=int, default=0)
     ap.add_argument("--manipulation-cam", action="store_true",
@@ -487,6 +519,11 @@ def main(argv=None) -> int:
                          "(no cityscape through the windows + lifts shadows)")
     ap.add_argument("--kinematic-arm-pose", action="store_true",
                     help="pose the rendered arm reaching the workspace (pure-USD, crash-safe)")
+    ap.add_argument("--collision-approximation", default="",
+                    choices=["", "boundingCube", "convexHull", "convexDecomposition"],
+                    help="mesh collision shape (convexHull lets the robot stand centered + close)")
+    ap.add_argument("--verify-cam", action="store_true",
+                    help="render a 3rd-person verify_*.png that frames the whole robot at the workspace")
     args = ap.parse_args(argv)
     scenarios = json.loads(Path(args.scenarios).read_text())
     if isinstance(scenarios, dict):
@@ -496,12 +533,15 @@ def main(argv=None) -> int:
         g1_usd=args.g1_usd, policy_id=args.policy, steps=args.steps, provider=args.provider,
         allow_paid=args.allow_paid, cold=args.cold, image=args.image, max_seconds=args.max_seconds,
         articulated=args.articulated, cheap_collision=args.cheap_collision,
+        physics_articulation_drive=args.physics_articulation_drive,
+        dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
         settle_seconds=args.settle_seconds, manipulation_cam=args.manipulation_cam,
         manipulation_look_at=args.manipulation_look_at, render_subframes=args.render_subframes,
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
         fill_light_intensity=args.fill_light_intensity,
         neutral_environment=args.neutral_environment,
-        kinematic_arm_pose=args.kinematic_arm_pose)
+        kinematic_arm_pose=args.kinematic_arm_pose,
+        collision_approximation=args.collision_approximation, verify_cam=args.verify_cam)
     print(json.dumps(m, indent=2, default=str))
     return 0 if m.get("status") in ("completed", "prepared") else 1
 
