@@ -774,6 +774,61 @@ def _resolve_task_target_from_stage(stage, scenario: Mapping[str, Any]) -> dict[
     }
 
 
+def _scene_placement_stand_plan(target_resolution, probe, *, floor_z: float = 0.05):
+    """Place the robot via the tested ``scene_placement.compute_stand_pose`` solver.
+
+    Given a scene_placement-resolved target (center + size), this probes the OPEN side of the
+    target, stands the pelvis on the nearest clear floor at reach distance, and faces the target
+    centroid. It is used instead of ``plan_task_stance`` for scene_placement targets so the robot
+    lands on the open floor IN FRONT of the workspace rather than clipping it (plan_task_stance
+    accepted the first probe candidate, which clipped the counter). Returns ``None`` when the
+    resolution lacks geometry, so the caller can fall back to ``plan_task_stance``.
+    """
+    sel = (target_resolution or {}).get("selected") or {}
+    center = sel.get("center_xyz")
+    size = sel.get("size_xyz")
+    if not center or not size or len(center) != 3 or len(size) != 3:
+        return None
+    bundle_dir = str(Path(__file__).resolve().parent)
+    if bundle_dir not in sys.path:
+        sys.path.insert(0, bundle_dir)
+    try:
+        try:
+            from scene_placement import SceneObject, compute_stand_pose  # worker bundle
+        except Exception:  # noqa: BLE001
+            from blueprint_pipeline.scene_placement import SceneObject, compute_stand_pose  # repo/tests
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "blocked", "blockers": ["scene_placement_unavailable"], "error": repr(exc)}
+    cx, cy, cz = (float(c) for c in center)
+    sx, sy, sz = (abs(float(s)) for s in size)
+    target = SceneObject(
+        id=str(sel.get("target_object_id") or "target"),
+        label=str(sel.get("target_object_label") or ""),
+        bbox_min=(cx - sx / 2.0, cy - sy / 2.0, cz - sz / 2.0),
+        bbox_max=(cx + sx / 2.0, cy + sy / 2.0, cz + sz / 2.0),
+        centroid=(cx, cy, cz),
+        source="usd",
+    )
+    pose = compute_stand_pose(
+        target, probe=probe, pelvis_height=ROBOT_PELVIS_HEIGHT_M, floor_z=floor_z,
+        standing_distance=0.55, include_diagonals=True,
+    )
+    return {
+        "schema_version": TASK_STANCE_SCHEMA_VERSION,
+        # compute_stand_pose always yields a non-clipping best-effort pose (closest clear spot, or
+        # the farthest probed spot when boxed in), so this is always usable placement.
+        "status": "accepted",
+        "source": "scene_placement_compute_stand_pose",
+        "accepted_pose": [round(float(v), 6) for v in pose.position],
+        "accepted_yaw": round(float(pose.yaw), 6),
+        "task_target_xyz": [round(cx, 6), round(cy, 6), round(cz, 6)],
+        "stand_clear": bool(pose.clear),
+        "standoff_m": round(float(pose.standoff_m), 6),
+        "candidates": [],
+        "notes": pose.notes,
+    }
+
+
 def _plan_task_stance_for_stage(
     *,
     stage,
@@ -808,6 +863,17 @@ def _plan_task_stance_for_stage(
                 "without it the runner must not claim the robot is standing clear."
             ),
         }
+    # For a scene_placement-resolved target, place via the tested compute_stand_pose solver
+    # (probe the open side -> stand on clear floor at reach, facing the centroid). This replaces
+    # plan_task_stance's first-clear-candidate accept, which clipped the counter.
+    if target_resolution and str(target_resolution.get("source") or "").startswith("scene_placement"):
+        sp_plan = _scene_placement_stand_plan(
+            target_resolution, probe,
+            floor_z=float(stance_scenario.get("floor_z_hint", 0.05) or 0.05),
+        )
+        if sp_plan is not None and sp_plan.get("status") == "accepted":
+            sp_plan["target_resolution"] = target_resolution
+            return sp_plan
     stance_plan = plan_task_stance(
         scenario=stance_scenario,
         manipulation_look_at=manipulation_look_at,

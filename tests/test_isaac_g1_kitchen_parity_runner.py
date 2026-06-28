@@ -544,3 +544,32 @@ def test_resolve_task_target_via_scene_placement_blocks_on_no_match(monkeypatch)
 def test_resolve_task_target_via_scene_placement_returns_none_without_task() -> None:
     # No task description at all -> nothing to resolve; defer to the id-driven path (None).
     assert M._resolve_task_target_via_scene_placement(stage=object(), scenario={}) is None
+
+
+def test_scene_placement_stand_plan_stands_in_front_on_clear_floor() -> None:
+    # A sink resolved at (2.28, 1.33, 1.0). The counter + wall occupy y >= 1.0; the open floor is
+    # y < 1.0. compute_stand_pose must place the pelvis IN FRONT (smaller y), on clear floor, facing
+    # the sink — not clipping the counter (the bug the hardening fixes).
+    tr = {"status": "resolved", "source": "scene_placement_task_label",
+          "selected": {"target_object_id": "sink", "target_object_label": "sink",
+                       "center_xyz": [2.28, 1.33, 1.0], "size_xyz": [0.4, 0.4, 0.3]}}
+
+    def probe(pose, yaw):
+        return 0 if pose[1] < 1.0 else 1   # clear only on the open (-y) floor in front
+
+    plan = M._scene_placement_stand_plan(tr, probe, floor_z=0.05)
+    assert plan["status"] == "accepted"
+    assert plan["source"] == "scene_placement_compute_stand_pose"
+    ap = plan["accepted_pose"]
+    assert ap[1] < 1.33                        # stands IN FRONT of the sink (not behind/clipping)
+    assert ap[1] < 1.0                          # on the probed clear floor
+    assert ap[2] == pytest.approx(0.84)        # floor_z(0.05) + pelvis(0.79)
+    assert math.sin(plan["accepted_yaw"]) > 0.5  # faces +y, toward the sink
+    assert plan["stand_clear"] is True
+    assert plan["task_target_xyz"] == [2.28, 1.33, 1.0]
+
+
+def test_scene_placement_stand_plan_none_without_geometry() -> None:
+    # A resolution lacking center/size -> None, so the caller falls back to plan_task_stance.
+    assert M._scene_placement_stand_plan({"selected": {"center_xyz": [1, 2, 3]}}, lambda p, y: 0) is None
+    assert M._scene_placement_stand_plan(None, lambda p, y: 0) is None
