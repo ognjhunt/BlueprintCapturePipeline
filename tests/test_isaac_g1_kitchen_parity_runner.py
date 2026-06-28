@@ -25,6 +25,15 @@ def test_runner_imports_without_isaacsim() -> None:
     assert hasattr(M, "run_scenarios") and hasattr(M, "parse_scenarios")
 
 
+def test_runner_writes_result_before_simulation_app_close() -> None:
+    source = _RUNNER.read_text()
+
+    preclose_marker = '"isaac_g1_kitchen_parity_result.json").write_text'
+    close_marker = "sim.close()"
+    assert preclose_marker in source
+    assert source.index(preclose_marker) < source.index(close_marker)
+
+
 def test_manipulation_cam_is_egocentric_vs_follow_chase() -> None:
     root, yaw = (1.75, 1.25, 0.79), 0.0  # robot at the sink, facing +x
     me, mt = M.manipulation_cam_pose(root, yaw)
@@ -136,6 +145,23 @@ def test_arm_reach_skeleton_can_pose_both_arms_for_first_frame() -> None:
     assert full["right_hand_palm_link"] != rest[3][1]
 
 
+def test_skeleton_world_for_frame_falls_back_when_articulation_has_no_links() -> None:
+    offsets = [
+        ("torso_link", (0.0, 0.0, 0.3)),
+        ("right_hand_palm_link", (0.2, 0.1, 0.0)),
+    ]
+    skel = M.skeleton_world_for_frame(
+        art_ctx={"art": object(), "link_names": []},
+        rest_offsets=offsets,
+        root_pose=(1.0, 2.0, 0.7),
+        yaw=0.0,
+    )
+    assert skel == [
+        ("torso_link", (1.0, 2.0, 1.0)),
+        ("right_hand_palm_link", (1.2, 2.1, 0.7)),
+    ]
+
+
 def test_camera_aperture_widens_fov_vs_default_telephoto() -> None:
     # the POV camera was rendering at USD's ~17deg-vertical default (focal 50 / vap 15.29),
     # which zooms into the dark basin; we widen it to the projection FOV
@@ -146,6 +172,23 @@ def test_camera_aperture_widens_fov_vs_default_telephoto() -> None:
     # default telephoto would be ~17deg vertical -> the new FOV is much wider (less zoomed)
     default_vfov = 2 * math.degrees(math.atan(15.2908 / (2 * 50.0)))
     assert got_vfov > default_vfov + 25
+
+
+def test_arm_reach_rotation_swings_rest_bone_toward_target() -> None:
+    # shoulder at origin; rest upper arm hangs down (-z); faucet is forward (+y), level
+    shoulder = (0.0, 0.0, 0.0)
+    rest_elbow = (0.0, 0.0, -0.3)          # arm hanging straight down
+    target = (0.0, 0.6, 0.0)                # reach forward (+y)
+    axis, angle = M.arm_reach_rotation(shoulder, rest_elbow, target, 1.0)
+    # rest dir = -z, want dir = +y -> 90 deg; axis perpendicular to both (= +/-x)
+    assert angle == pytest.approx(math.pi / 2, abs=1e-6)
+    assert abs(axis[0]) == pytest.approx(1.0, abs=1e-6) and abs(axis[1]) < 1e-9 and abs(axis[2]) < 1e-9
+    # reach_frac scales the swing
+    _, half = M.arm_reach_rotation(shoulder, rest_elbow, target, 0.5)
+    assert half == pytest.approx(math.pi / 4, abs=1e-6)
+    _, zero = M.arm_reach_rotation(shoulder, rest_elbow, target, 0.0)
+    assert zero == pytest.approx(0.0, abs=1e-9)
+    assert math.isclose(math.sqrt(sum(c * c for c in axis)), 1.0, abs_tol=1e-9)  # unit axis
 
 
 def test_parse_scenarios_normalizes_to_pelvis_height_route() -> None:

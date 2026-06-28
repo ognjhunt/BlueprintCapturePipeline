@@ -557,6 +557,89 @@ def compute_arm_reach_skeleton(skeleton, target, reach_frac, *, arm: str = "righ
     return out
 
 
+def arm_reach_rotation(shoulder, rest_elbow, target, reach_frac):
+    """Axis (unit xyz) + angle (radians) of the kinematic SHOULDER rotation that swings the rest
+    upper-arm bone (shoulder->rest_elbow) toward the target (shoulder->target), scaled by reach_frac.
+
+    Axis-agnostic: it derives the rotation from the rest bone and the desired bone direction, so there
+    is NO hardcoded joint axis to inspect on the G1 USD. Applied about the shoulder pivot it points the
+    upper arm at the object; the elbow/wrist/hand follow rigidly. Pure geometry, GPU-independent."""
+    def sub(a, b):
+        return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+    def dot(a, b):
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    def cross(a, b):
+        return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+    def length(a):
+        return math.sqrt(dot(a, a))
+
+    def norm(a):
+        L = length(a) or 1e-9
+        return (a[0] / L, a[1] / L, a[2] / L)
+
+    rest = norm(sub(rest_elbow, shoulder))
+    want = norm(sub(target, shoulder))
+    d = max(-1.0, min(1.0, dot(rest, want)))
+    angle = math.acos(d) * max(0.0, min(1.0, float(reach_frac)))
+    axis = cross(rest, want)
+    if length(axis) < 1e-6:
+        axis = (0.0, 0.0, 1.0)  # rest ~parallel/antiparallel to want -> arbitrary axis (angle ~0/pi)
+    return norm(axis), angle
+
+
+def _find_arm_link(links: dict, *keys: str):
+    """First Xformable link prim whose name contains ALL keys (case-insensitive)."""
+    for name, prim in links.items():
+        low = name.lower()
+        if all(k.lower() in low for k in keys):
+            return prim
+    return None
+
+
+def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right",
+                            reach_frac: float = 1.0) -> int:
+    """Kinematically pose the G1 arm(s) so the upper arm points at ``target`` — pure USD (rotate the
+    shoulder link about its pivot, children follow), NO physics tensor view, so it cannot trigger the
+    crash the articulation drive does. Returns the number of arms posed. GPU/USD only."""
+    from pxr import Usd, UsdGeom, Gf  # type: ignore
+    sides = ("left", "right") if arm == "both" else (arm,)
+    root = stage.GetPrimAtPath(prim_path)
+    links = {p.GetName(): p for p in Usd.PrimRange(root)
+             if p.IsA(UsdGeom.Xformable) and "link" in p.GetName().lower()}
+    posed = 0
+    for side in sides:
+        shoulder = (_find_arm_link(links, side, "shoulder", "pitch")
+                    or _find_arm_link(links, side, "shoulder"))
+        elbow = _find_arm_link(links, side, "elbow")
+        if shoulder is None or elbow is None:
+            continue
+        xc = UsdGeom.XformCache()  # fresh cache per arm (previous arm's mutation invalidated it)
+        sh_w = xc.GetLocalToWorldTransform(shoulder)
+        el_w = xc.GetLocalToWorldTransform(elbow)
+        sp = sh_w.ExtractTranslation()
+        ep = el_w.ExtractTranslation()
+        axis, angle = arm_reach_rotation((sp[0], sp[1], sp[2]), (ep[0], ep[1], ep[2]),
+                                         (float(target[0]), float(target[1]), float(target[2])),
+                                         reach_frac)
+        if angle < 1e-4:
+            continue
+        rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(*axis), math.degrees(angle)))
+        pivot = Gf.Vec3d(sp[0], sp[1], sp[2])
+        # rotate the shoulder's world transform about the shoulder pivot (USD row-vector convention)
+        m_pivot = Gf.Matrix4d().SetTranslate(-pivot) * rot * Gf.Matrix4d().SetTranslate(pivot)
+        new_world = sh_w * m_pivot
+        parent_world = xc.GetLocalToWorldTransform(shoulder.GetParent())
+        new_local = new_world * parent_world.GetInverse()
+        xf = UsdGeom.Xformable(shoulder)
+        xf.ClearXformOpOrder()
+        xf.AddTransformOp().Set(new_local)
+        posed += 1
+    return posed
+
+
 def _setup_articulated_g1(prim_path: str):
     """Create a physics SimulationContext (gravity OFF, so the kinematic walk pose holds without the
     G1 collapsing), play it, and initialize the G1 articulation for joint driving + link readback.
@@ -771,7 +854,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
                   fill_light_intensity: float = 0.0,
                   physics_articulation_drive: bool = False,
-                  neutral_environment: bool = False) -> dict:
+                  neutral_environment: bool = False,
+                  kinematic_arm_pose: bool = False) -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
     flushed progress + a per-scenario wall-clock cap so it cannot hang silently."""
@@ -930,6 +1014,17 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     )
                 else:
                     _place_root(stage, binding["prim_path"], decision.root_pose, decision.yaw)
+                    # Show the arm reaching in the RENDERED frame (pure USD, no physics tensor -> no
+                    # crash). The shoulder rotates so the upper arm points at the workspace target.
+                    if (kinematic_arm_pose and manipulation_reach
+                            and manipulation_look_at is not None):
+                        arm_frac = 1.0 if manipulation_cam else alpha
+                        try:
+                            _pose_arm_kinematic_usd(stage, binding["prim_path"], manipulation_look_at,
+                                                    arm=manipulation_reach_arm, reach_frac=arm_frac)
+                        except Exception as exc:  # noqa: BLE001 - pose is best-effort, never blocks frames
+                            if step == 0:
+                                _log(f"kinematic arm pose skipped ({exc!r})")
                 rec = policy_mod.action_record(
                     decision=decision, step=step, sim_time_s=step / float(fps), target=sc["target"],
                     scenario_eval_run_id=sc.get("scenario_eval_run_id"))
@@ -1069,6 +1164,9 @@ def main(argv=None) -> int:
     ap.add_argument("--neutral-environment", action="store_true",
                     help="replace the kitchen asset's outdoor-HDRI dome light with a neutral bright "
                          "environment (no cityscape through the windows + lifts shadowed surfaces)")
+    ap.add_argument("--kinematic-arm-pose", action="store_true",
+                    help="pose the RENDERED arm reaching the workspace target via pure-USD shoulder "
+                         "rotation (no physics tensor -> crash-safe); needs --manipulation-reach")
     args = ap.parse_args(argv)
 
     manip_look_at = None
@@ -1108,7 +1206,8 @@ def main(argv=None) -> int:
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
         fill_light_intensity=args.fill_light_intensity,
         physics_articulation_drive=args.physics_articulation_drive,
-        neutral_environment=args.neutral_environment)
+        neutral_environment=args.neutral_environment,
+        kinematic_arm_pose=args.kinematic_arm_pose)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))

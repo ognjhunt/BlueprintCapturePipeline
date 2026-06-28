@@ -121,6 +121,7 @@ if os.environ.get("PARITY_MANIPULATION_REACH","")=="1": cmd.append("--manipulati
 if os.environ.get("PARITY_MANIPULATION_REACH_ARM",""): cmd += ["--manipulation-reach-arm", os.environ["PARITY_MANIPULATION_REACH_ARM"]]
 if os.environ.get("PARITY_FILL_LIGHT_INTENSITY",""): cmd += ["--fill-light-intensity", os.environ["PARITY_FILL_LIGHT_INTENSITY"]]
 if os.environ.get("PARITY_NEUTRAL_ENVIRONMENT","")=="1": cmd.append("--neutral-environment")
+if os.environ.get("PARITY_KINEMATIC_ARM_POSE","")=="1": cmd.append("--kinematic-arm-pose")
 mark("runner_starting", cmd=cmd)
 rc=subprocess.call(cmd)
 mark("runner_done", rc=rc)
@@ -212,7 +213,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       render_subframes: int = 0, manipulation_reach: bool = False,
                       manipulation_reach_arm: str = "both",
                       fill_light_intensity: float = 0.0,
-                      neutral_environment: bool = False) -> RenderLaunchSpec:
+                      neutral_environment: bool = False,
+                      kinematic_arm_pose: bool = False) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -250,6 +252,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_FILL_LIGHT_INTENSITY"] = str(fill_light_intensity)
     if neutral_environment:
         env["PARITY_NEUTRAL_ENVIRONMENT"] = "1"
+    if kinematic_arm_pose:
+        env["PARITY_KINEMATIC_ARM_POSE"] = "1"
     if kitchen_url:
         env["KITCHEN_BUNDLE_URL"] = kitchen_url
     return RenderLaunchSpec(
@@ -352,6 +356,7 @@ def run_isaac_g1_kitchen_parity_job(
     manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
     fill_light_intensity: float = 0.0,
     neutral_environment: bool = False,
+    kinematic_arm_pose: bool = False,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan."""
     out_dir = Path(out_dir)
@@ -407,7 +412,8 @@ def run_isaac_g1_kitchen_parity_job(
                              render_subframes=render_subframes, manipulation_reach=manipulation_reach,
                              manipulation_reach_arm=manipulation_reach_arm,
                              fill_light_intensity=fill_light_intensity,
-                             neutral_environment=neutral_environment)
+                             neutral_environment=neutral_environment,
+                             kinematic_arm_pose=kinematic_arm_pose)
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
                                         "policy_id": policy_id, "steps": steps}
@@ -479,6 +485,8 @@ def main(argv=None) -> int:
     ap.add_argument("--neutral-environment", action="store_true",
                     help="replace the kitchen's outdoor-HDRI dome with a neutral environment "
                          "(no cityscape through the windows + lifts shadows)")
+    ap.add_argument("--kinematic-arm-pose", action="store_true",
+                    help="pose the rendered arm reaching the workspace (pure-USD, crash-safe)")
     args = ap.parse_args(argv)
     scenarios = json.loads(Path(args.scenarios).read_text())
     if isinstance(scenarios, dict):
@@ -492,7 +500,8 @@ def main(argv=None) -> int:
         manipulation_look_at=args.manipulation_look_at, render_subframes=args.render_subframes,
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
         fill_light_intensity=args.fill_light_intensity,
-        neutral_environment=args.neutral_environment)
+        neutral_environment=args.neutral_environment,
+        kinematic_arm_pose=args.kinematic_arm_pose)
     print(json.dumps(m, indent=2, default=str))
     return 0 if m.get("status") in ("completed", "prepared") else 1
 
