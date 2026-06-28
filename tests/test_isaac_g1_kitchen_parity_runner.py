@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -81,7 +83,10 @@ def test_arm_reach_skeleton_moves_hand_toward_faucet_and_into_view() -> None:
     # at full reach the hand is much closer to the faucet than at rest
     full = dict(M.compute_arm_reach_skeleton(rest, faucet, 1.0))
     import math
-    d = lambda a, b: math.dist(a, b)
+
+    def d(a, b):
+        return math.dist(a, b)
+
     assert d(full["right_hand_palm_link"], faucet) < d(rest_hand, faucet)
     # the hand advances toward the faucet in +y (into the camera's forward view)
     assert full["right_hand_palm_link"][1] > rest_hand[1]
@@ -194,7 +199,8 @@ def test_arm_reach_rotation_swings_rest_bone_toward_target() -> None:
 def test_parse_scenarios_normalizes_to_pelvis_height_route() -> None:
     req = {"scenarios": [
         {"scenario_id": "s1", "spawn_position_xyz": [-4.25, -3.35, 0.05],
-         "target_position_xyz": [1.75, 1.25, 0.05], "description": "to sink"},
+         "target_position_xyz": [1.75, 1.25, 0.05], "description": "to sink",
+         "target_object_id": "faucet_handle"},
         {"id": "s2", "route_points": [[0, 0, 0.1], [1, 1, 0.1], [2, 2, 0.1]]},
         {"scenario_id": "bad"},  # no start/target -> skipped
     ]}
@@ -204,6 +210,120 @@ def test_parse_scenarios_normalizes_to_pelvis_height_route() -> None:
     assert all(p[2] == M.ROBOT_PELVIS_HEIGHT_M for p in sc[0]["route_points"])
     assert sc[0]["start"][2] == M.ROBOT_PELVIS_HEIGHT_M
     assert len(sc[1]["route_points"]) == 3
+    assert sc[0]["raw_target_position_xyz"] == [1.75, 1.25, 0.05]
+    assert sc[0]["target_object_id"] == "faucet_handle"
+
+
+def test_task_stance_planner_uses_target_as_thing_to_face_not_pelvis() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [1.0],
+        "floor_z_hint": 0.05,
+    }
+    plan = M.plan_task_stance(scenario=scenario, probe_collision=lambda pose, yaw: 0)
+    assert plan["status"] == "accepted"
+    assert plan["accepted_pose"][:2] == [-1.0, 0.0]
+    assert plan["accepted_pose"][2] == pytest.approx(M.ROBOT_PELVIS_HEIGHT_M + 0.05)
+    assert plan["accepted_pose"][:2] != plan["task_target_xyz"][:2]
+    assert plan["accepted_yaw"] == pytest.approx(0.0)
+    assert plan["candidates"][0]["scene_collision_contact_count"] == 0
+
+
+def test_task_stance_planner_samples_around_target_until_collision_free() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [1.0],
+    }
+
+    def probe(pose, yaw):
+        return 1 if pose[0] < -0.99 and abs(pose[1]) < 1e-6 else 0
+
+    plan = M.plan_task_stance(scenario=scenario, probe_collision=probe)
+    assert plan["status"] == "accepted"
+    assert plan["selected_candidate_index"] == 1
+    assert plan["candidates"][0]["scene_collision_contact_count"] == 1
+    assert plan["candidates"][1]["scene_collision_contact_count"] == 0
+    assert math.dist(plan["accepted_pose"][:2], plan["task_target_xyz"][:2]) == pytest.approx(1.0)
+
+
+def test_task_stance_planner_fails_closed_when_all_candidates_collide() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [0.8, 1.0],
+    }
+    plan = M.plan_task_stance(scenario=scenario, probe_collision=lambda pose, yaw: 2)
+    assert plan["status"] == "blocked"
+    assert plan["blockers"] == ["no_collision_free_task_stance_candidate"]
+    assert all(c["scene_collision_contact_count"] == 2 for c in plan["candidates"])
+
+
+def test_usd_task_target_resolver_prefers_object_root_over_descendant(monkeypatch) -> None:
+    class FakeBox:
+        def __init__(self, center, size):
+            self._center = center
+            self._size = size
+
+        def IsEmpty(self):
+            return False
+
+        def GetCenter(self):
+            return self._center
+
+        def GetSize(self):
+            return self._size
+
+    class FakeBound:
+        def __init__(self, box):
+            self._box = box
+
+        def ComputeAlignedBox(self):
+            return self._box
+
+    class FakePrim:
+        def __init__(self, path, name, center, size):
+            self._path = path
+            self._name = name
+            self.box = FakeBox(center, size)
+
+        def GetPath(self):
+            return self._path
+
+        def GetName(self):
+            return self._name
+
+    root = FakePrim("/World/Sink054", "Sink054", [2.0, 0.5, 0.9], [1.2, 0.8, 1.0])
+    child = FakePrim("/World/Sink054/tiny_mesh", "tiny_mesh", [9.0, 9.0, 9.0], [0.1, 0.1, 0.1])
+
+    class FakeStage:
+        def Traverse(self):
+            return [child, root]
+
+    class FakeBBoxCache:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ComputeWorldBound(self, prim):
+            return FakeBound(prim.box)
+
+    fake_usd = types.SimpleNamespace(TimeCode=types.SimpleNamespace(Default=lambda: "default"))
+    fake_usd_geom = types.SimpleNamespace(
+        Tokens=types.SimpleNamespace(default_="default", render="render", proxy="proxy"),
+        BBoxCache=FakeBBoxCache,
+    )
+    fake_pxr = types.SimpleNamespace(Usd=fake_usd, UsdGeom=fake_usd_geom)
+    monkeypatch.setitem(sys.modules, "pxr", fake_pxr)
+    monkeypatch.setitem(sys.modules, "pxr.Usd", fake_usd)
+    monkeypatch.setitem(sys.modules, "pxr.UsdGeom", fake_usd_geom)
+
+    result = M._resolve_task_target_from_stage(FakeStage(), {"target_object_id": "Sink054"})
+
+    assert result["status"] == "resolved"
+    assert result["selected"]["prim_path"] == "/World/Sink054"
+    assert result["selected"]["center_xyz"] == [2.0, 0.5, 0.9]
+    assert result["selected"]["match_kind"] == "exact_prim_name_or_path_segment"
 
 
 def test_assemble_collision_summary_counts() -> None:
@@ -243,6 +363,72 @@ def test_build_result_aggregates_and_labels_truthfully() -> None:
     assert res["rendered_by_isaac_rtx"] is True
     assert "not dynamic locomotion" in res["proof_boundary"].lower()
     assert res["scenarios"][0]["scenario_id"] == "a" and res["scenarios"][0]["task_success"] is True
+
+
+def test_build_result_keeps_dynamic_standing_contacts_bounded() -> None:
+    res = M.build_result(
+        scenarios=[{"scenario_id": "sink_stand"}],
+        outcomes=[{"task_success": True}],
+        policy_id="blueprint_default_walk_to_target_smoke_policy",
+        kitchen_usd="k.usd",
+        g1_usd="g1.usd",
+        blockers=[],
+        physics_articulation_contact_reports=[
+            {
+                "scenario_id": "sink_stand",
+                "status": "completed",
+                "contact_event_count": 2,
+                "support_contact_event_count": 1,
+                "root_pose_teleport_during_physics_settle": False,
+            }
+        ],
+    )
+    summary = res["physics_articulation_standing_contact_summary"]
+    assert summary["completed_scenario_count"] == 1
+    assert summary["all_have_support_contact_evidence"] is True
+    assert summary["root_pose_teleport_during_physics_settle"] is False
+    assert "standing/contact settle" in res["proof_boundary"]
+    assert "not full dynamic locomotion" in res["proof_boundary"].lower()
+    assert "not deployment readiness" in res["proof_boundary"].lower()
+
+
+def test_summarize_physics_articulation_contact_reports_fails_closed_on_missing_support() -> None:
+    summary = M.summarize_physics_articulation_contact_reports([
+        {
+            "status": "completed",
+            "contact_event_count": 1,
+            "support_contact_event_count": 0,
+            "root_pose_teleport_during_physics_settle": False,
+        }
+    ])
+    assert summary["all_completed"] is True
+    assert summary["all_have_support_contact_evidence"] is False
+    assert "not prove full dynamic locomotion" in summary["claim_boundary"]
+
+
+def test_build_result_does_not_claim_support_contact_when_none_observed() -> None:
+    res = M.build_result(
+        scenarios=[{"scenario_id": "floor_stand"}],
+        outcomes=[{"task_success": False}],
+        policy_id="blueprint_default_walk_to_target_smoke_policy",
+        kitchen_usd="k.usd",
+        g1_usd="g1.usd",
+        blockers=[],
+        physics_articulation_contact_reports=[
+            {
+                "scenario_id": "floor_stand",
+                "status": "completed",
+                "contact_event_count": 0,
+                "support_contact_event_count": 0,
+                "root_pose_teleport_during_physics_settle": False,
+            }
+        ],
+    )
+    summary = res["physics_articulation_standing_contact_summary"]
+    assert summary["all_completed"] is True
+    assert summary["all_have_support_contact_evidence"] is False
+    assert "support-contact events were not observed" in res["proof_boundary"]
+    assert "does not prove support contact" in res["proof_boundary"]
 
 
 def test_build_result_blocks_on_blockers() -> None:
@@ -303,3 +489,58 @@ def test_follow_cam_is_behind_and_above_robot() -> None:
     assert eye[0] < 0.0           # behind the robot along -X
     assert eye[2] > 0.79          # above the root
     assert target[0] > 0.0        # looking ahead toward +X
+
+
+def _fake_scene_index(monkeypatch, objects):
+    """Patch scene_placement's USD index to enumerate a preset object list (no pxr/GPU)."""
+    sp = importlib.import_module("blueprint_pipeline.scene_placement")
+
+    class _FakeIndex:
+        def __init__(self, **kw):  # accepts stage=... / usd_path=...
+            pass
+
+        def objects(self):
+            return list(objects)
+
+    monkeypatch.setattr(sp, "UsdSceneSpatialIndex", _FakeIndex)
+    return sp
+
+
+def test_resolve_task_target_via_scene_placement_maps_task_to_object(monkeypatch) -> None:
+    # No object id, no coords — just a natural-language task. The runner enumerates the scene via
+    # scene_placement and maps "turn on the faucet" onto the faucet object's center. No hardcoding.
+    sp = importlib.import_module("blueprint_pipeline.scene_placement")
+    SceneObject = sp.SceneObject
+    objs = [
+        SceneObject(id="faucet_1", label="faucet", bbox_min=(2.4, 1.0, 0.9),
+                    bbox_max=(2.6, 1.3, 1.1), centroid=(2.5, 1.15, 1.0), source="usd"),
+        SceneObject(id="stove_1", label="stove", bbox_min=(0.0, 0.0, 0.0),
+                    bbox_max=(0.6, 0.6, 0.9), centroid=(0.3, 0.3, 0.45), source="usd"),
+    ]
+    _fake_scene_index(monkeypatch, objs)
+
+    res = M._resolve_task_target_via_scene_placement(
+        stage=object(), scenario={"description": "Stand at the sink and turn on the faucet."}
+    )
+    assert res is not None and res["status"] == "resolved"
+    assert res["source"] == "scene_placement_task_label"
+    assert res["selected"]["target_object_id"] == "faucet_1"      # task -> faucet, not stove
+    assert res["selected"]["center_xyz"] == [2.5, 1.15, 1.0]      # dynamic center from the scene
+
+
+def test_resolve_task_target_via_scene_placement_blocks_on_no_match(monkeypatch) -> None:
+    sp = importlib.import_module("blueprint_pipeline.scene_placement")
+    SceneObject = sp.SceneObject
+    objs = [SceneObject(id="rug_1", label="rug", bbox_min=(0, 0, 0),
+                        bbox_max=(1, 1, 0.1), centroid=(0.5, 0.5, 0.05), source="usd")]
+    _fake_scene_index(monkeypatch, objs)
+    res = M._resolve_task_target_via_scene_placement(
+        stage=object(), scenario={"task": "turn on the faucet"}
+    )
+    assert res is not None and res["status"] == "blocked"
+    assert "scene_placement_no_task_match" in res["blockers"]
+
+
+def test_resolve_task_target_via_scene_placement_returns_none_without_task() -> None:
+    # No task description at all -> nothing to resolve; defer to the id-driven path (None).
+    assert M._resolve_task_target_via_scene_placement(stage=object(), scenario={}) is None

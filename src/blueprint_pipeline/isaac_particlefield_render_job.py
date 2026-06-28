@@ -81,6 +81,10 @@ cmd=["/isaac-sim/python.sh", BUNDLE+"/run_isaac_splat_nurec_render.py",
 mark("runner_starting", cmd=cmd)
 rc=subprocess.call(cmd)
 mark("runner_done", rc=rc)
+# Keep the container process alive after runner completion so RunPod does not restart it and
+# clobber the final output object before the parent collector observes runner_done.
+while True:
+    time.sleep(30); putout()
 '''
 
 
@@ -270,6 +274,21 @@ def stop_pod(pod_id: str) -> dict:
     return get_render_provider("runpod").stop(pod_id)
 
 
+def _read_json_file(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _runner_result_from_dir(out_dir: Path) -> tuple[dict, str | None]:
+    for name in ("isaac_runtime_result.json", "isaac_g1_kitchen_parity_result.json"):
+        payload = _read_json_file(out_dir / name)
+        if payload:
+            return payload, name
+    return {}, None
+
+
 def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provider=None,
                       max_seconds: int = 1200, poll: int = 25) -> dict:
     """Poll the heartbeat-uploaded output (provider-neutral signed GET url), then stop the
@@ -280,6 +299,9 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
     get_url = (job_dir / "provider_output_get_url.txt").read_text().strip()
     t0 = time.time()
     last = {}
+    last_source = None
+    last_boot = {}
+    last_console_tail = ""
     done = False
     while time.time() - t0 < max_seconds:
         time.sleep(poll)
@@ -288,15 +310,16 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             zipfile.ZipFile(io.BytesIO(data)).extractall(out_dir)
         except Exception:  # noqa: BLE001
             continue
-        try:
-            last = json.loads((out_dir / "isaac_runtime_result.json").read_text())
-        except Exception:  # noqa: BLE001
-            last = {}
-        boot = {}
-        try:
-            boot = json.loads((out_dir / "bootstrap.json").read_text())
-        except Exception:  # noqa: BLE001
-            pass
+        last, last_source = _runner_result_from_dir(out_dir)
+        boot = _read_json_file(out_dir / "bootstrap.json")
+        if boot:
+            last_boot = boot
+        console = out_dir / "runner_console.log"
+        if console.is_file():
+            try:
+                last_console_tail = console.read_text(encoding="utf-8", errors="replace")[-4000:]
+            except Exception:  # noqa: BLE001
+                pass
         if last.get("status") in ("completed", "blocked") or boot.get("phase") == "runner_done":
             done = True
             break
@@ -309,9 +332,14 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             zipfile.ZipFile(io.BytesIO(data)).extractall(out_dir)
         except Exception:  # noqa: BLE001
             pass
+        refreshed, refreshed_source = _runner_result_from_dir(out_dir)
+        if refreshed:
+            last, last_source = refreshed, refreshed_source
     teardown = provider.terminate(instance_id)  # DELETE the pod (stopped pods still bill for disk)
     return {"status": "completed" if (done and last.get("status") == "completed") else "blocked",
-            "runner_result": last, "teardown": teardown, "elapsed_seconds": round(time.time() - t0, 1)}
+            "runner_result": last, "runner_result_source": last_source,
+            "last_bootstrap": last_boot, "runner_console_tail": last_console_tail,
+            "teardown": teardown, "elapsed_seconds": round(time.time() - t0, 1)}
 
 
 def _launch_shape_summary(provider_name: str, request: dict) -> dict:

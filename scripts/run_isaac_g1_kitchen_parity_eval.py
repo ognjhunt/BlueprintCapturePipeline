@@ -47,6 +47,22 @@ RESULT_SCHEMA_VERSION = "isaac_g1_kitchen_parity_result.v1"
 # robot footprint half-extent (m) for the PhysX overlap probe (approx G1 standing bbox)
 ROBOT_FOOTPRINT_HALF_EXTENT = (0.28, 0.28, 0.62)
 ROBOT_PELVIS_HEIGHT_M = 0.79
+TASK_STANCE_SCHEMA_VERSION = "task_stance_plan.v1"
+TASK_STANCE_TARGET_KEYS = (
+    "task_target_position_xyz",
+    "manipulation_target_position_xyz",
+    "target_object_position_xyz",
+    "look_at_position_xyz",
+)
+TASK_STANCE_FALLBACK_TARGET_KEYS = ("raw_target_position_xyz", "target")
+TASK_STANCE_TARGET_OBJECT_KEYS = ("target_object_id", "task_target_object_id", "object_id")
+TASK_STANCE_APPROACH_KEYS = (
+    "approach_position_xyz",
+    "robot_start_position_xyz",
+    "raw_spawn_position_xyz",
+    "start",
+)
+TASK_STANCE_ANGLE_OFFSETS_DEG = (0, 15, -15, 30, -30, 45, -45, 60, -60, 90, -90, 120, -120, 180)
 MANIPULATION_READY_ARM_SELECTIONS = ("right", "left", "both")
 MANIPULATION_READY_ARM_JOINT_DELTAS = {
     "left": {
@@ -85,6 +101,8 @@ def parse_scenarios(request: Mapping[str, Any]) -> list[dict]:
         target = raw.get("target_position_xyz") or raw.get("target") or (route[-1] if route else None)
         if start is None or target is None:
             continue
+        raw_start = [float(c) for c in start]
+        raw_target = [float(c) for c in target]
         start = [float(c) for c in start]
         target = [float(c) for c in target]
         if not route:
@@ -99,8 +117,203 @@ def parse_scenarios(request: Mapping[str, Any]) -> list[dict]:
             "target": [target[0], target[1], ROBOT_PELVIS_HEIGHT_M],
             "instruction": str(raw.get("instruction") or raw.get("description") or ""),
             "scenario_eval_run_id": raw.get("scenario_eval_run_id"),
+            "raw_spawn_position_xyz": raw_start,
+            "raw_target_position_xyz": raw_target,
+            "floor_z_hint": float(raw.get("floor_z_hint", raw_start[2] if len(raw_start) > 2 else 0.0)),
         })
+        for key in (
+            "task_target_position_xyz",
+            "manipulation_target_position_xyz",
+            "target_object_position_xyz",
+            "look_at_position_xyz",
+            "approach_position_xyz",
+            "robot_start_position_xyz",
+            "stance_distance_candidates_m",
+            "preferred_stance_distance_m",
+            "min_stance_distance_m",
+            "max_stance_distance_m",
+            "target_object_id",
+            "task_target_object_id",
+            "object_id",
+        ):
+            if key in raw:
+                out[-1][key] = raw[key]
     return out
+
+
+def _optional_xyz(value) -> tuple[float, float, float] | None:
+    if value is None:
+        return None
+    try:
+        vals = [float(v) for v in value]
+    except Exception:  # noqa: BLE001
+        return None
+    if len(vals) < 2:
+        return None
+    if len(vals) == 2:
+        vals.append(ROBOT_PELVIS_HEIGHT_M)
+    return (vals[0], vals[1], vals[2])
+
+
+def _with_xyz(scenario: Mapping[str, Any], key: str, xyz: Sequence[float]) -> dict[str, Any]:
+    out = dict(scenario)
+    out[key] = [float(xyz[0]), float(xyz[1]), float(xyz[2])]
+    return out
+
+
+def _unit_xy_from(a: Sequence[float], b: Sequence[float]) -> tuple[float, float] | None:
+    dx = float(a[0]) - float(b[0])
+    dy = float(a[1]) - float(b[1])
+    mag = math.hypot(dx, dy)
+    if mag < 1e-6:
+        return None
+    return (dx / mag, dy / mag)
+
+
+def task_stance_distance_candidates(scenario: Mapping[str, Any] | None = None) -> list[float]:
+    """Generic robot-profile stance distances around a task target.
+
+    The defaults are derived from the robot footprint, not from a kitchen/sink coordinate. Scenario
+    metadata can override them when a task compiler knows a better reach/standoff envelope.
+    """
+    scenario = scenario or {}
+    raw = scenario.get("stance_distance_candidates_m")
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        distances = sorted({round(float(v), 4) for v in raw if float(v) > 0.0})
+    else:
+        half_xy = max(float(ROBOT_FOOTPRINT_HALF_EXTENT[0]), float(ROBOT_FOOTPRINT_HALF_EXTENT[1]))
+        base = max(0.55, half_xy * 2.0)
+        distances = [round(base * scale, 4) for scale in (1.0, 1.25, 1.55, 1.9, 2.3)]
+    min_d = scenario.get("min_stance_distance_m")
+    max_d = scenario.get("max_stance_distance_m")
+    if min_d is not None:
+        distances = [d for d in distances if d >= float(min_d)]
+    if max_d is not None:
+        distances = [d for d in distances if d <= float(max_d)]
+    preferred = scenario.get("preferred_stance_distance_m")
+    if preferred is not None:
+        pref = float(preferred)
+        distances.sort(key=lambda d: (abs(d - pref), d))
+    return distances
+
+
+def task_stance_target_for_scenario(
+    scenario: Mapping[str, Any],
+    manipulation_look_at=None,
+    *,
+    allow_navigation_target_fallback: bool = True,
+) -> tuple[float, float, float] | None:
+    if manipulation_look_at is not None:
+        return _optional_xyz(manipulation_look_at)
+    for key in TASK_STANCE_TARGET_KEYS:
+        target = _optional_xyz(scenario.get(key))
+        if target is not None:
+            return target
+    if allow_navigation_target_fallback:
+        for key in TASK_STANCE_FALLBACK_TARGET_KEYS:
+            target = _optional_xyz(scenario.get(key))
+            if target is not None:
+                return target
+    return None
+
+
+def plan_task_stance(
+    *,
+    scenario: Mapping[str, Any],
+    manipulation_look_at=None,
+    probe_collision=None,
+    floor_z_hint: float | None = None,
+    robot_footprint_half_extent: Sequence[float] = ROBOT_FOOTPRINT_HALF_EXTENT,
+) -> dict[str, Any]:
+    """Select a task start pose around a target object without scene-specific coordinates.
+
+    The target is the object/workspace to face, not the root pose. Candidate root poses are sampled
+    around the target, biased toward the scenario's approach/start side, and accepted only when the
+    provided scene collision probe reports no hits.
+    """
+    target = task_stance_target_for_scenario(scenario, manipulation_look_at)
+    if target is None:
+        return {
+            "schema_version": TASK_STANCE_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["missing_task_stance_target"],
+            "candidates": [],
+        }
+    approach = None
+    for key in TASK_STANCE_APPROACH_KEYS:
+        approach = _optional_xyz(scenario.get(key))
+        if approach is not None:
+            break
+    primary = _unit_xy_from(approach, target) if approach is not None else None
+    if primary is None:
+        primary = (-1.0, 0.0)
+    primary_angle = math.atan2(primary[1], primary[0])
+    floor_z = float(
+        floor_z_hint
+        if floor_z_hint is not None
+        else scenario.get("floor_z_hint", 0.0)
+    )
+    root_z = floor_z + ROBOT_PELVIS_HEIGHT_M
+    distances = task_stance_distance_candidates(scenario)
+    if not distances:
+        return {
+            "schema_version": TASK_STANCE_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["empty_task_stance_distance_candidates"],
+            "task_target_xyz": [round(float(v), 6) for v in target],
+            "candidates": [],
+        }
+    probe = probe_collision or (lambda pose, yaw: 0)
+    candidates: list[dict[str, Any]] = []
+    for offset_deg in TASK_STANCE_ANGLE_OFFSETS_DEG:
+        angle = primary_angle + math.radians(float(offset_deg))
+        ux, uy = math.cos(angle), math.sin(angle)
+        for distance_m in distances:
+            pose = (
+                float(target[0]) + ux * float(distance_m),
+                float(target[1]) + uy * float(distance_m),
+                root_z,
+            )
+            yaw = math.atan2(float(target[1]) - pose[1], float(target[0]) - pose[0])
+            collision_count = int(probe(pose, yaw))
+            record = {
+                "candidate_kind": "task_stance",
+                "pose": [round(float(v), 6) for v in pose],
+                "yaw": round(float(yaw), 6),
+                "distance_to_target_m": round(float(distance_m), 6),
+                "angle_offset_deg": int(offset_deg),
+                "scene_collision_contact_count": collision_count,
+            }
+            candidates.append(record)
+            if collision_count == 0:
+                return {
+                    "schema_version": TASK_STANCE_SCHEMA_VERSION,
+                    "status": "accepted",
+                    "task_target_xyz": [round(float(v), 6) for v in target],
+                    "approach_point_xyz": (
+                        [round(float(v), 6) for v in approach] if approach is not None else None
+                    ),
+                    "robot_footprint_half_extent": [round(float(v), 6) for v in robot_footprint_half_extent],
+                    "floor_z_hint": round(floor_z, 6),
+                    "accepted_pose": record["pose"],
+                    "accepted_yaw": record["yaw"],
+                    "selected_candidate_index": len(candidates) - 1,
+                    "candidates": candidates,
+                    "claim_boundary": (
+                        "Task stance is selected from scene collision probes around the task target. "
+                        "It is placement evidence, not full dynamic locomotion or manipulation success."
+                    ),
+                }
+    return {
+        "schema_version": TASK_STANCE_SCHEMA_VERSION,
+        "status": "blocked",
+        "blockers": ["no_collision_free_task_stance_candidate"],
+        "task_target_xyz": [round(float(v), 6) for v in target],
+        "approach_point_xyz": [round(float(v), 6) for v in approach] if approach is not None else None,
+        "robot_footprint_half_extent": [round(float(v), 6) for v in robot_footprint_half_extent],
+        "floor_z_hint": round(floor_z, 6),
+        "candidates": candidates,
+    }
 
 
 def assemble_collision_summary(*, actions: Sequence[Mapping[str, Any]],
@@ -393,6 +606,202 @@ def _open_stage(usd_path: str):
     ctx = omni.usd.get_context()
     ctx.open_stage(usd_path)
     return ctx.get_stage()
+
+
+def _task_description_for_scenario(scenario: Mapping[str, Any]) -> str:
+    """Best-effort natural-language task string for the scenario (for task->object resolution)."""
+    for key in ("instruction", "task", "task_description", "description", "task_instruction"):
+        val = scenario.get(key)
+        if val:
+            return str(val).strip()
+    return ""
+
+
+def _resolve_task_target_via_scene_placement(stage, scenario: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Resolve the task's target OBJECT from the scene when no explicit object id/coords are given.
+
+    Unlike :func:`_resolve_task_target_from_stage` (which needs the caller to name the prim id), this
+    enumerates EVERY object in the scene via the swappable ``scene_placement`` spatial index and maps
+    the task description ("turn on the faucet") onto one of them. No scene-specific coordinates and no
+    foreknowledge of the prim id — it works for any task in any USD site. The package is imported
+    lazily + optionally so a worker without it (or without pxr) degrades to the id-driven path.
+    """
+    task = _task_description_for_scenario(scenario)
+    if not task:
+        return None
+    try:
+        from blueprint_pipeline.scene_placement import (  # type: ignore
+            UsdSceneSpatialIndex,
+            resolve_target_by_label,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "blocked", "blockers": ["scene_placement_unavailable"], "error": repr(exc)}
+    try:
+        index = UsdSceneSpatialIndex(stage=stage)
+        objects = list(index.objects())
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "blocked", "blockers": ["scene_placement_index_failed"], "error": repr(exc)}
+    if not objects:
+        return {"status": "blocked", "blockers": ["scene_placement_no_objects"], "task": task}
+    target = resolve_target_by_label(task, objects)
+    if target is None:
+        return {
+            "status": "blocked",
+            "blockers": ["scene_placement_no_task_match"],
+            "task": task,
+            "object_labels": sorted({o.label for o in objects})[:40],
+        }
+    size = target.size()
+    prim_path = ""
+    extra = getattr(target, "extra", None)
+    if isinstance(extra, Mapping):
+        prim_path = str(extra.get("prim_path", "") or "")
+    return {
+        "status": "resolved",
+        "source": "scene_placement_task_label",
+        "selected": {
+            "target_object_id": target.id,
+            "target_object_label": target.label,
+            "prim_path": prim_path,
+            "match_kind": "task_label",
+            "center_xyz": [round(float(c), 6) for c in target.centroid],
+            "size_xyz": [round(float(s), 6) for s in size],
+        },
+        "task": task,
+        "objects_considered": len(objects),
+    }
+
+
+def _resolve_task_target_from_stage(stage, scenario: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Resolve a task target from USD prim bounds when a scene/task compiler provides an object id.
+
+    This is the generic fallback for sites that do not ship a separate object-location JSON. It is
+    intentionally object-id driven; it does not know about kitchens, sinks, dishwashers, or counters.
+    When no object id is supplied (or the id isn't found), it defers to
+    :func:`_resolve_task_target_via_scene_placement`, which maps the task description onto a scene
+    object — so a scenario with only a natural-language task still resolves a target dynamically.
+    """
+    target_ids = [
+        str(scenario.get(key)).strip()
+        for key in TASK_STANCE_TARGET_OBJECT_KEYS
+        if scenario.get(key)
+    ]
+    if not target_ids:
+        # No explicit object id given — derive the target object from the task description via the
+        # scene_placement spatial index (enumerate scene objects, map task -> object). Dynamic path.
+        return _resolve_task_target_via_scene_placement(stage, scenario)
+    try:
+        from pxr import Usd, UsdGeom  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "blocked", "blockers": ["usd_target_bounds_unavailable"], "error": repr(exc)}
+    purposes = [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy]
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), purposes, useExtentsHint=True)
+    matches: list[dict[str, Any]] = []
+    for prim in stage.Traverse():
+        prim_path = str(prim.GetPath())
+        prim_name = str(prim.GetName())
+        path_segments = [segment.lower() for segment in prim_path.split("/") if segment]
+        matched_id = next(
+            (
+                tid
+                for tid in target_ids
+                if tid.lower() == prim_name.lower() or tid.lower() in path_segments
+            ),
+            None,
+        )
+        match_kind = "exact_prim_name_or_path_segment"
+        if not matched_id:
+            text = f"{prim_path} {prim_name}".lower()
+            matched_id = next((tid for tid in target_ids if tid.lower() in text), None)
+            match_kind = "ancestor_or_text_match"
+        if not matched_id:
+            continue
+        try:
+            box = cache.ComputeWorldBound(prim).ComputeAlignedBox()
+            if box.IsEmpty():
+                continue
+            center = box.GetCenter()
+            size = box.GetSize()
+        except Exception:  # noqa: BLE001
+            continue
+        matches.append({
+            "target_object_id": matched_id,
+            "prim_path": prim_path,
+            "match_kind": match_kind,
+            "path_depth": len(path_segments),
+            "center_xyz": [round(float(center[i]), 6) for i in range(3)],
+            "size_xyz": [round(float(size[i]), 6) for i in range(3)],
+            "volume_proxy": round(float(size[0] * size[1] * size[2]), 9),
+        })
+    if not matches:
+        # The supplied object id(s) weren't found as prims — fall back to task->object resolution
+        # over the full scene catalog before giving up.
+        sp = _resolve_task_target_via_scene_placement(stage, scenario)
+        if sp is not None and sp.get("status") == "resolved":
+            return sp
+        return {
+            "status": "blocked",
+            "blockers": ["target_object_id_not_found_in_usd_stage"],
+            "target_object_ids": target_ids,
+            "scene_placement_fallback": sp,
+        }
+    matches.sort(key=lambda item: (
+        0 if item["match_kind"] == "exact_prim_name_or_path_segment" else 1,
+        item["path_depth"],
+        -float(item["volume_proxy"]),
+        len(item["prim_path"]),
+    ))
+    return {
+        "status": "resolved",
+        "source": "usd_prim_bounds",
+        "selected": matches[0],
+        "matches_considered": matches[:10],
+    }
+
+
+def _plan_task_stance_for_stage(
+    *,
+    stage,
+    scenario: Mapping[str, Any],
+    manipulation_look_at,
+    probe,
+    no_collision_probe: bool,
+) -> dict[str, Any]:
+    stance_scenario = dict(scenario)
+    target_resolution = None
+    explicit_target = task_stance_target_for_scenario(
+        stance_scenario,
+        manipulation_look_at,
+        allow_navigation_target_fallback=False,
+    )
+    if explicit_target is None:
+        target_resolution = _resolve_task_target_from_stage(stage, stance_scenario)
+        if target_resolution and target_resolution.get("status") == "resolved":
+            stance_scenario = _with_xyz(
+                stance_scenario,
+                "target_object_position_xyz",
+                target_resolution["selected"]["center_xyz"],
+            )
+    if no_collision_probe:
+        return {
+            "schema_version": TASK_STANCE_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["task_stance_collision_probe_disabled"],
+            "target_resolution": target_resolution,
+            "claim_boundary": (
+                "Task stance placement requires a scene collision/clearance probe; "
+                "without it the runner must not claim the robot is standing clear."
+            ),
+        }
+    stance_plan = plan_task_stance(
+        scenario=stance_scenario,
+        manipulation_look_at=manipulation_look_at,
+        probe_collision=probe,
+        floor_z_hint=stance_scenario.get("floor_z_hint"),
+    )
+    if target_resolution is not None:
+        stance_plan["target_resolution"] = target_resolution
+    return stance_plan
 
 
 def _resolve_asset_uri(value: str) -> str:
@@ -1291,6 +1700,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         rest_offsets = None
         art_ctx = None
         dynamic_seed_decisions: dict[str, Any] = {}
+        preplanned_task_stance_plans: dict[str, dict[str, Any]] = {}
         if articulated:
             rest_offsets = _g1_link_rest_offsets(stage, binding["prim_path"])
             if dynamic_standing_contact_steps > 0 and scenarios:
@@ -1299,21 +1709,54 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         return 0
                 else:
                     seed_probe = _overlap_probe(binding["prim_path"])
-                seed_policy = policy_mod.make_policy(policy_id)
-                seed_policy.reset(scenarios[0])
-                seed_decision = seed_policy.step(
-                    policy_mod.StepContext(
-                        step=0,
-                        num_steps=steps,
-                        probe_collision=seed_probe,
+                if manipulation_stand:
+                    seed_sid = scenarios[0]["scenario_id"]
+                    seed_stance_plan = _plan_task_stance_for_stage(
+                        stage=stage,
+                        scenario=scenarios[0],
+                        manipulation_look_at=manipulation_look_at,
+                        probe=seed_probe,
+                        no_collision_probe=no_collision_probe,
                     )
-                )
-                dynamic_seed_decisions[scenarios[0]["scenario_id"]] = seed_decision
-                _place_root(stage, binding["prim_path"], seed_decision.root_pose, seed_decision.yaw)
-                _log(
-                    "dynamic standing/contact root seeded before articulation tensor view: "
-                    f"pose={seed_decision.root_pose}, yaw={seed_decision.yaw:.4f}"
-                )
+                    preplanned_task_stance_plans[seed_sid] = seed_stance_plan
+                    (out_dir / "dynamic_task_stance_seed_plan.json").write_text(
+                        json.dumps(seed_stance_plan, indent=2)
+                    )
+                    if seed_stance_plan.get("status") == "accepted":
+                        seed_root = tuple(float(v) for v in seed_stance_plan["accepted_pose"])
+                        seed_yaw = float(seed_stance_plan["accepted_yaw"])
+                        dynamic_seed_decisions[seed_sid] = {
+                            "source": "task_stance_plan",
+                            "root_pose": seed_root,
+                            "yaw": seed_yaw,
+                        }
+                        _place_root(stage, binding["prim_path"], seed_root, seed_yaw)
+                        _log(
+                            "dynamic standing/contact root seeded from task stance plan before "
+                            f"articulation tensor view: pose={seed_root}, yaw={seed_yaw:.4f}"
+                        )
+                    else:
+                        blockers.append("task_stance_plan_failed")
+                        _log(
+                            "dynamic standing/contact task stance seed blocked "
+                            f"{seed_stance_plan.get('blockers') or seed_stance_plan.get('status')}"
+                        )
+                else:
+                    seed_policy = policy_mod.make_policy(policy_id)
+                    seed_policy.reset(scenarios[0])
+                    seed_decision = seed_policy.step(
+                        policy_mod.StepContext(
+                            step=0,
+                            num_steps=steps,
+                            probe_collision=seed_probe,
+                        )
+                    )
+                    dynamic_seed_decisions[scenarios[0]["scenario_id"]] = seed_decision
+                    _place_root(stage, binding["prim_path"], seed_decision.root_pose, seed_decision.yaw)
+                    _log(
+                        "dynamic standing/contact root seeded before articulation tensor view: "
+                        f"pose={seed_decision.root_pose}, yaw={seed_decision.yaw:.4f}"
+                    )
             # The physics articulation drive is OPT-IN and default-OFF. Dynamic standing/contact
             # proof intentionally uses a plain SimulationContext with no SingleArticulation tensor
             # view because the official G1 USD invalidates that tensor view during joint drive/read.
@@ -1400,6 +1843,56 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             (sdir / "frames").mkdir(parents=True, exist_ok=True)
             pol = policy_mod.make_policy(policy_id)
             pol.reset(sc)
+            stand_root = stand_yaw = None
+            stance_plan = None
+            stance_plan_path = sdir / "task_stance_plan.json"
+            if manipulation_stand:
+                stance_plan = preplanned_task_stance_plans.get(sid)
+                if stance_plan is None:
+                    stance_plan = _plan_task_stance_for_stage(
+                        stage=stage,
+                        scenario=sc,
+                        manipulation_look_at=manipulation_look_at,
+                        probe=probe,
+                        no_collision_probe=no_collision_probe,
+                    )
+                stance_plan_path.write_text(json.dumps(stance_plan, indent=2))
+                if stance_plan.get("status") == "accepted":
+                    stand_root = tuple(float(v) for v in stance_plan["accepted_pose"])
+                    stand_yaw = float(stance_plan["accepted_yaw"])
+                    _log(
+                        f"scenario {sid}: task stance accepted -> "
+                        f"{tuple(round(float(c), 2) for c in stand_root)} yaw={stand_yaw:.2f} "
+                        f"after {len(stance_plan.get('candidates', []))} candidate probe(s)"
+                    )
+                else:
+                    blockers.append("task_stance_plan_failed")
+                    _log(
+                        f"scenario {sid}: task stance blocked "
+                        f"{stance_plan.get('blockers') or stance_plan.get('status')}"
+                    )
+            # When no explicit look-at is given, the manipulation camera + arm reach face the SAME
+            # target the stance was planned around (resolved from the scene+task via scene_placement),
+            # so a fully dynamic render needs NO hardcoded coordinates at all. Falls back to the
+            # explicit manipulation_look_at when one is provided (identical to prior behavior).
+            effective_look_at = manipulation_look_at
+            if (effective_look_at is None and stance_plan is not None
+                    and stance_plan.get("status") == "accepted"):
+                effective_look_at = stance_plan.get("task_target_xyz")
+                if effective_look_at is not None:
+                    _log(f"scenario {sid}: camera/reach look-at resolved from scene+task -> "
+                         f"{tuple(round(float(c), 2) for c in effective_look_at)}")
+                    # The pre-loop fill light only fires for an explicit look-at; light the
+                    # dynamically-resolved workspace too so the dynamic (no-coords) path isn't dark.
+                    if manipulation_cam and fill_light_intensity > 0:
+                        try:
+                            _add_workspace_fill_light(stage, effective_look_at,
+                                                      intensity=fill_light_intensity)
+                            _log(f"scenario {sid}: workspace fill light @ "
+                                 f"{tuple(round(float(c),2) for c in effective_look_at)} "
+                                 f"intensity={fill_light_intensity} (resolved)")
+                        except Exception as exc:  # noqa: BLE001 - lighting is best-effort
+                            _log(f"dynamic workspace fill light skipped ({exc!r})")
             t_sc = time.time()
             _log(f"scenario {sid}: warmup {warmup_frames} render frames (capped {per_scenario_seconds}s)")
             for wi in range(warmup_frames):
@@ -1417,21 +1910,32 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             truncated = False
             _log(f"scenario {sid}: stepping {steps}")
             for step in range(steps):
+                if manipulation_stand and stand_root is None:
+                    truncated = True
+                    break
                 if time.time() - t_sc > per_scenario_seconds:
                     _log(f"scenario {sid}: per-scenario cap {per_scenario_seconds}s hit at step {step}; truncating")
                     truncated = True
                     break
                 ctx = policy_mod.StepContext(step=step, num_steps=steps, probe_collision=probe)
                 decision = pol.step(ctx)
-                if manipulation_stand:
-                    # Manipulation task: the robot is already AT the workspace — don't navigate. Place
-                    # it at the scenario target (the standing spot) facing the look-at, every step.
-                    # Collisions don't matter for a static stand; this is just the task start pose.
-                    sx, sy = sc["target"][0], sc["target"][1]
-                    decision.root_pose = (sx, sy, ROBOT_PELVIS_HEIGHT_M)
-                    if manipulation_look_at is not None:
-                        decision.yaw = math.atan2(float(manipulation_look_at[1]) - sy,
-                                                  float(manipulation_look_at[0]) - sx)
+                if manipulation_stand and stand_root is not None:
+                    # Manipulation task: place the robot at the probed clear-floor task stance,
+                    # facing the target. The target is what the robot faces, not the pelvis position.
+                    decision.root_pose = stand_root
+                    decision.yaw = stand_yaw
+                    decision.desired_root_position = stand_root
+                    decision.policy_action = "accepted_task_stance_collision_checked_placement"
+                    if stance_plan is not None:
+                        candidates = stance_plan.get("candidates", [])
+                        decision.collision_probe_candidate_count = len(candidates)
+                        decision.rejected_collision_probe_count = int(
+                            stance_plan.get("selected_candidate_index") or 0
+                        )
+                        decision.rejected_probes = [
+                            c for c in candidates
+                            if int(c.get("scene_collision_contact_count") or 0) > 0
+                        ]
                 rejected_total += decision.rejected_collision_probe_count
                 if decision.policy_action != "accepted_direct_collision_checked_motion":
                     response_total += 1
@@ -1477,10 +1981,10 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     # Show the arm reaching in the RENDERED frame (pure USD, no physics tensor -> no
                     # crash). The shoulder rotates so the upper arm points at the workspace target.
                     if (kinematic_arm_pose and manipulation_reach
-                            and manipulation_look_at is not None):
+                            and effective_look_at is not None):
                         arm_frac = 1.0 if manipulation_cam else alpha
                         try:
-                            _pose_arm_kinematic_usd(stage, binding["prim_path"], manipulation_look_at,
+                            _pose_arm_kinematic_usd(stage, binding["prim_path"], effective_look_at,
                                                     arm=manipulation_reach_arm, reach_frac=arm_frac)
                         except Exception as exc:  # noqa: BLE001 - pose is best-effort, never blocks frames
                             if step == 0:
@@ -1492,7 +1996,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 trace.write(json.dumps(rec) + "\n")
                 if step % max(1, capture_every) == 0:
                     eye, tgt = (manipulation_cam_pose(decision.root_pose, decision.yaw,
-                                                      look_at=manipulation_look_at)
+                                                      look_at=effective_look_at)
                                 if manipulation_cam
                                 else follow_cam_pose(decision.root_pose, decision.yaw))
                     _place_camera(stage, pov_cam, eye, tgt)  # POV camera (manipulation egocentric or follow)
@@ -1506,11 +2010,11 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             root_pose=decision.root_pose,
                             yaw=decision.yaw,
                         )
-                        if manipulation_reach and manipulation_look_at is not None:
+                        if manipulation_reach and effective_look_at is not None:
                             # For manipulation POVs the first frame is already "task started": arms
                             # visible in the workspace. Navigation/follow shots can still ramp.
                             reach_frac = 1.0 if manipulation_cam else alpha
-                            skel = compute_arm_reach_skeleton(skel, manipulation_look_at, reach_frac,
+                            skel = compute_arm_reach_skeleton(skel, effective_look_at, reach_frac,
                                                               arm=manipulation_reach_arm)
                         lms = _project_skeleton(skel, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
                                                 vfov_deg=camera_vfov_deg, width=width, height=height)
@@ -1559,6 +2063,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 collision_summary=summary, bounded_steps=len(actions), model_timestep_s=1.0 / float(fps))
             outcome["frames_captured"] = cap
             outcome["truncated"] = truncated
+            if stance_plan is not None:
+                outcome["task_stance_plan"] = {
+                    "status": stance_plan.get("status"),
+                    "path": str(stance_plan_path),
+                    "accepted_pose": stance_plan.get("accepted_pose"),
+                    "accepted_yaw": stance_plan.get("accepted_yaw"),
+                    "candidate_count": len(stance_plan.get("candidates", [])),
+                    "blockers": stance_plan.get("blockers", []),
+                }
             outcomes.append(outcome)  # record BEFORE MP4 — MP4 is optional, frames already uploaded
             for name in ("overview", "robot_pov"):
                 glob = str(sdir / "frames" / f"{name}_*.png")
