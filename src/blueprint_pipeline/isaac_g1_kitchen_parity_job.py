@@ -125,6 +125,7 @@ if os.environ.get("PARITY_FILL_LIGHT_INTENSITY",""): cmd += ["--fill-light-inten
 if os.environ.get("PARITY_NEUTRAL_ENVIRONMENT","")=="1": cmd.append("--neutral-environment")
 if os.environ.get("PARITY_COLLISION_APPROXIMATION",""): cmd += ["--collision-approximation", os.environ["PARITY_COLLISION_APPROXIMATION"]]
 if os.environ.get("PARITY_VERIFY_CAM","")=="1": cmd.append("--verify-cam")
+if os.environ.get("PARITY_MANIPULATION_STAND","")=="1": cmd.append("--manipulation-stand")
 if os.environ.get("PARITY_KINEMATIC_ARM_POSE","")=="1": cmd.append("--kinematic-arm-pose")
 mark("runner_starting", cmd=cmd)
 rc=subprocess.call(cmd)
@@ -222,7 +223,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       neutral_environment: bool = False,
                       kinematic_arm_pose: bool = False,
                       collision_approximation: str = "",
-                      verify_cam: bool = False) -> RenderLaunchSpec:
+                      verify_cam: bool = False,
+                      manipulation_stand: bool = False) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -270,6 +272,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_COLLISION_APPROXIMATION"] = str(collision_approximation)
     if verify_cam:
         env["PARITY_VERIFY_CAM"] = "1"
+    if manipulation_stand:
+        env["PARITY_MANIPULATION_STAND"] = "1"
     if kitchen_url:
         env["KITCHEN_BUNDLE_URL"] = kitchen_url
     return RenderLaunchSpec(
@@ -377,6 +381,7 @@ def run_isaac_g1_kitchen_parity_job(
     kinematic_arm_pose: bool = False,
     collision_approximation: str = "",
     verify_cam: bool = False,
+    manipulation_stand: bool = False,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan."""
     out_dir = Path(out_dir)
@@ -436,7 +441,8 @@ def run_isaac_g1_kitchen_parity_job(
                              fill_light_intensity=fill_light_intensity,
                              neutral_environment=neutral_environment,
                              kinematic_arm_pose=kinematic_arm_pose,
-                             collision_approximation=collision_approximation, verify_cam=verify_cam)
+                             collision_approximation=collision_approximation, verify_cam=verify_cam,
+                             manipulation_stand=manipulation_stand)
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
                                         "policy_id": policy_id, "steps": steps,
@@ -466,7 +472,14 @@ def run_isaac_g1_kitchen_parity_job(
     render_out = out_dir / "render_output"
     result = watch_and_collect(job_dir, render_out, launch["instance_id"], provider=prov,
                                max_seconds=max_seconds)
-    manifest["render"] = {"status": result.get("status"), "elapsed_seconds": result.get("elapsed_seconds")}
+    manifest["render"] = {
+        "status": result.get("status"),
+        "elapsed_seconds": result.get("elapsed_seconds"),
+        "teardown": result.get("teardown"),
+        "runner_result_source": result.get("runner_result_source"),
+        "last_bootstrap": result.get("last_bootstrap"),
+        "runner_console_tail": result.get("runner_console_tail"),
+    }
     parity_result = result.get("runner_result") or {}
     try:
         parity_result = json.loads((render_out / "isaac_g1_kitchen_parity_result.json").read_text())
@@ -524,6 +537,8 @@ def main(argv=None) -> int:
                     help="mesh collision shape (convexHull lets the robot stand centered + close)")
     ap.add_argument("--verify-cam", action="store_true",
                     help="render a 3rd-person verify_*.png that frames the whole robot at the workspace")
+    ap.add_argument("--manipulation-stand", action="store_true",
+                    help="place the robot AT the target facing the look-at (task start pose, no navigation)")
     args = ap.parse_args(argv)
     scenarios = json.loads(Path(args.scenarios).read_text())
     if isinstance(scenarios, dict):
@@ -541,7 +556,8 @@ def main(argv=None) -> int:
         fill_light_intensity=args.fill_light_intensity,
         neutral_environment=args.neutral_environment,
         kinematic_arm_pose=args.kinematic_arm_pose,
-        collision_approximation=args.collision_approximation, verify_cam=args.verify_cam)
+        collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
+        manipulation_stand=args.manipulation_stand)
     print(json.dumps(m, indent=2, default=str))
     return 0 if m.get("status") in ("completed", "prepared") else 1
 

@@ -149,6 +149,19 @@ def test_collision_approximation_and_verify_cam_thread_env_and_bootstrap(tmp_pat
     assert "PARITY_VERIFY_CAM" in body and "--verify-cam" in body
 
 
+def test_manipulation_stand_flag_threads_env_and_bootstrap(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+    off = J.build_launch_spec(jd, image="img:tag", policy_id="p", steps=8)
+    assert "PARITY_MANIPULATION_STAND" not in off.env
+    on = J.build_launch_spec(jd, image="img:tag", policy_id="p", steps=8, manipulation_stand=True)
+    assert on.env["PARITY_MANIPULATION_STAND"] == "1"
+    body = J.docker_start_cmd()[1]
+    assert "PARITY_MANIPULATION_STAND" in body and "--manipulation-stand" in body
+
+
 def test_build_harness_package_is_wam_ready_and_honest(tmp_path: Path) -> None:
     result = {
         "policy_id": "blueprint_default_walk_to_target_smoke_policy",

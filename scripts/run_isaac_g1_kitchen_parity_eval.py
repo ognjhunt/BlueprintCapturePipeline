@@ -135,12 +135,19 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
         "Isaac RTX-rendered kinematic walk-to-target preview (parity with the MuJoCo preview "
         "controller). Not dynamic locomotion, not a learned policy, not deployment readiness."
     )
-    if contact_summary["scenario_count"] > 0:
+    if contact_summary["all_have_support_contact_evidence"]:
         proof_boundary = (
             "Isaac RTX-rendered kinematic walk-to-target preview plus opt-in PhysX articulation "
             "standing/contact settle samples. This upgrades the standing placement evidence to "
             "physics-stepped support/contact evidence, but it is still not full dynamic locomotion, "
             "not a learned balance controller, and not deployment readiness."
+        )
+    elif contact_summary["scenario_count"] > 0:
+        proof_boundary = (
+            "Isaac RTX-rendered kinematic walk-to-target preview plus opt-in PhysX articulation "
+            "standing/contact settle samples. The physics settle completed, but support-contact "
+            "events were not observed, so this does not prove support contact, full dynamic "
+            "locomotion, learned balance control, or deployment readiness."
         )
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
@@ -758,6 +765,34 @@ def _setup_articulated_g1(prim_path: str, *, gravity_z: float = 0.0):
             "link_names": link_names, "dof_count": len(dof_index), "gravity_z": float(gravity_z)}
 
 
+def _setup_physics_context_only(*, gravity_z: float = -9.81):
+    """Create/play a PhysX SimulationContext without creating a SingleArticulation tensor view.
+
+    The official G1 USD currently invalidates Isaac's tensor view when this runner drives or reads
+    the articulation through SingleArticulation. Dynamic-standing contact proof only needs the
+    authored USD articulation, gravity, collisions, and contact reporting, so this mode avoids the
+    tensor API entirely.
+    """
+    from isaacsim.core.api import SimulationContext  # type: ignore
+    ctx = SimulationContext(physics_dt=1.0 / 60.0, rendering_dt=1.0 / 60.0, stage_units_in_meters=1.0)
+    ctx.initialize_physics()
+    try:
+        ctx.get_physics_context().set_gravity(float(gravity_z))
+    except Exception:  # noqa: BLE001
+        pass
+    ctx.play()
+    return {
+        "ctx": ctx,
+        "art": None,
+        "dof_index": {},
+        "default": [],
+        "link_names": [],
+        "dof_count": 0,
+        "gravity_z": float(gravity_z),
+        "tensor_view_used": False,
+    }
+
+
 def _sim_step(ctx, *, render: bool = False) -> None:
     try:
         ctx.step(render=render)
@@ -775,6 +810,23 @@ def _safe_articulation_world_pose(art) -> dict[str, Any]:
             "available": True,
             "position_xyz": [round(float(v), 6) for v in pos],
             "orientation_wxyz": [round(float(v), 6) for v in quat],
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": repr(exc)}
+
+
+def _safe_usd_root_world_pose(stage, prim_path: str) -> dict[str, Any]:
+    try:
+        from pxr import UsdGeom  # type: ignore
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim or not prim.IsValid():
+            return {"available": False, "error": "prim_not_found"}
+        transform = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+        pos = transform.ExtractTranslation()
+        return {
+            "available": True,
+            "position_xyz": [round(float(pos[i]), 6) for i in range(3)],
+            "source": "usd_xform_cache",
         }
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "error": repr(exc)}
@@ -902,6 +954,7 @@ def _settle_dynamic_standing_contacts(
     scenario_id: str,
     manipulation_ready: bool = False,
     manipulation_reach_arm: str = "both",
+    root_pose_seeded_before_tensor_view: bool = True,
 ) -> dict[str, Any]:
     """Run a bounded PhysX standing/contact settle without mutating the G1 USD xform after the
     articulation tensor view exists.
@@ -910,32 +963,36 @@ def _settle_dynamic_standing_contacts(
     real articulation against the scene with gravity and contact reporting; it is not a full dynamic
     walking controller.
     """
-    import numpy as np  # type: ignore
-
-    art = art_ctx["art"]
+    art = art_ctx.get("art")
     ctx = art_ctx["ctx"]
-    targets = _joint_targets_for_pose(
-        art_ctx["default"],
-        art_ctx["dof_index"],
-        phase=phase,
-        moving=moving,
-        manipulation_ready=manipulation_ready,
-        manipulation_reach_arm=manipulation_reach_arm,
+    tensor_view_used = art is not None
+    targets = None
+    command_mode = "usd_physx_articulation_default_drives_no_tensor_view"
+    if tensor_view_used:
+        targets = _joint_targets_for_pose(
+            art_ctx["default"],
+            art_ctx["dof_index"],
+            phase=phase,
+            moving=moving,
+            manipulation_ready=manipulation_ready,
+            manipulation_reach_arm=manipulation_reach_arm,
+        )
+        # Do not call art.set_world_pose() here. On the official G1 USD that invalidates the
+        # PhysX tensor view with the same failure as mutating the USD root xform after initialization.
+        # Dynamic-standing mode pre-seeds the root USD transform before the physics context is played.
+        command_mode = _apply_articulation_joint_targets(art, targets)
+    before = (
+        _safe_articulation_world_pose(art)
+        if tensor_view_used else _safe_usd_root_world_pose(stage, robot_prim_path)
     )
-    w, x, y, z = yaw_to_quat(float(yaw))
-    art.set_world_pose(
-        position=np.asarray(root_pose, dtype="float32"),
-        orientation=np.asarray([w, x, y, z], dtype="float32"),
-    )
-    command_mode = _apply_articulation_joint_targets(art, targets)
-    before = _safe_articulation_world_pose(art)
     contact_setup = _enable_contact_reports(stage, robot_prim_path)
     records: list[dict[str, Any]] = []
     errors: list[str] = []
     executed = 0
     for _ in range(max(0, int(settle_steps))):
         try:
-            _apply_articulation_joint_targets(art, targets)
+            if tensor_view_used:
+                _apply_articulation_joint_targets(art, targets)
             _sim_step(ctx, render=False)
             executed += 1
             if len(records) < 80:
@@ -943,16 +1000,23 @@ def _settle_dynamic_standing_contacts(
         except Exception as exc:  # noqa: BLE001
             errors.append(repr(exc))
             break
-    after = _safe_articulation_world_pose(art)
+    after = (
+        _safe_articulation_world_pose(art)
+        if tensor_view_used else _safe_usd_root_world_pose(stage, robot_prim_path)
+    )
     support_records = [r for r in records if _is_support_contact(r)]
     return {
         "schema_version": "isaac_g1_physics_articulation_standing_contact_report.v1",
         "status": "completed" if executed == max(0, int(settle_steps)) and not errors else "blocked",
         "scenario_id": scenario_id,
         "gravity_z": art_ctx.get("gravity_z"),
+        "tensor_view_used": tensor_view_used,
         "requested_settle_steps": int(settle_steps),
         "executed_settle_steps": executed,
-        "root_pose_seeded_once_before_settle": True,
+        "seed_root_pose_xyz": [round(float(v), 6) for v in root_pose],
+        "seed_root_yaw_rad": round(float(yaw), 6),
+        "root_pose_seeded_before_tensor_view": bool(root_pose_seeded_before_tensor_view),
+        "root_pose_seeded_once_before_settle": False,
         "root_pose_teleport_during_physics_settle": False,
         "usd_root_xform_mutated_after_tensor_view": False,
         "joint_command_mode": command_mode,
@@ -1179,7 +1243,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   neutral_environment: bool = False,
                   kinematic_arm_pose: bool = False,
                   collision_approximation: str = "boundingCube",
-                  verify_cam: bool = False) -> dict:
+                  verify_cam: bool = False,
+                  manipulation_stand: bool = False) -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
     flushed progress + a per-scenario wall-clock cap so it cannot hang silently."""
@@ -1201,6 +1266,10 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
     if dynamic_standing_contact_steps > 0:
         articulated = True
         physics_articulation_drive = True
+        if int(steps) != 1:
+            blockers.append("physics_articulation_dynamic_standing_contact_requires_single_step")
+        if len(scenarios) != 1:
+            blockers.append("physics_articulation_dynamic_standing_contact_requires_single_scenario")
     try:
         _log(f"opening kitchen USD: {kitchen_usd}")
         stage = _open_stage(_resolve_asset_uri(kitchen_usd))
@@ -1221,21 +1290,49 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             (out_dir / "focus_prune.json").write_text(json.dumps(pr, indent=2))
         rest_offsets = None
         art_ctx = None
+        dynamic_seed_decisions: dict[str, Any] = {}
         if articulated:
             rest_offsets = _g1_link_rest_offsets(stage, binding["prim_path"])
-            # The physics articulation drive (SimulationContext + SingleArticulation tensor view) is
-            # OPT-IN and default-OFF. The crash pattern to avoid is mutating the G1 USD root xform
-            # after the tensor view exists. In the physics path, all root seeds go through the
-            # articulation API; the pure-USD _place_root fallback is used only when art_ctx is None.
+            if dynamic_standing_contact_steps > 0 and scenarios:
+                if no_collision_probe:
+                    def seed_probe(pose, yaw):  # noqa: ANN001
+                        return 0
+                else:
+                    seed_probe = _overlap_probe(binding["prim_path"])
+                seed_policy = policy_mod.make_policy(policy_id)
+                seed_policy.reset(scenarios[0])
+                seed_decision = seed_policy.step(
+                    policy_mod.StepContext(
+                        step=0,
+                        num_steps=steps,
+                        probe_collision=seed_probe,
+                    )
+                )
+                dynamic_seed_decisions[scenarios[0]["scenario_id"]] = seed_decision
+                _place_root(stage, binding["prim_path"], seed_decision.root_pose, seed_decision.yaw)
+                _log(
+                    "dynamic standing/contact root seeded before articulation tensor view: "
+                    f"pose={seed_decision.root_pose}, yaw={seed_decision.yaw:.4f}"
+                )
+            # The physics articulation drive is OPT-IN and default-OFF. Dynamic standing/contact
+            # proof intentionally uses a plain SimulationContext with no SingleArticulation tensor
+            # view because the official G1 USD invalidates that tensor view during joint drive/read.
             if physics_articulation_drive:
                 try:
                     gravity_z = -9.81 if dynamic_standing_contact_steps > 0 else 0.0
-                    art_ctx = _setup_articulated_g1(binding["prim_path"], gravity_z=gravity_z)
-                    _log(
-                        "G1 articulation drive ready: "
-                        f"{art_ctx['dof_count']} joints, {len(art_ctx['link_names'])} links, "
-                        f"gravity_z={gravity_z}"
-                    )
+                    if dynamic_standing_contact_steps > 0:
+                        art_ctx = _setup_physics_context_only(gravity_z=gravity_z)
+                        _log(
+                            "G1 USD PhysX articulation settle ready: "
+                            f"tensor_view_used={art_ctx['tensor_view_used']}, gravity_z={gravity_z}"
+                        )
+                    else:
+                        art_ctx = _setup_articulated_g1(binding["prim_path"], gravity_z=gravity_z)
+                        _log(
+                            "G1 articulation drive ready: "
+                            f"{art_ctx['dof_count']} joints, {len(art_ctx['link_names'])} links, "
+                            f"gravity_z={gravity_z}"
+                        )
                 except Exception as exc:  # noqa: BLE001
                     blockers.append("official_isaac_unitree_g1_joint_drive_unavailable")
                     _log(f"G1 articulation drive unavailable ({exc!r}); using USD skeleton fallback")
@@ -1326,6 +1423,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     break
                 ctx = policy_mod.StepContext(step=step, num_steps=steps, probe_collision=probe)
                 decision = pol.step(ctx)
+                if manipulation_stand:
+                    # Manipulation task: the robot is already AT the workspace — don't navigate. Place
+                    # it at the scenario target (the standing spot) facing the look-at, every step.
+                    # Collisions don't matter for a static stand; this is just the task start pose.
+                    sx, sy = sc["target"][0], sc["target"][1]
+                    decision.root_pose = (sx, sy, ROBOT_PELVIS_HEIGHT_M)
+                    if manipulation_look_at is not None:
+                        decision.yaw = math.atan2(float(manipulation_look_at[1]) - sy,
+                                                  float(manipulation_look_at[0]) - sx)
                 rejected_total += decision.rejected_collision_probe_count
                 if decision.policy_action != "accepted_direct_collision_checked_motion":
                     response_total += 1
@@ -1347,6 +1453,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             scenario_id=sid,
                             manipulation_ready=bool(manipulation_reach),
                             manipulation_reach_arm=manipulation_reach_arm,
+                            root_pose_seeded_before_tensor_view=sid in dynamic_seed_decisions,
                         )
                         report["step"] = step
                         physics_contact_reports.append(report)
@@ -1464,6 +1571,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         try:
             # SimulationApp.close() can terminate or stall the worker process on some
             # remote runtimes, so persist the collector-visible result before closing Isaac.
+            if dynamic_standing_contact_steps > 0 and not outcomes and not blockers:
+                blockers.append("physics_articulation_dynamic_standing_contact_stopped_before_outcome")
             result = build_result(scenarios=scenarios, outcomes=outcomes, policy_id=policy_id,
                                   kitchen_usd=kitchen_usd, g1_usd=g1_usd, blockers=blockers,
                                   physics_articulation_contact_reports=physics_contact_reports)
@@ -1529,9 +1638,9 @@ def main(argv=None) -> int:
                          "is used only when this is off.")
     ap.add_argument("--dynamic-standing-contact-steps", type=int, default=0,
                     help="opt-in PhysX standing/contact settle steps per sampled placement. This "
-                         "forces --articulated and --physics-articulation-drive, enables gravity, "
-                         "and records physics_articulation_standing_contact_reports.json. It is "
-                         "standing/contact evidence, not full dynamic walking.")
+                         "forces --articulated, enables gravity, avoids the SingleArticulation "
+                         "tensor view, and records physics_articulation_standing_contact_reports.json. "
+                         "It is standing/contact evidence, not full dynamic walking.")
     ap.add_argument("--neutral-environment", action="store_true",
                     help="replace the kitchen asset's outdoor-HDRI dome light with a neutral bright "
                          "environment (no cityscape through the windows + lifts shadowed surfaces)")
@@ -1545,6 +1654,9 @@ def main(argv=None) -> int:
     ap.add_argument("--verify-cam", action="store_true",
                     help="render a 3rd-person verify_*.png that frames the whole robot at the workspace "
                          "(proves where it stands vs the egocentric POV)")
+    ap.add_argument("--manipulation-stand", action="store_true",
+                    help="place the robot AT the scenario target facing --manipulation-look-at every "
+                         "step (task start pose; no navigation/redirect) — for manipulation, not locomotion")
     args = ap.parse_args(argv)
 
     manip_look_at = None
@@ -1587,7 +1699,8 @@ def main(argv=None) -> int:
         dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
         neutral_environment=args.neutral_environment,
         kinematic_arm_pose=args.kinematic_arm_pose,
-        collision_approximation=args.collision_approximation, verify_cam=args.verify_cam)
+        collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
+        manipulation_stand=args.manipulation_stand)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))
