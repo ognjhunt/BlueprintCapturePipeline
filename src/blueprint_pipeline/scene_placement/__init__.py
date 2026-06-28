@@ -26,6 +26,13 @@ from .perception_views import (
     generate_view_ring,
     view_ring_for_bounds,
 )
+from .perception_adapter import (
+    build_perception_view,
+    build_perception_views,
+    build_perception_views_from_frames,
+    depth_provider_from_map,
+    detections_from_sam3,
+)
 from .placement import compute_stand_pose
 from .target_resolver import (
     GenerateFn,
@@ -53,6 +60,11 @@ __all__ = [
     "generate_view_ring",
     "view_ring_for_bounds",
     "assemble_views",
+    "detections_from_sam3",
+    "depth_provider_from_map",
+    "build_perception_view",
+    "build_perception_views",
+    "build_perception_views_from_frames",
     "resolve_target",
     "resolve_target_by_label",
     "compute_stand_pose",
