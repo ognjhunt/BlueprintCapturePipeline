@@ -190,6 +190,17 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     policy = _repo_root() / "src" / "blueprint_pipeline" / "isaac_g1_policy.py"
     (bundle / "run_isaac_g1_kitchen_parity_eval.py").write_bytes(runner.read_bytes())
     (bundle / "isaac_g1_policy.py").write_bytes(policy.read_bytes())
+    # Ship the scene_placement package alongside the runner so its dynamic task->object resolution
+    # works on the worker (the runner imports `scene_placement` from the bundle dir; it falls back to
+    # the repo's `blueprint_pipeline.scene_placement` in tests). Without this the worker has no
+    # `blueprint_pipeline` on its path and the runner silently degrades to the scenario's literal
+    # target. The package is pure-Python + intra-package imports only, so a flat copy is importable.
+    import shutil
+    sp_src = _repo_root() / "src" / "blueprint_pipeline" / "scene_placement"
+    sp_dst = bundle / "scene_placement"
+    if sp_dst.exists():
+        shutil.rmtree(sp_dst)
+    shutil.copytree(sp_src, sp_dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     request = build_request(scenarios=scenarios, kitchen_main_usd_relative=kitchen_main_usd_relative,
                             g1_usd=g1_usd, policy_id=policy_id, steps=steps)
     (bundle / "request.json").write_text(json.dumps(request, indent=2), encoding="utf-8")

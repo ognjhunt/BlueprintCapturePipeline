@@ -40,6 +40,13 @@ def test_build_parity_bundle_contains_runner_policy_request_and_assets(tmp_path:
     assert "request.json" in names
     assert "kitchen/Collected_KitchenRoom/KitchenRoom.usd" in names
     assert "kitchen/Collected_KitchenRoom/Sink054/Sink054.usd" in names
+    # scene_placement package shipped so the worker's dynamic task->object resolution works
+    # (without it the runner has no blueprint_pipeline on its path and falls back to the literal
+    # scenario target — the exact gap that broke the first dynamic render).
+    assert "scene_placement/__init__.py" in names
+    assert "scene_placement/usd_index.py" in names
+    assert "scene_placement/target_resolver.py" in names
+    assert not any(n.endswith(".pyc") or "__pycache__" in n for n in names if n.startswith("scene_placement/"))
     assert req["steps"] == 32 and len(req["scenarios"]) == 2
 
 

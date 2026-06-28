@@ -630,10 +630,18 @@ def _resolve_task_target_via_scene_placement(stage, scenario: Mapping[str, Any])
     if not task:
         return None
     try:
-        from blueprint_pipeline.scene_placement import (  # type: ignore
-            UsdSceneSpatialIndex,
-            resolve_target_by_label,
-        )
+        try:
+            # On the worker the package is shipped flat into the bundle dir (already on sys.path).
+            from scene_placement import (  # type: ignore
+                UsdSceneSpatialIndex,
+                resolve_target_by_label,
+            )
+        except Exception:  # noqa: BLE001
+            # In the repo / tests it lives under the blueprint_pipeline package.
+            from blueprint_pipeline.scene_placement import (  # type: ignore
+                UsdSceneSpatialIndex,
+                resolve_target_by_label,
+            )
     except Exception as exc:  # noqa: BLE001
         return {"status": "blocked", "blockers": ["scene_placement_unavailable"], "error": repr(exc)}
     try:
