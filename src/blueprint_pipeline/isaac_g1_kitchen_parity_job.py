@@ -120,9 +120,14 @@ if os.environ.get("PARITY_RENDER_SUBFRAMES",""): cmd += ["--render-subframes", o
 if os.environ.get("PARITY_MANIPULATION_REACH","")=="1": cmd.append("--manipulation-reach")
 if os.environ.get("PARITY_MANIPULATION_REACH_ARM",""): cmd += ["--manipulation-reach-arm", os.environ["PARITY_MANIPULATION_REACH_ARM"]]
 if os.environ.get("PARITY_FILL_LIGHT_INTENSITY",""): cmd += ["--fill-light-intensity", os.environ["PARITY_FILL_LIGHT_INTENSITY"]]
+if os.environ.get("PARITY_NEUTRAL_ENVIRONMENT","")=="1": cmd.append("--neutral-environment")
 mark("runner_starting", cmd=cmd)
 rc=subprocess.call(cmd)
 mark("runner_done", rc=rc)
+# Keep the container process alive after runner completion so RunPod does not restart it and
+# clobber the final output object before the parent collector observes runner_done.
+while True:
+    time.sleep(30); putout()
 '''
 
 _EARLY_MARKER = r'''
@@ -206,7 +211,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       manipulation_cam: bool = False, manipulation_look_at: str = "",
                       render_subframes: int = 0, manipulation_reach: bool = False,
                       manipulation_reach_arm: str = "both",
-                      fill_light_intensity: float = 0.0) -> RenderLaunchSpec:
+                      fill_light_intensity: float = 0.0,
+                      neutral_environment: bool = False) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -242,6 +248,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_MANIPULATION_REACH_ARM"] = str(manipulation_reach_arm)
     if fill_light_intensity and fill_light_intensity > 0:
         env["PARITY_FILL_LIGHT_INTENSITY"] = str(fill_light_intensity)
+    if neutral_environment:
+        env["PARITY_NEUTRAL_ENVIRONMENT"] = "1"
     if kitchen_url:
         env["KITCHEN_BUNDLE_URL"] = kitchen_url
     return RenderLaunchSpec(
@@ -343,6 +351,7 @@ def run_isaac_g1_kitchen_parity_job(
     manipulation_cam: bool = False, manipulation_look_at: str = "", render_subframes: int = 0,
     manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
     fill_light_intensity: float = 0.0,
+    neutral_environment: bool = False,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan."""
     out_dir = Path(out_dir)
@@ -397,7 +406,8 @@ def run_isaac_g1_kitchen_parity_job(
                              manipulation_cam=manipulation_cam, manipulation_look_at=manipulation_look_at,
                              render_subframes=render_subframes, manipulation_reach=manipulation_reach,
                              manipulation_reach_arm=manipulation_reach_arm,
-                             fill_light_intensity=fill_light_intensity)
+                             fill_light_intensity=fill_light_intensity,
+                             neutral_environment=neutral_environment)
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
                                         "policy_id": policy_id, "steps": steps}
@@ -466,6 +476,9 @@ def main(argv=None) -> int:
     ap.add_argument("--manipulation-reach-arm", default="both", choices=["right", "left", "both"])
     ap.add_argument("--fill-light-intensity", type=float, default=0.0,
                     help="sphere fill light over the faucet workspace to lift the dark basin (0=off)")
+    ap.add_argument("--neutral-environment", action="store_true",
+                    help="replace the kitchen's outdoor-HDRI dome with a neutral environment "
+                         "(no cityscape through the windows + lifts shadows)")
     args = ap.parse_args(argv)
     scenarios = json.loads(Path(args.scenarios).read_text())
     if isinstance(scenarios, dict):
@@ -478,7 +491,8 @@ def main(argv=None) -> int:
         settle_seconds=args.settle_seconds, manipulation_cam=args.manipulation_cam,
         manipulation_look_at=args.manipulation_look_at, render_subframes=args.render_subframes,
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
-        fill_light_intensity=args.fill_light_intensity)
+        fill_light_intensity=args.fill_light_intensity,
+        neutral_environment=args.neutral_environment)
     print(json.dumps(m, indent=2, default=str))
     return 0 if m.get("status") in ("completed", "prepared") else 1
 

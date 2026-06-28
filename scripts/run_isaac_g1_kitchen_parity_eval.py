@@ -480,6 +480,23 @@ def _rest_skeleton_world(offsets, root_pose, yaw):
     return out
 
 
+def skeleton_world_for_frame(*, art_ctx, rest_offsets, root_pose, yaw):
+    """Return the best available G1 skeleton for a rendered frame.
+
+    Some Isaac worker images expose a controllable G1 articulation with valid joints but no body
+    names. Reading link poses in that state can invalidate the PhysX tensor view, so fall back to
+    the USD rest-offset skeleton unless the articulation has usable link names.
+    """
+    if art_ctx is not None and art_ctx.get("link_names"):
+        try:
+            return _g1_skeleton_world_positions(art_ctx["art"], art_ctx["link_names"])
+        except Exception as exc:  # noqa: BLE001
+            _log(f"G1 articulation skeleton read failed ({exc!r}); using USD skeleton fallback")
+    if rest_offsets is not None:
+        return _rest_skeleton_world(rest_offsets, root_pose, yaw)
+    return []
+
+
 def compute_arm_reach_skeleton(skeleton, target, reach_frac, *, arm: str = "right"):
     """Re-pose one arm of a world-space skeleton so its hand reaches toward ``target`` (the faucet).
 
@@ -712,6 +729,36 @@ def _add_workspace_fill_light(stage, target, *, intensity: float, height: float 
         Gf.Vec3d(float(target[0]), float(target[1]) - 0.25, float(height)))
 
 
+def _neutralize_environment(stage, *, intensity: float = 1500.0) -> int:
+    """Replace any outdoor-HDRI DomeLight in the loaded scene with a NEUTRAL uniform environment.
+
+    The Lightwheel kitchen ships a DomeLight (e.g. ``DomeLight_01`` with ``texture/chive 7000x3500.hdr``)
+    that projects an outdoor cityscape, visible through the kitchen windows — an incongruous background
+    for an enclosed manipulation scene. Clearing the HDRI texture + setting a neutral bright color turns
+    it into even ambient: windows read neutral (no city) AND the dark cabinet/basin surfaces get lifted
+    by global fill. Returns the number of dome lights neutralized. GPU/USD only."""
+    from pxr import UsdLux, Sdf, Gf  # type: ignore
+    n = 0
+    for prim in stage.Traverse():
+        if prim.GetTypeName() != "DomeLight":
+            continue
+        dome = UsdLux.DomeLight(prim)
+        for attr_name in ("inputs:texture:file", "texture:file"):
+            attr = prim.GetAttribute(attr_name)
+            if attr and attr.IsValid():
+                try:
+                    attr.Set(Sdf.AssetPath(""))  # drop the HDRI -> uniform dome (no cityscape)
+                except Exception:  # noqa: BLE001
+                    pass
+        try:
+            dome.CreateColorAttr().Set(Gf.Vec3f(0.92, 0.92, 0.95))  # neutral cool-white
+            dome.CreateIntensityAttr(float(intensity))
+        except Exception:  # noqa: BLE001
+            pass
+        n += 1
+    return n
+
+
 def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], out_dir: Path,
                   policy_id: str, steps: int, width: int, height: int, fps: int,
                   warmup_frames: int, capture_every: int, no_collision_probe: bool = False,
@@ -722,7 +769,9 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   camera_vfov_deg: float = 50.0, manipulation_cam: bool = False,
                   manipulation_look_at=None, render_subframes: int = 1,
                   manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
-                  fill_light_intensity: float = 0.0) -> dict:
+                  fill_light_intensity: float = 0.0,
+                  physics_articulation_drive: bool = False,
+                  neutral_environment: bool = False) -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
     flushed progress + a per-scenario wall-clock cap so it cannot hang silently."""
@@ -739,6 +788,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         _log("PhysX cooking disabled (WARNING: breaks the renderer on this image)")
     blockers: list[str] = []
     outcomes: list[dict] = []
+    result = None
     try:
         _log(f"opening kitchen USD: {kitchen_usd}")
         stage = _open_stage(_resolve_asset_uri(kitchen_usd))
@@ -760,17 +810,27 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         rest_offsets = None
         art_ctx = None
         if articulated:
-            try:
-                art_ctx = _setup_articulated_g1(binding["prim_path"])
-                _log(
-                    "G1 articulation drive ready: "
-                    f"{art_ctx['dof_count']} joints, {len(art_ctx['link_names'])} links"
-                )
-            except Exception as exc:  # noqa: BLE001
-                blockers.append("official_isaac_unitree_g1_joint_drive_unavailable")
-                _log(f"G1 articulation drive unavailable ({exc!r}); using USD skeleton fallback")
+            # The physics articulation drive (SimulationContext + SingleArticulation tensor view) is
+            # OPT-IN and default-OFF. On this G1 USD it invalidates the tensor view the instant the
+            # kinematic _place_root mutates the G1 root xform during rendering ("prim '/World/G1/
+            # waist_yaw_link' was deleted while being used by a link in a tensor view"), shutting the
+            # sim down at the first rollout step -> 0 frames. The default is the pure-USD kinematic
+            # path: root pose + arm-reach skeleton with NO physics tensor, which renders crash-free.
+            if physics_articulation_drive:
+                try:
+                    art_ctx = _setup_articulated_g1(binding["prim_path"])
+                    _log(
+                        "G1 articulation drive ready: "
+                        f"{art_ctx['dof_count']} joints, {len(art_ctx['link_names'])} links"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    blockers.append("official_isaac_unitree_g1_joint_drive_unavailable")
+                    _log(f"G1 articulation drive unavailable ({exc!r}); using USD skeleton fallback")
+                if art_ctx is not None and not art_ctx.get("link_names"):
+                    _log("G1 articulation body/link names unavailable; using USD root/skeleton fallback")
+                    art_ctx = None
             rest_offsets = _g1_link_rest_offsets(stage, binding["prim_path"])
-            _log(f"G1 skeleton fallback: {len(rest_offsets)} link landmarks (rest-pose, kinematic)")
+            _log(f"G1 skeleton (pure-USD kinematic, crash-free): {len(rest_offsets)} link landmarks")
         from pxr import UsdGeom, UsdLux  # type: ignore
         UsdGeom.Scope.Define(stage, "/World")
         over_cam = "/World/Cameras/overview"
@@ -791,6 +851,12 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             _add_workspace_fill_light(stage, manipulation_look_at, intensity=fill_light_intensity)
             _log(f"workspace fill light @ {tuple(round(float(c),2) for c in manipulation_look_at)} "
                  f"intensity={fill_light_intensity}")
+        if neutral_environment:
+            try:
+                n_dome = _neutralize_environment(stage)
+                _log(f"neutralized {n_dome} outdoor-HDRI dome light(s) -> enclosed neutral environment")
+            except Exception as exc:  # noqa: BLE001
+                _log(f"environment neutralize skipped ({exc!r})")
         _log(f"creating render products ({width}x{height})")
         over_annot = _make_render_product(over_cam, width, height)
         pov_annot = _make_render_product(pov_cam, width, height)
@@ -876,10 +942,12 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 else follow_cam_pose(decision.root_pose, decision.yaw))
                     _place_camera(stage, pov_cam, eye, tgt)  # POV camera (manipulation egocentric or follow)
                     if articulated and (art_ctx is not None or rest_offsets is not None):
-                        if art_ctx is not None:
-                            skel = _g1_skeleton_world_positions(art_ctx["art"], art_ctx["link_names"])
-                        else:
-                            skel = _rest_skeleton_world(rest_offsets, decision.root_pose, decision.yaw)
+                        skel = skeleton_world_for_frame(
+                            art_ctx=art_ctx,
+                            rest_offsets=rest_offsets,
+                            root_pose=decision.root_pose,
+                            yaw=decision.yaw,
+                        )
                         if manipulation_reach and manipulation_look_at is not None:
                             # For manipulation POVs the first frame is already "task started": arms
                             # visible in the workspace. Navigation/follow shots can still ramp.
@@ -934,12 +1002,17 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             _log(f"scenario {sid}: done")
     finally:
         try:
-            sim.close()
-        except Exception:  # noqa: BLE001
-            pass
-    result = build_result(scenarios=scenarios, outcomes=outcomes, policy_id=policy_id,
-                          kitchen_usd=kitchen_usd, g1_usd=g1_usd, blockers=blockers)
-    (out_dir / "isaac_g1_kitchen_parity_result.json").write_text(json.dumps(result, indent=2))
+            # SimulationApp.close() can terminate or stall the worker process on some
+            # remote runtimes, so persist the collector-visible result before closing Isaac.
+            result = build_result(scenarios=scenarios, outcomes=outcomes, policy_id=policy_id,
+                                  kitchen_usd=kitchen_usd, g1_usd=g1_usd, blockers=blockers)
+            (out_dir / "isaac_g1_kitchen_parity_result.json").write_text(json.dumps(result, indent=2))
+        finally:
+            try:
+                sim.close()
+            except Exception:  # noqa: BLE001
+                pass
+    assert result is not None
     return result
 
 
@@ -989,6 +1062,13 @@ def main(argv=None) -> int:
     ap.add_argument("--fill-light-intensity", type=float, default=0.0,
                     help="add a sphere fill light over the manipulation workspace (the faucet) at this "
                          "intensity to lift the dark sink basin; 0 disables")
+    ap.add_argument("--physics-articulation-drive", action="store_true",
+                    help="(opt-in, default off) drive the G1 via the physics articulation tensor view. "
+                         "On the current G1 USD this invalidates the tensor view during rendering and "
+                         "crashes the sim at step 1; leave OFF to use the crash-free pure-USD path")
+    ap.add_argument("--neutral-environment", action="store_true",
+                    help="replace the kitchen asset's outdoor-HDRI dome light with a neutral bright "
+                         "environment (no cityscape through the windows + lifts shadowed surfaces)")
     args = ap.parse_args(argv)
 
     manip_look_at = None
@@ -1026,7 +1106,9 @@ def main(argv=None) -> int:
         camera_vfov_deg=args.camera_vfov, manipulation_cam=args.manipulation_cam,
         manipulation_look_at=manip_look_at, render_subframes=args.render_subframes,
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
-        fill_light_intensity=args.fill_light_intensity)
+        fill_light_intensity=args.fill_light_intensity,
+        physics_articulation_drive=args.physics_articulation_drive,
+        neutral_environment=args.neutral_environment)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))
