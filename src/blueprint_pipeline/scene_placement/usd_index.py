@@ -199,6 +199,33 @@ def _objects_from_bounds(
     return objects
 
 
+def _drop_degenerate_boxes(
+    objects: Sequence[SceneObject],
+    *,
+    max_box_size: float = 6.0,
+    min_box_thickness: float = 0.0,
+) -> List[SceneObject]:
+    """Drop obstacle boxes that are bad data, not real geometry (PURE).
+
+    Per-leaf bounds from a real USD include junk the AABB clip test must not trust:
+      * INSTANCER / empty-mesh / unbounded prims whose ``ComputeWorldBound`` returns a giant box
+        (e.g. a 100x100x100 m "sink" leaf) — that single box would make EVERY pose read as clipping.
+      * (optionally) paper-thin sheets (``min_box_thickness > 0``) like wall/floor planes that slip
+        past name-based shell exclusion.
+    ``max_box_size`` is the per-axis cap (default 6 m — larger than any real kitchen fixture, so a
+    long 4 m counter run survives while the 100 m degenerate box is dropped).
+    """
+    kept: List[SceneObject] = []
+    for o in objects:
+        dx, dy, dz = o.size()
+        if max(dx, dy, dz) > max_box_size:
+            continue
+        if min_box_thickness > 0.0 and min(dx, dy, dz) < min_box_thickness:
+            continue
+        kept.append(o)
+    return kept
+
+
 class UsdSceneSpatialIndex:
     """Enumerate placement-relevant objects from a USD stage.
 
@@ -216,12 +243,16 @@ class UsdSceneSpatialIndex:
         usd_path: Optional[str] = None,
         *,
         exclude_substrings: Sequence[str] = DEFAULT_EXCLUDE_SUBSTRINGS,
+        max_obstacle_box_size: float = 6.0,
     ) -> None:
         if stage is None and not usd_path:
             raise ValueError("UsdSceneSpatialIndex requires either a stage or a usd_path")
         self._stage = stage
         self._usd_path = usd_path
         self._exclude_substrings = tuple(exclude_substrings)
+        # Per-axis cap for obstacle_boxes(): a leaf bound larger than this is degenerate data
+        # (instancer/empty-mesh) and dropped so it can't make every pose read as clipping.
+        self._max_obstacle_box_size = float(max_obstacle_box_size)
 
     def objects(self) -> List[SceneObject]:
         """Walk the stage and return one ``SceneObject`` per top-level named object.
@@ -238,10 +269,32 @@ class UsdSceneSpatialIndex:
             source="usd",
         )
 
+    def obstacle_boxes(self) -> List[SceneObject]:
+        """Fine, per-leaf-Gprim world AABBs for the clip/overlap test (NOT for target resolution).
+
+        ``objects()`` groups a multi-mesh assembly into ONE box — right for resolving "the sink",
+        but wrong for the clip test: a whole L-shaped base-cabinet run collapses into a single
+        room-spanning AABB whose box covers the open aisle floor, so any close-to-counter stance
+        reads as "inside the cabinet" even though the real cabinet is only ~0.6 m deep. This emits
+        one TIGHT box per leaf ``Gprim`` instead, each labeled with its named object (so the run
+        becomes several real cabinet boxes the robot can stand in front of), shell geometry still
+        excluded by name. Pass the result as ``obstacles`` to :func:`validate_stand_pose` / the
+        placement probe; keep using :meth:`objects` for resolving the task target.
+        """
+        leaf_bounds = self._walk_stage(leaf=True)
+        objects = _objects_from_bounds(
+            leaf_bounds,
+            exclude_substrings=self._exclude_substrings,
+            source="usd_leaf",
+        )
+        # Drop degenerate per-leaf bounds (instancer/empty-mesh boxes spanning the whole scene),
+        # which would otherwise make every pose read as clipping.
+        return _drop_degenerate_boxes(objects, max_box_size=self._max_obstacle_box_size)
+
     # ------------------------------------------------------------------
     # The ONLY pxr-touching code. Everything above is pure + unit-tested.
     # ------------------------------------------------------------------
-    def _walk_stage(self) -> List[Tuple[str, Tuple[Vec3, Vec3]]]:
+    def _walk_stage(self, *, leaf: bool = False) -> List[Tuple[str, Tuple[Vec3, Vec3]]]:
         """Lazy ``pxr`` walk -> ``[(prim_name, (bbox_min, bbox_max)), ...]``.
 
         WHY one entry per top-level named object: authored objects are often an
@@ -302,6 +355,28 @@ class UsdSceneSpatialIndex:
             # it instead of emitting a scene-spanning bound here. This is the guard
             # that stops an un-excluded wrapper Xform from collapsing the whole scene.
             if not _subtree_has_gprim(prim):
+                continue
+            if leaf:
+                # Fine granularity: emit one tight world AABB per leaf Gprim under this object,
+                # labeled with the OBJECT name. An L-shaped aggregate (a whole counter run) thus
+                # becomes several real cabinet boxes instead of one room-spanning AABB, so the clip
+                # test no longer treats the open aisle as "inside the cabinet".
+                for desc in Usd.PrimRange(prim):
+                    if not (desc.IsValid() and desc.IsA(UsdGeom.Gprim)):
+                        continue
+                    try:
+                        leaf_aligned = bbox_cache.ComputeWorldBound(desc).ComputeAlignedRange()
+                        if leaf_aligned.IsEmpty():
+                            continue
+                        lmn = leaf_aligned.GetMin()
+                        lmx = leaf_aligned.GetMax()
+                    except Exception:  # noqa: BLE001 - a malformed leaf must not abort the walk
+                        continue
+                    named_bounds.append((name, (
+                        (float(lmn[0]), float(lmn[1]), float(lmn[2])),
+                        (float(lmx[0]), float(lmx[1]), float(lmx[2])),
+                    )))
+                prim_range.PruneChildren()
                 continue
             # Compute the world AABB for THIS prim subtree.
             try:

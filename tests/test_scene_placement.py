@@ -582,6 +582,61 @@ def test_usd_walk_collapses_submeshes_and_excludes_shell_and_wrapper():
     assert sink.bbox_max[2] >= 1.3 - 1e-6
 
 
+def test_drop_degenerate_boxes_filters_instancer_and_thin_planes():
+    from blueprint_pipeline.scene_placement.usd_index import _drop_degenerate_boxes
+
+    def _b(oid, lo, hi):
+        return SceneObject(id=oid, label=oid, bbox_min=lo, bbox_max=hi,
+                           centroid=tuple(0.5*(lo[i]+hi[i]) for i in range(3)), source="usd_leaf")
+    boxes = [
+        _b("cabinet", (0, 0, 0), (4.0, 0.6, 0.85)),        # long but real counter run -> KEEP
+        _b("instancer", (-50, -50, -50), (50, 50, 50)),    # 100m degenerate -> DROP
+        _b("knob", (1.0, 1.0, 0.8), (1.1, 1.1, 0.9)),      # normal -> KEEP
+        _b("wall_plane", (0, 2.48, 0), (4.0, 2.48, 2.4)),  # zero-thickness sheet
+    ]
+    kept = _drop_degenerate_boxes(boxes, max_box_size=6.0)
+    assert sorted(o.id for o in kept) == ["cabinet", "knob", "wall_plane"]   # only the 100m box dropped
+    kept2 = _drop_degenerate_boxes(boxes, max_box_size=6.0, min_box_thickness=0.01)
+    assert sorted(o.id for o in kept2) == ["cabinet", "knob"]                # thin plane also dropped
+
+
+def test_obstacle_boxes_splits_aggregate_and_drops_degenerate():
+    """pxr-gated: obstacle_boxes() emits one TIGHT box per leaf Gprim (so a multi-mesh assembly is
+    several boxes for the clip test) while objects() keeps it grouped, and a 100m instancer box is
+    dropped. This is the fix for an L-counter collapsing into one aisle-covering AABB.
+    """
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+
+    def _cube(path, lo, hi):
+        m = UsdGeom.Mesh.Define(stage, path)
+        m.CreatePointsAttr([(lo[0],lo[1],lo[2]),(hi[0],lo[1],lo[2]),(hi[0],hi[1],lo[2]),(lo[0],hi[1],lo[2]),
+                            (lo[0],lo[1],hi[2]),(hi[0],lo[1],hi[2]),(hi[0],hi[1],hi[2]),(lo[0],hi[1],hi[2])])
+        m.CreateExtentAttr([(lo[0],lo[1],lo[2]),(hi[0],hi[1],hi[2])])
+        return m
+
+    # one named "Cabinet" assembly of two SEPARATED segments (an L) + a degenerate huge leaf
+    UsdGeom.Xform.Define(stage, "/World/Cabinet")
+    _cube("/World/Cabinet/SegA", (0.0, 0.0, 0.0), (0.6, 0.6, 0.85))
+    _cube("/World/Cabinet/SegB", (3.0, 3.0, 0.0), (3.6, 3.6, 0.85))
+    _cube("/World/Cabinet/Instancer", (-50, -50, -50), (50, 50, 50))   # degenerate
+
+    idx = UsdSceneSpatialIndex(stage=stage)
+    grouped = idx.objects()
+    assert [o.label for o in grouped] == ["cabinet"]            # ONE grouped object
+    g = grouped[0]
+    assert g.size()[0] >= 3.0 and g.size()[1] >= 3.0            # grouped AABB spans the whole L (coarse)
+
+    fine = idx.obstacle_boxes()
+    # two real segment boxes survive; the 100m instancer leaf is dropped; each box is TIGHT (~0.6m)
+    assert len(fine) == 2
+    assert all(o.label == "cabinet" for o in fine)
+    assert all(max(o.size()) < 1.0 for o in fine)              # tight, not the coarse 3m+ aggregate
+
+
 # ===========================================================================
 # perception_index — the camera math (the crux) + the detection->AABB index.
 # Self-contained: depends only on types + perception_index, so it runs even
