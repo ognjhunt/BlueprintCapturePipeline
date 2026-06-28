@@ -118,6 +118,13 @@ _TASK_STOPWORDS = frozenset(
         "please", "go", "move", "walk", "stand", "near", "by", "use", "operate",
         "activate", "start", "stop", "robot", "pick", "up", "grab", "take", "put",
         "place", "set", "get", "reach", "for", "into", "onto",
+        # Room / location qualifiers — these describe WHERE, never the object the task
+        # acts on, yet they often appear as a prim/label substring (e.g. a "kitchen_box"
+        # or "KitchenRoom" wrapper). Without dropping them, longest-first token ordering
+        # tries "kitchen" before "faucet"/"sink" and resolves to the wrong object.
+        "kitchen", "kitchenette", "bathroom", "bedroom", "garage", "office",
+        "hallway", "pantry", "basement", "closet", "room", "scene", "area", "here",
+        "there", "side",
     }
 )
 

@@ -175,6 +175,19 @@ def test_label_fallback_direct_substring(kitchen_objects):
     assert target.id == "faucet_1"  # "faucet" is a substring of "kitchen_faucet_01"
 
 
+def test_label_fallback_ignores_room_qualifier_word():
+    # Regression: a real GPU render resolved "Stand at the kitchen sink and turn on the
+    # faucet" to a "kitchen_box" prim because "kitchen" (longest token) was tried first and
+    # direct-matched. Room words must be stopped so the actual target noun wins.
+    objs = [_obj("box", "kitchen_box"), _obj("sink", "sink"), _obj("faucet", "faucet")]
+    target = tr.resolve_target_by_label("Stand at the kitchen sink and turn on the faucet.", objs)
+    assert target is not None
+    assert target.id in {"faucet", "sink"}        # the action target, NOT the kitchen_box
+    # even with only a sink present (no clean "faucet" prim), it must not pick kitchen_box
+    objs2 = [_obj("box", "kitchen_box"), _obj("sink", "sink")]
+    assert tr.resolve_target_by_label("turn on the kitchen faucet", objs2).id == "sink"
+
+
 def test_label_fallback_synonym_tap_to_faucet():
     objs = [_obj("f", "faucet"), _obj("s", "stove")]
     # "tap" is a synonym mapped onto faucet-like labels
