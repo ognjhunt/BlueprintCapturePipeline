@@ -637,6 +637,44 @@ def test_obstacle_boxes_splits_aggregate_and_drops_degenerate():
     assert all(max(o.size()) < 1.0 for o in fine)              # tight, not the coarse 3m+ aggregate
 
 
+def test_obstacle_boxes_splits_disconnected_components_inside_one_mesh():
+    """A single mesh can contain multiple disconnected cabinet pieces; split those too."""
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+    UsdGeom.Xform.Define(stage, "/World/PackedCabinet")
+
+    def cube_points(lo, hi):
+        return [
+            (lo[0], lo[1], lo[2]), (hi[0], lo[1], lo[2]), (hi[0], hi[1], lo[2]), (lo[0], hi[1], lo[2]),
+            (lo[0], lo[1], hi[2]), (hi[0], lo[1], hi[2]), (hi[0], hi[1], hi[2]), (lo[0], hi[1], hi[2]),
+        ]
+
+    faces = [
+        [0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4],
+        [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7],
+    ]
+    points = cube_points((0.0, 0.0, 0.0), (0.5, 0.5, 0.8))
+    points += cube_points((3.0, 3.0, 0.0), (3.5, 3.5, 0.8))
+    counts = [4] * 12
+    indices = [idx for face in faces for idx in face]
+    indices += [idx + 8 for face in faces for idx in face]
+    mesh = UsdGeom.Mesh.Define(stage, "/World/PackedCabinet/PackedCabinet")
+    mesh.CreatePointsAttr(points)
+    mesh.CreateFaceVertexCountsAttr(counts)
+    mesh.CreateFaceVertexIndicesAttr(indices)
+    mesh.CreateExtentAttr([(0.0, 0.0, 0.0), (3.5, 3.5, 0.8)])
+
+    fine = UsdSceneSpatialIndex(stage=stage).obstacle_boxes()
+
+    assert len(fine) == 2
+    assert [o.id for o in fine] == ["packedcabinet", "packedcabinet_1"]
+    assert all(o.size()[0] == pytest.approx(0.5) for o in fine)
+    assert all(o.size()[1] == pytest.approx(0.5) for o in fine)
+
+
 # ===========================================================================
 # perception_index — the camera math (the crux) + the detection->AABB index.
 # Self-contained: depends only on types + perception_index, so it runs even

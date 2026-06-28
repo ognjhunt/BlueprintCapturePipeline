@@ -96,7 +96,14 @@ class GpuRenderProvider:
     def build_request(self, spec: RenderLaunchSpec, job_dir: Path) -> dict:
         raise NotImplementedError
 
-    def launch(self, job_dir: Path, request: dict, *, cold: bool = False) -> dict:
+    def launch(
+        self,
+        job_dir: Path,
+        request: dict,
+        *,
+        cold: bool = False,
+        allow_cold_fallback: bool = True,
+    ) -> dict:
         raise NotImplementedError
 
     def stop(self, instance_id: str) -> dict:
@@ -152,7 +159,14 @@ class RunPodRenderProvider(GpuRenderProvider):
             "dockerStartCmd": list(spec.bootstrap_argv),
         }
 
-    def launch(self, job_dir: Path, request: dict, *, cold: bool = False) -> dict:
+    def launch(
+        self,
+        job_dir: Path,
+        request: dict,
+        *,
+        cold: bool = False,
+        allow_cold_fallback: bool = True,
+    ) -> dict:
         """Warm-host restart first (no image pull); else cold on-demand create."""
         key = self._key()
         if not key:
@@ -163,16 +177,41 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "imageName", "containerDiskInGb", "volumeInGb", "volumeMountPath",
                 "env", "dockerEntrypoint", "dockerStartCmd") if k in request}
             for pid in self.warm_candidates:
-                s, _ = _runpod_call("GET", f"/pods/{pid}", None, key=key)
+                attempt: dict = {"pod_id": pid}
+                s, get_body = _runpod_call("GET", f"/pods/{pid}", None, key=key)
+                attempt["get_status"] = s
+                if isinstance(get_body, dict):
+                    attempt["desiredStatus"] = get_body.get("desiredStatus")
+                    if get_body.get("error"):
+                        attempt["get_error"] = get_body.get("error")
                 if s != 200:
+                    attempts.append(attempt)
                     continue
-                _runpod_call("POST", f"/pods/{pid}/update", upd, key=key)
-                ss, _rs = _runpod_call("POST", f"/pods/{pid}/start", {}, key=key)
-                attempts.append({"pod_id": pid, "start_status": ss})
+                us, update_body = _runpod_call("POST", f"/pods/{pid}/update", upd, key=key)
+                attempt["update_status"] = us
+                if isinstance(update_body, dict) and update_body.get("error"):
+                    attempt["update_error"] = update_body.get("error")
+                if us not in (200, 201, 204):
+                    attempts.append(attempt)
+                    continue
+                ss, start_body = _runpod_call("POST", f"/pods/{pid}/start", {}, key=key)
+                attempt["start_status"] = ss
+                if isinstance(start_body, dict):
+                    if start_body.get("desiredStatus") is not None:
+                        attempt["start_desiredStatus"] = start_body.get("desiredStatus")
+                    if start_body.get("error"):
+                        attempt["start_error"] = start_body.get("error")
+                attempts.append(attempt)
                 if ss in (200, 201):
                     (job_dir / "started_pod_id.txt").write_text(pid)
                     return {"status": "launched", "instance_id": pid,
                             "mode": "warm_restart", "attempts": attempts}
+        if not cold and self.warm_candidates and not allow_cold_fallback:
+            return {
+                "status": "blocked",
+                "blockers": ["warm_restart_failed_cold_fallback_disabled"],
+                "attempts": attempts,
+            }
         s, r = _runpod_call("POST", "/pods", request, key=key)
         pid = r.get("id") if isinstance(r, dict) else None
         attempts.append({"cold_create_status": s, "pod_id": pid,
@@ -237,7 +276,14 @@ class VastRenderProvider(GpuRenderProvider):
             "max_hourly_rate_usd": spec.max_hourly_rate_usd,
         }
 
-    def launch(self, job_dir: Path, request: dict, *, cold: bool = False) -> dict:
+    def launch(
+        self,
+        job_dir: Path,
+        request: dict,
+        *,
+        cold: bool = False,
+        allow_cold_fallback: bool = True,
+    ) -> dict:
         """Search RT-capable offers under rate, then create an instance from the cheapest.
         Vast is always on-demand cold create; ``cold`` is accepted for a uniform signature."""
         key = self._key()

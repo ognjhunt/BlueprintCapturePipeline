@@ -45,6 +45,8 @@ DEFAULT_VALIDATION_FOOTPRINT_HALF_EXTENT: Tuple[float, float, float] = (0.28, 0.
 DEFAULT_VALIDATION_PELVIS_HEIGHT_M = 0.79
 DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG = 30.0
 DEFAULT_VALIDATION_STANDOFF_RANGE: Tuple[float, float] = (0.4, 1.2)
+DEFAULT_VALIDATION_CLIP_AREA_EPS_M2 = 0.005
+DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M = 0.08
 
 
 @dataclass
@@ -54,6 +56,9 @@ class PlacementVerdict:
     ok: bool
     failures: List[str] = field(default_factory=list)          # human-readable failed checks
     clipping: List[Tuple[str, float]] = field(default_factory=list)  # (obstacle_id, xy overlap m^2)
+    near_clearance: List[Tuple[str, float]] = field(default_factory=list)  # (obstacle_id, xy gap m)
+    outside_boundary: List[str] = field(default_factory=list)
+    min_obstacle_clearance_m: float | None = None
     facing_error_deg: float = 0.0
     standoff_m: float = 0.0
     on_floor: bool = True
@@ -108,6 +113,64 @@ def _obj_bbox_finite(obj: SceneObject) -> bool:
     )
 
 
+def _is_structural_boundary_obstacle(obj: SceneObject) -> bool:
+    """Walls/windows are room boundaries even when their mesh AABB starts above the foot band."""
+    source = str(obj.source or "").lower()
+    if not source.startswith("usd"):
+        return False
+    text = f"{obj.id} {obj.label}".lower()
+    if "wall" in text or "wallcollider" in text:
+        return True
+    # Window leaf meshes are usually mullions/trim, not the room envelope. They can still
+    # participate in clearance when close to the footprint, but only shell-derived windows
+    # should decide that a pose is outside the room or across a boundary from the target.
+    return "window" in text and source == "usd_shell"
+
+
+def _crosses_structural_boundary_xy(
+    *,
+    pose_xy: Tuple[float, float],
+    target_xy: Tuple[float, float],
+    boundary: SceneObject,
+    footprint_half_extent_xy: Tuple[float, float],
+) -> bool:
+    """True when the pose-to-target xy segment crosses a thin wall/window AABB.
+
+    A side-of-plane test alone is too broad for authored kitchens: any decorative window
+    segment with a thin AABB can sit between the pose x and target x while being nowhere near
+    the actual line of approach. Requiring the line segment to pierce the AABB's long-span
+    interval keeps real "wall/window side" rejections while not treating unrelated panes as
+    global room separators.
+    """
+    px, py = pose_xy
+    tx, ty = target_xy
+    hx, hy = footprint_half_extent_xy
+    min_x, min_y = float(boundary.bbox_min[0]), float(boundary.bbox_min[1])
+    max_x, max_y = float(boundary.bbox_max[0]), float(boundary.bbox_max[1])
+    size_x = abs(max_x - min_x)
+    size_y = abs(max_y - min_y)
+    cx = 0.5 * (min_x + max_x)
+    cy = 0.5 * (min_y + max_y)
+    eps = 1e-9
+    if size_x <= min(size_y, 0.35):
+        if (px - cx) * (tx - cx) >= 0.0 or abs(tx - px) <= eps:
+            return False
+        t = (cx - px) / (tx - px)
+        if not 0.0 <= t <= 1.0:
+            return False
+        y_at_boundary = py + t * (ty - py)
+        return (min_y - hy) <= y_at_boundary <= (max_y + hy)
+    if size_y <= min(size_x, 0.35):
+        if (py - cy) * (ty - cy) >= 0.0 or abs(ty - py) <= eps:
+            return False
+        t = (cy - py) / (ty - py)
+        if not 0.0 <= t <= 1.0:
+            return False
+        x_at_boundary = px + t * (tx - px)
+        return (min_x - hx) <= x_at_boundary <= (max_x + hx)
+    return False
+
+
 def validate_stand_pose(
     position: Vec3,
     yaw: float,
@@ -121,7 +184,8 @@ def validate_stand_pose(
     standoff_range: Tuple[float, float] = DEFAULT_VALIDATION_STANDOFF_RANGE,
     floor_tol: float = 0.08,
     foot_clearance: float = 0.40,
-    clip_area_eps: float = 1e-4,
+    clip_area_eps: float = DEFAULT_VALIDATION_CLIP_AREA_EPS_M2,
+    min_obstacle_clearance_m: float = DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M,
     standoff_obstacles: Optional[Sequence[SceneObject]] = None,
 ) -> PlacementVerdict:
     """Validate that ``position``/``yaw`` stands the robot correctly for acting on ``target``.
@@ -149,6 +213,13 @@ def validate_stand_pose(
        recessed in) to measure the gap to the NEAREST of the target and those fixtures, so a small target
        recessed behind a deep counter is judged reachable when the robot is at the counter's front edge.
 
+    ``clip_area_eps`` is a small AABB sliver tolerance for visual meshes split into thin component
+    boxes. It prevents millimeter-scale face-box overlaps from rejecting an otherwise clear stance
+    while still failing real footprint/object intersections. ``min_obstacle_clearance_m`` handles
+    the mirror-image bug: a footprint can be technically non-overlapping but only millimeters from
+    a base cabinet/wall AABB, which renders as clipping once the full G1 mesh and reconstruction
+    noise are involved.
+
     ``obstacles`` should be the shell-excluded object catalog (``SceneSpatialIndex.objects()``); the
     target itself may be present and is treated as a clip obstacle too (standing inside it = clip).
 
@@ -159,12 +230,11 @@ def validate_stand_pose(
     """
     px, py, pz = (float(v) for v in position)
     yaw = float(yaw)
-    hx, hy, hz = (abs(float(v)) for v in footprint_half_extent)
+    hx, hy, _hz = (abs(float(v)) for v in footprint_half_extent)
     f_min = (px - hx, py - hy)
     f_max = (px + hx, py + hy)
     pelvis_z = floor_z + pelvis_height
-    robot_top_z = pelvis_z + hz
-    robot_bottom_z = pelvis_z - hz
+    floor_obstacle_ceiling = floor_z + foot_clearance
     failures: List[str] = []
 
     # 0. FINITE INPUTS — guard before any comparison, since `x > nan` etc. are all False (silent pass).
@@ -181,26 +251,51 @@ def validate_stand_pose(
         # Bail out early: with non-finite geometry the downstream metrics are meaningless and would
         # report misleading (nan/0.0) diagnostics. Fail loud with the concrete reason instead.
         return PlacementVerdict(
-            ok=False, failures=failures, clipping=[],
+            ok=False, failures=failures, clipping=[], near_clearance=[], outside_boundary=[],
+            min_obstacle_clearance_m=min_obstacle_clearance_m,
             facing_error_deg=float("nan"), standoff_m=float("nan"),
             on_floor=False, notes="INVALID: " + "; ".join(failures),
         )
 
-    # 1. CLIP — an obstacle clips iff its z-span overlaps the robot body z-interval and its xy
-    #    footprint overlaps the robot footprint. Skip only obstacles wholly above the head or below
-    #    the feet.
+    # 1. CLIP — floor-occupancy model: an obstacle blocks the stance iff it reaches the floor under
+    #    the footprint. Skip anything above the foot band or entirely below the declared floor.
     clipping: List[Tuple[str, float]] = []
+    near_clearance: List[Tuple[str, float]] = []
+    outside_boundary: List[str] = []
     for obs in obstacles:
-        if obs.min_z() > robot_top_z or obs.max_z() < robot_bottom_z:
+        structural_boundary = _is_structural_boundary_obstacle(obs)
+        if (
+            not structural_boundary
+            and (obs.min_z() >= floor_obstacle_ceiling or obs.max_z() < floor_z)
+        ):
             continue
+        if structural_boundary:
+            if _crosses_structural_boundary_xy(
+                pose_xy=(px, py),
+                target_xy=(float(target.centroid[0]), float(target.centroid[1])),
+                boundary=obs,
+                footprint_half_extent_xy=(hx, hy),
+            ):
+                outside_boundary.append(obs.id)
         area = _xy_overlap_area(
             f_min, f_max,
             (obs.bbox_min[0], obs.bbox_min[1]), (obs.bbox_max[0], obs.bbox_max[1]),
         )
         if area > clip_area_eps:
             clipping.append((obs.id, round(area, 4)))
+            continue
+        gap = _xy_box_gap(
+            f_min, f_max,
+            (obs.bbox_min[0], obs.bbox_min[1]), (obs.bbox_max[0], obs.bbox_max[1]),
+        )
+        if 0.0 < gap < min_obstacle_clearance_m:
+            near_clearance.append((obs.id, round(gap, 4)))
     if clipping:
         failures.append("clips:" + ",".join(oid for oid, _ in clipping))
+    if near_clearance:
+        failures.append("clearance:" + ",".join(oid for oid, _ in near_clearance))
+    if outside_boundary:
+        failures.append("outside_boundary:" + ",".join(outside_boundary))
 
     # 2. ON FLOOR
     on_floor = abs(pz - pelvis_z) <= floor_tol
@@ -230,7 +325,9 @@ def validate_stand_pose(
     ok = not failures
     notes = "placement valid" if ok else "INVALID: " + "; ".join(failures)
     return PlacementVerdict(
-        ok=ok, failures=failures, clipping=clipping,
+        ok=ok, failures=failures, clipping=clipping, near_clearance=near_clearance,
+        outside_boundary=outside_boundary,
+        min_obstacle_clearance_m=round(float(min_obstacle_clearance_m), 6),
         facing_error_deg=round(facing_err, 1), standoff_m=round(standoff, 3),
         on_floor=on_floor, notes=notes,
     )
@@ -274,6 +371,16 @@ def placement_verdict_to_dict(verdict: PlacementVerdict) -> dict[str, Any]:
             {"object_id": oid, "overlap_area_xy_m2": round(float(area), 6)}
             for oid, area in verdict.clipping
         ],
+        "near_clearance": [
+            {"object_id": oid, "gap_m": round(float(gap), 6)}
+            for oid, gap in verdict.near_clearance
+        ],
+        "outside_boundary": list(verdict.outside_boundary),
+        "min_obstacle_clearance_m": (
+            round(float(verdict.min_obstacle_clearance_m), 6)
+            if verdict.min_obstacle_clearance_m is not None
+            else None
+        ),
         "facing_error_deg": round(float(verdict.facing_error_deg), 6)
         if math.isfinite(float(verdict.facing_error_deg))
         else str(verdict.facing_error_deg),
@@ -310,6 +417,7 @@ def build_placement_validation_report(
     max_facing_error_deg: float = DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG,
     standoff_range: Tuple[float, float] = DEFAULT_VALIDATION_STANDOFF_RANGE,
     floor_tol: float = 0.08,
+    min_obstacle_clearance_m: float = DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M,
     standoff_obstacles: Optional[Sequence[SceneObject]] = None,
     metadata: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
@@ -331,6 +439,7 @@ def build_placement_validation_report(
         max_facing_error_deg=max_facing_error_deg,
         standoff_range=standoff_range,
         floor_tol=floor_tol,
+        min_obstacle_clearance_m=min_obstacle_clearance_m,
         standoff_obstacles=standoff_obstacles,
     )
     payload: dict[str, Any] = {
@@ -347,6 +456,7 @@ def build_placement_validation_report(
         "robot_footprint_box_at_pose": _footprint_box_dict(position, footprint_half_extent),
         "max_facing_error_deg": round(float(max_facing_error_deg), 6),
         "standoff_range_m": [round(float(standoff_range[0]), 6), round(float(standoff_range[1]), 6)],
+        "min_obstacle_clearance_m": round(float(min_obstacle_clearance_m), 6),
         "target_object": scene_object_to_dict(target),
         "scene_object_count": len(scene_objects),
         "scene_objects": [scene_object_to_dict(obj) for obj in scene_objects],
@@ -369,6 +479,8 @@ def write_placement_validation_report(path: str | Path, **kwargs: Any) -> dict[s
 
 __all__ = [
     "DEFAULT_VALIDATION_FOOTPRINT_HALF_EXTENT",
+    "DEFAULT_VALIDATION_CLIP_AREA_EPS_M2",
+    "DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M",
     "DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG",
     "DEFAULT_VALIDATION_PELVIS_HEIGHT_M",
     "DEFAULT_VALIDATION_STANDOFF_RANGE",

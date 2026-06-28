@@ -35,6 +35,42 @@ _DARK_REPLY = json.dumps({
     "summary": "Sink POV but a large lower region is very dark.",
 })
 
+_PLACEMENT_PASS_REPLY = json.dumps({
+    "pass": True,
+    "robot_on_open_floor": True,
+    "facing_target": True,
+    "not_clipping_counter_cabinets_sink": True,
+    "reason": "Robot is on open floor in front of the sink and facing it.",
+})
+
+_PLACEMENT_FAIL_REPLY = json.dumps({
+    "pass": False,
+    "robot_on_open_floor": False,
+    "facing_target": True,
+    "not_clipping_counter_cabinets_sink": False,
+    "reason": "Robot legs appear merged into the sink cabinet.",
+})
+
+_MANIPULATION_POV_PASS_REPLY = json.dumps({
+    "pass": True,
+    "target_visible": True,
+    "gripper_or_hand_visible": True,
+    "robot_arm_visible_beyond_gripper": True,
+    "arm_reaching_target": True,
+    "not_mostly_dark_or_occluded": True,
+    "reason": "The robot forearm and gripper are visible reaching the refrigerator handle.",
+})
+
+_MANIPULATION_POV_FAIL_REPLY = json.dumps({
+    "pass": False,
+    "target_visible": True,
+    "gripper_or_hand_visible": True,
+    "robot_arm_visible_beyond_gripper": False,
+    "arm_reaching_target": True,
+    "not_mostly_dark_or_occluded": True,
+    "reason": "The frame shows only an isolated gripper with no forearm or arm context.",
+})
+
 
 def test_prompt_targets_the_human_obvious_anomalies() -> None:
     p = qc.build_qc_prompt(_FAUCET_TASK, scene_context="enclosed kitchen")
@@ -113,10 +149,6 @@ def test_qc_render_frames_aggregates_and_would_have_caught_the_city(tmp_path) ->
         p = tmp_path / f"robot_pov_000{i}.png"
         p.write_bytes(b"\x89PNG fake")
         paths.append(p)
-    replies = {paths[0].name: _CLEAN_REPLY, paths[1].name: _CLEAN_REPLY, paths[2].name: _CITY_REPLY}
-
-    def fake_generate_by_unused(_b, _p):  # all frames sampled (sample_n>=3) -> need per-frame replies
-        return _CLEAN_REPLY
 
     # route reply by frame: use review per-frame via a closure keyed on call order
     order = iter([_CLEAN_REPLY, _CLEAN_REPLY, _CITY_REPLY])
@@ -158,3 +190,130 @@ def test_extract_model_text_skips_thinking_parts() -> None:
 
     r = R([P("internal reasoning...", thought=True), P(_CLEAN_REPLY)])
     assert qc.extract_model_text(r) == _CLEAN_REPLY  # the thinking part is skipped
+
+
+def test_robot_placement_prompt_asks_the_exact_gate_question() -> None:
+    prompt = qc.build_robot_placement_qc_prompt(
+        "sink",
+        task_description="turn on the faucet",
+    )
+    assert "open floor in front of the sink" in prompt
+    assert "NOT inside/clipping the counter/cabinets/sink" in prompt
+    assert '"pass"' in prompt and "STRICT JSON" in prompt
+
+
+def test_manipulation_pov_prompt_asks_for_arm_and_affordance() -> None:
+    prompt = qc.build_manipulation_pov_qc_prompt(
+        "refrigerator",
+        task_description="open the refrigerator",
+    )
+    assert "refrigerator" in prompt
+    assert "gripper/hand AND a visible forearm" in prompt
+    assert "handle/affordance" in prompt
+    assert "too dark or occluded" in prompt
+
+
+def test_parse_robot_placement_verdict_fails_closed() -> None:
+    ok = qc.parse_robot_placement_verdict(_PLACEMENT_PASS_REPLY)
+    assert ok["parsed"] is True
+    assert ok["passed"] is True
+    assert ok["not_clipping_counter_cabinets_sink"] is True
+
+    bad = qc.parse_robot_placement_verdict(_PLACEMENT_FAIL_REPLY)
+    assert bad["parsed"] is True
+    assert bad["passed"] is False
+    assert "cabinet" in bad["reason"]
+
+    junk = qc.parse_robot_placement_verdict("not json")
+    assert junk["parsed"] is False
+    assert junk["passed"] is False
+
+
+def test_parse_manipulation_pov_verdict_fails_closed() -> None:
+    ok = qc.parse_manipulation_pov_verdict(_MANIPULATION_POV_PASS_REPLY)
+    assert ok["parsed"] is True
+    assert ok["passed"] is True
+    assert ok["gripper_or_hand_visible"] is True
+    assert ok["robot_arm_visible_beyond_gripper"] is True
+
+    bad = qc.parse_manipulation_pov_verdict(_MANIPULATION_POV_FAIL_REPLY)
+    assert bad["parsed"] is True
+    assert bad["passed"] is False
+    assert bad["target_visible"] is True
+    assert bad["gripper_or_hand_visible"] is True
+    assert bad["robot_arm_visible_beyond_gripper"] is False
+
+    junk = qc.parse_manipulation_pov_verdict("not json")
+    assert junk["parsed"] is False
+    assert junk["passed"] is False
+
+
+def test_qc_robot_placement_frames_blocks_on_any_failed_frame(tmp_path) -> None:
+    paths = []
+    for name in ("verify_0000.png", "robot_pov_0000.png"):
+        p = tmp_path / name
+        p.write_bytes(b"\x89PNG fake")
+        paths.append(p)
+    replies = iter([_PLACEMENT_PASS_REPLY, _PLACEMENT_FAIL_REPLY])
+
+    report = qc.qc_robot_placement_frames(
+        paths,
+        "sink",
+        task_description="turn on the faucet",
+        generate=lambda _b, _p: next(replies),
+    )
+
+    assert report["schema_version"] == "robot_placement_visual_qc.v1"
+    assert report["status"] == "blocked"
+    assert report["frames_reviewed"] == 2
+    assert "placement_visual_qc_failed" in report["blockers"]
+
+
+def test_qc_robot_placement_frames_passes_when_all_frames_pass(tmp_path) -> None:
+    p = tmp_path / "verify_0000.png"
+    p.write_bytes(b"\x89PNG fake")
+
+    report = qc.qc_robot_placement_frames(
+        [p],
+        "sink",
+        task_description="turn on the faucet",
+        generate=lambda _b, _p: _PLACEMENT_PASS_REPLY,
+    )
+
+    assert report["status"] == "passed"
+    assert report["blockers"] == []
+
+
+def test_qc_manipulation_pov_frames_blocks_without_visible_arm(tmp_path) -> None:
+    paths = []
+    for name in ("robot_pov_0000.png", "robot_pov_0001.png"):
+        p = tmp_path / name
+        p.write_bytes(b"\x89PNG fake")
+        paths.append(p)
+    replies = iter([_MANIPULATION_POV_PASS_REPLY, _MANIPULATION_POV_FAIL_REPLY])
+
+    report = qc.qc_manipulation_pov_frames(
+        paths,
+        "refrigerator",
+        task_description="open the refrigerator",
+        generate=lambda _b, _p: next(replies),
+    )
+
+    assert report["schema_version"] == "manipulation_pov_visual_qc.v1"
+    assert report["status"] == "blocked"
+    assert "manipulation_pov_visual_qc_failed" in report["blockers"]
+
+
+def test_qc_manipulation_pov_frames_passes_when_arm_reaches_target(tmp_path) -> None:
+    p = tmp_path / "robot_pov_0000.png"
+    p.write_bytes(b"\x89PNG fake")
+
+    report = qc.qc_manipulation_pov_frames(
+        [p],
+        "refrigerator",
+        task_description="open the refrigerator",
+        generate=lambda _b, _p: _MANIPULATION_POV_PASS_REPLY,
+    )
+
+    assert report["status"] == "passed"
+    assert report["blockers"] == []

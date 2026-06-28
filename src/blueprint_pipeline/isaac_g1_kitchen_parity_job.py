@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import time
 import urllib.request
 import zipfile
@@ -56,6 +57,11 @@ def parity_image() -> str:
     """Isaac worker image for the parity eval (defaults to the same Isaac eval worker)."""
     ref = _read_secret("isaac_eval_worker_image_ref")
     return ref or default_image()
+
+
+def _gemini_api_key_from_env() -> str:
+    """Gemini key for worker-side visual QC, read from local env and never serialized to artifacts."""
+    return (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
 
 
 # diagnostics-streaming pod bootstrap for the parity runner
@@ -96,7 +102,7 @@ if KURL:
     zipfile.ZipFile(io.BytesIO(kdata)).extractall(kdir)
     mark("kitchen_extracted", kitchen_files=len(list(pathlib.Path(kdir).rglob("*"))))
 threading.Thread(target=hb, daemon=True).start()
-try: subprocess.call(["/isaac-sim/python.sh","-m","pip","install","-q","pillow"])  # frame save dep (best-effort)
+try: subprocess.call(["/isaac-sim/python.sh","-m","pip","install","-q","pillow","google-genai"])  # frame save + Gemini QC deps (best-effort)
 except Exception: pass
 try: subprocess.call(["bash","-c","command -v ffmpeg >/dev/null 2>&1 || (apt-get update -y >/dev/null 2>&1 && apt-get install -y ffmpeg >/dev/null 2>&1)"])  # mp4 assembly (best-effort)
 except Exception: pass
@@ -188,8 +194,10 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     (bundle / "kitchen").mkdir(parents=True, exist_ok=True)
     runner = _repo_root() / "scripts" / "run_isaac_g1_kitchen_parity_eval.py"
     policy = _repo_root() / "src" / "blueprint_pipeline" / "isaac_g1_policy.py"
+    visual_qc = _repo_root() / "src" / "blueprint_pipeline" / "render_visual_qc.py"
     (bundle / "run_isaac_g1_kitchen_parity_eval.py").write_bytes(runner.read_bytes())
     (bundle / "isaac_g1_policy.py").write_bytes(policy.read_bytes())
+    (bundle / "render_visual_qc.py").write_bytes(visual_qc.read_bytes())
     # Ship the scene_placement package alongside the runner so its dynamic task->object resolution
     # works on the worker (the runner imports `scene_placement` from the bundle dir; it falls back to
     # the repo's `blueprint_pipeline.scene_placement` in tests). Without this the worker has no
@@ -235,7 +243,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       kinematic_arm_pose: bool = False,
                       collision_approximation: str = "",
                       verify_cam: bool = False,
-                      manipulation_stand: bool = False) -> RenderLaunchSpec:
+                      manipulation_stand: bool = False,
+                      gemini_api_key: str | None = None) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -287,6 +296,9 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_MANIPULATION_STAND"] = "1"
     if kitchen_url:
         env["KITCHEN_BUNDLE_URL"] = kitchen_url
+    if gemini_api_key:
+        env["GOOGLE_GENAI_API_KEY"] = gemini_api_key
+        env["GEMINI_API_KEY"] = gemini_api_key
     return RenderLaunchSpec(
         name="blueprint-isaac-g1-kitchen-parity", image=image, env=env,
         bootstrap_argv=docker_start_cmd(), entrypoint=["bash"],
@@ -340,15 +352,23 @@ def build_harness_package(*, result: dict, render_out_dir: Path, out_dir: Path) 
 # ----------------------------- launch with flaky-pod retry -----------------------------
 
 def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts: int = 3,
-                             marker_timeout: int = 150, poll: int = 15) -> dict:
-    """Cold-create a pod, then wait for its container's early heartbeat (``bootstrap.json`` on the
+                             marker_timeout: int = 150, poll: int = 15,
+                             cold: bool = True,
+                             allow_cold_fallback: bool = True) -> dict:
+    """Launch a pod, then wait for its container's early heartbeat (``bootstrap.json`` on the
     output URL). RunPod cold pods are ~50% flaky — created + billing but the container never runs.
     If no marker appears within ``marker_timeout``, terminate that pod and retry, so we never pay
-    for a dead pod. Returns the launch of the first pod that actually started."""
+    for a dead cold pod. Warm-restart duds are stopped rather than deleted so a preserved pod can be
+    reused later. Returns the launch of the first pod that actually started."""
     get_url = (job_dir / "provider_output_get_url.txt").read_text().strip()
     attempts: list[dict] = []
     for attempt in range(max_attempts):
-        launch = prov.launch(job_dir, request, cold=True)
+        launch = prov.launch(
+            job_dir,
+            request,
+            cold=cold,
+            allow_cold_fallback=allow_cold_fallback,
+        )
         if launch.get("status") != "launched":
             attempts.append({"attempt": attempt, "result": "launch_call_failed", "detail": launch})
             continue
@@ -366,10 +386,14 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                 continue
         attempts.append({"attempt": attempt, "instance_id": iid, "marker_seen": marker_seen})
         if marker_seen:
-            return {"status": "launched", "instance_id": iid, "mode": "cold_create_marker_verified",
+            mode = launch.get("mode") or ("cold_create" if cold else "warm_or_cold")
+            return {"status": "launched", "instance_id": iid, "mode": f"{mode}_marker_verified",
                     "attempts": attempts}
-        prov.terminate(iid)  # flaky pod (billing but not running) -> kill and retry
-    return {"status": "blocked", "blockers": ["all_cold_launch_attempts_flaky"], "attempts": attempts}
+        if str(launch.get("mode") or "").startswith("warm"):
+            prov.stop(iid)
+        else:
+            prov.terminate(iid)  # flaky cold pod (billing but not running) -> kill and retry
+    return {"status": "blocked", "blockers": ["all_launch_attempts_flaky"], "attempts": attempts}
 
 
 # ----------------------------- orchestration -----------------------------
@@ -394,6 +418,8 @@ def run_isaac_g1_kitchen_parity_job(
     collision_approximation: str = "",
     verify_cam: bool = False,
     manipulation_stand: bool = False,
+    warm_candidates: Sequence[str] | None = None,
+    warm_only: bool = False,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan."""
     out_dir = Path(out_dir)
@@ -401,8 +427,14 @@ def run_isaac_g1_kitchen_parity_job(
     manifest: dict = {"schema_version": SCHEMA_VERSION, "status": "blocked", "blockers": [],
                       "provider": (provider or "runpod").lower(), "policy_id": policy_id,
                       "rendered_by": "isaac_rtx_g1_kitchen_parity"}
+    configured_warm_candidates = tuple(
+        c.strip()
+        for c in (os.getenv("BLUEPRINT_RUNPOD_WARM_CANDIDATES") or "").split(",")
+        if c.strip()
+    )
+    warm_candidate_ids = tuple(warm_candidates or ()) + configured_warm_candidates + tuple(DEFAULT_WARM_CANDIDATES)
     try:
-        prov = get_render_provider(provider, warm_candidates=DEFAULT_WARM_CANDIDATES)
+        prov = get_render_provider(provider, warm_candidates=warm_candidate_ids)
     except ValueError as exc:
         manifest["blockers"].append("unknown_render_provider")
         manifest["error"] = str(exc)
@@ -454,7 +486,8 @@ def run_isaac_g1_kitchen_parity_job(
                              neutral_environment=neutral_environment,
                              kinematic_arm_pose=kinematic_arm_pose,
                              collision_approximation=collision_approximation, verify_cam=verify_cam,
-                             manipulation_stand=manipulation_stand)
+                             manipulation_stand=manipulation_stand,
+                             gemini_api_key=_gemini_api_key_from_env())
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
                                         "policy_id": policy_id, "steps": steps,
@@ -480,14 +513,16 @@ def run_isaac_g1_kitchen_parity_job(
     # before its container can write the bootstrap marker. Default the boot window to 900s so we
     # stop reaping nodes mid-pull (the 420s default lost every <~200 Mbps node). Configurable.
     launch = launch_with_marker_retry(prov, job_dir, request_body,
-                                      marker_timeout=marker_timeout, max_attempts=max_attempts)
+                                      marker_timeout=marker_timeout, max_attempts=max_attempts,
+                                      cold=cold,
+                                      allow_cold_fallback=not warm_only)
     manifest["launch"] = launch
     if launch.get("status") != "launched":
         manifest["blockers"].append("launch_failed_all_attempts_flaky")
         return manifest
     render_out = out_dir / "render_output"
     result = watch_and_collect(job_dir, render_out, launch["instance_id"], provider=prov,
-                               max_seconds=max_seconds)
+                               max_seconds=max_seconds, preserve_instance=True)
     manifest["render"] = {
         "status": result.get("status"),
         "elapsed_seconds": result.get("elapsed_seconds"),
@@ -518,6 +553,8 @@ def main(argv=None) -> int:
     ap.add_argument("--scenarios", required=True, help="JSON file: list of {scenario_id, spawn_position_xyz, target_position_xyz}")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--kitchen-asset-dir", default=None, help="local Collected_KitchenRoom parent dir to ship in the bundle")
+    ap.add_argument("--kitchen-url", default=None,
+                    help="previously staged kitchen asset zip signed URL; skips the large asset upload")
     ap.add_argument("--g1-usd", default=DEFAULT_G1_USD_RELATIVE)
     ap.add_argument("--policy", default="blueprint_default_walk_to_target_smoke_policy",
                     choices=["blueprint_default_walk_to_target_smoke_policy", "groot_sonic"])
@@ -525,6 +562,20 @@ def main(argv=None) -> int:
     ap.add_argument("--provider", default="runpod", choices=["runpod", "vast"])
     ap.add_argument("--allow-paid", action="store_true")
     ap.add_argument("--cold", action="store_true")
+    ap.add_argument(
+        "--warm-candidate",
+        action="append",
+        default=[],
+        help=(
+            "RunPod stopped pod id to try as a warm restart before cold create. "
+            "May be repeated; can also be supplied via BLUEPRINT_RUNPOD_WARM_CANDIDATES."
+        ),
+    )
+    ap.add_argument(
+        "--warm-only",
+        action="store_true",
+        help="try warm candidates only; block instead of creating a cold pod if warm restart fails",
+    )
     ap.add_argument("--image", default=None)
     ap.add_argument("--max-seconds", type=int, default=1500)
     ap.add_argument("--marker-timeout", type=int, default=900,
@@ -537,6 +588,12 @@ def main(argv=None) -> int:
     ap.add_argument("--dynamic-standing-contact-steps", type=int, default=0)
     ap.add_argument("--cheap-collision", action="store_true")
     ap.add_argument("--settle-seconds", type=int, default=0)
+    ap.add_argument("--focus-radius", type=float, default=0.0,
+                    help="task-aware scene pruning radius in meters (0=full scene)")
+    ap.add_argument("--keep-objects", default="",
+                    help="comma substrings of object names to always keep during focus pruning")
+    ap.add_argument("--per-scenario-seconds", type=int, default=420,
+                    help="wall-clock cap per scenario inside the Isaac runner")
     ap.add_argument("--manipulation-cam", action="store_true",
                     help="egocentric at-sink POV (manipulation framing) instead of the navigation chase cam")
     ap.add_argument("--manipulation-look-at", default="",
@@ -566,13 +623,18 @@ def main(argv=None) -> int:
         scenarios = scenarios.get("scenarios", [])
     m = run_isaac_g1_kitchen_parity_job(
         scenarios=scenarios, out_dir=args.out_dir, kitchen_asset_dir=args.kitchen_asset_dir,
+        kitchen_url=args.kitchen_url,
         g1_usd=args.g1_usd, policy_id=args.policy, steps=args.steps, provider=args.provider,
         allow_paid=args.allow_paid, cold=args.cold, image=args.image, max_seconds=args.max_seconds,
+        warm_candidates=tuple(args.warm_candidate or ()),
+        warm_only=args.warm_only,
         marker_timeout=args.marker_timeout, max_attempts=args.max_attempts,
         articulated=args.articulated, cheap_collision=args.cheap_collision,
         physics_articulation_drive=args.physics_articulation_drive,
         dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
-        settle_seconds=args.settle_seconds, manipulation_cam=args.manipulation_cam,
+        settle_seconds=args.settle_seconds, focus_radius=args.focus_radius,
+        keep_objects=args.keep_objects, per_scenario_seconds=args.per_scenario_seconds,
+        manipulation_cam=args.manipulation_cam,
         manipulation_look_at=args.manipulation_look_at, render_subframes=args.render_subframes,
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
         fill_light_intensity=args.fill_light_intensity,

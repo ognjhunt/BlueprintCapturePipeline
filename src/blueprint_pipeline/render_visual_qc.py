@@ -86,6 +86,64 @@ def build_qc_prompt(task_description: str, *, scene_context: str = "") -> str:
     )
 
 
+def build_robot_placement_qc_prompt(target: str, *, task_description: str = "") -> str:
+    """Strict placement gate for verify/robot-POV frames.
+
+    This is narrower than the generic render QC prompt: it asks only whether the robot is standing
+    in open floor in front of the named target, facing it, without clipping the furniture. The output
+    is normalized by :func:`parse_robot_placement_verdict` and can be used as a hard placement gate.
+    """
+    target_name = (target or "target").strip() or "target"
+    task = (task_description or f"stand in front of the {target_name}").strip()
+    return (
+        "You are a strict visual placement validator for a robotics render. "
+        f"The task is: {task}.\n\n"
+        f"Answer this exact question: Is the robot on the open floor in front of the {target_name}, "
+        f"facing it, NOT inside/clipping the counter/cabinets/sink?\n\n"
+        "Return STRICT JSON only, no prose, exactly this shape:\n"
+        "{\n"
+        '  "pass": true,\n'
+        '  "robot_on_open_floor": true,\n'
+        '  "facing_target": true,\n'
+        '  "not_clipping_counter_cabinets_sink": true,\n'
+        '  "reason": "short reason"\n'
+        "}\n"
+        "Use pass=false if the robot appears merged into, behind, inside, or clipping any "
+        "counter, cabinet, sink, or target fixture, or if the view is too ambiguous to verify."
+    )
+
+
+def build_manipulation_pov_qc_prompt(target: str, *, task_description: str = "") -> str:
+    """Strict POV gate for manipulation frames.
+
+    Unlike placement QC, an egocentric manipulation frame does not need to show the robot's feet or
+    whole body. It must show the task affordance and a visible robot arm/hand/gripper reaching it.
+    """
+    target_name = (target or "target").strip() or "target"
+    task = (task_description or f"reach toward the {target_name}").strip()
+    return (
+        "You are a strict visual QC reviewer for a robot manipulation POV frame. "
+        f"The task is: {task}.\n\n"
+        f"Answer this exact question: Does the frame show the {target_name} or its handle/affordance, "
+        "with the robot gripper/hand AND a visible forearm or arm segment extended toward it, "
+        "without the view being mostly "
+        "dark, occluded, or ambiguous?\n\n"
+        "Return STRICT JSON only, no prose, exactly this shape:\n"
+        "{\n"
+        '  "pass": true,\n'
+        '  "target_visible": true,\n'
+        '  "gripper_or_hand_visible": true,\n'
+        '  "robot_arm_visible_beyond_gripper": true,\n'
+        '  "arm_reaching_target": true,\n'
+        '  "not_mostly_dark_or_occluded": true,\n'
+        '  "reason": "short reason"\n'
+        "}\n"
+        "Use pass=false if the view only shows the target/appliance surface, if only an isolated "
+        "gripper/fingertip is visible without forearm or arm context, if the target/handle is not "
+        "visible, or if the frame is too dark or occluded."
+    )
+
+
 # ----------------------------- parsing / normalization -----------------------------
 
 def _extract_json_object(text: str) -> dict:
@@ -182,6 +240,75 @@ def parse_qc_verdict(raw_text: str) -> dict:
         "overall_severity": _norm_severity(obj.get("overall_severity")),
         "anomalies": anomalies,
         "summary": str(obj.get("summary") or "").strip(),
+        "raw_text": (raw_text or "")[:500],
+    }
+
+
+def parse_robot_placement_verdict(raw_text: str) -> dict:
+    """Normalize the placement-specific Gemini JSON response.
+
+    Malformed or missing model output is not accepted as clean placement. It returns
+    ``parsed=False`` and ``passed=False`` so the runner can fail closed.
+    """
+    obj = _extract_json_object(raw_text or "")
+    if not obj:
+        return {
+            "parsed": False,
+            "passed": False,
+            "robot_on_open_floor": None,
+            "facing_target": None,
+            "not_clipping_counter_cabinets_sink": None,
+            "reason": "",
+            "raw_text": (raw_text or "")[:500],
+        }
+    passed = _as_bool(obj.get("pass"), False)
+    on_floor = _as_bool(obj.get("robot_on_open_floor"), False)
+    facing = _as_bool(obj.get("facing_target"), False)
+    not_clipping = _as_bool(obj.get("not_clipping_counter_cabinets_sink"), False)
+    return {
+        "parsed": True,
+        "passed": bool(passed and on_floor and facing and not_clipping),
+        "robot_on_open_floor": on_floor,
+        "facing_target": facing,
+        "not_clipping_counter_cabinets_sink": not_clipping,
+        "reason": str(obj.get("reason") or obj.get("summary") or "").strip(),
+        "raw_text": (raw_text or "")[:500],
+    }
+
+
+def parse_manipulation_pov_verdict(raw_text: str) -> dict:
+    """Normalize the manipulation-POV JSON response and fail closed on ambiguity."""
+    obj = _extract_json_object(raw_text or "")
+    if not obj:
+        return {
+            "parsed": False,
+            "passed": False,
+            "target_visible": None,
+            "gripper_or_hand_visible": None,
+            "robot_arm_visible_beyond_gripper": None,
+            "arm_reaching_target": None,
+            "not_mostly_dark_or_occluded": None,
+            "reason": "",
+            "raw_text": (raw_text or "")[:500],
+        }
+    passed = _as_bool(obj.get("pass"), False)
+    target_visible = _as_bool(obj.get("target_visible"), False)
+    gripper_visible = _as_bool(
+        obj.get("gripper_or_hand_visible", obj.get("robot_arm_or_hand_visible")),
+        False,
+    )
+    arm_visible = _as_bool(obj.get("robot_arm_visible_beyond_gripper"), False)
+    reaching = _as_bool(obj.get("arm_reaching_target"), False)
+    clear_view = _as_bool(obj.get("not_mostly_dark_or_occluded"), False)
+    return {
+        "parsed": True,
+        "passed": bool(passed and target_visible and gripper_visible and arm_visible and reaching and clear_view),
+        "target_visible": target_visible,
+        "gripper_or_hand_visible": gripper_visible,
+        "robot_arm_visible_beyond_gripper": arm_visible,
+        "arm_reaching_target": reaching,
+        "not_mostly_dark_or_occluded": clear_view,
+        "reason": str(obj.get("reason") or obj.get("summary") or "").strip(),
         "raw_text": (raw_text or "")[:500],
     }
 
@@ -301,6 +428,54 @@ def review_render_frame(image: Any, task_description: str, *,
     return verdict
 
 
+def review_robot_placement_frame(image: Any, target: str, *, task_description: str = "",
+                                 generate: GenerateFn | None = None,
+                                 frame_label: str = "") -> dict:
+    """Review one frame with the placement-specific pass/fail prompt."""
+    gen = generate or _gemini_review_image
+    if isinstance(image, (bytes, bytearray)):
+        image_bytes = bytes(image)
+        label = frame_label or "<bytes>"
+    else:
+        p = Path(image)
+        image_bytes = p.read_bytes()
+        label = frame_label or p.name
+    prompt = build_robot_placement_qc_prompt(target, task_description=task_description)
+    try:
+        raw = gen(image_bytes, prompt)
+        verdict = parse_robot_placement_verdict(raw)
+        verdict["error"] = None
+    except Exception as exc:  # noqa: BLE001 - failed review is fail-closed, not clean.
+        verdict = parse_robot_placement_verdict("")
+        verdict["error"] = repr(exc)[:300]
+    verdict["frame"] = label
+    return verdict
+
+
+def review_manipulation_pov_frame(image: Any, target: str, *, task_description: str = "",
+                                  generate: GenerateFn | None = None,
+                                  frame_label: str = "") -> dict:
+    """Review one egocentric manipulation frame with the arm/affordance-specific prompt."""
+    gen = generate or _gemini_review_image
+    if isinstance(image, (bytes, bytearray)):
+        image_bytes = bytes(image)
+        label = frame_label or "<bytes>"
+    else:
+        p = Path(image)
+        image_bytes = p.read_bytes()
+        label = frame_label or p.name
+    prompt = build_manipulation_pov_qc_prompt(target, task_description=task_description)
+    try:
+        raw = gen(image_bytes, prompt)
+        verdict = parse_manipulation_pov_verdict(raw)
+        verdict["error"] = None
+    except Exception as exc:  # noqa: BLE001 - failed review is fail-closed, not clean.
+        verdict = parse_manipulation_pov_verdict("")
+        verdict["error"] = repr(exc)[:300]
+    verdict["frame"] = label
+    return verdict
+
+
 @dataclass
 class RenderQCReport:
     task_description: str
@@ -341,6 +516,79 @@ def qc_render_frames(frame_paths: Sequence[Any], task_description: str, *, sampl
         anomalies=anomalies,
         per_frame=per_frame,
     )
+
+
+def qc_robot_placement_frames(frame_paths: Sequence[Any], target: str, *, task_description: str = "",
+                              sample_n: int = 4,
+                              generate: GenerateFn | None = None) -> dict:
+    """Placement-specific visual gate over verify + robot_pov frames.
+
+    ``status`` is ``passed`` only when at least one frame was reviewed and every sampled frame returns
+    a parsed pass verdict. Missing frames, parse failures, and model errors are blockers.
+    """
+    sampled = sample_frame_paths(frame_paths, sample_n)
+    per_frame = [
+        review_robot_placement_frame(
+            p,
+            target,
+            task_description=task_description,
+            generate=generate,
+        )
+        for p in sampled
+    ]
+    blockers: list[str] = []
+    if not per_frame:
+        blockers.append("placement_visual_qc_no_frames")
+    for verdict in per_frame:
+        if not verdict.get("parsed"):
+            blockers.append("placement_visual_qc_unparsed")
+        elif not verdict.get("passed"):
+            blockers.append("placement_visual_qc_failed")
+    status = "passed" if per_frame and not blockers else "blocked"
+    return {
+        "schema_version": "robot_placement_visual_qc.v1",
+        "status": status,
+        "target": target,
+        "task_description": task_description,
+        "frames_reviewed": len(per_frame),
+        "blockers": sorted(set(blockers)),
+        "per_frame": per_frame,
+    }
+
+
+def qc_manipulation_pov_frames(frame_paths: Sequence[Any], target: str, *,
+                               task_description: str = "",
+                               sample_n: int = 4,
+                               generate: GenerateFn | None = None) -> dict:
+    """Manipulation-specific visual gate over robot POV frames."""
+    sampled = sample_frame_paths(frame_paths, sample_n)
+    per_frame = [
+        review_manipulation_pov_frame(
+            p,
+            target,
+            task_description=task_description,
+            generate=generate,
+        )
+        for p in sampled
+    ]
+    blockers: list[str] = []
+    if not per_frame:
+        blockers.append("manipulation_pov_visual_qc_no_frames")
+    for verdict in per_frame:
+        if not verdict.get("parsed"):
+            blockers.append("manipulation_pov_visual_qc_unparsed")
+        elif not verdict.get("passed"):
+            blockers.append("manipulation_pov_visual_qc_failed")
+    status = "passed" if per_frame and not blockers else "blocked"
+    return {
+        "schema_version": "manipulation_pov_visual_qc.v1",
+        "status": status,
+        "target": target,
+        "task_description": task_description,
+        "frames_reviewed": len(per_frame),
+        "blockers": sorted(set(blockers)),
+        "per_frame": per_frame,
+    }
 
 
 def qc_render_output_dir(render_out_dir: Any, task_description: str, *, sample_n: int = 3,

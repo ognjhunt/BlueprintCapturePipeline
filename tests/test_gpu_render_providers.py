@@ -6,6 +6,9 @@ fail-closed no-spend guards, and provider-parameterized teardown.
 """
 from __future__ import annotations
 
+import io
+import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -81,6 +84,115 @@ def test_runpod_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> N
     assert "runpod_api_key_missing" in res["blockers"]
 
 
+def test_runpod_warm_start_rejection_is_recorded_before_cold_fallback(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_key(_self):
+        return "rp-key"
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        calls.append((method, path))
+        assert key == "rp-key"
+        if path == "/pods/warm-1" and method == "GET":
+            return 200, {"id": "warm-1", "desiredStatus": "EXITED"}
+        if path == "/pods/warm-1/update" and method == "POST":
+            return 200, {"id": "warm-1", "desiredStatus": "EXITED"}
+        if path == "/pods/warm-1/start" and method == "POST":
+            return 409, {"error": "pod is not startable from EXITED"}
+        if path == "/pods" and method == "POST":
+            return 201, {"id": "cold-1"}
+        raise AssertionError((method, path, body))
+
+    monkeypatch.setattr(RunPodRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
+    res = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
+        tmp_path,
+        {"imageName": "img:tag", "env": {}, "dockerStartCmd": ["-lc", "run"]},
+        cold=False,
+    )
+
+    assert res["status"] == "launched"
+    assert res["instance_id"] == "cold-1"
+    assert res["mode"] == "cold_create"
+    assert res["attempts"][0] == {
+        "pod_id": "warm-1",
+        "get_status": 200,
+        "desiredStatus": "EXITED",
+        "update_status": 200,
+        "start_status": 409,
+        "start_error": "pod is not startable from EXITED",
+    }
+    assert res["attempts"][1]["cold_create_status"] == 201
+    assert calls == [
+        ("GET", "/pods/warm-1"),
+        ("POST", "/pods/warm-1/update"),
+        ("POST", "/pods/warm-1/start"),
+        ("POST", "/pods"),
+    ]
+
+
+def test_runpod_warm_only_blocks_without_cold_create(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_key(_self):
+        return "rp-key"
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        calls.append((method, path))
+        if path == "/pods/warm-1" and method == "GET":
+            return 200, {"id": "warm-1", "desiredStatus": "EXITED"}
+        if path == "/pods/warm-1/update" and method == "POST":
+            return 200, {"id": "warm-1", "desiredStatus": "EXITED"}
+        if path == "/pods/warm-1/start" and method == "POST":
+            return 409, {"error": "pod is not startable from EXITED"}
+        raise AssertionError((method, path, body))
+
+    monkeypatch.setattr(RunPodRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
+    res = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
+        tmp_path,
+        {"imageName": "img:tag", "env": {}, "dockerStartCmd": ["-lc", "run"]},
+        cold=False,
+        allow_cold_fallback=False,
+    )
+
+    assert res["status"] == "blocked"
+    assert "warm_restart_failed_cold_fallback_disabled" in res["blockers"]
+    assert res["attempts"][0]["start_status"] == 409
+    assert ("POST", "/pods") not in calls
+
+
+def test_runpod_warm_update_failure_does_not_start_stale_command(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_key(_self):
+        return "rp-key"
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        calls.append((method, path))
+        if path == "/pods/warm-1" and method == "GET":
+            return 200, {"id": "warm-1", "desiredStatus": "STOPPED"}
+        if path == "/pods/warm-1/update" and method == "POST":
+            return 400, {"error": "invalid update"}
+        if path == "/pods" and method == "POST":
+            return 201, {"id": "cold-1"}
+        raise AssertionError((method, path, body))
+
+    monkeypatch.setattr(RunPodRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
+    res = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
+        tmp_path,
+        {"imageName": "img:tag", "env": {}, "dockerStartCmd": ["-lc", "run"]},
+        cold=False,
+    )
+
+    assert res["status"] == "launched"
+    assert res["instance_id"] == "cold-1"
+    assert res["attempts"][0]["update_status"] == 400
+    assert res["attempts"][0]["update_error"] == "invalid update"
+    assert ("POST", "/pods/warm-1/start") not in calls
+
+
 # ----------------------------- Vast translation -----------------------------
 
 def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
@@ -150,9 +262,136 @@ def test_watch_and_collect_tears_down_via_provider(tmp_path: Path) -> None:
     fake = _FakeProvider()
     # max_seconds=0 -> skip the poll loop entirely (no network), go straight to teardown
     res = watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=0)
-    assert fake.terminated == "inst-9"  # pod is DELETED, not merely stopped
+    assert fake.terminated == "inst-9"  # blocked/no-result pod is DELETED
     assert res["status"] == "blocked"  # nothing rendered
     assert res["teardown"]["status"] == "terminated"
+
+
+def test_watch_and_collect_can_preserve_no_output_pod_for_warm_reuse(tmp_path: Path) -> None:
+    from blueprint_pipeline.isaac_particlefield_render_job import watch_and_collect
+
+    class _FakeProvider:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.terminated: str | None = None
+
+        def stop(self, instance_id: str) -> dict:
+            self.stopped = instance_id
+            return {"status": "stopped", "http": 204}
+
+        def terminate(self, instance_id: str) -> dict:
+            self.terminated = instance_id
+            return {"status": "terminated", "http": 204}
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+    fake = _FakeProvider()
+
+    res = watch_and_collect(
+        job_dir,
+        tmp_path / "out",
+        "inst-9",
+        provider=fake,
+        max_seconds=0,
+        preserve_instance=True,
+    )
+
+    assert res["status"] == "blocked"
+    assert fake.stopped == "inst-9"
+    assert fake.terminated is None
+    assert res["teardown"]["status"] == "stopped"
+
+
+def test_watch_and_collect_stops_successful_pod_for_warm_reuse(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import isaac_particlefield_render_job as job
+
+    class _FakeProvider:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.terminated: str | None = None
+
+        def stop(self, instance_id: str) -> dict:
+            self.stopped = instance_id
+            return {"status": "stopped", "http": 204}
+
+        def terminate(self, instance_id: str) -> dict:
+            self.terminated = instance_id
+            return {"status": "terminated", "http": 204}
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bootstrap.json", json.dumps({"phase": "runner_done", "rc": 0}))
+        zf.writestr("isaac_g1_kitchen_parity_result.json", json.dumps({"status": "completed"}))
+    payload_bytes = payload.getvalue()
+
+    class _Response:
+        def read(self) -> bytes:
+            return payload_bytes
+
+    monkeypatch.setattr(job.urllib.request, "urlopen", lambda _url, timeout=60: _Response())
+    monkeypatch.setattr(job.time, "sleep", lambda _seconds: None)
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+    fake = _FakeProvider()
+
+    res = job.watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1)
+
+    assert res["status"] == "completed"
+    assert fake.stopped == "inst-9"
+    assert fake.terminated is None
+    assert res["teardown"]["status"] == "stopped"
+
+
+def test_watch_and_collect_stops_blocked_runner_pod_for_warm_reuse(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import isaac_particlefield_render_job as job
+
+    class _FakeProvider:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.terminated: str | None = None
+
+        def stop(self, instance_id: str) -> dict:
+            self.stopped = instance_id
+            return {"status": "stopped", "http": 204}
+
+        def terminate(self, instance_id: str) -> dict:
+            self.terminated = instance_id
+            return {"status": "terminated", "http": 204}
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bootstrap.json", json.dumps({"phase": "runner_done", "rc": 0}))
+        zf.writestr("isaac_g1_kitchen_parity_result.json", json.dumps({
+            "status": "blocked",
+            "blockers": ["placement_validation_failed"],
+        }))
+    payload_bytes = payload.getvalue()
+
+    class _Response:
+        def read(self) -> bytes:
+            return payload_bytes
+
+    monkeypatch.setattr(job.urllib.request, "urlopen", lambda _url, timeout=60: _Response())
+    monkeypatch.setattr(job.time, "sleep", lambda _seconds: None)
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+    fake = _FakeProvider()
+
+    res = job.watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1)
+
+    assert res["status"] == "blocked"
+    assert fake.stopped == "inst-9"
+    assert fake.terminated is None
+    assert res["teardown"]["status"] == "stopped"
 
 
 def test_runpod_terminate_is_delete_and_fail_closed(tmp_path: Path, monkeypatch) -> None:

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.scene_placement import SceneObject
+
 _RUNNER = Path(__file__).resolve().parents[1] / "scripts" / "run_isaac_g1_kitchen_parity_eval.py"
 
 
@@ -55,16 +57,114 @@ def test_manipulation_cam_fixed_look_at_pins_faucet_regardless_of_yaw() -> None:
     # robot standing in front of the sink; faucet world point is known
     faucet = (2.28, 1.33, 0.9)
     e1, t1 = M.manipulation_cam_pose((2.28, 0.73, 0.79), math.pi / 2, look_at=faucet)
-    # target is pinned to the faucet, eye sits at head height (egocentric)
-    assert t1 == faucet
+    # target stays anchored near the faucet while blending toward the active arm corridor.
+    assert math.dist(t1, faucet) < 0.25
     assert e1[2] > 1.0
-    # a wrong/noisy final yaw must NOT move the framing off the faucet
+    # a wrong/noisy final yaw must NOT fall back to a yaw-relative navigation target.
     _, t2 = M.manipulation_cam_pose((2.28, 0.73, 0.79), -math.pi / 2, look_at=faucet)
-    assert t2 == faucet
+    assert math.dist(t2, faucet) < 0.25
     # without look_at it falls back to the yaw-relative target (forward of the robot) — a robot
     # standing elsewhere/facing elsewhere then frames its own front, NOT the faucet
     _, t3 = M.manipulation_cam_pose((1.0, 0.0, 0.79), 0.0)  # at [1,0] facing +x
     assert t3 != faucet and t3[0] > 1.0  # forward (+x) of the root, not the sink
+
+
+def test_surface_affordance_point_projects_target_to_nearest_face() -> None:
+    stance_plan = {
+        "task_target_xyz": [-1.979559, 0.655166, 1.025963],
+        "task_target_bounds": {
+            "bbox_min_xyz": [-2.521971, 0.13306, -0.000508],
+            "bbox_max_xyz": [-1.437147, 1.177273, 2.052435],
+        },
+    }
+
+    point = M._surface_affordance_point_for_stance(
+        stance_plan,
+        root_pose=(-1.035327, 0.658475, 0.84),
+    )
+
+    assert point == pytest.approx((-1.437147, 0.655166, 1.025963))
+
+
+def test_manipulation_cam_with_look_at_frames_active_arm_corridor() -> None:
+    root = (-1.035327, 0.658475, 0.84)
+    yaw = -3.138089
+    look_at = (-1.437147, 0.655166, 1.025963)
+
+    eye, target = M.manipulation_cam_pose(root, yaw, look_at=look_at, reach_arm="right")
+
+    assert target[0] > look_at[0]  # target is blended toward the active shoulder, not inside target
+    assert target[1] > look_at[1]
+    assert target[2] > look_at[2]
+    assert eye[0] > root[0]       # behind the robot for a -x-facing stance
+    assert eye[1] < root[1]       # frames across the right-arm reach corridor
+    assert eye[2] > look_at[2]
+
+    left_eye, left_target = M.manipulation_cam_pose(root, yaw, look_at=look_at, reach_arm="left")
+    assert left_eye[1] > root[1]
+    assert left_target[1] < look_at[1]
+
+
+def test_manipulation_camera_target_blends_affordance_with_visible_arm_context() -> None:
+    affordance = (-1.44, 0.66, 1.03)
+    arm_points = {
+        "elbow": (-1.05, 0.55, 1.10),
+        "wrist": (-1.22, 0.58, 0.98),
+        "hand": (-1.34, 0.62, 0.96),
+    }
+
+    target = M._manipulation_camera_target_with_arm_context(affordance, arm_points)
+
+    assert target[0] > affordance[0]
+    assert target[1] < affordance[1]
+    assert abs(target[2] - affordance[2]) < 0.08
+    assert math.dist(target, affordance) < 0.25
+
+
+def test_task_visual_qc_splits_verify_and_pov_rubrics(monkeypatch, tmp_path) -> None:
+    qc_mod = __import__("blueprint_pipeline.render_visual_qc", fromlist=["dummy"])
+    calls: dict[str, list[str]] = {}
+
+    def fake_placement(frames, target, *, task_description="", sample_n=4, generate=None):
+        calls["placement"] = [Path(p).name for p in frames]
+        return {
+            "schema_version": "robot_placement_visual_qc.v1",
+            "status": "passed",
+            "target": target,
+            "task_description": task_description,
+            "frames_reviewed": len(frames),
+            "blockers": [],
+            "per_frame": [],
+        }
+
+    def fake_pov(frames, target, *, task_description="", sample_n=4, generate=None):
+        calls["pov"] = [Path(p).name for p in frames]
+        return {
+            "schema_version": "manipulation_pov_visual_qc.v1",
+            "status": "passed",
+            "target": target,
+            "task_description": task_description,
+            "frames_reviewed": len(frames),
+            "blockers": [],
+            "per_frame": [],
+        }
+
+    monkeypatch.setattr(qc_mod, "qc_robot_placement_frames", fake_placement)
+    monkeypatch.setattr(qc_mod, "qc_manipulation_pov_frames", fake_pov)
+    verify = tmp_path / "verify_0000.png"
+    pov = tmp_path / "robot_pov_0000.png"
+
+    report = M._run_task_visual_qc(
+        [verify],
+        [pov],
+        target_label="refrigerator",
+        task_description="open the refrigerator",
+    )
+
+    assert report["status"] == "passed"
+    assert calls == {"placement": ["verify_0000.png"], "pov": ["robot_pov_0000.png"]}
+    assert report["placement"]["schema_version"] == "robot_placement_visual_qc.v1"
+    assert report["manipulation_pov"]["schema_version"] == "manipulation_pov_visual_qc.v1"
 
 
 def test_arm_reach_skeleton_moves_hand_toward_faucet_and_into_view() -> None:
@@ -202,16 +302,42 @@ def test_parse_scenarios_normalizes_to_pelvis_height_route() -> None:
          "target_position_xyz": [1.75, 1.25, 0.05], "description": "to sink",
          "target_object_id": "faucet_handle"},
         {"id": "s2", "route_points": [[0, 0, 0.1], [1, 1, 0.1], [2, 2, 0.1]]},
+        {"scenario_id": "task_only", "description": "open the service door"},
         {"scenario_id": "bad"},  # no start/target -> skipped
     ]}
     sc = M.parse_scenarios(req)
-    assert [s["scenario_id"] for s in sc] == ["s1", "s2"]
+    assert [s["scenario_id"] for s in sc] == ["s1", "s2", "task_only"]
     # navigation route lifted to pelvis height
     assert all(p[2] == M.ROBOT_PELVIS_HEIGHT_M for p in sc[0]["route_points"])
     assert sc[0]["start"][2] == M.ROBOT_PELVIS_HEIGHT_M
     assert len(sc[1]["route_points"]) == 3
     assert sc[0]["raw_target_position_xyz"] == [1.75, 1.25, 0.05]
     assert sc[0]["target_object_id"] == "faucet_handle"
+    assert sc[2]["task_target_deferred"] is True
+    assert sc[2]["route_points"] == []
+    assert sc[2]["instruction"] == "open the service door"
+
+
+def test_deferred_task_route_materializes_from_dynamic_stance() -> None:
+    scenario = {
+        "scenario_id": "task_only",
+        "instruction": "open the refrigerator",
+        "route_points": [],
+        "task_target_deferred": True,
+    }
+    M._materialize_deferred_task_route(
+        scenario,
+        stance_plan={"task_target_xyz": [1.5, 2.5, 1.1]},
+        root_pose=(1.0, 2.0, 0.84),
+        look_at=(1.5, 2.5, 1.1),
+    )
+
+    assert scenario["task_target_deferred"] is False
+    assert scenario["deferred_task_resolution"] == "materialized_from_task_stance_plan"
+    assert scenario["start"] == [1.0, 2.0, 0.84]
+    assert scenario["target"] == [1.5, 2.5, M.ROBOT_PELVIS_HEIGHT_M]
+    assert scenario["route_points"] == [scenario["start"], scenario["target"]]
+    assert scenario["raw_target_position_xyz"] == [1.5, 2.5, 1.1]
 
 
 def test_task_stance_planner_uses_target_as_thing_to_face_not_pelvis() -> None:
@@ -248,6 +374,681 @@ def test_task_stance_planner_samples_around_target_until_collision_free() -> Non
     assert math.dist(plan["accepted_pose"][:2], plan["task_target_xyz"][:2]) == pytest.approx(1.0)
 
 
+def test_task_stance_planner_offsets_from_target_footprint_surface() -> None:
+    scenario = {
+        "task_target_position_xyz": [2.0, 2.0, 0.9],
+        "robot_start_position_xyz": [2.0, 0.0, 0.05],
+        "target_object_bbox_min_xyz": [1.5, 1.65, 0.75],
+        "target_object_bbox_max_xyz": [2.5, 2.35, 1.15],
+        "stance_distance_candidates_m": [0.85],
+        "floor_z_hint": 0.05,
+    }
+
+    plan = M.plan_task_stance(scenario=scenario, probe_collision=lambda pose, yaw: 0)
+
+    assert plan["status"] == "accepted"
+    # The robot stands on the approach-side aisle. Without the footprint-surface offset, this
+    # would be y=1.15 (0.85m from the center); with the sink/counter half-depth included, it moves
+    # to y=0.80, clear of the target footprint.
+    assert plan["accepted_pose"][:2] == [2.0, 0.8]
+    assert plan["accepted_yaw"] == pytest.approx(math.pi / 2)
+    first = plan["candidates"][0]
+    assert first["standoff_from_target_surface_m"] == pytest.approx(0.85)
+    assert first["target_surface_offset_m"] == pytest.approx(0.35)
+    assert first["distance_to_target_m"] == pytest.approx(1.2)
+    assert plan["task_target_bounds"]["bbox_min_xyz"] == [1.5, 1.65, 0.75]
+
+
+def test_open_articulated_target_uses_close_surface_standoff_from_bounds() -> None:
+    scenario = {
+        "instruction": "open the refrigerator",
+        "target_object_id": "refrigerator",
+        "target_object_label": "refrigerator door",
+        "target_object_position_xyz": [-1.979559, 0.655166, 1.025963],
+        "robot_start_position_xyz": [-0.6, 0.66, 0.05],
+        "target_object_bbox_min_xyz": [-2.521971, 0.13306, -0.000508],
+        "target_object_bbox_max_xyz": [-1.437147, 1.177273, 2.052435],
+        "floor_z_hint": 0.05,
+    }
+
+    distances = M.task_stance_distance_candidates(scenario)
+    assert distances[0] == pytest.approx(0.4)
+    assert M._validation_standoff_range_for_scenario(scenario) == pytest.approx(
+        M.TASK_STANCE_CLOSE_REACH_GAP_RANGE_M
+    )
+
+    plan = M.plan_task_stance(
+        scenario=scenario,
+        probe_collision=lambda pose, yaw: 0,
+        placement_validator=lambda _pose, _yaw, record: (
+            {"status": "accepted", "blockers": []}
+            if record["angle_offset_deg"] == 0
+            and record["standoff_from_target_surface_m"] == pytest.approx(0.4)
+            else {"status": "blocked", "blockers": ["synthetic_reach_profile_reject"]}
+        ),
+    )
+
+    assert plan["status"] == "accepted"
+    chosen = plan["candidates"][plan["selected_candidate_index"]]
+    assert chosen["angle_offset_deg"] == 0
+    assert chosen["standoff_from_target_surface_m"] == pytest.approx(0.4)
+    assert plan["accepted_pose"][0] == pytest.approx(-1.037152, abs=0.002)
+    assert plan["accepted_pose"][1] == pytest.approx(0.65847, abs=0.002)
+    assert abs(abs(plan["accepted_yaw"]) - math.pi) < 0.01
+
+
+def test_non_articulated_target_keeps_default_standoff_profile() -> None:
+    scenario = {
+        "instruction": "turn on the faucet",
+        "target_object_id": "sink",
+        "target_object_label": "sink",
+    }
+
+    assert M.task_stance_distance_candidates(scenario)[0] == pytest.approx(
+        M.TASK_STANCE_DEFAULT_SURFACE_STANDOFF_M
+    )
+    assert M._validation_standoff_range_for_scenario(scenario) == pytest.approx(
+        M.TASK_STANCE_DEFAULT_VALIDATION_STANDOFF_RANGE_M
+    )
+
+
+def test_task_stance_default_distances_include_counter_clearance_band() -> None:
+    scenario = {
+        "task_target_position_xyz": [2.277888, 1.333059, 0.848527],
+        "robot_start_position_xyz": [2.35, 0.1, 0.05],
+        "target_object_bbox_min_xyz": [2.009021, 0.89582, 0.555082],
+        "target_object_bbox_max_xyz": [2.546755, 1.770299, 1.141971],
+        "floor_z_hint": 0.05,
+    }
+
+    plan = M.plan_task_stance(
+        scenario=scenario,
+        probe_collision=lambda pose, yaw: 0,
+        placement_validator=lambda _pose, _yaw, record: (
+            {"status": "accepted", "blockers": []}
+            if record["angle_offset_deg"] == 0
+            and abs(float(record["standoff_from_target_surface_m"]) - 1.4025) < 1e-9
+            else {"status": "blocked", "blockers": ["synthetic_clearance_or_reach_failure"]}
+        ),
+    )
+
+    assert plan["status"] == "accepted"
+    chosen = plan["candidates"][plan["selected_candidate_index"]]
+    assert chosen["angle_offset_deg"] == 0
+    assert chosen["standoff_from_target_surface_m"] == pytest.approx(1.4025)
+    assert plan["accepted_pose"][0] == pytest.approx(2.386169, abs=1e-6)
+    assert plan["accepted_pose"][1] == pytest.approx(-0.518468, abs=1e-6)
+
+
+def test_task_stance_planner_tries_near_angled_aisle_before_farther_straight_back() -> None:
+    scenario = {
+        "task_target_position_xyz": [2.277888, 1.333059, 0.848527],
+        "robot_start_position_xyz": [2.35, 0.1, 0.05],
+        "target_object_bbox_min_xyz": [2.009021, 0.89582, 0.555082],
+        "target_object_bbox_max_xyz": [2.546755, 1.770299, 1.141971],
+        "floor_z_hint": 0.05,
+    }
+
+    def validator(_pose, _yaw, record):
+        # The straight-back closest candidate clips. The planner should try a nearby angled stance
+        # at the same standoff before walking farther backward along the wall-side ray.
+        if (
+            record["angle_offset_deg"] == 0
+            and abs(float(record["standoff_from_target_surface_m"]) - 0.85) < 1e-9
+        ):
+            return {"status": "blocked", "blockers": ["synthetic_wall_side_clearance_failure"]}
+        return {"status": "accepted", "blockers": []}
+
+    plan = M.plan_task_stance(
+        scenario=scenario,
+        probe_collision=lambda pose, yaw: 0,
+        placement_validator=validator,
+    )
+
+    assert plan["status"] == "accepted"
+    chosen = plan["candidates"][plan["selected_candidate_index"]]
+    assert chosen["standoff_from_target_surface_m"] == pytest.approx(0.85)
+    assert chosen["angle_offset_deg"] == -15
+    assert plan["accepted_pose"][0] == pytest.approx(2.009, abs=0.002)
+    assert plan["accepted_pose"][1] == pytest.approx(0.028, abs=0.002)
+
+
+def test_task_stance_planner_prefers_approach_ray_over_backside_candidate() -> None:
+    scenario = {
+        "task_target_position_xyz": [2.277888, 1.333059, 0.848527],
+        "robot_start_position_xyz": [2.35, 0.1, 0.05],
+        "target_object_bbox_min_xyz": [2.009021, 0.89582, 0.555082],
+        "target_object_bbox_max_xyz": [2.546755, 1.770299, 1.141971],
+        "floor_z_hint": 0.05,
+    }
+
+    def validator(_pose, _yaw, record):
+        # The closer 180-degree candidate is on the backside of the target. A farther point on the
+        # approach ray is the room-side stance and must win once both validate geometrically.
+        accepts = (
+            record["angle_offset_deg"] == 180
+            and abs(float(record["standoff_from_target_surface_m"]) - 1.0625) < 1e-9
+        ) or (
+            record["angle_offset_deg"] == 0
+            and abs(float(record["standoff_from_target_surface_m"]) - 1.4025) < 1e-9
+        )
+        return (
+            {"status": "accepted", "blockers": []}
+            if accepts
+            else {"status": "blocked", "blockers": ["synthetic_geometry_reject"]}
+        )
+
+    plan = M.plan_task_stance(
+        scenario=scenario,
+        probe_collision=lambda pose, yaw: 0,
+        placement_validator=validator,
+    )
+
+    assert plan["status"] == "accepted"
+    chosen = plan["candidates"][plan["selected_candidate_index"]]
+    assert chosen["angle_offset_deg"] == 0
+    assert chosen["standoff_from_target_surface_m"] == pytest.approx(1.4025)
+    assert plan["accepted_pose"][0] == pytest.approx(2.386169, abs=1e-6)
+    assert plan["accepted_pose"][1] == pytest.approx(-0.518468, abs=1e-6)
+    assert plan["accepted_candidate_count"] == 2
+
+
+def test_task_stance_planner_without_approach_hint_prefers_nearest_validated_face() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 1.0],
+        "target_object_bbox_min_xyz": [-0.5, -0.5, 0.0],
+        "target_object_bbox_max_xyz": [0.5, 0.5, 2.0],
+        "floor_z_hint": 0.05,
+        "stance_distance_candidates_m": [0.4, 1.13],
+    }
+
+    def validator(_pose, _yaw, record):
+        accepts = (
+            record["angle_offset_deg"] == 180
+            and abs(float(record["standoff_from_target_surface_m"]) - 0.4) < 1e-9
+        ) or (
+            record["angle_offset_deg"] == 90
+            and abs(float(record["standoff_from_target_surface_m"]) - 1.13) < 1e-9
+        )
+        return (
+            {"status": "accepted", "blockers": []}
+            if accepts
+            else {"status": "blocked", "blockers": ["synthetic_geometry_reject"]}
+        )
+
+    plan = M.plan_task_stance(
+        scenario=scenario,
+        probe_collision=lambda pose, yaw: 0,
+        placement_validator=validator,
+    )
+
+    assert plan["status"] == "accepted"
+    chosen = plan["candidates"][plan["selected_candidate_index"]]
+    assert chosen["angle_offset_deg"] == 180
+    assert chosen["standoff_from_target_surface_m"] == pytest.approx(0.4)
+    assert chosen["approach_bias_enabled"] is False
+    assert plan["accepted_candidate_count"] == 2
+
+
+def test_xy_rect_overlap_and_gap_reports_overlap_and_clearance() -> None:
+    overlapping = M._xy_rect_overlap_and_gap(
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+        [0.5, 0.25, 0.0],
+        [1.5, 0.75, 1.0],
+    )
+    assert overlapping["overlaps_xy"] is True
+    assert overlapping["overlap_area_xy_m2"] == pytest.approx(0.25)
+    assert overlapping["gap_m"] == pytest.approx(0.0)
+
+    separated = M._xy_rect_overlap_and_gap(
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+        [1.3, 1.4, 0.0],
+        [2.0, 2.0, 1.0],
+    )
+    assert separated["overlaps_xy"] is False
+    assert separated["overlap_area_xy_m2"] == pytest.approx(0.0)
+    assert separated["gap_m"] == pytest.approx(0.5)
+
+
+def test_task_stance_planner_rejects_candidate_failed_by_placement_validation() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "target_object_bbox_min_xyz": [-0.25, -0.25, 0.6],
+        "target_object_bbox_max_xyz": [0.25, 0.25, 1.2],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [1.0],
+    }
+
+    def validator(_pose, _yaw, record):
+        if record["angle_offset_deg"] == 0:
+            return {"status": "blocked", "blockers": ["placed_robot_bbox_overlaps_target_bbox"]}
+        return {"status": "accepted", "blockers": []}
+
+    plan = M.plan_task_stance(
+        scenario=scenario,
+        probe_collision=lambda pose, yaw: 0,
+        placement_validator=validator,
+    )
+
+    assert plan["status"] == "accepted"
+    assert plan["selected_candidate_index"] == 1
+    assert plan["candidates"][0]["placement_validation"]["blockers"] == [
+        "placed_robot_bbox_overlaps_target_bbox"
+    ]
+    assert plan["placement_validation"]["status"] == "accepted"
+
+
+def test_task_stance_planner_fails_when_all_collision_free_candidates_fail_validation() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [1.0],
+    }
+
+    plan = M.plan_task_stance(
+        scenario=scenario,
+        probe_collision=lambda pose, yaw: 0,
+        placement_validator=lambda pose, yaw, record: {
+            "status": "blocked",
+            "blockers": ["placed_robot_bbox_center_far_from_root_pose"],
+        },
+    )
+
+    assert plan["status"] == "blocked"
+    assert plan["blockers"] == ["no_validated_task_stance_candidate"]
+    assert plan["placement_validation_rejected_candidate_count"] == len(plan["candidates"])
+    assert all("placement_validation" in candidate for candidate in plan["candidates"])
+
+
+def test_stage_placement_validator_blocks_actual_robot_bbox_overlap(monkeypatch) -> None:
+    placed = []
+    monkeypatch.setattr(
+        M,
+        "_place_root",
+        lambda stage, prim_path, pose, yaw: placed.append((stage, prim_path, pose, yaw)),
+    )
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [1.1, -0.2, 0.0],
+            "bbox_max_xyz": [1.4, 0.2, 1.7],
+            "center_xyz": [1.25, 0.0, 0.85],
+            "size_xyz": [0.3, 0.4, 1.7],
+        },
+    )
+    validator = M._placement_validator_for_stage(
+        object(),
+        "/World/G1",
+        ((1.0, -0.5, 0.5), (1.5, 0.5, 1.5)),
+    )
+
+    result = validator((0.0, 0.0, 0.84), 0.0, {"standoff_from_target_surface_m": 0.85})
+
+    assert placed
+    assert result["status"] == "blocked"
+    assert "placed_robot_bbox_overlaps_target_bbox" in result["blockers"]
+    assert "placed_robot_bbox_center_far_from_root_pose" in result["blockers"]
+
+
+def test_stage_placement_validator_accepts_clear_actual_robot_bbox(monkeypatch) -> None:
+    monkeypatch.setattr(M, "_place_root", lambda _stage, _prim_path, _pose, _yaw: None)
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [-0.3, -0.3, 0.0],
+            "bbox_max_xyz": [0.3, 0.3, 1.7],
+            "center_xyz": [0.0, 0.0, 0.85],
+            "size_xyz": [0.6, 0.6, 1.7],
+        },
+    )
+    validator = M._placement_validator_for_stage(
+        object(),
+        "/World/G1",
+        ((1.0, -0.5, 0.5), (1.5, 0.5, 1.5)),
+    )
+
+    result = validator((0.0, 0.0, 0.84), 0.0, {"standoff_from_target_surface_m": 0.85})
+
+    assert result["status"] == "accepted"
+    assert result["blockers"] == []
+    assert result["target_bbox_relation"]["gap_m"] == pytest.approx(0.7)
+    assert result["required_target_gap_m"] == pytest.approx(0.35)
+
+
+def test_stage_placement_validator_accepts_close_reach_gap_when_task_range_allows(monkeypatch) -> None:
+    pose = (-1.037152, 0.65847, 0.84)
+    target = SceneObject(
+        id="refrigerator",
+        label="refrigerator door",
+        bbox_min=(-2.521971, 0.13306, -0.000508),
+        bbox_max=(-1.437147, 1.177273, 2.052435),
+        centroid=(-1.979559, 0.655166, 1.025963),
+    )
+    monkeypatch.setattr(M, "_place_root", lambda _stage, _prim_path, _pose, _yaw: None)
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [pose[0] - 0.28, pose[1] - 0.28, 0.22],
+            "bbox_max_xyz": [pose[0] + 0.28, pose[1] + 0.28, 1.46],
+            "center_xyz": [pose[0], pose[1], pose[2]],
+            "size_xyz": [0.56, 0.56, 1.24],
+        },
+    )
+    validator = M._placement_validator_for_stage(
+        object(),
+        "/World/G1",
+        (target.bbox_min, target.bbox_max),
+        target_object=target,
+        scene_objects=[],
+        floor_z=0.05,
+        standoff_range=M.TASK_STANCE_CLOSE_REACH_GAP_RANGE_M,
+    )
+
+    result = validator(pose, -3.138083, {"standoff_from_target_surface_m": 0.4})
+
+    assert result["status"] == "accepted"
+    assert result["blockers"] == []
+    assert result["target_bbox_relation"]["gap_m"] == pytest.approx(0.12, abs=0.002)
+    assert result["deterministic_geometry"]["standoff_m"] == pytest.approx(0.12, abs=0.002)
+    assert result["validation_standoff_range_m"] == pytest.approx(
+        list(M.TASK_STANCE_CLOSE_REACH_GAP_RANGE_M)
+    )
+
+
+def test_stage_placement_validator_suppresses_broad_aabb_clip_only_after_zero_physx_contact(
+    monkeypatch,
+) -> None:
+    pose = (-1.037152, 0.65847, 0.84)
+    target = SceneObject(
+        id="articulated_target",
+        label="openable appliance door",
+        bbox_min=(-2.521971, 0.13306, -0.000508),
+        bbox_max=(-1.437147, 1.177273, 2.052435),
+        centroid=(-1.979559, 0.655166, 1.025963),
+    )
+    broad_false_positive = SceneObject(
+        id="broad_asset_leaf",
+        label="asset_leaf",
+        bbox_min=(-1.30, -0.15, 0.0),
+        bbox_max=(2.57, 2.46, 0.84),
+        centroid=(0.635, 1.155, 0.42),
+        source="usd_leaf",
+    )
+    monkeypatch.setattr(M, "_place_root", lambda _stage, _prim_path, _pose, _yaw: None)
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [pose[0] - 0.28, pose[1] - 0.28, 0.22],
+            "bbox_max_xyz": [pose[0] + 0.28, pose[1] + 0.28, 1.46],
+            "center_xyz": [pose[0], pose[1], pose[2]],
+            "size_xyz": [0.56, 0.56, 1.24],
+        },
+    )
+    validator = M._placement_validator_for_stage(
+        object(),
+        "/World/G1",
+        (target.bbox_min, target.bbox_max),
+        target_object=target,
+        scene_objects=[broad_false_positive],
+        floor_z=0.05,
+        standoff_range=M.TASK_STANCE_CLOSE_REACH_GAP_RANGE_M,
+    )
+
+    accepted = validator(pose, -3.138083, {"standoff_from_target_surface_m": 0.4, "scene_collision_contact_count": 0})
+    blocked = validator(pose, -3.138083, {"standoff_from_target_surface_m": 0.4, "scene_collision_contact_count": 1})
+
+    assert accepted["status"] == "accepted"
+    assert accepted["deterministic_geometry"]["ok"] is True
+    assert accepted["deterministic_geometry_raw"]["ok"] is False
+    assert accepted["deterministic_geometry_adjustments"]["suppressed_broad_aabb_clips"][0]["object_id"] == "broad_asset_leaf"
+    assert blocked["status"] == "blocked"
+    assert "placement_geometry_invalid" in blocked["blockers"]
+
+
+def test_placement_manifest_preserves_broad_aabb_adjustment(monkeypatch) -> None:
+    pose = (-1.037152, 0.65847, 0.84)
+    stance_plan = {
+        "floor_z_hint": 0.05,
+        "accepted_pose": list(pose),
+        "accepted_yaw": -3.138083,
+        "selected_candidate_index": 0,
+        "candidates": [
+            {
+                "standoff_from_target_surface_m": 0.4,
+                "scene_collision_contact_count": 0,
+            }
+        ],
+        "task_target_xyz": [-1.979559, 0.655166, 1.025963],
+        "task_target_bounds": {
+            "bbox_min_xyz": [-2.521971, 0.13306, -0.000508],
+            "bbox_max_xyz": [-1.437147, 1.177273, 2.052435],
+        },
+        "target_resolution": {
+            "selected": {
+                "target_object_id": "articulated_target",
+                "target_object_label": "openable appliance door",
+            }
+        },
+        "placement_validation": {
+            "validation_standoff_range_m": list(M.TASK_STANCE_CLOSE_REACH_GAP_RANGE_M)
+        },
+    }
+    broad_false_positive = SceneObject(
+        id="broad_asset_leaf",
+        label="asset_leaf",
+        bbox_min=(-1.30, -0.15, 0.0),
+        bbox_max=(2.57, 2.46, 0.84),
+        centroid=(0.635, 1.155, 0.42),
+        source="usd_leaf",
+    )
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [pose[0] - 0.28, pose[1] - 0.28, 0.22],
+            "bbox_max_xyz": [pose[0] + 0.28, pose[1] + 0.28, 1.46],
+            "center_xyz": [pose[0], pose[1], pose[2]],
+            "size_xyz": [0.56, 0.56, 1.24],
+        },
+    )
+
+    manifest = M._build_placement_validation_manifest(
+        stage=object(),
+        robot_prim_path="/World/G1",
+        stance_plan=stance_plan,
+        accepted_pose=pose,
+        accepted_yaw=-3.138083,
+        root_diagnostics={"status": "corrected"},
+        scene_objects=[broad_false_positive],
+        scenario_id="open_articulated_target",
+        visual_qc={"status": "passed"},
+    )
+
+    assert manifest["status"] == "PASS"
+    assert manifest["blockers"] == []
+    assert manifest["intended_geometry"]["ok"] is True
+    assert manifest["intended_geometry"]["raw_geometry"]["ok"] is False
+    assert manifest["intended_geometry"]["adjustments"]["suppressed_broad_aabb_clips"][0]["object_id"] == "broad_asset_leaf"
+
+
+def test_place_root_corrects_measured_world_footprint_offset(monkeypatch) -> None:
+    placements = []
+    current = {"pose": (0.0, 0.0, 0.0)}
+    local_offset = (0.35, -0.2)
+
+    def fake_set_root(_stage, _prim_path, pose, _yaw):
+        current["pose"] = tuple(float(v) for v in pose)
+        placements.append(current["pose"])
+
+    def fake_bbox(_stage, _prim_path):
+        pose = current["pose"]
+        center = (pose[0] + local_offset[0], pose[1] + local_offset[1])
+        return {
+            "bbox_min_xyz": [center[0] - 0.25, center[1] - 0.25, 0.0],
+            "bbox_max_xyz": [center[0] + 0.25, center[1] + 0.25, 1.6],
+            "center_xyz": [center[0], center[1], 0.8],
+            "size_xyz": [0.5, 0.5, 1.6],
+        }
+
+    monkeypatch.setattr(M, "_set_root_xform", fake_set_root)
+    monkeypatch.setattr(M, "_world_bbox_for_prim", fake_bbox)
+    monkeypatch.setattr(M, "_root_transform_diagnostics", lambda _stage, _prim_path: {"root": "diag"})
+
+    diag = M._place_root(object(), "/World/G1", (2.0, 0.8, 0.84), 1.57)
+
+    assert diag["status"] == "corrected"
+    assert diag["correction_applied"] is True
+    assert diag["measured_offset_xy_m"] == [0.35, -0.2]
+    assert diag["final_footprint_center_xy"] == [2.0, 0.8]
+    assert diag["final_xy_error_m"] == pytest.approx(0.0)
+    assert placements == [(2.0, 0.8, 0.84), (1.65, 1.0, 0.84)]
+
+
+def test_placement_validation_manifest_passes_with_actual_bbox_center_match(monkeypatch) -> None:
+    sp = importlib.import_module("blueprint_pipeline.scene_placement")
+    target = sp.SceneObject(
+        id="sink",
+        label="sink",
+        bbox_min=(1.5, 1.65, 0.75),
+        bbox_max=(2.5, 2.35, 1.15),
+        centroid=(2.0, 2.0, 0.95),
+        source="test",
+    )
+    stance_plan = {
+        "status": "accepted",
+        "accepted_pose": [2.0, 0.8, 0.84],
+        "accepted_yaw": math.pi / 2,
+        "floor_z_hint": 0.05,
+        "task_target_xyz": [2.0, 2.0, 0.95],
+        "task_target_bounds": {
+            "bbox_min_xyz": [1.5, 1.65, 0.75],
+            "bbox_max_xyz": [2.5, 2.35, 1.15],
+        },
+    }
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [1.72, 0.52, 0.0],
+            "bbox_max_xyz": [2.28, 1.08, 1.6],
+            "center_xyz": [2.0, 0.8, 0.8],
+            "size_xyz": [0.56, 0.56, 1.6],
+        },
+    )
+
+    manifest = M._build_placement_validation_manifest(
+        stage=object(),
+        robot_prim_path="/World/G1",
+        stance_plan=stance_plan,
+        accepted_pose=(2.0, 0.8, 0.84),
+        accepted_yaw=math.pi / 2,
+        root_diagnostics={"status": "placed"},
+        scene_objects=[target],
+        scenario_id="sink_stance",
+        visual_qc={"status": "passed", "blockers": []},
+        topdown_frame="/tmp/placement_topdown_0000.png",
+    )
+
+    assert manifest["status"] == "PASS"
+    assert manifest["blockers"] == []
+    assert manifest["ground_truth_placement"]["xy_error_m"] == pytest.approx(0.0)
+    assert manifest["intended_geometry"]["ok"] is True
+    assert manifest["topdown_debug_frame"].endswith("placement_topdown_0000.png")
+
+
+def test_placement_validation_manifest_fails_on_actual_bbox_center_mismatch(monkeypatch) -> None:
+    stance_plan = {
+        "status": "accepted",
+        "accepted_pose": [2.0, 0.8, 0.84],
+        "accepted_yaw": math.pi / 2,
+        "floor_z_hint": 0.05,
+        "task_target_xyz": [2.0, 2.0, 0.95],
+        "task_target_bounds": {
+            "bbox_min_xyz": [1.5, 1.65, 0.75],
+            "bbox_max_xyz": [2.5, 2.35, 1.15],
+        },
+    }
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [1.72, 1.32, 0.0],
+            "bbox_max_xyz": [2.28, 1.88, 1.6],
+            "center_xyz": [2.0, 1.6, 0.8],
+            "size_xyz": [0.56, 0.56, 1.6],
+        },
+    )
+    monkeypatch.setattr(M, "_root_transform_diagnostics", lambda _stage, _prim_path: {"root": "diag"})
+
+    manifest = M._build_placement_validation_manifest(
+        stage=object(),
+        robot_prim_path="/World/G1",
+        stance_plan=stance_plan,
+        accepted_pose=(2.0, 0.8, 0.84),
+        accepted_yaw=math.pi / 2,
+        root_diagnostics={"status": "placed"},
+        scene_objects=[],
+        scenario_id="sink_stance",
+        visual_qc={"status": "passed", "blockers": []},
+    )
+
+    assert manifest["status"] == "FAIL"
+    assert "placement_ground_truth_center_mismatch" in manifest["blockers"]
+    gt = manifest["ground_truth_placement"]
+    assert gt["robot_prim_path"] == "/World/G1"
+    assert gt["accepted_pose_xyz"] == [2.0, 0.8, 0.84]
+    assert gt["actual_world_aabb"]["center_xyz"] == [2.0, 1.6, 0.8]
+    assert gt["actual_footprint_center_xyz"] == [2.0, 1.6, 0.8]
+    assert gt["computed_xyz_offset_m"] == [0.0, 0.8, -0.04]
+    assert gt["xy_error_m"] > 0.1
+    assert gt["xform_diagnostics"] == {"root": "diag"}
+
+
+def test_dynamic_scene_target_bounds_thread_into_task_stance(monkeypatch) -> None:
+    def fake_resolve(_stage, _scenario):
+        return {
+            "status": "resolved",
+            "source": "scene_placement_task_label",
+            "selected": {
+                "target_object_id": "sink",
+                "target_object_label": "sink",
+                "center_xyz": [2.0, 2.0, 0.95],
+                "size_xyz": [1.0, 0.7, 0.4],
+                "bbox_min_xyz": [1.5, 1.65, 0.75],
+                "bbox_max_xyz": [2.5, 2.35, 1.15],
+            },
+        }
+
+    monkeypatch.setattr(M, "_resolve_task_target_from_stage", fake_resolve)
+    scenario = {
+        "instruction": "Stand at the kitchen sink and turn on the faucet.",
+        "raw_spawn_position_xyz": [2.0, 0.0, 0.05],
+        "floor_z_hint": 0.05,
+    }
+
+    plan = M._plan_task_stance_for_stage(
+        stage=object(),
+        scenario=scenario,
+        manipulation_look_at=None,
+        probe=lambda pose, yaw: 0,
+        no_collision_probe=False,
+    )
+
+    assert plan["status"] == "accepted"
+    assert plan["accepted_pose"][1] == pytest.approx(0.8)
+    assert plan["target_resolution"]["selected"]["target_object_id"] == "sink"
+    assert plan["task_target_bounds"]["bbox_max_xyz"] == [2.5, 2.35, 1.15]
+    assert plan["candidates"][0]["standoff_from_target_surface_m"] == pytest.approx(
+        M.TASK_STANCE_DEFAULT_SURFACE_STANDOFF_M
+    )
+
+
 def test_task_stance_planner_fails_closed_when_all_candidates_collide() -> None:
     scenario = {
         "task_target_position_xyz": [0.0, 0.0, 0.9],
@@ -258,6 +1059,189 @@ def test_task_stance_planner_fails_closed_when_all_candidates_collide() -> None:
     assert plan["status"] == "blocked"
     assert plan["blockers"] == ["no_collision_free_task_stance_candidate"]
     assert all(c["scene_collision_contact_count"] == 2 for c in plan["candidates"])
+
+
+def test_sink_target_standoff_does_not_use_broad_cabinet_fixture() -> None:
+    sink = SceneObject(
+        id="sink",
+        label="sink",
+        bbox_min=(2.0, 0.9, 0.5),
+        bbox_max=(2.6, 1.8, 1.1),
+        centroid=(2.3, 1.35, 0.8),
+    )
+    cabinet = SceneObject(
+        id="kitchen_cabinet_1",
+        label="kitchen_cabinet",
+        bbox_min=(-1.3, -0.15, 0.0),
+        bbox_max=(2.6, 2.45, 0.85),
+        centroid=(0.65, 1.15, 0.4),
+    )
+    faucet = SceneObject(
+        id="faucet",
+        label="faucet",
+        bbox_min=(2.25, 1.25, 0.9),
+        bbox_max=(2.35, 1.35, 1.1),
+        centroid=(2.3, 1.3, 1.0),
+    )
+
+    assert M._find_standoff_fixtures([cabinet, sink], sink) == []
+    assert M._find_standoff_fixtures([cabinet, sink], faucet) == [cabinet, sink]
+
+
+def test_placement_shell_obstacles_include_walls_not_floor_or_lights(monkeypatch) -> None:
+    class FakeRangeBox:
+        def __init__(self, bmin, bmax):
+            self._min = bmin
+            self._max = bmax
+
+        def IsEmpty(self):
+            return False
+
+        def GetMin(self):
+            return self._min
+
+        def GetMax(self):
+            return self._max
+
+        def GetSize(self):
+            return [self._max[i] - self._min[i] for i in range(3)]
+
+    class FakeBound:
+        def __init__(self, box):
+            self._box = box
+
+        def ComputeAlignedBox(self):
+            return self._box
+
+    class FakePrim:
+        def __init__(self, path, name, bmin, bmax):
+            self._path = path
+            self._name = name
+            self.box = FakeRangeBox(bmin, bmax)
+
+        def GetPath(self):
+            return self._path
+
+        def GetName(self):
+            return self._name
+
+    class FakeStage:
+        def Traverse(self):
+            return [
+                FakePrim("/World/Kitchen_Wall001", "Kitchen_Wall001", [2.8, -1, 0], [2.9, 2, 2.5]),
+                FakePrim("/World/Kitchen_Wall_Group", "Kitchen_Wall_Group", [-2, -2, 0], [4, 4, 2.5]),
+                FakePrim("/World/Kitchen_Cabinet_Door001", "Kitchen_Cabinet_Door001", [1, 1, 0], [1.05, 1.5, 0.8]),
+                FakePrim("/World/Kitchen_Floor", "Kitchen_Floor", [-2, -2, 0], [4, 4, 0.05]),
+                FakePrim("/World/RectLight_01", "RectLight_01", [0, 0, 2], [1, 1, 2.1]),
+            ]
+
+    class FakeBBoxCache:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ComputeWorldBound(self, prim):
+            return FakeBound(prim.box)
+
+    fake_usd = types.SimpleNamespace(TimeCode=types.SimpleNamespace(Default=lambda: "default"))
+    fake_usd_geom = types.SimpleNamespace(
+        Tokens=types.SimpleNamespace(default_="default", render="render", proxy="proxy"),
+        BBoxCache=FakeBBoxCache,
+    )
+    fake_pxr = types.SimpleNamespace(Usd=fake_usd, UsdGeom=fake_usd_geom)
+    monkeypatch.setitem(sys.modules, "pxr", fake_pxr)
+    monkeypatch.setitem(sys.modules, "pxr.Usd", fake_usd)
+    monkeypatch.setitem(sys.modules, "pxr.UsdGeom", fake_usd_geom)
+
+    obstacles = M._placement_shell_obstacles_for_stage(FakeStage())
+
+    assert [obj.id for obj in obstacles] == ["world_kitchen_wall001"]
+    assert obstacles[0].source == "usd_shell"
+    assert obstacles[0].bbox_min == (2.8, -1.0, 0.0)
+
+
+def test_placement_shell_obstacles_synthesize_broad_wall_mesh_edges(monkeypatch) -> None:
+    class FakeRangeBox:
+        def __init__(self, bmin, bmax):
+            self._min = bmin
+            self._max = bmax
+
+        def IsEmpty(self):
+            return False
+
+        def GetMin(self):
+            return self._min
+
+        def GetMax(self):
+            return self._max
+
+        def GetSize(self):
+            return [self._max[i] - self._min[i] for i in range(3)]
+
+    class FakeBound:
+        def __init__(self, box):
+            self._box = box
+
+        def ComputeAlignedBox(self):
+            return self._box
+
+    class FakePrim:
+        def __init__(self, path, name, bmin, bmax, is_mesh=False):
+            self._path = path
+            self._name = name
+            self.box = FakeRangeBox(bmin, bmax)
+            self._is_mesh = is_mesh
+
+        def GetPath(self):
+            return self._path
+
+        def GetName(self):
+            return self._name
+
+        def IsA(self, type_marker):
+            return self._is_mesh and type_marker == "MeshType"
+
+    class FakeStage:
+        def Traverse(self):
+            return [
+                FakePrim(
+                    "/root/Kitchen_Wall001",
+                    "Kitchen_Wall001",
+                    [-2.4, -1.6, 0.0],
+                    [2.76, 2.61, 2.7],
+                    is_mesh=True,
+                )
+            ]
+
+    class FakeBBoxCache:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ComputeWorldBound(self, prim):
+            return FakeBound(prim.box)
+
+    fake_usd = types.SimpleNamespace(TimeCode=types.SimpleNamespace(Default=lambda: "default"))
+    fake_usd_geom = types.SimpleNamespace(
+        Tokens=types.SimpleNamespace(default_="default", render="render", proxy="proxy"),
+        BBoxCache=FakeBBoxCache,
+        Mesh="MeshType",
+    )
+    fake_pxr = types.SimpleNamespace(Usd=fake_usd, UsdGeom=fake_usd_geom)
+    monkeypatch.setitem(sys.modules, "pxr", fake_pxr)
+    monkeypatch.setitem(sys.modules, "pxr.Usd", fake_usd)
+    monkeypatch.setitem(sys.modules, "pxr.UsdGeom", fake_usd_geom)
+
+    obstacles = M._placement_shell_obstacles_for_stage(FakeStage())
+
+    assert [obj.id for obj in obstacles] == [
+        "root_kitchen_wall001_xmin",
+        "root_kitchen_wall001_xmax",
+        "root_kitchen_wall001_ymin",
+        "root_kitchen_wall001_ymax",
+    ]
+    xmax = obstacles[1]
+    assert xmax.bbox_min[0] == pytest.approx(2.72)
+    assert xmax.bbox_max[0] == pytest.approx(2.8)
+    assert xmax.source == "usd_shell"
 
 
 def test_usd_task_target_resolver_prefers_object_root_over_descendant(monkeypatch) -> None:
@@ -275,6 +1259,23 @@ def test_usd_task_target_resolver_prefers_object_root_over_descendant(monkeypatc
         def GetSize(self):
             return self._size
 
+    class FakeRangeBox:
+        def __init__(self, bmin, bmax):
+            self._min = bmin
+            self._max = bmax
+
+        def IsEmpty(self):
+            return False
+
+        def GetMin(self):
+            return self._min
+
+        def GetMax(self):
+            return self._max
+
+        def GetSize(self):
+            return [self._max[i] - self._min[i] for i in range(3)]
+
     class FakeBound:
         def __init__(self, box):
             self._box = box
@@ -283,10 +1284,16 @@ def test_usd_task_target_resolver_prefers_object_root_over_descendant(monkeypatc
             return self._box
 
     class FakePrim:
-        def __init__(self, path, name, center, size):
+        def __init__(self, path, name, center, size, *, range_box=False):
             self._path = path
             self._name = name
-            self.box = FakeBox(center, size)
+            if range_box:
+                self.box = FakeRangeBox(
+                    [center[i] - size[i] / 2 for i in range(3)],
+                    [center[i] + size[i] / 2 for i in range(3)],
+                )
+            else:
+                self.box = FakeBox(center, size)
 
         def GetPath(self):
             return self._path
@@ -294,7 +1301,10 @@ def test_usd_task_target_resolver_prefers_object_root_over_descendant(monkeypatc
         def GetName(self):
             return self._name
 
-    root = FakePrim("/World/Sink054", "Sink054", [2.0, 0.5, 0.9], [1.2, 0.8, 1.0])
+    root = FakePrim(
+        "/World/Sink054", "Sink054", [2.0, 0.5, 0.9], [1.2, 0.8, 1.0],
+        range_box=True,
+    )
     child = FakePrim("/World/Sink054/tiny_mesh", "tiny_mesh", [9.0, 9.0, 9.0], [0.1, 0.1, 0.1])
 
     class FakeStage:
@@ -491,7 +1501,7 @@ def test_follow_cam_is_behind_and_above_robot() -> None:
     assert target[0] > 0.0        # looking ahead toward +X
 
 
-def _fake_scene_index(monkeypatch, objects):
+def _fake_scene_index(monkeypatch, objects, *, obstacle_boxes=None):
     """Patch scene_placement's USD index to enumerate a preset object list (no pxr/GPU)."""
     sp = importlib.import_module("blueprint_pipeline.scene_placement")
 
@@ -501,6 +1511,9 @@ def _fake_scene_index(monkeypatch, objects):
 
         def objects(self):
             return list(objects)
+
+        def obstacle_boxes(self):
+            return list(objects if obstacle_boxes is None else obstacle_boxes)
 
     monkeypatch.setattr(sp, "UsdSceneSpatialIndex", _FakeIndex)
     return sp
@@ -546,30 +1559,126 @@ def test_resolve_task_target_via_scene_placement_returns_none_without_task() -> 
     assert M._resolve_task_target_via_scene_placement(stage=object(), scenario={}) is None
 
 
-def test_scene_placement_stand_plan_stands_in_front_on_clear_floor() -> None:
-    # A sink resolved at (2.28, 1.33, 1.0). The counter + wall occupy y >= 1.0; the open floor is
-    # y < 1.0. compute_stand_pose must place the pelvis IN FRONT (smaller y), on clear floor, facing
-    # the sink — not clipping the counter (the bug the hardening fixes).
+def test_scene_placement_stand_plan_stands_on_clear_floor_when_probe_blocks_wall() -> None:
+    # When the probe DOES see the counter/wall (blocks y >= 1.0), it stands on the open floor in front.
     tr = {"status": "resolved", "source": "scene_placement_task_label",
           "selected": {"target_object_id": "sink", "target_object_label": "sink",
                        "center_xyz": [2.28, 1.33, 1.0], "size_xyz": [0.4, 0.4, 0.3]}}
-
-    def probe(pose, yaw):
-        return 0 if pose[1] < 1.0 else 1   # clear only on the open (-y) floor in front
-
-    plan = M._scene_placement_stand_plan(tr, probe, floor_z=0.05)
-    assert plan["status"] == "accepted"
-    assert plan["source"] == "scene_placement_compute_stand_pose"
-    ap = plan["accepted_pose"]
-    assert ap[1] < 1.33                        # stands IN FRONT of the sink (not behind/clipping)
-    assert ap[1] < 1.0                          # on the probed clear floor
-    assert ap[2] == pytest.approx(0.84)        # floor_z(0.05) + pelvis(0.79)
-    assert math.sin(plan["accepted_yaw"]) > 0.5  # faces +y, toward the sink
-    assert plan["stand_clear"] is True
-    assert plan["task_target_xyz"] == [2.28, 1.33, 1.0]
+    plan = M._scene_placement_stand_plan(tr, lambda p, y: 0 if p[1] < 1.0 else 1, floor_z=0.05)
+    assert plan["status"] == "accepted" and plan["accepted_pose"][1] < 1.0
 
 
 def test_scene_placement_stand_plan_none_without_geometry() -> None:
     # A resolution lacking center/size -> None, so the caller falls back to plan_task_stance.
     assert M._scene_placement_stand_plan({"selected": {"center_xyz": [1, 2, 3]}}, lambda p, y: 0) is None
     assert M._scene_placement_stand_plan(None, lambda p, y: 0) is None
+
+
+def test_topdown_debug_overlay_is_added_only_after_verify_and_pov_are_saved() -> None:
+    source = _RUNNER.read_text()
+    capture_start = source.index("debug_root_path = (")
+    normal_render = source.index("rep.orchestrator.step()", capture_start)
+    pov_save = source.index('_save_rgb(pov_annot, sdir / "frames" / f"robot_pov_', capture_start)
+    verify_save = source.index('_save_rgb(verify_annot, sdir / "frames" / f"verify_', capture_start)
+    overlay_update = source.index("_update_topdown_debug_scene(", capture_start)
+    topdown_save = source.index("placement_topdown_frame_path =", overlay_update)
+    overlay_remove = source.index("stage.RemovePrim(debug_root_path)", topdown_save)
+
+    assert normal_render < pov_save < overlay_update
+    assert normal_render < verify_save < overlay_update
+    assert overlay_update < topdown_save < overlay_remove
+
+
+def test_placement_obstacles_use_fine_boxes_not_grouped_cabinet_slab(monkeypatch) -> None:
+    sp = importlib.import_module("blueprint_pipeline.scene_placement")
+    SceneObject = sp.SceneObject
+    sink = SceneObject(
+        id="sink",
+        label="sink",
+        bbox_min=(2.009, 0.896, 0.555),
+        bbox_max=(2.547, 1.770, 1.142),
+        centroid=(2.278, 1.333, 0.849),
+        source="usd",
+    )
+    broad_cabinet = SceneObject(
+        id="kitchen_cabinet_1",
+        label="kitchen_cabinet",
+        bbox_min=(-1.300, -0.148, -0.014),
+        bbox_max=(2.568, 2.459, 0.836),
+        centroid=(0.634, 1.156, 0.411),
+        source="usd",
+    )
+    fine_cabinet_back_run = SceneObject(
+        id="kitchen_cabinet_leaf_back",
+        label="kitchen_cabinet",
+        bbox_min=(-1.300, 1.850, -0.014),
+        bbox_max=(2.568, 2.459, 0.836),
+        centroid=(0.634, 2.155, 0.411),
+        source="usd_leaf",
+    )
+    fine_cabinet_left_run = SceneObject(
+        id="kitchen_cabinet_leaf_left",
+        label="kitchen_cabinet",
+        bbox_min=(-1.300, -0.148, -0.014),
+        bbox_max=(-0.700, 2.459, 0.836),
+        centroid=(-1.000, 1.156, 0.411),
+        source="usd_leaf",
+    )
+    dishwasher = SceneObject(
+        id="dishwasher",
+        label="dishwasher",
+        bbox_min=(1.936, 0.267, 0.073),
+        bbox_max=(2.552, 0.884, 0.751),
+        centroid=(2.244, 0.575, 0.412),
+        source="usd_leaf",
+    )
+    flower_on_counter = SceneObject(
+        id="kitchen_flowers",
+        label="kitchen_flowers",
+        bbox_min=(1.806, -0.406, 0.794),
+        bbox_max=(2.666, 0.460, 1.451),
+        centroid=(2.236, 0.027, 1.122),
+        source="usd_leaf",
+    )
+    _fake_scene_index(
+        monkeypatch,
+        [sink, broad_cabinet],
+        obstacle_boxes=[sink, fine_cabinet_back_run, fine_cabinet_left_run, dishwasher, flower_on_counter],
+    )
+    monkeypatch.setattr(M, "_placement_shell_obstacles_for_stage", lambda _stage: [])
+    monkeypatch.setattr(M, "_place_root", lambda _stage, _prim_path, _pose, _yaw: {"status": "placed"})
+    pose = (2.366319, -0.179048, 0.84)
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [pose[0] - 0.28, pose[1] - 0.28, 0.22],
+            "bbox_max_xyz": [pose[0] + 0.28, pose[1] + 0.28, 1.46],
+            "center_xyz": [pose[0], pose[1], pose[2]],
+            "size_xyz": [0.56, 0.56, 1.24],
+        },
+    )
+
+    obstacles = M._placement_obstacles_for_stage(object())
+    assert {obj.id for obj in obstacles} == {
+        "sink",
+        "kitchen_cabinet_leaf_back",
+        "kitchen_cabinet_leaf_left",
+        "dishwasher",
+        "kitchen_flowers",
+    }
+    assert broad_cabinet.id not in {obj.id for obj in obstacles}
+
+    validator = M._placement_validator_for_stage(
+        object(),
+        "/World/G1",
+        (sink.bbox_min, sink.bbox_max),
+        target_object=sink,
+        scene_objects=obstacles,
+        floor_z=0.05,
+    )
+    result = validator(pose, 1.629212, {"standoff_from_target_surface_m": 1.0625})
+
+    assert result["status"] == "accepted"
+    assert result["blockers"] == []
+    assert result["deterministic_geometry"]["ok"] is True

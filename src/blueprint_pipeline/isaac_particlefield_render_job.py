@@ -290,9 +290,13 @@ def _runner_result_from_dir(out_dir: Path) -> tuple[dict, str | None]:
 
 
 def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provider=None,
-                      max_seconds: int = 1200, poll: int = 25) -> dict:
+                      max_seconds: int = 1200, poll: int = 25,
+                      stop_on_success: bool = True,
+                      preserve_instance: bool = False) -> dict:
     """Poll the heartbeat-uploaded output (provider-neutral signed GET url), then stop the
-    instance via the provider. ``provider`` defaults to RunPod for backward compatibility."""
+    instance via the provider. A worker that reached bootstrap/runner output is preserved with
+    stop() even when validation blocks, so it can be warm-restarted. True no-output launch duds are
+    terminated. ``provider`` defaults to RunPod for backward compatibility."""
     if provider is None:
         provider = get_render_provider("runpod")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -335,8 +339,17 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         refreshed, refreshed_source = _runner_result_from_dir(out_dir)
         if refreshed:
             last, last_source = refreshed, refreshed_source
-    teardown = provider.terminate(instance_id)  # DELETE the pod (stopped pods still bill for disk)
-    return {"status": "completed" if (done and last.get("status") == "completed") else "blocked",
+    completed = bool(done and last.get("status") == "completed")
+    runner_started = bool(done or last or last_boot or last_console_tail)
+    if (
+        (preserve_instance or (stop_on_success and runner_started))
+        and hasattr(provider, "stop")
+    ):
+        teardown = provider.stop(instance_id)
+    else:
+        # No marker/output means this was a launch dud rather than a reusable worker.
+        teardown = provider.terminate(instance_id)
+    return {"status": "completed" if completed else "blocked",
             "runner_result": last, "runner_result_source": last_source,
             "last_bootstrap": last_boot, "runner_console_tail": last_console_tail,
             "teardown": teardown, "elapsed_seconds": round(time.time() - t0, 1)}

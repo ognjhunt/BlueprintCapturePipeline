@@ -23,6 +23,71 @@ def test_build_request_shapes_worker_paths() -> None:
     assert [s["scenario_id"] for s in req["scenarios"]] == ["entry_to_sink", "narrow_passage_to_sink"]
 
 
+def test_cli_forwards_reused_kitchen_url(monkeypatch, tmp_path: Path) -> None:
+    scenarios_path = tmp_path / "scenarios.json"
+    scenarios_path.write_text(json.dumps(_SCENARIOS), encoding="utf-8")
+    captured: dict = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"status": "prepared"}
+
+    monkeypatch.setattr(J, "run_isaac_g1_kitchen_parity_job", fake_run)
+    rc = J.main([
+        "--scenarios", str(scenarios_path),
+        "--out-dir", str(tmp_path / "out"),
+        "--kitchen-url", "https://objects.example/kitchen.zip?sig=1",
+    ])
+
+    assert rc == 0
+    assert captured["kitchen_asset_dir"] is None
+    assert captured["kitchen_url"] == "https://objects.example/kitchen.zip?sig=1"
+
+
+def test_cli_forwards_warm_candidates_without_source_hardcoding(monkeypatch, tmp_path: Path) -> None:
+    scenarios_path = tmp_path / "scenarios.json"
+    scenarios_path.write_text(json.dumps(_SCENARIOS), encoding="utf-8")
+    captured: dict = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"status": "prepared"}
+
+    monkeypatch.setattr(J, "run_isaac_g1_kitchen_parity_job", fake_run)
+    rc = J.main([
+        "--scenarios", str(scenarios_path),
+        "--out-dir", str(tmp_path / "out"),
+        "--warm-candidate", "pod-a",
+        "--warm-candidate", "pod-b",
+    ])
+
+    assert rc == 0
+    assert captured["warm_candidates"] == ("pod-a", "pod-b")
+    assert captured["warm_only"] is False
+
+
+def test_cli_forwards_warm_only(monkeypatch, tmp_path: Path) -> None:
+    scenarios_path = tmp_path / "scenarios.json"
+    scenarios_path.write_text(json.dumps(_SCENARIOS), encoding="utf-8")
+    captured: dict = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"status": "prepared"}
+
+    monkeypatch.setattr(J, "run_isaac_g1_kitchen_parity_job", fake_run)
+    rc = J.main([
+        "--scenarios", str(scenarios_path),
+        "--out-dir", str(tmp_path / "out"),
+        "--warm-candidate", "pod-a",
+        "--warm-only",
+    ])
+
+    assert rc == 0
+    assert captured["warm_candidates"] == ("pod-a",)
+    assert captured["warm_only"] is True
+
+
 def test_build_parity_bundle_contains_runner_policy_request_and_assets(tmp_path: Path) -> None:
     # fake kitchen asset tree
     kdir = tmp_path / "kitchen_src"
@@ -37,6 +102,7 @@ def test_build_parity_bundle_contains_runner_policy_request_and_assets(tmp_path:
         req = json.loads(zf.read("request.json"))
     assert "run_isaac_g1_kitchen_parity_eval.py" in names
     assert "isaac_g1_policy.py" in names  # policy module shipped for the worker import
+    assert "render_visual_qc.py" in names  # Gemini placement QC module shipped for worker import
     assert "request.json" in names
     assert "kitchen/Collected_KitchenRoom/KitchenRoom.usd" in names
     assert "kitchen/Collected_KitchenRoom/Sink054/Sink054.usd" in names
@@ -65,6 +131,7 @@ def test_docker_start_cmd_runs_parity_runner() -> None:
     body = dsc[1]
     assert "container_bash_started" in body  # early marker
     assert "run_isaac_g1_kitchen_parity_eval.py" in body
+    assert "google-genai" in body
     assert "--request" in body
     assert "/isaac-sim/python.sh /workspace/boot.py" in body
     assert 'mark("runner_done", rc=rc)' in body
@@ -84,6 +151,25 @@ def test_build_launch_spec_carries_policy_and_signed_urls(tmp_path: Path) -> Non
     assert spec.env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"].endswith("sig=B")
     assert spec.bootstrap_argv[0] == "-lc"
     assert spec.container_disk_gb >= 120
+
+
+def test_build_launch_spec_threads_gemini_key_only_when_supplied(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+    off = J.build_launch_spec(jd, image="img:tag", policy_id="p", steps=8)
+    assert "GOOGLE_GENAI_API_KEY" not in off.env
+    assert "GEMINI_API_KEY" not in off.env
+    on = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="p",
+        steps=8,
+        gemini_api_key="secret-value",
+    )
+    assert on.env["GOOGLE_GENAI_API_KEY"] == "secret-value"
+    assert on.env["GEMINI_API_KEY"] == "secret-value"
 
 
 def test_manipulation_cam_flag_threads_env_and_bootstrap(tmp_path: Path) -> None:
@@ -165,6 +251,26 @@ def test_collision_approximation_and_verify_cam_thread_env_and_bootstrap(tmp_pat
     assert "PARITY_VERIFY_CAM" in body and "--verify-cam" in body
 
 
+def test_focus_prune_threads_env_and_bootstrap(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+    spec = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="p",
+        steps=8,
+        focus_radius=2.5,
+        keep_objects="room,floor,wall,sink,counter,cabinet,light",
+    )
+    assert spec.env["PARITY_FOCUS_RADIUS"] == "2.5"
+    assert spec.env["PARITY_KEEP_OBJECTS"] == "room,floor,wall,sink,counter,cabinet,light"
+    body = J.docker_start_cmd()[1]
+    assert "PARITY_FOCUS_RADIUS" in body and "--focus-radius" in body
+    assert "PARITY_KEEP_OBJECTS" in body and "--keep-objects" in body
+
+
 def test_manipulation_stand_flag_threads_env_and_bootstrap(tmp_path: Path) -> None:
     jd = tmp_path / "object_store_real_run"
     jd.mkdir()
@@ -230,16 +336,25 @@ def _make_fake_provider():
         def __init__(self, marker: bool) -> None:
             self.launched: list[str] = []
             self.terminated: list[str] = []
+            self.stopped: list[str] = []
             self._marker = marker
 
-        def launch(self, job_dir, request, *, cold=False):
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
             iid = f"pod{len(self.launched)}"
             self.launched.append(iid)
-            return {"status": "launched", "instance_id": iid}
+            return {
+                "status": "launched",
+                "instance_id": iid,
+                "mode": "cold_create" if cold else "warm_restart",
+            }
 
         def terminate(self, iid):
             self.terminated.append(iid)
             return {"status": "terminated"}
+
+        def stop(self, iid):
+            self.stopped.append(iid)
+            return {"status": "stopped"}
 
         def urlopen(self, url, timeout=60):
             buf = _io.BytesIO()
@@ -280,6 +395,31 @@ def test_launch_with_marker_retry_terminates_all_flaky_pods(tmp_path: Path, monk
     monkeypatch.setattr(J.urllib.request, "urlopen", fp.urlopen)
     res = J.launch_with_marker_retry(fp, jd, {"img": "x"}, max_attempts=3, marker_timeout=2, poll=1)
     assert res["status"] == "blocked"
-    assert "all_cold_launch_attempts_flaky" in res["blockers"]
+    assert "all_launch_attempts_flaky" in res["blockers"]
     # every flaky pod was DELETED — none left billing
     assert fp.terminated == ["pod0", "pod1", "pod2"]
+
+
+def test_launch_with_marker_retry_stops_flaky_warm_restart(tmp_path: Path, monkeypatch) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+    fp = _make_fake_provider()(marker=False)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(J.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(J.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(J.urllib.request, "urlopen", fp.urlopen)
+
+    res = J.launch_with_marker_retry(
+        fp,
+        jd,
+        {"img": "x"},
+        max_attempts=1,
+        marker_timeout=2,
+        poll=1,
+        cold=False,
+    )
+
+    assert res["status"] == "blocked"
+    assert fp.terminated == []
+    assert fp.stopped == ["pod0"]

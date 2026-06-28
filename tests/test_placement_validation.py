@@ -6,6 +6,7 @@ import math
 import pytest
 
 from blueprint_pipeline.scene_placement import (
+    DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M,
     PlacementVerdict,
     SceneObject,
     StandPose,
@@ -76,12 +77,124 @@ def test_no_clip_when_standing_in_front():
     assert "clips" not in " ".join(v.failures)
 
 
+def test_near_floor_obstacle_clearance_fails_without_overlap():
+    target = _obj("sink", 2.28, 1.33, 0.85, sx=0.4, sy=0.4, sz=0.3)
+    # The robot footprint at y=0.44 ends at y=0.72. This base obstacle starts 3 cm away:
+    # technically non-overlapping, but too close for a reliable G1 stance in reconstructed geometry.
+    near_base = SceneObject(
+        id="lower_cabinet_edge",
+        label="lower_cabinet_edge",
+        bbox_min=(1.5, 0.75, 0.0),
+        bbox_max=(3.0, 0.95, 0.85),
+        centroid=(2.25, 0.85, 0.425),
+    )
+    v = validate_stand_pose(
+        (2.28, 0.44, 0.84),
+        math.pi / 2,
+        target,
+        [near_base],
+        floor_z=0.05,
+    )
+
+    assert v.clipping == []
+    assert any(f.startswith("clearance:") for f in v.failures)
+    assert v.near_clearance == [("lower_cabinet_edge", pytest.approx(0.03))]
+    assert v.min_obstacle_clearance_m == pytest.approx(DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M)
+    assert v.ok is False
+
+
+def test_render_shell_wall_hugging_pose_fails_floor_obstacle_clearance():
+    target = SceneObject(
+        id="sink",
+        label="sink",
+        bbox_min=(2.009021, 0.89582, 0.555082),
+        bbox_max=(2.546755, 1.770299, 1.141971),
+        centroid=(2.277888, 1.33306, 0.848527),
+    )
+    lower_cabinet_run = SceneObject(
+        id="kitchen_cabinet_1",
+        label="kitchen_cabinet",
+        bbox_min=(-1.299939, -0.148189, -0.013745),
+        bbox_max=(2.567994, 2.459342, 0.836052),
+        centroid=(0.634028, 1.155576, 0.411154),
+    )
+    # Latest failed shell run: no overlap by about 5 mm, but visually the G1 is pressed into
+    # the side return/cabinet edge. The deterministic gate must reject this before VLM review.
+    v = validate_stand_pose(
+        (2.381207, -0.433613, 0.84),
+        1.629212,
+        target,
+        [lower_cabinet_run],
+        floor_z=0.05,
+    )
+
+    assert v.clipping == []
+    assert any(f.startswith("clearance:kitchen_cabinet_1") for f in v.failures)
+    assert v.near_clearance[0][1] == pytest.approx(0.0054, abs=0.001)
+    assert v.ok is False
+
+
 def test_wall_box_above_pelvis_is_not_a_clip():
     target, _ = _sink_and_counter()
     # a box mounted high on the wall (min_z 1.5 > pelvis 0.84) directly above the robot
     wall_box = _obj("kitchen_box", 2.28, 0.55, 1.6, sx=0.4, sy=0.4, sz=0.2)
     v = validate_stand_pose((2.28, 0.55, 0.84), math.pi / 2, target, [target, wall_box], floor_z=0.05)
     assert v.clipping == []          # stood UNDER it, not into it
+
+
+def test_usd_window_boundary_above_foot_band_still_requires_xy_clearance():
+    target = _obj("sink", 2.28, 1.33, 0.85, sx=0.4, sy=0.4, sz=0.3)
+    window = SceneObject(
+        id="kitchen_windows",
+        label="kitchen_windows",
+        bbox_min=(2.62, 0.50, 0.90),
+        bbox_max=(2.80, 1.95, 2.33),
+        centroid=(2.71, 1.22, 1.61),
+        source="usd_shell",
+    )
+    # Footprint x overlaps the window plane and y stops 3 cm short of it. A generic overhead object
+    # would be skipped, but a USD window/wall is a room boundary, so this is not a valid stance.
+    v = validate_stand_pose((2.74, 0.19, 0.84), 2.1, target, [window], floor_z=0.05)
+
+    assert any(f.startswith("clearance:kitchen_windows") for f in v.failures)
+    assert v.near_clearance[0][1] == pytest.approx(0.03)
+    assert v.ok is False
+
+
+def test_usd_window_boundary_rejects_robot_on_opposite_side_from_target():
+    target = _obj("sink", 2.28, 1.33, 0.85, sx=0.4, sy=0.4, sz=0.3)
+    window = SceneObject(
+        id="kitchen_windows",
+        label="kitchen_windows",
+        bbox_min=(2.62, 0.50, 0.90),
+        bbox_max=(2.80, 1.95, 2.33),
+        centroid=(2.71, 1.22, 1.61),
+        source="usd_shell",
+    )
+    v = validate_stand_pose((3.28, 0.44, 0.84), 2.4, target, [window], floor_z=0.05)
+
+    assert "outside_boundary:kitchen_windows" in v.failures
+    assert v.outside_boundary == ["kitchen_windows"]
+    assert v.ok is False
+
+
+def test_usd_leaf_window_trim_does_not_globally_reject_room_side_pose():
+    target = _obj("sink", 2.28, 1.33, 0.85, sx=0.4, sy=0.4, sz=0.3)
+    window_trim = SceneObject(
+        id="kitchen_windows_1",
+        label="kitchen_windows",
+        bbox_min=(2.62, 0.50, 0.90),
+        bbox_max=(2.80, 1.95, 2.33),
+        centroid=(2.71, 1.22, 1.61),
+        source="usd_leaf",
+    )
+    pose = (3.28, 0.44, 0.84)
+    yaw = math.atan2(target.centroid[1] - pose[1], target.centroid[0] - pose[0])
+
+    v = validate_stand_pose(pose, yaw, target, [window_trim], floor_z=0.05)
+
+    assert v.outside_boundary == []
+    assert not any(f.startswith("outside_boundary:") for f in v.failures)
 
 
 def test_off_floor_flagged():
@@ -289,6 +402,19 @@ def test_floor_reaching_furniture_in_footprint_is_a_clip():
     v = validate_stand_pose((1.5, 1.5, 0.79), 0.0, target, [base], floor_z=0.0)
     assert any(oid == "base_cabinet" for oid, _ in v.clipping)
     assert v.ok is False
+
+
+def test_tiny_mesh_aabb_sliver_overlap_is_tolerated_but_real_overlap_fails():
+    target = _obj("sink", 5.0, 5.0, 0.85)
+    sliver = SceneObject(
+        id="cabinet_face_sliver", label="cabinet_face_sliver",
+        bbox_min=(1.0, 1.995, 0.0), bbox_max=(2.0, 2.2, 0.75), centroid=(1.5, 2.1, 0.375),
+    )
+    tiny = validate_stand_pose((1.5, 1.72, 0.79), 0.0, target, [sliver], floor_z=0.0)
+    assert tiny.clipping == []
+
+    meaningful = validate_stand_pose((1.5, 1.75, 0.79), 0.0, target, [sliver], floor_z=0.0)
+    assert any(oid == "cabinet_face_sliver" for oid, _ in meaningful.clipping)
 
 
 def test_box_above_foot_band_clears_and_is_not_a_clip():

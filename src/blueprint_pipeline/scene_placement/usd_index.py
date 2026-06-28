@@ -244,6 +244,9 @@ class UsdSceneSpatialIndex:
         *,
         exclude_substrings: Sequence[str] = DEFAULT_EXCLUDE_SUBSTRINGS,
         max_obstacle_box_size: float = 6.0,
+        max_mesh_component_boxes: int = 128,
+        max_mesh_component_faces: int = 5000,
+        max_mesh_component_points: int = 20000,
     ) -> None:
         if stage is None and not usd_path:
             raise ValueError("UsdSceneSpatialIndex requires either a stage or a usd_path")
@@ -253,6 +256,12 @@ class UsdSceneSpatialIndex:
         # Per-axis cap for obstacle_boxes(): a leaf bound larger than this is degenerate data
         # (instancer/empty-mesh) and dropped so it can't make every pose read as clipping.
         self._max_obstacle_box_size = float(max_obstacle_box_size)
+        # Decorative meshes can have tens of thousands of disconnected face islands
+        # if their authoring duplicates vertices per petal/leaf. Splitting those into
+        # component AABBs turns placement startup into a whole-stage geometry pass.
+        self._max_mesh_component_boxes = int(max_mesh_component_boxes)
+        self._max_mesh_component_faces = int(max_mesh_component_faces)
+        self._max_mesh_component_points = int(max_mesh_component_points)
 
     def objects(self) -> List[SceneObject]:
         """Walk the stage and return one ``SceneObject`` per top-level named object.
@@ -323,6 +332,7 @@ class UsdSceneSpatialIndex:
             Usd.TimeCode.Default(),
             [UsdGeom.Tokens.default_, UsdGeom.Tokens.render],
         )
+        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
 
         def _subtree_has_gprim(root_prim) -> bool:
             """True if ``root_prim`` or any descendant is concrete geometry (Gprim)."""
@@ -330,6 +340,89 @@ class UsdSceneSpatialIndex:
                 if descendant.IsValid() and descendant.IsA(UsdGeom.Gprim):
                     return True
             return False
+
+        def _mesh_component_world_bounds(mesh_prim) -> List[Tuple[Vec3, Vec3]]:
+            """Connected mesh components as world AABBs.
+
+            Some authored assets pack an L-shaped cabinet run into one mesh. The mesh's single world
+            AABB covers open aisle floor, even though the connected pieces are narrow cabinet faces,
+            shelves, and top slabs. Splitting by face-vertex connectivity gives the clip validator
+            obstacle boxes that match occupied geometry more closely without using scene-specific
+            coordinates.
+            """
+            if not mesh_prim.IsA(UsdGeom.Mesh):
+                return []
+            try:
+                mesh = UsdGeom.Mesh(mesh_prim)
+                points = list(mesh.GetPointsAttr().Get() or [])
+                counts = list(mesh.GetFaceVertexCountsAttr().Get() or [])
+                indices = list(mesh.GetFaceVertexIndicesAttr().Get() or [])
+            except Exception:  # noqa: BLE001
+                return []
+            if not points or not counts or not indices:
+                return []
+            if (
+                len(points) > self._max_mesh_component_points
+                or len(counts) > self._max_mesh_component_faces
+            ):
+                return []
+            parent = list(range(len(points)))
+
+            def find(idx: int) -> int:
+                while parent[idx] != idx:
+                    parent[idx] = parent[parent[idx]]
+                    idx = parent[idx]
+                return idx
+
+            def union(a: int, b: int) -> None:
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[rb] = ra
+
+            offset = 0
+            for count in counts:
+                face = list(indices[offset: offset + int(count)])
+                offset += int(count)
+                valid = [int(i) for i in face if 0 <= int(i) < len(points)]
+                if not valid:
+                    continue
+                first = valid[0]
+                for idx in valid[1:]:
+                    union(first, idx)
+            components: Dict[int, List[int]] = {}
+            for idx in range(len(points)):
+                components.setdefault(find(idx), []).append(idx)
+            if len(components) <= 1:
+                return []
+            if len(components) > self._max_mesh_component_boxes:
+                return []
+            try:
+                xform = xform_cache.GetLocalToWorldTransform(mesh_prim)
+            except Exception:  # noqa: BLE001
+                return []
+            bounds: List[Tuple[Vec3, Vec3]] = []
+            for point_indices in components.values():
+                world_points = []
+                for idx in point_indices:
+                    try:
+                        p = xform.Transform(points[idx])
+                        world_points.append((float(p[0]), float(p[1]), float(p[2])))
+                    except Exception:  # noqa: BLE001
+                        continue
+                if not world_points:
+                    continue
+                bbox_min: Vec3 = (
+                    min(p[0] for p in world_points),
+                    min(p[1] for p in world_points),
+                    min(p[2] for p in world_points),
+                )
+                bbox_max: Vec3 = (
+                    max(p[0] for p in world_points),
+                    max(p[1] for p in world_points),
+                    max(p[2] for p in world_points),
+                )
+                bounds.append((bbox_min, bbox_max))
+            return bounds
 
         named_bounds: List[Tuple[str, Tuple[Vec3, Vec3]]] = []
         prim_range = iter(Usd.PrimRange(stage.GetPseudoRoot()))
@@ -363,6 +456,10 @@ class UsdSceneSpatialIndex:
                 # test no longer treats the open aisle as "inside the cabinet".
                 for desc in Usd.PrimRange(prim):
                     if not (desc.IsValid() and desc.IsA(UsdGeom.Gprim)):
+                        continue
+                    component_bounds = _mesh_component_world_bounds(desc)
+                    if component_bounds:
+                        named_bounds.extend((name, bounds) for bounds in component_bounds)
                         continue
                     try:
                         leaf_aligned = bbox_cache.ComputeWorldBound(desc).ComputeAlignedRange()

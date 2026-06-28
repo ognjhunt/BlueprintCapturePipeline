@@ -1,5 +1,95 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-06-27
+
+### User-Facing
+
+- Added a provider-agnostic GPU launch and Isaac/G1 kitchen-parity evaluation
+  lane for captured-scene review, including splat/NuRec support, G1 policy
+  scaffolding, particle-field USD helpers, and a kitchen-parity runner. These
+  outputs are simulator/render/runtime support artifacts; they do not prove
+  raw capture truth, live robot readiness, physical manipulation success,
+  safety validation, or deployment approval.
+- Expanded WAM compute and robot-POV support with provider-agnostic WAM compute
+  planning, object-index splat analysis, OSCAR provider command adapter updates,
+  generated-video review improvements, and WAM real-provider validation probe
+  wiring. The lane strengthens Task Evaluation Run and review-package
+  infrastructure while keeping generated media and provider outputs downstream
+  of capture/provenance evidence.
+- Added a per-step OSCAR/SAM3 closed-loop evaluation path and GPU pod startup
+  builder for policy/WAM/perception experiments. The closed loop can prepare and
+  test provider-side inference paths, but it remains evaluator/runtime evidence,
+  not an accepted forward/inverse consistency score or live deployment proof.
+- Hardened Isaac manipulation review media with manipulation-camera modes,
+  lighting/framing fixes, rest-pose skeleton conditioning, crash-safe USD arm
+  reach, convex-hull collision geometry, a centered third-person verify camera,
+  and a manipulation-stand mode that places the robot at the task start pose
+  without claiming navigation.
+- Added a VLM-backed visual sanity QC helper for rendered frames and WAM outputs
+  so blank, irrelevant, or weak review media can be flagged before it is treated
+  as useful support evidence.
+
+### Employee-Facing
+
+- Added or updated runtime modules and scripts for provider-agnostic GPU/WAM
+  execution and Isaac/G1 parity flows. Key paths include
+  `src/blueprint_pipeline/gpu_render_providers.py`,
+  `src/blueprint_pipeline/wam_compute_providers.py`,
+  `src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`,
+  `src/blueprint_pipeline/isaac_g1_policy.py`,
+  `src/blueprint_pipeline/isaac_particlefield_render_job.py`,
+  `src/blueprint_pipeline/isaac_nurec_export.py`,
+  `src/blueprint_pipeline/particlefield_usd.py`,
+  `src/blueprint_pipeline/splat_backends.py`,
+  `scripts/run_isaac_g1_kitchen_parity_eval.py`,
+  `scripts/run_isaac_splat_nurec_render.py`, and
+  `scripts/object_index_splat_analyzer_runner.py`.
+- Added OSCAR closed-loop and provider startup surfaces through
+  `src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py` and
+  `src/blueprint_pipeline/oscar_isaac_closed_loop_gpu_launch.py`, with focused
+  tests for injectable WAM backends, real OSCAR-2B pod-side inference,
+  next-frame extraction, CLI wiring, and startup-package generation.
+- Hardened provider reliability in `src/blueprint_pipeline/runpod_wam_async_runner.py`,
+  `src/blueprint_pipeline/vast_provider_adapter.py`,
+  `src/blueprint_pipeline/vast_wam_async_runner.py`, and
+  `src/blueprint_pipeline/oscar_wam_provider_bundle.py` by addressing stale
+  object-store output, heartbeat/poll behavior, dud detection, dependency
+  handling, and teardown behavior.
+- Added `src/blueprint_pipeline/render_visual_qc.py` with focused coverage in
+  `tests/test_render_visual_qc.py`; expanded tests across the Isaac/G1,
+  provider, WAM compute, object-index, generated-video review, and closed-loop
+  paths.
+- Added June 27 design/goal docs under
+  `docs/superpowers/specs/2026-06-27-isaac-g1-kitchen-parity-design.md`,
+  `docs/superpowers/specs/2026-06-27-provider-agnostic-wam-compute-design.md`,
+  and `docs/goals/2026-06-27-provider-agnostic-wam-compute-loop.md`.
+
+### Future-Agent-Facing
+
+- Contract changes: provider-agnostic compute/render abstractions were added for
+  GPU render and WAM compute paths. Keep model/provider backends replaceable and
+  preserve capture, package, evaluation, and provenance contracts above those
+  adapters.
+- Runtime behavior changes: RunPod/Vast WAM polling and object-store staging now
+  account for stale outputs, heartbeats, dud provider behavior, dependency
+  setup, and teardown more explicitly. Do not treat poll completion or artifact
+  presence as provider-runtime proof without matching runtime/provenance output.
+- CLI/script changes: the Isaac/G1 kitchen-parity and splat/NuRec render
+  scripts are now first-class support surfaces for review media generation;
+  `pyproject.toml` also picked up related GPU render entrypoints.
+- Proof-boundary changes: Isaac review frames, G1 skeleton videos,
+  manipulation-stand renders, visual QC labels, and generated WAM outputs are
+  downstream review/support artifacts. They may help decide whether to continue
+  a run, but they do not override raw capture/provenance truth or establish
+  physical robot readiness, navigation success, safety validation, deployment
+  approval, or forward/inverse episode consistency.
+- Launch/readiness gate changes: cold Isaac image pulls now tolerate a longer
+  marker timeout and additional attempts, which improves startup robustness but
+  does not remove the need for accepted provider execution, artifact upload,
+  cost/teardown, and review-quality evidence before stronger readiness claims.
+- Uncommitted local state: none found in the current checkout for June 27; this
+  entry is based on committed history for the previous completed calendar day.
+
 ## 2026-06-26
 
 ### User-Facing
