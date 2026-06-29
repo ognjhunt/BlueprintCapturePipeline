@@ -999,12 +999,11 @@ def manipulation_cam_pose(
     root_pose,
     yaw,
     *,
-    eye_forward: float = 0.15,
+    eye_forward: float = 0.12,
     eye_height: float = 1.35,
     target_forward: float = 0.6,
     target_height: float = 0.9,
     look_at=None,
-    shoulder_back: float = 0.65,
     shoulder_side: float = 0.38,
     reach_arm: str = "right",
 ):
@@ -1022,9 +1021,6 @@ def manipulation_cam_pose(
     fx, fy = math.cos(yaw), math.sin(yaw)
     if look_at is not None:
         affordance = (float(look_at[0]), float(look_at[1]), float(look_at[2]))
-        # For close reach tasks, a true target-centered ray can hide the active arm behind the
-        # appliance/cabinet face. Frame along the active arm corridor: the eye sits just off the
-        # opposite side of the head, while the target blends slightly toward the active shoulder.
         rx, ry = fy, -fx
         arm_norm = str(reach_arm or "right").strip().lower()
         if arm_norm == "left":
@@ -1033,20 +1029,22 @@ def manipulation_cam_pose(
             active_side = 0.0
         else:
             active_side = 1.0
+        # Keep the camera at a head-mounted seed pose. The target still blends slightly toward the
+        # active shoulder so the hand/forearm remain in the policy seed instead of a handle-only crop.
         shoulder_hint = (
             root_pose[0] + rx * float(shoulder_side) * active_side * 0.65,
             root_pose[1] + ry * float(shoulder_side) * active_side * 0.65,
             min(max(float(eye_height) - 0.10, affordance[2] + 0.04), affordance[2] + 0.22),
         )
-        target_blend = 0.24 if active_side else 0.12
+        target_blend = 0.30 if active_side else 0.14
         target = (
             affordance[0] * (1.0 - target_blend) + shoulder_hint[0] * target_blend,
             affordance[1] * (1.0 - target_blend) + shoulder_hint[1] * target_blend,
             affordance[2] * (1.0 - target_blend) + shoulder_hint[2] * target_blend,
         )
         eye = (
-            root_pose[0] - fx * float(shoulder_back) - rx * float(shoulder_side) * active_side,
-            root_pose[1] - fy * float(shoulder_back) - ry * float(shoulder_side) * active_side,
+            root_pose[0] + fx * float(eye_forward),
+            root_pose[1] + fy * float(eye_forward),
             max(float(eye_height), affordance[2] + 0.32),
         )
     else:
@@ -1085,12 +1083,12 @@ def _manipulation_camera_target_with_arm_context(
     available from the USD asset.
     """
     aff = (float(affordance[0]), float(affordance[1]), float(affordance[2]))
-    pts: list[tuple[Sequence[float], float]] = [(aff, 0.52)]
+    pts: list[tuple[Sequence[float], float]] = [(aff, 0.38)]
     if arm_points:
         if arm_points.get("hand") is not None:
-            pts.append((arm_points["hand"], 0.18))
+            pts.append((arm_points["hand"], 0.26))
         if arm_points.get("wrist") is not None:
-            pts.append((arm_points["wrist"], 0.18))
+            pts.append((arm_points["wrist"], 0.24))
         if arm_points.get("elbow") is not None:
             pts.append((arm_points["elbow"], 0.12))
     return _weighted_xyz(pts) or aff
@@ -1882,6 +1880,57 @@ def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right"
         xf.AddTransformOp().Set(new_local)
         posed += 1
     return posed
+
+
+def _capture_robot_neutral_descendant_xforms(stage, prim_path: str) -> dict[str, Any]:
+    """Capture robot descendant local transforms before any per-task arm posing mutates the stage.
+
+    Warm workers reuse one USD stage for many jobs. Any pure-USD reach pose must therefore be applied
+    from the same neutral robot seed every time, otherwise arm/link transforms compound across jobs.
+    Root placement is intentionally excluded; it is re-authored from the dynamic stance each frame.
+    """
+    from pxr import Usd, UsdGeom  # type: ignore
+    root = stage.GetPrimAtPath(prim_path)
+    if not root or not root.IsValid():
+        return {}
+    xc = UsdGeom.XformCache()
+    neutral: dict[str, Any] = {}
+    for prim in Usd.PrimRange(root):
+        if prim.GetPath() == root.GetPath():
+            continue
+        try:
+            if not prim.IsA(UsdGeom.Xformable):
+                continue
+            parent_world = xc.GetLocalToWorldTransform(prim.GetParent())
+            world = xc.GetLocalToWorldTransform(prim)
+            neutral[str(prim.GetPath())] = world * parent_world.GetInverse()
+        except Exception:  # noqa: BLE001
+            continue
+    return neutral
+
+
+def _restore_robot_neutral_descendant_xforms(stage, neutral_xforms: Mapping[str, Any]) -> int:
+    """Restore descendant local transforms captured by
+    :func:`_capture_robot_neutral_descendant_xforms`.
+    """
+    if not neutral_xforms:
+        return 0
+    from pxr import UsdGeom  # type: ignore
+    restored = 0
+    for path, local_matrix in neutral_xforms.items():
+        prim = stage.GetPrimAtPath(path)
+        if not prim or not prim.IsValid():
+            continue
+        try:
+            if not prim.IsA(UsdGeom.Xformable):
+                continue
+            xf = UsdGeom.Xformable(prim)
+            xf.ClearXformOpOrder()
+            xf.AddTransformOp().Set(local_matrix)
+            restored += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return restored
 
 
 def _setup_articulated_g1(prim_path: str, *, gravity_z: float = 0.0):
@@ -3307,11 +3356,9 @@ def _robot_link_mount(stage, robot_prim_path: str) -> dict[str, Any] | None:
             return None
         candidates: list[tuple[int, Any]] = []
         preferences = (
-            (0, ("camera", "link")),
+            (0, ("camera",)),
             (1, ("head", "link")),
             (2, ("neck", "link")),
-            (3, ("torso", "link")),
-            (4, ("pelvis", "link")),
         )
         for prim in Usd.PrimRange(root):
             try:
@@ -3331,6 +3378,9 @@ def _robot_link_mount(stage, robot_prim_path: str) -> dict[str, Any] | None:
                     "source": "robot_link_mount",
                     "prim_path": str(prim.GetPath()),
                     "link_rank": rank,
+                    "mount_role": (
+                        "camera_link" if rank == 0 else "head_link" if rank == 1 else "neck_link"
+                    ),
                     "eye_xyz": pos,
                 }
     except Exception:  # noqa: BLE001
@@ -3376,6 +3426,34 @@ def _robot_arm_link_points(stage, robot_prim_path: str, *, arm: str = "right") -
         return {}
 
 
+def _robot_head_lens_eye_from_mount(
+    mount_eye: Sequence[float],
+    yaw: float,
+    *,
+    authored_camera: bool = False,
+) -> tuple[tuple[float, float, float], dict[str, Any]]:
+    """Return the render eye for the robot-mounted POV.
+
+    Authored USD cameras are used exactly. For a bare head/neck link, use a small robot-relative
+    forward/up lens offset so the camera sits at the face of the head instead of inside the link mesh.
+    """
+    raw_eye = (float(mount_eye[0]), float(mount_eye[1]), float(mount_eye[2]))
+    if authored_camera:
+        return raw_eye, {"lens_offset_xyz_robot_frame": [0.0, 0.0, 0.0]}
+    fx, fy = math.cos(float(yaw)), math.sin(float(yaw))
+    forward_m = max(0.05, float(ROBOT_FOOTPRINT_HALF_EXTENT[0]) * 0.28)
+    up_m = max(0.015, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.03)
+    eye = (
+        raw_eye[0] + fx * forward_m,
+        raw_eye[1] + fy * forward_m,
+        raw_eye[2] + up_m,
+    )
+    return eye, {
+        "lens_offset_xyz_robot_frame": [round(forward_m, 6), 0.0, round(up_m, 6)],
+        "raw_mount_eye_xyz": [round(v, 6) for v in raw_eye],
+    }
+
+
 def _robot_mounted_manipulation_cam_pose(
     stage,
     robot_prim_path: str,
@@ -3398,13 +3476,19 @@ def _robot_mounted_manipulation_cam_pose(
         return fallback_eye, fallback_target, {"source": "root_yaw_fallback_no_robot_mount"}
     arm_points = _robot_arm_link_points(stage, robot_prim_path, arm=reach_arm)
     target = _manipulation_camera_target_with_arm_context(look_at, arm_points)
-    eye = tuple(float(v) for v in mount["eye_xyz"])
+    eye, lens_meta = _robot_head_lens_eye_from_mount(
+        mount["eye_xyz"],
+        yaw,
+        authored_camera=mount.get("source") == "authored_robot_camera",
+    )
     return eye, target, {
         "source": mount.get("source"),
         "mount_prim_path": mount.get("prim_path"),
+        "mount_role": mount.get("mount_role"),
         "arm_link_points_used": sorted(arm_points),
+        **lens_meta,
         "claim_boundary": (
-            "POV camera is mounted from robot USD geometry when an authored camera/head/torso link "
+            "POV camera is mounted from robot USD geometry when an authored camera/head/neck link "
             "is available; orientation is aimed at the task affordance plus visible arm context."
         ),
     }
@@ -3777,6 +3861,10 @@ def _set_camera_fov(stage, cam_path: str, vfov_deg: float, width: int, height: i
     cam.GetFocalLengthAttr().Set(focal)
     cam.GetHorizontalApertureAttr().Set(hap)
     cam.GetVerticalApertureAttr().Set(vap)
+    try:
+        cam.GetClippingRangeAttr().Set((0.02, 1000.0))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _add_workspace_fill_light(stage, target, *, intensity: float, height: float = 2.0,
@@ -3788,8 +3876,45 @@ def _add_workspace_fill_light(stage, target, *, intensity: float, height: float 
     light = UsdLux.SphereLight.Define(stage, path)
     light.CreateIntensityAttr(float(intensity))
     light.CreateRadiusAttr(0.4)
-    UsdGeom.Xformable(light.GetPrim()).AddTranslateOp().Set(
-        Gf.Vec3d(float(target[0]), float(target[1]) - 0.25, float(height)))
+    # Idempotent on a reused (warm --serve) stage: reuse the existing translate op instead of adding a
+    # second one (AddTranslateOp raises "xformOp:translate already exists" on the 2nd+ job otherwise).
+    xf = UsdGeom.Xformable(light.GetPrim())
+    translate_op = next(
+        (op for op in xf.GetOrderedXformOps() if op.GetOpType() == UsdGeom.XformOp.TypeTranslate),
+        None,
+    )
+    if translate_op is None:
+        translate_op = xf.AddTranslateOp()
+    translate_op.Set(Gf.Vec3d(float(target[0]), float(target[1]) - 0.25, float(height)))
+
+
+def _add_pov_headlamp(stage, eye, look_at, *, intensity: float = 20000.0,
+                      path: str = "/World/PovHeadlamp") -> None:
+    """Camera-side fill light for the manipulation POV so the REACHING ARM + gripper are front-lit.
+
+    The workspace fill light sits at the door/affordance, BEYOND the arm from the head-mounted camera,
+    so the camera otherwise sees only the arm's shadow side (it renders black). This places a small
+    bright sphere just in front of the camera eye, aimed toward the workspace, lighting the arm+gripper
+    the camera is looking at. Idempotent on a reused (warm --serve) stage."""
+    from pxr import UsdLux, UsdGeom, Gf  # type: ignore
+    fx, fy, fz = (float(look_at[0]) - float(eye[0]),
+                  float(look_at[1]) - float(eye[1]),
+                  float(look_at[2]) - float(eye[2]))
+    length = math.sqrt(fx * fx + fy * fy + fz * fz) or 1e-6
+    pos = (float(eye[0]) + fx / length * 0.15,
+           float(eye[1]) + fy / length * 0.15,
+           float(eye[2]) + fz / length * 0.15 + 0.06)  # 15cm toward the workspace, a touch above
+    light = UsdLux.SphereLight.Define(stage, path)
+    light.CreateIntensityAttr(float(intensity))
+    light.CreateRadiusAttr(0.12)
+    xf = UsdGeom.Xformable(light.GetPrim())
+    translate_op = next(
+        (op for op in xf.GetOrderedXformOps() if op.GetOpType() == UsdGeom.XformOp.TypeTranslate),
+        None,
+    )
+    if translate_op is None:
+        translate_op = xf.AddTranslateOp()
+    translate_op.Set(Gf.Vec3d(*pos))
 
 
 def _neutralize_environment(stage, *, intensity: float = 1500.0) -> int:
@@ -3839,10 +3964,18 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   kinematic_arm_pose: bool = False,
                   collision_approximation: str = "boundingCube",
                   verify_cam: bool = False,
-                  manipulation_stand: bool = False) -> dict:
+                  manipulation_stand: bool = False,
+                  serve: bool = False, serve_dir: "Path | None" = None,
+                  serve_idle_timeout_s: float = 600.0,
+                  serve_max_jobs: "int | None" = None) -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
-    flushed progress + a per-scenario wall-clock cap so it cannot hang silently."""
+    flushed progress + a per-scenario wall-clock cap so it cannot hang silently.
+
+    Warm mode (``serve=True``): after the one-time setup (Isaac boot, scene + G1 load, cameras,
+    settle), keep the process alive and render a STREAM of task scenarios pulled from ``serve_dir``
+    via :func:`blueprint_pipeline.warm_render_server.serve_render_loop`, so each rerun skips image
+    pull + Isaac boot + stage load + most settle. Single-shot behavior (``serve=False``) is unchanged."""
     out_dir.mkdir(parents=True, exist_ok=True)
     _log("booting Isaac (headless RTX) ...")
     sim = _boot_sim(headless=True)
@@ -3878,6 +4011,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         (out_dir / "g1_binding.json").write_text(json.dumps(binding, indent=2))
         if not binding["controllable_articulation_detected"]:
             blockers.append("official_isaac_unitree_g1_articulation_api_unverified")
+        robot_neutral_xforms: dict[str, Any] = {}
+        if kinematic_arm_pose or manipulation_reach:
+            robot_neutral_xforms = _capture_robot_neutral_descendant_xforms(
+                stage,
+                binding["prim_path"],
+            )
+            _log(f"G1 neutral descendant xforms captured: {len(robot_neutral_xforms)} prim(s)")
         has_deferred_task_targets = any(sc.get("task_target_deferred") for sc in scenarios)
         if focus_radius > 0 and has_deferred_task_targets:
             _log(
@@ -4046,7 +4186,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 return 0
         else:
             probe = _overlap_probe(binding["prim_path"])
-        for sc in scenarios:
+        def _render_scenario(sc):
             sid = sc["scenario_id"]
             sdir = out_dir / sid
             (sdir / "frames").mkdir(parents=True, exist_ok=True)
@@ -4144,11 +4284,11 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 else:
                     blockers.append("task_only_target_resolution_failed")
                     _log(f"scenario {sid}: task-only target could not be resolved into an accepted stance")
-                    continue
+                    return None
             if not sc.get("route_points") or sc.get("start") is None or sc.get("target") is None:
                 blockers.append("scenario_route_missing_after_task_resolution")
                 _log(f"scenario {sid}: missing start/target/route after task resolution")
-                continue
+                return None
             pol = policy_mod.make_policy(policy_id)
             pol.reset(sc)
             t_sc = time.time()
@@ -4235,6 +4375,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             manipulation_reach_arm=manipulation_reach_arm,
                         )
                 else:
+                    if robot_neutral_xforms:
+                        restored = _restore_robot_neutral_descendant_xforms(stage, robot_neutral_xforms)
+                        if step == 0:
+                            _log(
+                                f"scenario {sid}: neutral G1 descendant xforms restored "
+                                f"({restored} prims) before root placement/reach pose"
+                            )
                     last_root_diagnostics = _place_root(
                         stage,
                         binding["prim_path"],
@@ -4310,6 +4457,11 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     else:
                         eye, tgt = follow_cam_pose(decision.root_pose, decision.yaw)
                     _place_camera(stage, pov_cam, eye, tgt)  # POV camera (manipulation egocentric or follow)
+                    if manipulation_cam and manipulation_reach and effective_look_at is not None:
+                        # Front-light the reaching arm+gripper from the camera side (the workspace fill
+                        # light is BEYOND the arm, leaving its camera-facing side in shadow/black).
+                        _add_pov_headlamp(stage, eye, effective_look_at,
+                                          intensity=(fill_light_intensity if fill_light_intensity > 0 else 30000.0))
                     if verify_annot is not None:
                         v_eye, v_tgt = verify_cam_pose(decision.root_pose, decision.yaw)
                         _place_camera(stage, verify_cam_path, v_eye, v_tgt)  # 3rd-person: SHOW the robot
@@ -4515,6 +4667,50 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 except Exception as e:  # noqa: BLE001
                     _log(f"mp4 assembly for {name} failed ({e!r}); frames preserved for local assembly")
             _log(f"scenario {sid}: done")
+            return outcome
+
+        if serve:
+            try:  # worker: flat module in the bundle dir (sys.path has it); repo/tests: package
+                from warm_render_server import (  # type: ignore
+                    FileJobSource, SignedUrlJobSource, serve_render_loop)
+            except ImportError:
+                from blueprint_pipeline.warm_render_server import (  # type: ignore
+                    FileJobSource, SignedUrlJobSource, serve_render_loop)
+            inbox_get_url = os.environ.get("BLUEPRINT_WARM_INBOX_GET_URL", "").strip()
+            if inbox_get_url:
+                warm_source = SignedUrlJobSource(inbox_get_url, out_dir)
+                source_label = "signed_url_inbox"
+            else:
+                serve_root = Path(serve_dir) if serve_dir is not None else (out_dir / "warm_jobs")
+                warm_source = FileJobSource(serve_root)
+                source_label = f"file:{serve_root}"
+
+            def _serve_render_one(job_scenario):
+                normalized = parse_scenarios({"scenarios": [dict(job_scenario)]})
+                if not normalized:
+                    return {"status": "blocked", "blockers": ["scenario_unparseable"]}
+                produced = _render_scenario(normalized[0])
+                return {
+                    "status": "completed" if produced is not None else "skipped",
+                    "scenario_id": normalized[0].get("scenario_id"),
+                    "outcome": produced,
+                }
+
+            # Readiness marker: the control plane polls the output zip for this so it knows Isaac is
+            # booted + the scene is loaded + the loop is accepting jobs (so it can start submitting).
+            (out_dir / "warm_serve_ready.json").write_text(json.dumps(
+                {"status": "serving", "source": source_label,
+                 "idle_timeout_s": serve_idle_timeout_s, "max_jobs": serve_max_jobs}))
+            _log(f"warm serve: setup complete; serving jobs from {source_label} "
+                 f"(idle_timeout={serve_idle_timeout_s}s, max_jobs={serve_max_jobs})")
+            serve_summary = serve_render_loop(
+                render_one=_serve_render_one, job_source=warm_source,
+                idle_timeout_s=serve_idle_timeout_s, max_jobs=serve_max_jobs, log=_log)
+            (out_dir / "warm_serve_summary.json").write_text(json.dumps(serve_summary, indent=2))
+            _log(f"warm serve: exit {serve_summary}")
+        else:
+            for sc in scenarios:
+                _render_scenario(sc)
     finally:
         try:
             # SimulationApp.close() can terminate or stall the worker process on some
@@ -4534,7 +4730,393 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
     return result
 
 
-def main(argv=None) -> int:
+# --------------------------------------------------------------------------------------------------
+# Local dry-render preview (NO GPU, NO Isaac) — catch placement/camera/POV-framing bugs in <1s
+# before spending a cloud render. It reproduces the SAME stance + camera + arm-skeleton math the GPU
+# path runs (plan_task_stance / manipulation_cam_pose / compute_arm_reach_skeleton / project_point_to_
+# pixel), so wrong-side stance, a camera that crops the reaching arm, or a camera aimed into an
+# appliance are all visible locally. The arm skeleton uses a NOMINAL (Isaac-free) G1, so the arm is
+# approximate; the stance, camera pose, and projection are exact.
+# --------------------------------------------------------------------------------------------------
+
+# Nominal G1 link offsets from the pelvis root (robot frame: +x forward, +y left, +z up). Approximate
+# but dimensionally faithful enough that camera framing of the reaching arm transfers to the GPU run.
+# Link names mirror the real USD ("...link") so compute_arm_reach_skeleton recognizes the arm chain.
+_NOMINAL_G1_REST_OFFSETS: tuple[tuple[str, tuple[float, float, float]], ...] = (
+    ("pelvis_link", (0.0, 0.0, 0.0)),
+    ("torso_link", (0.0, 0.0, 0.20)),
+    ("head_link", (0.06, 0.0, 0.45)),
+    ("right_shoulder_link", (0.0, -0.16, 0.34)),
+    ("right_elbow_link", (0.06, -0.20, 0.10)),
+    ("right_wrist_link", (0.12, -0.22, -0.06)),
+    ("right_hand_link", (0.16, -0.23, -0.14)),
+    ("left_shoulder_link", (0.0, 0.16, 0.34)),
+    ("left_elbow_link", (0.06, 0.20, 0.10)),
+    ("left_wrist_link", (0.12, 0.22, -0.06)),
+    ("left_hand_link", (0.16, 0.23, -0.14)),
+)
+
+
+def _open_stage_local(usd_path: str):
+    """Open a USD stage with plain pxr (NO omni/Isaac) for the local dry-render's geometry reads."""
+    from pxr import Usd  # type: ignore
+    return Usd.Stage.Open(str(usd_path))
+
+
+def _bind_proxy_robot(
+    stage,
+    prim_path: str = "/World/G1",
+    *,
+    footprint_xy: tuple[float, float] = (0.50, 0.36),
+    height: float = 1.55,
+) -> str:
+    """Bind a footprint-sized proxy robot box at ``prim_path`` so the geometric placement validator can
+    place + bbox a 'robot' locally (the real G1 USD is an Isaac asset not present off-GPU). The proxy
+    reproduces the standing footprint the validator checks for clip/standoff, no Isaac needed."""
+    from pxr import UsdGeom, Gf  # type: ignore
+    UsdGeom.Xform.Define(stage, prim_path)
+    cube = UsdGeom.Cube.Define(stage, prim_path + "/proxy_body")
+    cube.GetSizeAttr().Set(1.0)
+    xf = UsdGeom.Xformable(cube.GetPrim())
+    xf.ClearXformOpOrder()
+    xf.AddScaleOp().Set(Gf.Vec3d(float(footprint_xy[0]), float(footprint_xy[1]), float(height)))
+    return prim_path
+
+
+def nominal_g1_rest_offsets() -> list[tuple[str, tuple[float, float, float]]]:
+    """Isaac-free nominal G1 rest-pose link offsets (pelvis frame), for the local dry-render skeleton.
+
+    Same shape as :func:`_g1_link_rest_offsets` (which reads the real USD), so it feeds straight into
+    :func:`_rest_skeleton_world` + :func:`compute_arm_reach_skeleton`. Approximate dimensions — used to
+    preview whether the reaching arm lands in the camera frame, not to claim exact joint geometry.
+    """
+    return [(name, (float(o[0]), float(o[1]), float(o[2]))) for name, o in _NOMINAL_G1_REST_OFFSETS]
+
+
+def _facing_error_deg(root_pose, yaw: float, target) -> float | None:
+    """Angle (deg) between where the robot faces and the XY direction from the root to the target."""
+    if target is None:
+        return None
+    dx = float(target[0]) - float(root_pose[0])
+    dy = float(target[1]) - float(root_pose[1])
+    if math.hypot(dx, dy) < 1e-6:
+        return 0.0
+    want = math.atan2(dy, dx)
+    err = math.degrees(abs((want - float(yaw) + math.pi) % (2 * math.pi) - math.pi))
+    return round(err, 3)
+
+
+def _dry_render_checks(summary) -> dict[str, bool]:
+    """Boolean pass/fail for the dry-render checklist. Centralized so the drawn labels and any callers
+    agree — and so a perfect ``0.0`` facing error is not swallowed by a ``0.0 or default`` falsy trap."""
+    chk = summary.get("checks", {}) or {}
+    pf = summary.get("pov_framing", {}) or {}
+    st = summary.get("stance", {}) or {}
+    fe = chk.get("facing_error_deg")
+    return {
+        "faces_target": fe is not None and float(fe) < 8.0,
+        "target_in_frame": bool(pf.get("target_in_frame")),
+        "arm_in_frame": int(pf.get("arm_landmarks_in_frame") or 0) >= 1,
+        "no_blockers": not st.get("blockers"),
+    }
+
+
+def _draw_dry_render_preview(
+    path,
+    *,
+    scenario,
+    stance_plan,
+    root_pose,
+    yaw: float,
+    look_at,
+    eye,
+    target,
+    pov_vfov_deg: float,
+    width: int,
+    height: int,
+    skeleton_world,
+    scene_objects,
+    arm: str,
+    summary,
+) -> None:
+    """Draw the 3-panel dry-render preview PNG: top-down placement, egocentric POV framing, summary."""
+    from PIL import Image, ImageDraw  # local: only the dry-render path needs PIL
+
+    PW, PH, GUT, TOP = 460, 420, 18, 34
+    W = GUT + 3 * (PW + GUT)
+    H = TOP + PH + GUT
+    img = Image.new("RGB", (W, H), (22, 24, 28))
+    d = ImageDraw.Draw(img)
+    panels = [GUT + i * (PW + GUT) for i in range(3)]
+    d.text((GUT, 8), f"DRY RENDER (no GPU) - {scenario.get('description') or scenario.get('instruction') or ''}"[:120],
+           fill=(235, 235, 235))
+    for x0 in panels:
+        d.rectangle([x0, TOP, x0 + PW, TOP + PH], outline=(70, 74, 82))
+
+    # ---- Panel A: top-down placement ----
+    ax0 = panels[0]
+    d.text((ax0 + 6, TOP + 4), "top-down placement", fill=(180, 200, 220))
+    xs, ys = [float(root_pose[0]), float(eye[0])], [float(root_pose[1]), float(eye[1])]
+    tb = stance_plan.get("task_target_bounds") if isinstance(stance_plan, dict) else None
+    if tb:
+        bmin, bmax = tb["bbox_min_xyz"], tb["bbox_max_xyz"]
+        xs += [bmin[0], bmax[0]]; ys += [bmin[1], bmax[1]]
+    for obj in scene_objects[:60]:
+        try:
+            xs += [obj.bbox_min[0], obj.bbox_max[0]]; ys += [obj.bbox_min[1], obj.bbox_max[1]]
+        except Exception:  # noqa: BLE001
+            continue
+    if look_at is not None:
+        xs.append(float(look_at[0])); ys.append(float(look_at[1]))
+    pad = 0.6
+    minx, maxx, miny, maxy = min(xs) - pad, max(xs) + pad, min(ys) - pad, max(ys) + pad
+    span = max(maxx - minx, maxy - miny, 1e-3)
+    inner = PH - 36
+
+    def w2s(wx, wy):
+        sx = ax0 + 14 + (float(wx) - minx) / span * inner
+        sy = TOP + 24 + (maxy - float(wy)) / span * inner  # +y world is up on screen
+        return (sx, sy)
+
+    for obj in scene_objects[:60]:
+        try:
+            p0 = w2s(obj.bbox_min[0], obj.bbox_min[1]); p1 = w2s(obj.bbox_max[0], obj.bbox_max[1])
+            d.rectangle([min(p0[0], p1[0]), min(p0[1], p1[1]), max(p0[0], p1[0]), max(p0[1], p1[1])],
+                        outline=(95, 100, 110))
+        except Exception:  # noqa: BLE001
+            continue
+    if tb:
+        p0 = w2s(bmin[0], bmin[1]); p1 = w2s(bmax[0], bmax[1])
+        d.rectangle([min(p0[0], p1[0]), min(p0[1], p1[1]), max(p0[0], p1[0]), max(p0[1], p1[1])],
+                    outline=(240, 150, 40), width=2)
+    # robot footprint (rotated rectangle) + facing arrow
+    hx, hy = 0.25, 0.18
+    cyaw, syaw = math.cos(yaw), math.sin(yaw)
+    corners = [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)]
+    poly = [w2s(root_pose[0] + cx * cyaw - cy * syaw, root_pose[1] + cx * syaw + cy * cyaw)
+            for cx, cy in corners]
+    d.polygon(poly, outline=(90, 170, 250))
+    rc = w2s(root_pose[0], root_pose[1])
+    fa = w2s(root_pose[0] + cyaw * 0.5, root_pose[1] + syaw * 0.5)
+    d.line([rc, fa], fill=(230, 80, 80), width=2)
+    d.ellipse([rc[0] - 3, rc[1] - 3, rc[0] + 3, rc[1] + 3], fill=(90, 170, 250))
+    # camera eye + look-at + frustum edges
+    ec = w2s(eye[0], eye[1])
+    d.ellipse([ec[0] - 3, ec[1] - 3, ec[0] + 3, ec[1] + 3], fill=(80, 220, 130))
+    if look_at is not None:
+        lc = w2s(look_at[0], look_at[1])
+        d.line([ec[0] - 5, ec[1], ec[0] + 5, ec[1]], fill=(240, 150, 40))
+        d.line([lc[0] - 5, lc[1], lc[0] + 5, lc[1]], fill=(240, 150, 40))
+        d.line([lc[0], lc[1] - 5, lc[0], lc[1] + 5], fill=(240, 150, 40))
+        fdx, fdy = float(look_at[0]) - float(eye[0]), float(look_at[1]) - float(eye[1])
+        ang = math.atan2(fdy, fdx)
+        half = math.radians(pov_vfov_deg * (width / max(height, 1)) / 2.0)
+        for s in (-1.0, 1.0):
+            a = ang + s * half
+            fp = w2s(eye[0] + math.cos(a) * span * 0.5, eye[1] + math.sin(a) * span * 0.5)
+            d.line([ec, fp], fill=(60, 130, 90))
+
+    # ---- Panel B: egocentric POV framing ----
+    bx0 = panels[1]
+    d.text((bx0 + 6, TOP + 4), f"egocentric POV  vfov={pov_vfov_deg:.0f}deg  (arm=APPROX)", fill=(180, 200, 220))
+    fx0, fy0 = bx0 + 18, TOP + 28
+    fw = PW - 36
+    fh = int(fw * height / max(width, 1))
+    if fh > PH - 46:
+        fh = PH - 46; fw = int(fh * width / max(height, 1))
+    d.rectangle([fx0, fy0, fx0 + fw, fy0 + fh], outline=(120, 125, 135))
+
+    def proj(wp):
+        px = project_point_to_pixel(wp, eye, target, (0.0, 0.0, 1.0), pov_vfov_deg, width, height)
+        if px is None:
+            return None
+        return (fx0 + px[0] / width * fw, fy0 + px[1] / height * fh)
+
+    for obj in scene_objects[:60]:
+        try:
+            sp = proj(obj.footprint_center() + (float(0.5 * (obj.bbox_min[2] + obj.bbox_max[2])),))
+        except Exception:  # noqa: BLE001
+            sp = None
+        if sp:
+            d.ellipse([sp[0] - 1.5, sp[1] - 1.5, sp[0] + 1.5, sp[1] + 1.5], fill=(110, 115, 125))
+    sk = {n: p for n, p in skeleton_world}
+    sides = ("right", "left") if str(arm) == "both" else (str(arm),)
+    for side in sides:
+        chain = [f"{side}_shoulder_link", f"{side}_elbow_link", f"{side}_wrist_link", f"{side}_hand_link"]
+        prev = None
+        for i, name in enumerate(chain):
+            wp = sk.get(name)
+            sp = proj(wp) if wp is not None else None
+            if sp is None:
+                prev = None
+                continue
+            if prev is not None:
+                d.line([prev, sp], fill=(90, 170, 250), width=2)
+            r = 5 if "hand" in name else 3
+            d.ellipse([sp[0] - r, sp[1] - r, sp[0] + r, sp[1] + r], fill=(120, 200, 255))
+            prev = sp
+    if look_at is not None:
+        lp = proj((float(look_at[0]), float(look_at[1]), float(look_at[2])))
+        if lp:
+            d.line([lp[0] - 7, lp[1], lp[0] + 7, lp[1]], fill=(240, 150, 40), width=2)
+            d.line([lp[0], lp[1] - 7, lp[0], lp[1] + 7], fill=(240, 150, 40), width=2)
+
+    # ---- Panel C: summary + checklist ----
+    cx0 = panels[2] + 8
+    d.text((cx0, TOP + 4), "summary", fill=(180, 200, 220))
+    chk = summary.get("checks", {})
+    pf = summary.get("pov_framing", {})
+    st = summary.get("stance", {})
+    ok = _dry_render_checks(summary)
+
+    def mark(flag):
+        return "OK" if flag else "XX"
+
+    lines = [
+        f"stance: {st.get('status')}",
+        f"pose:  {['%.2f' % v for v in (st.get('accepted_pose') or [])]}",
+        f"yaw:   {st.get('accepted_yaw')}",
+        f"look_at: {['%.2f' % v for v in (summary.get('look_at') or [])]}",
+        f"standoff_gap_m: {chk.get('standoff_gap_m')}",
+        "",
+        f"[{mark(ok['faces_target'])}] faces target  ({chk.get('facing_error_deg')} deg)",
+        f"[{mark(ok['target_in_frame'])}] target in POV frame",
+        f"[{mark(ok['arm_in_frame'])}] arm in POV frame  ({pf.get('arm_landmarks_in_frame')})",
+        f"[{mark(ok['no_blockers'])}] no stance blockers",
+    ]
+    for blk in (st.get("blockers") or [])[:4]:
+        lines.append(f"   blocker: {blk}")
+    yy = TOP + 26
+    for ln in lines:
+        d.text((cx0, yy), ln[:60], fill=(225, 225, 225))
+        yy += 18
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    img.save(str(path))
+
+
+def render_local_preview(
+    *,
+    stage,
+    scenario,
+    out_dir,
+    manipulation_reach_arm: str = "right",
+    camera_vfov_deg: float = 50.0,
+    width: int = 1280,
+    height: int = 960,
+    manipulation_look_at=None,
+    robot_prim_path: str | None = None,
+) -> dict[str, Any]:
+    """Produce a no-GPU dry-render preview (PNG + summary JSON) for a task on an open USD stage.
+
+    Reproduces the GPU runner's stance plan, manipulation camera, and reaching-arm skeleton, then draws
+    a top-down + egocentric-POV + checklist preview so wrong-side stance / cropped-arm / mis-aimed
+    camera show up locally in <1s. ``robot_prim_path`` (when a placeable robot proxy is bound) enables
+    the geometric placement validator; otherwise stance is planned without obstacle rejection.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sid = str(scenario.get("scenario_id") or scenario.get("episode_id") or "scenario")
+
+    stance_plan = _plan_task_stance_for_stage(
+        stage=stage,
+        scenario=scenario,
+        manipulation_look_at=manipulation_look_at,
+        probe=lambda pose, yaw: 0,
+        no_collision_probe=False,
+        robot_prim_path=robot_prim_path,
+    )
+
+    summary: dict[str, Any] = {
+        "scenario_id": sid,
+        "task": scenario.get("description") or scenario.get("instruction") or scenario.get("task"),
+        "manipulation_reach_arm": manipulation_reach_arm,
+        "stance": {
+            "status": stance_plan.get("status"),
+            "blockers": stance_plan.get("blockers"),
+            "accepted_pose": stance_plan.get("accepted_pose"),
+            "accepted_yaw": stance_plan.get("accepted_yaw"),
+        },
+        "claim_boundary": (
+            "Local dry-render preview: stance/camera/projection are exact; the reaching arm uses a "
+            "nominal (Isaac-free) G1, so arm framing is approximate, not a manipulation-success claim."
+        ),
+    }
+
+    try:
+        scene_objects = _scene_objects_for_stage(stage)
+    except Exception:  # noqa: BLE001 - the preview must not hard-fail on scene enumeration
+        scene_objects = []
+
+    if stance_plan.get("status") != "accepted":
+        summary["pov_framing"] = {"target_in_frame": False, "arm_landmarks_in_frame": 0,
+                                  "projected_landmark_count": 0}
+        summary["checks"] = {"facing_error_deg": None, "standoff_gap_m": None}
+        (out_dir / "dry_render_summary.json").write_text(json.dumps(summary, indent=2))
+        return summary
+
+    root = tuple(float(v) for v in stance_plan["accepted_pose"])
+    yaw = float(stance_plan["accepted_yaw"])
+    look_at = manipulation_look_at
+    if look_at is None:
+        look_at = _surface_affordance_point_for_stance(stance_plan, root) or stance_plan.get("task_target_xyz")
+    look_at = tuple(float(v) for v in look_at) if look_at is not None else None
+
+    pov_vfov_deg = max(float(camera_vfov_deg), 68.0)  # manipulation widen — mirrors the runner
+    eye, tgt = manipulation_cam_pose(root, yaw, look_at=look_at, reach_arm=manipulation_reach_arm)
+
+    skeleton_world = _rest_skeleton_world(nominal_g1_rest_offsets(), root, yaw)
+    if look_at is not None:
+        skeleton_world = compute_arm_reach_skeleton(skeleton_world, look_at, 1.0, arm=manipulation_reach_arm)
+    pov_lms = _project_skeleton(skeleton_world, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
+                                vfov_deg=pov_vfov_deg, width=width, height=height)
+
+    active = ("right", "left") if str(manipulation_reach_arm) == "both" else (str(manipulation_reach_arm),)
+    arm_in_frame = sum(
+        1 for lm in pov_lms
+        if any(lm["landmark_id"].startswith(f"{s}_") and any(k in lm["landmark_id"] for k in ("hand", "wrist", "elbow"))
+               for s in active)
+    )
+    target_px = (project_point_to_pixel(look_at, eye, tgt, (0.0, 0.0, 1.0), pov_vfov_deg, width, height)
+                 if look_at is not None else None)
+
+    summary["look_at"] = list(look_at) if look_at is not None else None
+    _target_center = stance_plan.get("task_target_xyz")
+    _target_bounds = stance_plan.get("task_target_bounds")
+    summary["target"] = {
+        "center_xyz": list(_target_center) if _target_center is not None else None,
+        "bbox_min_xyz": (_target_bounds or {}).get("bbox_min_xyz"),
+        "bbox_max_xyz": (_target_bounds or {}).get("bbox_max_xyz"),
+        "resolution_source": (stance_plan.get("target_resolution") or {}).get("source"),
+    }
+    summary["camera"] = {
+        "pov_eye": [round(float(v), 4) for v in eye],
+        "pov_target": [round(float(v), 4) for v in tgt],
+        "pov_vfov_deg": round(float(pov_vfov_deg), 3),
+    }
+    summary["pov_framing"] = {
+        "target_in_frame": target_px is not None,
+        "arm_landmarks_in_frame": int(arm_in_frame),
+        "projected_landmark_count": len(pov_lms),
+    }
+    summary["checks"] = {
+        "facing_error_deg": _facing_error_deg(root, yaw, look_at),
+        "standoff_gap_m": (stance_plan.get("candidates") or [{}])[stance_plan.get("selected_candidate_index", 0)]
+        .get("standoff_from_target_surface_m"),
+    }
+
+    _draw_dry_render_preview(
+        out_dir / "dry_render_preview.png",
+        scenario=scenario, stance_plan=stance_plan, root_pose=root, yaw=yaw, look_at=look_at,
+        eye=eye, target=tgt, pov_vfov_deg=pov_vfov_deg, width=width, height=height,
+        skeleton_world=skeleton_world, scene_objects=scene_objects, arm=manipulation_reach_arm,
+        summary=summary,
+    )
+    (out_dir / "dry_render_summary.json").write_text(json.dumps(summary, indent=2))
+    return summary
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Isaac G1 kitchen parity eval (GPU)")
     ap.add_argument("--request", help="execution request JSON (scenarios + asset hints)")
     ap.add_argument("--kitchen-usd", help="path/URI to Collected_KitchenRoom/KitchenRoom.usd")
@@ -4605,7 +5187,27 @@ def main(argv=None) -> int:
     ap.add_argument("--manipulation-stand", action="store_true",
                     help="place the robot AT the scenario target facing --manipulation-look-at every "
                          "step (task start pose; no navigation/redirect) — for manipulation, not locomotion")
-    args = ap.parse_args(argv)
+    ap.add_argument("--dry-render", action="store_true",
+                    help="NO-GPU local preview: reproduce stance + camera + reaching-arm framing from the "
+                         "kitchen USD + task string and write a preview PNG, so placement/POV bugs are caught "
+                         "locally before a cloud render. Needs --kitchen-usd + --request (no --g1-usd, no GPU).")
+    ap.add_argument("--dry-render-out", default=None,
+                    help="output dir for --dry-render artifacts (default: <out-dir>/dry_render)")
+    ap.add_argument("--serve", action="store_true",
+                    help="PERSISTENT WARM MODE: boot Isaac + load the scene ONCE, then serve a stream of "
+                         "task scenarios dropped into --serve-dir (each rerun skips image pull + Isaac boot "
+                         "+ stage load + most settle). Exits on a stop sentinel, idle timeout, or max jobs.")
+    ap.add_argument("--serve-dir", default=None,
+                    help="job/result directory the warm worker polls (default: <out-dir>/warm_jobs)")
+    ap.add_argument("--serve-idle-timeout", type=float, default=600.0,
+                    help="seconds with no new job before the warm worker exits (default 600)")
+    ap.add_argument("--serve-max-jobs", type=int, default=None,
+                    help="optional cap on jobs served before the warm worker exits (default: unlimited)")
+    return ap
+
+
+def main(argv=None) -> int:
+    args = build_arg_parser().parse_args(argv)
 
     manip_look_at = None
     if args.manipulation_look_at:
@@ -4619,9 +5221,38 @@ def main(argv=None) -> int:
     g1_usd = args.g1_usd or request.get("g1_usd")
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.dry_render:
+        dry_out = Path(args.dry_render_out) if args.dry_render_out else (out_dir / "dry_render")
+        if not scenarios or not kitchen_usd:
+            res = {"status": "blocked", "blockers": ["missing_scenarios_or_kitchen_usd"],
+                   "have_scenarios": bool(scenarios), "have_kitchen_usd": bool(kitchen_usd)}
+            print(json.dumps(res))
+            return 1
+        stage = _open_stage_local(kitchen_usd)
+        _bind_proxy_robot(stage, "/World/G1")
+        reach_arm = args.manipulation_reach_arm if args.manipulation_reach_arm != "both" else "right"
+        summaries = []
+        for sc in scenarios:
+            sid = str(sc.get("scenario_id") or sc.get("episode_id") or f"scenario_{len(summaries)}")
+            summ = render_local_preview(
+                stage=stage, scenario=sc, out_dir=dry_out / sid,
+                manipulation_reach_arm=reach_arm, camera_vfov_deg=args.camera_vfov,
+                width=args.width, height=args.height, manipulation_look_at=manip_look_at,
+                robot_prim_path="/World/G1",
+            )
+            summaries.append(summ)
+        (dry_out / "dry_render_index.json").write_text(json.dumps(summaries, indent=2))
+        accepted = sum(1 for s in summaries if s.get("stance", {}).get("status") == "accepted")
+        print(json.dumps({"status": "dry_render_complete", "scenarios": len(summaries),
+                          "accepted": accepted, "out_dir": str(dry_out)}))
+        return 0
+
     put_url = os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "")
 
-    if not scenarios or not kitchen_usd or not g1_usd:
+    # Warm serve mode boots Isaac with NO initial scenarios — jobs arrive at runtime via --serve-dir —
+    # so it requires the assets but not a pre-supplied scenario list.
+    if not kitchen_usd or not g1_usd or (not scenarios and not args.serve):
         res = {"schema_version": RESULT_SCHEMA_VERSION, "status": "blocked",
                "blockers": ["missing_scenarios_or_kitchen_usd_or_g1_usd"],
                "have_scenarios": bool(scenarios), "have_kitchen_usd": bool(kitchen_usd),
@@ -4648,7 +5279,10 @@ def main(argv=None) -> int:
         neutral_environment=args.neutral_environment,
         kinematic_arm_pose=args.kinematic_arm_pose,
         collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
-        manipulation_stand=args.manipulation_stand)
+        manipulation_stand=args.manipulation_stand,
+        serve=args.serve,
+        serve_dir=(Path(args.serve_dir) if args.serve_dir else None),
+        serve_idle_timeout_s=args.serve_idle_timeout, serve_max_jobs=args.serve_max_jobs)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))

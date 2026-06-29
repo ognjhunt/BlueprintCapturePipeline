@@ -133,6 +133,10 @@ if os.environ.get("PARITY_COLLISION_APPROXIMATION",""): cmd += ["--collision-app
 if os.environ.get("PARITY_VERIFY_CAM","")=="1": cmd.append("--verify-cam")
 if os.environ.get("PARITY_MANIPULATION_STAND","")=="1": cmd.append("--manipulation-stand")
 if os.environ.get("PARITY_KINEMATIC_ARM_POSE","")=="1": cmd.append("--kinematic-arm-pose")
+if os.environ.get("PARITY_SERVE","")=="1":
+    cmd.append("--serve")  # warm mode: boot Isaac + load scene ONCE, then serve jobs from the inbox env
+    if os.environ.get("PARITY_SERVE_IDLE_TIMEOUT",""): cmd += ["--serve-idle-timeout", os.environ["PARITY_SERVE_IDLE_TIMEOUT"]]
+    if os.environ.get("PARITY_SERVE_MAX_JOBS",""): cmd += ["--serve-max-jobs", os.environ["PARITY_SERVE_MAX_JOBS"]]
 mark("runner_starting", cmd=cmd)
 rc=subprocess.call(cmd)
 mark("runner_done", rc=rc)
@@ -195,9 +199,13 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     runner = _repo_root() / "scripts" / "run_isaac_g1_kitchen_parity_eval.py"
     policy = _repo_root() / "src" / "blueprint_pipeline" / "isaac_g1_policy.py"
     visual_qc = _repo_root() / "src" / "blueprint_pipeline" / "render_visual_qc.py"
+    # warm_render_server is stdlib-only (no intra-package imports), so a flat copy is importable as
+    # `import warm_render_server` on the worker — the runner's --serve path imports it with a fallback.
+    warm_server = _repo_root() / "src" / "blueprint_pipeline" / "warm_render_server.py"
     (bundle / "run_isaac_g1_kitchen_parity_eval.py").write_bytes(runner.read_bytes())
     (bundle / "isaac_g1_policy.py").write_bytes(policy.read_bytes())
     (bundle / "render_visual_qc.py").write_bytes(visual_qc.read_bytes())
+    (bundle / "warm_render_server.py").write_bytes(warm_server.read_bytes())
     # Ship the scene_placement package alongside the runner so its dynamic task->object resolution
     # works on the worker (the runner imports `scene_placement` from the bundle dir; it falls back to
     # the repo's `blueprint_pipeline.scene_placement` in tests). Without this the worker has no
@@ -244,7 +252,10 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       collision_approximation: str = "",
                       verify_cam: bool = False,
                       manipulation_stand: bool = False,
-                      gemini_api_key: str | None = None) -> RenderLaunchSpec:
+                      gemini_api_key: str | None = None,
+                      serve: bool = False, inbox_get_url: str = "",
+                      serve_idle_timeout_s: float = 1800.0,
+                      serve_max_jobs: int | None = None) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -299,6 +310,13 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
     if gemini_api_key:
         env["GOOGLE_GENAI_API_KEY"] = gemini_api_key
         env["GEMINI_API_KEY"] = gemini_api_key
+    if serve:
+        env["PARITY_SERVE"] = "1"
+        env["PARITY_SERVE_IDLE_TIMEOUT"] = str(int(serve_idle_timeout_s))
+        if serve_max_jobs is not None:
+            env["PARITY_SERVE_MAX_JOBS"] = str(int(serve_max_jobs))
+        if inbox_get_url:
+            env["BLUEPRINT_WARM_INBOX_GET_URL"] = inbox_get_url
     return RenderLaunchSpec(
         name="blueprint-isaac-g1-kitchen-parity", image=image, env=env,
         bootstrap_argv=docker_start_cmd(), entrypoint=["bash"],
@@ -398,6 +416,47 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
 
 # ----------------------------- orchestration -----------------------------
 
+def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int = 1800,
+                            poll_interval_s: float = 15.0) -> dict:
+    """Poll the worker's uploaded output zip for the --serve readiness marker (Isaac booted + scene
+    loaded + the loop accepting jobs). Returns {ready, elapsed_seconds, last_phase}. Does NOT tear the
+    pod down — the warm pod must stay running for the caller's WarmPoolClient."""
+    import io as _io
+    import time as _time
+    import urllib.request as _url
+    import zipfile as _zip
+
+    get_url_file = job_dir / "provider_output_get_url.txt"
+    if not get_url_file.is_file():
+        return {"ready": False, "reason": "missing_output_get_url", "instance_id": instance_id}
+    get_url = get_url_file.read_text().strip()
+    start = _time.monotonic()
+    last_phase = None
+    while _time.monotonic() - start < timeout_s:
+        try:
+            data = _url.urlopen(get_url, timeout=60).read()
+            with _zip.ZipFile(_io.BytesIO(data)) as z:
+                names = z.namelist()
+                if "bootstrap.json" in names:
+                    try:
+                        last_phase = json.loads(z.read("bootstrap.json").decode()).get("phase")
+                    except Exception:  # noqa: BLE001
+                        pass
+                if "warm_serve_ready.json" in names:
+                    detail = {}
+                    try:
+                        detail = json.loads(z.read("warm_serve_ready.json").decode())
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return {"ready": True, "elapsed_seconds": round(_time.monotonic() - start, 1),
+                            "last_phase": last_phase, "serve_detail": detail, "instance_id": instance_id}
+        except Exception:  # noqa: BLE001 - output not posted yet / mid-upload
+            pass
+        _time.sleep(poll_interval_s)
+    return {"ready": False, "reason": "serve_ready_timeout", "elapsed_seconds": round(_time.monotonic() - start, 1),
+            "last_phase": last_phase, "instance_id": instance_id}
+
+
 def run_isaac_g1_kitchen_parity_job(
     *, scenarios: Sequence[dict], out_dir: str | Path, kitchen_asset_dir: str | Path | None = None,
     kitchen_url: str | None = None,
@@ -420,8 +479,16 @@ def run_isaac_g1_kitchen_parity_job(
     manipulation_stand: bool = False,
     warm_candidates: Sequence[str] | None = None,
     warm_only: bool = False,
+    serve: bool = False, serve_idle_timeout_s: float = 1800.0,
+    serve_max_jobs: int | None = None, serve_ready_timeout: int = 1800,
 ) -> dict:
-    """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan."""
+    """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan.
+
+    Warm serve mode (``serve=True``): presign a job-inbox channel, launch ONE pod with ``--serve``
+    (boots Isaac + loads the scene once, then polls the inbox), wait for its readiness marker, and
+    return WITH THE POD LEFT RUNNING (no watch_and_collect / teardown). The caller drives it with a
+    :class:`~blueprint_pipeline.warm_render_server.WarmPoolClient` (submit jobs / collect results) and
+    is responsible for tearing it down. ``serve`` allows an empty ``scenarios`` list (jobs arrive live)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict = {"schema_version": SCHEMA_VERSION, "status": "blocked", "blockers": [],
@@ -440,7 +507,7 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["error"] = str(exc)
         return manifest
     manifest["provider_available"] = prov.available()
-    if not scenarios:
+    if not scenarios and not serve:
         manifest["blockers"].append("no_scenarios")
         return manifest
     manifest["scenario_ids"] = [s.get("scenario_id") or s.get("id") for s in scenarios]
@@ -471,8 +538,20 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["blockers"].append("staging_failed")
         manifest["staging"]["stderr_tail"] = staged.get("stderr_tail")
         return manifest
+    inbox_get_url = ""
+    if serve:
+        from blueprint_pipeline.wam_provider_object_store import presign_warm_inbox_channel
+        inbox = presign_warm_inbox_channel(job_dir, key_prefix=key_prefix)
+        manifest["warm_inbox"] = {"status": inbox.get("status"), "blockers": inbox.get("blockers"),
+                                  "inbox_key": inbox.get("inbox_key")}
+        if inbox.get("status") != "completed":
+            manifest["blockers"].append("warm_inbox_presign_failed")
+            return manifest
+        inbox_get_url = Path(inbox["warm_inbox_get_url_file"]).read_text().strip()
     spec = build_launch_spec(job_dir, image=image or parity_image(), policy_id=policy_id,
                              steps=steps, kitchen_url=kitchen_url, width=width, height=height,
+                             serve=serve, inbox_get_url=inbox_get_url,
+                             serve_idle_timeout_s=serve_idle_timeout_s, serve_max_jobs=serve_max_jobs,
                              warmup=warmup, per_scenario_seconds=per_scenario_seconds,
                              no_collision_probe=no_collision_probe, focus_radius=focus_radius,
                              keep_objects=keep_objects, settle_seconds=settle_seconds,
@@ -519,6 +598,24 @@ def run_isaac_g1_kitchen_parity_job(
     manifest["launch"] = launch
     if launch.get("status") != "launched":
         manifest["blockers"].append("launch_failed_all_attempts_flaky")
+        return manifest
+    if serve:
+        # Warm pod: leave it RUNNING. Wait for the serve-ready marker, then hand the caller the inbox
+        # PUT + output GET urls for its WarmPoolClient. NO watch_and_collect / teardown here — the warm
+        # pod must stay alive across the caller's live job submissions; the caller tears it down.
+        ready = _await_warm_serve_ready(job_dir, instance_id=launch["instance_id"],
+                                        timeout_s=serve_ready_timeout)
+        manifest["warm_serve"] = {
+            "instance_id": launch["instance_id"],
+            "ready": bool(ready.get("ready")),
+            "inbox_put_url_file": str(job_dir / "warm_inbox_put_url.txt"),
+            "output_get_url_file": str(job_dir / "provider_output_get_url.txt"),
+            "ready_detail": ready,
+        }
+        if ready.get("ready"):
+            manifest["status"] = "serving"
+        else:
+            manifest["blockers"].append("warm_serve_not_ready")
         return manifest
     render_out = out_dir / "render_output"
     result = watch_and_collect(job_dir, render_out, launch["instance_id"], provider=prov,

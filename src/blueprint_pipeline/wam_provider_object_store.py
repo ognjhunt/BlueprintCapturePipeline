@@ -389,6 +389,89 @@ def stage_wam_provider_bundle_object_store(
     return manifest
 
 
+def presign_warm_inbox_channel(
+    job_dir: str | Path,
+    *,
+    key_prefix: str = "blueprint/isaac-g1-parity",
+    expiration_seconds: int = 12 * 60 * 60,
+) -> dict[str, Any]:
+    """Presign a single 'warm inbox' object-store key for the persistent --serve worker job channel.
+
+    The control plane holds the presigned PUT (writes the next job); the warm pod polls the presigned
+    GET (claims jobs by monotonic seq). Results ride the EXISTING worker output channel, so only this
+    one extra key is needed. Reuses the same file-based secrets as :func:`stage_wam_provider_bundle_
+    object_store` and writes the URLs as sensitive files in ``job_dir``. Returns a status dict with
+    redacted URLs (raw URLs only ever touch the sensitive files)."""
+    resolved_job_dir = Path(job_dir)
+    resolved_job_dir.mkdir(parents=True, exist_ok=True)
+    access_key, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
+                                     default_paths=DEFAULT_ACCESS_KEY_FILES, label="object_store_access_key_id")
+    secret_key, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY",
+                                     default_paths=DEFAULT_SECRET_KEY_FILES, label="object_store_secret_access_key")
+    endpoint, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL",
+                                   default_paths=DEFAULT_ENDPOINT_FILES, label="object_store_endpoint_url",
+                                   allow_env_value=True)
+    bucket_value, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_BUCKET",
+                                       default_paths=DEFAULT_BUCKET_FILES, label="object_store_bucket")
+    region_value, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_REGION",
+                                       default_paths=DEFAULT_REGION_FILES, label="object_store_region",
+                                       allow_env_value=True)
+    region_value = region_value or "us-east-1"
+    blockers: list[str] = []
+    if not access_key:
+        blockers.append("missing_object_store_access_key_id_file")
+    if not secret_key:
+        blockers.append("missing_object_store_secret_access_key_file")
+    if not bucket_value:
+        blockers.append("missing_object_store_bucket_or_network_volume_id_file")
+    inbox_get_url = ""
+    inbox_put_url = ""
+    inbox_key = ""
+    if not blockers:
+        try:
+            import boto3  # type: ignore[import-not-found]
+            from botocore.client import Config  # type: ignore[import-not-found]
+        except Exception as exc:  # pragma: no cover - environment dependent
+            blockers.append(f"boto3_or_botocore_unavailable:{type(exc).__name__}")
+    if not blockers:
+        safe_prefix = key_prefix.strip("/ ") or "blueprint/isaac-g1-parity"
+        inbox_key = f"{safe_prefix}/{_job_key_component(resolved_job_dir)}/warm_inbox.json"
+        client_kwargs: dict[str, Any] = {
+            "aws_access_key_id": access_key, "aws_secret_access_key": secret_key,
+            "region_name": region_value, "config": Config(signature_version="s3v4"),
+        }
+        if endpoint:
+            client_kwargs["endpoint_url"] = endpoint
+        try:
+            client = boto3.client("s3", **client_kwargs)
+            client.put_object(Bucket=bucket_value, Key=inbox_key,
+                              Body=json.dumps({"seq": 0}).encode(), ContentType="application/json")
+            inbox_get_url = client.generate_presigned_url(
+                "get_object", Params={"Bucket": bucket_value, "Key": inbox_key},
+                ExpiresIn=int(expiration_seconds), HttpMethod="GET")
+            inbox_put_url = client.generate_presigned_url(
+                "put_object", Params={"Bucket": bucket_value, "Key": inbox_key,
+                                      "ContentType": "application/json"},
+                ExpiresIn=int(expiration_seconds), HttpMethod="PUT")
+        except Exception as exc:
+            blockers.append(f"warm_inbox_presign_failed:{type(exc).__name__}")
+    get_file = resolved_job_dir / "warm_inbox_get_url.txt"
+    put_file = resolved_job_dir / "warm_inbox_put_url.txt"
+    if inbox_get_url:
+        _write_sensitive_file(get_file, inbox_get_url, label="warm_inbox_get_url")
+    if inbox_put_url:
+        _write_sensitive_file(put_file, inbox_put_url, label="warm_inbox_put_url")
+    return {
+        "status": "completed" if (inbox_get_url and inbox_put_url and not blockers) else "blocked",
+        "blockers": blockers,
+        "inbox_key": inbox_key,
+        "warm_inbox_get_url_file": str(get_file) if inbox_get_url else None,
+        "warm_inbox_put_url_file": str(put_file) if inbox_put_url else None,
+        "warm_inbox_get_url_redacted": _redact_url(inbox_get_url) if inbox_get_url else None,
+        "warm_inbox_put_url_redacted": _redact_url(inbox_put_url) if inbox_put_url else None,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job-dir", required=True)

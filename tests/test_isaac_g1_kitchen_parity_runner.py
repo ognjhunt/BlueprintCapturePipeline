@@ -96,12 +96,12 @@ def test_manipulation_cam_with_look_at_frames_active_arm_corridor() -> None:
     assert target[0] > look_at[0]  # target is blended toward the active shoulder, not inside target
     assert target[1] > look_at[1]
     assert target[2] > look_at[2]
-    assert eye[0] > root[0]       # behind the robot for a -x-facing stance
-    assert eye[1] < root[1]       # frames across the right-arm reach corridor
+    assert eye[0] < root[0]       # head-mounted seed: slightly forward toward the fridge
+    assert abs(eye[1] - root[1]) < 0.02
     assert eye[2] > look_at[2]
 
     left_eye, left_target = M.manipulation_cam_pose(root, yaw, look_at=look_at, reach_arm="left")
-    assert left_eye[1] > root[1]
+    assert abs(left_eye[1] - root[1]) < 0.02
     assert left_target[1] < look_at[1]
 
 
@@ -119,6 +119,23 @@ def test_manipulation_camera_target_blends_affordance_with_visible_arm_context()
     assert target[1] < affordance[1]
     assert abs(target[2] - affordance[2]) < 0.08
     assert math.dist(target, affordance) < 0.25
+
+
+def test_robot_head_lens_eye_offsets_link_origin_out_of_head_mesh() -> None:
+    eye, meta = M._robot_head_lens_eye_from_mount((-1.0, 0.6, 1.35), math.pi)
+
+    assert eye[0] < -1.0
+    assert eye[1] == pytest.approx(0.6)
+    assert eye[2] > 1.35
+    assert meta["raw_mount_eye_xyz"] == [-1.0, 0.6, 1.35]
+
+    authored, authored_meta = M._robot_head_lens_eye_from_mount(
+        (-1.0, 0.6, 1.35),
+        math.pi,
+        authored_camera=True,
+    )
+    assert authored == (-1.0, 0.6, 1.35)
+    assert authored_meta["lens_offset_xyz_robot_frame"] == [0.0, 0.0, 0.0]
 
 
 def test_task_visual_qc_splits_verify_and_pov_rubrics(monkeypatch, tmp_path) -> None:
