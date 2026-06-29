@@ -5165,6 +5165,211 @@ def _robot_render_visibility_diagnostics(stage, robot_prim_path: str) -> dict[st
     }
 
 
+def _add_robot_review_proxy_box(
+    stage,
+    path: str,
+    *,
+    center: Sequence[float],
+    size: Sequence[float],
+    color: Sequence[float],
+) -> bool:
+    """Add a non-physics review box in world coordinates."""
+    from pxr import Gf, UsdGeom, UsdShade  # type: ignore
+
+    try:
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        prim = cube.GetPrim()
+        imageable = UsdGeom.Imageable(prim)
+        imageable.MakeVisible()
+        imageable.GetPurposeAttr().Set("default")
+        xf = UsdGeom.Xformable(prim)
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(float(center[0]), float(center[1]), float(center[2])))
+        xf.AddScaleOp().Set(Gf.Vec3f(
+            max(0.01, float(size[0])),
+            max(0.01, float(size[1])),
+            max(0.01, float(size[2])),
+        ))
+        gprim = UsdGeom.Gprim(prim)
+        gprim.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+        material_prim = stage.GetPrimAtPath("/World/Materials/RobotReviewVisible")
+        if material_prim and material_prim.IsValid():
+            UsdShade.MaterialBindingAPI(prim).Bind(
+                UsdShade.Material(material_prim),
+                bindingStrength=UsdShade.Tokens.strongerThanDescendants,
+            )
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _create_robot_review_visual_proxies(
+    stage,
+    robot_prim_path: str,
+    *,
+    proxy_root_path: str,
+    arm: str = "both",
+) -> dict[str, Any]:
+    """Create render-only robot geometry from the live G1 link/bbox state.
+
+    Some Isaac worker images expose the official G1 as articulation/collision Xforms with no renderable
+    Gprims. The placement and link projection math can still be valid, but RTX PNGs show no robot.
+    These proxies are a visual review layer only: they are derived from the robot subtree's current
+    world-space bbox and arm link transforms, live outside ``/World/G1`` so placement/collision bounds
+    stay tied to the actual robot, and add no physics/collision APIs.
+    """
+    from pxr import UsdGeom  # type: ignore
+
+    try:
+        stage.RemovePrim(proxy_root_path)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        UsdGeom.Scope.Define(stage, proxy_root_path)
+    except Exception:  # noqa: BLE001
+        pass
+
+    created = 0
+    blockers: list[str] = []
+    bbox = _world_bbox_for_prim(stage, robot_prim_path)
+    side_points = _robot_arm_link_points_by_arm(stage, robot_prim_path, arm=arm)
+    color_body = (0.74, 0.77, 0.80)
+    color_arm = (0.86, 0.88, 0.90)
+    body_boxes: list[str] = []
+    arm_boxes: list[str] = []
+
+    if bbox:
+        try:
+            bmin = tuple(float(v) for v in bbox["bbox_min_xyz"])
+            bmax = tuple(float(v) for v in bbox["bbox_max_xyz"])
+            center = tuple(float(v) for v in bbox["center_xyz"])
+            size = tuple(max(0.01, float(v)) for v in bbox["size_xyz"])
+            torso_center = (
+                center[0],
+                center[1],
+                bmin[2] + size[2] * 0.58,
+            )
+            torso_size = (
+                max(0.14, size[0] * 0.42),
+                max(0.12, size[1] * 0.52),
+                max(0.26, size[2] * 0.28),
+            )
+            if _add_robot_review_proxy_box(
+                stage,
+                f"{proxy_root_path}/torso",
+                center=torso_center,
+                size=torso_size,
+                color=color_body,
+            ):
+                created += 1
+                body_boxes.append(f"{proxy_root_path}/torso")
+            pelvis_center = (
+                center[0],
+                center[1],
+                bmin[2] + size[2] * 0.35,
+            )
+            pelvis_size = (
+                max(0.16, size[0] * 0.46),
+                max(0.13, size[1] * 0.58),
+                max(0.12, size[2] * 0.10),
+            )
+            if _add_robot_review_proxy_box(
+                stage,
+                f"{proxy_root_path}/pelvis",
+                center=pelvis_center,
+                size=pelvis_size,
+                color=color_body,
+            ):
+                created += 1
+                body_boxes.append(f"{proxy_root_path}/pelvis")
+            leg_z = bmin[2] + size[2] * 0.18
+            leg_h = max(0.18, size[2] * 0.28)
+            leg_dx = max(0.035, size[0] * 0.11)
+            leg_w = max(0.045, size[0] * 0.12)
+            leg_d = max(0.045, size[1] * 0.18)
+            for idx, offset in enumerate((-leg_dx, leg_dx)):
+                if _add_robot_review_proxy_box(
+                    stage,
+                    f"{proxy_root_path}/leg_{idx}",
+                    center=(center[0] + offset, center[1], leg_z),
+                    size=(leg_w, leg_d, leg_h),
+                    color=color_body,
+                ):
+                    created += 1
+                    body_boxes.append(f"{proxy_root_path}/leg_{idx}")
+        except Exception:  # noqa: BLE001
+            blockers.append("robot_review_body_proxy_failed")
+    else:
+        blockers.append("robot_bbox_unavailable_for_review_proxy")
+
+    arm_radius = 0.035
+    if bbox:
+        try:
+            arm_radius = max(0.025, min(0.05, float(bbox["size_xyz"][2]) * 0.026))
+        except Exception:  # noqa: BLE001
+            arm_radius = 0.035
+    for side, points in sorted(side_points.items()):
+        if not points:
+            blockers.append(f"{side}_arm_link_points_unavailable_for_review_proxy")
+            continue
+        for a_role, b_role in (("shoulder", "elbow"), ("elbow", "wrist"), ("wrist", "hand")):
+            a = points.get(a_role)
+            b = points.get(b_role)
+            if a is None or b is None:
+                continue
+            try:
+                a3 = tuple(float(v) for v in a)
+                b3 = tuple(float(v) for v in b)
+                center = tuple((a3[i] + b3[i]) * 0.5 for i in range(3))
+                size = tuple(abs(b3[i] - a3[i]) + arm_radius * 2.0 for i in range(3))
+                path = f"{proxy_root_path}/{side}_{a_role}_to_{b_role}"
+                if _add_robot_review_proxy_box(stage, path, center=center, size=size, color=color_arm):
+                    created += 1
+                    arm_boxes.append(path)
+            except Exception:  # noqa: BLE001
+                blockers.append(f"{side}_{a_role}_to_{b_role}_review_proxy_failed")
+        hand = points.get("hand") or points.get("wrist")
+        if hand is not None:
+            try:
+                hand3 = tuple(float(v) for v in hand)
+                path = f"{proxy_root_path}/{side}_hand_block"
+                if _add_robot_review_proxy_box(
+                    stage,
+                    path,
+                    center=hand3,
+                    size=(arm_radius * 2.4, arm_radius * 2.4, arm_radius * 2.0),
+                    color=color_arm,
+                ):
+                    created += 1
+                    arm_boxes.append(path)
+            except Exception:  # noqa: BLE001
+                blockers.append(f"{side}_hand_review_proxy_failed")
+
+    if created == 0:
+        blockers.append("robot_review_visual_proxy_not_created")
+    return {
+        "schema_version": "robot_review_visual_proxy.v1",
+        "status": "PASS" if not blockers else "FAIL",
+        "blockers": sorted(set(blockers)),
+        "proxy_root_path": proxy_root_path,
+        "created_gprim_count": created,
+        "body_proxy_paths": body_boxes,
+        "arm_proxy_paths": arm_boxes,
+        "arm_link_roles_by_arm": {
+            side: sorted(points)
+            for side, points in sorted(side_points.items())
+        },
+        "source_robot_prim_path": robot_prim_path,
+        "source_robot_bbox": bbox,
+        "claim_boundary": (
+            "Review visual proxies are generated from the current G1 robot bbox/link transforms only "
+            "when the worker lacks renderable G1 meshes. They are render aids, not collision, contact, "
+            "policy, physical-reach, or deployment proof."
+        ),
+    }
+
+
 def _add_workspace_fill_light(stage, target, *, intensity: float, height: float = 2.0,
                               path: str = "/World/WorkspaceFill") -> None:
     """Add a local sphere fill light above the manipulation workspace so the task surface and seeded
@@ -5795,11 +6000,20 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                     f"posed_count={posed_count} "
                                     f"target={tuple(round(float(c), 3) for c in effective_look_at)}"
                                 )
+                                review_proxy_diag = _create_robot_review_visual_proxies(
+                                    stage,
+                                    binding["prim_path"],
+                                    proxy_root_path=(
+                                        f"/World/RobotReviewVisualProxies/{_safe_prim_segment(sid)}"
+                                    ),
+                                    arm=rendered_reach_arm,
+                                )
                                 robot_render_diag = _robot_render_visibility_diagnostics(
                                     stage,
                                     binding["prim_path"],
                                 )
                                 robot_render_diag["posed_arm_link_count"] = int(posed_count)
+                                robot_render_diag["review_visual_proxy"] = review_proxy_diag
                                 (sdir / "robot_render_diagnostics.json").write_text(
                                     json.dumps(robot_render_diag, indent=2)
                                 )

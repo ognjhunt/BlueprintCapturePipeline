@@ -309,6 +309,48 @@ def test_robot_review_material_binds_only_robot_geometry() -> None:
     assert diag["material_bound_gprim_count"] == 1
 
 
+def test_robot_review_visual_proxies_use_link_geometry_without_scene_coords(monkeypatch) -> None:
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdGeom  # type: ignore
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World/G1")
+    for name, xyz in {
+        "right_shoulder_link": (0.0, -0.16, 1.14),
+        "right_elbow_link": (-0.12, -0.18, 1.06),
+        "right_wrist_link": (-0.24, -0.20, 1.02),
+        "right_hand_link": (-0.34, -0.22, 1.02),
+        "left_shoulder_link": (0.0, 0.16, 1.14),
+        "left_elbow_link": (-0.12, 0.18, 1.06),
+        "left_wrist_link": (-0.24, 0.20, 1.02),
+        "left_hand_link": (-0.34, 0.22, 1.02),
+    }.items():
+        prim = UsdGeom.Xform.Define(stage, f"/World/G1/{name}")
+        prim.AddTranslateOp().Set(xyz)
+
+    bbox = {
+        "bbox_min_xyz": [-0.25, -0.22, 0.05],
+        "bbox_max_xyz": [0.18, 0.22, 1.38],
+        "center_xyz": [-0.035, 0.0, 0.715],
+        "size_xyz": [0.43, 0.44, 1.33],
+    }
+    monkeypatch.setattr(M, "_world_bbox_for_prim", lambda _stage, _path: bbox)
+
+    diag = M._create_robot_review_visual_proxies(
+        stage,
+        "/World/G1",
+        proxy_root_path="/World/RobotReviewVisualProxies/test",
+        arm="both",
+    )
+
+    assert diag["status"] == "PASS"
+    assert diag["created_gprim_count"] >= 10
+    assert diag["source_robot_prim_path"] == "/World/G1"
+    assert stage.GetPrimAtPath("/World/RobotReviewVisualProxies/test/right_wrist_to_hand").IsValid()
+    assert stage.GetPrimAtPath("/World/RobotReviewVisualProxies/test/left_wrist_to_hand").IsValid()
+    assert not stage.GetPrimAtPath("/World/G1/right_wrist_to_hand")
+
+
 def test_robot_neutral_descendant_xforms_restore_warm_stage_mutation() -> None:
     # Warm serve reuses one USD stage. A reach pose must not compound into the next job/frame.
     pytest.importorskip("pxr")
