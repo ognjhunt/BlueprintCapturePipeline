@@ -25,6 +25,7 @@ import math
 import os
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from dataclasses import replace
@@ -138,6 +139,7 @@ MANIPULATION_ARM_LINK_NAME_TOKENS = (
 )
 MANIPULATION_ARM_POSE_MIN_LINK_MOVE_M = 0.02
 MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG = 50.0
+DEFAULT_RENDER_STEP_WATCHDOG_SECONDS = 180.0
 
 
 # ============================ testable helpers (no isaacsim) ============================
@@ -4758,6 +4760,81 @@ def _make_render_product(camera_path: str, width: int, height: int):
     return annot
 
 
+def _render_step_watchdog_seconds() -> float:
+    raw = os.getenv("PARITY_RENDER_STEP_WATCHDOG_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_RENDER_STEP_WATCHDOG_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_RENDER_STEP_WATCHDOG_SECONDS
+
+
+def _write_render_step_timeout_result(path: Path, *, label: str, seconds: float, scenario_id: str) -> None:
+    payload = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "status": "blocked",
+        "policy_id": None,
+        "rendered_by_isaac_rtx": True,
+        "scenarios_executed": 0,
+        "scenarios_passed": 0,
+        "blockers": ["render_step_timeout"],
+        "render_step_timeout": {
+            "label": label,
+            "seconds": round(float(seconds), 3),
+            "scenario_id": scenario_id,
+        },
+        "claim_boundary": (
+            "The renderer watchdog only bounds a stuck RTX render step. It does not validate task "
+            "success, manipulation success, physical readiness, safety, or deployment approval."
+        ),
+    }
+    try:
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _replicator_step_with_watchdog(
+    rep,
+    *,
+    label: str,
+    result_path: Path,
+    scenario_id: str,
+    timeout_seconds: float | None = None,
+) -> None:
+    """Run one Replicator step with a process-level timeout for C++ RTX hangs.
+
+    A Python signal cannot reliably interrupt a blocked native render call. If the watchdog fires,
+    write a blocked result and exit this runner process; the parent bootstrap records ``runner_done``
+    and uploads the final artifact zip so the paid pod can be stopped.
+    """
+    timeout = _render_step_watchdog_seconds() if timeout_seconds is None else float(timeout_seconds)
+    if timeout <= 0:
+        rep.orchestrator.step()
+        return
+    done = threading.Event()
+
+    def watchdog() -> None:
+        if done.wait(timeout):
+            return
+        _log(f"render step watchdog timeout after {timeout:.1f}s at {label}; exiting runner")
+        _write_render_step_timeout_result(
+            result_path,
+            label=label,
+            seconds=timeout,
+            scenario_id=scenario_id,
+        )
+        os._exit(124)
+
+    thread = threading.Thread(target=watchdog, name="render-step-watchdog", daemon=True)
+    thread.start()
+    try:
+        rep.orchestrator.step()
+    finally:
+        done.set()
+
+
 def _software_denoise_image(img):
     """Best-effort CPU denoise for review PNGs when RTX/NGX denoising is unavailable on a pod."""
     try:
@@ -5289,7 +5366,12 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     _log(f"warmup hit time cap at frame {wi}")
                     break
                 ts = time.time()
-                rep.orchestrator.step()
+                _replicator_step_with_watchdog(
+                    rep,
+                    label=f"{sid}:warmup:{wi}",
+                    result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
+                    scenario_id=sid,
+                )
                 _log(f"warmup frame {wi} render took {time.time() - ts:.1f}s")
             actions: list[dict] = []
             skel_rows: list[dict] = []
@@ -5545,8 +5627,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     # Accumulate N RTX subframes on the static (robot placed) frame to drain the
                     # RayTracedLighting denoiser's grain — a single step leaves heavy noise that an
                     # OSCAR start frame should not inherit.
-                    for _ in range(max(1, render_subframes)):
-                        rep.orchestrator.step()
+                    for subframe_idx in range(max(1, render_subframes)):
+                        _replicator_step_with_watchdog(
+                            rep,
+                            label=f"{sid}:frame:{cap}:subframe:{subframe_idx}",
+                            result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
+                            scenario_id=sid,
+                        )
                     rdt = time.time() - ts
                     over_ok = _save_rgb(
                         over_annot,
@@ -5603,8 +5690,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             height=height,
                             floor_z=floor_z,
                         )
-                        for _ in range(max(1, render_subframes)):
-                            rep.orchestrator.step()
+                        for subframe_idx in range(max(1, render_subframes)):
+                            _replicator_step_with_watchdog(
+                                rep,
+                                label=f"{sid}:topdown:{cap}:subframe:{subframe_idx}",
+                                result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
+                                scenario_id=sid,
+                            )
                         placement_topdown_frame_path = sdir / "frames" / f"placement_topdown_{cap:04d}.png"
                         _save_rgb(
                             topdown_annot,

@@ -3,6 +3,7 @@ in isaacsim — the Isaac-API calls are lazily imported inside the GPU-only func
 from __future__ import annotations
 
 import importlib.util
+import json
 import math
 import sys
 import types
@@ -229,6 +230,30 @@ def test_manipulation_camera_target_selection_rejects_downward_pitch_workaround(
     assert chosen["selection_allowed"] is True
     assert chosen["pitch_down_deg"] <= M.MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG
     assert "manipulation_pov_camera_pitched_down_too_far" not in chosen["blockers"]
+
+
+def test_render_step_watchdog_timeout_result_is_fail_closed(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("PARITY_RENDER_STEP_WATCHDOG_SECONDS", raising=False)
+    assert M._render_step_watchdog_seconds() == M.DEFAULT_RENDER_STEP_WATCHDOG_SECONDS
+    monkeypatch.setenv("PARITY_RENDER_STEP_WATCHDOG_SECONDS", "12.5")
+    assert M._render_step_watchdog_seconds() == pytest.approx(12.5)
+    monkeypatch.setenv("PARITY_RENDER_STEP_WATCHDOG_SECONDS", "not-a-number")
+    assert M._render_step_watchdog_seconds() == M.DEFAULT_RENDER_STEP_WATCHDOG_SECONDS
+
+    result_path = tmp_path / "isaac_g1_kitchen_parity_result.json"
+    M._write_render_step_timeout_result(
+        result_path,
+        label="scenario:warmup:0",
+        seconds=12.5,
+        scenario_id="scenario",
+    )
+
+    payload = json.loads(result_path.read_text())
+    assert payload["status"] == "blocked"
+    assert payload["blockers"] == ["render_step_timeout"]
+    assert payload["render_step_timeout"]["label"] == "scenario:warmup:0"
+    assert payload["render_step_timeout"]["scenario_id"] == "scenario"
+    assert payload["rendered_by_isaac_rtx"] is True
 
 
 def test_task_visual_qc_splits_verify_and_pov_rubrics(monkeypatch, tmp_path) -> None:
@@ -1827,7 +1852,7 @@ def test_scene_placement_stand_plan_none_without_geometry() -> None:
 def test_topdown_debug_overlay_is_added_only_after_verify_and_pov_are_saved() -> None:
     source = _RUNNER.read_text()
     capture_start = source.index("debug_root_path = (")
-    normal_render = source.index("rep.orchestrator.step()", capture_start)
+    normal_render = source.index("_replicator_step_with_watchdog(", capture_start)
     pov_save = source.index('_save_rgb(pov_annot, sdir / "frames" / f"robot_pov_', capture_start)
     verify_save = source.index('_save_rgb(verify_annot, sdir / "frames" / f"verify_', capture_start)
     overlay_update = source.index("_update_topdown_debug_scene(", capture_start)
