@@ -5022,12 +5022,22 @@ def _apply_robot_review_material(stage, robot_prim_path: str) -> int:
     shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
     material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
 
-    bound = 0
+    try:
+        UsdShade.MaterialBindingAPI(robot).Bind(
+            material,
+            bindingStrength=UsdShade.Tokens.strongerThanDescendants,
+        )
+        bound = 1
+    except Exception:  # noqa: BLE001
+        bound = 0
     for prim in Usd.PrimRange(robot):
         try:
             if not prim.IsA(UsdGeom.Gprim):
                 continue
-            UsdShade.MaterialBindingAPI(prim).Bind(material)
+            UsdShade.MaterialBindingAPI(prim).Bind(
+                material,
+                bindingStrength=UsdShade.Tokens.strongerThanDescendants,
+            )
             UsdGeom.Gprim(prim).CreateDisplayColorAttr([Gf.Vec3f(0.82, 0.84, 0.86)])
             bound += 1
         except Exception:  # noqa: BLE001

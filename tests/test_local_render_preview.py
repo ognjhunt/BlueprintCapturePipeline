@@ -288,9 +288,13 @@ def test_robot_review_material_binds_only_robot_geometry() -> None:
 
     bound = M._apply_robot_review_material(stage, "/World/G1")
 
-    assert bound == 1
+    assert bound >= 2
+    root_binding = UsdShade.MaterialBindingAPI(
+        stage.GetPrimAtPath("/World/G1")
+    ).ComputeBoundMaterial()[0]
     robot_binding = UsdShade.MaterialBindingAPI(robot_mesh.GetPrim()).ComputeBoundMaterial()[0]
     scene_binding = UsdShade.MaterialBindingAPI(scene_mesh.GetPrim()).ComputeBoundMaterial()[0]
+    assert root_binding and str(root_binding.GetPath()) == "/World/Materials/RobotReviewVisible"
     assert robot_binding and str(robot_binding.GetPath()) == "/World/Materials/RobotReviewVisible"
     assert not scene_binding
 
