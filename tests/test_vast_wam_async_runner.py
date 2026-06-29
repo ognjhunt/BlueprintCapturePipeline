@@ -336,6 +336,45 @@ def test_create_accepts_direct_provider_url_files_without_public_tunnel(
     assert "output-get-secret" not in persisted
 
 
+def test_create_forwards_allowed_machine_ids_to_offer_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _write_bundle(tmp_path / "bundle.zip")
+    _install_common_create_harness(monkeypatch)
+    captured_select: dict[str, Any] = {}
+
+    def fake_select_offer(*_args: Any, **kwargs: Any) -> None:
+        captured_select.update(kwargs)
+        return None
+
+    monkeypatch.setattr(runner, "_select_offer", fake_select_offer)
+
+    manifest = runner.create_async_vast_wam_run(
+        job_dir=tmp_path / "allowed",
+        bundle_path=bundle,
+        public_base_url="https://public.example",
+        token_file=tmp_path / "token-allowed",
+        secret_env_file=tmp_path / "urls-allowed.env",
+        session_budget_ledger=tmp_path / "budget-allowed.json",
+        allow_paid_vast_launch=True,
+        excluded_machine_ids=[49407],
+        allowed_machine_ids=[16571],
+        generated_at="now",
+    )
+
+    assert manifest["reason"] == "no_vast_offer_selected"
+    assert captured_select["excluded_machine_ids"] == [49407]
+    assert captured_select["allowed_machine_ids"] == [16571]
+    offer_manifest = json.loads(
+        (tmp_path / "allowed" / "vast_offer_selection_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert offer_manifest["excluded_machine_ids"] == [49407]
+    assert offer_manifest["allowed_machine_ids"] == [16571]
+
+
 def test_create_lock_inventory_offer_hard_cap_and_instance_blocks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

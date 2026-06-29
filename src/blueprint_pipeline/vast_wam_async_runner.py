@@ -36,12 +36,10 @@ from .vast_provider_adapter import (
     DEFAULT_TARGET_SPEND_USD,
     DEFAULT_VAST_API_KEY_FILE,
     DEFAULT_WAM_ROLLOUT_VIDEO_COUNT,
-    VAST_API_GATE_ENV,
     VAST_API_KEY_FILE_ENV,
     VAST_FINAL_VALIDATION_SCHEMA_VERSION,
     VAST_GPU_SANITY_SCHEMA_VERSION,
     VAST_ISAAC_SMOKE_SCHEMA_VERSION,
-    VAST_INSTANCE_LAUNCH_GATE_ENV,
     VAST_OFFER_SELECTION_SCHEMA_VERSION,
     VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION,
     VAST_PROVIDER_COMMAND_SCHEMA_VERSION,
@@ -547,6 +545,7 @@ def create_async_vast_wam_run(
     session_max_live_minutes: int | None = 45,
     min_gpu_ram_mb: int = 0,
     excluded_machine_ids: Sequence[int] = (),
+    allowed_machine_ids: Sequence[int] = (),
     startup_poll_seconds: int = 90,
     public_staging_verify_max_wait_seconds: int = 120,
     public_staging_verify_retry_interval_seconds: float = 5.0,
@@ -945,6 +944,7 @@ def create_async_vast_wam_run(
             max_hourly_rate=max_hourly_rate,
             min_gpu_ram_mb=min_gpu_ram_mb,
             excluded_machine_ids=excluded_machine_ids,
+            allowed_machine_ids=allowed_machine_ids,
             require_known_supported_isaac_driver=False,
         )
         offer_blockers: list[str] = (
@@ -962,6 +962,7 @@ def create_async_vast_wam_run(
             "max_hourly_rate_usd": max_hourly_rate,
             "min_gpu_ram_mb": int(min_gpu_ram_mb),
             "excluded_machine_ids": list(excluded_machine_ids),
+            "allowed_machine_ids": list(allowed_machine_ids),
             "selected_offer": _offer_artifact_summary(selected_offer),
             "considered_offers": [
                 _offer_artifact_summary(_offer_summary(offer)) for offer in offers
@@ -1162,6 +1163,8 @@ def create_async_vast_wam_run(
             "max_live_deadline_epoch": created_epoch + max_live_minutes * 60.0,
             "selected_offer": _offer_artifact_summary(selected_offer),
             "selected_hourly_rate_usd": selected_offer.get("hourly_rate_usd"),
+            "excluded_machine_ids": list(excluded_machine_ids),
+            "allowed_machine_ids": list(allowed_machine_ids),
             "public_image": public_image,
             "selected_container_image": selected_container_image,
             "vast_launch_mode": launch_mode,
@@ -1774,6 +1777,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
         help="Vast machine id to exclude from offer selection; repeatable.",
     )
+    create.add_argument(
+        "--allowed-machine-id",
+        action="append",
+        type=int,
+        default=[],
+        help="Restrict Vast offer selection to this machine id; repeatable.",
+    )
     create.add_argument("--startup-poll-seconds", type=int, default=90)
     create.add_argument("--public-staging-verify-max-wait-seconds", type=int, default=120)
     create.add_argument("--public-staging-verify-retry-interval-seconds", type=float, default=5.0)
@@ -1816,6 +1826,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             session_max_live_minutes=args.session_max_live_minutes,
             min_gpu_ram_mb=args.min_gpu_ram_mb,
             excluded_machine_ids=args.excluded_machine_id,
+            allowed_machine_ids=args.allowed_machine_id,
             startup_poll_seconds=args.startup_poll_seconds,
             public_staging_verify_max_wait_seconds=args.public_staging_verify_max_wait_seconds,
             public_staging_verify_retry_interval_seconds=args.public_staging_verify_retry_interval_seconds,
