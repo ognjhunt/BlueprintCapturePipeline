@@ -321,6 +321,52 @@ def test_object_index_basic_file_keyframe_and_prompt_helpers(
     )[1] is None
 
 
+def test_run_object_index_stage_all_backends_skipped_emits_empty_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root, context = _capture_tree(tmp_path)
+    arkit_root = context.raw_root / "arkit"
+    arkit_root.mkdir(parents=True)
+    (arkit_root / "frames.jsonl").write_text(
+        json.dumps(
+            {
+                "frameIndex": 0,
+                "timestamp": 0.0,
+                "imageResolution": [16, 12],
+                "intrinsics": [1.0, 1.0],
+                "cameraTransform": list(range(16)),
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in (
+        "OBJECT_INDEX_YOLO_WORLD_COMMAND",
+        "OBJECT_INDEX_GROUNDING_DINO_COMMAND",
+        "OBJECT_INDEX_SAM3_COMMAND",
+        "OBJECT_INDEX_SPLAT_ANALYZER_COMMAND",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(oi, "resolve_local_capture_context", lambda _capture_root: context)
+    monkeypatch.setattr(oi, "_command_from_env", lambda _name: "")
+
+    result = oi.run_object_index_stage(capture_root=capture_root, force_rebuild=True)
+    build_report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
+
+    assert result["status"] == "built"
+    assert result["object_count"] == 0
+    assert build_report["empty_index_cause"] == "backend_skipped"
+    assert Path(result["manifest_path"]).is_file()
+    assert Path(result["report_path"]).is_file()
+    grounding_hints = context.raw_root / "object_grounding_hints.json"
+    assert grounding_hints.is_file()
+    grounding_payload = json.loads(grounding_hints.read_text(encoding="utf-8"))
+    assert grounding_payload["grounded_objects"] == []
+    assert grounding_payload["manipulation_candidates"] == []
+    assert grounding_payload["articulation_hints"] == []
+    assert grounding_payload["tasks"] == []
+
+
 def test_object_index_subprocess_backend_and_detection_helpers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

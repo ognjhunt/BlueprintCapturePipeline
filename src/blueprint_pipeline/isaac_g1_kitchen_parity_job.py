@@ -23,9 +23,13 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import time
+import urllib.error
 import urllib.request
+import uuid
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Sequence
 
@@ -33,15 +37,76 @@ from .gpu_render_providers import RenderLaunchSpec, get_render_provider
 from .isaac_particlefield_render_job import (
     DEFAULT_WARM_CANDIDATES, _read_secret, default_image, stage_bundle, watch_and_collect,
 )
+from .provider_race import boot_marker_present, race_launch
 
 SCHEMA_VERSION = "isaac_g1_kitchen_parity_job.v1"
 WORKER_BUNDLE_DIR = "/workspace/bundle"
 DEFAULT_G1_USD_RELATIVE = "Isaac/Robots/Unitree/G1/g1.usd"
 DEFAULT_KITCHEN_MAIN_USD = "Collected_KitchenRoom/KitchenRoom.usd"
+PARITY_BUNDLE_REQUIRED_FILES = (
+    "run_isaac_g1_kitchen_parity_eval.py",
+    "isaac_g1_policy.py",
+    "render_visual_qc.py",
+    "warm_render_server.py",
+    "request.json",
+    "scene_placement/__init__.py",
+    "scene_placement/types.py",
+    "scene_placement/target_resolver.py",
+    "scene_placement/usd_index.py",
+    "scene_placement/perception_index.py",
+    "scene_placement/perception_fusion.py",
+    "scene_placement/perception_views.py",
+    "scene_placement/perception_adapter.py",
+    "scene_placement/placement.py",
+    "scene_placement/validation.py",
+)
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _git_worktree_evidence(*, max_dirty_entries: int = 200) -> dict:
+    """Return the committed SHA + dirty state used as a paid-launch provenance boundary."""
+    root = _repo_root()
+
+    def _git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    head = _git("rev-parse", "HEAD")
+    if head.returncode != 0:
+        return {
+            "status": "unavailable",
+            "repo_root": str(root),
+            "dirty": None,
+            "error": (head.stderr or head.stdout).strip()[:500],
+        }
+    status = _git("status", "--porcelain", "--untracked-files=all")
+    if status.returncode != 0:
+        return {
+            "status": "unavailable",
+            "repo_root": str(root),
+            "git_sha": head.stdout.strip(),
+            "dirty": None,
+            "error": (status.stderr or status.stdout).strip()[:500],
+        }
+    dirty_entries = [line for line in status.stdout.splitlines() if line.strip()]
+    return {
+        "status": "available",
+        "repo_root": str(root),
+        "git_sha": head.stdout.strip(),
+        "dirty": bool(dirty_entries),
+        "dirty_entries_count": len(dirty_entries),
+        "dirty_entries": dirty_entries[:max_dirty_entries],
+        "dirty_entries_truncated": len(dirty_entries) > max_dirty_entries,
+    }
 
 
 def _zip_dir(src_dir: Path, zip_path: Path) -> Path:
@@ -51,6 +116,12 @@ def _zip_dir(src_dir: Path, zip_path: Path) -> Path:
             if item.is_file():
                 zf.write(item, item.relative_to(src_dir).as_posix())
     return zip_path
+
+
+def _assert_parity_bundle_namelist(names: set[str]) -> None:
+    missing = [name for name in PARITY_BUNDLE_REQUIRED_FILES if name not in names]
+    if missing:
+        raise RuntimeError(f"parity_bundle_missing_required_files:{','.join(missing)}")
 
 
 def parity_image() -> str:
@@ -75,6 +146,7 @@ for p in pathlib.Path(OUT).iterdir():
     except Exception: pass
 PUT=os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL","")
 GETB=os.environ.get("BLUEPRINT_EVAL_MANIFEST_URI","")
+SESSION=os.environ.get("BLUEPRINT_LAUNCH_SESSION_ID","")
 def putout():
     try:
         buf=io.BytesIO()
@@ -87,7 +159,7 @@ def putout():
         urllib.request.urlopen(req, timeout=180).read()
     except Exception: pass
 def mark(ph, **k):
-    try: json.dump({"phase":ph, **k}, open(OUT+"/bootstrap.json","w"))
+    try: json.dump({"phase":ph, "launch_session_id":SESSION, **k}, open(OUT+"/bootstrap.json","w"))
     except Exception: pass
     putout()
 def hb():
@@ -154,7 +226,8 @@ while True:
 _EARLY_MARKER = r'''
 import os, io, json, zipfile, pathlib, urllib.request
 OUT="/workspace/out"; pathlib.Path(OUT).mkdir(parents=True, exist_ok=True)
-json.dump({"phase":"container_bash_started"}, open(OUT+"/bootstrap.json","w"))
+SESSION=os.environ.get("BLUEPRINT_LAUNCH_SESSION_ID","")
+json.dump({"phase":"container_bash_started","launch_session_id":SESSION}, open(OUT+"/bootstrap.json","w"))
 PUT=os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL","")
 buf=io.BytesIO()
 with zipfile.ZipFile(buf,"w") as z: z.write(OUT+"/bootstrap.json","bootstrap.json")
@@ -232,11 +305,30 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
                 dst = bundle / "kitchen" / item.relative_to(src)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.write_bytes(item.read_bytes())
+    bundle_files = sorted(
+        item.relative_to(bundle).as_posix()
+        for item in bundle.rglob("*")
+        if item.is_file()
+    )
+    _assert_parity_bundle_namelist(set(bundle_files))
+    (bundle / "bundle_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "isaac_g1_kitchen_parity_bundle.v1",
+                "required_files": list(PARITY_BUNDLE_REQUIRED_FILES),
+                "files": bundle_files,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     zip_path = out_dir / "isaac_g1_kitchen_parity_bundle.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for item in sorted(bundle.rglob("*")):
             if item.is_file():
                 zf.write(item, item.relative_to(bundle).as_posix())
+    with zipfile.ZipFile(zip_path) as zf:
+        _assert_parity_bundle_namelist(set(zf.namelist()))
     return zip_path
 
 
@@ -294,6 +386,14 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_MANIPULATION_LOOK_AT"] = str(manipulation_look_at)
     if render_subframes and render_subframes > 0:
         env["PARITY_RENDER_SUBFRAMES"] = str(render_subframes)
+    for key in (
+        "PARITY_RENDER_QUALITY_MODE",
+        "PARITY_PATH_TRACING_SAMPLES_PER_PIXEL",
+        "PARITY_PATH_TRACED_RT_SUBFRAMES",
+    ):
+        value = os.getenv(key, "").strip()
+        if value:
+            env[key] = value
     if manipulation_reach:
         env["PARITY_MANIPULATION_REACH"] = "1"
     if manipulation_reach and manipulation_reach_arm:
@@ -374,6 +474,29 @@ def build_harness_package(*, result: dict, render_out_dir: Path, out_dir: Path) 
 
 # ----------------------------- launch with flaky-pod retry -----------------------------
 
+def _request_with_launch_session_nonce(request: dict, launch_session_id: str) -> dict:
+    """Return a provider request copy whose worker environment carries this launch nonce."""
+    request_copy = deepcopy(request)
+    env = request_copy.get("env")
+    if not isinstance(env, dict):
+        env = {}
+        request_copy["env"] = env
+    env["BLUEPRINT_LAUNCH_SESSION_ID"] = launch_session_id
+    create_payload = request_copy.get("create_payload")
+    if isinstance(create_payload, dict):
+        create_env = create_payload.get("env")
+        if not isinstance(create_env, dict):
+            create_env = {}
+            create_payload["env"] = create_env
+        create_env["BLUEPRINT_LAUNCH_SESSION_ID"] = launch_session_id
+    return request_copy
+
+
+def _provider_names(provider: str | None) -> list[str]:
+    names = [p.strip().lower() for p in str(provider or "runpod").split(",") if p.strip()]
+    return names or ["runpod"]
+
+
 def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts: int = 3,
                              marker_timeout: int = 150, poll: int = 15,
                              cold: bool = True,
@@ -383,12 +506,14 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
     If no marker appears within ``marker_timeout``, terminate that pod and retry, so we never pay
     for a dead cold pod. Warm-restart duds are stopped rather than deleted so a preserved pod can be
     reused later. Returns the launch of the first pod that actually started."""
-    get_url = (job_dir / "provider_output_get_url.txt").read_text().strip()
     attempts: list[dict] = []
     for attempt in range(max_attempts):
+        launch_session_id = uuid.uuid4().hex
+        request_for_launch = _request_with_launch_session_nonce(request, launch_session_id)
+        (job_dir / "launch_session_nonce.txt").write_text(launch_session_id, encoding="utf-8")
         launch = prov.launch(
             job_dir,
-            request,
+            request_for_launch,
             cold=cold,
             allow_cold_fallback=allow_cold_fallback,
         )
@@ -400,14 +525,19 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
         marker_seen = False
         while time.time() - t0 < marker_timeout:
             time.sleep(poll)
-            try:
-                data = urllib.request.urlopen(get_url, timeout=60).read()
-                if "bootstrap.json" in zipfile.ZipFile(io.BytesIO(data)).namelist():
-                    marker_seen = True
-                    break
-            except Exception:  # noqa: BLE001
-                continue
-        attempts.append({"attempt": attempt, "instance_id": iid, "marker_seen": marker_seen})
+            marker_seen = boot_marker_present(
+                job_dir,
+                expected_launch_session_id=launch_session_id,
+                urlopen=urllib.request.urlopen,
+            )
+            if marker_seen:
+                break
+        attempts.append({
+            "attempt": attempt,
+            "instance_id": iid,
+            "marker_seen": marker_seen,
+            "launch_session_id": launch_session_id,
+        })
         if marker_seen:
             mode = launch.get("mode") or ("cold_create" if cold else "warm_or_cold")
             return {"status": "launched", "instance_id": iid, "mode": f"{mode}_marker_verified",
@@ -422,7 +552,8 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
 # ----------------------------- orchestration -----------------------------
 
 def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int = 1800,
-                            poll_interval_s: float = 15.0) -> dict:
+                            poll_interval_s: float = 15.0,
+                            launch_session_id: str | None = None) -> dict:
     """Poll the worker's uploaded output zip for the --serve readiness marker (Isaac booted + scene
     loaded + the loop accepting jobs). Returns {ready, elapsed_seconds, last_phase}. Does NOT tear the
     pod down — the warm pod must stay running for the caller's WarmPoolClient."""
@@ -435,6 +566,11 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
     if not get_url_file.is_file():
         return {"ready": False, "reason": "missing_output_get_url", "instance_id": instance_id}
     get_url = get_url_file.read_text().strip()
+    expected_session = str(launch_session_id or "").strip()
+    if not expected_session:
+        nonce_file = job_dir / "launch_session_nonce.txt"
+        if nonce_file.is_file():
+            expected_session = nonce_file.read_text(encoding="utf-8").strip()
     start = _time.monotonic()
     last_phase = None
     while _time.monotonic() - start < timeout_s:
@@ -444,7 +580,9 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
                 names = z.namelist()
                 if "bootstrap.json" in names:
                     try:
-                        last_phase = json.loads(z.read("bootstrap.json").decode()).get("phase")
+                        bootstrap_detail = json.loads(z.read("bootstrap.json").decode())
+                        if isinstance(bootstrap_detail, dict):
+                            last_phase = bootstrap_detail.get("phase")
                     except Exception:  # noqa: BLE001
                         pass
                 if "warm_serve_ready.json" in names:
@@ -453,8 +591,21 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
                         detail = json.loads(z.read("warm_serve_ready.json").decode())
                     except Exception:  # noqa: BLE001
                         pass
+                    if expected_session and str(detail.get("launch_session_id") or "") != expected_session:
+                        _time.sleep(poll_interval_s)
+                        continue
                     return {"ready": True, "elapsed_seconds": round(_time.monotonic() - start, 1),
                             "last_phase": last_phase, "serve_detail": detail, "instance_id": instance_id}
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                return {
+                    "ready": False,
+                    "reason": "presigned_url_expired_or_forbidden",
+                    "http_status": exc.code,
+                    "elapsed_seconds": round(_time.monotonic() - start, 1),
+                    "last_phase": last_phase,
+                    "instance_id": instance_id,
+                }
         except Exception:  # noqa: BLE001 - output not posted yet / mid-upload
             pass
         _time.sleep(poll_interval_s)
@@ -466,7 +617,8 @@ def run_isaac_g1_kitchen_parity_job(
     *, scenarios: Sequence[dict], out_dir: str | Path, kitchen_asset_dir: str | Path | None = None,
     kitchen_url: str | None = None,
     g1_usd: str = DEFAULT_G1_USD_RELATIVE, policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
-    steps: int = 64, provider: str = "runpod", allow_paid: bool = False, cold: bool = False,
+    steps: int = 64, provider: str = "runpod", allow_paid: bool = False,
+    allow_dirty_paid_launch: bool = False, cold: bool = False,
     image: str | None = None, key_prefix: str = "blueprint/isaac-g1-parity", max_seconds: int = 1500,
     marker_timeout: int = 900, max_attempts: int = 3,
     width: int = 1280, height: int = 960, warmup: int = 6, per_scenario_seconds: int = 420,
@@ -496,8 +648,9 @@ def run_isaac_g1_kitchen_parity_job(
     is responsible for tearing it down. ``serve`` allows an empty ``scenarios`` list (jobs arrive live)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    provider_names = _provider_names(provider)
     manifest: dict = {"schema_version": SCHEMA_VERSION, "status": "blocked", "blockers": [],
-                      "provider": (provider or "runpod").lower(), "policy_id": policy_id,
+                      "provider": ",".join(provider_names), "policy_id": policy_id,
                       "rendered_by": "isaac_rtx_g1_kitchen_parity"}
     configured_warm_candidates = tuple(
         c.strip()
@@ -506,16 +659,49 @@ def run_isaac_g1_kitchen_parity_job(
     )
     warm_candidate_ids = tuple(warm_candidates or ()) + configured_warm_candidates + tuple(DEFAULT_WARM_CANDIDATES)
     try:
-        prov = get_render_provider(provider, warm_candidates=warm_candidate_ids)
+        providers = [
+            get_render_provider(
+                name,
+                warm_candidates=warm_candidate_ids if name == "runpod" else (),
+            )
+            for name in provider_names
+        ]
     except ValueError as exc:
         manifest["blockers"].append("unknown_render_provider")
         manifest["error"] = str(exc)
         return manifest
-    manifest["provider_available"] = prov.available()
+    prov = providers[0]
+    multi_provider_race = len(providers) > 1 and not serve
+    if multi_provider_race:
+        manifest["providers"] = [p.name for p in providers]
+        manifest["provider_available"] = [p.available() for p in providers]
+    else:
+        manifest["provider_available"] = prov.available()
     if not scenarios and not serve:
         manifest["blockers"].append("no_scenarios")
         return manifest
     manifest["scenario_ids"] = [s.get("scenario_id") or s.get("id") for s in scenarios]
+    git_evidence = _git_worktree_evidence()
+    manifest["git_evidence"] = git_evidence
+    if allow_paid and not allow_dirty_paid_launch:
+        if git_evidence.get("status") != "available":
+            manifest["blockers"].append("git_worktree_evidence_unavailable")
+            manifest["status"] = "blocked"
+            manifest["note"] = (
+                "Paid launch blocked because the committed source boundary could not be "
+                "verified. Re-run only after git evidence is available, or pass the explicit "
+                "dirty-tree override and accept the provenance risk."
+            )
+            return manifest
+        if git_evidence.get("dirty"):
+            manifest["blockers"].append("dirty_worktree_paid_launch_blocked")
+            manifest["status"] = "blocked"
+            manifest["note"] = (
+                "Paid launch blocked from a dirty tree so cloud frames cannot be confused "
+                "with committed source. Commit/stash first, or pass the explicit dirty-tree "
+                "override and preserve this git_evidence in the launch manifest."
+            )
+            return manifest
     # Stage the large kitchen tree ONCE (reused across iterations); keep the code bundle tiny.
     # A caller may pass a previously-staged kitchen_url to skip the 1.2GB re-upload entirely.
     if kitchen_url:
@@ -586,21 +772,98 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["status"] = "prepared"
         manifest["note"] = f"bundled + staged + launchable on {prov.name}; re-run with allow_paid=True to spend GPU"
         return manifest
-    avail = prov.available()
-    if not avail.get("available"):
-        manifest["blockers"].append(avail.get("reason") or "provider_credentials_missing")
-        return manifest
+    if multi_provider_race:
+        available_pairs = [(p, p.available()) for p in providers]
+        runnable_providers = [p for p, avail in available_pairs if avail.get("available")]
+        manifest["provider_available"] = [avail for _p, avail in available_pairs]
+        if not runnable_providers:
+            manifest["blockers"].append("provider_credentials_missing")
+            return manifest
+    else:
+        avail = prov.available()
+        if not avail.get("available"):
+            manifest["blockers"].append(avail.get("reason") or "provider_credentials_missing")
+            return manifest
     # cold ~10-15GB Isaac image pulls on congested nodes routinely exceed 150s before the container
     # starts bash; give the early marker a generous window (+ an extra attempt) so a slow pull is not
     # mistaken for a dead pod (which caused all-dud batches on both providers).
     # The worker image is ~10.7 GB (one 10.6 GB layer); a slow node needs >7 min just to pull it
     # before its container can write the bootstrap marker. Default the boot window to 900s so we
     # stop reaping nodes mid-pull (the 420s default lost every <~200 Mbps node). Configurable.
-    launch = launch_with_marker_retry(prov, job_dir, request_body,
-                                      marker_timeout=marker_timeout, max_attempts=max_attempts,
-                                      cold=cold,
-                                      allow_cold_fallback=not warm_only)
-    manifest["launch"] = launch
+    collect_job_dir = job_dir
+    collect_provider = prov
+    if multi_provider_race:
+        race_stage_records: list[dict] = []
+
+        def _race_request(provider_obj, contender_job_dir):
+            contender_job_dir = Path(contender_job_dir)
+            staged_contender = stage_bundle(
+                bundle_zip,
+                contender_job_dir,
+                key_prefix=f"{key_prefix}/race/{provider_obj.name}",
+            )
+            race_stage_records.append({
+                "provider": provider_obj.name,
+                "job_dir": str(contender_job_dir),
+                "status": staged_contender.get("status"),
+            })
+            if staged_contender.get("status") != "completed":
+                raise RuntimeError(
+                    f"race_staging_failed:{provider_obj.name}:{staged_contender.get('status')}"
+                )
+            launch_session_id = uuid.uuid4().hex
+            (contender_job_dir / "launch_session_nonce.txt").write_text(
+                launch_session_id,
+                encoding="utf-8",
+            )
+            body = provider_obj.build_request(spec, contender_job_dir)
+            return _request_with_launch_session_nonce(body, launch_session_id)
+
+        def _race_marker_check(provider_obj, launch_result):
+            contender_job_dir = Path(str(launch_result.get("job_dir") or job_dir))
+            nonce_file = contender_job_dir / "launch_session_nonce.txt"
+            if not nonce_file.is_file():
+                return False
+            launch_session_id = nonce_file.read_text(encoding="utf-8").strip()
+            if not launch_session_id:
+                return False
+            return boot_marker_present(
+                contender_job_dir,
+                expected_launch_session_id=launch_session_id,
+                urlopen=urllib.request.urlopen,
+            )
+
+        race = race_launch(
+            runnable_providers,
+            _race_request,
+            marker_check=_race_marker_check,
+            marker_timeout=marker_timeout,
+            job_dir=job_dir,
+            cold=cold,
+            poll_interval=max(1.0, min(15.0, float(marker_timeout))),
+            launch_kwargs=lambda _p: {"allow_cold_fallback": not warm_only},
+        )
+        manifest["race_staging"] = race_stage_records
+        manifest["launch"] = {k: v for k, v in race.items() if k != "winner_provider"}
+        if race.get("status") == "launched":
+            launch = {
+                "status": "launched",
+                "instance_id": race.get("instance_id"),
+                "mode": race.get("mode"),
+                "winner_launch": race.get("winner_launch"),
+            }
+            collect_provider = race["winner_provider"]
+            collect_job_dir = Path(
+                str((race.get("winner_launch") or {}).get("job_dir") or job_dir)
+            )
+        else:
+            launch = race
+    else:
+        launch = launch_with_marker_retry(prov, job_dir, request_body,
+                                          marker_timeout=marker_timeout, max_attempts=max_attempts,
+                                          cold=cold,
+                                          allow_cold_fallback=not warm_only)
+        manifest["launch"] = launch
     if launch.get("status") != "launched":
         manifest["blockers"].append("launch_failed_all_attempts_flaky")
         return manifest
@@ -623,7 +886,7 @@ def run_isaac_g1_kitchen_parity_job(
             manifest["blockers"].append("warm_serve_not_ready")
         return manifest
     render_out = out_dir / "render_output"
-    result = watch_and_collect(job_dir, render_out, launch["instance_id"], provider=prov,
+    result = watch_and_collect(collect_job_dir, render_out, launch["instance_id"], provider=collect_provider,
                                max_seconds=max_seconds, preserve_instance=True)
     manifest["render"] = {
         "status": result.get("status"),
@@ -661,8 +924,17 @@ def main(argv=None) -> int:
     ap.add_argument("--policy", default="blueprint_default_walk_to_target_smoke_policy",
                     choices=["blueprint_default_walk_to_target_smoke_policy", "groot_sonic"])
     ap.add_argument("--steps", type=int, default=64)
-    ap.add_argument("--provider", default="runpod", choices=["runpod", "vast"])
+    ap.add_argument("--provider", default="runpod",
+                    help="provider name, or comma-separated race list such as runpod,vast")
     ap.add_argument("--allow-paid", action="store_true")
+    ap.add_argument(
+        "--allow-dirty-paid-launch",
+        action="store_true",
+        help=(
+            "override the dirty-worktree paid-launch block. Use only when the manifest's "
+            "git_evidence is an intentional evidence boundary."
+        ),
+    )
     ap.add_argument("--cold", action="store_true")
     ap.add_argument(
         "--warm-candidate",
@@ -727,7 +999,8 @@ def main(argv=None) -> int:
         scenarios=scenarios, out_dir=args.out_dir, kitchen_asset_dir=args.kitchen_asset_dir,
         kitchen_url=args.kitchen_url,
         g1_usd=args.g1_usd, policy_id=args.policy, steps=args.steps, provider=args.provider,
-        allow_paid=args.allow_paid, cold=args.cold, image=args.image, max_seconds=args.max_seconds,
+        allow_paid=args.allow_paid, allow_dirty_paid_launch=args.allow_dirty_paid_launch,
+        cold=args.cold, image=args.image, max_seconds=args.max_seconds,
         warm_candidates=tuple(args.warm_candidate or ()),
         warm_only=args.warm_only,
         marker_timeout=args.marker_timeout, max_attempts=args.max_attempts,

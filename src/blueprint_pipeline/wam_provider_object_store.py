@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
@@ -61,6 +62,37 @@ def _redact_url(value: str) -> str:
     query = "REDACTED_QUERY" if parsed.query else ""
     fragment = "REDACTED_FRAGMENT" if parsed.fragment else ""
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, fragment))
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _iso_z(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _presigned_url_expiry_metadata(generated_at: str, expiration_seconds: int) -> dict[str, Any]:
+    generated_dt = _parse_iso_datetime(generated_at) or datetime.now(timezone.utc)
+    expires_at = generated_dt + timedelta(seconds=int(expiration_seconds))
+    return {
+        "generated_at": generated_at,
+        "expires_at": _iso_z(expires_at),
+        "expiration_seconds": int(expiration_seconds),
+        "expiry_warning": int(expiration_seconds) <= 60 * 60,
+        "raw_url_values_recorded": False,
+    }
 
 
 def _safe_key_component(value: str) -> str:
@@ -169,6 +201,7 @@ def stage_wam_provider_bundle_object_store(
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
+    expiry_metadata = _presigned_url_expiry_metadata(generated, expiration_seconds)
     resolved_job_dir = Path(job_dir).expanduser().resolve()
     resolved_bundle = Path(bundle_path).expanduser().resolve()
     ensure_dir(resolved_job_dir)
@@ -355,7 +388,10 @@ def stage_wam_provider_bundle_object_store(
             "region": region_meta,
             "key_prefix": key_prefix,
             "expiration_seconds": int(expiration_seconds),
+            "expires_at": expiry_metadata["expires_at"],
+            "expiry_warning": expiry_metadata["expiry_warning"],
         },
+        "presigned_url_expiry": expiry_metadata,
         "upload_detail": upload_detail,
         "bundle_key": bundle_key or None,
         "output_key": output_key or None,
@@ -404,6 +440,8 @@ def presign_warm_inbox_channel(
     redacted URLs (raw URLs only ever touch the sensitive files)."""
     resolved_job_dir = Path(job_dir)
     resolved_job_dir.mkdir(parents=True, exist_ok=True)
+    generated = utc_now_iso()
+    expiry_metadata = _presigned_url_expiry_metadata(generated, expiration_seconds)
     access_key, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
                                      default_paths=DEFAULT_ACCESS_KEY_FILES, label="object_store_access_key_id")
     secret_key, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY",
@@ -464,7 +502,12 @@ def presign_warm_inbox_channel(
     return {
         "status": "completed" if (inbox_get_url and inbox_put_url and not blockers) else "blocked",
         "blockers": blockers,
+        "generated_at": generated,
+        "presigned_url_expiry": expiry_metadata,
         "inbox_key": inbox_key,
+        "expiration_seconds": int(expiration_seconds),
+        "expires_at": expiry_metadata["expires_at"],
+        "expiry_warning": expiry_metadata["expiry_warning"],
         "warm_inbox_get_url_file": str(get_file) if inbox_get_url else None,
         "warm_inbox_put_url_file": str(put_file) if inbox_put_url else None,
         "warm_inbox_get_url_redacted": _redact_url(inbox_get_url) if inbox_get_url else None,

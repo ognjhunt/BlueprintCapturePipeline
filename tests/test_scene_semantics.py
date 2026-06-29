@@ -607,3 +607,55 @@ def test_scene_semantics_gemini_import_and_model_edges(monkeypatch, tmp_path: Pa
     assert result.environment == "manufacturing"
     assert result.confidence == 0.0
     assert result.detected_objects == [{"sam_prompt": "red bin"}]
+
+
+def test_scene_semantics_retries_transient_and_deletes_uploaded_file(monkeypatch, tmp_path: Path) -> None:
+    video = tmp_path / "walkthrough.mov"
+    video.write_bytes(b"video")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(semantics.time, "sleep", lambda *_args, **_kwargs: None)
+
+    class RetryClient:
+        def __init__(self) -> None:
+            self.files = self
+            self.models = self
+            self.calls = 0
+            self.deleted: list[str] = []
+
+        def upload(self, *, file: str):
+            return SimpleNamespace(
+                name="files/retry",
+                uri="uri://retry",
+                mime_type="video/mp4",
+                state=SimpleNamespace(name="ACTIVE"),
+            )
+
+        def delete(self, *, name: str):
+            self.deleted.append(name)
+
+        def generate_content(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("RESOURCE_EXHAUSTED 429")
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "room_type": "kitchen",
+                        "confidence": True,
+                        "objects": [{"sam_prompt": "fridge handle"}],
+                    }
+                )
+            )
+
+    client = RetryClient()
+    fake_google = ModuleType("google")
+    fake_google.genai = _fake_genai_module(client)
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+
+    result = semantics._infer_with_gemini_video(raw_video_path=video, timeout_sec=5)
+
+    assert result is not None
+    assert result.environment == "kitchen"
+    assert result.confidence == 0.0
+    assert client.calls == 2
+    assert client.deleted == ["files/retry"]

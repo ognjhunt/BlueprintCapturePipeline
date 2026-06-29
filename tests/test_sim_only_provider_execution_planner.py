@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline.agent_operator_runtime import LIVE_AGENTS_SDK_ENV

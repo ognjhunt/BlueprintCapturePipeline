@@ -40,6 +40,8 @@ RUNPOD_WAM_STATE_SCHEMA_VERSION = "runpod_wam_async_state.v1"
 RUNPOD_WAM_CREATE_SCHEMA_VERSION = "runpod_wam_async_create_manifest.v1"
 RUNPOD_WAM_POLL_SCHEMA_VERSION = "runpod_wam_async_poll_manifest.v1"
 RUNPOD_WAM_DELETE_SCHEMA_VERSION = "runpod_wam_async_delete_manifest.v1"
+RUNPOD_WAM_STOP_SCHEMA_VERSION = "runpod_wam_async_stop_manifest.v1"
+RUNPOD_WAM_TEARDOWN_ACTION_ENV = "BLUEPRINT_RUNPOD_WAM_TEARDOWN_ACTION"
 RUNPOD_POD_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH"
 RUNPOD_UNITREE_GROOT_SONIC_FULL_LOOP_OVERRIDE_ENV = (
     "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
@@ -1390,6 +1392,53 @@ def _delete_pod(
     return manifest
 
 
+def _stop_pod(
+    *,
+    job_dir: Path,
+    pod_id: str,
+    api_key: str,
+    generated_at: str,
+) -> dict[str, Any]:
+    try:
+        status_code, response = _runpod_request(
+            method="POST",
+            path=f"/pods/{pod_id}/stop",
+            api_key=api_key,
+            timeout_seconds=30,
+        )
+        status = "completed" if status_code in {200, 202, 204} else "blocked"
+        blockers: list[str] = [] if status == "completed" else ["runpod_stop_pod_unexpected_status"]
+    except urllib.error.HTTPError as exc:
+        status_code = exc.code
+        response = {}
+        status = "completed" if exc.code in {404, 410} else "blocked"
+        blockers = [] if status == "completed" else ["runpod_stop_pod_http_error"]
+    manifest = {
+        "schema_version": RUNPOD_WAM_STOP_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": status,
+        "job_dir": str(job_dir),
+        "pod_id": pod_id,
+        "http_status_code": status_code,
+        "response_keys": sorted(response.keys()),
+        "blockers": blockers,
+        "stopped_pod_preserved_for_warm_reuse": status == "completed",
+        "gpu_spend_released_if_provider_honors_stop": status == "completed",
+        "stopped_volume_storage_may_continue_billing": status == "completed",
+        "continuing_spend_from_this_run": status != "completed",
+        "raw_secret_values_recorded": False,
+    }
+    write_json(job_dir / "runpod_wam_async_stop_manifest.json", manifest)
+    return manifest
+
+
+def _teardown_action() -> str:
+    action = _string(os.getenv(RUNPOD_WAM_TEARDOWN_ACTION_ENV)).lower()
+    if action in {"stop", "stopped", "preserve", "warm"}:
+        return "stop"
+    return "delete"
+
+
 def _download_provider_output_zip(
     *,
     job_dir: Path,
@@ -1638,7 +1687,8 @@ def poll_runpod_wam_async_run(
     teardown_pending = bool(
         not blockers and should_teardown and pod_id and api_key and pod_status != "not_found"
     )
-    delete_manifest: dict[str, Any] | None = None
+    teardown_action = _teardown_action()
+    teardown_manifest: dict[str, Any] | None = None
     continuing_spend = bool(
         pod_id
         and not output_present
@@ -1646,7 +1696,7 @@ def poll_runpod_wam_async_run(
             nonterminal_running_output
             or remote_runtime_running_without_terminal_output
             or not should_teardown
-            or (delete_manifest or {}).get("status") != "completed"
+            or (teardown_manifest or {}).get("status") != "completed"
         )
         and not pod_status_is_terminal
     )
@@ -1690,6 +1740,7 @@ def poll_runpod_wam_async_run(
         "last_nonterminal_output": last_nonterminal_output,
         "mp4_count": output_inspection.get("mp4_count"),
         "teardown_requested": teardown,
+        "teardown_action": teardown_action if teardown else "not_requested",
         "teardown_pending": teardown_pending,
         "teardown_performed": existing_teardown_completed,
         "continuing_spend_from_this_run": continuing_spend,
@@ -1701,12 +1752,20 @@ def poll_runpod_wam_async_run(
             resolved_job_dir / "runpod_wam_async_pre_teardown_poll_manifest.json",
             manifest,
         )
-        delete_manifest = _delete_pod(
-            job_dir=resolved_job_dir,
-            pod_id=pod_id,
-            api_key=api_key,
-            generated_at=generated,
-        )
+        if teardown_action == "stop":
+            teardown_manifest = _stop_pod(
+                job_dir=resolved_job_dir,
+                pod_id=pod_id,
+                api_key=api_key,
+                generated_at=generated,
+            )
+        else:
+            teardown_manifest = _delete_pod(
+                job_dir=resolved_job_dir,
+                pod_id=pod_id,
+                api_key=api_key,
+                generated_at=generated,
+            )
         continuing_spend = bool(
             pod_id
             and not output_present
@@ -1714,14 +1773,22 @@ def poll_runpod_wam_async_run(
                 nonterminal_running_output
                 or remote_runtime_running_without_terminal_output
                 or not should_teardown
-                or (delete_manifest or {}).get("status") != "completed"
+                or (teardown_manifest or {}).get("status") != "completed"
             )
             and not pod_status_is_terminal
         )
         manifest["teardown_performed"] = bool(
-            delete_manifest and delete_manifest.get("status") == "completed"
+            teardown_manifest and teardown_manifest.get("status") == "completed"
         )
         manifest["continuing_spend_from_this_run"] = continuing_spend
+        manifest["teardown_manifest_path"] = str(
+            resolved_job_dir
+            / (
+                "runpod_wam_async_stop_manifest.json"
+                if teardown_action == "stop"
+                else "runpod_wam_async_delete_manifest.json"
+            )
+        )
     write_json(resolved_job_dir / "runpod_wam_async_poll_manifest.json", manifest)
     state_update = {
         **state,

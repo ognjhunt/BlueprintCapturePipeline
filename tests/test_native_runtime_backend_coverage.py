@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import native_runtime_backend as nrb

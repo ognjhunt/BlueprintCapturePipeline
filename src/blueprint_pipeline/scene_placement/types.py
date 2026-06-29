@@ -25,7 +25,9 @@ class SceneObject:
     """A single meaningful scene object with a world-aligned bounding box.
 
     Produced by the spatial indices (USD walk or perception unprojection) and
-    consumed by the target resolver + placement solver. The AABB is the geometric
+    consumed by the target resolver + placement solver. Producers must canonicalize
+    AABBs so ``bbox_min[i] <= bbox_max[i]`` on every axis; USD/perception indices
+    enforce that invariant before constructing objects. The AABB is the geometric
     truth the placement math reasons about; ``label`` is the human handle the
     task/VLM matches against ("faucet", "sink", "stove").
     """

@@ -145,6 +145,48 @@ def _normalize2(v: Tuple[float, float]) -> Tuple[float, float]:
     return (v[0] / n, v[1] / n)
 
 
+def _target_degeneracy_reason(target: SceneObject) -> str | None:
+    coords = [*target.bbox_min, *target.bbox_max, *target.centroid]
+    try:
+        finite = all(math.isfinite(float(v)) for v in coords)
+    except (TypeError, ValueError):
+        finite = False
+    if not finite:
+        return "non_finite_target_aabb"
+    if any(float(target.bbox_min[i]) > float(target.bbox_max[i]) for i in range(3)):
+        return "inverted_target_aabb"
+    return None
+
+
+def _degenerate_target_stand_pose(
+    target: SceneObject,
+    *,
+    reason: str,
+    pelvis_height: float,
+    floor_z: float,
+) -> StandPose:
+    def finite_or(value: float, fallback: float) -> float:
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return f if math.isfinite(f) else fallback
+
+    xs = [finite_or(target.bbox_min[0], 0.0), finite_or(target.bbox_max[0], 0.0)]
+    ys = [finite_or(target.bbox_min[1], 0.0), finite_or(target.bbox_max[1], 0.0)]
+    cx = 0.5 * (min(xs) + max(xs))
+    cy = 0.5 * (min(ys) + max(ys))
+    z = finite_or(floor_z, 0.0) + finite_or(pelvis_height, 0.79)
+    return StandPose(
+        position=(cx, cy, z),
+        yaw=0.0,
+        target_id=target.id,
+        clear=False,
+        standoff_m=0.0,
+        notes=f"degenerate_target:{reason}; placement solver did not probe '{target.label}'",
+    )
+
+
 def compute_stand_pose(
     target: SceneObject,
     *,
@@ -157,6 +199,8 @@ def compute_stand_pose(
     clearance: float = 0.10,
     include_diagonals: bool = False,
     preferred_direction: Optional[Tuple[float, float]] = None,
+    openable_target: bool | None = None,
+    openable_standoff_extra_m: float = 0.25,
 ) -> StandPose:
     """Resolve the pelvis pose that stands the robot on the target's open side.
 
@@ -184,9 +228,32 @@ def compute_stand_pose(
     a pose can be flagged ``clear=True`` with the robot footprint sitting exactly at
     ``standing_distance`` from the surface regardless of this value. The parameter is
     retained only to keep the signature stable for a future footprint-inflation hook.
+
+    Degenerate targets fail closed before probing. Non-finite or inverted target
+    AABBs return a finite, ``clear=False`` pose with a ``degenerate_target`` note
+    instead of emitting NaN positions or negative standoffs.
+
+    ``openable_target`` adds a conservative door/drawer swing margin to the
+    requested standoff. It is a label-derived placement hint, not proof that the
+    fixture actually opens or that manipulation succeeds.
     """
+    degenerate_reason = _target_degeneracy_reason(target)
+    if degenerate_reason is not None:
+        return _degenerate_target_stand_pose(
+            target,
+            reason=degenerate_reason,
+            pelvis_height=pelvis_height,
+            floor_z=floor_z,
+        )
+
     directions = list(_CARDINALS) + (list(_DIAGONALS) if include_diagonals else [])
     centroid_xy = (target.centroid[0], target.centroid[1])
+    if openable_target is None:
+        target_kind = str(target.category or target.extra.get("target_kind") or "").lower()
+        openable_target = target_kind in {"openable", "articulated"}
+    effective_standing_distance = float(standing_distance)
+    if openable_target:
+        effective_standing_distance += max(0.0, float(openable_standoff_extra_m))
 
     clear_candidates: List[Tuple[float, Vec3, float, Tuple[float, float]]] = []
     # Fallback tuple: (openness, pose, standoff, direction). ``openness`` is the
@@ -201,7 +268,7 @@ def compute_stand_pose(
             probe=probe,
             pelvis_height=pelvis_height,
             floor_z=floor_z,
-            standing_distance=standing_distance,
+            standing_distance=effective_standing_distance,
             step=step,
             max_out=max_out,
             clearance=clearance,
@@ -239,7 +306,9 @@ def compute_stand_pose(
             target_id=target.id,
             clear=True,
             standoff_m=standoff,
-            notes=note % standoff,
+            notes=(note % standoff) + (
+                "; openable standoff margin applied" if openable_target else ""
+            ),
         )
 
     # Boxed in on every probed side: best-effort on the genuinely most-open direction.

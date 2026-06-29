@@ -16,6 +16,10 @@ docs/
 local_runs_worldlabs/
 local_runs/
 runs/
+output/
+robot_eval_jobs/
+wam_provider_output.json
+tools/splat_render/node_modules/
 skillpacks/
 tests/
 deploy/terraform/.terraform/

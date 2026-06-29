@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image, ImageDraw
 
 from blueprint_pipeline import wam_real_provider_validation_probe as real_probe

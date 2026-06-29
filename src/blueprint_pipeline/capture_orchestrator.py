@@ -1423,6 +1423,7 @@ def run_capture_pipeline(
         lane=lane,
         requested_lanes=requested_lanes,
     )
+    allow_lane_fault_isolation = len(lanes) > 1
     descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
     auto_stage_task_eval = _descriptor_requests_task_evaluation_run(
         descriptor_path
@@ -1442,6 +1443,7 @@ def run_capture_pipeline(
     )
 
     results: List[Dict[str, Any]] = []
+    lane_failures: List[Dict[str, Any]] = []
     qualification_result: Optional[Dict[str, Any]] = None
 
     def _append_lane_result(selected_lane: str, lane_result: Mapping[str, Any]) -> None:
@@ -1459,6 +1461,47 @@ def run_capture_pipeline(
             source=lane_result.get("source"),
         )
 
+    def _append_lane_failure(selected_lane: str, exc: BaseException) -> None:
+        failure = {
+            "lane": selected_lane,
+            "status": "failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+        results.append(failure)
+        lane_failures.append(failure)
+        log_event(
+            logger,
+            logging.ERROR,
+            "capture_pipeline.lane_failed",
+            descriptor_gcs_uri=descriptor_gcs_uri,
+            selected_lane=selected_lane,
+            error_type=failure["error_type"],
+            error=failure["error"],
+            result_count=len(results),
+        )
+
+    def _run_lane_call(selected_lane: str, func, *args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - lane failures must not discard prior lanes
+            if not allow_lane_fault_isolation:
+                raise
+            _append_lane_failure(selected_lane, exc)
+            return None
+
+    def _qualification_for_lane(selected_lane: str) -> Optional[Dict[str, Any]]:
+        nonlocal qualification_result
+        if qualification_result is None:
+            qualification_result = _run_lane_call(
+                selected_lane,
+                run_qualification_pipeline,
+                descriptor_gcs_uri=descriptor_gcs_uri,
+                config=cfg,
+                requested_lanes=lanes,
+            )
+        return qualification_result
+
     for selected_lane in lanes:
         log_event(
             logger,
@@ -1468,51 +1511,59 @@ def run_capture_pipeline(
             selected_lane=selected_lane,
         )
         if selected_lane in {"qualification", "scene_memory"}:
-            if qualification_result is None:
-                qualification_result = run_qualification_pipeline(
-                    descriptor_gcs_uri=descriptor_gcs_uri,
-                    config=cfg,
-                    requested_lanes=lanes,
-                )
+            qualification = _qualification_for_lane(selected_lane)
+            if qualification is None:
+                continue
             if selected_lane == "qualification":
-                _append_lane_result(selected_lane, qualification_result)
+                _append_lane_result(selected_lane, qualification)
             else:
                 _append_lane_result(
                     selected_lane,
                     _build_derived_lane_result(
                         lane="scene_memory",
                         source="qualification_artifacts",
-                        qualification_result=qualification_result,
+                        qualification_result=qualification,
                     )
                 )
             continue
         if selected_lane == "evaluation_prep":
-            if qualification_result is None:
-                qualification_result = run_qualification_pipeline(
-                    descriptor_gcs_uri=descriptor_gcs_uri,
-                    config=cfg,
-                    requested_lanes=lanes,
-                )
-            evaluation_prep_result = run_evaluation_prep_stage(
+            qualification = _qualification_for_lane(selected_lane)
+            if qualification is None:
+                continue
+            evaluation_prep_result = _run_lane_call(
+                selected_lane,
+                run_evaluation_prep_stage,
                 capture_root=descriptor_path.parent,
                 provider_name="manual",
             )
+            if evaluation_prep_result is None:
+                continue
             lane_result = _build_derived_lane_result(
                 lane="evaluation_prep",
                 source="evaluation_prep_artifacts",
-                qualification_result=qualification_result,
+                qualification_result=qualification,
                 extra_fields={"manifest_path": evaluation_prep_result.get("manifest_path")},
             )
             _append_lane_result(selected_lane, lane_result)
             continue
         if selected_lane == "simulation_automation":
             capture_root = descriptor_path.parent
-            automation_result = build_simulation_automation(capture_root=capture_root)
-            robot_eval_jobs = _run_robot_eval_job_inbox_if_ready(
+            automation_result = _run_lane_call(
+                selected_lane,
+                build_simulation_automation,
+                capture_root=capture_root,
+            )
+            if automation_result is None:
+                continue
+            robot_eval_jobs = _run_lane_call(
+                selected_lane,
+                _run_robot_eval_job_inbox_if_ready,
                 capture_root,
                 auto_stage_task_eval=auto_stage_task_eval,
                 descriptor_path=descriptor_path,
             )
+            if robot_eval_jobs is None:
+                continue
             auto_stage = robot_eval_jobs.get("auto_stage") if isinstance(
                 robot_eval_jobs.get("auto_stage"), Mapping
             ) else {}
@@ -1616,27 +1667,39 @@ def run_capture_pipeline(
             continue
         if selected_lane == "retrieval_index":
             capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
-            retrieval_result = run_retrieval_index_stage(
+            retrieval_result = _run_lane_call(
+                selected_lane,
+                run_retrieval_index_stage,
                 capture_root=capture_root,
                 force_rebuild=parse_bool(os.getenv("RETRIEVAL_INDEX_FORCE_REBUILD"), default=False),
             )
+            if retrieval_result is None:
+                continue
             _append_lane_result(selected_lane, {"lane": "retrieval_index", **retrieval_result})
             continue
         if selected_lane == "frame_alignment":
             capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
-            alignment_result = run_frame_alignment_stage(
+            alignment_result = _run_lane_call(
+                selected_lane,
+                run_frame_alignment_stage,
                 capture_root=capture_root,
                 force_realign=parse_bool(os.getenv("FRAME_ALIGNMENT_FORCE_REALIGN"), default=False),
             )
+            if alignment_result is None:
+                continue
             _append_lane_result(selected_lane, {"lane": "frame_alignment", **alignment_result})
             continue
         if selected_lane == "synthesis_coverage_validation":
             capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
-            synthesis_result = _run_synthesis_coverage_validation(
+            synthesis_result = _run_lane_call(
+                selected_lane,
+                _run_synthesis_coverage_validation,
                 capture_root=capture_root,
                 descriptor_gcs_uri=descriptor_gcs_uri,
                 cfg=cfg,
             )
+            if synthesis_result is None:
+                continue
             _append_lane_result(
                 selected_lane,
                 {"lane": "synthesis_coverage_validation", **synthesis_result},
@@ -1646,11 +1709,15 @@ def run_capture_pipeline(
             from .synthesis.cosmos_benchmark import run_cosmos_single_capture_smoke_lane
 
             capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
-            smoke_result = run_cosmos_single_capture_smoke_lane(
+            smoke_result = _run_lane_call(
+                selected_lane,
+                run_cosmos_single_capture_smoke_lane,
                 capture_root=capture_root,
                 descriptor_gcs_uri=descriptor_gcs_uri,
                 cfg=cfg,
             )
+            if smoke_result is None:
+                continue
             _append_lane_result(
                 selected_lane,
                 {"lane": "cosmos_single_capture_smoke", **smoke_result},
@@ -1663,16 +1730,21 @@ def run_capture_pipeline(
             descriptor_gcs_uri=descriptor_gcs_uri,
             selected_lane=selected_lane,
         )
-        raise ValueError(f"Unsupported pipeline lane: {selected_lane}")
+        unsupported_error = ValueError(f"Unsupported pipeline lane: {selected_lane}")
+        if not allow_lane_fault_isolation:
+            raise unsupported_error
+        _append_lane_failure(selected_lane, unsupported_error)
 
     parsed = parse_gs_uri(descriptor_gcs_uri)
     result = {
-        "status": "completed",
+        "status": "completed_with_lane_failures" if lane_failures else "completed",
         "descriptor_gcs_uri": descriptor_gcs_uri,
         "bucket": parsed.bucket,
         "lanes": lanes,
         "results": results,
     }
+    if lane_failures:
+        result["lane_failure_count"] = len(lane_failures)
     log_event(
         logger,
         logging.INFO,
@@ -1681,6 +1753,7 @@ def run_capture_pipeline(
         bucket=parsed.bucket,
         lanes=lanes,
         result_count=len(results),
+        lane_failure_count=len(lane_failures),
     )
     return result
 

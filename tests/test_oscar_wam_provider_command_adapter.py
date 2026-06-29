@@ -50,16 +50,30 @@ def _write_test_video(path: Path) -> None:
     writer.release()
 
 
+def _write_flat_dark_video(path: Path) -> None:
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (640, 480))
+    assert writer.isOpened()
+    for _ in range(5):
+        writer.write(np.full((480, 640, 3), 30, dtype=np.uint8))
+    writer.release()
+
+
 def _write_provider_zip(
     path: Path,
     *,
     valid_video: bool = True,
+    flat_dark_video: bool = False,
     runtime_model_truth: bool = True,
     include_rollout_context: bool = True,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     video_path = path.parent / "oscar_generated_rollout_source.mp4"
-    if valid_video:
+    if valid_video and flat_dark_video:
+        _write_flat_dark_video(video_path)
+    elif valid_video:
         _write_test_video(video_path)
     with zipfile.ZipFile(path, "w") as archive:
         if valid_video:
@@ -557,6 +571,79 @@ def test_provider_command_adapter_launches_and_imports_runpod_provider_result(
     assert captured_create["min_ram_per_gpu"] == 40
     assert captured_bundle["wam_rollout_input_manifest"] == rollout_input.resolve()
     assert captured_poll["teardown"] is True
+
+
+def test_provider_command_adapter_blocks_failed_rollout_visual_smoke(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _clear_provider_env(monkeypatch)
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    _write_json(rollout_input, {"schema_version": "wam_rollout_input_manifest.v1"})
+    output = tmp_path / "wam_provider_output.json"
+    work_dir = tmp_path / "work"
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_INPUT", str(rollout_input))
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(output))
+    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT", raising=False)
+    monkeypatch.delenv("BLUEPRINT_WAM_MODEL_CHECKPOINT", raising=False)
+
+    def fake_build_bundle(**kwargs: Any) -> dict[str, Any]:
+        bundle = Path(kwargs["job_dir"]) / "provider_bundle.zip"
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        bundle.write_bytes(b"bundle")
+        return {"status": "completed", "bundle_path": str(bundle), "blockers": []}
+
+    def fake_create(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "status": "pod_created",
+            "pod_id": "pod-123",
+            "job_dir": str(kwargs["job_dir"]),
+            "output_path": str(kwargs["output_path"]),
+            "blockers": [],
+        }
+
+    def fake_poll(**kwargs: Any) -> dict[str, Any]:
+        provider_job = Path(kwargs["job_dir"])
+        _write_provider_zip(
+            provider_job / "runpod_provider_runtime_output.zip",
+            flat_dark_video=True,
+        )
+        return {
+            "status": "completed",
+            "pod_id": "pod-123",
+            "provider_runtime_output_zip_path": str(
+                provider_job / "runpod_provider_runtime_output.zip"
+            ),
+            "provider_command_status": "completed",
+            "provider_command_blockers": [],
+            "output_zip_present": True,
+            "runtime_result_status": "completed",
+            "runtime_result_blockers": [],
+            "mp4_count": 1,
+            "teardown_performed": True,
+            "continuing_spend_from_this_run": False,
+        }
+
+    monkeypatch.setattr(adapter, "build_oscar_wam_provider_bundle", fake_build_bundle)
+    monkeypatch.setattr(compute_providers, "create_runpod_wam_async_run", fake_create)
+    monkeypatch.setattr(compute_providers, "poll_runpod_wam_async_run", fake_poll)
+
+    payload = adapter.run(
+        [
+            "--mode",
+            "auto",
+            "--provider",
+            "runpod",
+            "--allow-paid-runpod-launch",
+            "--work-dir",
+            str(work_dir),
+        ]
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["generated_rollout_visual_smoke_status"] == "failed_visual_quality_smoke"
+    assert "provider_generated_rollout_visual_smoke_failed" in payload["blockers"]
+    assert payload["fresh_model_run_claimed"] is False
 
 
 def test_provider_command_adapter_current_vast_run_requires_runtime_model_truth(

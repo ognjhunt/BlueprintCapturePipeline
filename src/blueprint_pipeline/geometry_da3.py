@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -136,6 +137,15 @@ def _sample_frames(
 
 def _load_da3_runtime(model: str) -> tuple[Optional[Any], List[str]]:
     warnings: List[str] = []
+    allow_native_import = str(os.getenv("BLUEPRINT_ALLOW_DA3_NATIVE_IMPORT") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not allow_native_import and "depth_anything_3.api" not in sys.modules:
+        warnings.append("da3_runtime_unavailable:native_import_not_enabled")
+        return None, warnings
     try:
         from depth_anything_3.api import DepthAnything3  # type: ignore[import-not-found]
     except Exception as exc:

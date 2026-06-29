@@ -1070,6 +1070,7 @@ def test_first_gpu_blocker_resolution_includes_webapp_upstream_field_details(
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "PYTHON": sys.executable},
     )
     assert verify_run.returncode == 3
     verification_result = json.loads(
@@ -1459,6 +1460,7 @@ def test_first_gpu_launch_order_allows_owner_gpu_command_before_closure_proof(
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "PYTHON": sys.executable},
     )
     assert upstream_verify_run.returncode == 0, upstream_verify_run.stderr
     upstream_result_path = Path(
@@ -1484,6 +1486,7 @@ def test_first_gpu_launch_order_allows_owner_gpu_command_before_closure_proof(
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "PYTHON": sys.executable},
     )
     assert verify_run.returncode == 0, verify_run.stderr
     assert "secret-token" not in verify_run.stdout
@@ -1571,6 +1574,7 @@ def test_first_gpu_run_packet_accepts_webapp_forwarding_preflight_report_without
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "PYTHON": sys.executable},
     )
     assert verify_run.returncode == 0, verify_run.stderr
     verification_result = json.loads(

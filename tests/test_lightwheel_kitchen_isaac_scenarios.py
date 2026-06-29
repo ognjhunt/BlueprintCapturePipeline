@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 import blueprint_pipeline.lightwheel_kitchen_isaac_scenarios as lks

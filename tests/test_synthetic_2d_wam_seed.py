@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline.synthetic_2d_wam_seed import build_synthetic_2d_wam_seed_job

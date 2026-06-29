@@ -764,7 +764,12 @@ def build_launch_gate_summary(
         launchable_export_bundle
         and str(launchable_export_bundle.get("status") or "").strip().lower() in {"ready", "launch_ready"}
     )
-    if not launchable_bundle_ready and (eval_root / "launchable_export_bundle.json").is_file():
+    if (
+        not launchable_bundle_ready
+        and launchable_export_bundle
+        and "status" not in launchable_export_bundle
+        and (eval_root / "launchable_export_bundle.json").is_file()
+    ):
         launchable_bundle_ready = True
 
     stage_checks = [

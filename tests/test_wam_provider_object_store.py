@@ -8,6 +8,17 @@ from types import SimpleNamespace
 from blueprint_pipeline import wam_provider_object_store as object_store
 
 
+def test_presigned_url_expiry_metadata_uses_generated_at() -> None:
+    meta = object_store._presigned_url_expiry_metadata(
+        "2026-06-29T12:00:00Z",
+        600,
+    )
+
+    assert meta["expires_at"] == "2026-06-29T12:10:00Z"
+    assert meta["expiry_warning"] is True
+    assert meta["raw_url_values_recorded"] is False
+
+
 def test_wam_provider_object_store_blocks_without_file_based_credentials(
     tmp_path: Path,
     monkeypatch,
@@ -96,6 +107,9 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
     )
 
     assert manifest["status"] == "completed"
+    assert manifest["presigned_url_expiry"]["expiration_seconds"] == 600
+    assert manifest["presigned_url_expiry"]["expiry_warning"] is True
+    assert manifest["object_store"]["expires_at"]
     assert manifest["provider_bundle_url_file"]["mode_is_0600"] is True
     assert manifest["provider_output_put_url_file"]["mode_is_0600"] is True
     uploaded_keys = [row[2] for row in fake_client.uploads]
@@ -119,6 +133,59 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
     assert "fake-signature" in (tmp_path / "job" / "provider_bundle_url.txt").read_text(
         encoding="utf-8"
     )
+
+
+def test_presign_warm_inbox_channel_records_expiry_without_leaking_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    secrets = home / ".blueprint-secrets"
+    secrets.mkdir(parents=True)
+    (secrets / "digitalocean_spaces_access_key_id").write_text("access\n", encoding="utf-8")
+    (secrets / "digitalocean_spaces_secret_access_key").write_text("secret\n", encoding="utf-8")
+    (secrets / "digitalocean_spaces_bucket").write_text("blueprint-wam\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    class FakeConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.puts: list[dict] = []
+
+        def put_object(self, **kwargs):
+            self.puts.append(kwargs)
+
+        def generate_presigned_url(self, operation: str, *, Params, ExpiresIn, HttpMethod):
+            return (
+                f"https://object.example/{Params['Bucket']}/{Params['Key']}"
+                f"?signature=secret-{operation}&expires={ExpiresIn}&method={HttpMethod}"
+            )
+
+    fake_client = FakeClient()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda _service, **_kwargs: fake_client),
+    )
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig))
+
+    manifest = object_store.presign_warm_inbox_channel(
+        tmp_path / "job",
+        key_prefix="blueprint/test",
+        expiration_seconds=600,
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["presigned_url_expiry"]["expiry_warning"] is True
+    assert manifest["expires_at"]
+    assert manifest["warm_inbox_get_url_redacted"].endswith("?REDACTED_QUERY")
+    assert "signature=secret" not in json.dumps(manifest)
+    assert (tmp_path / "job" / "warm_inbox_get_url.txt").stat().st_mode & 0o777 == 0o600
+    assert fake_client.puts and fake_client.puts[0]["ContentType"] == "application/json"
 
 
 def test_wam_provider_object_store_bucket_cli_and_main_edges(

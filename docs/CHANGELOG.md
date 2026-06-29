@@ -1,5 +1,134 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-06-29
+
+### User-Facing
+
+- Closed the no-GPU dry-render evidence gap for the Isaac/G1 kitchen-parity
+  lane. Local dry-render previews now carry explicit
+  `X-Blueprint-Render-Source=dry_render_preview` PNG metadata and JSON
+  provenance stating that they are NOT rendered Isaac frames.
+- Added a fail-fast CPU environment contract for the canonical interpreter:
+  `PIL`, `pxr`/`usd-core`, `mujoco`, `trimesh`, and `boto3` must be present so
+  dry-render, USD placement, and MuJoCo-parity tests run instead of skipping
+  green.
+- Added a dirty-worktree paid-launch guard for the Isaac/G1 provider job. Paid
+  GPU launch requests now record git evidence and block from a dirty or
+  unverifiable tree unless an explicit override preserves that provenance risk
+  in the manifest.
+
+### Employee-Facing
+
+- Added `blueprint-check-cpu-env` and `src/blueprint_pipeline/cpu_env_doctor.py`
+  for no-GPU dependency diagnosis, plus a meta-test that fails rather than
+  skips if the canonical CPU stack is missing.
+- Hardened `scene_placement` edge cases: suffix-only USD labels are dropped,
+  multi-target task strings expose a deterministic target-group diagnostic,
+  openable targets can receive conservative extra standoff, degenerate
+  perception cameras fail closed, room-spanning perception boxes are skipped,
+  and validation can flag a flipped forward-axis convention.
+- Hardened Gemini-backed support gates with reconciled model cascades,
+  balanced JSON extraction for reasoning-brace preambles, bounded transient
+  retry, boolean-confidence rejection, diagnostic logging, and best-effort
+  uploaded-file deletion after Gemini video inference.
+- Extended the Isaac/G1 provider bundle with a required-file namelist and
+  `bundle_manifest.json` so future runner/module extraction cannot silently drop
+  worker dependencies.
+
+### Future-Agent-Facing
+
+- Render-seed proof boundary for the 2026-06-29 render-visibility work:
+  CPU/hermetic only. No live GPU frame was produced in this session on
+  2026-06-29, so the G1 refrigerator/faucet render changes remain local
+  logic, dry-render, and unit-test evidence, not live Isaac frame proof,
+  deployment approval, physical-robot readiness, manipulation success, or
+  safety validation.
+- Evidence boundary: base checkout was `8715581de51851b898451ed528ed4d0dab3d1cc1`
+  on `main`; audit-start dirty files were `docs/CHANGELOG.md`,
+  `scripts/run_isaac_g1_kitchen_parity_eval.py`,
+  `tests/test_isaac_g1_kitchen_parity_runner.py`,
+  `tests/test_local_render_preview.py`, and untracked
+  `docs/cpu-work-audit-2026-06-29.md`.
+- Local CPU proof on 2026-06-29: `.venv/bin/python -m pytest -q -o
+  addopts=''` completed with `2556 passed, 30 skipped, 10 warnings` in
+  695.66s. The focused no-spend G1/placement/provider evidence command over
+  scene placement, perception, provider race, render lock, warm server, spend
+  guard, local render preview, and the Isaac/G1 runner completed with
+  `367 passed`; its matching `--collect-only` pass collected all 367 tests with
+  no collection errors.
+
+## 2026-06-28
+
+### User-Facing
+
+- Added dynamic, task-aware scene placement for Isaac/G1 kitchen-parity review
+  media. Tasks can now resolve a target object from USD scene bounds or injected
+  perception views, compute a stand pose from open-floor probes, and fail closed
+  when placement validation is weak instead of relying on hardcoded kitchen
+  coordinates.
+- Improved G1 manipulation POV review quality for faucet/fridge-style tasks
+  with corrected reach poses, arm/hand visibility checks, lighting/framing
+  updates, low-lens mount corrections, and stricter manipulation seed POV
+  validation. These frames remain simulator/render support artifacts, not raw
+  capture truth, physical manipulation success, safety validation, deployment
+  approval, or live robot readiness.
+- Hardened GPU/provider spend and warm-run behavior with spend guards, render
+  locks, provider race handling, longer image-pull/startup tolerance, object
+  store warm-inbox presigning, and a persistent warm render server whose control
+  loop is implemented and hermetically tested. Live multi-request reuse after
+  one real Isaac scene load still needs on-GPU proof.
+
+### Employee-Facing
+
+- Added the `src/blueprint_pipeline/scene_placement/` package with USD and
+  perception-backed spatial indexes, perception-view fusion, task target
+  resolution, obstacle/degenerate-box handling, geometric placement validation,
+  and a self-validating `place_and_validate_robot_for_task` orchestration path.
+  See `src/blueprint_pipeline/scene_placement/README.md`.
+- Updated `scripts/run_isaac_g1_kitchen_parity_eval.py` and
+  `src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py` so provider bundles
+  ship the placement package, re-add the bundle path before worker imports,
+  support warm `--serve` execution, route manipulation camera/arm reach through
+  resolved targets, and keep startup/image-pull watchdog behavior explicit.
+- Added provider and concurrency helpers in
+  `scripts/gpu_spend_guard.py`, `src/blueprint_pipeline/provider_race.py`,
+  `src/blueprint_pipeline/render_lock.py`, and
+  `src/blueprint_pipeline/warm_render_server.py`; extended
+  `src/blueprint_pipeline/wam_provider_object_store.py` with warm-inbox
+  presign support.
+- Expanded render/placement QC in `src/blueprint_pipeline/render_visual_qc.py`
+  and related tests so placement, robot-POV, manipulation-POV, provider, warm
+  server, spend guard, perception adapter/fusion, render lock, and scene
+  placement behavior are covered by focused unit tests.
+
+### Future-Agent-Facing
+
+- Contract changes: `scene_placement` is dependency-light and swappable; GPU
+  work stays behind injected render/SAM3/DA3/perception hooks, while capture,
+  package, evaluation, and provenance contracts above it remain stable.
+- Runtime behavior changes: Isaac/G1 jobs can now reuse a warm scene load and
+  accept task requests through a signed warm inbox. Treat warm-provider success
+  as provider/runtime scaffolding unless matching result, upload, teardown,
+  cost-control, and review artifacts are present.
+- CLI/script changes: `scripts/gpu_spend_guard.py` is a new spend-safety helper,
+  and `scripts/run_isaac_g1_kitchen_parity_eval.py` now owns more of the
+  dynamic placement, manipulation POV, local render-preview, and warm-run
+  harness behavior.
+- Proof-boundary changes: placement validation, visual QC, robot POV frames,
+  manipulation POV frames, and Isaac/G1 review media are downstream support
+  evidence only. They can flag whether review media is useful, but they do not
+  override raw capture/provenance evidence or prove live robot execution,
+  physical contact, task success, safety, deployment, or generated-world rank
+  fidelity.
+- Launch/readiness gate changes: image-pull/startup tolerance increased and
+  warm provider reuse reduces repeated cold-start pressure, but live provider
+  closure still requires accepted runtime artifacts, upload/finalizer evidence,
+  cost/teardown proof, and review-quality outputs.
+- Provenance note: this June 28 entry is based on committed history for the
+  previous completed calendar day. Do not read it as a claim that the June 29
+  audit checkout was clean; the June 29 entry records the dirty-tree evidence
+  boundary separately.
+
 ## 2026-06-27
 
 ### User-Facing

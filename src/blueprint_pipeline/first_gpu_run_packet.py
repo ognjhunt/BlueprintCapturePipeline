@@ -572,7 +572,7 @@ if [[ -n "${{SIM_ROBOT_POV_VIDEO_PATH:-}}" ]]; then
   helper_args+=(--sim-pov-video "$SIM_ROBOT_POV_VIDEO_PATH")
 fi
 
-"${{PYTHON:-python}}" -m blueprint_pipeline.owner_gpu_default_smoke_artifacts "${{helper_args[@]}}"
+"${{PYTHON:-python3}}" -m blueprint_pipeline.owner_gpu_default_smoke_artifacts "${{helper_args[@]}}"
 test -s "$BLUEPRINT_POLICY_EXECUTION_TRACE"
 test -s "$BLUEPRINT_SIM_ROBOT_POV_EVIDENCE"
 test -s "$BLUEPRINT_ARTIFACT_MANIFEST"
@@ -974,7 +974,7 @@ if [[ ! -s "$BLUEPRINT_MUJOCO_G1_MODEL_ROOT/g1.xml" ]]; then
   exit 14
 fi
 
-exec "${PYTHON:-python}" "$MUJOCO_UNITREE_G1_SMOKE_SCRIPT" \
+exec "${PYTHON:-python3}" "$MUJOCO_UNITREE_G1_SMOKE_SCRIPT" \
   --capture-root "$BLUEPRINT_CAPTURE_ROOT" \
   --g1-model-root "$BLUEPRINT_MUJOCO_G1_MODEL_ROOT"
 """
@@ -1015,7 +1015,7 @@ elif [[ -z "${{OWNER_SIMULATOR_COMMAND}}" ]]; then
 fi
 export OWNER_SIMULATOR_COMMAND
 
-python - "$CAPTURE_ROOT" "$PACKET_DIR" "$GPU_VM_SYNC_MANIFEST" "$GPU_VM_PREFLIGHT_OUTPUT" "$OWNER_SIMULATOR_COMMAND" <<'PY'
+"${{PYTHON:-python3}}" - "$CAPTURE_ROOT" "$PACKET_DIR" "$GPU_VM_SYNC_MANIFEST" "$GPU_VM_PREFLIGHT_OUTPUT" "$OWNER_SIMULATOR_COMMAND" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -1327,7 +1327,7 @@ if [[ "${{BLUEPRINT_ALLOW_WORLDLABS_PROVIDER_SUBMISSION:-}}" != "true" ]]; then
   exit 2
 fi
 
-python - "$SOURCE_VIDEO_PREFLIGHT" <<'PY'
+"${{PYTHON:-python3}}" - "$SOURCE_VIDEO_PREFLIGHT" <<'PY'
 from __future__ import annotations
 
 import json
@@ -1365,7 +1365,7 @@ set -euo pipefail
 {_shell_default_assignment("CAPTURE_ROOT", str(capture_root))}
 {_shell_default_assignment("WEBAPP_UPSTREAM_TRUTH_VERIFICATION_OUTPUT", str(result_path))}
 
-python - "$CAPTURE_ROOT" "$WEBAPP_UPSTREAM_TRUTH_VERIFICATION_OUTPUT" <<'PY'
+"${{PYTHON:-python3}}" - "$CAPTURE_ROOT" "$WEBAPP_UPSTREAM_TRUTH_VERIFICATION_OUTPUT" <<'PY'
 from __future__ import annotations
 
 import json
@@ -1491,7 +1491,7 @@ def _webapp_handoff_verification_commands(
 ) -> str:
     allow_rehearsal = "true" if allow_local_webapp_rehearsal else "false"
     python_block = r'''
-python - "$CAPTURE_ROOT" "$WEBAPP_SITE_SLUG" "$BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH" "$CAPTURE_ROOT_OVERRIDE_JSON" "$CAPTURE_ROOT_OVERRIDE_GLOBAL" "$WEBAPP_HANDOFF_VERIFICATION_OUTPUT" "$ALLOW_LOCAL_WEBAPP_REHEARSAL" "$ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT" <<'PY'
+"${PYTHON:-python3}" - "$CAPTURE_ROOT" "$WEBAPP_SITE_SLUG" "$BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH" "$CAPTURE_ROOT_OVERRIDE_JSON" "$CAPTURE_ROOT_OVERRIDE_GLOBAL" "$WEBAPP_HANDOFF_VERIFICATION_OUTPUT" "$ALLOW_LOCAL_WEBAPP_REHEARSAL" "$ROBOT_EVAL_JOB_REQUEST_FORWARD_PREFLIGHT_REPORT" <<'PY'
 from __future__ import annotations
 
 import json
@@ -4485,7 +4485,7 @@ if [[ "$BLUEPRINT_ALLOW_STAGING_FIRST_GPU_LIVE_INPUTS" != "true" ]]; then
   exit 2
 fi
 
-python - "$WEBAPP_JOB_REQUEST_PATH" "$REAL_ROBOT_POV_MANIFEST_PATH" <<'PY'
+"${{PYTHON:-python3}}" - "$WEBAPP_JOB_REQUEST_PATH" "$REAL_ROBOT_POV_MANIFEST_PATH" <<'PY'
 from pathlib import Path
 import json
 import sys

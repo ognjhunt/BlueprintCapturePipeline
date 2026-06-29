@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import mujoco_g1_simulator_command as mg

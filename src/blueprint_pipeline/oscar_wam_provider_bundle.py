@@ -174,6 +174,36 @@ def _path_from_auxiliary_observation(auxiliary_observation: Mapping[str, Any]) -
     return Path(text).expanduser()
 
 
+def _conditioning_video_model_input_useful(
+    *,
+    skeleton_video: Mapping[str, Any],
+    visual_smoke: Mapping[str, Any],
+) -> bool:
+    visual_signal = _mapping(skeleton_video.get("visual_signal"))
+    visual_signal_blockers = list(visual_signal.get("blockers") or [])
+    if (
+        skeleton_video.get("projected_g1_skeleton_rendered")
+        and skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and int(skeleton_video.get("projected_g1_skeleton_landmark_draw_count") or 0) > 0
+        and visual_signal.get("status") == "completed"
+    ):
+        return True
+    if (
+        visual_signal.get("status") in {"ok", "completed"}
+        and not visual_signal_blockers
+        and any(
+            _mapping(rollout).get("status") == "passed_visual_quality_smoke"
+            for rollout in visual_smoke.get("rollouts", []) or []
+        )
+    ):
+        return True
+    return bool(
+        _mapping(visual_smoke.get("claim_boundary")).get(
+            "visual_rollout_useful_for_task_success_review"
+        )
+    )
+
+
 def _omit_local_path_field(section: dict[str, Any], key: str) -> None:
     value = _string(section.get(key))
     if value.startswith("/"):
@@ -656,10 +686,9 @@ def _materialize_oscar_input_package_from_wam_generation_step(
         "conditioning_video_visual_smoke": conditioning_visual_smoke,
         "conditioning_video_decode_valid_for_review": conditioning_validation.get("status")
         == "completed",
-        "conditioning_video_visually_useful_for_model_input": bool(
-            _mapping(conditioning_visual_smoke.get("claim_boundary")).get(
-                "visual_rollout_useful_for_task_success_review"
-            )
+        "conditioning_video_visually_useful_for_model_input": _conditioning_video_model_input_useful(
+            skeleton_video=skeleton_video,
+            visual_smoke=conditioning_visual_smoke,
         ),
         "prompt": _task_prompt_from_wam_generation_step(step_input),
         "num_frames": num_frames,
@@ -757,11 +786,26 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
     visual_smoke = _mapping(input_package.get("conditioning_video_visual_smoke"))
     skeleton_video = _mapping(input_package.get("skeleton_video"))
     visual_signal = _mapping(skeleton_video.get("visual_signal"))
+    claim_boundary = _mapping(input_package.get("claim_boundary"))
+    projected_trace = _mapping(input_package.get("projected_skeleton_trace"))
+    projected_conditioning_used = bool(
+        projected_trace.get("used_for_conditioning")
+        or claim_boundary.get("projected_g1_skeleton_conditioning_used")
+        or skeleton_video.get("projected_g1_skeleton_rendered")
+    )
+    pure_projected_skeleton_stream = bool(
+        projected_conditioning_used
+        and skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and skeleton_video.get("skeleton_stream_texture_free")
+    )
     if validation.get("status") != "completed":
         blockers.append("oscar_input_skeleton_conditioning_video_unreadable")
     if input_package.get("conditioning_video_decode_valid_for_review") is not True:
         blockers.append("oscar_input_skeleton_conditioning_video_decode_invalid")
-    if visual_smoke.get("status") != "passed_visual_quality_smoke":
+    if (
+        visual_smoke.get("status") != "passed_visual_quality_smoke"
+        and not pure_projected_skeleton_stream
+    ):
         blockers.append("oscar_input_skeleton_conditioning_video_visual_smoke_failed")
     if input_package.get("conditioning_video_visually_useful_for_model_input") is not True:
         blockers.append("oscar_input_skeleton_conditioning_video_not_visually_useful")
@@ -770,19 +814,17 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
         for blocker in visual_signal.get("blockers", []) or []:
             if isinstance(blocker, str) and blocker:
                 blockers.append(f"oscar_input_skeleton_conditioning_{blocker}")
-    claim_boundary = _mapping(input_package.get("claim_boundary"))
-    projected_trace = _mapping(input_package.get("projected_skeleton_trace"))
-    projected_conditioning_used = bool(
-        projected_trace.get("used_for_conditioning")
-        or claim_boundary.get("projected_g1_skeleton_conditioning_used")
-        or skeleton_video.get("projected_g1_skeleton_rendered")
-    )
     if projected_conditioning_used:
         projected_path = Path(_string(projected_trace.get("path"))).expanduser()
         if not projected_path.is_file():
             blockers.append("oscar_input_projected_g1_skeleton_trace_missing")
         if int(projected_trace.get("projectable_row_count") or 0) <= 0:
             blockers.append("oscar_input_projected_g1_skeleton_trace_empty")
+        if (
+            pure_projected_skeleton_stream
+            and int(skeleton_video.get("projected_g1_skeleton_landmark_draw_count") or 0) <= 0
+        ):
+            blockers.append("oscar_input_projected_g1_skeleton_video_empty")
     return sorted(set(blockers))
 
 
@@ -886,6 +928,16 @@ def _runtime_input_package_manifest(
                 True
             )
         runtime_package["projected_skeleton_trace"] = projected_trace
+    dual_stream_contract = _mapping(runtime_package.get("oscar_dual_stream_input_contract"))
+    if dual_stream_contract or _package_uses_projected_g1_skeleton(input_package):
+        dual_stream_contract.update({
+            "first_rgb_frame_path": first_frame_runtime_path,
+            "skeleton_video_path": skeleton_runtime_path,
+            "first_rgb_frame_anchors_scene_and_robot_appearance": True,
+            "runtime_paths_rewritten_for_provider_bundle": True,
+            "raw_secret_values_recorded": False,
+        })
+        runtime_package["oscar_dual_stream_input_contract"] = dual_stream_contract
     validation = _mapping(runtime_package.get("conditioning_video_review_validation"))
     if validation:
         validation["path"] = skeleton_runtime_path
@@ -937,6 +989,17 @@ def _runtime_input_package_manifest(
         "conditioning_video_can_be_audited_against_projected_skeleton_trace": bool(
             projected_skeleton_runtime_path
         ),
+        "separate_2d_skeleton_stream": bool(
+            _mapping(runtime_package.get("skeleton_video")).get("skeleton_stream_separate_from_rgb")
+        ),
+        "skeleton_stream_texture_free": bool(
+            _mapping(runtime_package.get("skeleton_video")).get("skeleton_stream_texture_free")
+        ),
+        "first_rgb_frame_anchors_scene_and_robot_appearance": bool(
+            _mapping(runtime_package.get("oscar_dual_stream_input_contract")).get(
+                "first_rgb_frame_anchors_scene_and_robot_appearance"
+            )
+        ),
         "raw_secret_values_recorded": False,
     }
     runtime_package["oscar_auxiliary_observation_runtime_contract"] = {
@@ -951,6 +1014,19 @@ def _runtime_input_package_manifest(
         "runtime_manifest_paths_point_to_provider_runtime_inputs": True,
         "local_conditioning_review_frame_paths_omitted_from_runtime_manifest": True,
         "rgb_video_uses_selected_review_video": bool(rgb_runtime_path),
+        "first_rgb_frame_anchors_scene_and_robot_appearance": bool(
+            _mapping(runtime_package.get("oscar_dual_stream_input_contract")).get(
+                "first_rgb_frame_anchors_scene_and_robot_appearance"
+            )
+        ),
+        "separate_2d_skeleton_stream_aligned_to_rgb": bool(
+            _mapping(runtime_package.get("skeleton_video")).get(
+                "skeleton_stream_image_aligned_to_rgb"
+            )
+        ),
+        "skeleton_stream_is_texture_free": bool(
+            _mapping(runtime_package.get("skeleton_video")).get("skeleton_stream_texture_free")
+        ),
         "rgb_context_packaging_is_input_contract_not_rollout_quality_proof": True,
         "projected_g1_skeleton_trace_packaging_is_input_provenance_not_rollout_quality_proof": True,
         "auxiliary_observation_packaging_is_input_provenance_not_rollout_quality_proof": bool(
@@ -1068,9 +1144,22 @@ def _materialized_package_from_existing(
     manifest["conditioning_video_decode_valid_for_review"] = (
         conditioning_validation.get("status") == "completed"
     )
-    manifest["conditioning_video_visually_useful_for_model_input"] = bool(
-        _mapping(conditioning_visual_smoke.get("claim_boundary")).get(
-            "visual_rollout_useful_for_task_success_review"
+    skeleton_video = _mapping(manifest.get("skeleton_video"))
+    if not _mapping(skeleton_video.get("visual_signal")):
+        smoke_passed = any(
+            _mapping(rollout).get("status") == "passed_visual_quality_smoke"
+            for rollout in conditioning_visual_smoke.get("rollouts", []) or []
+        )
+        skeleton_video["visual_signal"] = {
+            "status": "completed" if smoke_passed else "blocked",
+            "blockers": [] if smoke_passed else ["conditioning_video_visual_smoke_failed"],
+            "derived_from_conditioning_video_visual_smoke": True,
+        }
+        manifest["skeleton_video"] = skeleton_video
+    manifest["conditioning_video_visually_useful_for_model_input"] = (
+        _conditioning_video_model_input_useful(
+            skeleton_video=_mapping(manifest.get("skeleton_video")),
+            visual_smoke=conditioning_visual_smoke,
         )
     )
     manifest["claim_boundary"] = {

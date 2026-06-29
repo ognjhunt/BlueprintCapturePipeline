@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import scene_wam_policy_episode_packet as packet

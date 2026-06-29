@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline.robot_eval_execution import build_simulator_command_artifacts

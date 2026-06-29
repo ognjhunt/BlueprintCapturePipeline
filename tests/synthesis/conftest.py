@@ -41,6 +41,7 @@ def synthetic_depth_m(synthetic_depth_raw: np.ndarray) -> np.ndarray:
 @pytest.fixture
 def synthetic_depth_png_bytes(synthetic_depth_raw: np.ndarray) -> bytes:
     """In-memory 16-bit grayscale PNG bytes of the synthetic depth map."""
+    pytest.importorskip("PIL")
     from PIL import Image as PILImage
     img = PILImage.fromarray(synthetic_depth_raw, mode="I;16")
     buf = io.BytesIO()
@@ -62,6 +63,7 @@ def synthetic_rgb() -> np.ndarray:
 @pytest.fixture
 def synthetic_rgb_jpg_bytes(synthetic_rgb: np.ndarray) -> bytes:
     """In-memory JPEG bytes of the synthetic RGB frame."""
+    pytest.importorskip("PIL")
     from PIL import Image as PILImage
     img = PILImage.fromarray(synthetic_rgb)
     buf = io.BytesIO()

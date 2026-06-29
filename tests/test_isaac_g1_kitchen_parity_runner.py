@@ -39,6 +39,105 @@ def test_runner_writes_result_before_simulation_app_close() -> None:
     assert source.index(preclose_marker) < source.index(close_marker)
 
 
+def test_g1_visual_asset_candidates_try_exact_then_visual_siblings() -> None:
+    candidates = M._g1_visual_asset_candidates("Isaac/Robots/Unitree/G1/g1.usda")
+
+    assert candidates == [
+        "Isaac/Robots/Unitree/G1/g1.usd",
+        "Unitree/G1/g1.usd",
+        "Unitree/G1/g1.usda",
+        "Isaac/Robots/Unitree/G1/g1.usda",
+    ]
+    assert len(candidates) == len(set(candidates))
+
+    absolute = M._g1_visual_asset_candidates("/Isaac/Robots/Unitree/G1/g1.usda")
+    assert absolute == [
+        "/Isaac/Robots/Unitree/G1/g1.usd",
+        "/Unitree/G1/g1.usd",
+        "/Unitree/G1/g1.usda",
+        "/Isaac/Robots/Unitree/G1/g1.usda",
+    ]
+
+    exact_visual = M._g1_visual_asset_candidates("Unitree/G1/g1.usd")
+    assert exact_visual == ["Unitree/G1/g1.usd"]
+
+
+def test_robot_visual_geometry_missing_requires_renderable_gprim() -> None:
+    assert M._robot_visual_geometry_missing(None) is True
+    assert M._robot_visual_geometry_missing({"gprim_count": 0, "blockers": []}) is True
+    assert M._robot_visual_geometry_missing({
+        "gprim_count": 4,
+        "blockers": ["robot_gprims_unmaterialized"],
+    }) is False
+    assert M._robot_visual_geometry_missing({
+        "gprim_count": 4,
+        "blockers": [M.ROBOT_VISUAL_MESH_MISSING_BLOCKER],
+    }) is True
+
+
+def test_bind_g1_visual_fallback_preserves_articulation_candidate_when_visual_missing(
+    monkeypatch,
+) -> None:
+    class _Prim:
+        def __init__(self, stage):
+            self._stage = stage
+
+        def IsValid(self) -> bool:
+            return bool(self._stage.bound)
+
+    class _Stage:
+        def __init__(self) -> None:
+            self.bound: list[str] = []
+            self.removed = 0
+
+        def GetPrimAtPath(self, _path):
+            return _Prim(self)
+
+        def RemovePrim(self, _path) -> None:
+            self.removed += 1
+
+    stage = _Stage()
+    monkeypatch.setattr(M, "_g1_visual_asset_candidates", lambda _value: ["physics.usd", "missing.usd"])
+    monkeypatch.setattr(M, "_resolve_asset_uri", lambda value: f"resolved:{value}")
+
+    def fake_bind(fake_stage, resolved, prim_path="/World/G1"):
+        fake_stage.bound.append(resolved)
+        has_physics = resolved.endswith("physics.usd")
+        return {
+            "prim_path": prim_path,
+            "controllable_articulation_detected": has_physics,
+            "collision_enabled_verified": has_physics,
+            "articulation_root_api_prim_count": 1 if has_physics else 0,
+            "collision_api_prim_count": 1 if has_physics else 0,
+            "resolved_g1_usd": resolved,
+        }
+
+    def fake_diag(fake_stage, _prim_path):
+        resolved = fake_stage.bound[-1]
+        return {
+            "status": "FAIL",
+            "blockers": [M.ROBOT_VISUAL_MESH_MISSING_BLOCKER],
+            "gprim_count": 0,
+            "mesh_count": 0,
+            "resolved_seen_by_test": resolved,
+        }
+
+    monkeypatch.setattr(M, "_bind_g1", fake_bind)
+    monkeypatch.setattr(M, "_robot_render_visibility_diagnostics", fake_diag)
+
+    binding = M._bind_g1_with_visual_fallback(stage, "requested.usd")
+
+    assert binding["candidate_g1_usd"] == "physics.usd"
+    assert binding["resolved_g1_usd"] == "resolved:physics.usd"
+    assert binding["visual_binding_status"] == "blocked_missing_renderable_robot_geometry"
+    assert binding["selected_nonvisual_candidate_reason"].startswith("preserved_articulation")
+    assert stage.bound == [
+        "resolved:physics.usd",
+        "resolved:missing.usd",
+        "resolved:physics.usd",
+    ]
+
+
 def test_manipulation_cam_is_egocentric_vs_follow_chase() -> None:
     root, yaw = (1.75, 1.25, 0.79), 0.0  # robot at the sink, facing +x
     me, mt = M.manipulation_cam_pose(root, yaw)
@@ -178,18 +277,48 @@ def test_robot_head_lens_eye_offsets_link_origin_out_of_head_mesh() -> None:
     assert authored_meta["lens_height_correction_applied"] is False
 
 
-def test_manipulation_seed_arm_target_keeps_low_handle_as_forward_seed() -> None:
+def test_robot_mounted_manipulation_camera_metadata_is_replayable() -> None:
+    source = _RUNNER.read_text()
+
+    assert '"camera_eye_xyz": [round(float(v), 6) for v in eye]' in source
+    assert '"camera_target_xyz": [round(float(v), 6) for v in target]' in source
+    assert '"camera_vfov_deg": round(float(vfov_deg), 6)' in source
+    assert '"viewport_size_px": [int(width), int(height)]' in source
+
+
+def test_real_g1_visual_meshes_preserve_authored_materials_by_default() -> None:
+    source = _RUNNER.read_text()
+
+    assert 'force_review_material = os.getenv("PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE", "") == "1"' in source
+    assert "override_robot_material = bool(robot_visual_missing or force_review_material)" in source
+    assert "override_authored_materials=override_robot_material" in source
+    assert '"authored_robot_materials_preserved"] = not bool(override_robot_material)' in source
+
+
+def test_manipulation_seed_arm_target_is_forward_ready_not_affordance_contact() -> None:
     shoulder = (0.0, 0.0, 1.2)
     low_handle = (0.45, 0.0, 0.85)
     high_handle = (0.45, 0.0, 1.45)
 
-    seed = M._manipulation_seed_arm_target_for_shoulder(shoulder, low_handle)
-    assert seed[:2] == low_handle[:2]
+    seed = M._manipulation_seed_arm_target_for_shoulder(
+        shoulder,
+        low_handle,
+        forward_yaw=0.0,
+    )
+    assert seed[0] > shoulder[0]
+    assert seed[1] == pytest.approx(shoulder[1])
     assert seed[2] > low_handle[2]
     assert seed[2] < shoulder[2]
 
-    high_seed = M._manipulation_seed_arm_target_for_shoulder(shoulder, high_handle)
-    assert high_seed == high_handle
+    high_seed = M._manipulation_seed_arm_target_for_shoulder(
+        shoulder,
+        high_handle,
+        forward_yaw=0.0,
+    )
+    assert high_seed[0] > shoulder[0]
+    assert high_seed[1] == pytest.approx(shoulder[1])
+    assert high_seed[2] < shoulder[2]
+    assert high_seed != high_handle
 
 
 def test_manipulation_arm_link_name_filter_is_side_and_arm_specific() -> None:
@@ -235,7 +364,7 @@ def test_manipulation_camera_target_selection_rejects_downward_pitch_workaround(
     assert "manipulation_pov_camera_pitched_down_too_far" not in chosen["blockers"]
 
 
-def test_manipulation_camera_target_selection_rejects_edge_cropped_both_arm_seed() -> None:
+def test_manipulation_camera_target_selection_accepts_hand_wrist_seed_without_elbow() -> None:
     eye = (-0.938489, 0.655171, 1.2802)
     affordance = (-1.437147, 0.655166, 1.025963)
     arm_points_by_arm = {
@@ -278,14 +407,17 @@ def test_manipulation_camera_target_selection_rejects_edge_cropped_both_arm_seed
     )
 
     assert meta["selected_camera_target"].startswith("head_forward_pitch_limited_")
-    assert geom["status"] == "FAIL"
-    assert "manipulation_pov_left_arm_seed_failed" in geom["blockers"]
-    assert "manipulation_pov_forearm_not_in_frame" in geom["blockers"]
+    assert geom["status"] == "PASS"
+    assert geom["seed_arm_visibility"]["status"] == "PASS"
+    assert "manipulation_pov_left_arm_seed_failed" not in geom["blockers"]
+    assert "manipulation_pov_arm_chain_not_in_frame" not in geom["blockers"]
     assert geom["camera_pitch_down_deg"] <= M.MANIPULATION_POV_HEAD_FORWARD_PITCH_DOWN_DEG
     assert geom["arm_roles_in_frame_by_arm"]["left"] == ["hand", "wrist"]
     assert geom["arm_roles_in_frame_by_arm"]["right"] == ["hand", "wrist"]
     assert geom["arm_roles_usefully_in_frame_by_arm"]["left"] == ["hand"]
     assert geom["arm_roles_usefully_in_frame_by_arm"]["right"] == ["hand", "wrist"]
+    assert geom["seed_arm_visibility"]["by_arm"]["left"]["arm_chain_roles_in_frame"] == ["hand", "wrist"]
+    assert geom["seed_arm_visibility"]["by_arm"]["right"]["arm_chain_roles_in_frame"] == ["hand", "wrist"]
 
 
 def test_render_step_watchdog_timeout_result_is_fail_closed(tmp_path, monkeypatch) -> None:
@@ -310,6 +442,73 @@ def test_render_step_watchdog_timeout_result_is_fail_closed(tmp_path, monkeypatc
     assert payload["render_step_timeout"]["label"] == "scenario:warmup:0"
     assert payload["render_step_timeout"]["scenario_id"] == "scenario"
     assert payload["rendered_by_isaac_rtx"] is True
+
+
+def test_render_quality_config_enables_pathtraced_for_review_subframes(monkeypatch) -> None:
+    monkeypatch.delenv("PARITY_RENDER_QUALITY_MODE", raising=False)
+    monkeypatch.delenv("PARITY_PATH_TRACING_SAMPLES_PER_PIXEL", raising=False)
+
+    cfg = M._render_quality_config(
+        render_subframes=32,
+        manipulation_cam=True,
+        verify_cam=True,
+    )
+
+    assert cfg["use_pathtraced"] is True
+    assert cfg["samples_per_pixel"] == 64
+    assert cfg["optix_denoiser_requested"] is True
+    assert cfg["firefly_filter_requested"] is True
+
+    realtime = M._render_quality_config(
+        render_subframes=32,
+        manipulation_cam=True,
+        verify_cam=True,
+        mode="realtime",
+    )
+    assert realtime["use_pathtraced"] is False
+
+    single_plain = M._render_quality_config(
+        render_subframes=1,
+        manipulation_cam=False,
+        verify_cam=False,
+    )
+    assert single_plain["use_pathtraced"] is False
+
+    forced = M._render_quality_config(
+        render_subframes=1,
+        manipulation_cam=False,
+        verify_cam=False,
+        mode="pathtraced",
+        samples_per_pixel=96,
+    )
+    assert forced["use_pathtraced"] is True
+    assert forced["samples_per_pixel"] == 96
+    assert M._effective_render_rt_subframes(32, cfg) == 1
+    assert M._effective_render_rt_subframes(32, realtime) == 32
+
+
+def test_path_traced_rt_subframes_env_override_is_bounded(monkeypatch) -> None:
+    quality = {"use_pathtraced": True}
+
+    monkeypatch.setenv("PARITY_PATH_TRACED_RT_SUBFRAMES", "4")
+    assert M._effective_render_rt_subframes(32, quality) == 4
+
+    monkeypatch.setenv("PARITY_PATH_TRACED_RT_SUBFRAMES", "99")
+    assert M._effective_render_rt_subframes(32, quality) == 8
+
+    monkeypatch.setenv("PARITY_PATH_TRACED_RT_SUBFRAMES", "not-a-number")
+    assert M._effective_render_rt_subframes(32, quality) == 1
+
+
+def test_replicator_step_waits_for_accumulated_subframes_before_saving() -> None:
+    source = _RUNNER.read_text()
+
+    helper = source.index("def _replicator_step_with_watchdog(")
+    step = source.index("rep.orchestrator.step(rt_subframes=subframes)", helper)
+    wait = source.index("rep.orchestrator.wait_until_complete()", step)
+    save = source.index("def _save_rgb(", wait)
+
+    assert step < wait < save
 
 
 def test_task_visual_qc_splits_verify_and_pov_rubrics(monkeypatch, tmp_path) -> None:
@@ -356,6 +555,35 @@ def test_task_visual_qc_splits_verify_and_pov_rubrics(monkeypatch, tmp_path) -> 
     assert calls == {"placement": ["verify_0000.png"], "pov": ["robot_pov_0000.png"]}
     assert report["placement"]["schema_version"] == "robot_placement_visual_qc.v1"
     assert report["manipulation_pov"]["schema_version"] == "manipulation_pov_visual_qc.v1"
+
+
+def test_task_visual_qc_blocks_when_manipulation_pov_has_no_frames(monkeypatch, tmp_path) -> None:
+    qc_mod = __import__("blueprint_pipeline.render_visual_qc", fromlist=["dummy"])
+
+    def fake_placement(frames, target, *, task_description="", sample_n=4, generate=None):
+        return {
+            "schema_version": "robot_placement_visual_qc.v1",
+            "status": "passed",
+            "target": target,
+            "task_description": task_description,
+            "frames_reviewed": len(frames),
+            "blockers": [],
+            "per_frame": [],
+        }
+
+    monkeypatch.setattr(qc_mod, "qc_robot_placement_frames", fake_placement)
+    verify = tmp_path / "verify_0000.png"
+
+    report = M._run_task_visual_qc(
+        [verify],
+        [],
+        target_label="refrigerator",
+        task_description="open the refrigerator",
+    )
+
+    assert report["status"] == "blocked"
+    assert "manipulation_pov_visual_qc_no_frames" in report["blockers"]
+    assert report["manipulation_pov"]["status"] == "blocked"
 
 
 def test_arm_reach_skeleton_moves_hand_toward_faucet_and_into_view() -> None:
@@ -414,6 +642,7 @@ def test_manipulation_pov_render_and_validation_use_same_arm_selection() -> None
     assert "pov_reach_arm = _normalize_reach_arm_selection(manipulation_reach_arm)" in source
     assert "rendered_reach_arm = pov_reach_arm" in source
     assert "arm=rendered_reach_arm" in source
+    assert "forward_yaw=decision.yaw" in source
     assert "arm=pov_reach_arm" in source
     assert 'arm_points_by_arm=cam_meta.get("arm_link_points_by_arm_xyz") or {}' in source
     assert "reach_arm = args.manipulation_reach_arm" in source
@@ -445,9 +674,15 @@ def test_arm_reach_skeleton_can_pose_both_arms_for_first_frame() -> None:
         ("right_hand_palm_link", (0.0, 0.45, 0.8)),
     ]
     target = (0.5, 0.0, 0.95)
-    full = dict(M.compute_arm_reach_skeleton(rest, target, 1.0, arm="both"))
+    full = dict(M.compute_arm_reach_skeleton(rest, target, 1.0, arm="both", forward_yaw=0.0))
     assert full["left_hand_palm_link"][0] > rest[1][1][0]
     assert full["right_hand_palm_link"][0] > rest[3][1][0]
+    assert full["left_hand_palm_link"][1] < 0.0
+    assert full["right_hand_palm_link"][1] > 0.0
+    assert (
+        full["right_hand_palm_link"][1] - full["left_hand_palm_link"][1]
+        > 0.30
+    )
     assert full["left_hand_palm_link"] != rest[1][1]
     assert full["right_hand_palm_link"] != rest[3][1]
 
@@ -1696,7 +1931,7 @@ def test_project_point_to_pixel() -> None:
     assert M.project_point_to_pixel((0.05, 50.0, 0.0), eye, target, up, 60.0, 640, 480) is None
 
 
-def test_manipulation_pov_geometry_requires_forearm_and_effector_in_frame() -> None:
+def test_manipulation_pov_geometry_requires_seed_arm_chain_and_effector_in_frame() -> None:
     eye, target = (0.0, 0.0, 1.0), (1.0, 0.0, 1.0)
     affordance = (1.0, 0.0, 1.0)
     visible = M._manipulation_pov_geometry(
@@ -1718,6 +1953,29 @@ def test_manipulation_pov_geometry_requires_forearm_and_effector_in_frame() -> N
     assert {"elbow", "wrist", "hand"}.issubset(set(visible["arm_roles_in_frame"]))
     assert visible["effector_distance_is_metadata_only"] is True
     assert visible["effector_distance_to_affordance_m"]["hand"] > 0.1
+
+    off_axis_affordance = M._manipulation_pov_geometry(
+        arm_points={
+            "shoulder": (0.1, -0.05, 1.02),
+            "elbow": (0.45, -0.05, 1.02),
+            "wrist": (0.7, -0.03, 1.01),
+            "hand": (0.82, -0.02, 1.0),
+        },
+        affordance=(1.0, 0.55, 1.0),
+        eye=eye,
+        target=target,
+        vfov_deg=95.0,
+        width=640,
+        height=480,
+        arm="right",
+    )
+    assert off_axis_affordance["status"] == "PASS"
+    assert off_axis_affordance["target_in_frame"] is True
+    assert off_axis_affordance["arm_extension"]["status"] == "PASS"
+    assert off_axis_affordance["arm_extension"]["horizontal_extension_ratio"] > 0.35
+    assert off_axis_affordance["effector_distance_is_metadata_only"] is True
+    assert "alignment_to_affordance_direction" not in off_axis_affordance["arm_extension"]
+    assert "manipulation_pov_effector_not_near_affordance" not in off_axis_affordance["blockers"]
 
     both_visible = M._manipulation_pov_geometry(
         arm_points={},
@@ -1769,6 +2027,21 @@ def test_manipulation_pov_geometry_requires_forearm_and_effector_in_frame() -> N
     assert right_only_for_both["status"] == "FAIL"
     assert "manipulation_pov_left_arm_seed_failed" in right_only_for_both["blockers"]
 
+    hand_only = M._manipulation_pov_geometry(
+        arm_points={
+            "hand": (0.82, -0.02, 1.0),
+        },
+        affordance=affordance,
+        eye=eye,
+        target=target,
+        vfov_deg=68.0,
+        width=640,
+        height=480,
+        arm="right",
+    )
+    assert hand_only["status"] == "FAIL"
+    assert "manipulation_pov_arm_chain_not_in_frame" in hand_only["blockers"]
+
     cropped = M._manipulation_pov_geometry(
         arm_points={
             "elbow": (-0.4, -0.05, 1.02),
@@ -1807,6 +2080,7 @@ def test_manipulation_pov_geometry_requires_forearm_and_effector_in_frame() -> N
 
 
 def test_pov_seed_frame_quality_rejects_black_edge_occlusion(tmp_path) -> None:
+    pytest.importorskip("PIL")
     from PIL import Image, ImageDraw  # type: ignore
 
     clean = tmp_path / "clean.png"
@@ -1935,6 +2209,71 @@ def test_topdown_debug_overlay_is_added_only_after_verify_and_pov_are_saved() ->
     assert normal_render < pov_save < overlay_update
     assert normal_render < verify_save < overlay_update
     assert overlay_update < topdown_save < overlay_remove
+
+
+def test_first_frame_warmup_runs_after_pov_camera_placement() -> None:
+    source = _RUNNER.read_text()
+    capture_start = source.index("if step % max(1, capture_every) == 0:")
+    pov_place = source.index("_place_camera(stage, pov_cam, eye, tgt)", capture_start)
+    warmup_log = source.index("first-frame warmup", pov_place)
+    warmup_step = source.index('label=f"{sid}:frame:{cap}:warmup:{wi}"', warmup_log)
+    frame_step = source.index('label=f"{sid}:frame:{cap}:rt_subframes:{capture_rt_subframes}"', warmup_step)
+    pov_save = source.index('_save_rgb(pov_annot, sdir / "frames" / f"robot_pov_', frame_step)
+
+    assert 'label=f"{sid}:warmup:{wi}"' not in source
+    assert pov_place < warmup_log < warmup_step < frame_step < pov_save
+
+
+def test_auto_render_settle_is_only_for_repeated_or_review_render(monkeypatch) -> None:
+    monkeypatch.delenv("PARITY_AUTO_RENDER_SETTLE_SECONDS", raising=False)
+
+    assert M._auto_render_settle_seconds(
+        configured_settle_seconds=0,
+        no_collision_probe=True,
+        manipulation_cam=True,
+        verify_cam=False,
+        manipulation_stand=False,
+        warmup_frames=6,
+        render_subframes=4,
+    ) == 0
+    assert M._auto_render_settle_seconds(
+        configured_settle_seconds=12,
+        no_collision_probe=False,
+        manipulation_cam=False,
+        verify_cam=False,
+        manipulation_stand=False,
+        warmup_frames=1,
+        render_subframes=1,
+    ) == 12
+    assert M._auto_render_settle_seconds(
+        configured_settle_seconds=0,
+        no_collision_probe=False,
+        manipulation_cam=False,
+        verify_cam=False,
+        manipulation_stand=False,
+        warmup_frames=1,
+        render_subframes=1,
+    ) == 0
+    assert M._auto_render_settle_seconds(
+        configured_settle_seconds=0,
+        no_collision_probe=False,
+        manipulation_cam=True,
+        verify_cam=False,
+        manipulation_stand=False,
+        warmup_frames=1,
+        render_subframes=1,
+    ) == 60
+
+    monkeypatch.setenv("PARITY_AUTO_RENDER_SETTLE_SECONDS", "7.5")
+    assert M._auto_render_settle_seconds(
+        configured_settle_seconds=0,
+        no_collision_probe=False,
+        manipulation_cam=False,
+        verify_cam=True,
+        manipulation_stand=False,
+        warmup_frames=1,
+        render_subframes=1,
+    ) == 7.5
 
 
 def test_placement_obstacles_use_fine_boxes_not_grouped_cabinet_slab(monkeypatch) -> None:

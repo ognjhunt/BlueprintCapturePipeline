@@ -370,6 +370,23 @@ def _extract_provider_payload(
         payload["generated_rollout_review_usefulness_blockers"] = [
             str(item) for item in visual_smoke.get("review_usefulness_blockers", []) or []
         ]
+        if payload.get("status") == "completed" and visual_smoke.get(
+            "status"
+        ) == "failed_visual_quality_smoke":
+            payload["status"] = "blocked"
+            payload["blockers"] = sorted(
+                set(
+                    [
+                        *[str(item) for item in payload.get("blockers", []) or [] if str(item)],
+                        "provider_generated_rollout_visual_smoke_failed",
+                        *[
+                            str(item)
+                            for item in visual_smoke.get("blockers", []) or []
+                            if str(item)
+                        ],
+                    ]
+                )
+            )
         is_replay = mode == "replay_existing_provider_output"
         is_current_provider = mode in {"vast_provider", "runpod_provider", "wam_compute_provider"}
         if imported_truth_claims:

@@ -28,7 +28,7 @@ from typing import Any, Callable, Mapping, Sequence
 # scene_semantics.py model cascade — gemini-3-flash-preview first (fast, correct JSON), per repo notes
 DEFAULT_MODEL_CASCADE = (
     "gemini-3-flash-preview",
-    "gemini-3.1-pro-preview",
+    "gemini-3-pro-preview",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
 )
@@ -146,22 +146,67 @@ def build_manipulation_pov_qc_prompt(target: str, *, task_description: str = "")
 
 # ----------------------------- parsing / normalization -----------------------------
 
+def _json_object_candidates(text: str) -> list[dict]:
+    """Balanced JSON object candidates from a model response."""
+    candidates: list[dict] = []
+    raw = text or ""
+    starts: list[int] = []
+    in_string = False
+    escaped = False
+    for idx, ch in enumerate(raw):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            starts.append(idx)
+        elif ch == "}" and starts:
+            start = starts.pop()
+            snippet = raw[start: idx + 1]
+            try:
+                payload = json.loads(snippet)
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                candidates.append(payload)
+    return candidates
+
+
+def _looks_like_qc_payload(payload: Mapping[str, Any]) -> bool:
+    expected = {
+        "coherent",
+        "robot_visible",
+        "background_consistent",
+        "dark_region_fraction",
+        "overall_severity",
+        "anomalies",
+        "pass",
+        "robot_on_open_floor",
+        "target_visible",
+        "gripper_or_hand_visible",
+    }
+    return any(key in payload for key in expected)
+
+
 def _extract_json_object(text: str) -> dict:
-    """json.loads, else the first {...} block (mirrors scene_semantics._extract_json_object)."""
+    """json.loads, else a balanced {...} block that looks like a QC payload."""
     try:
         payload = json.loads(text)
         if isinstance(payload, dict):
             return payload
     except Exception:
         pass
-    match = re.search(r"\{.*\}", text or "", re.DOTALL)
-    if not match:
-        return {}
-    try:
-        payload = json.loads(match.group(0))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    candidates = _json_object_candidates(re.sub(r"```(?:json)?\s*|\s*```", "", text or ""))
+    for payload in candidates:
+        if _looks_like_qc_payload(payload):
+            return payload
+    return candidates[0] if candidates else {}
 
 
 def extract_model_text(response: Any) -> str:
@@ -187,7 +232,7 @@ def extract_model_text(response: Any) -> str:
     return ""
 
 
-def _as_bool(value: Any, default: bool = True) -> bool:
+def _as_bool(value: Any, default: bool | None = True) -> bool | None:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -207,7 +252,9 @@ def _as_fraction(value: Any) -> float:
 
 def _norm_severity(value: Any) -> str:
     s = str(value or "").strip().lower()
-    return s if s in _SEVERITY_RANK else ("none" if not s else "low")
+    if s in _SEVERITY_RANK:
+        return s
+    return "none" if not s else "high"
 
 
 def parse_qc_verdict(raw_text: str) -> dict:
@@ -233,9 +280,9 @@ def parse_qc_verdict(raw_text: str) -> dict:
         })
     return {
         "parsed": True,
-        "coherent": _as_bool(obj.get("coherent"), True),
-        "robot_visible": _as_bool(obj.get("robot_visible"), True),
-        "background_consistent": _as_bool(obj.get("background_consistent"), True),
+        "coherent": _as_bool(obj.get("coherent"), None),
+        "robot_visible": _as_bool(obj.get("robot_visible"), None),
+        "background_consistent": _as_bool(obj.get("background_consistent"), None),
         "dark_region_fraction": _as_fraction(obj.get("dark_region_fraction")),
         "overall_severity": _norm_severity(obj.get("overall_severity")),
         "anomalies": anomalies,
@@ -321,11 +368,11 @@ def verdict_is_flagged(verdict: Mapping[str, Any], *, severity_floor: str = DEFA
     if not verdict.get("parsed", False):
         return True
     floor = _SEVERITY_RANK.get(severity_floor, 2)
-    if verdict.get("coherent") is False:
+    if verdict.get("coherent") is not True:
         return True
-    if verdict.get("robot_visible") is False:
+    if verdict.get("robot_visible") is not True:
         return True
-    if verdict.get("background_consistent") is False:
+    if verdict.get("background_consistent") is not True:
         return True
     if float(verdict.get("dark_region_fraction") or 0.0) >= dark_region_floor:
         return True

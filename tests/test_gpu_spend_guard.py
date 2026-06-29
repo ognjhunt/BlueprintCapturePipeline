@@ -82,6 +82,22 @@ def test_parse_runpod_exited_pod_is_not_live() -> None:
     assert inst.live is False
 
 
+def test_parse_runpod_stopped_warm_pod_is_not_live_or_reapable() -> None:
+    now = _epoch(2026, 6, 27, 1, 0, 0)
+    pod = {
+        "id": "pwbu7wxsvxpr0x",
+        "name": "blueprint-warm-pool",
+        "desiredStatus": "STOPPED",
+        "runtime": None,
+        "costPerHr": 0.79,
+        "createdAt": "2026-01-01T00:00:00Z",
+    }
+    inst = guard._parse_runpod_pod(pod, now=now)
+    assert inst.state == "stopped"
+    assert inst.live is False
+    assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is False
+
+
 # --------------------------- Vast parsing ---------------------------
 
 
@@ -178,6 +194,12 @@ def test_dead_pod_is_not_reapable() -> None:
 def test_protected_dud_is_never_reapable() -> None:
     inst = _runpod_inst(id="pod-owned", booted=False, age_seconds=600.0)
     assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids={"pod-owned"}) is False
+
+
+def test_default_warm_candidate_ids_are_never_reapable_without_owner_process() -> None:
+    for pod_id in guard.DEFAULT_WARM_CANDIDATE_IDS:
+        inst = _runpod_inst(id=pod_id, booted=False, age_seconds=99999.0)
+        assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is False
 
 
 # --------------------------- ownership / live owner ---------------------------

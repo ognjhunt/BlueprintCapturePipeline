@@ -384,6 +384,88 @@ def test_object_geometry_fake_trimesh_branches(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(ogs, "trimesh", real_trimesh)
 
 
+def test_2d_only_object_index_entries_use_bbox_proxy_meshes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _capture_root(tmp_path)
+    _write_json(
+        root / "raw" / "object_index.json",
+        [
+            {
+                "id": "fridge-door",
+                "label": "fridge door",
+                "boundingBox": {"center": [0.0, 0.0, 1.0], "extents": [0.8, 0.1, 2.0]},
+            },
+            {
+                "id": "fridge-handle",
+                "label": "fridge handle",
+                "boundingBox": {"center": [0.35, -0.08, 1.1], "extents": [0.05, 0.05, 0.8]},
+            },
+        ],
+    )
+
+    class FakeMesh:
+        def __init__(self, extents: object = (0.2, 0.2, 0.2)) -> None:
+            ex = ogs.np.asarray(extents, dtype=float)
+            half = ex / 2.0
+            self.vertices = ogs.np.asarray(
+                [
+                    [-half[0], -half[1], -half[2]],
+                    [half[0], -half[1], -half[2]],
+                    [half[0], half[1], -half[2]],
+                    [-half[0], half[1], -half[2]],
+                    [-half[0], -half[1], half[2]],
+                    [half[0], -half[1], half[2]],
+                    [half[0], half[1], half[2]],
+                    [-half[0], half[1], half[2]],
+                ],
+                dtype=float,
+            )
+            self.bounds = ogs.np.asarray([[-half[0], -half[1], -half[2]], [half[0], half[1], half[2]]])
+            self.faces = ogs.np.asarray([[4, 5, 6]], dtype=int)
+            self.face_normals = ogs.np.asarray([[0.0, 0.0, 1.0]], dtype=float)
+            self.triangles_center = ogs.np.asarray([[0.0, 0.0, half[2]]], dtype=float)
+            self.area_faces = ogs.np.asarray([max(0.01, float(ex[0] * ex[1]))], dtype=float)
+            self.bounding_box = SimpleNamespace(to_mesh=lambda: FakeMesh(extents))
+
+        def copy(self) -> "FakeMesh":
+            copied = FakeMesh((1.0, 1.0, 1.0))
+            copied.vertices = self.vertices.copy()
+            copied.bounds = self.bounds.copy()
+            copied.faces = self.faces.copy()
+            copied.face_normals = self.face_normals.copy()
+            copied.triangles_center = self.triangles_center.copy()
+            copied.area_faces = self.area_faces.copy()
+            copied.bounding_box = SimpleNamespace(to_mesh=lambda: FakeMesh((1.0, 1.0, 1.0)))
+            return copied
+
+        @property
+        def convex_hull(self) -> "FakeMesh":
+            return self
+
+        def split(self, only_watertight: bool = False) -> list["FakeMesh"]:
+            return [self]
+
+        def export(self, path: Path) -> None:
+            path.write_bytes(b"mesh")
+
+    fake_trimesh = SimpleNamespace(
+        creation=SimpleNamespace(box=lambda extents: FakeMesh(extents)),
+    )
+    monkeypatch.setattr(ogs, "trimesh", fake_trimesh)
+
+    result = ogs.run_object_geometry_stage(capture_root=root, provider_name="manual")
+    manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+
+    assert result["object_count"] == 2
+    assert {item["object_id"] for item in manifest["objects"]} == {"fridge-door", "fridge-handle"}
+    for item in manifest["objects"]:
+        assert item["mesh_source"] == "bbox_proxy_mesh"
+        assert item["grounding_level"] == "inferred"
+        assert item["provenance"]["grounding_level"] == "inferred"
+
+
 def test_object_geometry_surfaces_views_support_and_run_edges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

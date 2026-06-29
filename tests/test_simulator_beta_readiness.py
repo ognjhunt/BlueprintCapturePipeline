@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline.simulator_beta_readiness import (

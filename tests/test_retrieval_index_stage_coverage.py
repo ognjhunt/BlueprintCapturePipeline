@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import retrieval_index_stage as ris

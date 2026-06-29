@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.error
 import zipfile
 from collections import deque
 
 from blueprint_pipeline.warm_render_server import (
     FileJobSource,
+    PresignedUrlAccessError,
     SignedUrlJobSource,
     WarmJob,
     WarmPoolClient,
@@ -46,7 +48,7 @@ def _advancing_clock(step):
 
 def test_serve_loop_renders_queued_jobs_then_stops_on_sentinel() -> None:
     src = _FakeSource([
-        WarmJob("r1", {"description": "open the refrigerator"}),
+        WarmJob("r1", {"description": "open the refrigerator"}, session_nonce="sess-1"),
         WarmJob("r2", {"description": "turn on the faucet"}),
         WarmJob("stop", {}, stop=True),
     ])
@@ -61,7 +63,10 @@ def test_serve_loop_renders_queued_jobs_then_stops_on_sentinel() -> None:
     assert res["jobs_served"] == 2
     assert res["exit_reason"] == "stop_requested"
     assert [s["description"] for s in rendered] == ["open the refrigerator", "turn on the faucet"]
-    assert src.results["r1"] == {"status": "ok", "task": "open the refrigerator", "request_id": "r1"}
+    assert src.results["r1"]["status"] == "ok"
+    assert src.results["r1"]["task"] == "open the refrigerator"
+    assert src.results["r1"]["request_id"] == "r1"
+    assert src.results["r1"]["warm_session_nonce"] == "sess-1"
     assert src.results["r2"]["status"] == "ok"
 
 
@@ -159,6 +164,59 @@ def test_signed_url_job_source_polls_dedups_and_reads_stop(tmp_path) -> None:
     assert job2 is not None and job2.stop is True
 
 
+def test_signed_url_job_source_treats_404_as_empty_inbox(tmp_path) -> None:
+    def http_get(url):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    src = SignedUrlJobSource("http://inbox", tmp_path / "out", http_get=http_get)
+
+    assert src.poll() is None
+    assert src.consecutive_failures == 0
+    assert src.last_error is None
+
+
+def test_signed_url_job_source_surfaces_forbidden_inbox(tmp_path) -> None:
+    def http_get(url):
+        raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+
+    src = SignedUrlJobSource("http://inbox", tmp_path / "out", http_get=http_get)
+
+    try:
+        src.poll()
+    except PresignedUrlAccessError as exc:
+        assert exc.classification == "presigned_url_expired_or_forbidden"
+        assert exc.operation == "warm_inbox_get"
+        assert exc.status_code == 403
+    else:
+        raise AssertionError("expected PresignedUrlAccessError")
+    assert src.consecutive_failures == 1
+    assert src.last_error == "presigned_url_expired_or_forbidden"
+
+
+def test_serve_loop_exits_on_unrecoverable_inbox(tmp_path) -> None:
+    src = SignedUrlJobSource(
+        "http://inbox",
+        tmp_path / "out",
+        http_get=lambda _url: b"{not json",
+        max_consecutive_failures=2,
+    )
+    logs: list[str] = []
+
+    res = serve_render_loop(
+        render_one=lambda sc: {"status": "ok"},
+        job_source=src,
+        idle_timeout_s=100.0,
+        clock=_advancing_clock(1.0),
+        sleep=lambda s: None,
+        log=logs.append,
+    )
+
+    assert res["exit_reason"] == "inbox_unrecoverable"
+    assert res["blocker"] == "warm_inbox_malformed_json"
+    assert res["consecutive_failures"] == 2
+    assert any("inbox unrecoverable" in line for line in logs)
+
+
 def test_signed_url_job_source_publishes_result_into_out_dir(tmp_path) -> None:
     # Results ride the EXISTING output channel: the pod writes them into its out dir, which the
     # worker's heartbeat already uploads. No second presigned channel needed.
@@ -178,19 +236,81 @@ def test_warm_pool_client_submit_puts_incrementing_seq() -> None:
     cli.submit({"description": "open the microwave"})
     assert puts[0][1]["seq"] == 1 and puts[0][1]["request_id"] == "r1"
     assert puts[0][1]["scenario"]["description"] == "open the refrigerator"
+    assert puts[0][1]["warm_session_nonce"] == cli.session_nonce
     assert puts[1][1]["seq"] == 2
 
 
 def test_warm_pool_client_poll_result_reads_from_output_zip() -> None:
+    session_nonce = "fresh-session"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("warm_results/r1.json", json.dumps({"status": "ok", "request_id": "r1"}))
+        z.writestr("warm_results/r1.json", json.dumps({
+            "status": "ok",
+            "request_id": "r1",
+            "warm_session_nonce": session_nonce,
+        }))
     data = buf.getvalue()
     cli = WarmPoolClient("http://inbox/put", "http://out/get",
-                         http_put=lambda u, d: None, http_get=lambda u: data)
+                         http_put=lambda u, d: None, http_get=lambda u: data,
+                         session_nonce=session_nonce)
     res = cli.poll_result("r1", timeout_s=5.0, interval_s=0.0,
                           clock=_advancing_clock(1.0), sleep=lambda s: None)
     assert res is not None and res["status"] == "ok"
+
+
+def test_warm_pool_client_poll_result_rejects_stale_session_result() -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("warm_results/job-1.json", json.dumps({
+            "status": "ok",
+            "request_id": "job-1",
+            "warm_session_nonce": "old-session",
+        }))
+    data = buf.getvalue()
+    cli = WarmPoolClient(
+        "http://inbox/put",
+        "http://out/get",
+        http_put=lambda u, d: None,
+        http_get=lambda u: data,
+        session_nonce="new-session",
+    )
+
+    res = cli.poll_result(
+        "job-1",
+        timeout_s=3.0,
+        interval_s=0.0,
+        clock=_advancing_clock(1.0),
+        sleep=lambda s: None,
+    )
+
+    assert res is None
+
+
+def test_warm_pool_client_poll_result_surfaces_expired_output_url() -> None:
+    def http_get(url):
+        raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+
+    cli = WarmPoolClient(
+        "http://inbox/put",
+        "http://out/get",
+        http_put=lambda u, d: None,
+        http_get=http_get,
+        session_nonce="fresh-session",
+    )
+
+    try:
+        cli.poll_result(
+            "job-1",
+            timeout_s=3.0,
+            interval_s=0.0,
+            clock=_advancing_clock(1.0),
+            sleep=lambda s: None,
+        )
+    except PresignedUrlAccessError as exc:
+        assert exc.classification == "presigned_url_expired_or_forbidden"
+        assert exc.operation == "warm_output_get"
+    else:
+        raise AssertionError("expected PresignedUrlAccessError")
 
 
 def test_warm_pool_client_poll_result_times_out_when_absent() -> None:

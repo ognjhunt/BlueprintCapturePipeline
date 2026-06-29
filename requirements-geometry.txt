@@ -1,2 +1,6 @@
+usd-core>=24.0
+mujoco>=3.1
+trimesh>=4.4.0
+pycollada>=0.8
 open3d>=0.18.0
 pybullet>=3.2.6

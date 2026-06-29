@@ -28,11 +28,15 @@ it returns truthy once the instance is alive.
 from __future__ import annotations
 
 import collections
+import io
+import json
 import math
 import threading
 import time
+import urllib.request
+import zipfile
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 SCHEMA_VERSION = "provider_race.v1"
 
@@ -150,10 +154,82 @@ def _safe_segment(name: str) -> str:
     return "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in str(name)) or "provider"
 
 
-def _resolve_request(request, provider):
+def _resolve_request(request, provider, job_dir: Path | None = None):
     """``request`` may be one body shared by all providers, or a callable that builds the
     provider-native body per provider (RunPod pod body vs Vast offer-search differ)."""
-    return request(provider) if callable(request) else request
+    if not callable(request):
+        return request
+    if job_dir is not None:
+        try:
+            return request(provider, job_dir)
+        except TypeError:
+            pass
+    return request(provider)
+
+
+def _resolve_launch_kwargs(launch_kwargs, provider) -> dict[str, Any]:
+    """Optional provider-specific kwargs forwarded to ``provider.launch``.
+
+    ``launch_kwargs`` mirrors ``request``: either one mapping shared by every provider, or a callable
+    ``launch_kwargs(provider) -> mapping``. The race keeps this optional so legacy tests/providers with
+    only ``launch(job_dir, request, *, cold=False)`` continue to work.
+    """
+    if launch_kwargs is None:
+        return {}
+    value = launch_kwargs(provider) if callable(launch_kwargs) else launch_kwargs
+    if not value:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError("launch_kwargs must be a mapping or callable returning a mapping")
+    return dict(value)
+
+
+def boot_marker_present(
+    job_dir: str | Path | None = None,
+    *,
+    get_url: str | None = None,
+    output_url_file: str | Path | None = None,
+    marker_name: str = "bootstrap.json",
+    expected_launch_session_id: str | None = None,
+    timeout: float = 60.0,
+    urlopen: Callable[..., object] | None = None,
+) -> bool:
+    """Return whether a provider output zip contains the expected boot marker.
+
+    The helper is intentionally fail-closed: missing signed URLs, expired/forbidden URLs,
+    malformed zips, absent marker files, invalid marker JSON, and stale launch-session
+    markers all return ``False``. It never logs or returns the signed URL.
+    """
+    try:
+        resolved_url = str(get_url or "").strip()
+        if not resolved_url:
+            url_file = Path(output_url_file) if output_url_file else (
+                Path(job_dir) / "provider_output_get_url.txt" if job_dir is not None else None
+            )
+            if url_file is None or not url_file.is_file():
+                return False
+            resolved_url = url_file.read_text(encoding="utf-8").strip()
+        if not resolved_url:
+            return False
+
+        opener = urlopen or urllib.request.urlopen
+        try:
+            response = opener(resolved_url, timeout=timeout)
+        except TypeError:
+            response = opener(resolved_url)
+        data = response.read()
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            if marker_name not in zf.namelist():
+                return False
+            marker = json.loads(zf.read(marker_name).decode())
+        if not isinstance(marker, dict):
+            return False
+        expected = str(expected_launch_session_id or "").strip()
+        if expected and str(marker.get("launch_session_id") or "") != expected:
+            return False
+        return True
+    except Exception:  # noqa: BLE001 - boot-marker probes must fail closed, not crash launch races
+        return False
 
 
 def race_launch(
@@ -167,6 +243,7 @@ def race_launch(
     poll_interval: float = 10.0,
     circuit_breaker: ProviderCircuitBreaker | None = None,
     terminate_losers: bool = True,
+    launch_kwargs: Mapping[str, Any] | Callable[[object], Mapping[str, Any]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict:
@@ -192,6 +269,9 @@ def race_launch(
             skipped (unless *all* are tripped, in which case they race healthiest-first so
             the job isn't dead-ended). Outcomes are recorded back into it.
         terminate_losers: when True (default), every launched non-winner is terminated.
+        launch_kwargs: optional mapping, or callable returning a mapping, forwarded to
+            ``provider.launch``. This lets the job enforce warm-only semantics with
+            ``allow_cold_fallback=False`` without baking provider-specific options into the racer.
         sleep / monotonic: injectable clocks for hermetic, fast tests.
 
     Returns:
@@ -227,6 +307,7 @@ def race_launch(
     records = [
         {"provider": p.name, "index": i, "outcome": None, "instance_id": None,
          "mode": None, "launch": None, "terminated": None, "reason": None,
+         "stopped": None, "teardown_action": None, "launch_kwargs": None,
          "polls": 0, "elapsed_seconds": 0.0}
         for i, p in enumerate(runnable)
     ]
@@ -243,12 +324,32 @@ def race_launch(
 
         # -- launch --
         try:
-            launch = provider.launch(sub_dir, _resolve_request(request, provider), cold=cold)
+            kwargs = _resolve_launch_kwargs(launch_kwargs, provider)
+            request_body = _resolve_request(request, provider, sub_dir)
+            rec["launch_kwargs"] = dict(kwargs)
+            try:
+                launch = provider.launch(
+                    sub_dir,
+                    request_body,
+                    cold=cold,
+                    **kwargs,
+                )
+            except TypeError as exc:
+                if not kwargs:
+                    raise
+                rec["launch_kwargs_legacy_fallback"] = repr(exc)[:200]
+                launch = provider.launch(
+                    sub_dir,
+                    request_body,
+                    cold=cold,
+                )
         except Exception as exc:  # noqa: BLE001 — a thrown launch is just a dud, not a crash
             rec["outcome"] = "no_capacity"
             rec["reason"] = ("launch_raised:" + repr(exc))[:200]
             rec["elapsed_seconds"] = round(monotonic() - started, 3)
             return
+        if isinstance(launch, dict):
+            launch.setdefault("job_dir", str(sub_dir))
         rec["launch"] = launch if isinstance(launch, dict) else {"raw": repr(launch)[:200]}
         iid = launch.get("instance_id") if isinstance(launch, dict) else None
         launched = isinstance(launch, dict) and launch.get("status") == "launched" and bool(iid)
@@ -314,9 +415,19 @@ def race_launch(
         iid = rec["instance_id"]
         if iid and terminate_losers:
             try:
-                rec["terminated"] = runnable[i].terminate(iid)
+                mode = str(rec.get("mode") or "")
+                if mode.startswith("warm") and hasattr(runnable[i], "stop"):
+                    rec["teardown_action"] = "stop"
+                    rec["stopped"] = runnable[i].stop(iid)
+                else:
+                    rec["teardown_action"] = "terminate"
+                    rec["terminated"] = runnable[i].terminate(iid)
             except Exception as exc:  # noqa: BLE001
-                rec["terminated"] = {"status": "terminate_failed", "error": repr(exc)[:200]}
+                action = rec.get("teardown_action") or "teardown"
+                if action == "stop":
+                    rec["stopped"] = {"status": "stop_failed", "error": repr(exc)[:200]}
+                else:
+                    rec["terminated"] = {"status": "terminate_failed", "error": repr(exc)[:200]}
             terminated += 1
 
     # 4) Feed outcomes back into the breaker. A provider that booted (won OR booted_lost)

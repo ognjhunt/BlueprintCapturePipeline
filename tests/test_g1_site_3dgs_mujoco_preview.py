@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import g1_site_3dgs_mujoco_preview as preview

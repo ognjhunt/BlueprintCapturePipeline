@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline.synthesis import cosmos_worker

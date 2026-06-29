@@ -350,18 +350,25 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             last, last_source = refreshed, refreshed_source
     completed = bool(done and last.get("status") == "completed")
     runner_started = bool(done or last or last_boot or last_console_tail)
-    if (
-        (preserve_instance or (stop_on_success and runner_started))
-        and hasattr(provider, "stop")
-    ):
+    timed_out_without_runner_done = not done
+    if done and (preserve_instance or (stop_on_success and runner_started)) and hasattr(provider, "stop"):
         teardown = provider.stop(instance_id)
+        teardown_reason = "runner_done_preserved_for_warm_reuse"
     else:
-        # No marker/output means this was a launch dud rather than a reusable worker.
+        # A pod that never reached runner_done is not a reusable warm worker. Terminate it so
+        # providers that bill stopped disks (notably RunPod) release storage as well as compute.
         teardown = provider.terminate(instance_id)
+        teardown_reason = (
+            "timeout_without_runner_done_terminated"
+            if timed_out_without_runner_done
+            else "launch_dud_terminated"
+        )
     return {"status": "completed" if completed else "blocked",
             "runner_result": last, "runner_result_source": last_source,
             "last_bootstrap": last_boot, "runner_console_tail": last_console_tail,
-            "teardown": teardown, "elapsed_seconds": round(time.time() - t0, 1)}
+            "teardown": teardown, "teardown_reason": teardown_reason,
+            "timed_out_without_runner_done": timed_out_without_runner_done,
+            "elapsed_seconds": round(time.time() - t0, 1)}
 
 
 def _launch_shape_summary(provider_name: str, request: dict) -> dict:

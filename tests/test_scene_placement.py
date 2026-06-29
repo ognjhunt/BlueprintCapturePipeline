@@ -203,6 +203,27 @@ def test_label_fallback_synonym_fridge_to_refrigerator():
     assert target.id == "r"
 
 
+def test_multi_target_detector_preserves_distinct_fixture_groups():
+    assert tr.detect_multi_target("turn on the faucet and the stove") is True
+    assert tr.task_target_groups("turn the tap and faucet") == ["faucet"]
+    assert tr.detect_multi_target("turn the tap and faucet") is False
+
+
+def test_resolve_targets_by_label_returns_deterministic_primary_order():
+    objs = [_obj("stove", "stove"), _obj("faucet", "faucet"), _obj("fridge", "refrigerator")]
+    targets = tr.resolve_targets_by_label("open the refrigerator and turn on the faucet", objs)
+
+    assert [obj.id for obj in targets] == ["fridge", "faucet"]
+    assert tr.resolve_target_by_label("open the refrigerator and turn on the faucet", objs).id == "fridge"
+
+
+def test_target_kind_classifies_openable_vs_static():
+    assert tr.classify_target_kind(_obj("fridge", "refrigerator")) == "openable"
+    assert tr.classify_target_kind(_obj("drawer", "drawer_pull")) == "openable"
+    assert tr.classify_target_kind(_obj("faucet", "kitchen_faucet")) == "static"
+    assert tr.is_openable_target(_obj("door", "cabinet door")) is True
+
+
 def test_label_fallback_prefers_shortest_label():
     # two faucet-like objects: the most direct name wins the tie
     objs = [
@@ -352,6 +373,14 @@ def test_clean_label_handles_blank_and_pure_index():
     assert _clean_label("_001") == ""
 
 
+def test_clean_label_drops_suffix_only_names():
+    assert _clean_label("_geo") == ""
+    assert _clean_label("_mesh") == ""
+    assert _clean_label("link") == ""
+    assert _clean_label("Faucet_geo") == "faucet"
+    assert _clean_label("Faucet_01_geo") == "faucet"
+
+
 # ----------------------------- _is_excluded -----------------------------
 
 def test_is_excluded_matches_shell_substrings():
@@ -467,6 +496,7 @@ def test_objects_from_bounds_disambiguates_duplicate_ids():
 def test_objects_from_bounds_skips_unlabelable_names():
     named = [
         _named_bounds("001", (0, 0, 0), (1, 1, 1)),
+        _named_bounds("_geo", (0, 0, 0), (1, 1, 1)),
         _named_bounds("Faucet", (1, 1, 0.8), (1.4, 1.4, 1.2)),
     ]
     objs = _objects_from_bounds(named)
@@ -480,6 +510,15 @@ def test_objects_from_bounds_coerces_to_float_tuples():
     assert o.bbox_max == (2.0, 2.0, 2.0)
     assert isinstance(o.centroid[0], float)
     assert o.centroid == (1.0, 1.0, 1.0)
+
+
+def test_objects_from_bounds_canonicalizes_inverted_aabb_axes():
+    objs = _objects_from_bounds([_named_bounds("Faucet", (1, 1, 1), (0, 0, 0))])
+    o = objs[0]
+    assert o.bbox_min == (0.0, 0.0, 0.0)
+    assert o.bbox_max == (1.0, 1.0, 1.0)
+    assert o.size() == (1.0, 1.0, 1.0)
+    assert o.centroid == (0.5, 0.5, 0.5)
 
 
 def test_objects_from_bounds_respects_custom_exclude():
@@ -682,6 +721,7 @@ def test_obstacle_boxes_splits_disconnected_components_inside_one_mesh():
 # ===========================================================================
 from blueprint_pipeline.scene_placement.perception_index import (  # noqa: E402
     PerceptionSceneSpatialIndex,
+    _aabb_from_points,
     camera_basis,
     pixel_ray,
     resolve_intrinsics,
@@ -693,6 +733,17 @@ def _approx_vec(a, b, tol=1e-6):
     assert len(a) == len(b)
     for x, y in zip(a, b):
         assert x == pytest.approx(y, abs=tol)
+
+
+def test_aabb_from_points_is_order_independent_and_canonical():
+    bmin, bmax = _aabb_from_points([(3.0, -1.0, 2.0), (1.0, 4.0, 0.5)])
+    reversed_bmin, reversed_bmax = _aabb_from_points([(1.0, 4.0, 0.5), (3.0, -1.0, 2.0)])
+
+    assert bmin == (1.0, -1.0, 0.5)
+    assert bmax == (3.0, 4.0, 2.0)
+    assert reversed_bmin == bmin
+    assert reversed_bmax == bmax
+    assert all(bmin[i] <= bmax[i] for i in range(3))
 
 
 def test_camera_basis_is_orthonormal_right_handed():
@@ -727,6 +778,11 @@ def test_camera_basis_handles_up_parallel_to_forward():
         assert math.sqrt(sum(c * c for c in v)) == pytest.approx(1.0)
     assert sum(a * b for a, b in zip(right, forward)) == pytest.approx(0.0, abs=1e-9)
     assert sum(a * b for a, b in zip(up_cam, forward)) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_camera_basis_rejects_coincident_eye_and_target():
+    with pytest.raises(ValueError, match="eye and target"):
+        camera_basis((1.0, 2.0, 3.0), (1.0, 2.0, 3.0), (0.0, 0.0, 1.0))
 
 
 def test_unproject_on_axis_is_eye_plus_forward_times_depth():
@@ -887,6 +943,26 @@ def test_perception_index_skips_detection_with_no_valid_depth():
     assert [o.label for o in index.objects()] == ["good"]
 
 
+def test_perception_index_skips_room_spanning_unprojected_box():
+    camera = {
+        "fx": 10.0, "fy": 10.0, "cx": 50.0, "cy": 50.0,
+        "eye": (0.0, 0.0, 0.0), "target": (1.0, 0.0, 0.0), "up": (0.0, 0.0, 1.0),
+    }
+    detections = [
+        {"label": "bad", "bbox_px": (0.0, 0.0, 100.0, 100.0)},
+        {"label": "sink", "bbox_px": (49.0, 49.0, 51.0, 51.0)},
+    ]
+
+    index = PerceptionSceneSpatialIndex(
+        detections,
+        lambda _px, _py: 2.0,
+        camera,
+        max_world_box_size=6.0,
+    )
+
+    assert [o.label for o in index.objects()] == ["sink"]
+
+
 def test_perception_index_skips_malformed_bbox_without_crashing():
     """A non-iterable / wrong-length bbox_px is SKIPPED, not allowed to crash the
     whole scene build — same robustness contract as the no-valid-depth skip.
@@ -937,6 +1013,7 @@ def test_perception_index_satisfies_spatial_index_protocol():
 # =========================================================================== #
 
 from blueprint_pipeline.scene_placement.placement import compute_stand_pose  # noqa: E402
+from blueprint_pipeline.scene_placement.validation import validate_stand_pose  # noqa: E402
 
 
 def _target(cx=0.0, cy=0.0, cz=0.9, hx=0.2, hy=0.2, hz=0.1, id_="faucet", label="faucet"):
@@ -947,6 +1024,90 @@ def _target(cx=0.0, cy=0.0, cz=0.9, hx=0.2, hy=0.2, hz=0.1, id_="faucet", label=
         bbox_max=(cx + hx, cy + hy, cz + hz),
         centroid=(cx, cy, cz),
     )
+
+
+def test_compute_stand_pose_flags_non_finite_target_without_probe():
+    calls = []
+    target = SceneObject(
+        id="bad",
+        label="bad",
+        bbox_min=(float("nan"), 0.0, 0.0),
+        bbox_max=(1.0, 1.0, 1.0),
+        centroid=(float("nan"), 0.5, 0.5),
+    )
+
+    pose = compute_stand_pose(target, probe=lambda p, y: calls.append((p, y)) or 0)
+
+    assert calls == []
+    assert pose.clear is False
+    assert pose.standoff_m == 0.0
+    assert all(math.isfinite(v) for v in pose.position)
+    assert "degenerate_target:non_finite_target_aabb" in pose.notes
+
+
+def test_compute_stand_pose_flags_non_numeric_target_without_probe():
+    calls = []
+    target = SceneObject(
+        id="bad-string",
+        label="bad-string",
+        bbox_min=("bad", 0.0, 0.0),
+        bbox_max=(1.0, 1.0, 1.0),
+        centroid=(0.5, 0.5, 0.5),
+    )
+
+    pose = compute_stand_pose(target, probe=lambda p, y: calls.append((p, y)) or 0)
+
+    assert calls == []
+    assert pose.clear is False
+    assert pose.standoff_m == 0.0
+    assert all(math.isfinite(v) for v in pose.position)
+    assert "degenerate_target:non_finite_target_aabb" in pose.notes
+
+
+def test_compute_stand_pose_flags_inverted_target_without_negative_standoff():
+    calls = []
+    target = SceneObject(
+        id="inverted",
+        label="inverted",
+        bbox_min=(1.0, 1.0, 1.0),
+        bbox_max=(0.0, 0.0, 0.0),
+        centroid=(0.5, 0.5, 0.5),
+    )
+
+    pose = compute_stand_pose(target, probe=lambda p, y: calls.append((p, y)) or 0)
+
+    assert calls == []
+    assert pose.clear is False
+    assert pose.standoff_m >= 0.0
+    assert pose.position == (0.5, 0.5, 0.79)
+    assert "degenerate_target:inverted_target_aabb" in pose.notes
+
+
+def test_canonicalized_inverted_bounds_match_ordered_placement_and_validation():
+    ordered = _objects_from_bounds([_named_bounds("Faucet", (0, 0, 0), (1, 1, 1))])[0]
+    inverted = _objects_from_bounds([_named_bounds("Faucet", (1, 1, 1), (0, 0, 0))])[0]
+
+    ordered_pose = compute_stand_pose(ordered, probe=lambda p, y: 0)
+    inverted_pose = compute_stand_pose(inverted, probe=lambda p, y: 0)
+    ordered_validation = validate_stand_pose(
+        ordered_pose.position,
+        ordered_pose.yaw,
+        ordered,
+        [ordered],
+        floor_z=0.0,
+    )
+    inverted_validation = validate_stand_pose(
+        inverted_pose.position,
+        inverted_pose.yaw,
+        inverted,
+        [inverted],
+        floor_z=0.0,
+    )
+
+    assert inverted.size() == ordered.size()
+    assert inverted_pose.position == ordered_pose.position
+    assert inverted_pose.standoff_m == pytest.approx(ordered_pose.standoff_m)
+    assert inverted_validation.ok == ordered_validation.ok
 
 
 def test_compute_stand_pose_picks_open_side_of_l_counter():
@@ -1027,6 +1188,23 @@ def test_compute_stand_pose_respects_standoff():
     cx, cy = tgt.footprint_center()
     dist = math.hypot(pose.position[0] - cx, pose.position[1] - cy)
     assert abs(dist - (0.3 + 0.55)) < 1e-6
+
+
+def test_compute_stand_pose_adds_openable_standoff_margin():
+    static = _target(id_="sink", label="sink", hx=0.3, hy=0.3)
+    openable = _target(id_="fridge", label="refrigerator", hx=0.3, hy=0.3)
+    openable.category = "openable"
+
+    static_pose = compute_stand_pose(
+        static, probe=lambda p, y: 0, standing_distance=0.55, step=0.1
+    )
+    openable_pose = compute_stand_pose(
+        openable, probe=lambda p, y: 0, standing_distance=0.55, step=0.1
+    )
+
+    assert static_pose.standoff_m == pytest.approx(0.55)
+    assert openable_pose.standoff_m == pytest.approx(0.80)
+    assert "openable standoff margin" in openable_pose.notes
 
 
 def test_compute_stand_pose_two_walls_single_open_side():

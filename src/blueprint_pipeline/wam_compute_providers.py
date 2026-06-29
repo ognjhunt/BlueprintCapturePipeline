@@ -403,11 +403,13 @@ def _result_from_manifest(
         status = "blocked"
     if status == "completed" and blockers:
         status = "blocked"
-    teardown_path = (
-        job_dir / "runpod_wam_async_delete_manifest.json"
-        if provider == "runpod"
-        else job_dir / "vast_teardown_manifest.json"
-    )
+    if provider == "runpod":
+        teardown_path = job_dir / "runpod_wam_async_delete_manifest.json"
+        stop_teardown_path = job_dir / "runpod_wam_async_stop_manifest.json"
+        if not teardown_path.is_file() and stop_teardown_path.is_file():
+            teardown_path = stop_teardown_path
+    else:
+        teardown_path = job_dir / "vast_teardown_manifest.json"
     teardown_payload = {}
     if teardown_path.is_file():
         try:

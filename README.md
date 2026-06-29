@@ -399,6 +399,13 @@ Artifact families and advisory downstream outputs:
 uv sync --extra dev
 ```
 
+The `dev` extra carries the full no-GPU validation stack (`usd-core`/`pxr`,
+`mujoco`, `trimesh`, `pycollada`/`collada`, `boto3`) so the dry-render,
+scene-placement, and parity
+tests run instead of skipping. For the canonical one-command CPU setup, the
+import probe, and the green-baseline test commands, see
+[docs/DEV_SETUP.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/DEV_SETUP.md).
+
 Run repository commands through the synced environment:
 
 ```bash
@@ -770,12 +777,13 @@ The older single-VM GPU runbook is still available for legacy downstream world-m
 
 For privacy-service bring-up, use the service images under [`deploy/docker/`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/deploy/docker) and the Terraform stack under [`deploy/terraform/main.tf`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/deploy/terraform/main.tf).
 
-The normal local repo bootstrap is:
+The canonical no-GPU local setup is documented in
+[`docs/DEV_SETUP.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/DEV_SETUP.md).
+Use that setup before dry-render, USD placement, MuJoCo, or provider-staging
+tests; it verifies `PIL`, `pxr`, `mujoco`, `trimesh`, `collada`, and `boto3`.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .[dev]
+python -m blueprint_pipeline.cpu_env_doctor
 ```
 
 Then stage and run:
@@ -876,6 +884,38 @@ It writes review artifacts only; it does not run Isaac Sim, MuJoCo, PyBullet,
 live providers, model downloads, or rank-fidelity trials.
 Evaluation prep surfaces existing SimReady artifacts but does not auto-build
 them unless `BLUEPRINT_ALLOW_LEGACY_SIMREADY_EVAL_PREP=true` is set.
+
+Isaac/G1 kitchen-parity render support:
+
+```bash
+python scripts/run_isaac_g1_kitchen_parity_eval.py \
+  --request /path/to/request.json \
+  --kitchen-usd /path/to/Collected_KitchenRoom/KitchenRoom.usd \
+  --out-dir /tmp/blueprint-g1-dry-render \
+  --dry-render
+```
+
+`scripts/run_isaac_g1_kitchen_parity_eval.py` owns the G1 kitchen-parity review
+lane, including the head-POV `open the refrigerator` seed path and the local
+`--dry-render` preview. Dry-render is CPU-only support evidence for
+stance/camera/arm-framing checks. It is not a rendered Isaac frame, policy
+success, physical object contact, safety validation, deployment approval,
+learned-policy success, or live robot readiness.
+
+Recent G1 support modules:
+
+- `src/blueprint_pipeline/scene_placement/` provides pure, swappable placement
+  helpers. Importing the package pulls in no `isaacsim`, `torch`,
+  `google-genai`, network, or GPU dependency; USD, perception, VLM, and PhysX
+  backends are injected. See
+  [`src/blueprint_pipeline/scene_placement/README.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/scene_placement/README.md).
+- `src/blueprint_pipeline/warm_render_server.py` implements a hermetically
+  tested warm-serve control loop. Live multi-job reuse after one real Isaac
+  scene load still requires on-GPU proof.
+- `src/blueprint_pipeline/provider_race.py`, `src/blueprint_pipeline/render_lock.py`,
+  and `scripts/gpu_spend_guard.py` are provider/spend-safety scaffolding. They
+  do not prove live provider execution, teardown, artifact quality, or readiness
+  by themselves.
 
 Optional Palatial PhysReady twin request/materialization lane:
 

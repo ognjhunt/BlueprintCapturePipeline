@@ -86,6 +86,17 @@ _PROXY_GROUPS: tuple[tuple[str, ...], ...] = (
     ("faucet", "tap", "spout", "mixer", "sink", "basin", "washbasin"),
     ("stove", "cooktop", "range", "burner", "hob", "oven"),
 )
+_OPENABLE_TARGET_GROUPS = frozenset(
+    {
+        "fridge",
+        "oven",
+        "microwave",
+        "dishwasher",
+        "cabinet",
+        "drawer",
+        "door",
+    }
+)
 
 
 def _synonyms_of(token: str) -> set[str]:
@@ -95,6 +106,17 @@ def _synonyms_of(token: str) -> set[str]:
         if token in group:
             out.update(group)
     return out
+
+
+def _canonical_group_for_token(token: str) -> str | None:
+    """Canonical synonym-group name for a token, or None when it is not a known target noun."""
+    token = (token or "").strip().lower()
+    if not token:
+        return None
+    for group in _SYNONYM_GROUPS:
+        if token in group:
+            return group[0]
+    return None
 
 
 def _proxies_of(token: str) -> set[str]:
@@ -313,6 +335,47 @@ def _task_intent_tokens(task: str) -> List[str]:
     return sorted(uniq, key=len, reverse=True)
 
 
+def task_target_groups(task: str) -> list[str]:
+    """Distinct fixture groups named by a task, preserving first mention order.
+
+    ``faucet`` + ``tap`` is one group; ``faucet`` + ``stove`` is a multi-target
+    task. This is a diagnostic contract, not a claim that all targets can be
+    executed in one render.
+    """
+    words = re.findall(r"[a-z0-9]+", (task or "").lower())
+    groups: list[str] = []
+    seen: set[str] = set()
+    for word in words:
+        if word in _TASK_STOPWORDS:
+            continue
+        group = _canonical_group_for_token(word)
+        if group and group not in seen:
+            seen.add(group)
+            groups.append(group)
+    return groups
+
+
+def detect_multi_target(task: str) -> bool:
+    """True when a task names two or more distinct fixture groups."""
+    return len(task_target_groups(task)) >= 2
+
+
+def classify_target_kind(obj: SceneObject) -> str:
+    """Advisory label-derived target kind: ``openable`` or ``static``.
+
+    This is not capture truth. It is a conservative placement hint for articulated
+    fixtures such as refrigerator doors, drawers, cabinets, and dishwashers.
+    """
+    text = f"{obj.label} {obj.category} {obj.id}".lower()
+    tokens = re.findall(r"[a-z0-9]+", text)
+    groups = {_canonical_group_for_token(token) for token in tokens}
+    return "openable" if any(group in _OPENABLE_TARGET_GROUPS for group in groups) else "static"
+
+
+def is_openable_target(obj: SceneObject) -> bool:
+    return classify_target_kind(obj) == "openable"
+
+
 # Match strength, lower == better. A label that literally contains the task token
 # beats a synonym proxy ("faucet" label over a "sink" proxy), which beats a weaker
 # cross-fixture proxy. Used to rank candidate objects for one intent token.
@@ -369,3 +432,31 @@ def resolve_target_by_label(
             ranked.sort(key=lambda t: (t[0], t[1], t[2]))
             return ranked[0][3]
     return None
+
+
+def resolve_targets_by_label(task: str, objects: List[SceneObject]) -> list[SceneObject]:
+    """Resolve every distinct target group mentioned by ``task`` using the label fallback.
+
+    Results are ordered by first mention in the task. The existing single-target
+    ``resolve_target_by_label`` API remains the primary/first target.
+    """
+    if not objects:
+        return []
+    out: list[SceneObject] = []
+    seen_ids: set[str] = set()
+    for group in task_target_groups(task):
+        ranked = [
+            (rank, len(obj.label or ""), obj.label or "", obj)
+            for obj in objects
+            for token in _synonyms_of(group)
+            for rank in (_label_match_rank(token, obj.label),)
+            if rank != _RANK_NONE
+        ]
+        if not ranked:
+            continue
+        ranked.sort(key=lambda t: (t[0], t[1], t[2]))
+        selected = ranked[0][3]
+        if selected.id not in seen_ids:
+            seen_ids.add(selected.id)
+            out.append(selected)
+    return out

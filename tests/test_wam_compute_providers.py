@@ -283,6 +283,84 @@ def test_run_wam_compute_job_normalizes_runpod_result(
     assert captured_poll["teardown"] is True
 
 
+def test_run_wam_compute_job_records_runpod_stop_teardown_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path / "bundle.zip")
+
+    def fake_create(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "schema_version": "runpod_wam_async_create_manifest.v1",
+            "generated_at": "now",
+            "status": "pod_created",
+            "pod_id": "pod-123",
+            "output_path": str(kwargs["output_path"]),
+            "blockers": [],
+            "raw_secret_values_recorded": False,
+        }
+
+    def fake_poll(**kwargs: Any) -> dict[str, Any]:
+        provider_job = Path(kwargs["job_dir"])
+        output_zip = provider_job / "runpod_provider_runtime_output.zip"
+        with zipfile.ZipFile(output_zip, "w") as archive:
+            archive.writestr("oscar_generated_rollout.mp4", b"fake")
+        (provider_job / "runpod_wam_async_stop_manifest.json").write_text(
+            (
+                '{"schema_version":"runpod_wam_async_stop_manifest.v1",'
+                '"status":"completed","pod_id":"pod-123"}'
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "schema_version": "runpod_wam_async_poll_manifest.v1",
+            "generated_at": "now",
+            "status": "completed",
+            "pod_id": "pod-123",
+            "pod_status": "RUNNING",
+            "provider_command_status": "completed",
+            "provider_command_blockers": [],
+            "output_zip_present": True,
+            "provider_runtime_output_zip_path": str(output_zip),
+            "runtime_result_status": "completed",
+            "runtime_result_blockers": [],
+            "mp4_count": 1,
+            "teardown_action": "stop",
+            "teardown_performed": True,
+            "continuing_spend_from_this_run": False,
+            "raw_secret_values_recorded": False,
+        }
+
+    monkeypatch.setattr(providers, "create_runpod_wam_async_run", fake_create)
+    monkeypatch.setattr(providers, "poll_runpod_wam_async_run", fake_poll)
+    monkeypatch.setattr(
+        providers,
+        "_inspect_provider_runtime_output_zip",
+        lambda *_args, **_kwargs: {
+            "zip_present": True,
+            "runtime_result_status": "completed",
+            "runtime_result_blockers": [],
+            "mp4_count": 1,
+            "mp4_validation": {"files": []},
+        },
+    )
+
+    result = providers.run_wam_compute_job(
+        spec=_spec(bundle),
+        job_dir=tmp_path / "compute",
+        provider_order=["runpod"],
+        allow_paid_launch=True,
+    )
+
+    assert result.status == "completed"
+    assert result.provider == "runpod"
+    assert result.teardown_manifest_path is not None
+    assert result.teardown_manifest_path.endswith("runpod_wam_async_stop_manifest.json")
+    assert result.teardown_status == "completed"
+    assert result.teardown_performed is True
+    assert result.continuing_spend_from_this_run is False
+
+
 def test_run_wam_compute_job_blocks_when_expected_mp4_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

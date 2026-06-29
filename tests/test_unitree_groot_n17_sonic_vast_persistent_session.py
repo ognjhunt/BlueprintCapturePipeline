@@ -6,6 +6,8 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image, ImageDraw
 
 from blueprint_pipeline import vast_provider_adapter

@@ -325,8 +325,28 @@ def _configured_conditioning_mode(projected_skeleton_rows: Sequence[Mapping[str,
     if configured is not None and configured.strip():
         return configured.strip()
     if _projected_skeleton_projectable_row_count(projected_skeleton_rows) > 0:
-        return "projected_g1_skeleton_rgb_overlay"
+        return "projected_g1_skeleton"
     return DEFAULT_CONDITIONING_MODE
+
+
+def _conditioning_video_model_input_useful(
+    *,
+    skeleton_video: Mapping[str, Any],
+    visual_smoke: Mapping[str, Any],
+) -> bool:
+    visual_signal = _mapping(skeleton_video.get("visual_signal"))
+    if (
+        skeleton_video.get("projected_g1_skeleton_rendered")
+        and skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and int(skeleton_video.get("projected_g1_skeleton_landmark_draw_count") or 0) > 0
+        and visual_signal.get("status") == "completed"
+    ):
+        return True
+    return bool(
+        _mapping(visual_smoke.get("claim_boundary")).get(
+            "visual_rollout_useful_for_task_success_review"
+        )
+    )
 
 
 def _sample_rows(rows: Sequence[Mapping[str, Any]], count: int) -> list[dict[str, Any]]:
@@ -888,6 +908,22 @@ def _render_proxy_skeleton_video(
                 or projected_g1_skeleton_rgb_overlay
             )
         ),
+        "skeleton_stream_separate_from_rgb": bool(
+            projected_g1_skeleton and not projected_g1_skeleton_rgb_overlay
+        ),
+        "skeleton_stream_texture_free": bool(
+            projected_g1_skeleton and not projected_g1_skeleton_rgb_overlay
+        ),
+        "skeleton_stream_image_aligned_to_rgb": bool(projected_g1_skeleton),
+        "first_rgb_frame_anchors_scene_and_robot_appearance": bool(projected_g1_skeleton),
+        "alignment_contract": {
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "frame_count": len(sampled_rows),
+            "source_rgb_anchor": "first_frame",
+            "skeleton_coordinates": "projected_pixel_landmarks",
+        },
         "background_video_path": str(background_video) if background_video else None,
         "background_frame_count": background_frame_count,
         "background_preprocessing": {
@@ -1116,6 +1152,10 @@ def _materialize_oscar_input_package(
     projected_g1_skeleton_rendered = bool(
         skeleton_video.get("projected_g1_skeleton_rendered")
     )
+    conditioning_video_useful = _conditioning_video_model_input_useful(
+        skeleton_video=skeleton_video,
+        visual_smoke=skeleton_video_visual_smoke,
+    )
     rgb_context_mode = _rgb_context_mode()
     rgb_video_used_for_latent_context = bool(
         not projected_g1_skeleton_rendered
@@ -1145,11 +1185,26 @@ def _materialize_oscar_input_package(
         "conditioning_video_decode_valid_for_review": (
             skeleton_video_review_validation.get("status") == "completed"
         ),
-        "conditioning_video_visually_useful_for_model_input": bool(
-            _mapping(skeleton_video_visual_smoke.get("claim_boundary")).get(
-                "visual_rollout_useful_for_task_success_review"
-            )
-        ),
+        "conditioning_video_visually_useful_for_model_input": conditioning_video_useful,
+        "oscar_dual_stream_input_contract": {
+            "first_rgb_frame_path": str(first_frame.get("path")),
+            "skeleton_video_path": str(skeleton_video.get("path")),
+            "separate_2d_skeleton_stream": bool(
+                skeleton_video.get("skeleton_stream_separate_from_rgb")
+            ),
+            "skeleton_stream_texture_free": bool(
+                skeleton_video.get("skeleton_stream_texture_free")
+            ),
+            "skeleton_stream_image_aligned_to_rgb": bool(
+                skeleton_video.get("skeleton_stream_image_aligned_to_rgb")
+            ),
+            "first_rgb_frame_anchors_scene_and_robot_appearance": True,
+            "full_rgb_video_required_for_oscar_inference": False,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "num_frames": num_frames,
+        },
         "prompt": _task_prompt(rollout_manifest),
         "num_frames": num_frames,
         "fps": fps,
@@ -1233,6 +1288,13 @@ def _materialize_oscar_input_package(
                 )
             ),
             "first_frame_uses_selected_review_video": True,
+            "first_rgb_frame_anchors_scene_and_robot_appearance": True,
+            "separate_2d_skeleton_stream_aligned_to_rgb": bool(
+                skeleton_video.get("skeleton_stream_image_aligned_to_rgb")
+            ),
+            "skeleton_stream_is_texture_free": bool(
+                skeleton_video.get("skeleton_stream_texture_free")
+            ),
             "rgb_video_uses_selected_review_video": True,
             "rgb_video_used_for_oscar_rgb_latent_context": rgb_video_used_for_latent_context,
             "rgb_context_mode": rgb_context_mode,

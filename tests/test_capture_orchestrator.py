@@ -1881,6 +1881,57 @@ def test_capture_orchestrator_runs_single_capture_smoke_lane(monkeypatch, tmp_pa
     ]
 
 
+def test_capture_pipeline_preserves_completed_lane_when_later_lane_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    descriptor_path = tmp_path / "scenes" / "scene-1" / "captures" / "capture-1" / "capture_descriptor.json"
+    descriptor_path.parent.mkdir(parents=True)
+    descriptor_path.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.resolve_requested_lanes",
+        lambda **_kwargs: ["qualification", "retrieval_index"],
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.resolve_gs_uri_to_path",
+        lambda *_args, **_kwargs: descriptor_path,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.run_qualification_pipeline",
+        lambda **_kwargs: {
+            "lane": "qualification",
+            "status": "completed",
+            "manifest_path": str(tmp_path / "qualification.json"),
+        },
+    )
+
+    def _retrieval_boom(**_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("retrieval index crashed")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.run_retrieval_index_stage",
+        _retrieval_boom,
+    )
+
+    result = run_capture_pipeline(
+        descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        requested_lanes=["qualification", "retrieval_index"],
+        config=PipelineConfig(gcs_root=tmp_path),
+    )
+
+    assert result["status"] == "completed_with_lane_failures"
+    assert result["lane_failure_count"] == 1
+    assert result["results"][0]["lane"] == "qualification"
+    assert result["results"][0]["status"] == "completed"
+    assert result["results"][1] == {
+        "lane": "retrieval_index",
+        "status": "failed",
+        "error_type": "RuntimeError",
+        "error": "retrieval index crashed",
+    }
+
+
 def test_resolve_requested_lanes_defaults_to_current_stack_for_site_world_candidate(
     tmp_path: Path,
 ) -> None:

@@ -78,6 +78,7 @@ robot_eval_jobs/
 policy_endpoint_setups/
 frame_*.png
 MUJOCO_LOG.TXT
+wam_provider_output.json
 uv.lock
 
 # Splat render tool (node deps installed locally)

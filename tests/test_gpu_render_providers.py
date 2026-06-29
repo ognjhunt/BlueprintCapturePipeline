@@ -267,7 +267,7 @@ def test_watch_and_collect_tears_down_via_provider(tmp_path: Path) -> None:
     assert res["teardown"]["status"] == "terminated"
 
 
-def test_watch_and_collect_can_preserve_no_output_pod_for_warm_reuse(tmp_path: Path) -> None:
+def test_watch_and_collect_terminates_no_output_pod_even_when_preserve_requested(tmp_path: Path) -> None:
     from blueprint_pipeline.isaac_particlefield_render_job import watch_and_collect
 
     class _FakeProvider:
@@ -300,9 +300,11 @@ def test_watch_and_collect_can_preserve_no_output_pod_for_warm_reuse(tmp_path: P
     )
 
     assert res["status"] == "blocked"
-    assert fake.stopped == "inst-9"
-    assert fake.terminated is None
-    assert res["teardown"]["status"] == "stopped"
+    assert fake.stopped is None
+    assert fake.terminated == "inst-9"
+    assert res["teardown"]["status"] == "terminated"
+    assert res["teardown_reason"] == "timeout_without_runner_done_terminated"
+    assert res["timed_out_without_runner_done"] is True
 
 
 def test_watch_and_collect_stops_successful_pod_for_warm_reuse(tmp_path: Path, monkeypatch) -> None:
@@ -345,6 +347,7 @@ def test_watch_and_collect_stops_successful_pod_for_warm_reuse(tmp_path: Path, m
     assert res["status"] == "completed"
     assert fake.stopped == "inst-9"
     assert fake.terminated is None
+    assert res["teardown_reason"] == "runner_done_preserved_for_warm_reuse"
     assert res["teardown"]["status"] == "stopped"
 
 
@@ -439,8 +442,66 @@ def test_watch_and_collect_ignores_stale_result_before_runner_done(tmp_path: Pat
     assert res["status"] == "blocked"
     assert res["last_bootstrap"]["phase"] == "kitchen_fetching"
     assert res["runner_result"]["blockers"] == ["stale_previous_run"]
-    assert fake.stopped == "inst-9"
-    assert fake.terminated is None
+    assert fake.stopped is None
+    assert fake.terminated == "inst-9"
+    assert res["teardown_reason"] == "timeout_without_runner_done_terminated"
+
+
+def test_watch_and_collect_terminates_heartbeat_timeout_despite_preserve(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from blueprint_pipeline import isaac_particlefield_render_job as job
+
+    class _FakeProvider:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.terminated: str | None = None
+
+        def stop(self, instance_id: str) -> dict:
+            self.stopped = instance_id
+            return {"status": "stopped"}
+
+        def terminate(self, instance_id: str) -> dict:
+            self.terminated = instance_id
+            return {"status": "terminated"}
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bootstrap.json", json.dumps({"phase": "runner_starting"}))
+        zf.writestr("runner_console.log", "Isaac is still starting")
+    payload_bytes = payload.getvalue()
+
+    class _Response:
+        def read(self) -> bytes:
+            return payload_bytes
+
+    clock = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr(job.time, "time", lambda: next(clock, 2.0))
+    monkeypatch.setattr(job.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(job.urllib.request, "urlopen", lambda _url, timeout=60: _Response())
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+    fake = _FakeProvider()
+
+    res = job.watch_and_collect(
+        job_dir,
+        tmp_path / "out",
+        "inst-9",
+        provider=fake,
+        max_seconds=1,
+        poll=1,
+        preserve_instance=True,
+    )
+
+    assert res["status"] == "blocked"
+    assert fake.stopped is None
+    assert fake.terminated == "inst-9"
+    assert res["last_bootstrap"]["phase"] == "runner_starting"
+    assert res["timed_out_without_runner_done"] is True
 
 
 def test_runpod_terminate_is_delete_and_fail_closed(tmp_path: Path, monkeypatch) -> None:

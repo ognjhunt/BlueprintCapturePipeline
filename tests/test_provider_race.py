@@ -12,13 +12,20 @@ terminating the losers — a degraded provider can no longer hold the job hostag
 """
 from __future__ import annotations
 
+import io
+import json
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.provider_race import ProviderCircuitBreaker, race_launch
+from blueprint_pipeline.provider_race import (
+    ProviderCircuitBreaker,
+    boot_marker_present,
+    race_launch,
+)
 
 
 # ----------------------------- fakes -----------------------------
@@ -76,6 +83,74 @@ def _marker_check(provider, launch_result):
 
 
 _NO_SLEEP = lambda *_a, **_k: None  # noqa: E731 — deterministic, no wall-clock in unit tests
+
+
+def _marker_zip(payload: dict | None = None, *, member: str = "bootstrap.json") -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        if payload is not None:
+            zf.writestr(member, json.dumps(payload))
+    return buf.getvalue()
+
+
+class _UrlOpenResponse:
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
+
+def _urlopen_for(data: bytes):
+    def _open(_url, timeout=None):  # noqa: ANN001 - mirrors urllib.request.urlopen
+        return _UrlOpenResponse(data)
+
+    return _open
+
+
+# ----------------------------- shared boot marker helper -----------------------------
+
+
+def test_boot_marker_present_reads_bootstrap_from_signed_output(tmp_path: Path):
+    (tmp_path / "provider_output_get_url.txt").write_text(
+        "https://store.example/output.zip?sig=secret",
+        encoding="utf-8",
+    )
+
+    assert boot_marker_present(
+        tmp_path,
+        expected_launch_session_id="fresh-session",
+        urlopen=_urlopen_for(_marker_zip({"launch_session_id": "fresh-session"})),
+    ) is True
+
+
+def test_boot_marker_present_rejects_missing_marker(tmp_path: Path):
+    (tmp_path / "provider_output_get_url.txt").write_text("https://store.example/output.zip?sig=secret")
+
+    assert boot_marker_present(tmp_path, urlopen=_urlopen_for(_marker_zip(None))) is False
+
+
+def test_boot_marker_present_rejects_stale_launch_session(tmp_path: Path):
+    (tmp_path / "provider_output_get_url.txt").write_text("https://store.example/output.zip?sig=secret")
+
+    assert boot_marker_present(
+        tmp_path,
+        expected_launch_session_id="fresh-session",
+        urlopen=_urlopen_for(_marker_zip({"launch_session_id": "old-session"})),
+    ) is False
+
+
+def test_boot_marker_present_fails_closed_without_signed_url(tmp_path: Path):
+    assert boot_marker_present(tmp_path, urlopen=_urlopen_for(_marker_zip({"phase": "container_bash_started"}))) is False
+
+
+def test_boot_marker_present_fails_closed_on_url_errors(tmp_path: Path):
+    (tmp_path / "provider_output_get_url.txt").write_text("https://store.example/output.zip?sig=secret")
+
+    def _raise(_url, timeout=None):  # noqa: ANN001 - mirrors urllib.request.urlopen
+        raise PermissionError("expired presigned url")
+
+    assert boot_marker_present(tmp_path, urlopen=_raise) is False
 
 
 # ----------------------------- ProviderCircuitBreaker -----------------------------
@@ -266,6 +341,151 @@ def test_race_passes_cold_flag_and_per_provider_request(tmp_path: Path):
     assert seen == {"fast": True, "other": True}            # request built per provider
     assert fast.last_request == {"built_for": "fast"}
     assert fast.launch_cold is True                          # cold forwarded to .launch
+
+
+def test_race_forwards_launch_kwargs_to_capable_provider(tmp_path: Path):
+    class KwProvider(FakeProvider):
+        def __init__(self, name):
+            super().__init__(name, boots=True, marker_after=1)
+            self.launch_kwargs = None
+
+        def launch(
+            self,
+            job_dir,
+            request,
+            *,
+            cold=False,
+            allow_cold_fallback=True,
+            provider_hint=None,
+        ):
+            self.launch_calls += 1
+            self.launch_cold = cold
+            self.last_request = request
+            self.launch_kwargs = {
+                "allow_cold_fallback": allow_cold_fallback,
+                "provider_hint": provider_hint,
+            }
+            assert isinstance(job_dir, Path)
+            return {
+                "status": "launched",
+                "instance_id": f"{self.name}-iid",
+                "mode": "warm_restart",
+            }
+
+    provider = KwProvider("runpod")
+
+    res = race_launch(
+        [provider],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=1,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+        launch_kwargs=lambda p: {
+            "allow_cold_fallback": False,
+            "provider_hint": p.name,
+        },
+        sleep=_NO_SLEEP,
+    )
+
+    assert res["status"] == "launched"
+    assert provider.launch_kwargs == {
+        "allow_cold_fallback": False,
+        "provider_hint": "runpod",
+    }
+    assert res["contenders"][0]["launch_kwargs"] == {
+        "allow_cold_fallback": False,
+        "provider_hint": "runpod",
+    }
+
+
+def test_race_launch_kwargs_are_compatible_with_legacy_cold_only_provider(tmp_path: Path):
+    legacy = FakeProvider("legacy", boots=True, marker_after=1)
+
+    res = race_launch(
+        [legacy],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=1,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+        launch_kwargs={"allow_cold_fallback": False},
+        sleep=_NO_SLEEP,
+    )
+
+    assert res["status"] == "launched"
+    assert legacy.launch_calls == 1
+    assert res["contenders"][0]["launch_kwargs"] == {"allow_cold_fallback": False}
+    assert "launch_kwargs_legacy_fallback" in res["contenders"][0]
+
+
+def test_race_stops_warm_loser_instead_of_terminating(tmp_path: Path):
+    class WarmLoser(FakeProvider):
+        def __init__(self, name):
+            super().__init__(name, boots=False)
+            self.stop_calls = []
+
+        def launch(self, job_dir, request, *, cold=False):
+            self.launch_calls += 1
+            self.launch_cold = cold
+            self.last_request = request
+            assert isinstance(job_dir, Path)
+            return {"status": "launched", "instance_id": f"{self.name}-iid", "mode": "warm_restart"}
+
+        def stop(self, instance_id):
+            self.stop_calls.append(instance_id)
+            return {"status": "stopped", "instance_id": instance_id}
+
+    fast = FakeProvider("fast", boots=True, marker_after=1)
+    warm_loser = WarmLoser("warm")
+
+    res = race_launch(
+        [fast, warm_loser],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=0.05,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+        sleep=_NO_SLEEP,
+    )
+
+    assert res["provider"] == "fast"
+    assert warm_loser.stop_calls == ["warm-iid"]
+    assert warm_loser.terminate_calls == []
+    warm_rec = next(c for c in res["contenders"] if c["provider"] == "warm")
+    assert warm_rec["teardown_action"] == "stop"
+    assert warm_rec["stopped"]["status"] == "stopped"
+
+
+def test_race_records_warm_stop_failure_without_sinking_winner(tmp_path: Path):
+    class StopFails(FakeProvider):
+        def __init__(self, name):
+            super().__init__(name, boots=False)
+
+        def launch(self, job_dir, request, *, cold=False):
+            self.launch_calls += 1
+            return {"status": "launched", "instance_id": f"{self.name}-iid", "mode": "warm_restart"}
+
+        def stop(self, _instance_id):
+            raise RuntimeError("stop api failed")
+
+    fast = FakeProvider("fast", boots=True, marker_after=1)
+    loser = StopFails("warm")
+
+    res = race_launch(
+        [fast, loser],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=0.05,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+        sleep=_NO_SLEEP,
+    )
+
+    assert res["status"] == "launched"
+    warm_rec = next(c for c in res["contenders"] if c["provider"] == "warm")
+    assert warm_rec["teardown_action"] == "stop"
+    assert warm_rec["stopped"]["status"] == "stop_failed"
 
 
 def test_race_terminate_losers_false_keeps_instances_but_reports_them(tmp_path: Path):

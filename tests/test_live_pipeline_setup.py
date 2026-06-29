@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import urllib.error
 from pathlib import Path
 
@@ -77,7 +78,7 @@ def test_live_pipeline_setup_loads_env_without_exposing_values(
         "\n".join(
             [
                 "BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING=true",
-                "BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND=python -c 'print(1)'",
+                f"BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND={sys.executable} -c 'print(1)'",
                 "GEMINI_API_KEY=secret-gemini",
                 "OPENAI_API_KEY=secret-openai",
                 "DIGITALOCEAN_ACCESS_TOKEN=secret-do",
@@ -118,9 +119,9 @@ def test_live_pipeline_setup_marks_live_sections_ready_when_explicitly_configure
 
     result = build_live_pipeline_setup_manifest(
         capture_root=capture_root,
-        simulator_command="python -c 'print(1)'",
-        vision_labeling_command="python -c 'print(1)'",
-        delivery_command="python -c 'print(1)'",
+        simulator_command=f"{sys.executable} -c 'print(1)'",
+        vision_labeling_command=f"{sys.executable} -c 'print(1)'",
+        delivery_command=f"{sys.executable} -c 'print(1)'",
         load_local_env=False,
     )
 
@@ -167,8 +168,8 @@ def test_live_pipeline_setup_accepts_owner_arena_results_without_overclaiming_we
     result = build_live_pipeline_setup_manifest(
         capture_root=capture_root,
         arena_results_dir=arena_results,
-        vision_labeling_command="python -c 'print(1)'",
-        delivery_command="python -c 'print(1)'",
+        vision_labeling_command=f"{sys.executable} -c 'print(1)'",
+        delivery_command=f"{sys.executable} -c 'print(1)'",
         load_local_env=False,
     )
 

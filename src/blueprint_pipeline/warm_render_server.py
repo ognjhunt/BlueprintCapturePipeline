@@ -12,11 +12,41 @@ from __future__ import annotations
 import io
 import json
 import time
+import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
+
+
+class PresignedUrlAccessError(RuntimeError):
+    """Classified presigned URL access failure.
+
+    Carries only status/classification metadata; it intentionally never includes the raw URL.
+    """
+
+    def __init__(self, *, operation: str, status_code: int, classification: str) -> None:
+        super().__init__(f"{classification}:{operation}:http_{status_code}")
+        self.operation = operation
+        self.status_code = int(status_code)
+        self.classification = classification
+
+
+class WarmInboxUnrecoverable(RuntimeError):
+    """Raised when the warm inbox has repeated hard failures and should stop polling."""
+
+    def __init__(self, *, reason: str, failures: int) -> None:
+        super().__init__(f"{reason}:consecutive_failures={failures}")
+        self.reason = reason
+        self.failures = int(failures)
+
+
+def _http_error_classification(code: int) -> str:
+    if int(code) in (401, 403):
+        return "presigned_url_expired_or_forbidden"
+    return f"presigned_url_http_error_{int(code)}"
 
 
 @dataclass
@@ -26,6 +56,7 @@ class WarmJob:
     request_id: str
     scenario: dict[str, Any] = field(default_factory=dict)
     stop: bool = False
+    session_nonce: str = ""
 
 
 class JobSource(Protocol):
@@ -66,7 +97,23 @@ def serve_render_loop(
             _log(f"warm serve loop: max_jobs={max_jobs} reached after {served} job(s)")
             return {"jobs_served": served, "exit_reason": "max_jobs"}
 
-        job = job_source.poll()
+        try:
+            job = job_source.poll()
+        except PresignedUrlAccessError as exc:
+            _log(f"warm serve loop: inbox access failed: {exc.classification}")
+            return {
+                "jobs_served": served,
+                "exit_reason": "inbox_unrecoverable",
+                "blocker": exc.classification,
+            }
+        except WarmInboxUnrecoverable as exc:
+            _log(f"warm serve loop: inbox unrecoverable: {exc.reason}")
+            return {
+                "jobs_served": served,
+                "exit_reason": "inbox_unrecoverable",
+                "blocker": exc.reason,
+                "consecutive_failures": exc.failures,
+            }
         if job is None:
             if clock() - last_activity >= idle_timeout_s:
                 _log(f"warm serve loop: idle {idle_timeout_s}s elapsed; exiting after {served} job(s)")
@@ -89,6 +136,8 @@ def serve_render_loop(
             _log(f"warm serve loop: request_id={job.request_id} render error: {exc!r}")
 
         result["request_id"] = job.request_id
+        if job.session_nonce:
+            result["warm_session_nonce"] = job.session_nonce
         job_source.publish_result(job.request_id, result)
         served += 1
         last_activity = clock()
@@ -136,6 +185,7 @@ class FileJobSource:
             request_id=str(payload.get("request_id") or path.stem),
             scenario=dict(payload.get("scenario") or {}),
             stop=bool(payload.get("stop")),
+            session_nonce=str(payload.get("warm_session_nonce") or ""),
         )
 
     def publish_result(self, request_id: str, result: dict[str, Any]) -> None:
@@ -169,27 +219,60 @@ class SignedUrlJobSource:
     """
 
     def __init__(self, inbox_get_url: str, out_dir: Path | str, *,
-                 http_get: Callable[[str], bytes] = _http_get_bytes) -> None:
+                 http_get: Callable[[str], bytes] = _http_get_bytes,
+                 max_consecutive_failures: int = 10) -> None:
         self.inbox_get_url = inbox_get_url
         self.out_dir = Path(out_dir)
         self.results_dir = self.out_dir / "warm_results"
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self._http_get = http_get
+        self.max_consecutive_failures = max(1, int(max_consecutive_failures))
+        self.consecutive_failures = 0
+        self.last_error: str | None = None
         # The inbox is seeded with seq=0 at presign time; start at 0 so that seed is NOT claimed as a
         # job (the control plane's first real submit is seq=1).
         self._last_seq = 0
 
+    def _reset_failures(self) -> None:
+        self.consecutive_failures = 0
+        self.last_error = None
+
+    def _record_hard_failure(self, reason: str) -> None:
+        self.consecutive_failures += 1
+        self.last_error = reason
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            raise WarmInboxUnrecoverable(
+                reason=reason,
+                failures=self.consecutive_failures,
+            )
+
     def poll(self) -> Optional[WarmJob]:
         try:
             raw = self._http_get(self.inbox_get_url)
-        except Exception:  # noqa: BLE001 - empty/absent inbox (404) == no job yet
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                self._reset_failures()
+                return None
+            reason = _http_error_classification(exc.code)
+            self._record_hard_failure(reason)
+            if exc.code in (401, 403):
+                raise PresignedUrlAccessError(
+                    operation="warm_inbox_get",
+                    status_code=exc.code,
+                    classification=reason,
+                ) from exc
+            return None
+        except Exception:  # noqa: BLE001 - transient network failures are treated as no job yet
             return None
         if not raw:
+            self._reset_failures()
             return None
         try:
             payload = json.loads(raw.decode() if isinstance(raw, (bytes, bytearray)) else raw)
-        except Exception:  # noqa: BLE001 - a partial write: treat as no job
+        except Exception:  # noqa: BLE001 - repeated malformed payloads are a broken inbox
+            self._record_hard_failure("warm_inbox_malformed_json")
             return None
+        self._reset_failures()
         seq = int(payload.get("seq", -1))
         if seq <= self._last_seq:
             return None
@@ -198,6 +281,7 @@ class SignedUrlJobSource:
             request_id=str(payload.get("request_id") or seq),
             scenario=dict(payload.get("scenario") or {}),
             stop=bool(payload.get("stop")),
+            session_nonce=str(payload.get("warm_session_nonce") or ""),
         )
 
     def publish_result(self, request_id: str, result: dict[str, Any]) -> None:
@@ -215,24 +299,39 @@ class WarmPoolClient:
 
     def __init__(self, inbox_put_url: str, output_get_url: str, *,
                  http_put: Callable[[str, bytes], None] = _http_put_bytes,
-                 http_get: Callable[[str], bytes] = _http_get_bytes) -> None:
+                 http_get: Callable[[str], bytes] = _http_get_bytes,
+                 session_nonce: str | None = None) -> None:
         self.inbox_put_url = inbox_put_url
         self.output_get_url = output_get_url
         self._http_put = http_put
         self._http_get = http_get
         self._seq = 0
+        self.session_nonce = session_nonce or uuid.uuid4().hex
+        self._submitted_request_ids: set[str] = set()
 
     def submit(self, scenario: dict[str, Any], request_id: Optional[str] = None) -> str:
         self._seq += 1
         rid = request_id or f"job-{self._seq}"
-        payload = {"seq": self._seq, "request_id": rid, "scenario": scenario, "stop": False}
+        payload = {
+            "seq": self._seq,
+            "request_id": rid,
+            "scenario": scenario,
+            "stop": False,
+            "warm_session_nonce": self.session_nonce,
+        }
         self._http_put(self.inbox_put_url, json.dumps(payload).encode())
+        self._submitted_request_ids.add(rid)
         return rid
 
     def submit_stop(self) -> None:
         self._seq += 1
         self._http_put(self.inbox_put_url,
-                       json.dumps({"seq": self._seq, "request_id": "stop", "stop": True}).encode())
+                       json.dumps({
+                           "seq": self._seq,
+                           "request_id": "stop",
+                           "stop": True,
+                           "warm_session_nonce": self.session_nonce,
+                       }).encode())
 
     def poll_result(self, request_id: str, *, timeout_s: float = 300.0, interval_s: float = 5.0,
                     clock: Callable[[], float] = time.monotonic,
@@ -245,7 +344,22 @@ class WarmPoolClient:
                 if raw:
                     with zipfile.ZipFile(io.BytesIO(raw)) as z:
                         if key in z.namelist():
-                            return json.loads(z.read(key).decode())
+                            result = json.loads(z.read(key).decode())
+                            if result.get("warm_session_nonce") != self.session_nonce:
+                                sleep(interval_s)
+                                continue
+                            return result
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    pass
+                elif exc.code in (401, 403):
+                    raise PresignedUrlAccessError(
+                        operation="warm_output_get",
+                        status_code=exc.code,
+                        classification=_http_error_classification(exc.code),
+                    ) from exc
+                else:
+                    pass
             except Exception:  # noqa: BLE001 - output zip not posted yet / mid-upload: retry
                 pass
             sleep(interval_s)

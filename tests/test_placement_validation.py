@@ -212,6 +212,33 @@ def test_facing_away_flagged():
     assert any(f.startswith("facing_off") for f in v.failures)
 
 
+def test_forward_frame_mismatch_flags_flipped_yaw_convention():
+    target, counter = _sink_and_counter()
+    pose = (2.28, 0.55, 0.84)
+    yaw = math.pi / 2
+
+    correct = validate_stand_pose(
+        pose,
+        yaw,
+        target,
+        [target, counter],
+        floor_z=0.05,
+        forward_axis_yaw_offset_deg=0.0,
+    )
+    flipped = validate_stand_pose(
+        pose,
+        yaw,
+        target,
+        [target, counter],
+        floor_z=0.05,
+        forward_axis_yaw_offset_deg=180.0,
+    )
+
+    assert not any(f.startswith("forward_frame_mismatch") for f in correct.failures)
+    assert any(f.startswith("forward_frame_mismatch") for f in flipped.failures)
+    assert flipped.ok is False
+
+
 def test_standoff_too_far_flagged():
     target, counter = _sink_and_counter()
     v = validate_stand_pose((2.28, -1.0, 0.84), math.pi / 2, target, [target, counter], floor_z=0.05)

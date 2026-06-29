@@ -587,12 +587,13 @@ def _materialize_artifact_map(
 
 
 def _read_depth_frame(path: Path) -> Any:
-    import cv2  # type: ignore[import-not-found]
     import numpy as np
 
     if path.suffix.lower() == ".npy":
         depth = np.load(path).astype("float32")
     else:
+        import cv2  # type: ignore[import-not-found]
+
         depth = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         if depth is None:
             raise FileNotFoundError(f"depth_frame_missing:{path}")

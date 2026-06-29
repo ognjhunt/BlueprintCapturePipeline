@@ -12,6 +12,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import oscar_isaac_closed_loop_eval as L
@@ -402,7 +404,7 @@ def test_local_oscar_subprocess_generate_blocks_on_nonzero(tmp_path: Path) -> No
 
 
 def test_extract_last_frame_via_opencv_roundtrip(tmp_path: Path) -> None:
-    import cv2
+    cv2 = pytest.importorskip("cv2")
     import numpy as np
 
     video = tmp_path / "clip.mp4"
@@ -418,6 +420,32 @@ def test_extract_last_frame_via_opencv_roundtrip(tmp_path: Path) -> None:
     got = cv2.imread(str(out))
     assert got is not None and got.shape == (24, 32, 3)
     assert int(got.mean()) > 120  # the brightest (last) frame, not an earlier dark one
+
+
+def test_extract_last_frame_uses_ffmpeg_when_cv2_missing(tmp_path: Path, monkeypatch) -> None:
+    import builtins
+    import subprocess
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-video")
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object):
+        if name == "cv2":
+            raise ImportError("cv2 intentionally unavailable")
+        return real_import(name, *args, **kwargs)
+
+    def fake_run(argv: list[str], **_kwargs: object):
+        Path(argv[-1]).write_bytes(b"png")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    out = L.extract_last_frame_via_opencv(video, tmp_path / "extracted")
+
+    assert out == tmp_path / "extracted" / "next_observation.png"
+    assert out.is_file()
 
 
 def test_closed_loop_blocks_on_empty_route(tmp_path: Path) -> None:

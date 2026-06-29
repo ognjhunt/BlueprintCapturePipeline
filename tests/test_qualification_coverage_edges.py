@@ -90,6 +90,11 @@ def test_qualification_small_helpers_and_handoff_paths(
     assert q._object_index_runtime_blockers(tmp_path) == [
         "object_index_backend:required_backend:failed_to_launch"
     ]
+    blocker = q._object_index_exception_blocker(
+        "ensure_object_index_stage",
+        RuntimeError("SAM3D crashed"),
+    )
+    assert blocker == "object_index_stage:ensure_object_index_stage:RuntimeError:SAM3D crashed"
 
     descriptor = _descriptor(
         intake_packet_uri="gs://bucket/intake.json",
@@ -258,7 +263,10 @@ def test_qualification_record_brief_and_opportunity_edge_paths(tmp_path: Path) -
         scorecard=scorecard,
         scope_record=scope,
         object_index_entries=object_entries,
-        object_index_runtime_blockers=["object_index_backend:required_backend:failed_to_launch"],
+        object_index_runtime_blockers=[
+            "object_index_backend:required_backend:failed_to_launch",
+            "object_index_stage:ensure_object_index_stage:RuntimeError:SAM3D crashed",
+        ],
     )
     risk_ids = {risk["id"] for risk in record["risks"]}
     assert {
@@ -269,6 +277,10 @@ def test_qualification_record_brief_and_opportunity_edge_paths(tmp_path: Path) -
         "privacy_restrictions",
         "object_index_runtime_missing",
     }.issubset(risk_ids)
+    object_index_risk = next(
+        risk for risk in record["risks"] if risk["id"] == "object_index_runtime_missing"
+    )
+    assert "SAM3D crashed" in object_index_risk["detail"]
 
     scaffolding_record = q._build_qualification_record(
         descriptor=_descriptor(

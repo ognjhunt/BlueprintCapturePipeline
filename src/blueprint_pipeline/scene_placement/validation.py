@@ -15,10 +15,9 @@ Two intended uses — and the difference is the whole point:
      bad-pose bug. That separation is exactly what we lacked when a pose read fine in the data but the
      robot rendered inside the counter.
 
-     LIMITATION: this only isolates *position* bugs. A pure-ROTATION frame bug (the robot lands at the
-     right xy but ``yaw`` is applied in a flipped/rotated frame) that stays under ``max_facing_error_deg``
-     passes BOTH the intent and the actual checks, so it is NOT isolated here. The facing check only
-     catches gross (> tolerance) heading errors; sub-threshold frame rotations are a known blind spot.
+     Rotation-frame bugs are checked when the caller supplies a non-zero
+     ``forward_axis_yaw_offset_deg``. That keeps the default runner convention unchanged while making a
+     flipped/rotated forward-axis convention fail deterministically before render.
 
 Pure + stdlib-only, so it unit-tests with synthetic boxes — no torch, no GPU, no network.
 
@@ -187,6 +186,7 @@ def validate_stand_pose(
     clip_area_eps: float = DEFAULT_VALIDATION_CLIP_AREA_EPS_M2,
     min_obstacle_clearance_m: float = DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M,
     standoff_obstacles: Optional[Sequence[SceneObject]] = None,
+    forward_axis_yaw_offset_deg: float = 0.0,
 ) -> PlacementVerdict:
     """Validate that ``position``/``yaw`` stands the robot correctly for acting on ``target``.
 
@@ -227,6 +227,11 @@ def validate_stand_pose(
     non-finite AABB, yields ``ok=False`` with an explicit ``non_finite_*`` reason rather than a
     silently-passing verdict (every IEEE comparison against ``nan`` is ``False``, which would otherwise
     let a garbage pose slip through facing/clip/standoff).
+
+    ``forward_axis_yaw_offset_deg`` is a render-free convention cross-check. Keep it at ``0`` for the
+    runner's normal +x-forward pelvis frame. Passing a non-zero offset models a caller applying yaw in a
+    rotated/flipped frame; the validator then fails with ``forward_frame_mismatch`` if that applied
+    forward axis would not look at the target.
     """
     px, py, pz = (float(v) for v in position)
     yaw = float(yaw)
@@ -238,7 +243,7 @@ def validate_stand_pose(
     failures: List[str] = []
 
     # 0. FINITE INPUTS — guard before any comparison, since `x > nan` etc. are all False (silent pass).
-    if not _all_finite(px, py, pz, yaw, floor_z):
+    if not _all_finite(px, py, pz, yaw, floor_z, forward_axis_yaw_offset_deg):
         failures.append("non_finite_pose")
     if not _obj_bbox_finite(target):
         failures.append(f"non_finite_target:{target.id}")
@@ -307,6 +312,12 @@ def validate_stand_pose(
     facing_err = _angle_diff_deg(yaw, dir_to_target)
     if facing_err > max_facing_error_deg:
         failures.append(f"facing_off({facing_err:.0f}deg)")
+    applied_forward_err = _angle_diff_deg(
+        yaw + math.radians(float(forward_axis_yaw_offset_deg)),
+        dir_to_target,
+    )
+    if applied_forward_err > max_facing_error_deg:
+        failures.append(f"forward_frame_mismatch({applied_forward_err:.0f}deg)")
 
     # 4. STANDOFF — xy gap to the nearest reach surface (target box, plus any supporting fixtures).
     standoff = _xy_box_gap(

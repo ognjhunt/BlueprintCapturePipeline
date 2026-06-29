@@ -454,6 +454,46 @@ def test_launch_gate_requires_buyer_request_id(tmp_path: Path) -> None:
     assert checks["buyer_request_linked"]["detail"] == "buyer_request_id is missing from the buyer request linkage"
 
 
+def test_launch_gate_does_not_treat_blocked_bundle_file_as_ready(tmp_path: Path) -> None:
+    capture_root, _descriptor_uri = _build_capture(
+        tmp_path,
+        capture_source="iphone",
+        capture_modality="iphone_arkit_lidar",
+    )
+    eval_root = capture_root / "pipeline" / "evaluation_prep"
+    eval_root.mkdir(parents=True, exist_ok=True)
+    (eval_root / "launchable_export_bundle.json").write_text(
+        json.dumps({"status": "blocked", "blockers": ["missing_rights"]}),
+        encoding="utf-8",
+    )
+
+    summary = build_launch_gate_summary(capture_root=capture_root, env={})
+    checks = {check["name"]: check for check in summary["stage_checks"]}
+
+    assert summary["overall_status"] == "blocked"
+    assert checks["buyer_fulfillment_bundle_ready"]["passed"] is False
+
+
+def test_launch_gate_keeps_legacy_statusless_bundle_file_fallback(tmp_path: Path) -> None:
+    capture_root, _descriptor_uri = _build_capture(
+        tmp_path,
+        capture_source="iphone",
+        capture_modality="iphone_arkit_lidar",
+    )
+    eval_root = capture_root / "pipeline" / "evaluation_prep"
+    eval_root.mkdir(parents=True, exist_ok=True)
+    # Legacy bundles predate the status field; the fallback is intentionally limited to this case.
+    (eval_root / "launchable_export_bundle.json").write_text(
+        json.dumps({"bundle_uri": "gs://bucket/legacy.zip"}),
+        encoding="utf-8",
+    )
+
+    summary = build_launch_gate_summary(capture_root=capture_root, env={})
+    checks = {check["name"]: check for check in summary["stage_checks"]}
+
+    assert checks["buyer_fulfillment_bundle_ready"]["passed"] is True
+
+
 def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_capture(
         tmp_path,

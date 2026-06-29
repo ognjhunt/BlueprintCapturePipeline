@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+pytest.importorskip("PIL")
 from PIL import Image, ImageDraw
 
 from blueprint_pipeline.wam_generated_video_review import (

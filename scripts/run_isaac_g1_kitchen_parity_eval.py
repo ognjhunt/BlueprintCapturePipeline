@@ -46,6 +46,12 @@ except Exception:  # noqa: BLE001
     from blueprint_pipeline import isaac_g1_policy as policy_mod  # repo (tests)
 
 RESULT_SCHEMA_VERSION = "isaac_g1_kitchen_parity_result.v1"
+DRY_RENDER_SOURCE_MARKER = "dry_render_preview"
+DRY_RENDER_SOURCE_HEADER = "X-Blueprint-Render-Source"
+DRY_RENDER_NOTE_HEADER = "X-Blueprint-Render-Note"
+DRY_RENDER_NOT_RENDERED_NOTE = (
+    "NOT a rendered frame: CPU-only dry-render preview of stance/camera/projection math."
+)
 # robot footprint half-extent (m) for the PhysX overlap probe (approx G1 standing bbox)
 ROBOT_FOOTPRINT_HALF_EXTENT = (0.28, 0.28, 0.62)
 ROBOT_PELVIS_HEIGHT_M = 0.79
@@ -142,6 +148,10 @@ MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG = 26.0
 MANIPULATION_POV_HEAD_FORWARD_PITCH_DOWN_DEG = 24.0
 MANIPULATION_POV_MIN_VFOV_DEG = 110.0
 DEFAULT_RENDER_STEP_WATCHDOG_SECONDS = 180.0
+ROBOT_VISUAL_MESH_MISSING_BLOCKER = "robot_visual_mesh_missing"
+ROBOT_REVIEW_VISUAL_PROXY_USED_BLOCKER = "robot_review_visual_proxy_used"
+DEFAULT_PATH_TRACING_MIN_SAMPLES_PER_PIXEL = 64
+DEFAULT_PATH_TRACING_MAX_SAMPLES_PER_PIXEL = 128
 
 
 # ============================ testable helpers (no isaacsim) ============================
@@ -1147,20 +1157,68 @@ def _target_raised_to_max_pitch_down(eye, target, max_pitch_down_deg: float) -> 
     return (tgt[0], tgt[1], min_target_z)
 
 
-def _manipulation_seed_arm_target_for_shoulder(shoulder, affordance) -> tuple[float, float, float]:
-    """Task-directed arm seed target that keeps the arm out instead of pre-reaching down.
+def _unit_xy_from_yaw(yaw: float | None) -> tuple[float, float] | None:
+    if yaw is None:
+        return None
+    try:
+        fx = math.cos(float(yaw))
+        fy = math.sin(float(yaw))
+    except Exception:  # noqa: BLE001
+        return None
+    norm = math.hypot(fx, fy)
+    if norm <= 1e-9:
+        return None
+    return (fx / norm, fy / norm)
 
-    The initial policy/WAM seed should show arms extended into the task corridor, not already solving
-    the manipulation. Horizontally, the seed points at the resolved affordance. Vertically, it never
-    drives the arm below a shoulder-relative forward posture unless the affordance itself is higher.
+
+def _unit_xy_from_points(origin, target) -> tuple[float, float] | None:
+    try:
+        dx = float(target[0]) - float(origin[0])
+        dy = float(target[1]) - float(origin[1])
+    except Exception:  # noqa: BLE001
+        return None
+    norm = math.hypot(dx, dy)
+    if norm <= 1e-9:
+        return None
+    return (dx / norm, dy / norm)
+
+
+def _manipulation_seed_arm_target_for_shoulder(
+    shoulder,
+    affordance,
+    *,
+    forward_yaw: float | None = None,
+    forward_xy: Sequence[float] | None = None,
+) -> tuple[float, float, float]:
+    """Forward-ready arm seed target for the initial policy/WAM observation.
+
+    This is intentionally not a contact/reach target. The resolved affordance remains useful for the
+    camera and geometry report, but the initial robot pose should only show both arms held forward
+    from their own shoulders so the policy/WAM evaluator can produce the action.
     """
     shoulder_z = float(shoulder[2])
-    affordance_z = float(affordance[2])
+    direction: tuple[float, float] | None = None
+    if forward_xy is not None:
+        try:
+            fx = float(forward_xy[0])
+            fy = float(forward_xy[1])
+            norm = math.hypot(fx, fy)
+            if norm > 1e-9:
+                direction = (fx / norm, fy / norm)
+        except Exception:  # noqa: BLE001
+            direction = None
+    if direction is None:
+        direction = _unit_xy_from_yaw(forward_yaw)
+    if direction is None:
+        direction = _unit_xy_from_points(shoulder, affordance)
+    if direction is None:
+        direction = (1.0, 0.0)
     forward_seed_z = shoulder_z - max(0.04, min(0.10, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.12))
+    forward_distance_m = max(0.32, min(0.48, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.58))
     return (
-        float(affordance[0]),
-        float(affordance[1]),
-        max(affordance_z, forward_seed_z),
+        float(shoulder[0]) + direction[0] * forward_distance_m,
+        float(shoulder[1]) + direction[1] * forward_distance_m,
+        forward_seed_z,
     )
 
 
@@ -1178,6 +1236,46 @@ def _projection_dict(px) -> dict[str, Any] | None:
 def _normalize_reach_arm_selection(arm: str) -> str:
     selection = str(arm or "right").strip().lower()
     return selection if selection in {"left", "right", "both"} else "right"
+
+
+def _manipulation_seed_arm_visibility(
+    *,
+    available_roles: Sequence[str],
+    roles_in_frame: set[str],
+    useful_roles_in_frame: set[str],
+) -> dict[str, Any]:
+    """Validate initial seed arm visibility without overfitting to one link role name.
+
+    For the WAM/policy seed we need a clear task POV with the hand/arm visible, not proof that a
+    specific ``forearm``/``elbow`` role was projected in the useful band. A visible hand+wrist chain
+    is sufficient arm evidence; a lone hand/fingertip is not.
+    """
+    available = {str(role) for role in available_roles}
+    effector_roles = roles_in_frame.intersection({"hand", "wrist"})
+    useful_effector_roles = useful_roles_in_frame.intersection({"hand", "wrist"})
+    arm_chain_roles = roles_in_frame.intersection({"elbow", "wrist", "hand"})
+    useful_arm_chain_roles = useful_roles_in_frame.intersection({"elbow", "wrist", "hand"})
+    blockers: list[str] = []
+    if not available:
+        blockers.append("manipulation_pov_arm_links_unavailable")
+    if not effector_roles:
+        blockers.append("manipulation_pov_arm_not_in_frame")
+    elif not useful_effector_roles:
+        blockers.append("manipulation_pov_effector_not_usefully_in_frame")
+    if len(arm_chain_roles) < 2:
+        blockers.append("manipulation_pov_arm_chain_not_in_frame")
+    return {
+        "status": "PASS" if not blockers else "FAIL",
+        "blockers": blockers,
+        "effector_roles_in_frame": sorted(effector_roles),
+        "useful_effector_roles_in_frame": sorted(useful_effector_roles),
+        "arm_chain_roles_in_frame": sorted(arm_chain_roles),
+        "useful_arm_chain_roles_in_frame": sorted(useful_arm_chain_roles),
+        "requirement": (
+            "Initial manipulation seed requires visible hand/wrist arm-chain evidence and the "
+            "task affordance in frame; it does not require a specifically named forearm/elbow role."
+        ),
+    }
 
 
 def _required_manipulation_arms(arm: str) -> tuple[str, ...]:
@@ -1201,9 +1299,9 @@ def _manipulation_pov_geometry_single(
 
     The articulated skeleton trace is optional and may be disabled for crash-safe kinematic renders,
     so manipulation media needs an independent USD-link projection check. This is an initial seed
-    frame gate: the target affordance and task-side forearm/gripper must be visible, and the arm must
-    be held forward toward the workspace. It deliberately does NOT require the gripper to be at the
-    affordance; the policy/WAM rollout is responsible for completing the manipulation.
+    frame gate: the target affordance and task-side hand/wrist arm chain must be visible, and the arm
+    must be held in a forward-ready posture. It deliberately does NOT require the gripper to be at or
+    aimed at the affordance; the policy/WAM rollout is responsible for completing the manipulation.
     """
     blockers: list[str] = []
     aff = (float(affordance[0]), float(affordance[1]), float(affordance[2]))
@@ -1254,8 +1352,11 @@ def _manipulation_pov_geometry_single(
         if margin >= min_margin_px and v_px <= max_useful_v_px:
             useful_projected.append(item)
     useful_roles_in_frame = {str(item["link_role"]) for item in useful_projected}
-    effector_roles = useful_roles_in_frame.intersection({"hand", "wrist"})
-    forearm_roles = useful_roles_in_frame.intersection({"elbow", "wrist", "hand"})
+    seed_arm_visibility = _manipulation_seed_arm_visibility(
+        available_roles=available_roles,
+        roles_in_frame=roles_in_frame,
+        useful_roles_in_frame=useful_roles_in_frame,
+    )
     if not available_roles:
         blockers.append("manipulation_pov_arm_links_unavailable")
     if target_px is None:
@@ -1264,10 +1365,7 @@ def _manipulation_pov_geometry_single(
         blockers.append("manipulation_pov_target_near_frame_edge")
     if pitch_down_deg > MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG:
         blockers.append("manipulation_pov_camera_pitched_down_too_far")
-    if not effector_roles:
-        blockers.append("manipulation_pov_arm_not_in_frame")
-    if len(forearm_roles) < 2:
-        blockers.append("manipulation_pov_forearm_not_in_frame")
+    blockers.extend(str(b) for b in (seed_arm_visibility.get("blockers") or []))
 
     effector_distances: dict[str, float] = {}
     for role in ("wrist", "hand"):
@@ -1294,22 +1392,19 @@ def _manipulation_pov_geometry_single(
         if effector_pt is not None:
             shoulder = tuple(float(shoulder_pt[i]) for i in range(3))
             effector = tuple(float(effector_pt[i]) for i in range(3))
-            task_dir = _norm((aff[0] - shoulder[0], aff[1] - shoulder[1], aff[2] - shoulder[2]))
-            arm_dir = _norm((
-                effector[0] - shoulder[0],
-                effector[1] - shoulder[1],
-                effector[2] - shoulder[2],
-            ))
             arm_len = math.sqrt(sum((effector[i] - shoulder[i]) ** 2 for i in range(3)))
-            alignment = sum(arm_dir[i] * task_dir[i] for i in range(3))
+            horizontal_extension_m = math.sqrt(
+                (effector[0] - shoulder[0]) ** 2
+                + (effector[1] - shoulder[1]) ** 2
+            )
+            horizontal_extension_ratio = horizontal_extension_m / arm_len if arm_len > 1e-6 else 0.0
             vertical_drop_ratio = (
                 abs(effector[2] - shoulder[2]) / arm_len if arm_len > 1e-6 else 1.0
             )
             extension_blockers: list[str] = []
-            # Low alignment catches the bad seed class where the arm is visible but hanging down or
-            # tucked sideways instead of held out toward the task workspace. Distance to the affordance
-            # is only metadata; the initial seed must not pre-solve the task.
-            if alignment < 0.35:
+            # Reject the bad seed class where the arm is visible but hanging nearly vertical. Do not
+            # require the hand to align with the affordance; the initial image is just a ready state.
+            if horizontal_extension_ratio < 0.35 or vertical_drop_ratio > 0.85:
                 extension_blockers.append("manipulation_pov_arm_not_extended_forward")
             if arm_len < 0.12:
                 extension_blockers.append("manipulation_pov_arm_extension_too_short")
@@ -1317,11 +1412,12 @@ def _manipulation_pov_geometry_single(
                 "status": "PASS" if not extension_blockers else "FAIL",
                 "blockers": extension_blockers,
                 "shoulder_to_effector_m": round(float(arm_len), 4),
-                "alignment_to_affordance_direction": round(float(alignment), 4),
+                "horizontal_extension_m": round(float(horizontal_extension_m), 4),
+                "horizontal_extension_ratio": round(float(horizontal_extension_ratio), 4),
                 "vertical_drop_ratio": round(float(vertical_drop_ratio), 4),
                 "claim_boundary": (
                     "Forward extension checks initial manipulation readiness only. It does not require "
-                    "contact with the affordance or prove task completion."
+                    "aiming at/contact with the affordance or prove task completion."
                 ),
             }
     if arm_extension.get("status") != "PASS":
@@ -1343,6 +1439,7 @@ def _manipulation_pov_geometry_single(
         "arm_roles_usefully_in_frame": sorted(useful_roles_in_frame),
         "arm_landmarks_in_frame": len(projected),
         "arm_landmarks_usefully_in_frame": len(useful_projected),
+        "seed_arm_visibility": seed_arm_visibility,
         "effector_distance_to_affordance_m": effector_distances,
         "effector_distance_is_metadata_only": True,
         "arm_extension": arm_extension,
@@ -1437,6 +1534,16 @@ def _manipulation_pov_geometry(
         side: report.get("arm_extension")
         for side, report in per_arm.items()
     }
+    seed_arm_visibility_by_arm = {
+        side: report.get("seed_arm_visibility")
+        for side, report in per_arm.items()
+    }
+    seed_arm_visibility_blockers = sorted({
+        str(blocker)
+        for visibility in seed_arm_visibility_by_arm.values()
+        if isinstance(visibility, Mapping)
+        for blocker in (visibility.get("blockers") or [])
+    })
     extension_blockers = sorted({
         str(blocker)
         for extension in extension_by_arm.values()
@@ -1475,6 +1582,15 @@ def _manipulation_pov_geometry(
             int(report.get("arm_landmarks_usefully_in_frame") or 0)
             for report in per_arm.values()
         ),
+        "seed_arm_visibility": {
+            "status": "PASS" if not seed_arm_visibility_blockers else "FAIL",
+            "blockers": seed_arm_visibility_blockers,
+            "by_arm": seed_arm_visibility_by_arm,
+            "requirement": (
+                "Each requested arm must provide visible hand/wrist arm-chain evidence in the "
+                "task POV. This is seed framing evidence, not task completion."
+            ),
+        },
         "effector_distance_to_affordance_m": (
             primary.get("effector_distance_to_affordance_m") or {}
         ),
@@ -1489,7 +1605,7 @@ def _manipulation_pov_geometry(
             "by_arm": extension_by_arm,
             "claim_boundary": (
                 "Forward extension checks initial manipulation readiness only. It does not require "
-                "contact with the affordance or prove task completion."
+                "aiming at/contact with the affordance or prove task completion."
             ),
         },
         "projected_landmarks": projected,
@@ -2185,11 +2301,53 @@ def _resolve_asset_uri(value: str) -> str:
     return value
 
 
+def _g1_visual_asset_candidates(value: str) -> list[str]:
+    """Return likely visual USD candidates without tying the harness to a scene.
+
+    The caller supplies the robot asset URI/path. For multiphysics ``.usda`` inputs, prefer the
+    same-directory ``.usd`` visual sibling and the Isaac-6 short ``Unitree/G1`` visual sibling before
+    falling back to the physics-only ``.usda`` composition. Non-``.usda`` inputs are tried exactly
+    first. The list is ordered and deduped.
+    """
+    candidates: list[str] = []
+
+    def add(candidate: str | None) -> None:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    raw = str(value or "").strip()
+    lower = raw.lower()
+    short_candidates: list[str] = []
+    if "/Isaac/Robots/Unitree/G1/" in raw:
+        short_candidates.append(raw.replace("/Isaac/Robots/Unitree/G1/", "/Unitree/G1/"))
+    if raw.startswith("Isaac/Robots/Unitree/G1/"):
+        short_candidates.append(raw.replace("Isaac/Robots/Unitree/G1/", "Unitree/G1/", 1))
+    if lower.endswith(".usda"):
+        add(raw[:-5] + ".usd")
+        for short in short_candidates:
+            if short.lower().endswith(".usda"):
+                add(short[:-5] + ".usd")
+            add(short)
+        add(raw)
+    else:
+        add(raw)
+        for short in short_candidates:
+            add(short)
+    return candidates
+
+
 def _bind_g1(stage, g1_usd: str, prim_path: str = "/World/G1"):
     """Reference the official Isaac G1 USD and verify it is a controllable, collidable articulation."""
     from pxr import UsdPhysics  # type: ignore
     g1_prim = stage.DefinePrim(prim_path, "Xform")
     g1_prim.GetReferences().AddReference(g1_usd)
+    load_error = None
+    try:
+        stage.Load(prim_path)
+        payload_load_status = "loaded"
+    except Exception as exc:  # noqa: BLE001
+        payload_load_status = "load_failed"
+        load_error = repr(exc)
     art_count = collision_count = 0
     for prim in stage.Traverse():
         if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
@@ -2202,7 +2360,95 @@ def _bind_g1(stage, g1_usd: str, prim_path: str = "/World/G1"):
         "collision_enabled_verified": collision_count > 0,
         "articulation_root_api_prim_count": art_count,
         "collision_api_prim_count": collision_count,
+        "g1_usd": g1_usd,
+        "payload_load_status": payload_load_status,
+        "payload_load_error": load_error,
     }
+
+
+def _robot_visual_geometry_missing(diag: Mapping[str, Any] | None) -> bool:
+    """True when the robot subtree has no actual renderable Gprim/Mesh surface."""
+    if not diag:
+        return True
+    blockers = {str(b) for b in (diag.get("blockers") or [])}
+    if ROBOT_VISUAL_MESH_MISSING_BLOCKER in blockers:
+        return True
+    try:
+        return int(diag.get("gprim_count") or 0) <= 0
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _bind_g1_with_visual_fallback(stage, g1_usd: str, prim_path: str = "/World/G1"):
+    """Bind G1 and prefer a composition that exposes renderable visual surfaces.
+
+    Link projections and articulation probes can pass against a physics-only composition. This helper
+    keeps those signals separate from visual readiness by trying ordered visual candidates and returning
+    the first one whose robot subtree has drawable Gprims. If every candidate remains physics-only, the
+    final binding carries a fail-closed visual diagnostic.
+    """
+    attempts: list[dict[str, Any]] = []
+    last_binding: dict[str, Any] | None = None
+    best_nonvisual_candidate: str | None = None
+    best_nonvisual_resolved: str | None = None
+    for candidate in _g1_visual_asset_candidates(g1_usd):
+        resolved = _resolve_asset_uri(candidate)
+        try:
+            if stage.GetPrimAtPath(prim_path).IsValid():
+                stage.RemovePrim(prim_path)
+        except Exception:  # noqa: BLE001
+            pass
+        binding = _bind_g1(stage, resolved, prim_path=prim_path)
+        diag = _robot_render_visibility_diagnostics(stage, prim_path)
+        binding["robot_render_diagnostics"] = diag
+        binding["requested_g1_usd"] = g1_usd
+        binding["candidate_g1_usd"] = candidate
+        binding["resolved_g1_usd"] = resolved
+        binding["visual_candidate_attempts"] = attempts
+        attempt = {
+            "candidate_g1_usd": candidate,
+            "resolved_g1_usd": resolved,
+            "status": diag.get("status"),
+            "blockers": diag.get("blockers", []),
+            "gprim_count": diag.get("gprim_count"),
+            "mesh_count": diag.get("mesh_count"),
+            "payload_load_status": binding.get("payload_load_status"),
+        }
+        attempts.append(attempt)
+        last_binding = binding
+        if not _robot_visual_geometry_missing(diag):
+            binding["visual_binding_status"] = "renderable_robot_geometry_found"
+            binding["visual_candidate_attempts"] = attempts
+            return binding
+        if best_nonvisual_candidate is None and (
+            binding.get("controllable_articulation_detected")
+            or binding.get("collision_enabled_verified")
+            or int(binding.get("articulation_root_api_prim_count") or 0) > 0
+            or int(binding.get("collision_api_prim_count") or 0) > 0
+        ):
+            best_nonvisual_candidate = candidate
+            best_nonvisual_resolved = resolved
+    assert last_binding is not None
+    if best_nonvisual_resolved and best_nonvisual_resolved != last_binding.get("resolved_g1_usd"):
+        try:
+            if stage.GetPrimAtPath(prim_path).IsValid():
+                stage.RemovePrim(prim_path)
+        except Exception:  # noqa: BLE001
+            pass
+        last_binding = _bind_g1(stage, best_nonvisual_resolved, prim_path=prim_path)
+        diag = _robot_render_visibility_diagnostics(stage, prim_path)
+        last_binding["robot_render_diagnostics"] = diag
+        last_binding["requested_g1_usd"] = g1_usd
+        last_binding["candidate_g1_usd"] = best_nonvisual_candidate
+        last_binding["resolved_g1_usd"] = best_nonvisual_resolved
+    last_binding["visual_binding_status"] = "blocked_missing_renderable_robot_geometry"
+    last_binding["visual_candidate_attempts"] = attempts
+    last_binding["selected_nonvisual_candidate_reason"] = (
+        "preserved_articulation_or_collision_candidate_when_no_renderable_gprims_found"
+        if best_nonvisual_resolved
+        else "no_candidate_exposed_renderable_gprims_or_articulation_collision"
+    )
+    return last_binding
 
 
 def _setup_g1_articulation(prim_path: str):
@@ -2380,14 +2626,22 @@ def skeleton_world_for_frame(*, art_ctx, rest_offsets, root_pose, yaw):
     return []
 
 
-def compute_arm_reach_skeleton(skeleton, target, reach_frac, *, arm: str = "right"):
-    """Re-pose one arm of a world-space skeleton so its hand seeds toward ``target``.
+def compute_arm_reach_skeleton(
+    skeleton,
+    target,
+    reach_frac,
+    *,
+    arm: str = "right",
+    forward_yaw: float | None = None,
+):
+    """Re-pose one arm of a world-space skeleton into a forward-ready seed.
 
     The walk policy never moves the arms, so the skeleton (OSCAR's action conditioning) just shows a
     rigid robot. This rotates the arm chain about the shoulder so the hand travels from its rest spot
-    to the target as ``reach_frac`` goes 0->1 — turning the skeleton-video into a forward seed. Each
-    arm link keeps its rest fractional distance from the shoulder (rigid straight-arm reach), and the
-    reach is clamped to the arm's length so it never overstretches. Pure geometry, GPU-independent.
+    to a shoulder-relative forward-ready target as ``reach_frac`` goes 0->1. The task target is only
+    fallback direction context when a robot yaw is unavailable; it is not treated as a solved reach or
+    contact point. Each arm link keeps its rest fractional distance from the shoulder, and the seed is
+    clamped to the arm's length so it never overstretches. Pure geometry, GPU-independent.
 
     ``skeleton`` is ``[(name, (x,y,z)), ...]``; returns the same shape with the arm links re-placed.
     """
@@ -2396,7 +2650,13 @@ def compute_arm_reach_skeleton(skeleton, target, reach_frac, *, arm: str = "righ
     if str(arm).lower() == "both":
         out = skeleton
         for side in ("left", "right"):
-            out = compute_arm_reach_skeleton(out, target, reach_frac, arm=side)
+            out = compute_arm_reach_skeleton(
+                out,
+                target,
+                reach_frac,
+                arm=side,
+                forward_yaw=forward_yaw,
+            )
         return out
     arm_keys = ("shoulder", "elbow", "wrist", "hand")
     prefix = f"{arm}_"
@@ -2424,7 +2684,11 @@ def compute_arm_reach_skeleton(skeleton, target, reach_frac, *, arm: str = "righ
     shoulder = centroid(sh)
     hand_rest = centroid(hand)
     arm_len = length(sub(hand_rest, shoulder)) or 1e-6
-    seed_target = _manipulation_seed_arm_target_for_shoulder(shoulder, target)
+    seed_target = _manipulation_seed_arm_target_for_shoulder(
+        shoulder,
+        target,
+        forward_yaw=forward_yaw,
+    )
     to_target = sub(seed_target, shoulder)
     tlen = length(to_target) or 1e-6
     reach_dist = min(arm_len, tlen)
@@ -2504,12 +2768,19 @@ def _arm_link_prims_for_side(links: Mapping[str, Any], side: str) -> list[Any]:
     return out
 
 
-def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right",
-                            reach_frac: float = 1.0) -> int:
+def _pose_arm_kinematic_usd(
+    stage,
+    prim_path: str,
+    target,
+    *,
+    arm: str = "right",
+    reach_frac: float = 1.0,
+    forward_yaw: float | None = None,
+) -> int:
     """Kinematically pose the G1 arm(s) into a manipulation-ready forward seed.
 
     Pure USD: rotate the requested arm link set about the shoulder pivot so the
-    shoulder->effector direction points toward the task workspace. Some G1 USD variants do not place
+    shoulder->effector direction points into the robot's forward-ready corridor. Some G1 USD variants do not place
     elbow/wrist/hand links below the shoulder link in an ordinary transform hierarchy, so rotating
     only the shoulder can report success while the visible/measured hand stays in rest pose. This path
     therefore authors target world transforms for every actual side-arm link prim and then verifies
@@ -2525,9 +2796,8 @@ def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right"
     for side in sides:
         shoulder = (_find_arm_link(links, side, "shoulder", "pitch")
                     or _find_arm_link(links, side, "shoulder"))
-        # Align shoulder->effector with shoulder->workspace so the arm is extended forward in the
-        # initial seed. The effector is not translated to the affordance; distance remains metadata for
-        # the downstream policy/WAM rollout.
+        # Align shoulder->effector with the robot-forward seed. The effector is not translated to the
+        # affordance; distance remains metadata for the downstream policy/WAM rollout.
         effector = (_find_arm_link(links, side, "hand") or _find_arm_link(links, side, "palm")
                     or _find_arm_link(links, side, "wrist") or _find_arm_link(links, side, "elbow"))
         if shoulder is None or effector is None:
@@ -2538,7 +2808,11 @@ def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right"
         sp = sh_w.ExtractTranslation()
         ep = el_w.ExtractTranslation()
         shoulder_xyz = (float(sp[0]), float(sp[1]), float(sp[2]))
-        seed_target = _manipulation_seed_arm_target_for_shoulder(shoulder_xyz, target)
+        seed_target = _manipulation_seed_arm_target_for_shoulder(
+            shoulder_xyz,
+            target,
+            forward_yaw=forward_yaw,
+        )
         axis, angle = arm_reach_rotation(
             shoulder_xyz,
             (float(ep[0]), float(ep[1]), float(ep[2])),
@@ -4041,24 +4315,19 @@ def _run_task_visual_qc(
         task_description=task_description,
         sample_n=min(4, len(placement_frame_paths)),
     )
-    pov_report = (
-        qc_manipulation_pov_frames(
-            list(pov_frame_paths),
-            target_label,
-            task_description=task_description,
-            sample_n=min(4, len(pov_frame_paths)),
-        )
-        if pov_frame_paths
-        else None
+    pov_report = qc_manipulation_pov_frames(
+        list(pov_frame_paths),
+        target_label,
+        task_description=task_description,
+        sample_n=min(4, len(pov_frame_paths)),
     )
     blockers: list[str] = []
     if placement_report.get("status") != "passed":
         blockers.extend(placement_report.get("blockers") or ["placement_visual_qc_failed"])
-    if pov_report is not None and pov_report.get("status") != "passed":
+    if pov_report.get("status") != "passed":
         blockers.extend(pov_report.get("blockers") or ["manipulation_pov_visual_qc_failed"])
     frames_reviewed = int(placement_report.get("frames_reviewed") or 0)
-    if pov_report is not None:
-        frames_reviewed += int(pov_report.get("frames_reviewed") or 0)
+    frames_reviewed += int(pov_report.get("frames_reviewed") or 0)
     return {
         "schema_version": "robot_task_visual_qc.v1",
         "status": "passed" if not blockers else "blocked",
@@ -4507,6 +4776,10 @@ def _robot_mounted_manipulation_cam_pose(
         "source": mount.get("source"),
         "mount_prim_path": mount.get("prim_path"),
         "mount_role": mount.get("mount_role"),
+        "camera_eye_xyz": [round(float(v), 6) for v in eye],
+        "camera_target_xyz": [round(float(v), 6) for v in target],
+        "camera_vfov_deg": round(float(vfov_deg), 6) if vfov_deg is not None else None,
+        "viewport_size_px": [int(width), int(height)] if width is not None and height is not None else None,
         "required_arms": list(_required_manipulation_arms(reach_selection)),
         "arm_link_points_used": sorted(arm_points),
         "arm_link_points_xyz": {
@@ -4867,6 +5140,185 @@ def _render_step_watchdog_seconds() -> float:
         return DEFAULT_RENDER_STEP_WATCHDOG_SECONDS
 
 
+def _auto_render_settle_seconds(
+    *,
+    configured_settle_seconds: float,
+    no_collision_probe: bool,
+    manipulation_cam: bool,
+    verify_cam: bool,
+    manipulation_stand: bool,
+    warmup_frames: int,
+    render_subframes: int,
+) -> float:
+    """Return a post-placement settle time before repeated RTX stepping.
+
+    Isaac/PhysX collision queries can start async cooking during task-stance probing. The old
+    global settle happened before those probes, so repeated RTX steps could still render while
+    cooking was active. Keep this task-agnostic and opt-out via env/config instead of baking in
+    any scene or object coordinates.
+    """
+    if configured_settle_seconds > 0:
+        return float(configured_settle_seconds)
+    if no_collision_probe:
+        return 0.0
+    repeated_or_review_render = (
+        bool(manipulation_cam)
+        or bool(verify_cam)
+        or bool(manipulation_stand)
+        or int(warmup_frames) > 1
+        or int(render_subframes) > 1
+    )
+    if not repeated_or_review_render:
+        return 0.0
+    raw = os.getenv("PARITY_AUTO_RENDER_SETTLE_SECONDS", "60").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 60.0
+
+
+def _render_quality_config(
+    *,
+    render_subframes: int,
+    manipulation_cam: bool,
+    verify_cam: bool,
+    mode: str | None = None,
+    samples_per_pixel: int | None = None,
+) -> dict[str, Any]:
+    """Return scene-agnostic RTX quality settings for review manipulation frames.
+
+    ``render_subframes`` alone does not switch Replicator out of the realtime RTX lighting path. For
+    reviewed manipulation/verify frames, multi-subframe renders should use the path-traced renderer so
+    samples accumulate into one cleaner frame while preserving authored materials/textures.
+    """
+    subframes = max(1, int(render_subframes))
+    raw_mode = str(
+        mode if mode is not None else os.getenv("PARITY_RENDER_QUALITY_MODE", "auto")
+    ).strip().lower()
+    normalized_mode = raw_mode or "auto"
+    disable_modes = {"off", "disabled", "none", "raytracedlighting", "ray_traced_lighting", "realtime"}
+    pathtraced_modes = {"pathtraced", "path_traced", "path-traced", "pt"}
+    if normalized_mode in disable_modes:
+        use_pathtraced = False
+    elif normalized_mode in pathtraced_modes:
+        use_pathtraced = True
+    else:
+        use_pathtraced = subframes > 1 and (bool(manipulation_cam) or bool(verify_cam))
+
+    if samples_per_pixel is None:
+        raw_spp = os.getenv("PARITY_PATH_TRACING_SAMPLES_PER_PIXEL", "").strip()
+        try:
+            samples = int(raw_spp) if raw_spp else max(
+                DEFAULT_PATH_TRACING_MIN_SAMPLES_PER_PIXEL,
+                min(DEFAULT_PATH_TRACING_MAX_SAMPLES_PER_PIXEL, subframes * 2),
+            )
+        except ValueError:
+            samples = max(
+                DEFAULT_PATH_TRACING_MIN_SAMPLES_PER_PIXEL,
+                min(DEFAULT_PATH_TRACING_MAX_SAMPLES_PER_PIXEL, subframes * 2),
+            )
+    else:
+        samples = int(samples_per_pixel)
+    samples = max(1, min(512, samples))
+    return {
+        "schema_version": "isaac_render_quality_config.v1",
+        "mode": normalized_mode,
+        "render_subframes": subframes,
+        "use_pathtraced": bool(use_pathtraced),
+        "samples_per_pixel": samples if use_pathtraced else 0,
+        "optix_denoiser_requested": bool(use_pathtraced),
+        "firefly_filter_requested": bool(use_pathtraced),
+        "claim_boundary": (
+            "Render-quality settings affect review PNG cleanliness only. They do not validate task "
+            "success, policy quality, physical reach, safety, or deployment readiness."
+        ),
+    }
+
+
+def _apply_render_quality_settings(
+    rep,
+    *,
+    render_subframes: int,
+    manipulation_cam: bool,
+    verify_cam: bool,
+    out_dir: Path,
+) -> dict[str, Any]:
+    config = _render_quality_config(
+        render_subframes=render_subframes,
+        manipulation_cam=manipulation_cam,
+        verify_cam=verify_cam,
+    )
+    diagnostics = dict(config)
+    diagnostics["settings_applied"] = []
+    diagnostics["setting_errors"] = []
+    if config["use_pathtraced"]:
+        try:
+            rep.settings.set_render_pathtraced(
+                samples_per_pixel=int(config["samples_per_pixel"])
+            )
+            diagnostics["settings_applied"].append("rep.settings.set_render_pathtraced")
+        except Exception as exc:  # noqa: BLE001
+            diagnostics["setting_errors"].append({
+                "setting": "rep.settings.set_render_pathtraced",
+                "error": repr(exc),
+            })
+        try:
+            import carb  # type: ignore
+
+            settings = carb.settings.get_settings()
+            for path, value in (
+                ("/rtx/pathtracing/optixDenoiser/enabled", True),
+                ("/rtx/pathtracing/optixDenoiser/blendFactor", 0.0),
+                ("/rtx/pathtracing/fireflyFilter/enabled", True),
+                ("/rtx/pathtracing/fireflyFilter/maxIntensityPerSample", 350.0),
+                ("/rtx/pathtracing/fireflyFilter/maxIntensityPerSampleDiffuse", 350.0),
+                ("/rtx-transient/resourcemanager/enableTextureStreaming", False),
+            ):
+                try:
+                    settings.set(path, value)
+                    diagnostics["settings_applied"].append(path)
+                except Exception as exc:  # noqa: BLE001
+                    diagnostics["setting_errors"].append({
+                        "setting": path,
+                        "error": repr(exc),
+                    })
+        except Exception as exc:  # noqa: BLE001
+            diagnostics["setting_errors"].append({
+                "setting": "carb.settings",
+                "error": repr(exc),
+            })
+    diagnostics["status"] = "PASS" if not diagnostics["setting_errors"] else "WARN"
+    try:
+        (out_dir / "render_quality_settings.json").write_text(
+            json.dumps(diagnostics, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return diagnostics
+
+
+def _effective_render_rt_subframes(
+    render_subframes: int,
+    render_quality: Mapping[str, Any] | None,
+) -> int:
+    """Replicator step subframes after renderer-mode selection.
+
+    In realtime RTX lighting, ``render_subframes`` is the main accumulation lever. In path-traced mode
+    the selected ``samples_per_pixel`` is already the quality lever; keeping the old large
+    ``rt_subframes`` value would multiply render cost without improving the seed contract enough to
+    justify the timeout/spend risk.
+    """
+    requested = max(1, int(render_subframes))
+    if not (render_quality or {}).get("use_pathtraced"):
+        return requested
+    raw = os.getenv("PARITY_PATH_TRACED_RT_SUBFRAMES", "").strip()
+    try:
+        return max(1, min(8, int(raw))) if raw else 1
+    except ValueError:
+        return 1
+
+
 def _write_render_step_timeout_result(path: Path, *, label: str, seconds: float, scenario_id: str) -> None:
     payload = {
         "schema_version": RESULT_SCHEMA_VERSION,
@@ -4899,6 +5351,7 @@ def _replicator_step_with_watchdog(
     result_path: Path,
     scenario_id: str,
     timeout_seconds: float | None = None,
+    rt_subframes: int = 1,
 ) -> None:
     """Run one Replicator step with a process-level timeout for C++ RTX hangs.
 
@@ -4907,8 +5360,20 @@ def _replicator_step_with_watchdog(
     and uploads the final artifact zip so the paid pod can be stopped.
     """
     timeout = _render_step_watchdog_seconds() if timeout_seconds is None else float(timeout_seconds)
+    subframes = max(1, int(rt_subframes))
+
+    def _step() -> None:
+        try:
+            rep.orchestrator.step(rt_subframes=subframes)
+        except TypeError:
+            rep.orchestrator.step()
+        try:
+            rep.orchestrator.wait_until_complete()
+        except Exception:  # noqa: BLE001
+            pass
+
     if timeout <= 0:
-        rep.orchestrator.step()
+        _step()
         return
     done = threading.Event()
 
@@ -4927,7 +5392,7 @@ def _replicator_step_with_watchdog(
     thread = threading.Thread(target=watchdog, name="render-step-watchdog", daemon=True)
     thread.start()
     try:
-        rep.orchestrator.step()
+        _step()
     finally:
         done.set()
 
@@ -5002,34 +5467,43 @@ def _set_camera_fov(stage, cam_path: str, vfov_deg: float, width: int, height: i
         pass
 
 
-def _apply_robot_review_material(stage, robot_prim_path: str) -> int:
+def _apply_robot_review_material(
+    stage,
+    robot_prim_path: str,
+    *,
+    override_authored_materials: bool = True,
+) -> int:
     """Bind a neutral matte material to robot geometry so review renders can see G1 against dark targets.
 
-    This is intentionally robot-scoped and scene/task agnostic. It improves visual QC readability for
-    dark or reflective appliances without moving the robot, target, camera, or environment geometry.
+    This is intentionally robot-scoped and scene/task agnostic. Visibility/purpose normalization is
+    always applied, but authored materials/textures are preserved unless ``override_authored_materials``
+    is true. The override is for missing-material diagnostics and review proxies, not final seed media.
     """
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade  # type: ignore
 
     robot = stage.GetPrimAtPath(robot_prim_path)
     if not (robot and robot.IsValid()):
         return 0
-    mat_path = "/World/Materials/RobotReviewVisible"
-    material = UsdShade.Material.Define(stage, mat_path)
-    shader = UsdShade.Shader.Define(stage, f"{mat_path}/PreviewSurface")
-    shader.CreateIdAttr("UsdPreviewSurface")
-    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.82, 0.84, 0.86))
-    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.72)
-    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
-    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    material = None
+    bound = 0
+    if override_authored_materials:
+        mat_path = "/World/Materials/RobotReviewVisible"
+        material = UsdShade.Material.Define(stage, mat_path)
+        shader = UsdShade.Shader.Define(stage, f"{mat_path}/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.82, 0.84, 0.86))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.72)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
 
-    try:
-        UsdShade.MaterialBindingAPI(robot).Bind(
-            material,
-            bindingStrength=UsdShade.Tokens.strongerThanDescendants,
-        )
-        bound = 1
-    except Exception:  # noqa: BLE001
-        bound = 0
+        try:
+            UsdShade.MaterialBindingAPI(robot).Bind(
+                material,
+                bindingStrength=UsdShade.Tokens.strongerThanDescendants,
+            )
+            bound = 1
+        except Exception:  # noqa: BLE001
+            bound = 0
     for prim in Usd.PrimRange(robot):
         try:
             if prim.IsA(UsdGeom.Imageable):
@@ -5041,12 +5515,13 @@ def _apply_robot_review_material(stage, robot_prim_path: str) -> int:
                     purpose_attr.Set("default")
             if not prim.IsA(UsdGeom.Gprim):
                 continue
-            UsdShade.MaterialBindingAPI(prim).Bind(
-                material,
-                bindingStrength=UsdShade.Tokens.strongerThanDescendants,
-            )
-            UsdGeom.Gprim(prim).CreateDisplayColorAttr([Gf.Vec3f(0.82, 0.84, 0.86)])
-            bound += 1
+            if material is not None:
+                UsdShade.MaterialBindingAPI(prim).Bind(
+                    material,
+                    bindingStrength=UsdShade.Tokens.strongerThanDescendants,
+                )
+                UsdGeom.Gprim(prim).CreateDisplayColorAttr([Gf.Vec3f(0.82, 0.84, 0.86)])
+                bound += 1
         except Exception:  # noqa: BLE001
             continue
     return bound
@@ -5077,7 +5552,13 @@ def _robot_render_visibility_diagnostics(stage, robot_prim_path: str) -> dict[st
     instanceable_count = 0
     sample_gprims: list[dict[str, Any]] = []
     arm_gprims: list[dict[str, Any]] = []
-    for prim in Usd.PrimRange(robot):
+    try:
+        prim_iter = Usd.PrimRange(robot, Usd.TraverseInstanceProxies())
+        traversed_instance_proxies = True
+    except Exception:  # noqa: BLE001
+        prim_iter = Usd.PrimRange(robot)
+        traversed_instance_proxies = False
+    for prim in prim_iter:
         total_prims += 1
         type_name = str(prim.GetTypeName() or "typeless")
         type_counts[type_name] = type_counts.get(type_name, 0) + 1
@@ -5135,7 +5616,7 @@ def _robot_render_visibility_diagnostics(stage, robot_prim_path: str) -> dict[st
     if imageable_count == 0:
         blockers.append("robot_imageable_prims_missing")
     if gprim_count == 0:
-        blockers.append("robot_gprim_visuals_missing")
+        blockers.append(ROBOT_VISUAL_MESH_MISSING_BLOCKER)
     if gprim_count > 0 and material_bound_count == 0:
         blockers.append("robot_gprims_unmaterialized")
     if visibility_counts and visibility_counts.get("invisible", 0) >= max(1, imageable_count):
@@ -5151,6 +5632,8 @@ def _robot_render_visibility_diagnostics(stage, robot_prim_path: str) -> dict[st
         "imageable_prim_count": imageable_count,
         "gprim_count": gprim_count,
         "mesh_count": mesh_count,
+        "renderable_robot_geometry_present": gprim_count > 0,
+        "traversed_instance_proxies": traversed_instance_proxies,
         "material_bound_gprim_count": material_bound_count,
         "instanceable_prim_count": instanceable_count,
         "purpose_counts": dict(sorted(purpose_counts.items())),
@@ -5490,6 +5973,37 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
     _log("Isaac booted; enabling Replicator")
     rep = _enable_and_import_replicator()  # after boot: omni.* now importable + extension enabled
     _log("Replicator ready")
+    render_quality_diag = _apply_render_quality_settings(
+        rep,
+        render_subframes=int(render_subframes),
+        manipulation_cam=bool(manipulation_cam),
+        verify_cam=bool(verify_cam),
+        out_dir=out_dir,
+    )
+    if render_quality_diag.get("use_pathtraced"):
+        _log(
+            "path-traced render quality enabled: "
+            f"spp={render_quality_diag.get('samples_per_pixel')} "
+            f"rt_subframes={render_quality_diag.get('render_subframes')}"
+        )
+    capture_rt_subframes = _effective_render_rt_subframes(
+        int(render_subframes),
+        render_quality_diag,
+    )
+    render_quality_diag["requested_replicator_rt_subframes"] = max(1, int(render_subframes))
+    render_quality_diag["effective_replicator_rt_subframes"] = int(capture_rt_subframes)
+    try:
+        (out_dir / "render_quality_settings.json").write_text(
+            json.dumps(render_quality_diag, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    if capture_rt_subframes != max(1, int(render_subframes)):
+        _log(
+            "effective Replicator rt_subframes reduced for path-traced capture: "
+            f"{capture_rt_subframes}"
+        )
     if disable_physx:
         # NOTE: confirmed on GPU to break the RTX renderer (hangs at render-product creation) —
         # kept only for experiments. Keep PhysX on and use settle_seconds instead.
@@ -5513,12 +6027,24 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             nc = _force_cheap_collision(stage, approximation=collision_approximation)
             _log(f"forced {collision_approximation} collision on {nc} mesh-collision prims")
         _log("kitchen stage open; binding G1 articulation")
-        binding = _bind_g1(stage, _resolve_asset_uri(g1_usd))
+        binding = _bind_g1_with_visual_fallback(stage, g1_usd)
         _log(f"G1 binding: articulation={binding['controllable_articulation_detected']} "
-             f"collision={binding['collision_enabled_verified']}")
+             f"collision={binding['collision_enabled_verified']} "
+             f"visual={binding.get('visual_binding_status')}")
         (out_dir / "g1_binding.json").write_text(json.dumps(binding, indent=2))
         if not binding["controllable_articulation_detected"]:
             blockers.append("official_isaac_unitree_g1_articulation_api_unverified")
+        robot_render_diag: dict[str, Any] | None = dict(
+            binding.get("robot_render_diagnostics") or {}
+        )
+        robot_visual_missing = _robot_visual_geometry_missing(robot_render_diag)
+        if robot_visual_missing and (manipulation_cam or verify_cam):
+            if ROBOT_VISUAL_MESH_MISSING_BLOCKER not in blockers:
+                blockers.append(ROBOT_VISUAL_MESH_MISSING_BLOCKER)
+            _log(
+                "G1 visual mesh/Gprim readiness FAILED after candidate load attempts; "
+                "link projections will be treated as geometry-only evidence"
+            )
         robot_neutral_xforms: dict[str, Any] = {}
         if kinematic_arm_pose or manipulation_reach:
             robot_neutral_xforms = _capture_robot_neutral_descendant_xforms(
@@ -5673,10 +6199,26 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 _log(f"environment neutralize skipped ({exc!r})")
         if manipulation_cam or verify_cam:
             try:
-                n_robot_mat = _apply_robot_review_material(stage, binding["prim_path"])
-                _log(f"robot review material bound to {n_robot_mat} G1 geometry prim(s)")
+                force_review_material = os.getenv("PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE", "") == "1"
+                override_robot_material = bool(robot_visual_missing or force_review_material)
+                n_robot_mat = _apply_robot_review_material(
+                    stage,
+                    binding["prim_path"],
+                    override_authored_materials=override_robot_material,
+                )
+                if override_robot_material:
+                    _log(f"robot review material bound to {n_robot_mat} G1 geometry prim(s)")
+                else:
+                    _log("robot authored materials preserved; visibility/purpose normalized")
                 robot_render_diag = _robot_render_visibility_diagnostics(stage, binding["prim_path"])
                 robot_render_diag["review_material_bound_count"] = int(n_robot_mat)
+                robot_render_diag["review_material_override_applied"] = bool(override_robot_material)
+                robot_render_diag["authored_robot_materials_preserved"] = not bool(override_robot_material)
+                robot_render_diag["visual_binding_status"] = binding.get("visual_binding_status")
+                robot_render_diag["visual_candidate_attempts"] = binding.get(
+                    "visual_candidate_attempts", []
+                )
+                robot_visual_missing = _robot_visual_geometry_missing(robot_render_diag)
                 (out_dir / "robot_render_diagnostics.json").write_text(
                     json.dumps(robot_render_diag, indent=2)
                 )
@@ -5686,9 +6228,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         over_annot = _make_render_product(over_cam, width, height)
         pov_annot = _make_render_product(pov_cam, width, height)
         verify_annot = _make_render_product(verify_cam_path, width, height) if verify_cam else None
-        topdown_annot = (
-            _make_render_product(topdown_cam_path, width, height) if manipulation_stand else None
-        )
+        topdown_annot = None
+        topdown_enabled = bool(manipulation_stand)
         if software_denoise:
             _log("software PNG denoise enabled for saved render frames")
         center, radius = scene_framing(scenarios)
@@ -5696,22 +6237,52 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                       (center[0] + radius * 1.4, center[1] - radius * 1.4, center[2] + radius * 1.1),
                       center)
         _log("render products + overview camera ready")
-        if settle_seconds > 0:
-            # Let PhysX finish async collision-cooking BEFORE we render — rendering *during*
-            # cooking is what hangs frame 2+. A pure wait lets the background cook threads drain.
-            _log(f"settling {settle_seconds}s for PhysX cooking to drain before rendering")
-            t_settle = time.time()
-            while time.time() - t_settle < settle_seconds:
-                time.sleep(15)
-                _log(f"  settle {int(time.time() - t_settle)}/{settle_seconds}s")
-            _log("settle complete; starting render")
         if no_collision_probe:
             _log("collision probe DISABLED (policy goes direct every step)")
             def probe(pose, yaw):  # noqa: ANN001
                 return 0
         else:
             probe = _overlap_probe(binding["prim_path"])
+        render_settle_seconds = _auto_render_settle_seconds(
+            configured_settle_seconds=float(settle_seconds),
+            no_collision_probe=bool(no_collision_probe),
+            manipulation_cam=bool(manipulation_cam),
+            verify_cam=bool(verify_cam),
+            manipulation_stand=bool(manipulation_stand),
+            warmup_frames=int(warmup_frames),
+            render_subframes=int(render_subframes),
+        )
+        render_settle_done = False
+        if render_settle_seconds > 0:
+            _log(
+                f"post-placement render settle configured for {render_settle_seconds:g}s "
+                "(after task collision probes, before repeated RTX steps)"
+            )
+
+        def _settle_after_task_probe_if_needed(scenario_id: str) -> None:
+            nonlocal render_settle_done
+            if render_settle_done or render_settle_seconds <= 0:
+                return
+            # Let PhysX finish async collision-cooking AFTER task stance/probe queries. Rendering
+            # during that window can hang second-and-later RTX steps on some worker nodes.
+            _log(
+                f"scenario {scenario_id}: settling {render_settle_seconds:g}s after task "
+                "placement probes before RTX stepping"
+            )
+            t_settle = time.time()
+            interval = 15.0 if render_settle_seconds >= 15 else max(1.0, render_settle_seconds)
+            while time.time() - t_settle < render_settle_seconds:
+                time.sleep(min(interval, max(0.0, render_settle_seconds - (time.time() - t_settle))))
+                _log(
+                    f"  scenario {scenario_id}: settle "
+                    f"{int(min(time.time() - t_settle, render_settle_seconds))}/"
+                    f"{int(render_settle_seconds)}s"
+                )
+            render_settle_done = True
+            _log(f"scenario {scenario_id}: render settle complete; starting RTX capture")
+
         def _render_scenario(sc):
+            nonlocal topdown_annot
             sid = sc["scenario_id"]
             sdir = out_dir / sid
             (sdir / "frames").mkdir(parents=True, exist_ok=True)
@@ -5731,6 +6302,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             pov_geometry_blocker_recorded = False
             last_root_diagnostics: dict[str, Any] | None = None
             stance_plan_path = sdir / "task_stance_plan.json"
+            scenario_robot_render_diag = dict(robot_render_diag or {})
             def _write_pov_geometry_report() -> dict[str, Any] | None:
                 if not pov_geometry_records:
                     return None
@@ -5842,22 +6414,10 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 blockers.append("scenario_route_missing_after_task_resolution")
                 _log(f"scenario {sid}: missing start/target/route after task resolution")
                 return None
+            _settle_after_task_probe_if_needed(sid)
             pol = policy_mod.make_policy(policy_id)
             pol.reset(sc)
             t_sc = time.time()
-            _log(f"scenario {sid}: warmup {warmup_frames} render frames (capped {per_scenario_seconds}s)")
-            for wi in range(warmup_frames):
-                if time.time() - t_sc > per_scenario_seconds:
-                    _log(f"warmup hit time cap at frame {wi}")
-                    break
-                ts = time.time()
-                _replicator_step_with_watchdog(
-                    rep,
-                    label=f"{sid}:warmup:{wi}",
-                    result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
-                    scenario_id=sid,
-                )
-                _log(f"warmup frame {wi} render took {time.time() - ts:.1f}s")
             actions: list[dict] = []
             skel_rows: list[dict] = []
             trace = (sdir / "trace.jsonl").open("w")
@@ -5991,6 +6551,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 effective_look_at,
                                 arm=rendered_reach_arm,
                                 reach_frac=arm_frac,
+                                forward_yaw=decision.yaw,
                             )
                             if step == 0:
                                 _log(
@@ -5998,24 +6559,41 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                     f"arm={rendered_reach_arm} "
                                     f"requested_arm={manipulation_reach_arm} "
                                     f"posed_count={posed_count} "
-                                    f"target={tuple(round(float(c), 3) for c in effective_look_at)}"
+                                    f"seed=forward_ready "
+                                    f"affordance={tuple(round(float(c), 3) for c in effective_look_at)}"
                                 )
-                                review_proxy_diag = _create_robot_review_visual_proxies(
+                                review_proxy_diag = None
+                                if robot_visual_missing:
+                                    review_proxy_diag = _create_robot_review_visual_proxies(
+                                        stage,
+                                        binding["prim_path"],
+                                        proxy_root_path=(
+                                            f"/World/RobotReviewVisualProxies/{_safe_prim_segment(sid)}"
+                                        ),
+                                        arm=rendered_reach_arm,
+                                    )
+                                    _log(
+                                        f"scenario {sid}: using review-only robot visual proxies "
+                                        f"status={review_proxy_diag.get('status')} "
+                                        f"gprims={review_proxy_diag.get('created_gprim_count')}"
+                                    )
+                                scenario_robot_render_diag = _robot_render_visibility_diagnostics(
                                     stage,
                                     binding["prim_path"],
-                                    proxy_root_path=(
-                                        f"/World/RobotReviewVisualProxies/{_safe_prim_segment(sid)}"
-                                    ),
-                                    arm=rendered_reach_arm,
                                 )
-                                robot_render_diag = _robot_render_visibility_diagnostics(
-                                    stage,
-                                    binding["prim_path"],
+                                scenario_robot_render_diag["posed_arm_link_count"] = int(posed_count)
+                                scenario_robot_render_diag["visual_binding_status"] = binding.get(
+                                    "visual_binding_status"
                                 )
-                                robot_render_diag["posed_arm_link_count"] = int(posed_count)
-                                robot_render_diag["review_visual_proxy"] = review_proxy_diag
+                                scenario_robot_render_diag["visual_candidate_attempts"] = binding.get(
+                                    "visual_candidate_attempts", []
+                                )
+                                if review_proxy_diag is not None:
+                                    scenario_robot_render_diag[
+                                        "review_visual_proxy"
+                                    ] = review_proxy_diag
                                 (sdir / "robot_render_diagnostics.json").write_text(
-                                    json.dumps(robot_render_diag, indent=2)
+                                    json.dumps(scenario_robot_render_diag, indent=2)
                                 )
                         except Exception as exc:  # noqa: BLE001 - pose is best-effort, never blocks frames
                             if step == 0:
@@ -6071,7 +6649,46 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             "step": step,
                             "frame_index": cap,
                             "camera_meta": cam_meta,
+                            "robot_visual_geometry": {
+                                "status": (
+                                    "FAIL" if robot_visual_missing
+                                    else str(
+                                        (scenario_robot_render_diag or {}).get("status") or "PASS"
+                                    )
+                                ),
+                                "blockers": (
+                                    [ROBOT_VISUAL_MESH_MISSING_BLOCKER]
+                                    if robot_visual_missing
+                                    else list(
+                                        (scenario_robot_render_diag or {}).get("blockers") or []
+                                    )
+                                ),
+                                "gprim_count": (scenario_robot_render_diag or {}).get(
+                                    "gprim_count"
+                                ),
+                                "mesh_count": (scenario_robot_render_diag or {}).get("mesh_count"),
+                                "visual_binding_status": binding.get("visual_binding_status"),
+                                "claim_boundary": (
+                                    "USD arm-link projections are not visual proof unless the robot "
+                                    "subtree also has renderable Gprim/Mesh surfaces."
+                                ),
+                            },
                         }
+                        if robot_visual_missing:
+                            geom_blockers = list(pov_geom.get("blockers") or [])
+                            geom_blockers.append(ROBOT_VISUAL_MESH_MISSING_BLOCKER)
+                            if (
+                                isinstance(scenario_robot_render_diag, dict)
+                                and (
+                                    scenario_robot_render_diag.get("review_visual_proxy") or {}
+                                ).get("status") == "PASS"
+                            ):
+                                geom_blockers.append(ROBOT_REVIEW_VISUAL_PROXY_USED_BLOCKER)
+                                pov_geom["review_visual_proxy"] = scenario_robot_render_diag[
+                                    "review_visual_proxy"
+                                ]
+                            pov_geom["blockers"] = sorted(set(str(b) for b in geom_blockers))
+                            pov_geom["status"] = "FAIL"
                         pov_geometry_records.append(pov_geom)
                         pov_geometry_report = _write_pov_geometry_report()
                         if cap == 0:
@@ -6098,7 +6715,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         _place_camera(stage, verify_cam_path, v_eye, v_tgt)  # 3rd-person: SHOW the robot
                     debug_root_path = (
                         f"/World/PlacementDebug/{_safe_prim_segment(sid)}"
-                        if topdown_annot is not None and stance_plan is not None
+                        if topdown_enabled and stance_plan is not None
                         else None
                     )
                     if debug_root_path is not None:
@@ -6115,10 +6732,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         )
                         if manipulation_reach and effective_look_at is not None:
                             # For manipulation POVs the first frame is already "task started": arms
-                            # visible in the workspace. Navigation/follow shots can still ramp.
+                            # visible in a forward-ready seed. Navigation/follow shots can still ramp.
                             reach_frac = 1.0 if manipulation_cam else alpha
-                            skel = compute_arm_reach_skeleton(skel, effective_look_at, reach_frac,
-                                                              arm=rendered_reach_arm)
+                            skel = compute_arm_reach_skeleton(
+                                skel,
+                                effective_look_at,
+                                reach_frac,
+                                arm=rendered_reach_arm,
+                                forward_yaw=decision.yaw,
+                            )
                         lms = _project_skeleton(skel, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
                                                 vfov_deg=pov_vfov_deg, width=width, height=height)
                         if cap == 0:
@@ -6130,16 +6752,33 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             "camera": "robot_pov", "landmarks": lms,  # OSCAR reads row["landmarks"]
                             "projected_landmark_count": len(lms)})
                     ts = time.time()
-                    # Accumulate N RTX subframes on the static (robot placed) frame to drain the
-                    # RayTracedLighting denoiser's grain — a single step leaves heavy noise that an
-                    # OSCAR start frame should not inherit.
-                    for subframe_idx in range(max(1, render_subframes)):
-                        _replicator_step_with_watchdog(
-                            rep,
-                            label=f"{sid}:frame:{cap}:subframe:{subframe_idx}",
-                            result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
-                            scenario_id=sid,
+                    if cap == 0 and warmup_frames > 0:
+                        _log(
+                            f"scenario {sid}: first-frame warmup {warmup_frames} render frames "
+                            f"(capped {per_scenario_seconds}s)"
                         )
+                        for wi in range(warmup_frames):
+                            if time.time() - t_sc > per_scenario_seconds:
+                                _log(f"first-frame warmup hit time cap at frame {wi}")
+                                break
+                            wts = time.time()
+                            _replicator_step_with_watchdog(
+                                rep,
+                                label=f"{sid}:frame:{cap}:warmup:{wi}",
+                                result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
+                                scenario_id=sid,
+                            )
+                            _log(f"first-frame warmup frame {wi} render took {time.time() - wts:.1f}s")
+                    # Accumulate RTX subframes inside a single Replicator step. Repeating plain
+                    # step() calls produces independent noisy frames rather than one denoised sample
+                    # accumulation.
+                    _replicator_step_with_watchdog(
+                        rep,
+                        label=f"{sid}:frame:{cap}:rt_subframes:{capture_rt_subframes}",
+                        result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
+                        scenario_id=sid,
+                        rt_subframes=capture_rt_subframes,
+                    )
                     rdt = time.time() - ts
                     over_ok = _save_rgb(
                         over_annot,
@@ -6174,7 +6813,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     if verify_annot is not None:
                         _save_rgb(verify_annot, sdir / "frames" / f"verify_{cap:04d}.png",
                                   software_denoise=software_denoise)
-                    if topdown_annot is not None and stance_plan is not None and debug_root_path is not None:
+                    if topdown_enabled and stance_plan is not None and debug_root_path is not None:
                         floor_z = float(decision.root_pose[2]) - ROBOT_PELVIS_HEIGHT_M
                         if stance_plan.get("floor_z_hint") is not None:
                             floor_z = float(stance_plan.get("floor_z_hint"))
@@ -6196,13 +6835,16 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             height=height,
                             floor_z=floor_z,
                         )
-                        for subframe_idx in range(max(1, render_subframes)):
-                            _replicator_step_with_watchdog(
-                                rep,
-                                label=f"{sid}:topdown:{cap}:subframe:{subframe_idx}",
-                                result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
-                                scenario_id=sid,
-                            )
+                        if topdown_annot is None:
+                            _log("creating lazy topdown render product")
+                            topdown_annot = _make_render_product(topdown_cam_path, width, height)
+                        _replicator_step_with_watchdog(
+                            rep,
+                            label=f"{sid}:topdown:{cap}:rt_subframes:{capture_rt_subframes}",
+                            result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
+                            scenario_id=sid,
+                            rt_subframes=capture_rt_subframes,
+                        )
                         placement_topdown_frame_path = sdir / "frames" / f"placement_topdown_{cap:04d}.png"
                         _save_rgb(
                             topdown_annot,
@@ -6285,6 +6927,27 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     blockers_now = set(placement_validation_manifest.get("blockers") or [])
                     if visual_qc.get("status") != "passed":
                         blockers_now.add("placement_visual_qc_failed")
+                    placement_validation_manifest["robot_visual_geometry"] = {
+                        "status": (
+                            "FAIL" if robot_visual_missing
+                            else str((scenario_robot_render_diag or {}).get("status") or "PASS")
+                        ),
+                        "blockers": (
+                            [ROBOT_VISUAL_MESH_MISSING_BLOCKER]
+                            if robot_visual_missing
+                            else list((scenario_robot_render_diag or {}).get("blockers") or [])
+                        ),
+                        "gprim_count": (scenario_robot_render_diag or {}).get("gprim_count"),
+                        "mesh_count": (scenario_robot_render_diag or {}).get("mesh_count"),
+                        "visual_binding_status": binding.get("visual_binding_status"),
+                        "diagnostics_path": str(sdir / "robot_render_diagnostics.json"),
+                        "claim_boundary": (
+                            "Placement validation requires robot visual surfaces for rendered "
+                            "review frames; USD link projections alone do not prove visible arms/body."
+                        ),
+                    }
+                    if robot_visual_missing:
+                        blockers_now.add(ROBOT_VISUAL_MESH_MISSING_BLOCKER)
                     if pov_geometry_report is not None:
                         placement_validation_manifest["manipulation_pov_geometry"] = {
                             "status": pov_geometry_report.get("status"),
@@ -6343,6 +7006,22 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     ).get("status"),
                     "topdown_debug_frame": placement_validation_manifest.get("topdown_debug_frame"),
                 }
+            if manipulation_cam or verify_cam:
+                outcome["robot_visual_geometry"] = {
+                    "status": (
+                        "FAIL" if robot_visual_missing
+                        else str((scenario_robot_render_diag or {}).get("status") or "PASS")
+                    ),
+                    "blockers": (
+                        [ROBOT_VISUAL_MESH_MISSING_BLOCKER]
+                        if robot_visual_missing
+                        else list((scenario_robot_render_diag or {}).get("blockers") or [])
+                    ),
+                    "gprim_count": (scenario_robot_render_diag or {}).get("gprim_count"),
+                    "mesh_count": (scenario_robot_render_diag or {}).get("mesh_count"),
+                    "visual_binding_status": binding.get("visual_binding_status"),
+                    "diagnostics_path": str(sdir / "robot_render_diagnostics.json"),
+                }
             if pov_geometry_report is not None:
                 outcome["manipulation_pov_geometry"] = {
                     "status": pov_geometry_report.get("status"),
@@ -6391,6 +7070,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             # booted + the scene is loaded + the loop is accepting jobs (so it can start submitting).
             (out_dir / "warm_serve_ready.json").write_text(json.dumps(
                 {"status": "serving", "source": source_label,
+                 "launch_session_id": os.environ.get("BLUEPRINT_LAUNCH_SESSION_ID", ""),
                  "idle_timeout_s": serve_idle_timeout_s, "max_jobs": serve_max_jobs}))
             _log(f"warm serve: setup complete; serving jobs from {source_label} "
                  f"(idle_timeout={serve_idle_timeout_s}s, max_jobs={serve_max_jobs})")
@@ -6429,6 +7109,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
 # appliance are all visible locally. The arm skeleton uses a NOMINAL (Isaac-free) G1, so the arm is
 # approximate; the stance, camera pose, and projection are exact.
 # --------------------------------------------------------------------------------------------------
+
+# Provenance for every dry-render artifact (the preview PNG metadata AND the summary JSON) is stamped
+# from the module-level DRY_RENDER_SOURCE_MARKER / DRY_RENDER_NOT_RENDERED_NOTE constants (defined near
+# the top of this module). The dry-render preview is a CPU geometry sketch — stance/camera/projection
+# are exact, but the arm is a nominal Isaac-free skeleton and NOTHING is path-traced — so it must never
+# be filed or screenshotted as if it were a real Isaac/RTX render. This mirrors the native_runtime
+# placeholder path's "X-Blueprint-Render-Source: placeholder_cosmos_pending" claim-boundary marker.
 
 # Nominal G1 link offsets from the pelvis root (robot frame: +x forward, +y left, +z up). Approximate
 # but dimensionally faithful enough that camera framing of the reaching arm transfers to the GPU run.
@@ -6503,12 +7190,35 @@ def _dry_render_checks(summary) -> dict[str, bool]:
     chk = summary.get("checks", {}) or {}
     pf = summary.get("pov_framing", {}) or {}
     st = summary.get("stance", {}) or {}
+    rv = summary.get("robot_visual_geometry", {}) or {}
+    pov_geom = summary.get("manipulation_pov_geometry", {}) or {}
     fe = chk.get("facing_error_deg")
+    pitch_down = chk.get("camera_pitch_down_deg")
     return {
         "faces_target": fe is not None and float(fe) < 8.0,
         "target_in_frame": bool(pf.get("target_in_frame")),
         "arm_in_frame": int(pf.get("arm_landmarks_in_frame") or 0) >= 1,
         "no_blockers": not st.get("blockers"),
+        "robot_visual_mesh_present": bool(rv.get("renderable_robot_geometry_present", True)),
+        "camera_pitch_within_cap": (
+            pitch_down is None
+            or float(pitch_down) <= float(MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG)
+        ),
+        "pov_geometry_pass": not pov_geom or pov_geom.get("status") == "PASS",
+    }
+
+
+def _dry_render_provenance() -> dict[str, str]:
+    return {
+        DRY_RENDER_SOURCE_HEADER: DRY_RENDER_SOURCE_MARKER,
+        DRY_RENDER_NOTE_HEADER: DRY_RENDER_NOT_RENDERED_NOTE,
+        "render_source": DRY_RENDER_SOURCE_MARKER,
+        "render_source_note": DRY_RENDER_NOT_RENDERED_NOTE,
+        "claim_boundary": (
+            "CPU dry-render previews are local stance/camera/projection support artifacts. They are "
+            "not Isaac RTX frames, simulator execution proof, task success, physical reach proof, "
+            "safety validation, deployment approval, or raw capture truth."
+        ),
     }
 
 
@@ -6531,7 +7241,7 @@ def _draw_dry_render_preview(
     summary,
 ) -> None:
     """Draw the 3-panel dry-render preview PNG: top-down placement, egocentric POV framing, summary."""
-    from PIL import Image, ImageDraw  # local: only the dry-render path needs PIL
+    from PIL import Image, ImageDraw, PngImagePlugin  # local: only the dry-render path needs PIL
 
     PW, PH, GUT, TOP = 460, 420, 18, 34
     W = GUT + 3 * (PW + GUT)
@@ -6674,6 +7384,9 @@ def _draw_dry_render_preview(
         f"[{mark(ok['target_in_frame'])}] target in POV frame",
         f"[{mark(ok['arm_in_frame'])}] arm in POV frame  ({pf.get('arm_landmarks_in_frame')})",
         f"[{mark(ok['no_blockers'])}] no stance blockers",
+        f"[{mark(ok['robot_visual_mesh_present'])}] robot visual mesh present",
+        f"[{mark(ok['camera_pitch_within_cap'])}] camera pitch within cap",
+        f"[{mark(ok['pov_geometry_pass'])}] POV geometry gate",
     ]
     for blk in (st.get("blockers") or [])[:4]:
         lines.append(f"   blocker: {blk}")
@@ -6683,7 +7396,11 @@ def _draw_dry_render_preview(
         yy += 18
 
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    img.save(str(path))
+    png_info = PngImagePlugin.PngInfo()
+    provenance = summary.get("render_provenance", {}) or _dry_render_provenance()
+    png_info.add_text(DRY_RENDER_SOURCE_HEADER, str(provenance.get(DRY_RENDER_SOURCE_HEADER)))
+    png_info.add_text(DRY_RENDER_NOTE_HEADER, str(provenance.get(DRY_RENDER_NOTE_HEADER)))
+    img.save(str(path), pnginfo=png_info)
 
 
 def render_local_preview(
@@ -6697,6 +7414,8 @@ def render_local_preview(
     height: int = 960,
     manipulation_look_at=None,
     robot_prim_path: str | None = None,
+    robot_visual_prim_path: str | None = None,
+    robot_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Produce a no-GPU dry-render preview (PNG + summary JSON) for a task on an open USD stage.
 
@@ -6722,6 +7441,12 @@ def render_local_preview(
         "scenario_id": sid,
         "task": scenario.get("description") or scenario.get("instruction") or scenario.get("task"),
         "manipulation_reach_arm": manipulation_reach_arm,
+        "render_source": DRY_RENDER_SOURCE_MARKER,
+        "render_source_headers": {
+            DRY_RENDER_SOURCE_HEADER: DRY_RENDER_SOURCE_MARKER,
+            DRY_RENDER_NOTE_HEADER: DRY_RENDER_NOT_RENDERED_NOTE,
+        },
+        "render_provenance": _dry_render_provenance(),
         "stance": {
             "status": stance_plan.get("status"),
             "blockers": stance_plan.get("blockers"),
@@ -6754,11 +7479,74 @@ def render_local_preview(
     look_at = tuple(float(v) for v in look_at) if look_at is not None else None
 
     pov_vfov_deg = max(float(camera_vfov_deg), 90.0)  # manipulation widen — mirrors the runner
-    eye, tgt = manipulation_cam_pose(root, yaw, look_at=look_at, reach_arm=manipulation_reach_arm)
+    visual_prim_path = robot_visual_prim_path or robot_prim_path
+    if visual_prim_path and stage.GetPrimAtPath(visual_prim_path).IsValid():
+        _set_root_xform(stage, visual_prim_path, root, yaw)
+    robot_camera_meta: dict[str, Any] = {"source": "nominal_root_yaw_fallback"}
+    if visual_prim_path:
+        robot_diag = _robot_render_visibility_diagnostics(stage, visual_prim_path)
+        summary["robot_visual_geometry"] = {
+            "status": robot_diag.get("status"),
+            "blockers": robot_diag.get("blockers", []),
+            "gprim_count": robot_diag.get("gprim_count"),
+            "mesh_count": robot_diag.get("mesh_count"),
+            "renderable_robot_geometry_present": bool(
+                robot_diag.get("renderable_robot_geometry_present")
+            ),
+            "visual_binding_status": (
+                (robot_binding or {}).get("visual_binding_status")
+                if robot_binding is not None else "dry_render_proxy_robot"
+            ),
+            "diagnostics": robot_diag,
+            "claim_boundary": (
+                "Robot visual diagnostics prove only whether the local USD subtree exposes renderable "
+                "Gprim/Mesh surfaces for review media. They do not prove physical geometry, contact, "
+                "policy success, or live robot readiness."
+            ),
+        }
+    if robot_binding is not None and visual_prim_path:
+        eye, tgt, robot_camera_meta = _robot_mounted_manipulation_cam_pose(
+            stage,
+            visual_prim_path,
+            root,
+            yaw,
+            look_at=look_at,
+            reach_arm=manipulation_reach_arm,
+            vfov_deg=pov_vfov_deg,
+            width=width,
+            height=height,
+        )
+    else:
+        eye, tgt = manipulation_cam_pose(
+            root,
+            yaw,
+            look_at=look_at,
+            reach_arm=manipulation_reach_arm,
+        )
+    if look_at is not None:
+        capped_tgt = _target_raised_to_max_pitch_down(
+            eye,
+            tgt,
+            MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG,
+        )
+        if capped_tgt != tgt:
+            robot_camera_meta = {
+                **robot_camera_meta,
+                "pitch_cap_applied": True,
+                "uncapped_pov_target": [round(float(v), 6) for v in tgt],
+                "max_pitch_down_deg": float(MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG),
+            }
+            tgt = capped_tgt
 
     skeleton_world = _rest_skeleton_world(nominal_g1_rest_offsets(), root, yaw)
     if look_at is not None:
-        skeleton_world = compute_arm_reach_skeleton(skeleton_world, look_at, 1.0, arm=manipulation_reach_arm)
+        skeleton_world = compute_arm_reach_skeleton(
+            skeleton_world,
+            look_at,
+            1.0,
+            arm=manipulation_reach_arm,
+            forward_yaw=yaw,
+        )
     pov_lms = _project_skeleton(skeleton_world, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
                                 vfov_deg=pov_vfov_deg, width=width, height=height)
 
@@ -6784,6 +7572,9 @@ def render_local_preview(
         "pov_eye": [round(float(v), 4) for v in eye],
         "pov_target": [round(float(v), 4) for v in tgt],
         "pov_vfov_deg": round(float(pov_vfov_deg), 3),
+        "pov_pitch_down_deg": round(float(_camera_pitch_down_deg(eye, tgt)), 3),
+        "source": robot_camera_meta.get("source"),
+        "metadata": robot_camera_meta,
     }
     summary["pov_framing"] = {
         "target_in_frame": target_px is not None,
@@ -6792,9 +7583,32 @@ def render_local_preview(
     }
     summary["checks"] = {
         "facing_error_deg": _facing_error_deg(root, yaw, look_at),
+        "camera_pitch_down_deg": round(float(_camera_pitch_down_deg(eye, tgt)), 3),
         "standoff_gap_m": (stance_plan.get("candidates") or [{}])[stance_plan.get("selected_candidate_index", 0)]
         .get("standoff_from_target_surface_m"),
     }
+    if robot_binding is not None and visual_prim_path and look_at is not None:
+        reach_selection = _normalize_reach_arm_selection(manipulation_reach_arm)
+        arm_points_by_arm = _robot_arm_link_points_by_arm(
+            stage,
+            visual_prim_path,
+            arm=reach_selection,
+        )
+        if reach_selection == "both":
+            arm_points = _average_arm_link_points(arm_points_by_arm)
+        else:
+            arm_points = dict(arm_points_by_arm.get(reach_selection) or {})
+        summary["manipulation_pov_geometry"] = _manipulation_pov_geometry(
+            arm_points=arm_points,
+            arm_points_by_arm=arm_points_by_arm,
+            affordance=look_at,
+            eye=eye,
+            target=tgt,
+            vfov_deg=pov_vfov_deg,
+            width=width,
+            height=height,
+            arm=reach_selection,
+        )
 
     _draw_dry_render_preview(
         out_dir / "dry_render_preview.png",
@@ -6923,7 +7737,12 @@ def main(argv=None) -> int:
             print(json.dumps(res))
             return 1
         stage = _open_stage_local(kitchen_usd)
-        _bind_proxy_robot(stage, "/World/G1")
+        robot_prim_path = "/World/G1"
+        robot_binding: dict[str, Any] | None = None
+        if g1_usd:
+            robot_binding = _bind_g1_with_visual_fallback(stage, g1_usd, prim_path=robot_prim_path)
+        else:
+            _bind_proxy_robot(stage, robot_prim_path)
         reach_arm = args.manipulation_reach_arm
         summaries = []
         for sc in scenarios:
@@ -6932,7 +7751,9 @@ def main(argv=None) -> int:
                 stage=stage, scenario=sc, out_dir=dry_out / sid,
                 manipulation_reach_arm=reach_arm, camera_vfov_deg=args.camera_vfov,
                 width=args.width, height=args.height, manipulation_look_at=manip_look_at,
-                robot_prim_path="/World/G1",
+                robot_prim_path=robot_prim_path,
+                robot_visual_prim_path=robot_prim_path,
+                robot_binding=robot_binding,
             )
             summaries.append(summ)
         (dry_out / "dry_render_index.json").write_text(json.dumps(summaries, indent=2))

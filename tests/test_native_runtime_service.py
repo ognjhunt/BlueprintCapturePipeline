@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 from starlette.websockets import WebSocketDisconnect
 

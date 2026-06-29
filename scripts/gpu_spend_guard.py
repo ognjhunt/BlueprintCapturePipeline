@@ -52,6 +52,21 @@ VAST_TERMINAL_STATUSES = frozenset(
 )
 # RunPod desired-states that mean the pod is no longer a live compute allocation.
 RUNPOD_TERMINAL_STATUSES = frozenset({"EXITED", "TERMINATED", "TERMINATING"})
+RUNPOD_STOPPED_STATUSES = frozenset({"STOPPED", "PAUSED"})
+# Keep this local so the standalone guard does not import render-job modules while running as a
+# cost watchdog. Source of truth: isaac_particlefield_render_job.DEFAULT_WARM_CANDIDATES.
+DEFAULT_WARM_CANDIDATE_IDS = frozenset(
+    {
+        "pwbu7wxsvxpr0x",
+        "9zxerj0nm3ow76",
+        "qzgtsh4t27hi7f",
+        "v4bd9u2qhwivb8",
+        "y3n5n7t6wvaawe",
+        "1gx9uri0mkrxg9",
+        "ajxbj2ysyow3n9",
+        "usjvua1bwlwhyj",
+    }
+)
 
 
 def _now() -> float:
@@ -143,12 +158,14 @@ def _parse_runpod_pod(pod: Mapping[str, Any], *, now: float) -> GpuInstance:
     desired = str(pod.get("desiredStatus") or "").upper()
     runtime = pod.get("runtime")
     booted = bool(runtime)
-    live = booted or desired not in RUNPOD_TERMINAL_STATUSES
+    live = booted or desired not in (RUNPOD_TERMINAL_STATUSES | RUNPOD_STOPPED_STATUSES)
 
     if booted:
         state = "running"
     elif desired == "RUNNING":
         state = "booting"
+    elif desired in RUNPOD_STOPPED_STATUSES:
+        state = "stopped"
     else:
         state = desired.lower() or "unknown"
 
@@ -427,11 +444,15 @@ def is_reapable(
 ) -> bool:
     """True only for an orphaned dud: live, never booted, older than the boot
     threshold, and not protected by a live owning process."""
+    if inst.provider == "runpod" and inst.id in DEFAULT_WARM_CANDIDATE_IDS:
+        return False
     if inst.id in protected_ids:
         return False
     if not inst.live:
         return False
     if inst.booted:
+        return False
+    if inst.provider == "runpod" and inst.state != "booting":
         return False
     if inst.age_seconds is None:
         return False

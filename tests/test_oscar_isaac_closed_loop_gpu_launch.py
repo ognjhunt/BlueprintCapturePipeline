@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import oscar_isaac_closed_loop_gpu_launch as G

@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline.synthesis import cosmos_benchmark

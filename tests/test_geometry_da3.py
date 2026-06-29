@@ -6,6 +6,8 @@ import types
 from pathlib import Path
 
 import numpy as np
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import geometry_da3 as da3

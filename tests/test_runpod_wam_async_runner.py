@@ -481,6 +481,62 @@ def test_runpod_poll_tolerates_transient_not_found_after_create(
     assert (tmp_path / "job" / "runpod_wam_async_pre_teardown_poll_manifest.json").is_file()
 
 
+def test_runpod_poll_can_stop_pod_for_warm_reuse_instead_of_delete(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("wam_runtime_result.json", json.dumps({"status": "completed"}))
+        archive.writestr("oscar_generated_rollout.mp4", b"fake-mp4")
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-123",
+                "created_at_epoch": runner.time.time(),
+                "output_path": str(output_zip),
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["path"] == "/pods/pod-123":
+            return 200, {"desiredStatus": "RUNNING"}
+        if kwargs["path"] == "/pods/pod-123/stop":
+            return 200, {"id": "pod-123", "desiredStatus": "EXITED"}
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setenv(runner.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "stop")
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        teardown=True,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["teardown_action"] == "stop"
+    assert manifest["teardown_performed"] is True
+    assert manifest["continuing_spend_from_this_run"] is False
+    assert (job_dir / "runpod_wam_async_stop_manifest.json").is_file()
+    assert not (job_dir / "runpod_wam_async_delete_manifest.json").exists()
+    assert any(request["path"] == "/pods/pod-123/stop" for request in requests)
+
+
 def test_runpod_poll_stops_not_found_grace_when_delete_already_completed(
     tmp_path: Path,
     monkeypatch,

@@ -6,6 +6,8 @@ import sys
 from types import ModuleType
 
 import numpy as np
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline.synthesis import depth_splat as depth_splat_module

@@ -8,9 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import cv2
 import numpy as np
 import pytest
+
+cv2 = pytest.importorskip("cv2")
 
 from blueprint_pipeline import oscar_wam_command_adapter as adapter
 
@@ -205,23 +206,36 @@ def test_oscar_wam_command_adapter_materializes_inputs_and_blocks_without_cuda(
     assert Path(package["first_frame"]["path"]).is_file()
     assert Path(package["skeleton_video"]["path"]).is_file()
     assert package["conditioning_video_review_validation"]["status"] == "completed"
-    assert package["conditioning_video_visual_smoke"]["status"] == "passed_visual_quality_smoke"
     assert package["conditioning_video_decode_valid_for_review"] is True
     assert package["conditioning_video_visually_useful_for_model_input"] is True
-    assert package["skeleton_video"]["conditioning_mode"] == "projected_g1_skeleton_rgb_overlay"
+    assert package["skeleton_video"]["conditioning_mode"] == "projected_g1_skeleton"
     assert package["skeleton_video"]["proxy_skeleton_overlay_drawn"] is False
     assert package["skeleton_video"]["egocentric_arm_skeleton_rendered"] is False
     assert package["skeleton_video"]["oscar_gripper_scenario_proxy_rendered"] is False
     assert package["skeleton_video"]["projected_g1_skeleton_rendered"] is True
     assert package["skeleton_video"]["texture_free_egocentric_arm_skeleton_rendered"] is False
-    assert package["skeleton_video"]["selected_review_video_background_used"] is True
-    assert package["skeleton_video"]["background_frame_count"] == 4
+    assert package["skeleton_video"]["selected_review_video_background_used"] is False
+    assert package["skeleton_video"]["background_frame_count"] == 0
+    assert package["skeleton_video"]["skeleton_stream_separate_from_rgb"] is True
+    assert package["skeleton_video"]["skeleton_stream_texture_free"] is True
+    assert package["skeleton_video"]["skeleton_stream_image_aligned_to_rgb"] is True
+    assert package["skeleton_video"]["first_rgb_frame_anchors_scene_and_robot_appearance"] is True
+    assert package["skeleton_video"]["alignment_contract"]["width"] == 64
+    assert package["skeleton_video"]["alignment_contract"]["height"] == 64
     assert package["projected_skeleton_trace"]["used_for_conditioning"] is True
     assert package["projected_skeleton_trace"]["row_count"] == 4
     assert package["projected_skeleton_trace"]["projectable_row_count"] == 4
-    assert package["rgb_video"]["used_for_oscar_rgb_latent_context"] is True
-    assert package["rgb_video"]["omitted_for_projected_g1_skeleton_conditioning"] is False
-    assert package["rgb_video"]["normalized_for_oscar_inference"] is True
+    assert package["rgb_video"]["used_for_oscar_rgb_latent_context"] is False
+    assert package["rgb_video"]["omitted_for_projected_g1_skeleton_conditioning"] is True
+    assert package["rgb_video"]["normalized_for_oscar_inference"] is False
+    assert package["oscar_dual_stream_input_contract"]["separate_2d_skeleton_stream"] is True
+    assert package["oscar_dual_stream_input_contract"]["skeleton_stream_texture_free"] is True
+    assert (
+        package["oscar_dual_stream_input_contract"][
+            "first_rgb_frame_anchors_scene_and_robot_appearance"
+        ]
+        is True
+    )
     assert package["claim_boundary"]["skeleton_conditioning_is_proxy_from_mujoco_trace"] is True
     assert package["claim_boundary"]["projected_g1_skeleton_conditioning_used"] is True
     assert (
@@ -252,17 +266,26 @@ def test_oscar_wam_command_adapter_materializes_inputs_and_blocks_without_cuda(
     )
     assert (
         package["claim_boundary"]["conditioning_video_preserves_selected_egocentric_rgb_context"]
-        is True
+        is False
     )
-    assert package["claim_boundary"]["first_person_conditioning_uses_selected_review_video"] is True
+    assert package["claim_boundary"]["first_person_conditioning_uses_selected_review_video"] is False
     assert package["claim_boundary"]["first_frame_uses_selected_review_video"] is True
     assert (
+        package["claim_boundary"]["first_rgb_frame_anchors_scene_and_robot_appearance"]
+        is True
+    )
+    assert (
+        package["claim_boundary"]["separate_2d_skeleton_stream_aligned_to_rgb"]
+        is True
+    )
+    assert package["claim_boundary"]["skeleton_stream_is_texture_free"] is True
+    assert (
         package["claim_boundary"]["rgb_video_arg_omitted_for_projected_g1_skeleton_conditioning"]
-        is False
+        is True
     )
     assert (
         package["claim_boundary"]["conditioning_video_uses_selected_first_person_g1_mesh_view"]
-        is True
+        is False
     )
     assert package["claim_boundary"]["conditioning_visual_enhancement_applies_to_support_asset_only"] is True
     assert written["raw_credentials_written_to_artifacts"] is False
@@ -323,6 +346,8 @@ def test_oscar_wam_command_adapter_projected_g1_overlay_uses_first_person_backgr
     assert skeleton["conditioning_mode"] == "projected_g1_skeleton_rgb_overlay"
     assert skeleton["projected_g1_skeleton_rendered"] is True
     assert skeleton["selected_review_video_background_used"] is True
+    assert skeleton["skeleton_stream_separate_from_rgb"] is False
+    assert skeleton["skeleton_stream_texture_free"] is False
     assert skeleton["background_frame_count"] == 4
     assert (
         skeleton["background_preprocessing"]["background_alpha_applied_to_projected_g1_skeleton"]
@@ -553,7 +578,7 @@ def test_oscar_wam_command_adapter_private_helper_edges(
     )
     assert len(projected_rows) == 4
     assert adapter._projected_skeleton_projectable_row_count(projected_rows) == 4
-    assert adapter._configured_conditioning_mode(projected_rows) == "projected_g1_skeleton_rgb_overlay"
+    assert adapter._configured_conditioning_mode(projected_rows) == "projected_g1_skeleton"
     assert adapter._configured_conditioning_mode([]) == "oscar_gripper_scenario_proxy"
     assert adapter._sample_rows([], 3) == []
     assert adapter._sample_rows([{"row": 1}], 3) == [{"row": 1}, {"row": 1}, {"row": 1}]

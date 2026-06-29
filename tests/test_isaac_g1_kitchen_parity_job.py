@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -88,6 +89,26 @@ def test_cli_forwards_warm_only(monkeypatch, tmp_path: Path) -> None:
     assert captured["warm_only"] is True
 
 
+def test_cli_forwards_provider_race_list(monkeypatch, tmp_path: Path) -> None:
+    scenarios_path = tmp_path / "scenarios.json"
+    scenarios_path.write_text(json.dumps(_SCENARIOS), encoding="utf-8")
+    captured: dict = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"status": "prepared"}
+
+    monkeypatch.setattr(J, "run_isaac_g1_kitchen_parity_job", fake_run)
+    rc = J.main([
+        "--scenarios", str(scenarios_path),
+        "--out-dir", str(tmp_path / "out"),
+        "--provider", "runpod,vast",
+    ])
+
+    assert rc == 0
+    assert captured["provider"] == "runpod,vast"
+
+
 def test_build_parity_bundle_contains_runner_policy_request_and_assets(tmp_path: Path) -> None:
     # fake kitchen asset tree
     kdir = tmp_path / "kitchen_src"
@@ -100,6 +121,7 @@ def test_build_parity_bundle_contains_runner_policy_request_and_assets(tmp_path:
     with zipfile.ZipFile(zip_path) as zf:
         names = set(zf.namelist())
         req = json.loads(zf.read("request.json"))
+        manifest = json.loads(zf.read("bundle_manifest.json"))
     assert "run_isaac_g1_kitchen_parity_eval.py" in names
     assert "isaac_g1_policy.py" in names  # policy module shipped for the worker import
     assert "render_visual_qc.py" in names  # Gemini placement QC module shipped for worker import
@@ -112,6 +134,10 @@ def test_build_parity_bundle_contains_runner_policy_request_and_assets(tmp_path:
     assert "scene_placement/__init__.py" in names
     assert "scene_placement/usd_index.py" in names
     assert "scene_placement/target_resolver.py" in names
+    assert "bundle_manifest.json" in names
+    for required in J.PARITY_BUNDLE_REQUIRED_FILES:
+        assert required in names
+        assert required in manifest["required_files"]
     assert not any(n.endswith(".pyc") or "__pycache__" in n for n in names if n.startswith("scene_placement/"))
     assert req["steps"] == 32 and len(req["scenarios"]) == 2
 
@@ -172,6 +198,22 @@ def test_build_launch_spec_threads_gemini_key_only_when_supplied(tmp_path: Path)
     )
     assert on.env["GOOGLE_GENAI_API_KEY"] == "secret-value"
     assert on.env["GEMINI_API_KEY"] == "secret-value"
+
+
+def test_build_launch_spec_threads_nonsecret_render_quality_env(monkeypatch, tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+    monkeypatch.setenv("PARITY_RENDER_QUALITY_MODE", "pathtraced")
+    monkeypatch.setenv("PARITY_PATH_TRACING_SAMPLES_PER_PIXEL", "128")
+    monkeypatch.setenv("PARITY_PATH_TRACED_RT_SUBFRAMES", "2")
+
+    spec = J.build_launch_spec(jd, image="img:tag", policy_id="p", steps=8)
+
+    assert spec.env["PARITY_RENDER_QUALITY_MODE"] == "pathtraced"
+    assert spec.env["PARITY_PATH_TRACING_SAMPLES_PER_PIXEL"] == "128"
+    assert spec.env["PARITY_PATH_TRACED_RT_SUBFRAMES"] == "2"
 
 
 def test_manipulation_cam_flag_threads_env_and_bootstrap(tmp_path: Path) -> None:
@@ -317,6 +359,188 @@ def test_job_prepared_plan_without_spend(tmp_path: Path, monkeypatch) -> None:
     assert m["provider"] == "vast"
     assert m["launch_request_shape"]["provider"] == "vast"
     assert m["scenario_ids"] == ["entry_to_sink", "narrow_passage_to_sink"]
+    assert "git_evidence" in m
+
+
+def test_job_prepared_multi_provider_plan_without_spend(tmp_path: Path, monkeypatch) -> None:
+    def _fake_stage(bundle_zip, job_dir, *, key_prefix):
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+        (job_dir / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+        return {"status": "completed", "manifest": {}}
+
+    monkeypatch.setattr(J, "stage_bundle", _fake_stage)
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="runpod,vast",
+        allow_paid=False,
+    )
+
+    assert m["status"] == "prepared"
+    assert m["provider"] == "runpod,vast"
+    assert m["providers"] == ["runpod", "vast"]
+    assert m["launch_request_shape"]["provider"] == "runpod"
+
+
+def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
+    )
+
+    def _fake_stage(bundle_zip, job_dir, *, key_prefix):
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "provider_bundle_url.txt").write_text(
+            f"https://spaces.example/{job_dir.name}/bundle.zip?sig=A"
+        )
+        (job_dir / "provider_output_put_url.txt").write_text(
+            f"https://spaces.example/{job_dir.name}/out.zip?sig=B"
+        )
+        (job_dir / "provider_output_get_url.txt").write_text(
+            f"https://spaces.example/{job_dir.name}/out.zip?sig=C"
+        )
+        return {"status": "completed", "manifest": {}}
+
+    class _FakeProvider:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.requests: list[dict] = []
+
+        def available(self) -> dict:
+            return {"provider": self.name, "available": True}
+
+        def build_request(self, spec, job_dir):
+            body = {"env": dict(spec.env), "provider": self.name, "job_dir": str(job_dir)}
+            self.requests.append(body)
+            return body
+
+    fake_providers = {"runpod": _FakeProvider("runpod"), "vast": _FakeProvider("vast")}
+    monkeypatch.setattr(
+        J,
+        "get_render_provider",
+        lambda name, warm_candidates=(): fake_providers[name],
+    )
+    monkeypatch.setattr(J, "stage_bundle", _fake_stage)
+    captured: dict = {}
+
+    def _fake_race(providers, request, marker_check, marker_timeout, *, job_dir, cold=False,
+                   poll_interval=10.0, circuit_breaker=None, terminate_losers=True,
+                   launch_kwargs=None, sleep=None, monotonic=None):
+        bodies = []
+        for i, provider_obj in enumerate(providers):
+            contender_dir = Path(job_dir) / f"contender-{i}-{provider_obj.name}"
+            body = request(provider_obj, contender_dir)
+            bodies.append(body)
+            assert body["env"]["BLUEPRINT_LAUNCH_SESSION_ID"]
+            assert launch_kwargs(provider_obj) == {"allow_cold_fallback": True}
+        captured["race_bodies"] = bodies
+        winner_dir = Path(job_dir) / "contender-1-vast"
+        return {
+            "schema": "provider_race.v1",
+            "status": "launched",
+            "provider": "vast",
+            "instance_id": "vast-iid",
+            "mode": "vast_on_demand",
+            "winner_provider": fake_providers["vast"],
+            "winner_launch": {"status": "launched", "instance_id": "vast-iid",
+                              "mode": "vast_on_demand", "job_dir": str(winner_dir)},
+            "contenders": [],
+            "skipped": [],
+            "terminated_losers": 1,
+            "reason": None,
+        }
+
+    def _fake_watch(job_dir, render_out, instance_id, *, provider=None, max_seconds=0,
+                    preserve_instance=False):
+        captured["collect_job_dir"] = Path(job_dir)
+        captured["collect_provider"] = provider.name
+        captured["collect_instance_id"] = instance_id
+        return {
+            "status": "completed",
+            "elapsed_seconds": 1,
+            "teardown": {"status": "preserved"},
+            "runner_result": {
+                "status": "completed",
+                "policy_id": "blueprint_default_walk_to_target_smoke_policy",
+                "scenarios": [],
+                "scenarios_executed": 0,
+                "scenarios_passed": 0,
+            },
+        }
+
+    monkeypatch.setattr(J, "race_launch", _fake_race)
+    monkeypatch.setattr(J, "watch_and_collect", _fake_watch)
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="runpod,vast",
+        allow_paid=True,
+        allow_dirty_paid_launch=True,
+    )
+
+    assert m["status"] == "completed"
+    assert m["launch"]["provider"] == "vast"
+    assert m["launch"]["terminated_losers"] == 1
+    assert captured["collect_provider"] == "vast"
+    assert captured["collect_instance_id"] == "vast-iid"
+    assert captured["collect_job_dir"].name == "contender-1-vast"
+
+
+def test_paid_launch_blocks_dirty_worktree_before_staging(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {
+            "status": "available",
+            "git_sha": "abc123",
+            "dirty": True,
+            "dirty_entries_count": 1,
+            "dirty_entries": [" M scripts/run_isaac_g1_kitchen_parity_eval.py"],
+            "dirty_entries_truncated": False,
+        },
+    )
+
+    def _stage_should_not_run(*_args, **_kwargs):
+        raise AssertionError("paid dirty-tree guard must run before staging")
+
+    monkeypatch.setattr(J, "stage_bundle", _stage_should_not_run)
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="vast",
+        allow_paid=True,
+    )
+
+    assert m["status"] == "blocked"
+    assert "dirty_worktree_paid_launch_blocked" in m["blockers"]
+    assert m["git_evidence"]["dirty"] is True
+
+
+def test_cli_forwards_dirty_paid_launch_override(monkeypatch, tmp_path: Path) -> None:
+    scenarios_path = tmp_path / "scenarios.json"
+    scenarios_path.write_text(json.dumps(_SCENARIOS), encoding="utf-8")
+    captured: dict = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"status": "prepared"}
+
+    monkeypatch.setattr(J, "run_isaac_g1_kitchen_parity_job", fake_run)
+    rc = J.main([
+        "--scenarios", str(scenarios_path),
+        "--out-dir", str(tmp_path / "out"),
+        "--allow-paid",
+        "--allow-dirty-paid-launch",
+    ])
+
+    assert rc == 0
+    assert captured["allow_paid"] is True
+    assert captured["allow_dirty_paid_launch"] is True
 
 
 def test_job_blocks_on_no_scenarios(tmp_path: Path) -> None:
@@ -335,15 +559,18 @@ def _make_fake_provider():
     import zipfile as _zip
 
     class _FakeProv:
-        def __init__(self, marker: bool) -> None:
+        def __init__(self, marker: bool, marker_mode: str = "matching") -> None:
             self.launched: list[str] = []
             self.terminated: list[str] = []
             self.stopped: list[str] = []
             self._marker = marker
+            self._marker_mode = marker_mode
+            self._launch_session_id = ""
 
         def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
             iid = f"pod{len(self.launched)}"
             self.launched.append(iid)
+            self._launch_session_id = str((request.get("env") or {}).get("BLUEPRINT_LAUNCH_SESSION_ID") or "")
             return {
                 "status": "launched",
                 "instance_id": iid,
@@ -362,7 +589,15 @@ def _make_fake_provider():
             buf = _io.BytesIO()
             with _zip.ZipFile(buf, "w") as z:
                 if self._marker:
-                    z.writestr("bootstrap.json", "{}")
+                    marker_payload = {}
+                    if self._marker_mode == "matching":
+                        marker_payload = {"launch_session_id": self._launch_session_id}
+                    elif self._marker_mode == "wrong":
+                        marker_payload = {"launch_session_id": "old-session"}
+                    z.writestr(
+                        "bootstrap.json",
+                        json.dumps(marker_payload),
+                    )
 
             class _R:
                 def read(self_inner):
@@ -402,6 +637,30 @@ def test_launch_with_marker_retry_terminates_all_flaky_pods(tmp_path: Path, monk
     assert fp.terminated == ["pod0", "pod1", "pod2"]
 
 
+def test_launch_with_marker_retry_ignores_stale_bootstrap_marker(tmp_path: Path, monkeypatch) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+    fp = _make_fake_provider()(marker=True, marker_mode="wrong")
+    clock = {"t": 0.0}
+    monkeypatch.setattr(J.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(J.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(J.urllib.request, "urlopen", fp.urlopen)
+
+    res = J.launch_with_marker_retry(
+        fp,
+        jd,
+        {"env": {"EXISTING": "1"}},
+        max_attempts=1,
+        marker_timeout=2,
+        poll=1,
+    )
+
+    assert res["status"] == "blocked"
+    assert res["attempts"][0]["marker_seen"] is False
+    assert fp.terminated == ["pod0"]
+
+
 def test_launch_with_marker_retry_stops_flaky_warm_restart(tmp_path: Path, monkeypatch) -> None:
     jd = tmp_path / "job"
     jd.mkdir()
@@ -425,3 +684,102 @@ def test_launch_with_marker_retry_stops_flaky_warm_restart(tmp_path: Path, monke
     assert res["status"] == "blocked"
     assert fp.terminated == []
     assert fp.stopped == ["pod0"]
+
+
+def test_await_warm_serve_ready_requires_matching_launch_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import io as _io
+    import zipfile as _zip
+
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+    (jd / "launch_session_nonce.txt").write_text("fresh-session", encoding="utf-8")
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w") as z:
+        z.writestr("bootstrap.json", json.dumps({
+            "phase": "runner_starting",
+            "launch_session_id": "fresh-session",
+        }))
+        z.writestr("warm_serve_ready.json", json.dumps({
+            "status": "serving",
+            "launch_session_id": "old-session",
+        }))
+    data = buf.getvalue()
+
+    class _R:
+        def read(self) -> bytes:
+            return data
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(J.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(J.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(J.urllib.request, "urlopen", lambda _url, timeout=60: _R())
+
+    res = J._await_warm_serve_ready(jd, instance_id="pod1", timeout_s=2, poll_interval_s=1)
+
+    assert res["ready"] is False
+    assert res["reason"] == "serve_ready_timeout"
+
+
+def test_await_warm_serve_ready_accepts_matching_launch_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import io as _io
+    import zipfile as _zip
+
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+    (jd / "launch_session_nonce.txt").write_text("fresh-session", encoding="utf-8")
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w") as z:
+        z.writestr("bootstrap.json", json.dumps({
+            "phase": "runner_starting",
+            "launch_session_id": "fresh-session",
+        }))
+        z.writestr("warm_serve_ready.json", json.dumps({
+            "status": "serving",
+            "launch_session_id": "fresh-session",
+        }))
+    data = buf.getvalue()
+
+    class _R:
+        def read(self) -> bytes:
+            return data
+
+    monkeypatch.setattr(J.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(J.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(J.urllib.request, "urlopen", lambda _url, timeout=60: _R())
+
+    res = J._await_warm_serve_ready(jd, instance_id="pod1", timeout_s=2, poll_interval_s=1)
+
+    assert res["ready"] is True
+    assert res["serve_detail"]["launch_session_id"] == "fresh-session"
+
+
+def test_await_warm_serve_ready_surfaces_expired_output_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+
+    monkeypatch.setattr(J.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(
+        J.urllib.request,
+        "urlopen",
+        lambda url, timeout=60: (_ for _ in ()).throw(
+            urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+        ),
+    )
+
+    res = J._await_warm_serve_ready(jd, instance_id="pod1", timeout_s=2, poll_interval_s=1)
+
+    assert res["ready"] is False
+    assert res["reason"] == "presigned_url_expired_or_forbidden"
+    assert res["http_status"] == 403

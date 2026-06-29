@@ -160,7 +160,10 @@ def camera_basis(eye: Vec3, target: Vec3, up: Vec3) -> Tuple[Vec3, Vec3, Vec3]:
     The supplied ``up`` only needs to be *roughly* up — it is re-orthogonalized, so
     a non-perpendicular hint still yields a clean basis (Gram-Schmidt style).
     """
-    forward = _normalize(_sub(target, eye))
+    forward_raw = _sub(target, eye)
+    if _norm(forward_raw) <= 1e-9:
+        raise ValueError("camera eye and target must not be coincident")
+    forward = _normalize(forward_raw)
     right = _cross(forward, up)
     if _norm(right) <= 1e-9:
         # up was (anti)parallel to forward (e.g. looking straight down with z-up);
@@ -266,11 +269,25 @@ def _box_corner_pixels(bbox_px: Sequence[float]) -> List[Tuple[float, float]]:
 
 
 def _aabb_from_points(points: Sequence[Vec3]) -> Tuple[Vec3, Vec3]:
-    """Axis-aligned min/max corners over a set of world points."""
+    """Axis-aligned canonical min/max corners over a set of world points."""
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
     zs = [p[2] for p in points]
-    return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
+    bmin = (min(xs), min(ys), min(zs))
+    bmax = (max(xs), max(ys), max(zs))
+    return tuple(min(bmin[i], bmax[i]) for i in range(3)), tuple(
+        max(bmin[i], bmax[i]) for i in range(3)
+    )
+
+
+def _aabb_is_usable(bbox_min: Vec3, bbox_max: Vec3, *, max_box_size: float) -> bool:
+    values = [*bbox_min, *bbox_max]
+    if not all(math.isfinite(float(v)) for v in values):
+        return False
+    sizes = [float(bbox_max[i]) - float(bbox_min[i]) for i in range(3)]
+    if any(size < 0.0 for size in sizes):
+        return False
+    return max(sizes) <= float(max_box_size)
 
 
 # ----------------------------- the index -----------------------------
@@ -291,6 +308,7 @@ class PerceptionSceneSpatialIndex:
         camera: Mapping[str, object],
         *,
         samples_per_axis: int = 3,
+        max_world_box_size: float = 6.0,
     ) -> None:
         """
         Args:
@@ -304,6 +322,7 @@ class PerceptionSceneSpatialIndex:
         self._depth_provider = depth_provider
         self._camera = camera
         self._samples_per_axis = samples_per_axis
+        self._max_world_box_size = float(max_world_box_size)
         # Resolve camera geometry once; reused for every detection.
         self._intrinsics = resolve_intrinsics(camera)
         eye, target, up = resolve_extrinsics(camera)
@@ -347,6 +366,12 @@ class PerceptionSceneSpatialIndex:
                 for (px, py) in _box_corner_pixels(bbox_t)
             ]
             bbox_min, bbox_max = _aabb_from_points(world_pts)
+            if not _aabb_is_usable(
+                bbox_min,
+                bbox_max,
+                max_box_size=self._max_world_box_size,
+            ):
+                continue
             centroid = world_pts[-1]  # the box center we appended last
             label = str(det.get("label", "") or "")
             confidence = det.get("confidence", 1.0)

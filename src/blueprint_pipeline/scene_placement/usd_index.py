@@ -62,6 +62,7 @@ _LABEL_STRIP_SUFFIXES: Tuple[str, ...] = (
     "_grp",
     "_group",
 )
+_LABEL_STRUCTURAL_WORDS = frozenset(suffix.lstrip("_") for suffix in _LABEL_STRIP_SUFFIXES)
 
 
 def _clean_label(name: str) -> str:
@@ -87,6 +88,8 @@ def _clean_label(name: str) -> str:
     while previous != label:
         previous = label
         lowered = label.lower()
+        if lowered.strip("_ ") in _LABEL_STRUCTURAL_WORDS:
+            return ""
         # Drop a known structural suffix (e.g. "_link", "_geo").
         for suffix in _LABEL_STRIP_SUFFIXES:
             if lowered.endswith(suffix) and len(label) > len(suffix):
@@ -100,6 +103,8 @@ def _clean_label(name: str) -> str:
             if stripped != label:
                 label = stripped
         label = label.strip("_ ")
+        if label.lower() in _LABEL_STRUCTURAL_WORDS:
+            return ""
     return label.lower()
 
 
@@ -164,8 +169,12 @@ def _objects_from_bounds(
         label = _clean_label(name)
         if not label:
             continue
-        bmin = (float(bbox_min[0]), float(bbox_min[1]), float(bbox_min[2]))
-        bmax = (float(bbox_max[0]), float(bbox_max[1]), float(bbox_max[2]))
+        raw_min = (float(bbox_min[0]), float(bbox_min[1]), float(bbox_min[2]))
+        raw_max = (float(bbox_max[0]), float(bbox_max[1]), float(bbox_max[2]))
+        # Authored USD/perception bounds can arrive with corner order inverted. Reordering min/max
+        # is lossless canonicalization; non-finite values still flow to validation fail-closed.
+        bmin = tuple(min(raw_min[i], raw_max[i]) for i in range(3))
+        bmax = tuple(max(raw_min[i], raw_max[i]) for i in range(3))
         centroid: Vec3 = (
             0.5 * (bmin[0] + bmax[0]),
             0.5 * (bmin[1] + bmax[1]),

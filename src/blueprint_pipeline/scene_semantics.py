@@ -181,6 +181,36 @@ def _normalize_environment(value: str) -> str:
     return text if text in _SUPPORTED_ENVIRONMENTS else "default"
 
 
+def _json_object_candidates(text: str) -> List[Dict[str, Any]]:
+    raw = text or ""
+    candidates: List[Dict[str, Any]] = []
+    starts: List[int] = []
+    in_string = False
+    escaped = False
+    for idx, ch in enumerate(raw):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            starts.append(idx)
+        elif ch == "}" and starts:
+            start = starts.pop()
+            try:
+                payload = json.loads(raw[start: idx + 1])
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                candidates.append(payload)
+    return candidates
+
+
 def _extract_json_object(text: str) -> Dict[str, Any]:
     try:
         payload = json.loads(text)
@@ -189,14 +219,12 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return {}
-    try:
-        payload = json.loads(match.group(0))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    candidates = _json_object_candidates(re.sub(r"```(?:json)?\s*|\s*```", "", text or ""))
+    expected_keys = {"room_type", "environment", "objects", "summary", "scores", "confidence"}
+    for payload in candidates:
+        if any(key in payload for key in expected_keys):
+            return payload
+    return candidates[0] if candidates else {}
 
 
 def _extract_response_text(response: Any) -> str:
@@ -233,12 +261,54 @@ class _GeminiResult:
 
 _DEFAULT_MODEL_CASCADE = [
     "gemini-3-flash-preview",
-    "gemini-3.1-pro-preview",
+    "gemini-3-pro-preview",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
 ]
 _DEFAULT_GEMINI_VIDEO_ANALYSIS_FPS = 5.0
 _MAX_GEMINI_VIDEO_ANALYSIS_FPS = 24.0
+_GEMINI_TRANSIENT_RETRIES = 2
+
+
+def _gemini_models_from_override(*env_names: str) -> List[str]:
+    for env_name in env_names:
+        override = (os.getenv(env_name) or "").strip()
+        if override:
+            return [override]
+    return list(_DEFAULT_MODEL_CASCADE)
+
+
+def _is_transient_gemini_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    return (
+        status == 429
+        or "429" in text
+        or "resource_exhausted" in text
+        or "rate limit" in text
+        or "temporarily" in text
+        or "timeout" in text
+    )
+
+
+def _delete_gemini_file(client: Any, uploaded_file: Any) -> None:
+    name = getattr(uploaded_file, "name", None)
+    if not name:
+        return
+    try:
+        client.files.delete(name=name)
+    except Exception as exc:  # noqa: BLE001 - best-effort privacy/cost cleanup.
+        logger.info("Gemini file cleanup skipped for %s: %r", name, exc)
+
+
+def _bounded_confidence(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, confidence))
 
 
 def _gemini_video_analysis_fps() -> float:
@@ -342,8 +412,7 @@ def _infer_with_gemini_video(*, raw_video_path: Path, timeout_sec: int) -> Optio
     except Exception:
         return None
 
-    override = (os.getenv("SCENE_SEMANTICS_GEMINI_MODEL") or "").strip()
-    models_to_try = [override] if override else list(_DEFAULT_MODEL_CASCADE)
+    models_to_try = _gemini_models_from_override("SCENE_SEMANTICS_GEMINI_MODEL")
     client = genai.Client(api_key=api_key)
     uploaded = _upload_gemini_video_file(client, raw_video_path, timeout_sec)
     if uploaded is None:
@@ -370,45 +439,65 @@ def _infer_with_gemini_video(*, raw_video_path: Path, timeout_sec: int) -> Optio
         "Be thorough — list every distinct manipulatable object you see."
     )
 
-    for model in models_to_try:
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=[_build_gemini_video_part(genai.types, uploaded, fps), combined_prompt],
-                config={
-                    "temperature": 0.3,
-                    "max_output_tokens": 8192,
-                    "response_mime_type": "application/json",
-                },
+    try:
+        for model in models_to_try:
+            response = None
+            for attempt in range(_GEMINI_TRANSIENT_RETRIES + 1):
+                try:
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=[_build_gemini_video_part(genai.types, uploaded, fps), combined_prompt],
+                        config={
+                            "temperature": 0.3,
+                            "max_output_tokens": 8192,
+                            "response_mime_type": "application/json",
+                        },
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 - cascade/retry then degrade.
+                    if attempt < _GEMINI_TRANSIENT_RETRIES and _is_transient_gemini_error(exc):
+                        logger.info(
+                            "Gemini scene semantics transient failure on %s attempt %s: %r",
+                            model,
+                            attempt + 1,
+                            exc,
+                        )
+                        time.sleep(0.25 * (2 ** attempt))
+                        continue
+                    logger.info("Gemini scene semantics model %s failed: %r", model, exc)
+                    response = None
+                    break
+            if response is None:
+                continue
+
+            raw_text = _extract_response_text(response)
+            if not raw_text:
+                logger.info("Gemini scene semantics model %s returned empty text", model)
+                continue
+
+            payload = _extract_json_object(raw_text)
+            if not payload:
+                logger.info("Gemini scene semantics model %s returned unparseable JSON", model)
+                continue
+            room_type = _normalize_environment(
+                str(payload.get("room_type") or payload.get("environment") or "default")
             )
-        except Exception:
-            continue
+            confidence = _bounded_confidence(payload.get("confidence", 0.0))
 
-        raw_text = _extract_response_text(response)
-        if not raw_text:
-            continue
+            detected_objects: List[Dict[str, Any]] = []
+            raw_objects = payload.get("objects", [])
+            if isinstance(raw_objects, list):
+                detected_objects = [obj for obj in raw_objects if isinstance(obj, dict)]
 
-        payload = _extract_json_object(raw_text)
-        room_type = _normalize_environment(str(payload.get("room_type") or payload.get("environment") or "default"))
-        confidence_raw = payload.get("confidence", 0.0)
-        try:
-            confidence = float(confidence_raw)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        confidence = max(0.0, min(1.0, confidence))
-
-        detected_objects: List[Dict[str, Any]] = []
-        raw_objects = payload.get("objects", [])
-        if isinstance(raw_objects, list):
-            detected_objects = [obj for obj in raw_objects if isinstance(obj, dict)]
-
-        return _GeminiResult(
-            environment=room_type,
-            confidence=confidence,
-            model=model,
-            raw_text=raw_text,
-            detected_objects=detected_objects,
-        )
+            return _GeminiResult(
+                environment=room_type,
+                confidence=confidence,
+                model=model,
+                raw_text=raw_text,
+                detected_objects=detected_objects,
+            )
+    finally:
+        _delete_gemini_file(client, uploaded)
 
     return None
 
@@ -649,8 +738,10 @@ def _infer_capture_review_with_gemini_video(
     except Exception:
         return None
 
-    override = (os.getenv("CAPTURE_FIDELITY_GEMINI_MODEL") or os.getenv("SCENE_SEMANTICS_GEMINI_MODEL") or "").strip()
-    models_to_try = [override] if override else list(_DEFAULT_MODEL_CASCADE)
+    models_to_try = _gemini_models_from_override(
+        "CAPTURE_FIDELITY_GEMINI_MODEL",
+        "SCENE_SEMANTICS_GEMINI_MODEL",
+    )
     prompt = _gemini_capture_review_prompt(
         descriptor=descriptor,
         qa_report=qa_report,
@@ -663,33 +754,54 @@ def _infer_capture_review_with_gemini_video(
         return None
     fps = _gemini_video_analysis_fps()
 
-    for model in models_to_try:
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=[_build_gemini_video_part(genai.types, current, fps), prompt],
-                config={
-                    "temperature": 0.2,
-                    "max_output_tokens": 8192,
-                    "response_mime_type": "application/json",
-                },
-            )
-        except Exception:
-            continue
+    try:
+        for model in models_to_try:
+            response = None
+            for attempt in range(_GEMINI_TRANSIENT_RETRIES + 1):
+                try:
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=[_build_gemini_video_part(genai.types, current, fps), prompt],
+                        config={
+                            "temperature": 0.2,
+                            "max_output_tokens": 8192,
+                            "response_mime_type": "application/json",
+                        },
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    if attempt < _GEMINI_TRANSIENT_RETRIES and _is_transient_gemini_error(exc):
+                        logger.info(
+                            "Gemini capture review transient failure on %s attempt %s: %r",
+                            model,
+                            attempt + 1,
+                            exc,
+                        )
+                        time.sleep(0.25 * (2 ** attempt))
+                        continue
+                    logger.info("Gemini capture review model %s failed: %r", model, exc)
+                    response = None
+                    break
+            if response is None:
+                continue
 
-        raw_text = _extract_response_text(response)
-        if not raw_text:
-            continue
+            raw_text = _extract_response_text(response)
+            if not raw_text:
+                logger.info("Gemini capture review model %s returned empty text", model)
+                continue
 
-        payload = _extract_json_object(raw_text)
-        if not payload:
-            continue
-        payload["model"] = model
-        payload["raw_text"] = raw_text
-        payload["video_analysis_fps"] = fps
-        payload["video_file_name"] = getattr(current, "name", None)
-        payload["video_file_uri"] = getattr(current, "uri", None)
-        return payload
+            payload = _extract_json_object(raw_text)
+            if not payload:
+                logger.info("Gemini capture review model %s returned unparseable JSON", model)
+                continue
+            payload["model"] = model
+            payload["raw_text"] = raw_text
+            payload["video_analysis_fps"] = fps
+            payload["video_file_name"] = getattr(current, "name", None)
+            payload["video_file_uri"] = getattr(current, "uri", None)
+            return payload
+    finally:
+        _delete_gemini_file(client, current)
 
     return None
 

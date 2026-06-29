@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from blueprint_pipeline import render_visual_qc as qc
 
 _FAUCET_TASK = "a humanoid robot at a kitchen sink about to turn on the faucet"
@@ -92,6 +94,39 @@ def test_parse_normalizes_and_is_robust_to_junk() -> None:
     assert bad["parsed"] is False
 
 
+def test_parse_qc_verdict_missing_safety_booleans_fails_closed() -> None:
+    missing = qc.parse_qc_verdict(json.dumps({"summary": "looks ok"}))
+
+    assert missing["parsed"] is True
+    assert missing["coherent"] is None
+    assert missing["robot_visible"] is None
+    assert missing["background_consistent"] is None
+    assert qc.verdict_is_flagged(missing) is True
+
+    clean = qc.parse_qc_verdict(_CLEAN_REPLY)
+    assert clean["coherent"] is True
+    assert clean["robot_visible"] is True
+    assert clean["background_consistent"] is True
+    assert qc.verdict_is_flagged(clean) is False
+
+
+def test_unknown_nonempty_severity_clamps_high() -> None:
+    reply = json.dumps({
+        "coherent": True,
+        "robot_visible": True,
+        "background_consistent": True,
+        "dark_region_fraction": 0.0,
+        "overall_severity": "critical",
+        "anomalies": [{"category": "other", "severity": "severe", "description": "bad"}],
+    })
+
+    verdict = qc.parse_qc_verdict(reply)
+
+    assert verdict["overall_severity"] == "high"
+    assert verdict["anomalies"][0]["severity"] == "high"
+    assert qc.verdict_is_flagged(verdict) is True
+
+
 def test_flagging_rules() -> None:
     assert qc.verdict_is_flagged(qc.parse_qc_verdict(_CITY_REPLY)) is True       # incoherent + high anomaly
     assert qc.verdict_is_flagged(qc.parse_qc_verdict(_CLEAN_REPLY)) is False      # clean passes
@@ -104,6 +139,49 @@ def test_flagging_rules() -> None:
     assert qc.verdict_is_flagged(qc.parse_qc_verdict(low)) is False
 
 
+def test_parse_qc_verdict_flags_missing_critical_booleans() -> None:
+    verdict = qc.parse_qc_verdict(json.dumps({"summary": "partial model reply"}))
+
+    assert verdict["parsed"] is True
+    assert verdict["coherent"] is None
+    assert verdict["robot_visible"] is None
+    assert verdict["background_consistent"] is None
+    assert qc.verdict_is_flagged(verdict) is True
+
+    clean = qc.parse_qc_verdict(json.dumps({
+        "coherent": True,
+        "robot_visible": True,
+        "background_consistent": True,
+        "dark_region_fraction": 0.0,
+        "overall_severity": "none",
+        "anomalies": [],
+    }))
+    assert qc.verdict_is_flagged(clean) is False
+
+
+def test_unknown_nonempty_severity_clamps_high_and_flags() -> None:
+    verdict = qc.parse_qc_verdict(json.dumps({
+        "coherent": True,
+        "robot_visible": True,
+        "background_consistent": True,
+        "overall_severity": "critical",
+        "anomalies": [],
+    }))
+
+    assert verdict["overall_severity"] == "high"
+    assert qc.verdict_is_flagged(verdict) is True
+
+    anomaly = qc.parse_qc_verdict(json.dumps({
+        "coherent": True,
+        "robot_visible": True,
+        "background_consistent": True,
+        "overall_severity": "none",
+        "anomalies": [{"category": "other", "severity": "critical", "description": "bad"}],
+    }))
+    assert anomaly["anomalies"][0]["severity"] == "high"
+    assert qc.verdict_is_flagged(anomaly) is True
+
+
 def test_sample_frames_evenly_with_first_and_last() -> None:
     frames = [f"f{i}.png" for i in range(10)]
     s = qc.sample_frame_paths(frames, 3)
@@ -111,6 +189,23 @@ def test_sample_frames_evenly_with_first_and_last() -> None:
     assert qc.sample_frame_paths(frames, 0) == frames          # 0 -> all
     assert qc.sample_frame_paths(["a", "b"], 5) == ["a", "b"]   # fewer than sample_n -> all
     assert qc.sample_frame_paths(frames, 1) == ["f0.png"]
+
+
+@pytest.mark.parametrize("n", [2, 3, 5, 7])
+@pytest.mark.parametrize("sample_n", [2, 3, 4])
+def test_sample_frames_preserves_first_last_and_dedups(n: int, sample_n: int) -> None:
+    frames = [f"f{i}.png" for i in range(n)]
+    sampled = qc.sample_frame_paths(frames, sample_n)
+
+    if n <= sample_n:
+        assert sampled == frames
+        return
+    assert sampled[0] == frames[0]
+    assert sampled[-1] == frames[-1]
+    assert len(sampled) <= sample_n
+    assert len(sampled) == len(set(sampled))
+    if sample_n == 2:
+        assert sampled == [frames[0], frames[-1]]
 
 
 def test_review_frame_with_injected_generate_flags_city(tmp_path) -> None:
@@ -190,6 +285,55 @@ def test_extract_model_text_skips_thinking_parts() -> None:
 
     r = R([P("internal reasoning...", thought=True), P(_CLEAN_REPLY)])
     assert qc.extract_model_text(r) == _CLEAN_REPLY  # the thinking part is skipped
+
+
+def test_extract_model_text_all_thinking_parts_flags_unparsed() -> None:
+    class P:
+        def __init__(self, text, thought=False):
+            self.text = text
+            self.thought = thought
+
+    class C:
+        def __init__(self, parts):
+            self.content = type("X", (), {"parts": parts})
+
+    class R:
+        text = ""
+
+        def __init__(self, parts):
+            self.candidates = [C(parts)]
+
+    raw = qc.extract_model_text(R([P("internal reasoning only", thought=True)]))
+    verdict = qc.parse_qc_verdict(raw)
+
+    assert raw == ""
+    assert verdict["parsed"] is False
+    assert qc.verdict_is_flagged(verdict) is True
+
+
+def test_extract_model_text_uses_candidate_when_response_text_blank() -> None:
+    class P:
+        text = _CLEAN_REPLY
+        thought = False
+
+    class C:
+        content = type("X", (), {"parts": [P()]})
+
+    response = type("R", (), {"text": "   ", "candidates": [C()]})()
+
+    assert qc.extract_model_text(response) == _CLEAN_REPLY
+
+
+def test_extract_json_object_ignores_reasoning_braces_before_qc_payload() -> None:
+    raw = 'thinking {not json} more notes {"coherent": true, "robot_visible": true, '\
+        '"background_consistent": true, "dark_region_fraction": 0, '\
+        '"overall_severity": "none", "anomalies": []}'
+
+    verdict = qc.parse_qc_verdict(raw)
+
+    assert verdict["parsed"] is True
+    assert verdict["coherent"] is True
+    assert verdict["overall_severity"] == "none"
 
 
 def test_robot_placement_prompt_asks_the_exact_gate_question() -> None:

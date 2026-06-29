@@ -5,9 +5,10 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 import pytest
+
+cv2 = pytest.importorskip("cv2")
 
 from blueprint_pipeline import oscar_wam_provider_bundle as bundle_module
 from blueprint_pipeline.oscar_wam_provider_bundle import build_oscar_wam_provider_bundle
@@ -125,11 +126,34 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
                     "row_count": 1,
                     "projectable_row_count": 1,
                 },
-                "skeleton_video": {"projected_g1_skeleton_rendered": True},
+                "skeleton_video": {
+                    "conditioning_mode": "projected_g1_skeleton",
+                    "projected_g1_skeleton_rendered": True,
+                    "skeleton_stream_separate_from_rgb": True,
+                    "skeleton_stream_texture_free": True,
+                    "skeleton_stream_image_aligned_to_rgb": True,
+                    "first_rgb_frame_anchors_scene_and_robot_appearance": True,
+                    "projected_g1_skeleton_landmark_draw_count": 2,
+                    "visual_signal": {"status": "completed", "blockers": []},
+                },
+                "oscar_dual_stream_input_contract": {
+                    "first_rgb_frame_path": str(oscar_input / "first_frame.png"),
+                    "skeleton_video_path": str(
+                        oscar_input / "blueprint_proxy_skeleton_conditioning.mp4"
+                    ),
+                    "separate_2d_skeleton_stream": True,
+                    "skeleton_stream_texture_free": True,
+                    "skeleton_stream_image_aligned_to_rgb": True,
+                    "first_rgb_frame_anchors_scene_and_robot_appearance": True,
+                    "full_rgb_video_required_for_oscar_inference": False,
+                },
                 "claim_boundary": {
                     "projected_g1_skeleton_conditioning_used": True,
                     "projected_g1_skeleton_conditioning_is_simulated_mujoco_state": True,
                     "projected_g1_skeleton_conditioning_is_not_physical_robot_sensor_evidence": True,
+                    "first_rgb_frame_anchors_scene_and_robot_appearance": True,
+                    "separate_2d_skeleton_stream_aligned_to_rgb": True,
+                    "skeleton_stream_is_texture_free": True,
                 },
                 "source_mujoco_endpoint_eval_job_dir": str(tmp_path / "mujoco-job"),
             }
@@ -194,6 +218,36 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
         ]
         is True
     )
+    assert (
+        runtime_input_package["oscar_projected_skeleton_runtime_contract"][
+            "separate_2d_skeleton_stream"
+        ]
+        is True
+    )
+    assert (
+        runtime_input_package["oscar_projected_skeleton_runtime_contract"][
+            "skeleton_stream_texture_free"
+        ]
+        is True
+    )
+    assert (
+        runtime_input_package["oscar_projected_skeleton_runtime_contract"][
+            "first_rgb_frame_anchors_scene_and_robot_appearance"
+        ]
+        is True
+    )
+    assert runtime_input_package["oscar_dual_stream_input_contract"][
+        "first_rgb_frame_path"
+    ] == "provider_runtime/oscar_input/first_frame.png"
+    assert runtime_input_package["oscar_dual_stream_input_contract"][
+        "skeleton_video_path"
+    ] == "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"
+    assert runtime_input_package["oscar_dual_stream_input_contract"][
+        "separate_2d_skeleton_stream"
+    ] is True
+    assert runtime_input_package["oscar_dual_stream_input_contract"][
+        "skeleton_stream_texture_free"
+    ] is True
     assert (
         runtime_manifest["oscar_runtime_argv_contract"]["projected_skeleton_trace_packaged"] is True
     )
@@ -271,6 +325,19 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
         is True
     )
     assert runtime_input_package["claim_boundary"]["rgb_video_uses_selected_review_video"] is False
+    assert (
+        runtime_input_package["claim_boundary"][
+            "first_rgb_frame_anchors_scene_and_robot_appearance"
+        ]
+        is True
+    )
+    assert (
+        runtime_input_package["claim_boundary"][
+            "separate_2d_skeleton_stream_aligned_to_rgb"
+        ]
+        is True
+    )
+    assert runtime_input_package["claim_boundary"]["skeleton_stream_is_texture_free"] is True
     assert (
         runtime_input_package["claim_boundary"][
             "rgb_context_packaging_is_input_contract_not_rollout_quality_proof"
@@ -632,6 +699,47 @@ def test_build_oscar_wam_provider_bundle_blocks_invalid_existing_conditioning_vi
         "oscar_input_skeleton_conditioning_proxy_conditioning_foreground_fraction_too_low"
         in low_signal["blockers"]
     )
+
+
+def test_short_conditioning_video_can_stage_when_signal_is_useful_for_model_input(
+    tmp_path: Path,
+) -> None:
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    rollout_input.write_text(
+        json.dumps({"source_mujoco_endpoint_eval_job_dir": str(tmp_path / "mujoco-job")}),
+        encoding="utf-8",
+    )
+    oscar_input = tmp_path / "oscar_input"
+    oscar_input.mkdir()
+    _write_review_png(oscar_input / "first_frame.png")
+    _write_useful_conditioning_mp4(oscar_input / "blueprint_proxy_skeleton_conditioning.mp4")
+    (tmp_path / "oscar_wam_input_package_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_oscar_wam_input_package.v1",
+                "skeleton_video": {
+                    "visual_signal": {"status": "ok", "blockers": []},
+                },
+                "claim_boundary": {
+                    "conditioning_video_visual_smoke_is_not_wam_output_success": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "short-condition-bundle-job",
+        wam_rollout_input_manifest=rollout_input,
+        oscar_input_dir=oscar_input,
+        generated_at="2026-06-21T00:00:00+00:00",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["local_bundle_ready_for_remote_staging"] is True
+    assert "oscar_input_skeleton_conditioning_video_not_visually_useful" not in manifest[
+        "blockers"
+    ]
 
 
 def test_oscar_wam_provider_bundle_blocks_missing_projected_skeleton_trace_when_claimed(

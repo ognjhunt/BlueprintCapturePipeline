@@ -381,28 +381,60 @@ def _step_backend_status(step_record: Mapping[str, Any]) -> dict[str, Any]:
 def extract_last_frame_via_opencv(video_path: str | Path, out_dir: str | Path) -> Path | None:
     """Default ``extract_next_frame``: the last frame of an OSCAR clip is the next observation.
 
-    Uses OpenCV so it works on the pod next to OSCAR. Returns the saved PNG path or None.
+    Uses OpenCV when available and falls back to ffmpeg on local control-plane machines that
+    download a provider MP4 but do not have cv2 installed. Returns the saved PNG path or None.
     """
-    import cv2  # local import: only needed where a real clip is produced (the GPU pod)
-
     resolved_out = Path(out_dir).expanduser()
     resolved_out.mkdir(parents=True, exist_ok=True)
-    capture = cv2.VideoCapture(str(video_path))
-    last_frame = None
     try:
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            last_frame = frame
-    finally:
-        capture.release()
-    if last_frame is None:
-        return None
+        import cv2  # local import: only needed where a real clip is produced
+    except ImportError:
+        cv2 = None
+    if cv2 is not None:
+        capture = cv2.VideoCapture(str(video_path))
+        last_frame = None
+        try:
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                last_frame = frame
+        finally:
+            capture.release()
+        if last_frame is None:
+            return None
+        frame_path = resolved_out / "next_observation.png"
+        if not cv2.imwrite(str(frame_path), last_frame):
+            return None
+        return frame_path
+
     frame_path = resolved_out / "next_observation.png"
-    if not cv2.imwrite(str(frame_path), last_frame):
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-sseof",
+                "-1",
+                "-i",
+                str(video_path),
+                "-frames:v",
+                "1",
+                str(frame_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
         return None
-    return frame_path
+    return frame_path if result.returncode == 0 and frame_path.is_file() else None
 
 
 def build_oscar_inference_argv(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
+pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import unitree_groot_n17_sonic_policy_server_command as command

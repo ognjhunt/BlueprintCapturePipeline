@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .capture_bridge import CaptureDescriptor
 from .capture_enrichment_llm import build_capture_enrichment_runner
@@ -434,6 +434,21 @@ def _object_index_runtime_blockers(capture_root: Path) -> List[str]:
             if blocker not in blockers:
                 blockers.append(blocker)
     return blockers
+
+
+def _object_index_exception_blocker(context: str, exc: BaseException) -> str:
+    message = str(exc).strip().replace("\n", " ")[:240] or "no_message"
+    return f"object_index_stage:{context}:{type(exc).__name__}:{message}"
+
+
+def _append_unique(items: List[str], item: str) -> None:
+    if item and item not in items:
+        items.append(item)
+
+
+def _extend_unique(items: List[str], new_items: Iterable[str]) -> None:
+    for item in new_items:
+        _append_unique(items, str(item))
 
 
 def _task_hypothesis_string(raw: Mapping[str, Any], *keys: str) -> str:
@@ -4240,7 +4255,11 @@ def run_qualification_pipeline(
                     capture_root=descriptor_path.parent,
                     force_rebuild=parse_bool(os.getenv("OBJECT_INDEX_FORCE_REBUILD"), default=False),
                 )
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - qualification must degrade but record the blocker
+                _append_unique(
+                    object_index_runtime_blockers,
+                    _object_index_exception_blocker("ensure_object_index_stage", exc),
+                )
                 stage_result = {}
             if isinstance(stage_result.get("grounding_payload"), Mapping):
                 grounding_payload = dict(stage_result["grounding_payload"])
@@ -4252,13 +4271,20 @@ def run_qualification_pipeline(
             if object_index_uri:
                 object_index_path = resolve_gs_uri_to_path(object_index_uri, storage_root)
                 object_index_entries = load_object_index(object_index_uri, gcs_root=storage_root)
-            object_index_runtime_blockers = _object_index_runtime_blockers(descriptor_path.parent)
-        except Exception:
+            _extend_unique(
+                object_index_runtime_blockers,
+                _object_index_runtime_blockers(descriptor_path.parent),
+            )
+        except Exception as exc:  # noqa: BLE001 - keep qualification running, but do not hide the crash
             manifest = None
             object_index_uri = None
             object_index_entries = []
             grounding_payload = None
             object_index_runtime_blockers = _object_index_runtime_blockers(descriptor_path.parent)
+            _append_unique(
+                object_index_runtime_blockers,
+                _object_index_exception_blocker("object_index_load", exc),
+            )
 
         raw_task_hypothesis = _try_read_optional_json_uri(
             descriptor.task_hypothesis_uri,
