@@ -504,6 +504,119 @@ def build_closed_loop_seed_conditioning_preflight(
     }
 
 
+def _first_closed_loop_policy_action(
+    *,
+    route_points: Sequence[Sequence[float]],
+    steps: int,
+) -> dict[str, Any]:
+    route = [tuple(float(c) for c in point) for point in route_points]
+    target = route[-1]
+    policy = DeterministicWalkToTargetPolicy()
+    policy.reset({"route_points": list(route), "start": route[0], "target": target})
+    decision = policy.step(
+        StepContext(step=0, num_steps=max(1, int(steps)), probe_collision=lambda pose, yaw: 0)
+    )
+    return action_record(decision=decision, step=0, sim_time_s=0.0, target=target)
+
+
+def build_closed_loop_provider_input_contract_preflight(
+    *,
+    start_frame_path: str | Path,
+    route_points: Sequence[Sequence[float]],
+    output_dir: str | Path,
+    task_prompt: str,
+    selected_backend: str,
+    use_provider_command: bool,
+    steps: int,
+    num_frames: int,
+    num_steps: int,
+    guidance: float,
+    seed: int,
+    height: int,
+    width: int,
+    fps: float,
+    projected_skeleton_trace_path: str | Path | None,
+) -> dict[str, Any]:
+    """Materialize the first-step provider input contract without launching a provider."""
+
+    backend = _string(selected_backend).strip() or "oscar_wam"
+    required = bool(backend == "oscar_wam" and use_provider_command)
+    if not required:
+        return {
+            "schema_version": "closed_loop_provider_input_contract_preflight.v1",
+            "status": "not_requested",
+            "required": False,
+            "selected_wam_backend": backend,
+            "use_provider_command": bool(use_provider_command),
+            "blockers": [],
+            "claim_boundary": {"preflight_is_no_spend": True},
+        }
+    out = Path(output_dir).expanduser().resolve()
+    ensure_dir(out)
+    blockers: list[str] = []
+    contract: dict[str, Any] = {}
+    bundle_manifest: dict[str, Any] = {}
+    step_input_path = out / "wam_generation_step_input.json"
+    bundle_manifest_path = out / "oscar_wam_provider_bundle_manifest.json"
+    try:
+        if not route_points:
+            raise ValueError("empty_route_points")
+        action = _first_closed_loop_policy_action(route_points=route_points, steps=steps)
+        step_input = build_wam_generation_step_input(
+            current_frame_path=start_frame_path,
+            action=action,
+            step_index=1,
+            output_dir=out / "step_0001",
+            task_prompt=task_prompt,
+            projected_skeleton_trace_path=projected_skeleton_trace_path,
+        )
+        write_json(step_input_path, step_input)
+        from .oscar_wam_provider_bundle import build_oscar_wam_provider_bundle
+
+        bundle_manifest = build_oscar_wam_provider_bundle(
+            job_dir=out,
+            wam_rollout_input_manifest=step_input_path,
+            num_frames=int(num_frames),
+            height=int(height),
+            width=int(width),
+            fps=float(fps),
+            num_steps=int(num_steps),
+            guidance=float(guidance),
+            seed=int(seed) + 1,
+        )
+        contract = _mapping(bundle_manifest.get("input_package_contract_diagnostic"))
+        blockers.extend(str(item) for item in bundle_manifest.get("blockers") or [])
+        if contract.get("status") == "blocked":
+            blockers.extend(str(item) for item in contract.get("blockers") or [])
+    except Exception as exc:
+        blockers.append(f"provider_input_contract_preflight_failed:{type(exc).__name__}")
+    return {
+        "schema_version": "closed_loop_provider_input_contract_preflight.v1",
+        "status": "ready" if not blockers else "blocked",
+        "required": True,
+        "selected_wam_backend": backend,
+        "use_provider_command": bool(use_provider_command),
+        "step_input_path": str(step_input_path),
+        "bundle_manifest_path": str(bundle_manifest_path),
+        "bundle_status": bundle_manifest.get("status"),
+        "contract_status": contract.get("status"),
+        "contract_warnings": contract.get("warnings") or [],
+        "contract_blockers": contract.get("blockers") or [],
+        "autoregressive_risk_flags": contract.get("autoregressive_risk_flags") or [],
+        "autoregressive_risk_level": contract.get("autoregressive_risk_level"),
+        "short_rollout_sanity_recommended_before_scale_up": bool(
+            contract.get("short_rollout_sanity_recommended_before_scale_up")
+        ),
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": {
+            "preflight_is_no_spend": True,
+            "provider_input_contract_is_not_model_execution_proof": True,
+            "provider_input_contract_is_not_generated_rollout_quality_proof": True,
+            "scene_or_task_specific_coordinates_hardcoded": False,
+        },
+    }
+
+
 def make_oscar_provider_command_wam_backend(
     *,
     work_dir: str | Path,
@@ -1591,6 +1704,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         steps=int(args.steps),
         projected_skeleton_trace_path=projected_skeleton_trace_path,
     )
+    provider_input_contract_preflight = build_closed_loop_provider_input_contract_preflight(
+        start_frame_path=args.start_frame,
+        route_points=route,
+        output_dir=out_dir / "provider_input_contract_preflight",
+        task_prompt=args.task_prompt,
+        selected_backend=args.wam_backend,
+        use_provider_command=bool(args.use_provider_command),
+        steps=int(args.steps),
+        num_frames=int(args.num_frames),
+        num_steps=int(args.oscar_num_steps),
+        guidance=float(args.oscar_guidance),
+        seed=int(args.oscar_seed),
+        height=int(args.oscar_height),
+        width=int(args.oscar_width),
+        fps=float(args.oscar_fps),
+        projected_skeleton_trace_path=projected_skeleton_trace_path,
+    )
+    wam_backend_readiness["provider_input_contract_preflight"] = (
+        provider_input_contract_preflight
+    )
+    if provider_input_contract_preflight.get("blockers"):
+        wam_backend_readiness["blockers"] = list(
+            wam_backend_readiness.get("blockers") or []
+        ) + [
+            str(item) for item in provider_input_contract_preflight.get("blockers") or []
+        ]
+        wam_backend_readiness["status"] = "blocked"
     if seed_conditioning_preflight.get("blockers"):
         wam_backend_readiness["seed_conditioning_preflight"] = seed_conditioning_preflight
         wam_backend_readiness["blockers"] = list(
@@ -1632,6 +1772,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "wam_backend_readiness_path": str(out_dir / "closed_loop_wam_backend_readiness.json"),
             "wam_backend_readiness": wam_backend_readiness,
             "seed_conditioning_preflight": seed_conditioning_preflight,
+            "provider_input_contract_preflight": provider_input_contract_preflight,
             "use_provider_command": bool(args.use_provider_command),
             "oscar_provider": args.oscar_provider,
             "allow_paid_provider_launch": bool(args.allow_paid_provider_launch),
