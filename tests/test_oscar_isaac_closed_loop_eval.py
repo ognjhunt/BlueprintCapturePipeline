@@ -42,6 +42,55 @@ def _stub_wam(work: Path):
     return _generate
 
 
+def _write_seed_geometry_route(tmp_path: Path) -> tuple[Path, Path]:
+    render_dir = tmp_path / "render"
+    source_render = render_dir / "frames" / "robot_pov_0000.png"
+    _write_frame(source_render, seed=18)
+    seed = tmp_path / "selected_seed.jpg"
+    _write_frame(seed, seed=19)
+    (render_dir / "manipulation_pov_geometry.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "manipulation_pov_geometry_index.v1",
+                "frames": [
+                    {
+                        "status": "PASS",
+                        "camera": "robot_pov",
+                        "seed_frame_quality": {"image_size_px": [64, 48]},
+                        "target_projection": {"available": True, "u_px": 50, "v_px": 24},
+                        "projected_landmarks": [
+                            {
+                                "landmark_id": "right_hand_link",
+                                "link_role": "hand",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 32,
+                                    "v_px": 30,
+                                    "depth_m": 0.3,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_trace = render_dir / "trace.jsonl"
+    source_trace.write_text("{}\n", encoding="utf-8")
+    route = tmp_path / "route.json"
+    route.write_text(
+        json.dumps(
+            {
+                "route_points": [[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+                "source_trace": str(source_trace),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return seed, route
+
+
 def test_closed_loop_runs_policy_wam_harness_per_step(tmp_path: Path) -> None:
     start = _write_frame(tmp_path / "start.png", seed=3)
     route = [(-4.25, -3.35, 0.79), (-1.0, -1.0, 0.79), (1.75, 1.25, 0.79)]
@@ -926,3 +975,51 @@ def test_closed_loop_cli_dry_run_writes_provider_input_contract_preflight(
     ]
     assert Path(preflight["bundle_manifest_path"]).is_file()
     assert json.loads(capsys.readouterr().out)["status"] == "prepared"
+
+
+def test_closed_loop_paid_long_run_requires_short_visual_sanity_after_input_risk(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("cv2")
+    seed, route = _write_seed_geometry_route(tmp_path)
+
+    exit_code = L.main(
+        [
+            "--start-frame",
+            str(seed),
+            "--route-file",
+            str(route),
+            "--output-dir",
+            str(tmp_path / "closed_loop"),
+            "--wam-backend",
+            "oscar_wam",
+            "--use-provider-command",
+            "--oscar-provider",
+            "runpod",
+            "--allow-paid-provider-launch",
+            "--steps",
+            "4",
+            "--oscar-guidance",
+            "4.25",
+            "--dry-run",
+        ]
+    )
+
+    assert exit_code == 2
+    plan = json.loads(
+        (tmp_path / "closed_loop" / "oscar_isaac_closed_loop_plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    gate = plan["short_rollout_sanity_gate"]
+    assert gate["status"] == "blocked"
+    assert gate["required"] is True
+    assert gate["risk_recommends_short_sanity"] is True
+    assert "closed_loop_paid_long_wam_requires_passed_short_rollout_sanity" in gate[
+        "blockers"
+    ]
+    assert "short_visual_sanity_manifest_env_missing" in gate["blockers"]
+    assert "closed_loop_paid_long_wam_requires_passed_short_rollout_sanity" in plan[
+        "blockers"
+    ]
+    assert json.loads(capsys.readouterr().out)["status"] == "blocked"

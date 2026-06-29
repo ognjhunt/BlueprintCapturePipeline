@@ -46,6 +46,9 @@ VAST_API_GATE_ENV = "BLUEPRINT_ALLOW_VAST_API_CALLS"
 VAST_INSTANCE_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"
 VAST_PAID_WAM_GATE_ENV = "BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH"
 VAST_API_KEY_FILE_ENV = "VAST_API_KEY_FILE"
+PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV = (
+    "BLUEPRINT_PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST"
+)
 
 # A WAM generation backend: given the current observation frame, the policy action, the step
 # index, and the action history, produce the next-observation frame path (and optional video).
@@ -613,6 +616,82 @@ def build_closed_loop_provider_input_contract_preflight(
             "provider_input_contract_is_not_model_execution_proof": True,
             "provider_input_contract_is_not_generated_rollout_quality_proof": True,
             "scene_or_task_specific_coordinates_hardcoded": False,
+        },
+    }
+
+
+def build_closed_loop_short_rollout_sanity_gate(
+    *,
+    selected_backend: str,
+    use_provider_command: bool,
+    allow_paid_provider_launch: bool,
+    steps: int,
+    provider_input_contract_preflight: Mapping[str, Any],
+    short_visual_sanity_manifest_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Require a passed short visual sanity run before paid long WAM scale-up."""
+
+    backend = _string(selected_backend).strip() or "oscar_wam"
+    risk_recommends_short_sanity = bool(
+        provider_input_contract_preflight.get(
+            "short_rollout_sanity_recommended_before_scale_up"
+        )
+    )
+    required = bool(
+        backend == "oscar_wam"
+        and use_provider_command
+        and allow_paid_provider_launch
+        and int(steps) > 2
+        and risk_recommends_short_sanity
+    )
+    manifest_path_text = _string(short_visual_sanity_manifest_path) or _string(
+        os.getenv(PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV)
+    )
+    if not required:
+        return {
+            "schema_version": "closed_loop_short_rollout_sanity_gate.v1",
+            "status": "not_required",
+            "required": False,
+            "selected_wam_backend": backend,
+            "steps": int(steps),
+            "risk_recommends_short_sanity": risk_recommends_short_sanity,
+            "blockers": [],
+            "claim_boundary": {"gate_is_no_spend": True},
+        }
+    blockers = ["closed_loop_paid_long_wam_requires_passed_short_rollout_sanity"]
+    validation: dict[str, Any] = {}
+    if not manifest_path_text:
+        blockers.append("short_visual_sanity_manifest_env_missing")
+    else:
+        try:
+            from .unitree_groot_n17_sonic_vast_persistent_session import (
+                validate_persistent_wam_short_visual_sanity_manifest,
+            )
+
+            validation = validate_persistent_wam_short_visual_sanity_manifest(
+                manifest_path_text
+            )
+            if validation.get("status") == "passed_short_visual_sanity":
+                blockers = []
+            else:
+                blockers.extend(str(item) for item in validation.get("blockers") or [])
+        except Exception as exc:
+            blockers.append(f"short_visual_sanity_manifest_validation_failed:{type(exc).__name__}")
+    return {
+        "schema_version": "closed_loop_short_rollout_sanity_gate.v1",
+        "status": "ready" if not blockers else "blocked",
+        "required": True,
+        "selected_wam_backend": backend,
+        "steps": int(steps),
+        "risk_recommends_short_sanity": risk_recommends_short_sanity,
+        "short_visual_sanity_manifest_path": manifest_path_text or None,
+        "short_visual_sanity_validation": validation,
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": {
+            "gate_is_no_spend": True,
+            "short_visual_sanity_is_not_task_success_proof": True,
+            "short_visual_sanity_is_scale_up_gate_only": True,
+            "generated_world_rank_fidelity_result_proven": False,
         },
     }
 
@@ -1671,6 +1750,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--require-real-perception-backend", action="store_true")
     parser.add_argument("--require-sam3-completed", action="store_true")
     parser.add_argument("--require-da3-completed", action="store_true")
+    parser.add_argument(
+        "--short-visual-sanity-manifest",
+        default=None,
+        help=(
+            "Passed persistent_wam_short_visual_sanity_manifest.json required before "
+            "paid long WAM scale-up when provider input risk flags recommend it."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -1731,6 +1818,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             str(item) for item in provider_input_contract_preflight.get("blockers") or []
         ]
         wam_backend_readiness["status"] = "blocked"
+    short_rollout_sanity_gate = build_closed_loop_short_rollout_sanity_gate(
+        selected_backend=args.wam_backend,
+        use_provider_command=bool(args.use_provider_command),
+        allow_paid_provider_launch=bool(args.allow_paid_provider_launch),
+        steps=int(args.steps),
+        provider_input_contract_preflight=provider_input_contract_preflight,
+        short_visual_sanity_manifest_path=args.short_visual_sanity_manifest,
+    )
+    wam_backend_readiness["short_rollout_sanity_gate"] = short_rollout_sanity_gate
+    if short_rollout_sanity_gate.get("blockers"):
+        wam_backend_readiness["blockers"] = list(
+            wam_backend_readiness.get("blockers") or []
+        ) + [str(item) for item in short_rollout_sanity_gate.get("blockers") or []]
+        wam_backend_readiness["status"] = "blocked"
     if seed_conditioning_preflight.get("blockers"):
         wam_backend_readiness["seed_conditioning_preflight"] = seed_conditioning_preflight
         wam_backend_readiness["blockers"] = list(
@@ -1773,6 +1874,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "wam_backend_readiness": wam_backend_readiness,
             "seed_conditioning_preflight": seed_conditioning_preflight,
             "provider_input_contract_preflight": provider_input_contract_preflight,
+            "short_rollout_sanity_gate": short_rollout_sanity_gate,
             "use_provider_command": bool(args.use_provider_command),
             "oscar_provider": args.oscar_provider,
             "allow_paid_provider_launch": bool(args.allow_paid_provider_launch),
