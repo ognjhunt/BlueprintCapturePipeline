@@ -1105,7 +1105,17 @@ def _projection_dict(px) -> dict[str, Any] | None:
     }
 
 
-def _manipulation_pov_geometry(
+def _normalize_reach_arm_selection(arm: str) -> str:
+    selection = str(arm or "right").strip().lower()
+    return selection if selection in {"left", "right", "both"} else "right"
+
+
+def _required_manipulation_arms(arm: str) -> tuple[str, ...]:
+    selection = _normalize_reach_arm_selection(arm)
+    return ("left", "right") if selection == "both" else (selection,)
+
+
+def _manipulation_pov_geometry_single(
     *,
     arm_points: Mapping[str, Sequence[float]] | None,
     affordance,
@@ -1120,8 +1130,10 @@ def _manipulation_pov_geometry(
     """Machine-check that the actual USD arm links are visible in the head POV.
 
     The articulated skeleton trace is optional and may be disabled for crash-safe kinematic renders,
-    so manipulation media needs an independent USD-link projection check. A visible gripper alone is
-    not enough for a useful seed frame; require the effector plus another forearm link in frame.
+    so manipulation media needs an independent USD-link projection check. This is an initial seed
+    frame gate: the target affordance and task-side forearm/gripper must be visible, and the arm must
+    be held forward toward the workspace. It deliberately does NOT require the gripper to be at the
+    affordance; the policy/WAM rollout is responsible for completing the manipulation.
     """
     blockers: list[str] = []
     aff = (float(affordance[0]), float(affordance[1]), float(affordance[2]))
@@ -1171,7 +1183,10 @@ def _manipulation_pov_geometry(
             math.sqrt(sum((float(pt[i]) - aff[i]) ** 2 for i in range(3))),
             4,
         )
-    reach_tolerance_m = None
+    arm_extension: dict[str, Any] = {
+        "status": "unverified",
+        "blockers": ["manipulation_pov_arm_extension_unverified"],
+    }
     if arm_points and (arm_points.get("shoulder") is not None):
         shoulder_pt = arm_points["shoulder"]
         spans = []
@@ -1180,11 +1195,42 @@ def _manipulation_pov_geometry(
             if pt is None:
                 continue
             spans.append(math.sqrt(sum((float(pt[i]) - float(shoulder_pt[i])) ** 2 for i in range(3))))
-        if spans:
-            reach_tolerance_m = round(max(0.28, min(0.65, max(spans) * 0.75)), 4)
-    if effector_distances and reach_tolerance_m is not None:
-        if min(effector_distances.values()) > reach_tolerance_m:
-            blockers.append("manipulation_pov_effector_not_near_affordance")
+        effector_pt = (arm_points.get("hand") or arm_points.get("wrist"))
+        if effector_pt is not None:
+            shoulder = tuple(float(shoulder_pt[i]) for i in range(3))
+            effector = tuple(float(effector_pt[i]) for i in range(3))
+            task_dir = _norm((aff[0] - shoulder[0], aff[1] - shoulder[1], aff[2] - shoulder[2]))
+            arm_dir = _norm((
+                effector[0] - shoulder[0],
+                effector[1] - shoulder[1],
+                effector[2] - shoulder[2],
+            ))
+            arm_len = math.sqrt(sum((effector[i] - shoulder[i]) ** 2 for i in range(3)))
+            alignment = sum(arm_dir[i] * task_dir[i] for i in range(3))
+            vertical_drop_ratio = (
+                abs(effector[2] - shoulder[2]) / arm_len if arm_len > 1e-6 else 1.0
+            )
+            extension_blockers: list[str] = []
+            # Low alignment catches the bad seed class where the arm is visible but hanging down or
+            # tucked sideways instead of held out toward the task workspace. Distance to the affordance
+            # is only metadata; the initial seed must not pre-solve the task.
+            if alignment < 0.35:
+                extension_blockers.append("manipulation_pov_arm_not_extended_forward")
+            if arm_len < 0.12:
+                extension_blockers.append("manipulation_pov_arm_extension_too_short")
+            arm_extension = {
+                "status": "PASS" if not extension_blockers else "FAIL",
+                "blockers": extension_blockers,
+                "shoulder_to_effector_m": round(float(arm_len), 4),
+                "alignment_to_affordance_direction": round(float(alignment), 4),
+                "vertical_drop_ratio": round(float(vertical_drop_ratio), 4),
+                "claim_boundary": (
+                    "Forward extension checks initial manipulation readiness only. It does not require "
+                    "contact with the affordance or prove task completion."
+                ),
+            }
+    if arm_extension.get("status") != "PASS":
+        blockers.extend(str(b) for b in (arm_extension.get("blockers") or []))
 
     return {
         "schema_version": "manipulation_pov_geometry.v1",
@@ -1199,11 +1245,215 @@ def _manipulation_pov_geometry(
         "arm_roles_in_frame": sorted(roles_in_frame),
         "arm_landmarks_in_frame": len(projected),
         "effector_distance_to_affordance_m": effector_distances,
-        "effector_affordance_tolerance_m": reach_tolerance_m,
+        "effector_distance_is_metadata_only": True,
+        "arm_extension": arm_extension,
         "projected_landmarks": projected,
         "claim_boundary": (
-            "This checks camera framing of USD robot links against the resolved task affordance. "
-            "It is not manipulation success or physical reach validation."
+            "This checks initial camera framing of USD robot links against the resolved task affordance. "
+            "It is not manipulation success, contact proof, physical reach validation, or deployment "
+            "readiness."
+        ),
+    }
+
+
+def _manipulation_pov_geometry(
+    *,
+    arm_points: Mapping[str, Sequence[float]] | None,
+    affordance,
+    eye,
+    target,
+    up=(0.0, 0.0, 1.0),
+    vfov_deg: float,
+    width: int,
+    height: int,
+    arm: str = "right",
+    arm_points_by_arm: Mapping[str, Mapping[str, Sequence[float]]] | None = None,
+) -> dict[str, Any]:
+    """Validate a manipulation seed POV for one or more requested arms."""
+    selection = _normalize_reach_arm_selection(arm)
+    required_arms = _required_manipulation_arms(selection)
+    if len(required_arms) == 1:
+        side = required_arms[0]
+        side_points = (arm_points_by_arm or {}).get(side) if arm_points_by_arm else None
+        report = _manipulation_pov_geometry_single(
+            arm_points=side_points or arm_points,
+            affordance=affordance,
+            eye=eye,
+            target=target,
+            up=up,
+            vfov_deg=vfov_deg,
+            width=width,
+            height=height,
+            arm=side,
+        )
+        report["reach_arm"] = selection
+        report["required_arms"] = [side]
+        return report
+
+    per_arm: dict[str, dict[str, Any]] = {}
+    for side in required_arms:
+        per_arm[side] = _manipulation_pov_geometry_single(
+            arm_points=(arm_points_by_arm or {}).get(side) or {},
+            affordance=affordance,
+            eye=eye,
+            target=target,
+            up=up,
+            vfov_deg=vfov_deg,
+            width=width,
+            height=height,
+            arm=side,
+        )
+    primary = per_arm.get("right") or next(iter(per_arm.values()))
+    side_failures = [side for side, report in per_arm.items() if report.get("status") != "PASS"]
+    blockers = sorted({
+        str(blocker)
+        for report in per_arm.values()
+        for blocker in (report.get("blockers") or [])
+    } | {
+        f"manipulation_pov_{side}_arm_seed_failed"
+        for side in side_failures
+    })
+    target_px = primary.get("target_projection")
+    projected = [
+        landmark
+        for report in per_arm.values()
+        for landmark in (report.get("projected_landmarks") or [])
+    ]
+    roles_in_frame = sorted({
+        str(role)
+        for report in per_arm.values()
+        for role in (report.get("arm_roles_in_frame") or [])
+    })
+    available_roles = sorted({
+        str(role)
+        for report in per_arm.values()
+        for role in (report.get("available_arm_link_roles") or [])
+    })
+    extension_by_arm = {
+        side: report.get("arm_extension")
+        for side, report in per_arm.items()
+    }
+    extension_blockers = sorted({
+        str(blocker)
+        for extension in extension_by_arm.values()
+        if isinstance(extension, Mapping)
+        for blocker in (extension.get("blockers") or [])
+    })
+    return {
+        "schema_version": "manipulation_pov_geometry.v1",
+        "status": "PASS" if not blockers else "FAIL",
+        "blockers": blockers,
+        "camera": "robot_pov",
+        "reach_arm": selection,
+        "required_arms": list(required_arms),
+        "target_affordance_xyz": primary.get("target_affordance_xyz"),
+        "target_in_frame": bool(primary.get("target_in_frame")),
+        "target_projection": target_px,
+        "available_arm_link_roles": available_roles,
+        "available_arm_link_roles_by_arm": {
+            side: report.get("available_arm_link_roles") or []
+            for side, report in per_arm.items()
+        },
+        "arm_roles_in_frame": roles_in_frame,
+        "arm_roles_in_frame_by_arm": {
+            side: report.get("arm_roles_in_frame") or []
+            for side, report in per_arm.items()
+        },
+        "arm_landmarks_in_frame": len(projected),
+        "effector_distance_to_affordance_m": (
+            primary.get("effector_distance_to_affordance_m") or {}
+        ),
+        "effector_distance_to_affordance_m_by_arm": {
+            side: report.get("effector_distance_to_affordance_m") or {}
+            for side, report in per_arm.items()
+        },
+        "effector_distance_is_metadata_only": True,
+        "arm_extension": {
+            "status": "PASS" if not extension_blockers else "FAIL",
+            "blockers": extension_blockers,
+            "by_arm": extension_by_arm,
+            "claim_boundary": (
+                "Forward extension checks initial manipulation readiness only. It does not require "
+                "contact with the affordance or prove task completion."
+            ),
+        },
+        "projected_landmarks": projected,
+        "per_arm_geometry": per_arm,
+        "claim_boundary": (
+            "This checks initial camera framing of USD robot links against the resolved task affordance. "
+            "It is not manipulation success, contact proof, physical reach validation, or deployment "
+            "readiness."
+        ),
+    }
+
+
+def _fraction_from_histogram(hist: Sequence[int], indexes: range) -> float:
+    total = float(sum(hist))
+    if total <= 0.0:
+        return 0.0
+    return float(sum(hist[i] for i in indexes)) / total
+
+
+def _image_luma_extreme_fractions(gray_img, box) -> dict[str, float]:
+    crop = gray_img.crop(tuple(int(v) for v in box))
+    hist = crop.histogram()
+    return {
+        "dark_fraction": round(_fraction_from_histogram(hist, range(0, 14)), 6),
+        "bright_fraction": round(_fraction_from_histogram(hist, range(242, 256)), 6),
+    }
+
+
+def _pov_seed_frame_quality(frame_path: Path | str) -> dict[str, Any]:
+    """Detect obvious camera self-occlusion/clipping in a saved robot POV seed frame.
+
+    This deliberately uses broad image statistics, not object-specific semantics: a robot-head seed
+    with a large near-black edge wedge is usually a camera inside/behind robot geometry or a clipped
+    near-field body part. Dark task objects in the center are allowed; edge occlusion is not.
+    """
+    try:
+        from PIL import Image  # type: ignore
+        img = Image.open(frame_path).convert("L")
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "schema_version": "manipulation_pov_seed_frame_quality.v1",
+            "status": "FAIL",
+            "blockers": ["manipulation_pov_frame_unreadable"],
+            "error": repr(exc),
+        }
+    w, h = img.size
+    edge_w = max(1, int(round(w * 0.16)))
+    lower_y = max(0, int(round(h * 0.45)))
+    regions = {
+        "left_edge": (0, 0, edge_w, h),
+        "right_edge": (max(0, w - edge_w), 0, w, h),
+        "left_lower_edge": (0, lower_y, edge_w, h),
+        "right_lower_edge": (max(0, w - edge_w), lower_y, w, h),
+    }
+    metrics = {
+        name: _image_luma_extreme_fractions(img, box)
+        for name, box in regions.items()
+    }
+    edge_dark = max(metrics["left_edge"]["dark_fraction"], metrics["right_edge"]["dark_fraction"])
+    lower_edge_dark = max(
+        metrics["left_lower_edge"]["dark_fraction"],
+        metrics["right_lower_edge"]["dark_fraction"],
+    )
+    blockers: list[str] = []
+    if edge_dark > 0.38 or lower_edge_dark > 0.46:
+        blockers.append("manipulation_pov_edge_self_occlusion")
+    return {
+        "schema_version": "manipulation_pov_seed_frame_quality.v1",
+        "status": "PASS" if not blockers else "FAIL",
+        "blockers": blockers,
+        "frame_path": str(frame_path),
+        "image_size_px": [int(w), int(h)],
+        "edge_band_fraction": 0.16,
+        "regions": metrics,
+        "max_edge_dark_fraction": round(float(edge_dark), 6),
+        "max_lower_edge_dark_fraction": round(float(lower_edge_dark), 6),
+        "claim_boundary": (
+            "Image statistics only catch gross edge self-occlusion/clipping in the seed POV. "
+            "They do not validate task success or object contact."
         ),
     }
 
@@ -1218,6 +1468,7 @@ def _select_manipulation_camera_target_for_visible_arm(
     width: int,
     height: int,
     arm: str = "right",
+    arm_points_by_arm: Mapping[str, Mapping[str, Sequence[float]]] | None = None,
 ) -> tuple[tuple[float, float, float], dict[str, Any]]:
     """Pick a task-anchored look-at that keeps the active forearm in the head POV when possible."""
     aff = (float(affordance[0]), float(affordance[1]), float(affordance[2]))
@@ -1252,6 +1503,7 @@ def _select_manipulation_camera_target_for_visible_arm(
     for name, candidate in candidates:
         geom = _manipulation_pov_geometry(
             arm_points=arm_points,
+            arm_points_by_arm=arm_points_by_arm,
             affordance=aff,
             eye=eye,
             target=candidate,
@@ -1269,6 +1521,10 @@ def _select_manipulation_camera_target_for_visible_arm(
         score += 2.0 * len(roles.intersection({"elbow", "wrist", "hand"}))
         if len(roles.intersection({"elbow", "wrist", "hand"})) >= 2:
             score += 5.0
+        if geom.get("status") == "PASS":
+            score += 10.0
+        else:
+            score -= 1.5 * len(geom.get("blockers") or [])
         if score > best_score:
             best_name = name
             best_target = candidate
@@ -2036,11 +2292,14 @@ def _find_arm_link(links: dict, *keys: str):
 
 def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right",
                             reach_frac: float = 1.0) -> int:
-    """Kinematically pose the G1 arm(s) so the HAND/gripper reaches toward ``target`` — pure USD
-    (rotate the shoulder link about its pivot so the whole arm swings the hand at the object, children
-    follow), NO physics tensor view, so it cannot trigger the crash the articulation drive does. With
-    ``arm="both"`` both arms reach forward (the egocentric manipulation seed). Returns the number of
-    arms posed. GPU/USD only."""
+    """Kinematically pose the G1 arm(s) into a manipulation-ready forward seed.
+
+    Pure USD: rotate the shoulder link about its pivot so the shoulder->effector direction points
+    toward the task workspace; children follow at the arm's natural length. This makes the forearm and
+    gripper visible in the robot POV without claiming contact or task completion. No physics tensor
+    view, so it cannot trigger the articulation-drive crash. With ``arm="both"`` both arms move
+    forward for the egocentric seed. Returns the number of arms posed. GPU/USD only.
+    """
     from pxr import Usd, UsdGeom, Gf  # type: ignore
     sides = ("left", "right") if arm == "both" else (arm,)
     root = stage.GetPrimAtPath(prim_path)
@@ -2050,10 +2309,9 @@ def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right"
     for side in sides:
         shoulder = (_find_arm_link(links, side, "shoulder", "pitch")
                     or _find_arm_link(links, side, "shoulder"))
-        # Align shoulder->HAND with shoulder->target so the GRIPPER reaches the affordance. Rotating
-        # only the upper arm (shoulder->elbow) aims the bone but leaves the bent hand ~0.2-0.4m short of
-        # the object (Codex's manipulation_pov_geometry gate flagged exactly this). Fall back through
-        # wrist/elbow if a hand/palm link is absent.
+        # Align shoulder->effector with shoulder->workspace so the arm is extended forward in the
+        # initial seed. The effector is not translated to the affordance; distance remains metadata for
+        # the downstream policy/WAM rollout.
         effector = (_find_arm_link(links, side, "hand") or _find_arm_link(links, side, "palm")
                     or _find_arm_link(links, side, "wrist") or _find_arm_link(links, side, "elbow"))
         if shoulder is None or effector is None:
@@ -2522,6 +2780,60 @@ def _root_transform_diagnostics(stage, prim_path: str) -> dict[str, Any]:
         "parent": _prim_transform_snapshot(stage, parent_path) if parent_path else None,
         "pseudo_root": _prim_transform_snapshot(stage, str(stage.GetPseudoRoot().GetPath())),
     }
+
+
+def _robot_upright_report(stage, prim_path: str, *, max_tilt_deg: float = 12.0) -> dict[str, Any]:
+    """Verify the placed robot root is upright enough for a policy seed frame."""
+    if not hasattr(stage, "GetPrimAtPath"):
+        return {
+            "schema_version": "robot_upright_report.v1",
+            "status": "unverified",
+            "blockers": [],
+            "prim_path": prim_path,
+            "reason": "stage_object_does_not_expose_usd_prim_lookup",
+        }
+    try:
+        from pxr import UsdGeom, Gf  # type: ignore
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim or not prim.IsValid():
+            return {
+                "schema_version": "robot_upright_report.v1",
+                "status": "blocked",
+                "blockers": ["robot_upright_prim_unavailable"],
+                "prim_path": prim_path,
+            }
+        matrix = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+        try:
+            up = matrix.TransformDir(Gf.Vec3d(0.0, 0.0, 1.0))
+            up_vec = (float(up[0]), float(up[1]), float(up[2]))
+        except Exception:  # noqa: BLE001
+            up_vec = (float(matrix[0][2]), float(matrix[1][2]), float(matrix[2][2]))
+        norm = math.sqrt(sum(v * v for v in up_vec)) or 1e-9
+        up_unit = tuple(v / norm for v in up_vec)
+        cos_tilt = max(-1.0, min(1.0, up_unit[2]))
+        tilt_deg = math.degrees(math.acos(cos_tilt))
+        blockers = [] if tilt_deg <= float(max_tilt_deg) else ["robot_root_not_upright"]
+        return {
+            "schema_version": "robot_upright_report.v1",
+            "status": "passed" if not blockers else "blocked",
+            "blockers": blockers,
+            "prim_path": prim_path,
+            "root_up_vector_world": [round(float(v), 6) for v in up_unit],
+            "tilt_deg": round(float(tilt_deg), 4),
+            "max_tilt_deg": round(float(max_tilt_deg), 4),
+            "claim_boundary": (
+                "Upright validation checks root orientation for an initial policy seed only; it is not "
+                "dynamic balance, locomotion, safety, or deployment validation."
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "schema_version": "robot_upright_report.v1",
+            "status": "blocked",
+            "blockers": ["robot_upright_report_failed"],
+            "prim_path": prim_path,
+            "error": repr(exc),
+        }
 
 
 def _world_bbox_for_prim(stage, prim_path: str) -> dict[str, list[float]] | None:
@@ -3331,12 +3643,16 @@ def _build_placement_validation_manifest(
         if not verdict.ok:
             blockers.append("placement_geometry_invalid")
     actual_bbox = _world_bbox_for_prim(stage, robot_prim_path)
+    upright_report = _robot_upright_report(stage, robot_prim_path)
+    if upright_report.get("status") == "blocked":
+        blockers.append("placement_robot_not_upright")
     ground_truth: dict[str, Any] = {
         "robot_prim_path": robot_prim_path,
         "accepted_pose_xyz": _rounded_xyz(accepted_pose),
         "accepted_pose_xy": [round(float(accepted_pose[0]), 6), round(float(accepted_pose[1]), 6)],
         "max_xy_error_m": PLACEMENT_GROUND_TRUTH_MAX_FOOTPRINT_CENTER_DELTA_M,
         "place_root_diagnostics": dict(root_diagnostics or {}),
+        "upright_report": upright_report,
     }
     if actual_bbox is None:
         ground_truth["status"] = "blocked"
@@ -3626,6 +3942,38 @@ def _robot_arm_link_points(stage, robot_prim_path: str, *, arm: str = "right") -
         return {}
 
 
+def _robot_arm_link_points_by_arm(
+    stage,
+    robot_prim_path: str,
+    *,
+    arm: str = "right",
+) -> dict[str, dict[str, tuple[float, float, float]]]:
+    return {
+        side: _robot_arm_link_points(stage, robot_prim_path, arm=side)
+        for side in _required_manipulation_arms(arm)
+    }
+
+
+def _average_arm_link_points(
+    arm_points_by_arm: Mapping[str, Mapping[str, Sequence[float]]],
+) -> dict[str, tuple[float, float, float]]:
+    averaged: dict[str, tuple[float, float, float]] = {}
+    for role in ("shoulder", "elbow", "wrist", "hand"):
+        pts = [
+            tuple(float(v) for v in points[role])
+            for points in arm_points_by_arm.values()
+            if points.get(role) is not None
+        ]
+        if not pts:
+            continue
+        averaged[role] = (
+            sum(pt[0] for pt in pts) / len(pts),
+            sum(pt[1] for pt in pts) / len(pts),
+            sum(pt[2] for pt in pts) / len(pts),
+        )
+    return averaged
+
+
 def _robot_head_lens_eye_from_mount(
     mount_eye: Sequence[float],
     yaw: float,
@@ -3677,7 +4025,16 @@ def _robot_mounted_manipulation_cam_pose(
     mount = _robot_authored_camera_mount(stage, robot_prim_path) or _robot_link_mount(stage, robot_prim_path)
     if mount is None:
         return fallback_eye, fallback_target, {"source": "root_yaw_fallback_no_robot_mount"}
-    arm_points = _robot_arm_link_points(stage, robot_prim_path, arm=reach_arm)
+    reach_selection = _normalize_reach_arm_selection(reach_arm)
+    arm_points_by_arm = _robot_arm_link_points_by_arm(
+        stage,
+        robot_prim_path,
+        arm=reach_selection,
+    )
+    if reach_selection == "both":
+        arm_points = _average_arm_link_points(arm_points_by_arm)
+    else:
+        arm_points = dict(arm_points_by_arm.get(reach_selection) or {})
     target = _manipulation_camera_target_with_arm_context(look_at, arm_points)
     eye, lens_meta = _robot_head_lens_eye_from_mount(
         mount["eye_xyz"],
@@ -3694,17 +4051,27 @@ def _robot_mounted_manipulation_cam_pose(
             vfov_deg=float(vfov_deg),
             width=int(width),
             height=int(height),
-            arm=str(reach_arm),
+            arm=reach_selection,
+            arm_points_by_arm=arm_points_by_arm,
         )
+    arm_points_by_arm_json = {
+        side: {
+            key: [round(float(v), 6) for v in value]
+            for key, value in sorted(points.items())
+        }
+        for side, points in sorted(arm_points_by_arm.items())
+    }
     return eye, target, {
         "source": mount.get("source"),
         "mount_prim_path": mount.get("prim_path"),
         "mount_role": mount.get("mount_role"),
+        "required_arms": list(_required_manipulation_arms(reach_selection)),
         "arm_link_points_used": sorted(arm_points),
         "arm_link_points_xyz": {
             key: [round(float(v), 6) for v in value]
             for key, value in sorted(arm_points.items())
         },
+        "arm_link_points_by_arm_xyz": arm_points_by_arm_json,
         **target_meta,
         **lens_meta,
         "claim_boundary": (
@@ -4452,12 +4819,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             placement_validation_blocker_recorded = False
             placement_topdown_frame_path: Path | None = None
             placement_topdown_layout_frame_path: Path | None = None
-            pov_reach_arm = (
-                str(manipulation_reach_arm)
-                if str(manipulation_reach_arm) in {"left", "right"}
-                else "right"
-            )
-            rendered_reach_arm = "both" if manipulation_cam else str(manipulation_reach_arm)
+            pov_reach_arm = _normalize_reach_arm_selection(manipulation_reach_arm)
+            rendered_reach_arm = pov_reach_arm
             pov_geometry_path = sdir / "manipulation_pov_geometry.json"
             pov_geometry_records: list[dict[str, Any]] = []
             pov_geometry_report: dict[str, Any] | None = None
@@ -4707,8 +5070,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 f"xy_error={placement_validation_manifest['ground_truth_placement'].get('xy_error_m')}"
                             )
                     # Show manipulation-ready arms in the RENDERED frame (pure USD, no physics tensor
-                    # -> no crash). For egocentric manipulation seeds both arms are forward by default;
-                    # the geometry gate still validates the task-side effector against the affordance.
+                    # -> no crash). The same requested arm set is used for render, camera metadata, and
+                    # geometry validation so a both-arm seed cannot be validated as a one-arm frame.
                     if (kinematic_arm_pose and manipulation_reach
                             and effective_look_at is not None):
                         arm_frac = 1.0 if manipulation_cam else alpha
@@ -4768,6 +5131,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     ):
                         pov_geom = _manipulation_pov_geometry(
                             arm_points=cam_meta.get("arm_link_points_xyz") or {},
+                            arm_points_by_arm=cam_meta.get("arm_link_points_by_arm_xyz") or {},
                             affordance=effective_look_at,
                             eye=eye,
                             target=tgt,
@@ -4847,8 +5211,31 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         sdir / "frames" / f"overview_{cap:04d}.png",
                         software_denoise=software_denoise,
                     )
-                    _save_rgb(pov_annot, sdir / "frames" / f"robot_pov_{cap:04d}.png",
-                              software_denoise=software_denoise)
+                    pov_frame_path = sdir / "frames" / f"robot_pov_{cap:04d}.png"
+                    pov_ok = _save_rgb(pov_annot, sdir / "frames" / f"robot_pov_{cap:04d}.png",
+                                       software_denoise=software_denoise)
+                    if manipulation_cam and manipulation_reach and pov_geometry_records:
+                        frame_quality = (
+                            _pov_seed_frame_quality(pov_frame_path)
+                            if pov_ok
+                            else {
+                                "schema_version": "manipulation_pov_seed_frame_quality.v1",
+                                "status": "FAIL",
+                                "blockers": ["manipulation_pov_frame_not_saved"],
+                                "frame_path": str(pov_frame_path),
+                            }
+                        )
+                        last_pov_geom = dict(pov_geometry_records[-1])
+                        frame_blockers = [str(b) for b in (frame_quality.get("blockers") or [])]
+                        merged_blockers = sorted(set((last_pov_geom.get("blockers") or []) + frame_blockers))
+                        last_pov_geom["seed_frame_quality"] = frame_quality
+                        last_pov_geom["blockers"] = merged_blockers
+                        last_pov_geom["status"] = "PASS" if not merged_blockers else "FAIL"
+                        pov_geometry_records[-1] = last_pov_geom
+                        pov_geometry_report = _write_pov_geometry_report()
+                        if frame_quality.get("status") != "PASS" and not pov_geometry_blocker_recorded:
+                            blockers.append("manipulation_pov_geometry_failed")
+                            pov_geometry_blocker_recorded = True
                     if verify_annot is not None:
                         _save_rgb(verify_annot, sdir / "frames" / f"verify_{cap:04d}.png",
                                   software_denoise=software_denoise)
@@ -5373,7 +5760,7 @@ def render_local_preview(
 ) -> dict[str, Any]:
     """Produce a no-GPU dry-render preview (PNG + summary JSON) for a task on an open USD stage.
 
-    Reproduces the GPU runner's stance plan, manipulation camera, and reaching-arm skeleton, then draws
+    Reproduces the GPU runner's stance plan, manipulation camera, and arms-forward seed skeleton, then draws
     a top-down + egocentric-POV + checklist preview so wrong-side stance / cropped-arm / mis-aimed
     camera show up locally in <1s. ``robot_prim_path`` (when a placeable robot proxy is bound) enables
     the geometric placement validator; otherwise stance is planned without obstacle rejection.
@@ -5541,8 +5928,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="replace the kitchen asset's outdoor-HDRI dome light with a neutral bright "
                          "environment (no cityscape through the windows + lifts shadowed surfaces)")
     ap.add_argument("--kinematic-arm-pose", action="store_true",
-                    help="pose the RENDERED arm reaching the workspace target via pure-USD shoulder "
-                         "rotation (no physics tensor -> crash-safe); needs --manipulation-reach")
+                    help="pose the RENDERED arm(s) into a forward manipulation-ready seed via pure-USD "
+                         "shoulder rotation (no physics tensor -> crash-safe); needs --manipulation-reach")
     ap.add_argument("--collision-approximation", default="boundingCube",
                     choices=["boundingCube", "convexHull", "convexDecomposition"],
                     help="mesh collision shape: boundingCube (fast, coarse) vs convexHull (shape-"
@@ -5554,7 +5941,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="place the robot AT the scenario target facing --manipulation-look-at every "
                          "step (task start pose; no navigation/redirect) — for manipulation, not locomotion")
     ap.add_argument("--dry-render", action="store_true",
-                    help="NO-GPU local preview: reproduce stance + camera + reaching-arm framing from the "
+                    help="NO-GPU local preview: reproduce stance + camera + arms-forward framing from the "
                          "kitchen USD + task string and write a preview PNG, so placement/POV bugs are caught "
                          "locally before a cloud render. Needs --kitchen-usd + --request (no --g1-usd, no GPU).")
     ap.add_argument("--dry-render-out", default=None,

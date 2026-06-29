@@ -235,11 +235,13 @@ def test_manipulation_ready_arm_pose_defaults_to_both_arms() -> None:
         M.manipulation_ready_arm_joint_deltas("center")
 
 
-def test_manipulation_pov_render_poses_both_arms_while_validating_task_side() -> None:
+def test_manipulation_pov_render_and_validation_use_same_arm_selection() -> None:
     source = _RUNNER.read_text()
-    assert 'rendered_reach_arm = "both" if manipulation_cam else str(manipulation_reach_arm)' in source
+    assert "pov_reach_arm = _normalize_reach_arm_selection(manipulation_reach_arm)" in source
+    assert "rendered_reach_arm = pov_reach_arm" in source
     assert "arm=rendered_reach_arm" in source
     assert "arm=pov_reach_arm" in source
+    assert 'arm_points_by_arm=cam_meta.get("arm_link_points_by_arm_xyz") or {}' in source
     assert "reach_arm = args.manipulation_reach_arm" in source
     assert 'if args.manipulation_reach_arm != "both" else "right"' not in source
 
@@ -1525,9 +1527,10 @@ def test_manipulation_pov_geometry_requires_forearm_and_effector_in_frame() -> N
     affordance = (1.0, 0.0, 1.0)
     visible = M._manipulation_pov_geometry(
         arm_points={
-            "elbow": (0.7, -0.05, 1.02),
-            "wrist": (0.86, -0.03, 1.01),
-            "hand": (0.95, -0.02, 1.0),
+            "shoulder": (0.1, -0.05, 1.02),
+            "elbow": (0.45, -0.05, 1.02),
+            "wrist": (0.7, -0.03, 1.01),
+            "hand": (0.82, -0.02, 1.0),
         },
         affordance=affordance,
         eye=eye,
@@ -1539,6 +1542,58 @@ def test_manipulation_pov_geometry_requires_forearm_and_effector_in_frame() -> N
     )
     assert visible["status"] == "PASS"
     assert {"elbow", "wrist", "hand"}.issubset(set(visible["arm_roles_in_frame"]))
+    assert visible["effector_distance_is_metadata_only"] is True
+    assert visible["effector_distance_to_affordance_m"]["hand"] > 0.1
+
+    both_visible = M._manipulation_pov_geometry(
+        arm_points={},
+        arm_points_by_arm={
+            "left": {
+                "shoulder": (0.1, 0.05, 1.02),
+                "elbow": (0.45, 0.05, 1.02),
+                "wrist": (0.7, 0.03, 1.01),
+                "hand": (0.82, 0.02, 1.0),
+            },
+            "right": {
+                "shoulder": (0.1, -0.05, 1.02),
+                "elbow": (0.45, -0.05, 1.02),
+                "wrist": (0.7, -0.03, 1.01),
+                "hand": (0.82, -0.02, 1.0),
+            },
+        },
+        affordance=affordance,
+        eye=eye,
+        target=target,
+        vfov_deg=68.0,
+        width=640,
+        height=480,
+        arm="both",
+    )
+    assert both_visible["status"] == "PASS"
+    assert both_visible["required_arms"] == ["left", "right"]
+    assert set(both_visible["per_arm_geometry"]) == {"left", "right"}
+    assert both_visible["arm_extension"]["status"] == "PASS"
+
+    right_only_for_both = M._manipulation_pov_geometry(
+        arm_points={},
+        arm_points_by_arm={
+            "right": {
+                "shoulder": (0.1, -0.05, 1.02),
+                "elbow": (0.45, -0.05, 1.02),
+                "wrist": (0.7, -0.03, 1.01),
+                "hand": (0.82, -0.02, 1.0),
+            },
+        },
+        affordance=affordance,
+        eye=eye,
+        target=target,
+        vfov_deg=68.0,
+        width=640,
+        height=480,
+        arm="both",
+    )
+    assert right_only_for_both["status"] == "FAIL"
+    assert "manipulation_pov_left_arm_seed_failed" in right_only_for_both["blockers"]
 
     cropped = M._manipulation_pov_geometry(
         arm_points={
@@ -1557,12 +1612,12 @@ def test_manipulation_pov_geometry_requires_forearm_and_effector_in_frame() -> N
     assert cropped["status"] == "FAIL"
     assert "manipulation_pov_arm_not_in_frame" in cropped["blockers"]
 
-    visible_but_not_reaching = M._manipulation_pov_geometry(
+    visible_but_hanging = M._manipulation_pov_geometry(
         arm_points={
-            "shoulder": (0.1, -0.05, 1.02),
-            "elbow": (0.2, -0.05, 1.02),
-            "wrist": (0.28, -0.03, 1.01),
-            "hand": (0.35, -0.02, 1.0),
+            "shoulder": (0.3, -0.05, 1.2),
+            "elbow": (0.3, -0.05, 1.0),
+            "wrist": (0.3, -0.03, 0.82),
+            "hand": (0.3, -0.02, 0.7),
         },
         affordance=affordance,
         eye=eye,
@@ -1572,8 +1627,28 @@ def test_manipulation_pov_geometry_requires_forearm_and_effector_in_frame() -> N
         height=480,
         arm="right",
     )
-    assert visible_but_not_reaching["status"] == "FAIL"
-    assert "manipulation_pov_effector_not_near_affordance" in visible_but_not_reaching["blockers"]
+    assert visible_but_hanging["status"] == "FAIL"
+    assert "manipulation_pov_arm_not_extended_forward" in visible_but_hanging["blockers"]
+    assert "manipulation_pov_effector_not_near_affordance" not in visible_but_hanging["blockers"]
+
+
+def test_pov_seed_frame_quality_rejects_black_edge_occlusion(tmp_path) -> None:
+    from PIL import Image, ImageDraw  # type: ignore
+
+    clean = tmp_path / "clean.png"
+    clean_img = Image.new("RGB", (640, 480), (185, 185, 185))
+    ImageDraw.Draw(clean_img).rectangle((260, 120, 380, 330), fill=(8, 8, 8))
+    clean_img.save(clean)
+    clean_report = M._pov_seed_frame_quality(clean)
+    assert clean_report["status"] == "PASS"
+
+    occluded = tmp_path / "occluded.png"
+    occ_img = Image.new("RGB", (640, 480), (185, 185, 185))
+    ImageDraw.Draw(occ_img).rectangle((520, 0, 640, 480), fill=(0, 0, 0))
+    occ_img.save(occluded)
+    occ_report = M._pov_seed_frame_quality(occluded)
+    assert occ_report["status"] == "FAIL"
+    assert "manipulation_pov_edge_self_occlusion" in occ_report["blockers"]
 
 
 def test_follow_cam_is_behind_and_above_robot() -> None:
