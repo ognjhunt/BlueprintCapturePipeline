@@ -138,7 +138,8 @@ MANIPULATION_ARM_LINK_NAME_TOKENS = (
     "gripper",
 )
 MANIPULATION_ARM_POSE_MIN_LINK_MOVE_M = 0.02
-MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG = 50.0
+MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG = 26.0
+MANIPULATION_POV_HEAD_FORWARD_PITCH_DOWN_DEG = 24.0
 DEFAULT_RENDER_STEP_WATCHDOG_SECONDS = 180.0
 
 
@@ -1002,11 +1003,21 @@ def follow_cam_pose(root_pose, yaw, *, back: float = 2.2, up: float = 1.6):
     return eye, target
 
 
-def verify_cam_pose(root_pose, yaw, *, back: float = 2.4, up: float = 1.5, side: float = 1.2):
+def verify_cam_pose(root_pose, yaw, *, back: float = 0.8, up: float = 1.05, side: float = 2.0,
+                    look_at=None):
     """3rd-person VERIFICATION camera: pulled back behind + above + to the side so the WHOLE robot AND
     the workspace it faces are both in frame — proves where the robot is actually standing (vs the
     egocentric POV, which shows only what the robot looks at)."""
     fx, fy = math.cos(yaw), math.sin(yaw)
+    if look_at is not None:
+        try:
+            dx = float(look_at[0]) - float(root_pose[0])
+            dy = float(look_at[1]) - float(root_pose[1])
+            d = math.hypot(dx, dy)
+            if d > 1e-4:
+                fx, fy = dx / d, dy / d
+        except Exception:  # noqa: BLE001
+            pass
     px, py = -fy, fx  # perpendicular (left of facing) for a 3/4 angle that reveals body-vs-counter gap
     eye = (root_pose[0] - fx * back + px * side, root_pose[1] - fy * back + py * side, root_pose[2] + up)
     target = (root_pose[0] + fx * 0.45, root_pose[1] + fy * 0.45, root_pose[2] + 0.25)  # robot torso/front
@@ -1112,6 +1123,29 @@ def _manipulation_camera_target_with_arm_context(
     return _weighted_xyz(pts) or aff
 
 
+def _camera_pitch_down_deg(eye, target) -> float:
+    horizontal_to_target_m = math.hypot(
+        float(target[0]) - float(eye[0]),
+        float(target[1]) - float(eye[1]),
+    )
+    return math.degrees(math.atan2(
+        max(0.0, float(eye[2]) - float(target[2])),
+        max(horizontal_to_target_m, 1e-6),
+    ))
+
+
+def _target_raised_to_max_pitch_down(eye, target, max_pitch_down_deg: float) -> tuple[float, float, float]:
+    """Raise a look-at point just enough to keep a robot-head seed from becoming a down-looking crop."""
+    tgt = (float(target[0]), float(target[1]), float(target[2]))
+    horizontal_to_target_m = math.hypot(tgt[0] - float(eye[0]), tgt[1] - float(eye[1]))
+    if horizontal_to_target_m <= 1e-6:
+        return tgt
+    min_target_z = float(eye[2]) - math.tan(math.radians(float(max_pitch_down_deg))) * horizontal_to_target_m
+    if tgt[2] >= min_target_z:
+        return tgt
+    return (tgt[0], tgt[1], min_target_z)
+
+
 def _manipulation_seed_arm_target_for_shoulder(shoulder, affordance) -> tuple[float, float, float]:
     """Task-directed arm seed target that keeps the arm out instead of pre-reaching down.
 
@@ -1175,14 +1209,7 @@ def _manipulation_pov_geometry_single(
     target_px = project_point_to_pixel(aff, eye, target, up, vfov_deg, width, height)
     target_projection = _projection_dict(target_px)
     target_margin_px = None
-    horizontal_to_target_m = math.hypot(
-        float(target[0]) - float(eye[0]),
-        float(target[1]) - float(eye[1]),
-    )
-    pitch_down_deg = math.degrees(math.atan2(
-        max(0.0, float(eye[2]) - float(target[2])),
-        max(horizontal_to_target_m, 1e-6),
-    ))
+    pitch_down_deg = _camera_pitch_down_deg(eye, target)
     if target_px is not None:
         u_px = float(target_px[0])
         v_px = float(target_px[1])
@@ -1533,6 +1560,18 @@ def _select_manipulation_camera_target_for_visible_arm(
         ("affordance_arm_context", tuple(float(v) for v in initial_target)),
         ("affordance", aff),
     ]
+    preferred_pitch = min(
+        float(MANIPULATION_POV_HEAD_FORWARD_PITCH_DOWN_DEG),
+        float(MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG),
+    )
+
+    def add_pitch_limited(name: str, candidate: Sequence[float]) -> None:
+        limited = _target_raised_to_max_pitch_down(eye, candidate, preferred_pitch)
+        if any(abs(float(limited[i]) - float(candidate[i])) > 1e-5 for i in range(3)):
+            candidates.append((name, limited))
+
+    add_pitch_limited("head_forward_pitch_limited_arm_context", initial_target)
+    add_pitch_limited("head_forward_pitch_limited_affordance", aff)
     if arm_points:
         hand = arm_points.get("hand")
         wrist = arm_points.get("wrist")
@@ -1559,6 +1598,7 @@ def _select_manipulation_camera_target_for_visible_arm(
             weighted = _weighted_xyz(pts)
             if weighted is not None:
                 candidates.append(("forearm_weighted", weighted))
+                add_pitch_limited("head_forward_pitch_limited_forearm_context", weighted)
                 if forward_z > float(weighted[2]):
                     candidates.append((
                         "head_forward_forearm_context",
@@ -1571,6 +1611,7 @@ def _select_manipulation_camera_target_for_visible_arm(
                 task_context_pts.append((wrist, 0.12))
             task_context = _weighted_xyz(task_context_pts)
             if task_context is not None and forward_z > float(task_context[2]):
+                add_pitch_limited("head_forward_pitch_limited_task_context", task_context)
                 candidates.append((
                     "head_forward_task_context",
                     (float(task_context[0]), float(task_context[1]), forward_z),
@@ -1579,6 +1620,7 @@ def _select_manipulation_camera_target_for_visible_arm(
             weighted = _weighted_xyz([(aff, 0.35), (wrist, 0.30), (hand, 0.35)])
             if weighted is not None:
                 candidates.append(("effector_weighted", weighted))
+                add_pitch_limited("head_forward_pitch_limited_effector_context", weighted)
                 if forward_z > float(weighted[2]):
                     candidates.append((
                         "head_forward_effector_context",
@@ -1636,6 +1678,8 @@ def _select_manipulation_camera_target_for_visible_arm(
         score -= min(8.0, max(0.0, pitch_down_deg - 18.0) / 6.0)
         if name.startswith("head_forward_"):
             score += 2.0
+        if name.startswith("head_forward_pitch_limited_"):
+            score += 3.0
         if score > best_score:
             best_name = name
             best_target = candidate
@@ -4870,7 +4914,12 @@ def _software_denoise_image(img):
         pass
     try:
         from PIL import ImageFilter  # type: ignore
-        return img.filter(ImageFilter.MedianFilter(size=3))
+        return (
+            img
+            .filter(ImageFilter.MedianFilter(size=3))
+            .filter(ImageFilter.MedianFilter(size=3))
+            .filter(ImageFilter.SMOOTH_MORE)
+        )
     except Exception:  # noqa: BLE001
         return img
 
@@ -5609,7 +5658,11 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         _add_pov_headlamp(stage, eye, effective_look_at,
                                           intensity=(fill_light_intensity if fill_light_intensity > 0 else 30000.0))
                     if verify_annot is not None:
-                        v_eye, v_tgt = verify_cam_pose(decision.root_pose, decision.yaw)
+                        v_eye, v_tgt = verify_cam_pose(
+                            decision.root_pose,
+                            decision.yaw,
+                            look_at=effective_look_at,
+                        )
                         _place_camera(stage, verify_cam_path, v_eye, v_tgt)  # 3rd-person: SHOW the robot
                     debug_root_path = (
                         f"/World/PlacementDebug/{_safe_prim_segment(sid)}"

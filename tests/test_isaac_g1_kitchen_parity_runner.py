@@ -235,6 +235,55 @@ def test_manipulation_camera_target_selection_rejects_downward_pitch_workaround(
     assert "manipulation_pov_camera_pitched_down_too_far" not in chosen["blockers"]
 
 
+def test_manipulation_camera_target_selection_prefers_pitch_limited_both_arm_seed() -> None:
+    eye = (-0.938489, 0.655171, 1.2802)
+    affordance = (-1.437147, 0.655166, 1.025963)
+    arm_points_by_arm = {
+        "left": {
+            "elbow": (-0.958272, 0.543407, 0.961516),
+            "hand": (-1.225504, 0.61788, 1.085062),
+            "shoulder": (-0.868313, 0.554951, 1.13178),
+            "wrist": (-1.05134, 0.570512, 0.988109),
+        },
+        "right": {
+            "elbow": (-0.988705, 0.755822, 0.981045),
+            "hand": (-1.176726, 0.701394, 1.093561),
+            "shoulder": (-0.868313, 0.755381, 1.13178),
+            "wrist": (-1.074752, 0.730238, 1.026266),
+        },
+    }
+    arm_points = M._average_arm_link_points(arm_points_by_arm)
+
+    target, meta = M._select_manipulation_camera_target_for_visible_arm(
+        affordance,
+        arm_points,
+        eye,
+        M._manipulation_camera_target_with_arm_context(affordance, arm_points),
+        vfov_deg=90.0,
+        width=1280,
+        height=960,
+        arm="both",
+        arm_points_by_arm=arm_points_by_arm,
+    )
+    geom = M._manipulation_pov_geometry(
+        arm_points=arm_points,
+        arm_points_by_arm=arm_points_by_arm,
+        affordance=affordance,
+        eye=eye,
+        target=target,
+        vfov_deg=90.0,
+        width=1280,
+        height=960,
+        arm="both",
+    )
+
+    assert meta["selected_camera_target"].startswith("head_forward_pitch_limited_")
+    assert geom["status"] == "PASS"
+    assert geom["camera_pitch_down_deg"] <= M.MANIPULATION_POV_HEAD_FORWARD_PITCH_DOWN_DEG
+    assert geom["arm_roles_in_frame_by_arm"]["left"] == ["hand", "wrist"]
+    assert geom["arm_roles_in_frame_by_arm"]["right"] == ["hand", "wrist"]
+
+
 def test_render_step_watchdog_timeout_result_is_fail_closed(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("PARITY_RENDER_STEP_WATCHDOG_SECONDS", raising=False)
     assert M._render_step_watchdog_seconds() == M.DEFAULT_RENDER_STEP_WATCHDOG_SECONDS
@@ -1777,6 +1826,22 @@ def test_follow_cam_is_behind_and_above_robot() -> None:
     assert eye[0] < 0.0           # behind the robot along -X
     assert eye[2] > 0.79          # above the root
     assert target[0] > 0.0        # looking ahead toward +X
+
+
+def test_verify_cam_pose_is_side_biased_for_visual_placement_qc() -> None:
+    root = (-1.037147, 0.655166, 0.84)
+    yaw = math.pi
+    look_at = (-1.437147, 0.655166, 1.025963)
+    eye, target = M.verify_cam_pose(root, yaw, look_at=look_at)
+    fx, fy = math.cos(yaw), math.sin(yaw)
+    px, py = -fy, fx
+    from_root = (eye[0] - root[0], eye[1] - root[1])
+    behind_m = -(from_root[0] * fx + from_root[1] * fy)
+    side_m = abs(from_root[0] * px + from_root[1] * py)
+
+    assert side_m > behind_m * 1.8
+    assert eye[2] > root[2] + 0.8
+    assert target[2] > root[2]
 
 
 def _fake_scene_index(monkeypatch, objects, *, obstacle_boxes=None):
