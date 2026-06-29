@@ -42,6 +42,10 @@ NEXT_OBSERVATION_SELECTION_SCHEMA_VERSION = "oscar_next_observation_selection.v1
 CLOSED_LOOP_WAM_BACKEND_READINESS_SCHEMA_VERSION = "closed_loop_wam_backend_readiness.v1"
 SUPPORTED_CLOSED_LOOP_WAM_BACKENDS = ("oscar_wam", "cosmos3_wam")
 BUILT_IN_CLOSED_LOOP_WAM_BACKENDS = frozenset({"oscar_wam"})
+VAST_API_GATE_ENV = "BLUEPRINT_ALLOW_VAST_API_CALLS"
+VAST_INSTANCE_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"
+VAST_PAID_WAM_GATE_ENV = "BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH"
+VAST_API_KEY_FILE_ENV = "VAST_API_KEY_FILE"
 
 # A WAM generation backend: given the current observation frame, the policy action, the step
 # index, and the action history, produce the next-observation frame path (and optional video).
@@ -209,6 +213,155 @@ def _provider_payload_proves_fresh_model(payload: Mapping[str, Any]) -> bool:
     )
 
 
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(_string(os.getenv(name)) or default)
+    except ValueError:
+        return default
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(float(_string(os.getenv(name)) or default))
+    except ValueError:
+        return default
+
+
+def _vast_session_budget_path() -> Path:
+    explicit = _string(os.getenv("VAST_SESSION_BUDGET_LEDGER_FILE"))
+    if explicit:
+        return Path(explicit).expanduser()
+    key_file = Path(
+        _string(os.getenv(VAST_API_KEY_FILE_ENV)) or "~/.blueprint-secrets/vast_api_key"
+    ).expanduser()
+    return key_file.parent / "vast_session_cost_summary.json"
+
+
+def _vast_paid_provider_preflight(
+    *,
+    allow_paid_provider_launch: bool,
+    max_hourly_rate_usd: float,
+    max_live_minutes: int,
+    session_max_live_minutes: int,
+    hard_cap_usd: float,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if not allow_paid_provider_launch:
+        blockers.append("closed_loop_paid_provider_launch_not_authorized")
+    if not _env_truthy(VAST_PAID_WAM_GATE_ENV):
+        blockers.append(f"missing_env_{VAST_PAID_WAM_GATE_ENV}")
+    if not _env_truthy(VAST_API_GATE_ENV):
+        blockers.append(f"missing_env_{VAST_API_GATE_ENV}")
+    if not _env_truthy(VAST_INSTANCE_LAUNCH_GATE_ENV):
+        blockers.append(f"missing_env_{VAST_INSTANCE_LAUNCH_GATE_ENV}")
+    key_file = Path(
+        _string(os.getenv(VAST_API_KEY_FILE_ENV)) or "~/.blueprint-secrets/vast_api_key"
+    ).expanduser()
+    if not key_file.is_file():
+        blockers.append(f"missing_file_based_secret_{VAST_API_KEY_FILE_ENV}")
+    budget_path = _vast_session_budget_path()
+    prior_cost = 0.0
+    prior_live_seconds = 0.0
+    budget_present = budget_path.is_file()
+    budget_parse_error = None
+    attempt_count = 0
+    if budget_present:
+        try:
+            budget = json.loads(budget_path.read_text(encoding="utf-8"))
+            attempts = budget.get("attempts")
+            if isinstance(attempts, list):
+                attempt_count = len(attempts)
+                for row in attempts:
+                    if not isinstance(row, Mapping):
+                        continue
+                    try:
+                        prior_cost += float(row.get("estimated_cost_usd") or 0.0)
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        prior_live_seconds += float(
+                            row.get("actual_live_runtime_seconds_observed_by_adapter")
+                            or 0.0
+                        )
+                    except (TypeError, ValueError):
+                        pass
+        except Exception as exc:  # pragma: no cover - type surfaced in artifact
+            budget_parse_error = type(exc).__name__
+            blockers.append("vast_session_budget_ledger_parse_failed")
+    projected_incremental_cost = max_hourly_rate_usd * (max_live_minutes / 60.0)
+    prior_live_minutes = prior_live_seconds / 60.0
+    if (
+        session_max_live_minutes >= 0
+        and prior_live_minutes >= float(session_max_live_minutes)
+    ):
+        blockers.append("session_live_runtime_limit_exhausted")
+    if prior_cost + projected_incremental_cost > hard_cap_usd:
+        blockers.append("session_estimated_spend_hard_cap_exhausted")
+    elif prior_cost >= hard_cap_usd:
+        blockers.append("session_estimated_spend_hard_cap_already_exceeded")
+    if prior_cost > 0.0 and not budget_present:
+        warnings.append("vast_budget_prior_cost_inferred_without_ledger")
+    return {
+        "schema_version": "closed_loop_vast_paid_provider_preflight.v1",
+        "status": "ready" if not blockers else "blocked",
+        "provider": "vast",
+        "gate_env": {
+            VAST_PAID_WAM_GATE_ENV: _env_truthy(VAST_PAID_WAM_GATE_ENV),
+            VAST_API_GATE_ENV: _env_truthy(VAST_API_GATE_ENV),
+            VAST_INSTANCE_LAUNCH_GATE_ENV: _env_truthy(VAST_INSTANCE_LAUNCH_GATE_ENV),
+        },
+        "vast_api_key_file_present": key_file.is_file(),
+        "vast_api_key_file_path": str(key_file),
+        "budget_path": str(budget_path),
+        "budget_ledger_present": budget_present,
+        "budget_parse_error": budget_parse_error,
+        "attempt_count": attempt_count,
+        "prior_estimated_cost_usd": round(prior_cost, 6),
+        "prior_live_runtime_minutes": round(prior_live_minutes, 6),
+        "max_hourly_rate_usd": float(max_hourly_rate_usd),
+        "requested_max_live_runtime_minutes": int(max_live_minutes),
+        "session_max_live_runtime_minutes": int(session_max_live_minutes),
+        "projected_max_incremental_cost_usd": round(projected_incremental_cost, 6),
+        "hard_cap_usd": float(hard_cap_usd),
+        "blockers": sorted(set(blockers)),
+        "warnings": warnings,
+        "raw_secret_values_recorded": False,
+        "claim_boundary": {
+            "preflight_is_no_spend": True,
+            "preflight_does_not_call_vast_api": True,
+            "secret_values_not_read_into_artifact": True,
+        },
+    }
+
+
+def _closed_loop_paid_provider_preflight(
+    *,
+    provider: str,
+    allow_paid_provider_launch: bool,
+) -> dict[str, Any]:
+    provider_id = _string(provider).strip().lower()
+    if provider_id != "vast":
+        return {
+            "schema_version": "closed_loop_paid_provider_preflight.v1",
+            "status": "not_applicable",
+            "provider": provider_id or provider,
+            "blockers": [],
+            "claim_boundary": {"preflight_is_no_spend": True},
+        }
+    return _vast_paid_provider_preflight(
+        allow_paid_provider_launch=allow_paid_provider_launch,
+        max_hourly_rate_usd=_float_env("BLUEPRINT_VAST_WAM_MAX_HOURLY_RATE", 0.35),
+        max_live_minutes=_int_env("BLUEPRINT_VAST_WAM_MAX_LIVE_MINUTES", 30),
+        session_max_live_minutes=_int_env("BLUEPRINT_VAST_WAM_SESSION_MAX_LIVE_MINUTES", 35),
+        hard_cap_usd=_float_env("BLUEPRINT_VAST_WAM_HARD_CAP_USD", 3.0),
+    )
+
+
 def build_closed_loop_wam_backend_readiness(
     *,
     selected_backend: str,
@@ -236,6 +389,20 @@ def build_closed_loop_wam_backend_readiness(
     built_in_oscar_provider_configured = bool(
         backend == "oscar_wam" and use_provider_command
     )
+    paid_provider_preflight = (
+        _closed_loop_paid_provider_preflight(
+            provider=oscar_provider,
+            allow_paid_provider_launch=allow_paid_provider_launch,
+        )
+        if built_in_oscar_provider_configured and allow_paid_provider_launch
+        else {
+            "schema_version": "closed_loop_paid_provider_preflight.v1",
+            "status": "not_requested",
+            "provider": oscar_provider,
+            "blockers": [],
+            "claim_boundary": {"preflight_is_no_spend": True},
+        }
+    )
     explicit_provider_command_configured = bool(backend_command)
     supported_by_this_runner = backend in BUILT_IN_CLOSED_LOOP_WAM_BACKENDS
     blockers: list[str] = []
@@ -244,6 +411,7 @@ def build_closed_loop_wam_backend_readiness(
     if backend == "oscar_wam":
         if not (built_in_oscar_provider_configured or local_oscar_configured):
             blockers.append("blocked_missing_oscar_provider_or_local_checkpoint")
+        blockers.extend(str(item) for item in paid_provider_preflight.get("blockers") or [])
     elif backend == "cosmos3_wam":
         blockers.append("blocked_cosmos3_wam_not_wired_into_isaac_closed_loop_runner")
         if not explicit_provider_command_configured:
@@ -273,6 +441,7 @@ def build_closed_loop_wam_backend_readiness(
         "explicit_provider_command_configured": explicit_provider_command_configured,
         "provider_command_env_var": command_env_var,
         "generic_provider_command_env_var": "BLUEPRINT_WAM_PROVIDER_COMMAND",
+        "paid_provider_preflight": paid_provider_preflight,
         "strategy": get_wam_backend_strategy(backend),
         "blockers": blockers,
         "claim_boundary": {

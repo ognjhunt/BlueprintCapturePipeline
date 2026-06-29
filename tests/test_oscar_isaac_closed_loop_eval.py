@@ -649,6 +649,78 @@ def test_closed_loop_wam_backend_readiness_blocks_unwired_cosmos3(
     )
 
 
+def test_closed_loop_wam_backend_readiness_surfaces_vast_paid_gate_blockers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_VAST_API_CALLS", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", raising=False)
+    monkeypatch.setenv("VAST_API_KEY_FILE", str(tmp_path / "missing_vast_api_key"))
+    monkeypatch.setenv("VAST_SESSION_BUDGET_LEDGER_FILE", str(tmp_path / "budget.json"))
+
+    readiness = L.build_closed_loop_wam_backend_readiness(
+        selected_backend="oscar_wam",
+        use_provider_command=True,
+        oscar_provider="vast",
+        allow_paid_provider_launch=True,
+    )
+
+    assert readiness["status"] == "blocked"
+    preflight = readiness["paid_provider_preflight"]
+    assert preflight["status"] == "blocked"
+    assert "missing_env_BLUEPRINT_ALLOW_VAST_API_CALLS" in readiness["blockers"]
+    assert "missing_env_BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH" in readiness["blockers"]
+    assert "missing_file_based_secret_VAST_API_KEY_FILE" in readiness["blockers"]
+    assert preflight["claim_boundary"]["preflight_does_not_call_vast_api"] is True
+
+
+def test_closed_loop_wam_backend_readiness_surfaces_vast_session_budget_blockers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key_file = tmp_path / "vast_api_key"
+    key_file.write_text("redacted-test-key\n", encoding="utf-8")
+    budget = tmp_path / "budget.json"
+    budget.write_text(
+        json.dumps(
+            {
+                "schema_version": "vast_session_cost_summary.v4",
+                "attempts": [
+                    {
+                        "estimated_cost_usd": 0.60,
+                        "actual_live_runtime_seconds_observed_by_adapter": 55 * 60,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
+    monkeypatch.setenv("VAST_API_KEY_FILE", str(key_file))
+    monkeypatch.setenv("VAST_SESSION_BUDGET_LEDGER_FILE", str(budget))
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_MAX_HOURLY_RATE", "0.45")
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_MAX_LIVE_MINUTES", "45")
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_SESSION_MAX_LIVE_MINUTES", "50")
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_HARD_CAP_USD", "0.75")
+
+    readiness = L.build_closed_loop_wam_backend_readiness(
+        selected_backend="oscar_wam",
+        use_provider_command=True,
+        oscar_provider="vast",
+        allow_paid_provider_launch=True,
+    )
+
+    preflight = readiness["paid_provider_preflight"]
+    assert readiness["status"] == "blocked"
+    assert preflight["prior_estimated_cost_usd"] == 0.6
+    assert preflight["prior_live_runtime_minutes"] == 55.0
+    assert "session_live_runtime_limit_exhausted" in readiness["blockers"]
+    assert "session_estimated_spend_hard_cap_exhausted" in readiness["blockers"]
+    assert preflight["raw_secret_values_recorded"] is False
+    assert "redacted-test-key" not in json.dumps(preflight)
+
+
 def test_closed_loop_cli_writes_no_spend_backend_readiness_for_cosmos3(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
