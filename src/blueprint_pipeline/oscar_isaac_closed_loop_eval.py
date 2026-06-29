@@ -348,21 +348,28 @@ def _closed_loop_paid_provider_preflight(
     allow_paid_provider_launch: bool,
 ) -> dict[str, Any]:
     provider_id = _string(provider).strip().lower()
-    if provider_id != "vast":
-        return {
-            "schema_version": "closed_loop_paid_provider_preflight.v1",
-            "status": "not_applicable",
-            "provider": provider_id or provider,
-            "blockers": [],
-            "claim_boundary": {"preflight_is_no_spend": True},
-        }
-    return _vast_paid_provider_preflight(
-        allow_paid_provider_launch=allow_paid_provider_launch,
-        max_hourly_rate_usd=_float_env("BLUEPRINT_VAST_WAM_MAX_HOURLY_RATE", 0.35),
-        max_live_minutes=_int_env("BLUEPRINT_VAST_WAM_MAX_LIVE_MINUTES", 30),
-        session_max_live_minutes=_int_env("BLUEPRINT_VAST_WAM_SESSION_MAX_LIVE_MINUTES", 35),
-        hard_cap_usd=_float_env("BLUEPRINT_VAST_WAM_HARD_CAP_USD", 3.0),
-    )
+    if provider_id == "vast":
+        return _vast_paid_provider_preflight(
+            allow_paid_provider_launch=allow_paid_provider_launch,
+            max_hourly_rate_usd=_float_env("BLUEPRINT_VAST_WAM_MAX_HOURLY_RATE", 0.35),
+            max_live_minutes=_int_env("BLUEPRINT_VAST_WAM_MAX_LIVE_MINUTES", 30),
+            session_max_live_minutes=_int_env(
+                "BLUEPRINT_VAST_WAM_SESSION_MAX_LIVE_MINUTES", 35
+            ),
+            hard_cap_usd=_float_env("BLUEPRINT_VAST_WAM_HARD_CAP_USD", 3.0),
+        )
+    return {
+        "schema_version": "closed_loop_paid_provider_preflight.v1",
+        "status": "blocked",
+        "provider": provider_id or provider,
+        "blockers": [
+            f"closed_loop_paid_provider_{provider_id or 'unknown'}_disabled_use_vast"
+        ],
+        "claim_boundary": {
+            "preflight_is_no_spend": True,
+            "paid_closed_loop_provider_default_is_vast": True,
+        },
+    }
 
 
 def build_closed_loop_wam_backend_readiness(
@@ -371,7 +378,7 @@ def build_closed_loop_wam_backend_readiness(
     use_provider_command: bool,
     oscar_repo: str | None = None,
     checkpoint: str | None = None,
-    oscar_provider: str = "runpod",
+    oscar_provider: str = "vast",
     allow_paid_provider_launch: bool = False,
 ) -> dict[str, Any]:
     """Describe which WAM backend the closed-loop runner can actually execute.
@@ -853,7 +860,7 @@ def make_oscar_provider_command_wam_backend(
     height: int = 480,
     width: int = 640,
     fps: float = 15.0,
-    provider: str = "runpod",
+    provider: str = "vast",
     allow_paid_provider_launch: bool = False,
     timeout_seconds: float = 3600.0,
     adapter_run: Callable[[Sequence[str] | None], Mapping[str, Any]] = run_oscar_wam_provider_adapter,
@@ -1885,7 +1892,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--oscar-repo")
     parser.add_argument("--checkpoint")
     parser.add_argument("--use-provider-command", action="store_true")
-    parser.add_argument("--oscar-provider", choices=("auto", "vast", "runpod"), default="runpod")
+    parser.add_argument("--oscar-provider", choices=("auto", "vast", "runpod"), default="vast")
     parser.add_argument("--provider-timeout-seconds", type=float, default=3600.0)
     parser.add_argument("--allow-paid-provider-launch", action="store_true")
     parser.add_argument("--output-dir", required=True)

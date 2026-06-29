@@ -152,7 +152,7 @@ def _write_passed_short_visual_sanity_manifest(
                 "status": "passed_short_visual_sanity",
                 "short_visual_sanity_passed": True,
                 "policy_observation_path": str(policy_observation_path.resolve()),
-                "provider": "runpod",
+                "provider": "vast",
                 "requested_transition_count": 2,
                 "requested_loop_step_count": 3,
                 "generated_transition_count": 2,
@@ -173,7 +173,7 @@ def _write_passed_short_visual_sanity_manifest(
                 "learned_wam_model_success_count": 2,
                 "structural_fallback_used": False,
                 "paid_provider": {
-                    "provider": "runpod",
+                    "provider": "vast",
                     "used": False,
                     "teardown_status": "not_required_no_paid_provider",
                     "teardown_performed": False,
@@ -185,6 +185,26 @@ def _write_passed_short_visual_sanity_manifest(
         encoding="utf-8",
     )
     return manifest
+
+
+def _allow_vast_paid_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    key_file = tmp_path / "vast_api_key"
+    key_file.write_text("redacted-vast-test-key\n", encoding="utf-8")
+    budget = tmp_path / "fresh_vast_budget.json"
+    budget.write_text(
+        json.dumps({"schema_version": "vast_session_cost_summary.v4", "attempts": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
+    monkeypatch.setenv("VAST_API_KEY_FILE", str(key_file))
+    monkeypatch.setenv("VAST_SESSION_BUDGET_LEDGER_FILE", str(budget))
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_MAX_HOURLY_RATE", "0.25")
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_MAX_LIVE_MINUTES", "10")
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_SESSION_MAX_LIVE_MINUTES", "30")
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_HARD_CAP_USD", "0.50")
+    return key_file
 
 
 def test_closed_loop_runs_policy_wam_harness_per_step(tmp_path: Path) -> None:
@@ -376,7 +396,7 @@ def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_
         height=240,
         width=320,
         fps=10.0,
-        provider="runpod",
+        provider="vast",
         allow_paid_provider_launch=True,
         adapter_run=_fake_adapter,
         extract_next_frame=_extract,
@@ -961,8 +981,6 @@ def test_closed_loop_cli_blocks_paid_multi_step_provider_without_projected_skele
             "--wam-backend",
             "oscar_wam",
             "--use-provider-command",
-            "--oscar-provider",
-            "runpod",
             "--allow-paid-provider-launch",
             "--steps",
             "2",
@@ -977,6 +995,9 @@ def test_closed_loop_cli_blocks_paid_multi_step_provider_without_projected_skele
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     blocker = "closed_loop_projected_skeleton_trace_missing_for_paid_multi_step_provider_wam"
     assert readiness["status"] == "blocked"
+    assert readiness["oscar_provider"] == "vast"
+    assert readiness["paid_provider_preflight"]["provider"] == "vast"
+    assert plan["oscar_provider"] == "vast"
     assert readiness["seed_conditioning_preflight"]["required"] is True
     assert blocker in readiness["blockers"]
     assert blocker in plan["blockers"]
@@ -985,9 +1006,10 @@ def test_closed_loop_cli_blocks_paid_multi_step_provider_without_projected_skele
 
 
 def test_closed_loop_cli_dry_run_writes_provider_input_contract_preflight(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     pytest.importorskip("cv2")
+    _allow_vast_paid_provider(monkeypatch, tmp_path)
     render_dir = tmp_path / "render"
     source_render = render_dir / "frames" / "robot_pov_0000.png"
     _write_frame(source_render, seed=18)
@@ -1046,7 +1068,7 @@ def test_closed_loop_cli_dry_run_writes_provider_input_contract_preflight(
             "oscar_wam",
             "--use-provider-command",
             "--oscar-provider",
-            "runpod",
+            "vast",
             "--allow-paid-provider-launch",
             "--steps",
             "2",
@@ -1075,9 +1097,10 @@ def test_closed_loop_cli_dry_run_writes_provider_input_contract_preflight(
 
 
 def test_closed_loop_paid_long_run_requires_short_visual_sanity_after_input_risk(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     pytest.importorskip("cv2")
+    _allow_vast_paid_provider(monkeypatch, tmp_path)
     seed, route = _write_seed_geometry_route(tmp_path)
 
     exit_code = L.main(
@@ -1092,7 +1115,7 @@ def test_closed_loop_paid_long_run_requires_short_visual_sanity_after_input_risk
             "oscar_wam",
             "--use-provider-command",
             "--oscar-provider",
-            "runpod",
+            "vast",
             "--allow-paid-provider-launch",
             "--steps",
             "4",
@@ -1122,7 +1145,7 @@ def test_closed_loop_paid_long_run_requires_short_visual_sanity_after_input_risk
     launch_plan = plan["short_visual_sanity_launch_plan"]
     assert launch_plan["status"] == "ready"
     assert launch_plan["required"] is True
-    assert launch_plan["provider"] == "runpod"
+    assert launch_plan["provider"] == "vast"
     assert launch_plan["provider_resolution"] == "explicit_provider"
     assert launch_plan["blockers"] == []
     assert launch_plan["command_materialized"] is True
@@ -1151,9 +1174,10 @@ def test_closed_loop_paid_long_run_requires_short_visual_sanity_after_input_risk
 
 
 def test_closed_loop_short_sanity_manifest_must_match_policy_observation(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     pytest.importorskip("cv2")
+    _allow_vast_paid_provider(monkeypatch, tmp_path)
     seed, route = _write_seed_geometry_route(tmp_path)
     stale_observation = tmp_path / "stale_policy_observation.json"
     stale_observation.write_text(
@@ -1181,7 +1205,7 @@ def test_closed_loop_short_sanity_manifest_must_match_policy_observation(
             "oscar_wam",
             "--use-provider-command",
             "--oscar-provider",
-            "runpod",
+            "vast",
             "--allow-paid-provider-launch",
             "--steps",
             "4",
@@ -1212,9 +1236,10 @@ def test_closed_loop_short_sanity_manifest_must_match_policy_observation(
 
 
 def test_closed_loop_matching_short_sanity_manifest_unlocks_dry_run(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     pytest.importorskip("cv2")
+    _allow_vast_paid_provider(monkeypatch, tmp_path)
     seed, route = _write_seed_geometry_route(tmp_path)
     output_dir = tmp_path / "closed_loop"
 
@@ -1230,7 +1255,7 @@ def test_closed_loop_matching_short_sanity_manifest_unlocks_dry_run(
             "oscar_wam",
             "--use-provider-command",
             "--oscar-provider",
-            "runpod",
+            "vast",
             "--allow-paid-provider-launch",
             "--steps",
             "4",
@@ -1262,7 +1287,7 @@ def test_closed_loop_matching_short_sanity_manifest_unlocks_dry_run(
             "oscar_wam",
             "--use-provider-command",
             "--oscar-provider",
-            "runpod",
+            "vast",
             "--allow-paid-provider-launch",
             "--steps",
             "4",
