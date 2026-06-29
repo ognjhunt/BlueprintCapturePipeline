@@ -768,6 +768,13 @@ def build_closed_loop_short_visual_sanity_launch_plan(
     short_provider, provider_resolution = _short_visual_sanity_provider_for_oscar_provider(
         oscar_provider
     )
+    paid_provider_preflight = _closed_loop_paid_provider_preflight(
+        provider=short_provider,
+        allow_paid_provider_launch=allow_paid_provider_launch,
+    )
+    provider_launch_blockers = [
+        str(item) for item in paid_provider_preflight.get("blockers") or []
+    ]
     command_argv = [
         sys.executable,
         "-m",
@@ -785,9 +792,17 @@ def build_closed_loop_short_visual_sanity_launch_plan(
         "--timeout-seconds",
         str(float(timeout_seconds)),
     ]
+    command_materialized = bool(policy_observation and not blockers)
+    launch_allowed_now = bool(command_materialized and not provider_launch_blockers)
+    if blockers:
+        status = "blocked"
+    elif provider_launch_blockers:
+        status = "blocked_provider_authorization"
+    else:
+        status = "ready"
     return {
         "schema_version": "closed_loop_short_visual_sanity_launch_plan.v1",
-        "status": "ready" if not blockers else "blocked",
+        "status": status,
         "required": True,
         "selected_wam_backend": backend,
         "steps": int(steps),
@@ -797,9 +812,13 @@ def build_closed_loop_short_visual_sanity_launch_plan(
         if policy_observation
         else None,
         "policy_observation_materialized": bool(policy_observation),
+        "command_materialized": command_materialized,
         "job_dir": str(job_dir),
         "provider": short_provider,
         "provider_resolution": provider_resolution,
+        "paid_provider_preflight": paid_provider_preflight,
+        "provider_launch_allowed_now": launch_allowed_now,
+        "provider_launch_blockers": sorted(set(provider_launch_blockers)),
         "command_argv": command_argv,
         "command_display": shlex.join(command_argv),
         "expected_manifest_path": str(expected_manifest_path),
@@ -810,7 +829,7 @@ def build_closed_loop_short_visual_sanity_launch_plan(
             "--short-visual-sanity-manifest",
             str(expected_manifest_path),
         ],
-        "blockers": sorted(set(blockers)),
+        "blockers": sorted(set([*blockers, *provider_launch_blockers])),
         "claim_boundary": {
             "plan_is_no_spend": True,
             "short_visual_sanity_is_scale_up_gate_only": True,
@@ -1988,6 +2007,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         wam_backend_readiness["status"] = "blocked"
     else:
         wam_backend_readiness["seed_conditioning_preflight"] = seed_conditioning_preflight
+    wam_backend_readiness["blockers"] = list(
+        dict.fromkeys(str(item) for item in wam_backend_readiness.get("blockers") or [])
+    )
     write_json(out_dir / "closed_loop_wam_backend_readiness.json", wam_backend_readiness)
     oscar_ready = wam_backend_readiness["status"] == "ready"
 

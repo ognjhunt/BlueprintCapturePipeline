@@ -1029,6 +1029,9 @@ def test_closed_loop_paid_long_run_requires_short_visual_sanity_after_input_risk
     assert launch_plan["provider"] == "runpod"
     assert launch_plan["provider_resolution"] == "explicit_provider"
     assert launch_plan["blockers"] == []
+    assert launch_plan["command_materialized"] is True
+    assert launch_plan["provider_launch_allowed_now"] is True
+    assert launch_plan["provider_launch_blockers"] == []
     policy_observation_path = Path(launch_plan["policy_observation_path"])
     assert policy_observation_path.is_file()
     policy_observation = json.loads(policy_observation_path.read_text(encoding="utf-8"))
@@ -1048,4 +1051,62 @@ def test_closed_loop_paid_long_run_requires_short_visual_sanity_after_input_risk
     assert launch_plan["unlock_env"][
         L.PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV
     ] == launch_plan["expected_manifest_path"]
+    assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+
+
+def test_closed_loop_short_sanity_launch_plan_blocks_vast_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("cv2")
+    seed, route = _write_seed_geometry_route(tmp_path)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_VAST_API_CALLS", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", raising=False)
+    monkeypatch.setenv("VAST_API_KEY_FILE", str(tmp_path / "missing_vast_api_key"))
+    monkeypatch.setenv("VAST_SESSION_BUDGET_LEDGER_FILE", str(tmp_path / "budget.json"))
+
+    exit_code = L.main(
+        [
+            "--start-frame",
+            str(seed),
+            "--route-file",
+            str(route),
+            "--output-dir",
+            str(tmp_path / "closed_loop"),
+            "--wam-backend",
+            "oscar_wam",
+            "--use-provider-command",
+            "--oscar-provider",
+            "vast",
+            "--allow-paid-provider-launch",
+            "--steps",
+            "4",
+            "--oscar-guidance",
+            "4.25",
+            "--dry-run",
+        ]
+    )
+
+    assert exit_code == 2
+    plan = json.loads(
+        (tmp_path / "closed_loop" / "oscar_isaac_closed_loop_plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    launch_plan = plan["short_visual_sanity_launch_plan"]
+    assert launch_plan["status"] == "blocked_provider_authorization"
+    assert launch_plan["command_materialized"] is True
+    assert launch_plan["provider_launch_allowed_now"] is False
+    assert launch_plan["provider"] == "vast"
+    assert Path(launch_plan["policy_observation_path"]).is_file()
+    assert "missing_env_BLUEPRINT_ALLOW_VAST_API_CALLS" in launch_plan[
+        "provider_launch_blockers"
+    ]
+    assert "missing_env_BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH" in launch_plan[
+        "provider_launch_blockers"
+    ]
+    assert "missing_file_based_secret_VAST_API_KEY_FILE" in launch_plan["blockers"]
+    assert launch_plan["paid_provider_preflight"]["status"] == "blocked"
+    assert launch_plan["claim_boundary"]["plan_is_no_spend"] is True
+    assert len(plan["blockers"]) == len(set(plan["blockers"]))
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
