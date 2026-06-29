@@ -122,6 +122,22 @@ MANIPULATION_READY_ARM_JOINT_DELTAS = {
         "right_wrist_pitch_joint": -0.15,
     },
 }
+MANIPULATION_ARM_LINK_NAME_TOKENS = (
+    "shoulder",
+    "upper_arm",
+    "upperarm",
+    "forearm",
+    "lower_arm",
+    "lowerarm",
+    "elbow",
+    "wrist",
+    "hand",
+    "palm",
+    "finger",
+    "gripper",
+)
+MANIPULATION_ARM_POSE_MIN_LINK_MOVE_M = 0.02
+MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG = 50.0
 
 
 # ============================ testable helpers (no isaacsim) ============================
@@ -1007,12 +1023,12 @@ def manipulation_cam_pose(
     shoulder_side: float = 0.38,
     reach_arm: str = "right",
 ):
-    """Eye + target for an EGOCENTRIC manipulation POV: from the robot's head, looking down-forward
-    at the workspace directly in front (the sink/faucet and the robot's hands).
+    """Eye + target for an EGOCENTRIC manipulation POV: from the robot's head, looking forward
+    at the task workspace directly in front of the robot and between the arms.
 
     Unlike ``follow_cam_pose`` (a chase shot behind+above, framing the whole robot walking across the
     room) this frames the local task region. Heights are absolute so the view sits at head level and
-    looks at counter level — the in-distribution, coherent view a manipulation WAM can actually
+    looks at manipulation height — the in-distribution, coherent view a manipulation WAM can actually
     predict, instead of a room-scale navigation scene it collapses to blur on.
 
     ``look_at`` (a fixed world x,y,z — e.g. the affordance/handle surface) pins the target so the
@@ -1202,7 +1218,7 @@ def _manipulation_pov_geometry_single(
         blockers.append("manipulation_pov_target_not_in_frame")
     elif target_margin_px is not None and target_margin_px < min(float(width), float(height)) * 0.06:
         blockers.append("manipulation_pov_target_near_frame_edge")
-    if pitch_down_deg > 60.0:
+    if pitch_down_deg > MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG:
         blockers.append("manipulation_pov_camera_pitched_down_too_far")
     if not effector_roles:
         blockers.append("manipulation_pov_arm_not_in_frame")
@@ -1583,6 +1599,8 @@ def _select_manipulation_camera_target_for_visible_arm(
             height=height,
             arm=arm,
         )
+        geom_blockers = set(str(b) for b in (geom.get("blockers") or []))
+        geom_pitch_down_deg = float(geom.get("camera_pitch_down_deg") or 0.0)
         roles = set(geom.get("arm_roles_in_frame") or [])
         score = 0.0
         if geom.get("target_in_frame"):
@@ -1596,6 +1614,8 @@ def _select_manipulation_camera_target_for_visible_arm(
             score += 10.0
         else:
             score -= 1.5 * len(geom.get("blockers") or [])
+        if "manipulation_pov_camera_pitched_down_too_far" in geom_blockers:
+            score -= 30.0
         target_proj = geom.get("target_projection") or {}
         if target_proj:
             u = float(target_proj.get("u_px") or 0.0)
@@ -1610,14 +1630,7 @@ def _select_manipulation_camera_target_for_visible_arm(
                 score -= min(14.0, (useful_v_min - v) / max(float(height), 1.0) * 40.0)
             elif v > useful_v_max:
                 score -= min(8.0, (v - useful_v_max) / max(float(height), 1.0) * 24.0)
-        horizontal = math.hypot(
-            float(candidate[0]) - float(eye[0]),
-            float(candidate[1]) - float(eye[1]),
-        )
-        pitch_down_deg = math.degrees(math.atan2(
-            max(0.0, float(eye[2]) - float(candidate[2])),
-            max(horizontal, 1e-6),
-        ))
+        pitch_down_deg = geom_pitch_down_deg
         score -= min(8.0, max(0.0, pitch_down_deg - 18.0) / 6.0)
         if name.startswith("head_forward_"):
             score += 2.0
@@ -1634,6 +1647,8 @@ def _select_manipulation_camera_target_for_visible_arm(
             "target_margin_px": geom.get("target_margin_px"),
             "pitch_down_deg": geom.get("camera_pitch_down_deg"),
             "arm_roles_in_frame": geom.get("arm_roles_in_frame"),
+            "selection_allowed": "manipulation_pov_camera_pitched_down_too_far" not in geom_blockers,
+            "blockers": sorted(geom_blockers),
         })
     return best_target, {
         "selected_camera_target": best_name,
@@ -2288,11 +2303,11 @@ def skeleton_world_for_frame(*, art_ctx, rest_offsets, root_pose, yaw):
 
 
 def compute_arm_reach_skeleton(skeleton, target, reach_frac, *, arm: str = "right"):
-    """Re-pose one arm of a world-space skeleton so its hand reaches toward ``target`` (the faucet).
+    """Re-pose one arm of a world-space skeleton so its hand seeds toward ``target``.
 
     The walk policy never moves the arms, so the skeleton (OSCAR's action conditioning) just shows a
     rigid robot. This rotates the arm chain about the shoulder so the hand travels from its rest spot
-    to the target as ``reach_frac`` goes 0->1 — turning the skeleton-video into an actual reach. Each
+    to the target as ``reach_frac`` goes 0->1 — turning the skeleton-video into a forward seed. Each
     arm link keeps its rest fractional distance from the shoulder (rigid straight-arm reach), and the
     reach is clamped to the arm's length so it never overstretches. Pure geometry, GPU-independent.
 
@@ -2390,15 +2405,38 @@ def _find_arm_link(links: dict, *keys: str):
     return None
 
 
+def _is_manipulation_arm_link_name(name: str, side: str) -> bool:
+    """Return whether a robot link name belongs to the requested manipulation arm side."""
+    low = str(name or "").lower()
+    side_low = str(side or "").lower()
+    return (
+        "link" in low
+        and side_low in low
+        and any(token in low for token in MANIPULATION_ARM_LINK_NAME_TOKENS)
+    )
+
+
+def _arm_link_prims_for_side(links: Mapping[str, Any], side: str) -> list[Any]:
+    out = [
+        prim
+        for name, prim in links.items()
+        if _is_manipulation_arm_link_name(name, side)
+    ]
+    out.sort(key=lambda prim: str(prim.GetPath()))
+    return out
+
+
 def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right",
                             reach_frac: float = 1.0) -> int:
     """Kinematically pose the G1 arm(s) into a manipulation-ready forward seed.
 
-    Pure USD: rotate the shoulder link about its pivot so the shoulder->effector direction points
-    toward the task workspace; children follow at the arm's natural length. This makes the forearm and
-    gripper visible in the robot POV without claiming contact or task completion. No physics tensor
-    view, so it cannot trigger the articulation-drive crash. With ``arm="both"`` both arms move
-    forward for the egocentric seed. Returns the number of arms posed. GPU/USD only.
+    Pure USD: rotate the requested arm link set about the shoulder pivot so the
+    shoulder->effector direction points toward the task workspace. Some G1 USD variants do not place
+    elbow/wrist/hand links below the shoulder link in an ordinary transform hierarchy, so rotating
+    only the shoulder can report success while the visible/measured hand stays in rest pose. This path
+    therefore authors target world transforms for every actual side-arm link prim and then verifies
+    that the measured effector link moved. It seeds the frame; it does not claim contact or task
+    completion. No physics tensor view is used.
     """
     from pxr import Usd, UsdGeom, Gf  # type: ignore
     sides = ("left", "right") if arm == "both" else (arm,)
@@ -2433,14 +2471,44 @@ def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right"
             continue
         rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(*axis), math.degrees(angle)))
         pivot = Gf.Vec3d(sp[0], sp[1], sp[2])
-        # rotate the shoulder's world transform about the shoulder pivot (USD row-vector convention)
+        # Rotate the link world transforms about the shoulder pivot (USD row-vector convention).
         m_pivot = Gf.Matrix4d().SetTranslate(-pivot) * rot * Gf.Matrix4d().SetTranslate(pivot)
-        new_world = sh_w * m_pivot
-        parent_world = xc.GetLocalToWorldTransform(shoulder.GetParent())
-        new_local = new_world * parent_world.GetInverse()
-        xf = UsdGeom.Xformable(shoulder)
-        xf.ClearXformOpOrder()
-        xf.AddTransformOp().Set(new_local)
+        arm_link_prims = _arm_link_prims_for_side(links, side)
+        if shoulder not in arm_link_prims:
+            arm_link_prims.append(shoulder)
+        if effector not in arm_link_prims:
+            arm_link_prims.append(effector)
+        arm_link_prims = sorted(
+            {str(prim.GetPath()): prim for prim in arm_link_prims}.values(),
+            key=lambda prim: str(prim.GetPath()),
+        )
+        old_world: dict[str, Any] = {}
+        old_parent_world: dict[str, Any] = {}
+        for prim in arm_link_prims:
+            path = str(prim.GetPath())
+            old_world[path] = xc.GetLocalToWorldTransform(prim)
+            old_parent_world[path] = xc.GetLocalToWorldTransform(prim.GetParent())
+        target_world = {
+            path: matrix * m_pivot
+            for path, matrix in old_world.items()
+        }
+        for prim in sorted(arm_link_prims, key=lambda p: str(p.GetPath()).count("/")):
+            path = str(prim.GetPath())
+            parent_path = str(prim.GetParent().GetPath())
+            parent_world = target_world.get(parent_path) or old_parent_world[path]
+            new_local = target_world[path] * parent_world.GetInverse()
+            xf = UsdGeom.Xformable(prim)
+            xf.ClearXformOpOrder()
+            xf.AddTransformOp().Set(new_local)
+        moved_xc = UsdGeom.XformCache()
+        moved = moved_xc.GetLocalToWorldTransform(effector).ExtractTranslation()
+        moved_dist = math.sqrt(
+            (float(moved[0]) - float(ep[0])) ** 2
+            + (float(moved[1]) - float(ep[1])) ** 2
+            + (float(moved[2]) - float(ep[2])) ** 2
+        )
+        if moved_dist < MANIPULATION_ARM_POSE_MIN_LINK_MOVE_M:
+            continue
         posed += 1
     return posed
 
@@ -4728,8 +4796,8 @@ def _save_rgb(annot, out_path: Path, *, software_denoise: bool = False) -> bool:
 def camera_aperture_for_fov(vfov_deg: float, width: int, height: int, focal_mm: float = 20.0):
     """Focal length + (horizontal, vertical) aperture that give a camera a vertical FOV of
     ``vfov_deg`` at the render aspect ratio. USD's default 50mm/20.955mm camera is a ~24deg
-    telephoto — far too zoomed for the manipulation POV (it fills the frame with the dark sink
-    basin) and it does NOT match the FOV the skeleton projection assumes, so the projected
+    telephoto — far too zoomed for the manipulation POV and it does NOT match the FOV
+    the skeleton projection assumes, so the projected
     landmarks misalign with the render. Pure trig (no USD) so it is unit-testable."""
     vap = 2.0 * float(focal_mm) * math.tan(math.radians(float(vfov_deg)) / 2.0)
     hap = vap * (float(width) / float(height))
@@ -4757,9 +4825,8 @@ def _set_camera_fov(stage, cam_path: str, vfov_deg: float, width: int, height: i
 
 def _add_workspace_fill_light(stage, target, *, intensity: float, height: float = 2.0,
                               path: str = "/World/WorkspaceFill") -> None:
-    """Add a local sphere fill light above the manipulation workspace (the faucet) so the dark sink
-    basin + the reaching arm are lit. Intensity is configurable (blind-tunable via re-render). The
-    default scene has a single distant key light that leaves the basin interior in shadow. GPU/USD."""
+    """Add a local sphere fill light above the manipulation workspace so the task surface and seeded
+    arms are lit. Intensity is configurable (blind-tunable via re-render). GPU/USD."""
     from pxr import UsdLux, UsdGeom, Gf  # type: ignore
     light = UsdLux.SphereLight.Define(stage, path)
     light.CreateIntensityAttr(float(intensity))
@@ -6173,10 +6240,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="drive the G1 joints with the walk gait + emit g1_projected_skeleton_trace.jsonl (for OSCAR)")
     ap.add_argument("--camera-vfov", type=float, default=50.0, help="POV camera vertical FOV (deg) for skeleton projection")
     ap.add_argument("--manipulation-cam", action="store_true",
-                    help="egocentric manipulation POV (head looking down-forward at the sink/hands) "
-                         "instead of the behind-and-above follow cam — for WAM-ing the task, not navigation")
+                    help="egocentric manipulation POV from the robot head/face looking forward into "
+                         "the task workspace instead of the behind-and-above follow cam")
     ap.add_argument("--manipulation-look-at", default=None,
-                    help="fixed world 'x,y,z' the manipulation cam aims at (e.g. the faucet) — pins the "
+                    help="fixed world 'x,y,z' the manipulation cam aims at — pins the "
                          "framing to the known workspace instead of the policy's noisy final yaw")
     ap.add_argument("--render-subframes", type=int, default=1,
                     help="RTX orchestrator steps accumulated per captured frame to denoise grain (e.g. 16)")
@@ -6188,8 +6255,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--manipulation-reach-arm", default="both", choices=["right", "left", "both"],
                     help="which arm is posed for the task")
     ap.add_argument("--fill-light-intensity", type=float, default=0.0,
-                    help="add a sphere fill light over the manipulation workspace (the faucet) at this "
-                         "intensity to lift the dark sink basin; 0 disables")
+                    help="add a sphere fill light over the manipulation workspace at this intensity; "
+                         "0 disables")
     ap.add_argument("--physics-articulation-drive", action="store_true",
                     help="(opt-in, default off) drive the G1 via the physics articulation tensor view. "
                          "All root seeds stay on the articulation API; the pure-USD root xform fallback "
@@ -6208,7 +6275,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--collision-approximation", default="boundingCube",
                     choices=["boundingCube", "convexHull", "convexDecomposition"],
                     help="mesh collision shape: boundingCube (fast, coarse) vs convexHull (shape-"
-                         "accurate enough to stand centered + close at the sink, still fast)")
+                         "accurate enough for close task stances, still fast)")
     ap.add_argument("--verify-cam", action="store_true",
                     help="render a 3rd-person verify_*.png that frames the whole robot at the workspace "
                          "(proves where it stands vs the egocentric POV)")

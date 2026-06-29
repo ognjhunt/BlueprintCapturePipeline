@@ -188,6 +188,49 @@ def test_manipulation_seed_arm_target_keeps_low_handle_as_forward_seed() -> None
     assert high_seed == high_handle
 
 
+def test_manipulation_arm_link_name_filter_is_side_and_arm_specific() -> None:
+    assert M._is_manipulation_arm_link_name("right_shoulder_pitch_link", "right")
+    assert M._is_manipulation_arm_link_name("right_wrist_roll_link", "right")
+    assert M._is_manipulation_arm_link_name("left_gripper_finger_link", "left")
+    assert not M._is_manipulation_arm_link_name("right_hip_pitch_link", "right")
+    assert not M._is_manipulation_arm_link_name("left_wrist_roll_link", "right")
+    assert not M._is_manipulation_arm_link_name("bright_panel_link", "right")
+
+
+def test_manipulation_camera_target_selection_rejects_downward_pitch_workaround() -> None:
+    eye = (-1.14832, 0.655171, 1.2802)
+    affordance = (-1.98, 0.66, 1.03)
+    # This mirrors the bad seed class: low wrist/hand points can be made visible only by aiming the
+    # robot-head camera steeply downward. The selector should keep the frame head-forward and let the
+    # geometry gate fail on the arm seed instead of choosing a downward workaround.
+    arm_points = {
+        "shoulder": (-0.868313, 0.655166, 1.13178),
+        "elbow": (-0.884094, 0.655166, 0.945243),
+        "wrist": (-0.984094, 0.655166, 0.935237),
+        "hand": (-1.148447, 0.65439, 0.948114),
+    }
+
+    _target, meta = M._select_manipulation_camera_target_for_visible_arm(
+        affordance,
+        arm_points,
+        eye,
+        M._manipulation_camera_target_with_arm_context(affordance, arm_points),
+        vfov_deg=90.0,
+        width=1280,
+        height=960,
+        arm="both",
+        arm_points_by_arm={"left": arm_points, "right": arm_points},
+    )
+
+    chosen = next(
+        c for c in meta["camera_target_candidates"]
+        if c["candidate"] == meta["selected_camera_target"]
+    )
+    assert chosen["selection_allowed"] is True
+    assert chosen["pitch_down_deg"] <= M.MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG
+    assert "manipulation_pov_camera_pitched_down_too_far" not in chosen["blockers"]
+
+
 def test_task_visual_qc_splits_verify_and_pov_rubrics(monkeypatch, tmp_path) -> None:
     qc_mod = __import__("blueprint_pipeline.render_visual_qc", fromlist=["dummy"])
     calls: dict[str, list[str]] = {}
