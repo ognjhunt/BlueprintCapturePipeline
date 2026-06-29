@@ -628,6 +628,7 @@ def build_closed_loop_short_rollout_sanity_gate(
     steps: int,
     provider_input_contract_preflight: Mapping[str, Any],
     short_visual_sanity_manifest_path: str | Path | None = None,
+    expected_policy_observation_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Require a passed short visual sanity run before paid long WAM scale-up."""
 
@@ -669,7 +670,8 @@ def build_closed_loop_short_rollout_sanity_gate(
             )
 
             validation = validate_persistent_wam_short_visual_sanity_manifest(
-                manifest_path_text
+                manifest_path_text,
+                policy_observation_path=expected_policy_observation_path,
             )
             if validation.get("status") == "passed_short_visual_sanity":
                 blockers = []
@@ -685,6 +687,7 @@ def build_closed_loop_short_rollout_sanity_gate(
         "steps": int(steps),
         "risk_recommends_short_sanity": risk_recommends_short_sanity,
         "short_visual_sanity_manifest_path": manifest_path_text or None,
+        "expected_policy_observation_path": _string(expected_policy_observation_path) or None,
         "short_visual_sanity_validation": validation,
         "blockers": sorted(set(blockers)),
         "claim_boundary": {
@@ -1961,15 +1964,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             str(item) for item in provider_input_contract_preflight.get("blockers") or []
         ]
         wam_backend_readiness["status"] = "blocked"
-    short_rollout_sanity_gate = build_closed_loop_short_rollout_sanity_gate(
-        selected_backend=args.wam_backend,
-        use_provider_command=bool(args.use_provider_command),
-        allow_paid_provider_launch=bool(args.allow_paid_provider_launch),
-        steps=int(args.steps),
-        provider_input_contract_preflight=provider_input_contract_preflight,
-        short_visual_sanity_manifest_path=args.short_visual_sanity_manifest,
-    )
-    wam_backend_readiness["short_rollout_sanity_gate"] = short_rollout_sanity_gate
     short_visual_sanity_launch_plan = build_closed_loop_short_visual_sanity_launch_plan(
         selected_backend=args.wam_backend,
         use_provider_command=bool(args.use_provider_command),
@@ -1984,6 +1978,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     wam_backend_readiness["short_visual_sanity_launch_plan"] = (
         short_visual_sanity_launch_plan
     )
+    short_rollout_sanity_gate = build_closed_loop_short_rollout_sanity_gate(
+        selected_backend=args.wam_backend,
+        use_provider_command=bool(args.use_provider_command),
+        allow_paid_provider_launch=bool(args.allow_paid_provider_launch),
+        steps=int(args.steps),
+        provider_input_contract_preflight=provider_input_contract_preflight,
+        short_visual_sanity_manifest_path=args.short_visual_sanity_manifest,
+        expected_policy_observation_path=short_visual_sanity_launch_plan.get(
+            "policy_observation_path"
+        ),
+    )
+    wam_backend_readiness["short_rollout_sanity_gate"] = short_rollout_sanity_gate
     if short_visual_sanity_launch_plan.get("blockers"):
         wam_backend_readiness["blockers"] = list(
             wam_backend_readiness.get("blockers") or []

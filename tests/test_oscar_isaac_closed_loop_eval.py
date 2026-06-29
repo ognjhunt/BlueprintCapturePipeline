@@ -91,6 +91,102 @@ def _write_seed_geometry_route(tmp_path: Path) -> tuple[Path, Path]:
     return seed, route
 
 
+def _write_passed_short_visual_sanity_manifest(
+    root: Path, policy_observation_path: Path
+) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    source_qa = root / "source_policy_observation_visual_qa.json"
+    report = root / "wam_rollout_visual_quality_report.json"
+    contact_sheet = _write_frame(root / "wam_rollout_contact_sheet.jpg", seed=91)
+    video_status = root / "video_review_status.json"
+    review_video = root / "review_video" / "persistent_policy_wam_live_rollout_review.mp4"
+    review_video.parent.mkdir(parents=True, exist_ok=True)
+    source_qa.write_text(
+        json.dumps({"status": "passed_visual_quality_gate"}),
+        encoding="utf-8",
+    )
+    report.write_text(
+        json.dumps(
+            {
+                "status": "passed_visual_quality_gate",
+                "visual_profile": "review_quality",
+                "visual_success": True,
+                "profile_contract": {
+                    "review_quality_profile": True,
+                    "review_quality_minimum_satisfied": True,
+                    "smoke_only": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    ffprobe_metadata = {
+        "streams": [
+            {
+                "width": 640,
+                "height": 480,
+                "avg_frame_rate": "15/1",
+                "nb_frames": "24",
+            }
+        ],
+        "format": {"duration": "1.6", "size": "1000"},
+    }
+    video_status.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "ffprobe_command_ran": True,
+                "ffprobe_returncode": 0,
+                "ffprobe_metadata": ffprobe_metadata,
+            }
+        ),
+        encoding="utf-8",
+    )
+    review_video.write_bytes(b"mp4")
+    manifest = root / "persistent_wam_short_visual_sanity_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "persistent_wam_short_visual_sanity.v1",
+                "generated_at": "now",
+                "status": "passed_short_visual_sanity",
+                "short_visual_sanity_passed": True,
+                "policy_observation_path": str(policy_observation_path.resolve()),
+                "provider": "runpod",
+                "requested_transition_count": 2,
+                "requested_loop_step_count": 3,
+                "generated_transition_count": 2,
+                "visual_profile": "review_quality",
+                "source_policy_observation_visual_qa_status": (
+                    "passed_visual_quality_gate"
+                ),
+                "source_policy_observation_visual_qa_path": str(source_qa),
+                "wam_rollout_visual_success": True,
+                "wam_rollout_visual_quality_report_path": str(report),
+                "wam_rollout_contact_sheet_path": str(contact_sheet),
+                "video_review_status_path": str(video_status),
+                "review_video_path": str(review_video),
+                "ffprobe_command_ran": True,
+                "ffprobe_returncode": 0,
+                "ffprobe_metadata": ffprobe_metadata,
+                "live_wam_generation_success_count": 2,
+                "learned_wam_model_success_count": 2,
+                "structural_fallback_used": False,
+                "paid_provider": {
+                    "provider": "runpod",
+                    "used": False,
+                    "teardown_status": "not_required_no_paid_provider",
+                    "teardown_performed": False,
+                    "continuing_spend_from_this_run": False,
+                },
+                "blockers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def test_closed_loop_runs_policy_wam_harness_per_step(tmp_path: Path) -> None:
     start = _write_frame(tmp_path / "start.png", seed=3)
     route = [(-4.25, -3.35, 0.79), (-1.0, -1.0, 0.79), (1.75, 1.25, 0.79)]
@@ -1052,6 +1148,147 @@ def test_closed_loop_paid_long_run_requires_short_visual_sanity_after_input_risk
         L.PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV
     ] == launch_plan["expected_manifest_path"]
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+
+
+def test_closed_loop_short_sanity_manifest_must_match_policy_observation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("cv2")
+    seed, route = _write_seed_geometry_route(tmp_path)
+    stale_observation = tmp_path / "stale_policy_observation.json"
+    stale_observation.write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_policy_observation.v1",
+                "visual_observation": {"camera_frame_path": str(seed.resolve())},
+            }
+        ),
+        encoding="utf-8",
+    )
+    stale_manifest = _write_passed_short_visual_sanity_manifest(
+        tmp_path / "stale_short_sanity", stale_observation
+    )
+
+    exit_code = L.main(
+        [
+            "--start-frame",
+            str(seed),
+            "--route-file",
+            str(route),
+            "--output-dir",
+            str(tmp_path / "closed_loop"),
+            "--wam-backend",
+            "oscar_wam",
+            "--use-provider-command",
+            "--oscar-provider",
+            "runpod",
+            "--allow-paid-provider-launch",
+            "--steps",
+            "4",
+            "--oscar-guidance",
+            "4.25",
+            "--short-visual-sanity-manifest",
+            str(stale_manifest),
+            "--dry-run",
+        ]
+    )
+
+    assert exit_code == 2
+    plan = json.loads(
+        (tmp_path / "closed_loop" / "oscar_isaac_closed_loop_plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    gate = plan["short_rollout_sanity_gate"]
+    assert gate["status"] == "blocked"
+    assert "short_visual_sanity_policy_observation_mismatch" in gate["blockers"]
+    assert gate["expected_policy_observation_path"] == plan[
+        "short_visual_sanity_launch_plan"
+    ]["policy_observation_path"]
+    assert "short_visual_sanity_policy_observation_mismatch" in gate[
+        "short_visual_sanity_validation"
+    ]["blockers"]
+    assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+
+
+def test_closed_loop_matching_short_sanity_manifest_unlocks_dry_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("cv2")
+    seed, route = _write_seed_geometry_route(tmp_path)
+    output_dir = tmp_path / "closed_loop"
+
+    first_exit_code = L.main(
+        [
+            "--start-frame",
+            str(seed),
+            "--route-file",
+            str(route),
+            "--output-dir",
+            str(output_dir),
+            "--wam-backend",
+            "oscar_wam",
+            "--use-provider-command",
+            "--oscar-provider",
+            "runpod",
+            "--allow-paid-provider-launch",
+            "--steps",
+            "4",
+            "--oscar-guidance",
+            "4.25",
+            "--dry-run",
+        ]
+    )
+    assert first_exit_code == 2
+    first_plan = json.loads(
+        (output_dir / "oscar_isaac_closed_loop_plan.json").read_text(encoding="utf-8")
+    )
+    policy_observation_path = Path(
+        first_plan["short_visual_sanity_launch_plan"]["policy_observation_path"]
+    )
+    matching_manifest = _write_passed_short_visual_sanity_manifest(
+        tmp_path / "matching_short_sanity", policy_observation_path
+    )
+
+    second_exit_code = L.main(
+        [
+            "--start-frame",
+            str(seed),
+            "--route-file",
+            str(route),
+            "--output-dir",
+            str(output_dir),
+            "--wam-backend",
+            "oscar_wam",
+            "--use-provider-command",
+            "--oscar-provider",
+            "runpod",
+            "--allow-paid-provider-launch",
+            "--steps",
+            "4",
+            "--oscar-guidance",
+            "4.25",
+            "--short-visual-sanity-manifest",
+            str(matching_manifest),
+            "--dry-run",
+        ]
+    )
+
+    assert second_exit_code == 0
+    plan = json.loads(
+        (output_dir / "oscar_isaac_closed_loop_plan.json").read_text(encoding="utf-8")
+    )
+    gate = plan["short_rollout_sanity_gate"]
+    assert plan["status"] == "prepared"
+    assert gate["status"] == "ready"
+    assert gate["short_visual_sanity_manifest_path"] == str(matching_manifest)
+    assert gate["expected_policy_observation_path"] == str(policy_observation_path)
+    assert gate["short_visual_sanity_validation"]["status"] == "passed_short_visual_sanity"
+    assert "closed_loop_paid_long_wam_requires_passed_short_rollout_sanity" not in plan[
+        "blockers"
+    ]
+    captured = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert captured[-1]["status"] == "prepared"
 
 
 def test_closed_loop_short_sanity_launch_plan_blocks_vast_authorization(
