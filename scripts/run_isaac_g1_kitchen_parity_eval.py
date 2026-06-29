@@ -140,6 +140,7 @@ MANIPULATION_ARM_LINK_NAME_TOKENS = (
 MANIPULATION_ARM_POSE_MIN_LINK_MOVE_M = 0.02
 MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG = 26.0
 MANIPULATION_POV_HEAD_FORWARD_PITCH_DOWN_DEG = 24.0
+MANIPULATION_POV_MIN_VFOV_DEG = 110.0
 DEFAULT_RENDER_STEP_WATCHDOG_SECONDS = 180.0
 
 
@@ -1003,7 +1004,7 @@ def follow_cam_pose(root_pose, yaw, *, back: float = 2.2, up: float = 1.6):
     return eye, target
 
 
-def verify_cam_pose(root_pose, yaw, *, back: float = 0.8, up: float = 1.05, side: float = 2.0,
+def verify_cam_pose(root_pose, yaw, *, back: float = 1.4, up: float = 1.1, side: float = -0.8,
                     look_at=None):
     """3rd-person VERIFICATION camera: pulled back behind + above + to the side so the WHOLE robot AND
     the workspace it faces are both in frame — proves where the robot is actually standing (vs the
@@ -1018,7 +1019,7 @@ def verify_cam_pose(root_pose, yaw, *, back: float = 0.8, up: float = 1.05, side
                 fx, fy = dx / d, dy / d
         except Exception:  # noqa: BLE001
             pass
-    px, py = -fy, fx  # perpendicular (left of facing) for a 3/4 angle that reveals body-vs-counter gap
+    px, py = -fy, fx  # perpendicular to facing for a 3/4 angle that reveals body-vs-target gap
     eye = (root_pose[0] - fx * back + px * side, root_pose[1] - fy * back + py * side, root_pose[2] + up)
     target = (root_pose[0] + fx * 0.45, root_pose[1] + fy * 0.45, root_pose[2] + 0.25)  # robot torso/front
     return eye, target
@@ -1239,8 +1240,22 @@ def _manipulation_pov_geometry_single(
         })
 
     roles_in_frame = {str(item["link_role"]) for item in projected}
-    effector_roles = roles_in_frame.intersection({"hand", "wrist"})
-    forearm_roles = roles_in_frame.intersection({"elbow", "wrist", "hand"})
+    useful_projected = []
+    min_margin_px = min(float(width), float(height)) * 0.035
+    max_useful_v_px = float(height) * 0.93
+    for item in projected:
+        proj = item.get("image_projection") or {}
+        try:
+            u_px = float(proj.get("u_px"))
+            v_px = float(proj.get("v_px"))
+        except Exception:  # noqa: BLE001
+            continue
+        margin = min(u_px, float(width) - u_px, v_px, float(height) - v_px)
+        if margin >= min_margin_px and v_px <= max_useful_v_px:
+            useful_projected.append(item)
+    useful_roles_in_frame = {str(item["link_role"]) for item in useful_projected}
+    effector_roles = useful_roles_in_frame.intersection({"hand", "wrist"})
+    forearm_roles = useful_roles_in_frame.intersection({"elbow", "wrist", "hand"})
     if not available_roles:
         blockers.append("manipulation_pov_arm_links_unavailable")
     if target_px is None:
@@ -1325,7 +1340,9 @@ def _manipulation_pov_geometry_single(
         "camera_pitch_down_deg": round(float(pitch_down_deg), 2),
         "available_arm_link_roles": available_roles,
         "arm_roles_in_frame": sorted(roles_in_frame),
+        "arm_roles_usefully_in_frame": sorted(useful_roles_in_frame),
         "arm_landmarks_in_frame": len(projected),
+        "arm_landmarks_usefully_in_frame": len(useful_projected),
         "effector_distance_to_affordance_m": effector_distances,
         "effector_distance_is_metadata_only": True,
         "arm_extension": arm_extension,
@@ -1406,6 +1423,11 @@ def _manipulation_pov_geometry(
         for report in per_arm.values()
         for role in (report.get("arm_roles_in_frame") or [])
     })
+    useful_roles_in_frame = sorted({
+        str(role)
+        for report in per_arm.values()
+        for role in (report.get("arm_roles_usefully_in_frame") or [])
+    })
     available_roles = sorted({
         str(role)
         for report in per_arm.values()
@@ -1439,11 +1461,20 @@ def _manipulation_pov_geometry(
             for side, report in per_arm.items()
         },
         "arm_roles_in_frame": roles_in_frame,
+        "arm_roles_usefully_in_frame": useful_roles_in_frame,
         "arm_roles_in_frame_by_arm": {
             side: report.get("arm_roles_in_frame") or []
             for side, report in per_arm.items()
         },
+        "arm_roles_usefully_in_frame_by_arm": {
+            side: report.get("arm_roles_usefully_in_frame") or []
+            for side, report in per_arm.items()
+        },
         "arm_landmarks_in_frame": len(projected),
+        "arm_landmarks_usefully_in_frame": sum(
+            int(report.get("arm_landmarks_usefully_in_frame") or 0)
+            for report in per_arm.values()
+        ),
         "effector_distance_to_affordance_m": (
             primary.get("effector_distance_to_affordance_m") or {}
         ),
@@ -1645,7 +1676,7 @@ def _select_manipulation_camera_target_for_visible_arm(
         )
         geom_blockers = set(str(b) for b in (geom.get("blockers") or []))
         geom_pitch_down_deg = float(geom.get("camera_pitch_down_deg") or 0.0)
-        roles = set(geom.get("arm_roles_in_frame") or [])
+        roles = set(geom.get("arm_roles_usefully_in_frame") or geom.get("arm_roles_in_frame") or [])
         score = 0.0
         if geom.get("target_in_frame"):
             score += 6.0
@@ -1693,6 +1724,7 @@ def _select_manipulation_camera_target_for_visible_arm(
             "target_margin_px": geom.get("target_margin_px"),
             "pitch_down_deg": geom.get("camera_pitch_down_deg"),
             "arm_roles_in_frame": geom.get("arm_roles_in_frame"),
+            "arm_roles_usefully_in_frame": geom.get("arm_roles_usefully_in_frame"),
             "selection_allowed": "manipulation_pov_camera_pitched_down_too_far" not in geom_blockers,
             "blockers": sorted(geom_blockers),
         })
@@ -5252,11 +5284,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         # POV camera: widen from USD's ~17deg telephoto default to the projection FOV so the frame
         # shows the forward task workspace and visible arms instead of a tight near-field crop, while
         # keeping the rendered view aligned with skeleton projection. Overview frames the whole scene.
-        pov_vfov_deg = max(float(camera_vfov_deg), 90.0) if manipulation_cam else float(camera_vfov_deg)
+        pov_vfov_deg = (
+            max(float(camera_vfov_deg), float(MANIPULATION_POV_MIN_VFOV_DEG))
+            if manipulation_cam
+            else float(camera_vfov_deg)
+        )
         _set_camera_fov(stage, pov_cam, pov_vfov_deg, width, height)
         _set_camera_fov(stage, over_cam, 60.0, width, height)
         if verify_cam:
-            _set_camera_fov(stage, verify_cam_path, 55.0, width, height)
+            _set_camera_fov(stage, verify_cam_path, 70.0, width, height)
         if manipulation_cam and fill_light_intensity > 0 and manipulation_look_at is not None:
             _add_workspace_fill_light(stage, manipulation_look_at, intensity=fill_light_intensity)
             _log(f"workspace fill light @ {tuple(round(float(c),2) for c in manipulation_look_at)} "

@@ -219,7 +219,7 @@ def test_manipulation_camera_target_selection_rejects_downward_pitch_workaround(
         arm_points,
         eye,
         M._manipulation_camera_target_with_arm_context(affordance, arm_points),
-        vfov_deg=90.0,
+        vfov_deg=M.MANIPULATION_POV_MIN_VFOV_DEG,
         width=1280,
         height=960,
         arm="both",
@@ -271,7 +271,7 @@ def test_manipulation_camera_target_selection_prefers_pitch_limited_both_arm_see
         affordance=affordance,
         eye=eye,
         target=target,
-        vfov_deg=90.0,
+        vfov_deg=M.MANIPULATION_POV_MIN_VFOV_DEG,
         width=1280,
         height=960,
         arm="both",
@@ -282,6 +282,8 @@ def test_manipulation_camera_target_selection_prefers_pitch_limited_both_arm_see
     assert geom["camera_pitch_down_deg"] <= M.MANIPULATION_POV_HEAD_FORWARD_PITCH_DOWN_DEG
     assert geom["arm_roles_in_frame_by_arm"]["left"] == ["hand", "wrist"]
     assert geom["arm_roles_in_frame_by_arm"]["right"] == ["hand", "wrist"]
+    assert geom["arm_roles_usefully_in_frame_by_arm"]["left"] == ["hand", "wrist"]
+    assert geom["arm_roles_usefully_in_frame_by_arm"]["right"] == ["hand", "wrist"]
 
 
 def test_render_step_watchdog_timeout_result_is_fail_closed(tmp_path, monkeypatch) -> None:
@@ -1828,7 +1830,7 @@ def test_follow_cam_is_behind_and_above_robot() -> None:
     assert target[0] > 0.0        # looking ahead toward +X
 
 
-def test_verify_cam_pose_is_side_biased_for_visual_placement_qc() -> None:
+def test_verify_cam_pose_is_behind_robot_for_visual_placement_qc() -> None:
     root = (-1.037147, 0.655166, 0.84)
     yaw = math.pi
     look_at = (-1.437147, 0.655166, 1.025963)
@@ -1839,7 +1841,8 @@ def test_verify_cam_pose_is_side_biased_for_visual_placement_qc() -> None:
     behind_m = -(from_root[0] * fx + from_root[1] * fy)
     side_m = abs(from_root[0] * px + from_root[1] * py)
 
-    assert side_m > behind_m * 1.8
+    assert behind_m > side_m
+    assert side_m > 0.2
     assert eye[2] > root[2] + 0.8
     assert target[2] > root[2]
 
