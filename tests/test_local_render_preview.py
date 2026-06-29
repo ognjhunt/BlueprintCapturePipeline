@@ -282,11 +282,16 @@ def test_robot_review_material_binds_only_robot_geometry() -> None:
     from pxr import Usd, UsdGeom, UsdShade  # type: ignore
 
     stage = Usd.Stage.CreateInMemory()
-    UsdGeom.Xform.Define(stage, "/World/G1")
+    root = UsdGeom.Xform.Define(stage, "/World/G1")
     robot_mesh = UsdGeom.Mesh.Define(stage, "/World/G1/torso_mesh")
     scene_mesh = UsdGeom.Mesh.Define(stage, "/World/Refrigerator/door_mesh")
+    root_img = UsdGeom.Imageable(root.GetPrim())
+    root_img.GetVisibilityAttr().Set(UsdGeom.Tokens.invisible)
+    robot_img = UsdGeom.Imageable(robot_mesh.GetPrim())
+    robot_img.GetPurposeAttr().Set("proxy")
 
     bound = M._apply_robot_review_material(stage, "/World/G1")
+    diag = M._robot_render_visibility_diagnostics(stage, "/World/G1")
 
     assert bound >= 2
     root_binding = UsdShade.MaterialBindingAPI(
@@ -297,6 +302,11 @@ def test_robot_review_material_binds_only_robot_geometry() -> None:
     assert root_binding and str(root_binding.GetPath()) == "/World/Materials/RobotReviewVisible"
     assert robot_binding and str(robot_binding.GetPath()) == "/World/Materials/RobotReviewVisible"
     assert not scene_binding
+    assert root_img.ComputeVisibility() == UsdGeom.Tokens.inherited
+    assert robot_img.GetPurposeAttr().Get() == "default"
+    assert diag["status"] == "PASS"
+    assert diag["gprim_count"] == 1
+    assert diag["material_bound_gprim_count"] == 1
 
 
 def test_robot_neutral_descendant_xforms_restore_warm_stage_mutation() -> None:

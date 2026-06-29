@@ -1241,8 +1241,8 @@ def _manipulation_pov_geometry_single(
 
     roles_in_frame = {str(item["link_role"]) for item in projected}
     useful_projected = []
-    min_margin_px = min(float(width), float(height)) * 0.035
-    max_useful_v_px = float(height) * 0.93
+    min_margin_px = min(float(width), float(height)) * 0.05
+    max_useful_v_px = float(height) * 0.84
     for item in projected:
         proj = item.get("image_projection") or {}
         try:
@@ -5032,6 +5032,13 @@ def _apply_robot_review_material(stage, robot_prim_path: str) -> int:
         bound = 0
     for prim in Usd.PrimRange(robot):
         try:
+            if prim.IsA(UsdGeom.Imageable):
+                imageable = UsdGeom.Imageable(prim)
+                imageable.MakeVisible()
+                purpose_attr = imageable.GetPurposeAttr()
+                purpose = purpose_attr.Get()
+                if str(purpose or "") in {"guide", "proxy"}:
+                    purpose_attr.Set("default")
             if not prim.IsA(UsdGeom.Gprim):
                 continue
             UsdShade.MaterialBindingAPI(prim).Bind(
@@ -5043,6 +5050,119 @@ def _apply_robot_review_material(stage, robot_prim_path: str) -> int:
         except Exception:  # noqa: BLE001
             continue
     return bound
+
+
+def _robot_render_visibility_diagnostics(stage, robot_prim_path: str) -> dict[str, Any]:
+    """Summarize robot visual/renderability state for debugging RTX frames.
+
+    The placement validator can pass from collision/BBox geometry even when the render products do not
+    show a readable robot. This artifact is robot-subtree scoped and dynamic; it records whether G1 has
+    visible imageable/gprim descendants after material binding without assuming scene/task coordinates.
+    """
+    from pxr import Usd, UsdGeom, UsdShade  # type: ignore
+
+    robot = stage.GetPrimAtPath(robot_prim_path)
+    if not (robot and robot.IsValid()):
+        return {
+            "schema_version": "robot_render_visibility_diagnostics.v1",
+            "status": "FAIL",
+            "blockers": ["robot_prim_missing"],
+            "robot_prim_path": robot_prim_path,
+        }
+
+    purpose_counts: dict[str, int] = {}
+    visibility_counts: dict[str, int] = {}
+    type_counts: dict[str, int] = {}
+    total_prims = imageable_count = gprim_count = mesh_count = material_bound_count = 0
+    instanceable_count = 0
+    sample_gprims: list[dict[str, Any]] = []
+    arm_gprims: list[dict[str, Any]] = []
+    for prim in Usd.PrimRange(robot):
+        total_prims += 1
+        type_name = str(prim.GetTypeName() or "typeless")
+        type_counts[type_name] = type_counts.get(type_name, 0) + 1
+        try:
+            if prim.IsInstanceable():
+                instanceable_count += 1
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if prim.IsA(UsdGeom.Imageable):
+                imageable_count += 1
+                imageable = UsdGeom.Imageable(prim)
+                purpose = str(imageable.GetPurposeAttr().Get() or "default")
+                visibility = str(imageable.ComputeVisibility() or "unknown")
+                purpose_counts[purpose] = purpose_counts.get(purpose, 0) + 1
+                visibility_counts[visibility] = visibility_counts.get(visibility, 0) + 1
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if not prim.IsA(UsdGeom.Gprim):
+                continue
+            gprim_count += 1
+            if prim.IsA(UsdGeom.Mesh):
+                mesh_count += 1
+            material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
+            material_path = str(material.GetPath()) if material else None
+            if material_path:
+                material_bound_count += 1
+            entry = {
+                "path": str(prim.GetPath()),
+                "type_name": type_name,
+                "material_path": material_path,
+            }
+            try:
+                bbox = _world_bbox_for_prim(stage, str(prim.GetPath()))
+                if bbox:
+                    entry["bbox_min_xyz"] = bbox.get("bbox_min_xyz")
+                    entry["bbox_max_xyz"] = bbox.get("bbox_max_xyz")
+                    entry["size_xyz"] = bbox.get("size_xyz")
+            except Exception:  # noqa: BLE001
+                pass
+            if len(sample_gprims) < 24:
+                sample_gprims.append(entry)
+            lower_path = str(prim.GetPath()).lower()
+            if (
+                len(arm_gprims) < 32
+                and any(side in lower_path for side in ("left", "right"))
+                and any(token in lower_path for token in MANIPULATION_ARM_LINK_NAME_TOKENS)
+            ):
+                arm_gprims.append(entry)
+        except Exception:  # noqa: BLE001
+            continue
+
+    blockers: list[str] = []
+    if imageable_count == 0:
+        blockers.append("robot_imageable_prims_missing")
+    if gprim_count == 0:
+        blockers.append("robot_gprim_visuals_missing")
+    if gprim_count > 0 and material_bound_count == 0:
+        blockers.append("robot_gprims_unmaterialized")
+    if visibility_counts and visibility_counts.get("invisible", 0) >= max(1, imageable_count):
+        blockers.append("robot_imageables_all_invisible")
+
+    return {
+        "schema_version": "robot_render_visibility_diagnostics.v1",
+        "status": "PASS" if not blockers else "FAIL",
+        "blockers": blockers,
+        "robot_prim_path": robot_prim_path,
+        "root_bbox": _world_bbox_for_prim(stage, robot_prim_path),
+        "total_descendant_prims": total_prims,
+        "imageable_prim_count": imageable_count,
+        "gprim_count": gprim_count,
+        "mesh_count": mesh_count,
+        "material_bound_gprim_count": material_bound_count,
+        "instanceable_prim_count": instanceable_count,
+        "purpose_counts": dict(sorted(purpose_counts.items())),
+        "visibility_counts": dict(sorted(visibility_counts.items())),
+        "type_counts": dict(sorted(type_counts.items())),
+        "sample_gprims": sample_gprims,
+        "arm_gprim_samples": arm_gprims,
+        "claim_boundary": (
+            "Diagnostics report USD robot visual/renderability state only. They do not prove "
+            "manipulation success, policy quality, or physical readiness."
+        ),
+    }
 
 
 def _add_workspace_fill_light(stage, target, *, intensity: float, height: float = 2.0,
@@ -5350,6 +5470,11 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             try:
                 n_robot_mat = _apply_robot_review_material(stage, binding["prim_path"])
                 _log(f"robot review material bound to {n_robot_mat} G1 geometry prim(s)")
+                robot_render_diag = _robot_render_visibility_diagnostics(stage, binding["prim_path"])
+                robot_render_diag["review_material_bound_count"] = int(n_robot_mat)
+                (out_dir / "robot_render_diagnostics.json").write_text(
+                    json.dumps(robot_render_diag, indent=2)
+                )
             except Exception as exc:  # noqa: BLE001
                 _log(f"robot review material skipped ({exc!r})")
         _log(f"creating render products ({width}x{height})")
@@ -5669,6 +5794,14 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                     f"requested_arm={manipulation_reach_arm} "
                                     f"posed_count={posed_count} "
                                     f"target={tuple(round(float(c), 3) for c in effective_look_at)}"
+                                )
+                                robot_render_diag = _robot_render_visibility_diagnostics(
+                                    stage,
+                                    binding["prim_path"],
+                                )
+                                robot_render_diag["posed_arm_link_count"] = int(posed_count)
+                                (sdir / "robot_render_diagnostics.json").write_text(
+                                    json.dumps(robot_render_diag, indent=2)
                                 )
                         except Exception as exc:  # noqa: BLE001 - pose is best-effort, never blocks frames
                             if step == 0:

@@ -235,7 +235,7 @@ def test_manipulation_camera_target_selection_rejects_downward_pitch_workaround(
     assert "manipulation_pov_camera_pitched_down_too_far" not in chosen["blockers"]
 
 
-def test_manipulation_camera_target_selection_prefers_pitch_limited_both_arm_seed() -> None:
+def test_manipulation_camera_target_selection_rejects_edge_cropped_both_arm_seed() -> None:
     eye = (-0.938489, 0.655171, 1.2802)
     affordance = (-1.437147, 0.655166, 1.025963)
     arm_points_by_arm = {
@@ -278,11 +278,13 @@ def test_manipulation_camera_target_selection_prefers_pitch_limited_both_arm_see
     )
 
     assert meta["selected_camera_target"].startswith("head_forward_pitch_limited_")
-    assert geom["status"] == "PASS"
+    assert geom["status"] == "FAIL"
+    assert "manipulation_pov_left_arm_seed_failed" in geom["blockers"]
+    assert "manipulation_pov_forearm_not_in_frame" in geom["blockers"]
     assert geom["camera_pitch_down_deg"] <= M.MANIPULATION_POV_HEAD_FORWARD_PITCH_DOWN_DEG
     assert geom["arm_roles_in_frame_by_arm"]["left"] == ["hand", "wrist"]
     assert geom["arm_roles_in_frame_by_arm"]["right"] == ["hand", "wrist"]
-    assert geom["arm_roles_usefully_in_frame_by_arm"]["left"] == ["hand", "wrist"]
+    assert geom["arm_roles_usefully_in_frame_by_arm"]["left"] == ["hand"]
     assert geom["arm_roles_usefully_in_frame_by_arm"]["right"] == ["hand", "wrist"]
 
 
