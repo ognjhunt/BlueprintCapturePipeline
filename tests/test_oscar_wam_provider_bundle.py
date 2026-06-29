@@ -1062,6 +1062,11 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
     assert contract["status"] == "ready"
     assert contract["rgb_context"]["rgb_context_mode"] == "single_frame_repeat"
     assert "oscar_contract_rgb_context_single_frame_repeat" in contract["warnings"]
+    assert "rgb_context_single_frame_repeat_autoregressive_risk" in contract[
+        "autoregressive_risk_flags"
+    ]
+    assert contract["autoregressive_risk_level"] == "monitor"
+    assert contract["short_rollout_sanity_recommended_before_scale_up"] is True
     assert input_package["oscar_input_contract_diagnostic"] == contract
     assert input_package["skeleton_video"]["visual_signal"]["auxiliary_target_overlay_used"] is True
     assert input_package["skeleton_video"]["visual_signal"]["auxiliary_target_bbox_used"] is True
@@ -1146,6 +1151,13 @@ def test_wam_generation_step_input_prefers_projected_skeleton_trace(
     assert contract["rgb_context"]["rgb_context_mode"] == "single_frame_repeat"
     assert "oscar_contract_rgb_context_single_frame_repeat" in contract["warnings"]
     assert "oscar_contract_guidance_high_for_contract_debug" in contract["warnings"]
+    assert "rgb_context_single_frame_repeat_autoregressive_risk" in contract[
+        "autoregressive_risk_flags"
+    ]
+    assert "guidance_high_autoregressive_debug_risk" in contract[
+        "autoregressive_risk_flags"
+    ]
+    assert contract["autoregressive_risk_level"] == "monitor"
     assert (
         input_package["oscar_rgb_context_runtime_contract"]["projected_g1_rgb_context_enabled"]
         is True

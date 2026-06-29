@@ -1158,6 +1158,7 @@ def _oscar_input_contract_diagnostic(
     prompt = _string(input_package.get("prompt"))
     blockers: list[str] = []
     warnings: list[str] = []
+    autoregressive_risk_flags: list[str] = []
     first_size = {
         "width": _int_value(first_frame.get("width")),
         "height": _int_value(first_frame.get("height")),
@@ -1201,6 +1202,9 @@ def _oscar_input_contract_diagnostic(
             skeleton_video.get("projected_g1_skeleton_max_interframe_motion_px")
         ) <= 0.5:
             warnings.append("oscar_contract_projected_skeleton_nearly_static")
+            autoregressive_risk_flags.append(
+                "projected_skeleton_nearly_static_autoregressive_risk"
+            )
     rgb_used = bool(rgb_video.get("used_for_oscar_rgb_latent_context"))
     rgb_context_mode = _string(rgb_video.get("rgb_context_mode")) or "not_configured"
     if rgb_used:
@@ -1217,10 +1221,14 @@ def _oscar_input_contract_diagnostic(
             blockers.append("oscar_contract_rgb_context_too_dark")
         if rgb_context_mode == "single_frame_repeat":
             warnings.append("oscar_contract_rgb_context_single_frame_repeat")
+            autoregressive_risk_flags.append(
+                "rgb_context_single_frame_repeat_autoregressive_risk"
+            )
     elif projected_used:
         warnings.append("oscar_contract_rgb_context_omitted_with_projected_skeleton")
     if float(guidance) >= 6.0:
         warnings.append("oscar_contract_guidance_high_for_contract_debug")
+        autoregressive_risk_flags.append("guidance_high_autoregressive_debug_risk")
     return {
         "schema_version": "oscar_wam_runtime_input_contract_diagnostic.v1",
         "status": "ready" if not blockers else "blocked",
@@ -1269,6 +1277,13 @@ def _oscar_input_contract_diagnostic(
         },
         "blockers": blockers,
         "warnings": warnings,
+        "autoregressive_risk_flags": autoregressive_risk_flags,
+        "autoregressive_risk_level": "blocked"
+        if blockers
+        else "monitor"
+        if autoregressive_risk_flags
+        else "none",
+        "short_rollout_sanity_recommended_before_scale_up": bool(autoregressive_risk_flags),
         "likely_debug_focus": [
             "oscar_runtime_input_contract",
             "conditioning_stream_alignment",
@@ -1281,6 +1296,7 @@ def _oscar_input_contract_diagnostic(
             "diagnostic_is_no_spend": True,
             "diagnostic_is_not_model_execution_proof": True,
             "diagnostic_is_not_generated_rollout_quality_proof": True,
+            "autoregressive_risk_flags_are_not_model_quality_proof": True,
             "scene_or_task_specific_pixels_used": False,
         },
     }
@@ -3595,6 +3611,13 @@ def main() -> int:
         "input_contract_status": input_contract_diagnostic.get("status"),
         "input_contract_blockers": input_contract_diagnostic.get("blockers") or [],
         "input_contract_warnings": input_contract_diagnostic.get("warnings") or [],
+        "input_contract_autoregressive_risk_flags": input_contract_diagnostic.get(
+            "autoregressive_risk_flags"
+        )
+        or [],
+        "input_contract_autoregressive_risk_level": input_contract_diagnostic.get(
+            "autoregressive_risk_level"
+        ),
         "diagnostic_only_not_success_label": True,
     }
     rollouts = []
