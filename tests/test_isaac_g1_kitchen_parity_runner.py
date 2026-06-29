@@ -128,14 +128,33 @@ def test_robot_head_lens_eye_offsets_link_origin_out_of_head_mesh() -> None:
     assert eye[1] == pytest.approx(0.6)
     assert eye[2] > 1.35
     assert meta["raw_mount_eye_xyz"] == [-1.0, 0.6, 1.35]
+    assert meta["lens_height_correction_applied"] is False
+
+    low_eye, low_meta = M._robot_head_lens_eye_from_mount(
+        (-0.86, 0.65, 0.84),
+        math.pi,
+        root_pose=(-1.04, 0.65, 0.84),
+        arm_points={
+            "shoulder": (-0.87, 0.65, 1.13),
+            "wrist": (-0.98, 0.65, 0.94),
+            "hand": (-1.15, 0.65, 0.95),
+        },
+    )
+    assert low_eye[0] < -1.10
+    assert low_eye[2] > 1.35
+    assert low_meta["lens_height_correction_applied"] is True
+    assert low_meta["min_head_lens_z"] > 1.3
 
     authored, authored_meta = M._robot_head_lens_eye_from_mount(
         (-1.0, 0.6, 1.35),
         math.pi,
+        root_pose=(-1.04, 0.65, 0.84),
+        arm_points={"shoulder": (-0.87, 0.65, 1.13)},
         authored_camera=True,
     )
     assert authored == (-1.0, 0.6, 1.35)
     assert authored_meta["lens_offset_xyz_robot_frame"] == [0.0, 0.0, 0.0]
+    assert authored_meta["lens_height_correction_applied"] is False
 
 
 def test_task_visual_qc_splits_verify_and_pov_rubrics(monkeypatch, tmp_path) -> None:

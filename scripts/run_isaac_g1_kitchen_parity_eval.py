@@ -1525,6 +1525,14 @@ def _select_manipulation_camera_target_for_visible_arm(
             score += 10.0
         else:
             score -= 1.5 * len(geom.get("blockers") or [])
+        target_proj = geom.get("target_projection") or {}
+        if target_proj:
+            u = float(target_proj.get("u_px") or 0.0)
+            v = float(target_proj.get("v_px") or 0.0)
+            margin = min(u, float(width) - u, v, float(height) - v)
+            score += max(0.0, min(6.0, margin / max(float(height), 1.0) * 20.0))
+            score -= (abs(u - float(width) * 0.5) / max(float(width), 1.0)) * 2.0
+            score -= (abs(v - float(height) * 0.5) / max(float(height), 1.0)) * 2.0
         if score > best_score:
             best_name = name
             best_target = candidate
@@ -3979,6 +3987,8 @@ def _robot_head_lens_eye_from_mount(
     yaw: float,
     *,
     authored_camera: bool = False,
+    root_pose: Sequence[float] | None = None,
+    arm_points: Mapping[str, Sequence[float]] | None = None,
 ) -> tuple[tuple[float, float, float], dict[str, Any]]:
     """Return the render eye for the robot-mounted POV.
 
@@ -3987,18 +3997,40 @@ def _robot_head_lens_eye_from_mount(
     """
     raw_eye = (float(mount_eye[0]), float(mount_eye[1]), float(mount_eye[2]))
     if authored_camera:
-        return raw_eye, {"lens_offset_xyz_robot_frame": [0.0, 0.0, 0.0]}
+        return raw_eye, {
+            "lens_offset_xyz_robot_frame": [0.0, 0.0, 0.0],
+            "raw_mount_eye_xyz": [round(v, 6) for v in raw_eye],
+            "lens_height_correction_applied": False,
+        }
     fx, fy = math.cos(float(yaw)), math.sin(float(yaw))
-    forward_m = max(0.05, float(ROBOT_FOOTPRINT_HALF_EXTENT[0]) * 0.28)
+    forward_m = max(0.05, float(ROBOT_FOOTPRINT_HALF_EXTENT[0]) * 1.0)
     up_m = max(0.015, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.03)
+    shoulder_z_values = [
+        float(arm_points[role][2])
+        for role in ("shoulder",)
+        if arm_points and arm_points.get(role) is not None
+    ]
+    min_head_z = None
+    if root_pose is not None:
+        min_head_z = float(root_pose[2]) + max(0.50, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.84)
+    if shoulder_z_values:
+        shoulder_head_z = max(shoulder_z_values) + max(0.18, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.36)
+        min_head_z = shoulder_head_z if min_head_z is None else max(min_head_z, shoulder_head_z)
+    corrected_z = raw_eye[2]
+    height_corrected = False
+    if min_head_z is not None and corrected_z < min_head_z:
+        corrected_z = min_head_z
+        height_corrected = True
     eye = (
         raw_eye[0] + fx * forward_m,
         raw_eye[1] + fy * forward_m,
-        raw_eye[2] + up_m,
+        corrected_z + up_m,
     )
     return eye, {
         "lens_offset_xyz_robot_frame": [round(forward_m, 6), 0.0, round(up_m, 6)],
         "raw_mount_eye_xyz": [round(v, 6) for v in raw_eye],
+        "lens_height_correction_applied": bool(height_corrected),
+        "min_head_lens_z": round(float(min_head_z), 6) if min_head_z is not None else None,
     }
 
 
@@ -4040,6 +4072,8 @@ def _robot_mounted_manipulation_cam_pose(
         mount["eye_xyz"],
         yaw,
         authored_camera=mount.get("source") == "authored_robot_camera",
+        root_pose=root_pose,
+        arm_points=arm_points,
     )
     target_meta: dict[str, Any] = {}
     if vfov_deg is not None and width is not None and height is not None:
