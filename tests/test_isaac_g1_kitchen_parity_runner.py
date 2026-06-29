@@ -141,11 +141,14 @@ def test_robot_head_lens_eye_offsets_link_origin_out_of_head_mesh() -> None:
             "hand": (-1.15, 0.65, 0.95),
         },
     )
-    assert low_eye[0] < -1.10
+    assert -1.02 < low_eye[0] < -0.90
     assert 1.25 < low_eye[2] < 1.32
     assert low_meta["lens_height_correction_applied"] is True
     assert low_meta["min_head_lens_z"] > 1.2
     assert 0.08 <= low_meta["shoulder_to_lens_z_m"] <= 0.18
+    # The fallback lens stays behind the forearm; otherwise wrist/elbow links project behind the
+    # head camera and only gripper tips can appear at the bottom of the POV frame.
+    assert low_eye[0] > -0.98
 
     bounded, bounded_meta = M._robot_head_lens_eye_from_mount(
         (-0.86, 0.65, 0.84),

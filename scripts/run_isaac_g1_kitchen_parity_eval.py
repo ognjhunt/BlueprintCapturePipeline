@@ -4245,7 +4245,10 @@ def _robot_head_lens_eye_from_mount(
             "head_lens_z_source": "authored_camera",
         }
     fx, fy = math.cos(float(yaw)), math.sin(float(yaw))
-    forward_m = max(0.05, float(ROBOT_FOOTPRINT_HALF_EXTENT[0]) * 1.0)
+    # Link-origin fallback: keep the lens near the face/neck plane, not at the front of the whole
+    # robot footprint. Pushing the camera too far forward can put the forearms behind the lens, which
+    # crops them out of an otherwise valid head POV.
+    forward_m = max(0.04, min(0.12, float(ROBOT_FOOTPRINT_HALF_EXTENT[0]) * 0.35))
     head_bounds_json: dict[str, Any] | None = None
     if head_bounds:
         bmin = head_bounds.get("bbox_min_xyz")
@@ -4281,6 +4284,24 @@ def _robot_head_lens_eye_from_mount(
                 }
             except Exception:  # noqa: BLE001
                 head_bounds_json = None
+    if arm_points:
+        try:
+            raw_projection = raw_eye[0] * fx + raw_eye[1] * fy
+            ahead = []
+            for role in ("elbow", "wrist", "hand"):
+                pt = arm_points.get(role)
+                if pt is None:
+                    continue
+                proj = float(pt[0]) * fx + float(pt[1]) * fy
+                if proj > raw_projection + 0.03:
+                    ahead.append(proj)
+            if ahead:
+                # Keep the eye behind the nearest visible forearm/hand link so those links project in
+                # front of the head camera instead of being clipped behind it.
+                max_forward_before_arm = min(ahead) - raw_projection - 0.035
+                forward_m = max(0.035, min(forward_m, max_forward_before_arm))
+        except Exception:  # noqa: BLE001
+            pass
     up_m = max(0.015, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.03)
     shoulder_z_values = [
         float(arm_points[role][2])
