@@ -598,3 +598,63 @@ def test_closed_loop_blocks_on_empty_route(tmp_path: Path) -> None:
     )
     assert manifest["status"] == "blocked"
     assert "blocked_empty_route" in manifest["blockers"]
+
+
+def test_closed_loop_wam_backend_readiness_blocks_unwired_cosmos3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND", "python cosmos3_adapter.py")
+
+    readiness = L.build_closed_loop_wam_backend_readiness(
+        selected_backend="cosmos3_wam",
+        use_provider_command=True,
+        oscar_repo=None,
+        checkpoint=None,
+        oscar_provider="vast",
+        allow_paid_provider_launch=False,
+    )
+
+    assert readiness["status"] == "blocked"
+    assert readiness["selected_wam_backend"] == "cosmos3_wam"
+    assert readiness["explicit_provider_command_configured"] is True
+    assert "blocked_cosmos3_wam_not_wired_into_isaac_closed_loop_runner" in readiness["blockers"]
+    assert (
+        readiness["claim_boundary"]["cosmos3_strategy_preference_does_not_imply_runtime_wired"]
+        is True
+    )
+
+
+def test_closed_loop_cli_writes_no_spend_backend_readiness_for_cosmos3(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=13)
+    route = tmp_path / "route.json"
+    route.write_text(json.dumps({"route_points": [[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]]}), encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND", "python cosmos3_adapter.py")
+
+    exit_code = L.main(
+        [
+            "--start-frame",
+            str(start),
+            "--route-file",
+            str(route),
+            "--output-dir",
+            str(tmp_path / "closed_loop"),
+            "--wam-backend",
+            "cosmos3_wam",
+            "--use-provider-command",
+            "--dry-run",
+        ]
+    )
+
+    assert exit_code == 2
+    readiness_path = tmp_path / "closed_loop" / "closed_loop_wam_backend_readiness.json"
+    plan_path = tmp_path / "closed_loop" / "oscar_isaac_closed_loop_plan.json"
+    readiness = json.loads(readiness_path.read_text(encoding="utf-8"))
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert readiness["status"] == "blocked"
+    assert readiness["selected_wam_backend"] == "cosmos3_wam"
+    assert plan["selected_wam_backend"] == "cosmos3_wam"
+    assert plan["wam_backend_readiness_path"] == str(readiness_path)
+    assert "blocked_cosmos3_wam_not_wired_into_isaac_closed_loop_runner" in plan["blockers"]
+    assert json.loads(capsys.readouterr().out)["status"] == "blocked"

@@ -33,10 +33,15 @@ from .isaac_g1_policy import (
     interpolate_route,
 )
 from .oscar_wam_provider_command_adapter import run as run_oscar_wam_provider_adapter
+from .wam_backend_strategy import get_wam_backend_strategy
 from .wam_derived_observation_harness import run_wam_derived_observation_harness_step
+from .wam_provider_runtime import WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE
 
 LOOP_SCHEMA_VERSION = "oscar_isaac_closed_loop_eval.v1"
 NEXT_OBSERVATION_SELECTION_SCHEMA_VERSION = "oscar_next_observation_selection.v1"
+CLOSED_LOOP_WAM_BACKEND_READINESS_SCHEMA_VERSION = "closed_loop_wam_backend_readiness.v1"
+SUPPORTED_CLOSED_LOOP_WAM_BACKENDS = ("oscar_wam", "cosmos3_wam")
+BUILT_IN_CLOSED_LOOP_WAM_BACKENDS = frozenset({"oscar_wam"})
 
 # A WAM generation backend: given the current observation frame, the policy action, the step
 # index, and the action history, produce the next-observation frame path (and optional video).
@@ -202,6 +207,81 @@ def _provider_payload_proves_fresh_model(payload: Mapping[str, Any]) -> bool:
         and payload.get("provider_learned_wam_model_ran")
         and payload.get("provider_generated_video_is_model_output")
     )
+
+
+def build_closed_loop_wam_backend_readiness(
+    *,
+    selected_backend: str,
+    use_provider_command: bool,
+    oscar_repo: str | None = None,
+    checkpoint: str | None = None,
+    oscar_provider: str = "runpod",
+    allow_paid_provider_launch: bool = False,
+) -> dict[str, Any]:
+    """Describe which WAM backend the closed-loop runner can actually execute.
+
+    The strategy catalog can prefer Cosmos3 for new learned-WAM work, but this
+    runner still has only OSCAR-specific local/provider execution paths. This
+    manifest is a no-spend guardrail so a paid run cannot be mistaken for a
+    Cosmos3 run unless a real Cosmos3 adapter has been wired through the loop.
+    """
+
+    backend = _string(selected_backend).strip() or "oscar_wam"
+    command_env_var = WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE.get(backend)
+    backend_command = (
+        _string(os.environ.get(command_env_var or ""))
+        or _string(os.environ.get("BLUEPRINT_WAM_PROVIDER_COMMAND"))
+    )
+    local_oscar_configured = bool(_string(oscar_repo) and _string(checkpoint))
+    built_in_oscar_provider_configured = bool(
+        backend == "oscar_wam" and use_provider_command
+    )
+    explicit_provider_command_configured = bool(backend_command)
+    supported_by_this_runner = backend in BUILT_IN_CLOSED_LOOP_WAM_BACKENDS
+    blockers: list[str] = []
+    if backend not in SUPPORTED_CLOSED_LOOP_WAM_BACKENDS:
+        blockers.append("unsupported_closed_loop_wam_backend")
+    if backend == "oscar_wam":
+        if not (built_in_oscar_provider_configured or local_oscar_configured):
+            blockers.append("blocked_missing_oscar_provider_or_local_checkpoint")
+    elif backend == "cosmos3_wam":
+        blockers.append("blocked_cosmos3_wam_not_wired_into_isaac_closed_loop_runner")
+        if not explicit_provider_command_configured:
+            blockers.append("blocked_cosmos3_wam_requires_explicit_provider_command")
+    elif backend in SUPPORTED_CLOSED_LOOP_WAM_BACKENDS:
+        blockers.append("blocked_selected_wam_backend_not_supported_by_runner")
+    return {
+        "schema_version": CLOSED_LOOP_WAM_BACKEND_READINESS_SCHEMA_VERSION,
+        "selected_wam_backend": backend,
+        "status": "ready" if not blockers else "blocked",
+        "supported_backend_ids": list(SUPPORTED_CLOSED_LOOP_WAM_BACKENDS),
+        "built_in_closed_loop_backend_ids": sorted(BUILT_IN_CLOSED_LOOP_WAM_BACKENDS),
+        "supported_by_this_runner": supported_by_this_runner,
+        "provider_adapter_kind": (
+            "built_in_oscar_provider_adapter"
+            if built_in_oscar_provider_configured
+            else "local_oscar_subprocess"
+            if local_oscar_configured
+            else "explicit_provider_command"
+            if explicit_provider_command_configured
+            else "not_configured"
+        ),
+        "oscar_provider": oscar_provider,
+        "allow_paid_provider_launch": bool(allow_paid_provider_launch),
+        "local_oscar_repo_configured": bool(_string(oscar_repo)),
+        "local_oscar_checkpoint_configured": bool(_string(checkpoint)),
+        "explicit_provider_command_configured": explicit_provider_command_configured,
+        "provider_command_env_var": command_env_var,
+        "generic_provider_command_env_var": "BLUEPRINT_WAM_PROVIDER_COMMAND",
+        "strategy": get_wam_backend_strategy(backend),
+        "blockers": blockers,
+        "claim_boundary": {
+            "readiness_manifest_is_no_spend": True,
+            "readiness_manifest_is_not_model_execution_proof": True,
+            "cosmos3_strategy_preference_does_not_imply_runtime_wired": True,
+            "oscar_provider_path_is_not_cosmos3_runtime": backend == "oscar_wam",
+        },
+    }
 
 
 def make_oscar_provider_command_wam_backend(
@@ -960,6 +1040,8 @@ def run_oscar_isaac_closed_loop(
     require_sam3_completed: bool = False,
     require_da3_completed: bool = False,
     perception_target_prompts: Sequence[str] | None = None,
+    wam_backend_id: str = "oscar_wam",
+    wam_backend_readiness: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     resolved_out = Path(output_dir).expanduser().resolve()
@@ -1132,6 +1214,7 @@ def run_oscar_isaac_closed_loop(
     )
     proof = {
         "policy_source": "isaac_g1_policy.DeterministicWalkToTargetPolicy",
+        "selected_wam_backend": _string(wam_backend_id) or "oscar_wam",
         "isaac_policy_actions_recorded": len(action_history),
         "oscar_per_step_generation_calls": sum(
             1 for row in proof_rows if row.get("oscar_per_step_backend")
@@ -1169,6 +1252,8 @@ def run_oscar_isaac_closed_loop(
         "task_target_reached": reached,
         "trace_path": str(trace_path),
         "harness_dir": str(harness_dir),
+        "selected_wam_backend": _string(wam_backend_id) or "oscar_wam",
+        "wam_backend_readiness": dict(wam_backend_readiness or {}),
         "proof": proof,
         "blockers": blockers,
         "claim_boundary": (
@@ -1202,6 +1287,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--task-prompt", default="walk to the sink")
     parser.add_argument("--num-frames", type=int, default=8, help="OSCAR clip length per step")
+    parser.add_argument(
+        "--wam-backend",
+        choices=SUPPORTED_CLOSED_LOOP_WAM_BACKENDS,
+        default="oscar_wam",
+        help=(
+            "WAM backend requested for the closed-loop. This runner currently "
+            "has built-in execution only for oscar_wam; cosmos3_wam is a "
+            "blocked readiness check until an explicit Cosmos3 adapter is wired."
+        ),
+    )
     parser.add_argument("--oscar-repo")
     parser.add_argument("--checkpoint")
     parser.add_argument("--use-provider-command", action="store_true")
@@ -1234,7 +1329,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.harness_backend_command
         else DEFAULT_SAM3_HARNESS_BACKEND_COMMAND
     )
-    oscar_ready = bool(args.use_provider_command or (args.oscar_repo and args.checkpoint))
+    wam_backend_readiness = build_closed_loop_wam_backend_readiness(
+        selected_backend=args.wam_backend,
+        use_provider_command=bool(args.use_provider_command),
+        oscar_repo=args.oscar_repo,
+        checkpoint=args.checkpoint,
+        oscar_provider=args.oscar_provider,
+        allow_paid_provider_launch=bool(args.allow_paid_provider_launch),
+    )
+    write_json(out_dir / "closed_loop_wam_backend_readiness.json", wam_backend_readiness)
+    oscar_ready = wam_backend_readiness["status"] == "ready"
 
     if args.dry_run or not oscar_ready:
         plan = {
@@ -1251,6 +1355,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "steps": int(args.steps),
             "task_prompt": args.task_prompt,
             "num_frames_per_step": int(args.num_frames),
+            "selected_wam_backend": args.wam_backend,
+            "wam_backend_readiness_path": str(out_dir / "closed_loop_wam_backend_readiness.json"),
+            "wam_backend_readiness": wam_backend_readiness,
             "use_provider_command": bool(args.use_provider_command),
             "oscar_provider": args.oscar_provider,
             "allow_paid_provider_launch": bool(args.allow_paid_provider_launch),
@@ -1265,7 +1372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "sam3_completed_required": bool(args.require_sam3_completed),
                 "da3_completed_required": bool(args.require_da3_completed),
             },
-            "blockers": [] if oscar_ready else ["blocked_missing_oscar_repo_or_checkpoint"],
+            "blockers": list(wam_backend_readiness.get("blockers") or []),
         }
         write_json(out_dir / "oscar_isaac_closed_loop_plan.json", plan)
         print(json.dumps({"status": plan["status"], "mode": plan["mode"]}, sort_keys=True))
@@ -1309,6 +1416,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         require_sam3_completed=bool(args.require_sam3_completed),
         require_da3_completed=bool(args.require_da3_completed),
         perception_target_prompts=list(args.perception_target_prompt or []),
+        wam_backend_id=args.wam_backend,
+        wam_backend_readiness=wam_backend_readiness,
     )
     print(json.dumps({"status": manifest["status"], "steps_executed": manifest.get("steps_executed")}, sort_keys=True))
     return 0 if manifest["status"] == "completed" else 2

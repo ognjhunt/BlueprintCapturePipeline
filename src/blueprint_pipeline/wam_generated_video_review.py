@@ -1613,6 +1613,10 @@ def visual_smoke_generated_rollouts_for_review(
                 ),
                 None,
             )
+            immediate_future_collapse = bool(
+                first_failed_future_sample
+                and int(first_failed_future_sample.get("sample_index") or -1) == 1
+            )
             future_quality_diagnostic = {
                 "source_sample_frame_index": samples[0].get("frame_index"),
                 "sampled_future_frame_count": len(later_samples),
@@ -1639,6 +1643,24 @@ def visual_smoke_generated_rollouts_for_review(
                     if later_samples
                     else None
                 ),
+                "first_future_frame_collapsed": immediate_future_collapse,
+                "diagnostic_label": (
+                    "immediate_future_frame_collapse"
+                    if immediate_future_collapse
+                    else "future_frame_quality_degraded"
+                    if first_failed_future_sample
+                    else "future_frames_pass_sampled_signal_gates"
+                ),
+                "likely_debug_focus": (
+                    [
+                        "wam_runtime_input_contract",
+                        "action_or_skeleton_conditioning",
+                        "image_video_normalization_or_decoding",
+                        "guidance_or_sampling_settings",
+                    ]
+                    if immediate_future_collapse
+                    else []
+                ),
                 "diagnostic_only_not_success_label": True,
             }
             first_frame_not_scene_like = not first_preserves_scene
@@ -1646,6 +1668,10 @@ def visual_smoke_generated_rollouts_for_review(
             if first_frame_not_scene_like:
                 quality_blockers.append(
                     "generated_rollout_first_frame_not_scene_like"
+                )
+            if immediate_future_collapse:
+                quality_blockers.append(
+                    "generated_rollout_first_future_frame_collapsed"
                 )
             if later_flat_or_dark:
                 quality_blockers.append("generated_rollout_later_frames_flat_or_dark")
@@ -1670,6 +1696,7 @@ def visual_smoke_generated_rollouts_for_review(
                     "future_frame_quality_diagnostic": future_quality_diagnostic,
                     "visual_quality_flags": {
                         "first_frame_preserves_source_scene": first_preserves_scene,
+                        "first_future_frame_collapsed": immediate_future_collapse,
                         "later_frames_flat_or_dark": later_flat_or_dark,
                         "later_frames_lost_scene_structure": later_lost_scene_structure,
                         "later_frames_static_noise_artifact": later_static_or_noise_artifact,
@@ -1718,6 +1745,7 @@ def visual_smoke_generated_rollouts_for_review(
         else "failed_visual_quality_smoke"
         if {
             "generated_rollout_first_frame_not_scene_like",
+            "generated_rollout_first_future_frame_collapsed",
             "generated_rollout_later_frames_flat_or_dark",
             "generated_rollout_later_frames_lost_scene_structure",
             "generated_rollout_later_frames_static_noise_artifact",

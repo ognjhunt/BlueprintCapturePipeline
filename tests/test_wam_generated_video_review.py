@@ -483,8 +483,12 @@ def test_visual_smoke_reports_first_future_frame_collapse(
     rollout = smoke["rollouts"][0]
     diagnostic = rollout["future_frame_quality_diagnostic"]
     assert smoke["status"] == "failed_visual_quality_smoke"
+    assert "generated_rollout_first_future_frame_collapsed" in smoke["blockers"]
     assert "generated_rollout_later_frames_flat_or_dark" in smoke["blockers"]
     assert diagnostic["first_failed_future_frame_index"] == 1
+    assert diagnostic["first_future_frame_collapsed"] is True
+    assert diagnostic["diagnostic_label"] == "immediate_future_frame_collapse"
+    assert "wam_runtime_input_contract" in diagnostic["likely_debug_focus"]
     assert diagnostic["sampled_future_frame_count"] > 0
     assert diagnostic["diagnostic_only_not_success_label"] is True
 
