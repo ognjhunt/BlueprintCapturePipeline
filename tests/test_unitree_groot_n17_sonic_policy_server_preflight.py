@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -208,7 +209,7 @@ def test_policy_server_preflight_ready_with_local_checkpoint_cuda_and_sim2sim(
     monkeypatch.setenv(runtime.WBC_ROOT_ENV, str(_fake_wbc_root(tmp_path)))
     monkeypatch.setenv(runtime.N17_CHECKPOINT_ENV, str(n17_checkpoint))
     monkeypatch.setenv(runtime.SONIC_CHECKPOINT_ENV, str(sonic_checkpoint))
-    monkeypatch.setenv(runtime.SIM2SIM_COMMAND_ENV, "python")
+    monkeypatch.setenv(runtime.SIM2SIM_COMMAND_ENV, sys.executable)
 
     report = preflight.run_unitree_groot_n17_sonic_policy_server_preflight(
         job_dir=tmp_path / "job",

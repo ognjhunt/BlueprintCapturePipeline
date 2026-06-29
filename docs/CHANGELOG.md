@@ -34,6 +34,21 @@
 - Extended the Isaac/G1 provider bundle with a required-file namelist and
   `bundle_manifest.json` so future runner/module extraction cannot silently drop
   worker dependencies.
+- Made the full no-GPU test suite pass on a bare `python3`-only interpreter:
+  the live-pipeline control-plane and Unitree-GR00T policy-server-preflight
+  readiness tests now reference `sys.executable` for their command fixtures
+  instead of assuming a bare `python` binary. Production command-runnability
+  validators were left strict (they still report `blocked` when a named binary
+  is genuinely absent); only the test fixtures changed.
+- Added `opencv-python-headless` (`cv2`) to the canonical no-GPU stack (the
+  `dev` extra, the `dev` dependency-group, and the CPU env contract). Without it
+  ~32 oscar/cosmos/WAM/video tests silently skipped; they now run and pass.
+- Closed a `uv sync` footgun with a PEP 735 default `[dependency-groups].dev`
+  group: a bare `uv sync` now installs the full no-GPU stack
+  (`pxr`/`mujoco`/`trimesh`/`cv2`/`boto3`) instead of UNINSTALLING 31 packages
+  (including `usd-core`/`mujoco`/`trimesh`) and silently re-breaking the
+  dry-render / placement / POV / video gates. `docs/DEV_SETUP.md` and the
+  Makefile document `uv sync` as the canonical command.
 
 ### Future-Agent-Facing
 
@@ -56,6 +71,12 @@
   guard, local render preview, and the Isaac/G1 runner completed with
   `367 passed`; its matching `--collect-only` pass collected all 367 tests with
   no collection errors.
+- Local CPU proof update on 2026-06-29 (continued): after the test-interpreter
+  portability fix and the `cv2` dependency addition, the full
+  `.venv/bin/python -m pytest tests/` run completed with 0 failures
+  (`2567 passed, 32 skipped`); those 32 skips were all `cv2`-gated and now run
+  after installing `opencv-python-headless`. The render-visibility/G1 work
+  remains CPU/hermetic-only — still no live GPU frame produced in this session.
 
 ## 2026-06-28
 

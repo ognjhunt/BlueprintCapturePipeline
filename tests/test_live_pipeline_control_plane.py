@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from blueprint_pipeline.live_pipeline_control_plane import (
@@ -583,8 +584,8 @@ def test_live_pipeline_control_plane_next_inputs_follow_ready_sections(
     result = run_live_pipeline_control_plane(
         capture_root=capture_root,
         job_request_inbox=inbox_dir,
-        vision_labeling_command="python -c 'print(1)'",
-        delivery_command="python -c 'print(1)'",
+        vision_labeling_command=f"{sys.executable} -c 'print(1)'",
+        delivery_command=f"{sys.executable} -c 'print(1)'",
         load_local_env=False,
         output_path=tmp_path / "control-plane.json",
     )

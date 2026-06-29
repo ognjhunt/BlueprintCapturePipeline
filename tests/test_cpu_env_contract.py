@@ -79,6 +79,13 @@ REQUIRED_MODULES = [
         "cloud / dev extra (botocore>=1.34.0)",
         "provider object-store signing, retry, and client exception support",
     ),
+    (
+        "cv2",
+        "opencv-python-headless (cv2)",
+        "dev / runtime extra (opencv-python-headless>=4.10.0)",
+        "image I/O for the oscar/cosmos WAM, visual-augmentation, and video-review tests "
+        "(absent cv2 silently skips ~32 of them)",
+    ),
 ]
 
 
