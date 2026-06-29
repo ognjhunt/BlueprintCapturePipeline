@@ -1370,23 +1370,24 @@ def test_short_visual_sanity_blocks_before_provider_when_source_qa_fails(
     observation_path = _policy_observation(tmp_path / "observation.json", frame)
     called = False
 
-    def fake_runpod(**_kwargs):
+    def fake_vast(**_kwargs):
         nonlocal called
         called = True
         raise AssertionError("provider runner should not start after source QA failure")
 
-    monkeypatch.setattr(short_sanity, "run_persistent_session_runpod", fake_runpod)
+    monkeypatch.setattr(short_sanity, "run_persistent_session", fake_vast)
 
     manifest, exit_code = short_sanity.run_short_visual_sanity(
         policy_observation_path=observation_path,
         job_dir=tmp_path / "short",
-        provider="runpod",
         transition_count=2,
     )
 
     assert exit_code == 2
     assert called is False
     assert manifest["status"] == "blocked"
+    assert manifest["provider"] == "vast"
+    assert manifest["paid_provider"]["provider"] == "vast"
     assert manifest["paid_provider"]["used"] is False
     assert manifest["paid_provider"]["teardown_status"] == "not_required_prelaunch_blocked"
     assert manifest["provider_success"] is False

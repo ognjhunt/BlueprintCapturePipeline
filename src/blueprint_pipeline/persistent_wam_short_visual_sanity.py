@@ -454,7 +454,7 @@ def run_short_visual_sanity(
     *,
     policy_observation_path: str | Path,
     job_dir: str | Path | None = None,
-    provider: str = "runpod",
+    provider: str = "vast",
     transition_count: int = 2,
     task_prompt: str | None = None,
     timeout_seconds: float = 3600.0,
@@ -559,7 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy-observation", required=True)
     parser.add_argument("--job-dir")
-    parser.add_argument("--provider", choices=("runpod", "vast"), default="runpod")
+    parser.add_argument("--provider", choices=("runpod", "vast"), default="vast")
     parser.add_argument("--transition-count", type=int, choices=(1, 2), default=2)
     parser.add_argument("--task-prompt")
     parser.add_argument("--timeout-seconds", type=float, default=3600.0)
