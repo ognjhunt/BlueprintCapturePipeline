@@ -453,6 +453,57 @@ def build_closed_loop_wam_backend_readiness(
     }
 
 
+def build_closed_loop_seed_conditioning_preflight(
+    *,
+    selected_backend: str,
+    use_provider_command: bool,
+    allow_paid_provider_launch: bool,
+    steps: int,
+    projected_skeleton_trace_path: str | Path | None,
+) -> dict[str, Any]:
+    """Fail closed when a paid multi-step provider loop would run without skeleton conditioning."""
+
+    backend = _string(selected_backend).strip() or "oscar_wam"
+    blockers: list[str] = []
+    trace_path = (
+        Path(projected_skeleton_trace_path).expanduser()
+        if projected_skeleton_trace_path
+        else None
+    )
+    required = bool(
+        backend == "oscar_wam"
+        and use_provider_command
+        and allow_paid_provider_launch
+        and int(steps) > 1
+    )
+    if required:
+        if trace_path is None:
+            blockers.append(
+                "closed_loop_projected_skeleton_trace_missing_for_paid_multi_step_provider_wam"
+            )
+        elif not trace_path.is_file():
+            blockers.append(
+                "closed_loop_projected_skeleton_trace_file_missing_for_paid_multi_step_provider_wam"
+            )
+    return {
+        "schema_version": "closed_loop_seed_conditioning_preflight.v1",
+        "status": "ready" if not blockers else "blocked",
+        "required": required,
+        "selected_wam_backend": backend,
+        "use_provider_command": bool(use_provider_command),
+        "allow_paid_provider_launch": bool(allow_paid_provider_launch),
+        "steps": int(steps),
+        "projected_skeleton_trace_path": str(trace_path) if trace_path else None,
+        "projected_skeleton_trace_present": bool(trace_path and trace_path.is_file()),
+        "blockers": blockers,
+        "claim_boundary": {
+            "preflight_is_no_spend": True,
+            "projected_skeleton_trace_is_conditioning_not_task_success_proof": True,
+            "scene_or_task_specific_coordinates_hardcoded": False,
+        },
+    }
+
+
 def make_oscar_provider_command_wam_backend(
     *,
     work_dir: str | Path,
@@ -1533,6 +1584,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         oscar_provider=args.oscar_provider,
         allow_paid_provider_launch=bool(args.allow_paid_provider_launch),
     )
+    seed_conditioning_preflight = build_closed_loop_seed_conditioning_preflight(
+        selected_backend=args.wam_backend,
+        use_provider_command=bool(args.use_provider_command),
+        allow_paid_provider_launch=bool(args.allow_paid_provider_launch),
+        steps=int(args.steps),
+        projected_skeleton_trace_path=projected_skeleton_trace_path,
+    )
+    if seed_conditioning_preflight.get("blockers"):
+        wam_backend_readiness["seed_conditioning_preflight"] = seed_conditioning_preflight
+        wam_backend_readiness["blockers"] = list(
+            wam_backend_readiness.get("blockers") or []
+        ) + [
+            str(item) for item in seed_conditioning_preflight.get("blockers") or []
+        ]
+        wam_backend_readiness["status"] = "blocked"
+    else:
+        wam_backend_readiness["seed_conditioning_preflight"] = seed_conditioning_preflight
     write_json(out_dir / "closed_loop_wam_backend_readiness.json", wam_backend_readiness)
     oscar_ready = wam_backend_readiness["status"] == "ready"
 
@@ -1563,6 +1631,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "selected_wam_backend": args.wam_backend,
             "wam_backend_readiness_path": str(out_dir / "closed_loop_wam_backend_readiness.json"),
             "wam_backend_readiness": wam_backend_readiness,
+            "seed_conditioning_preflight": seed_conditioning_preflight,
             "use_provider_command": bool(args.use_provider_command),
             "oscar_provider": args.oscar_provider,
             "allow_paid_provider_launch": bool(args.allow_paid_provider_launch),

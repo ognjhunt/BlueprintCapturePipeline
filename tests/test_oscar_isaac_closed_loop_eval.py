@@ -793,3 +793,47 @@ def test_closed_loop_cli_writes_no_spend_backend_readiness_for_cosmos3(
     assert plan["wam_backend_readiness_path"] == str(readiness_path)
     assert "blocked_cosmos3_wam_not_wired_into_isaac_closed_loop_runner" in plan["blockers"]
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+
+
+def test_closed_loop_cli_blocks_paid_multi_step_provider_without_projected_skeleton(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=17)
+    route = tmp_path / "route.json"
+    route.write_text(
+        json.dumps({"route_points": [[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]]}),
+        encoding="utf-8",
+    )
+
+    exit_code = L.main(
+        [
+            "--start-frame",
+            str(start),
+            "--route-file",
+            str(route),
+            "--output-dir",
+            str(tmp_path / "closed_loop"),
+            "--wam-backend",
+            "oscar_wam",
+            "--use-provider-command",
+            "--oscar-provider",
+            "runpod",
+            "--allow-paid-provider-launch",
+            "--steps",
+            "2",
+            "--dry-run",
+        ]
+    )
+
+    assert exit_code == 2
+    readiness_path = tmp_path / "closed_loop" / "closed_loop_wam_backend_readiness.json"
+    plan_path = tmp_path / "closed_loop" / "oscar_isaac_closed_loop_plan.json"
+    readiness = json.loads(readiness_path.read_text(encoding="utf-8"))
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    blocker = "closed_loop_projected_skeleton_trace_missing_for_paid_multi_step_provider_wam"
+    assert readiness["status"] == "blocked"
+    assert readiness["seed_conditioning_preflight"]["required"] is True
+    assert blocker in readiness["blockers"]
+    assert blocker in plan["blockers"]
+    assert plan["seed_conditioning_preflight"]["projected_skeleton_trace_present"] is False
+    assert json.loads(capsys.readouterr().out)["status"] == "blocked"
