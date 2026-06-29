@@ -696,6 +696,130 @@ def build_closed_loop_short_rollout_sanity_gate(
     }
 
 
+def _short_visual_sanity_provider_for_oscar_provider(provider: str) -> tuple[str, str]:
+    provider_text = _string(provider).strip().lower()
+    if provider_text in {"vast", "runpod"}:
+        return provider_text, "explicit_provider"
+    return "vast", "auto_defaults_to_vast_provider_command_order"
+
+
+def build_closed_loop_short_visual_sanity_launch_plan(
+    *,
+    selected_backend: str,
+    use_provider_command: bool,
+    allow_paid_provider_launch: bool,
+    steps: int,
+    provider_input_contract_preflight: Mapping[str, Any],
+    output_dir: str | Path,
+    oscar_provider: str,
+    task_prompt: str,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Materialize the exact short-sanity command needed before long paid rollout."""
+
+    backend = _string(selected_backend).strip() or "oscar_wam"
+    risk_recommends_short_sanity = bool(
+        provider_input_contract_preflight.get(
+            "short_rollout_sanity_recommended_before_scale_up"
+        )
+    )
+    required = bool(
+        backend == "oscar_wam"
+        and use_provider_command
+        and allow_paid_provider_launch
+        and int(steps) > 2
+        and risk_recommends_short_sanity
+    )
+    root = Path(output_dir).expanduser().resolve()
+    policy_observation_path = root / "short_visual_sanity_policy_observation.json"
+    job_dir = root / "short_visual_sanity_job"
+    expected_manifest_path = job_dir / "persistent_wam_short_visual_sanity_manifest.json"
+    if not required:
+        return {
+            "schema_version": "closed_loop_short_visual_sanity_launch_plan.v1",
+            "status": "not_required",
+            "required": False,
+            "selected_wam_backend": backend,
+            "steps": int(steps),
+            "risk_recommends_short_sanity": risk_recommends_short_sanity,
+            "blockers": [],
+            "claim_boundary": {"plan_is_no_spend": True},
+        }
+
+    blockers: list[str] = []
+    step_input_path = Path(
+        _string(provider_input_contract_preflight.get("step_input_path"))
+    ).expanduser()
+    step_input: dict[str, Any] = {}
+    policy_observation: dict[str, Any] = {}
+    if not step_input_path.is_file():
+        blockers.append("closed_loop_short_sanity_step_input_missing")
+    else:
+        try:
+            step_input = json.loads(step_input_path.read_text(encoding="utf-8"))
+            policy_observation = _mapping(step_input.get("current_policy_observation"))
+        except Exception as exc:
+            blockers.append(f"closed_loop_short_sanity_step_input_unreadable:{type(exc).__name__}")
+    if not policy_observation and step_input_path.is_file():
+        blockers.append("closed_loop_short_sanity_policy_observation_missing")
+    if policy_observation:
+        write_json(policy_observation_path, policy_observation)
+
+    short_provider, provider_resolution = _short_visual_sanity_provider_for_oscar_provider(
+        oscar_provider
+    )
+    command_argv = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.persistent_wam_short_visual_sanity",
+        "--policy-observation",
+        str(policy_observation_path),
+        "--job-dir",
+        str(job_dir),
+        "--provider",
+        short_provider,
+        "--transition-count",
+        "2",
+        "--task-prompt",
+        _string(task_prompt),
+        "--timeout-seconds",
+        str(float(timeout_seconds)),
+    ]
+    return {
+        "schema_version": "closed_loop_short_visual_sanity_launch_plan.v1",
+        "status": "ready" if not blockers else "blocked",
+        "required": True,
+        "selected_wam_backend": backend,
+        "steps": int(steps),
+        "risk_recommends_short_sanity": risk_recommends_short_sanity,
+        "source_step_input_path": str(step_input_path),
+        "policy_observation_path": str(policy_observation_path)
+        if policy_observation
+        else None,
+        "policy_observation_materialized": bool(policy_observation),
+        "job_dir": str(job_dir),
+        "provider": short_provider,
+        "provider_resolution": provider_resolution,
+        "command_argv": command_argv,
+        "command_display": shlex.join(command_argv),
+        "expected_manifest_path": str(expected_manifest_path),
+        "unlock_env": {
+            PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV: str(expected_manifest_path)
+        },
+        "followup_closed_loop_arg": [
+            "--short-visual-sanity-manifest",
+            str(expected_manifest_path),
+        ],
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": {
+            "plan_is_no_spend": True,
+            "short_visual_sanity_is_scale_up_gate_only": True,
+            "short_visual_sanity_is_not_task_success_proof": True,
+            "generated_world_rank_fidelity_result_proven": False,
+        },
+    }
+
+
 def make_oscar_provider_command_wam_backend(
     *,
     work_dir: str | Path,
@@ -1827,6 +1951,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         short_visual_sanity_manifest_path=args.short_visual_sanity_manifest,
     )
     wam_backend_readiness["short_rollout_sanity_gate"] = short_rollout_sanity_gate
+    short_visual_sanity_launch_plan = build_closed_loop_short_visual_sanity_launch_plan(
+        selected_backend=args.wam_backend,
+        use_provider_command=bool(args.use_provider_command),
+        allow_paid_provider_launch=bool(args.allow_paid_provider_launch),
+        steps=int(args.steps),
+        provider_input_contract_preflight=provider_input_contract_preflight,
+        output_dir=out_dir / "short_visual_sanity_launch_plan",
+        oscar_provider=args.oscar_provider,
+        task_prompt=args.task_prompt,
+        timeout_seconds=float(args.provider_timeout_seconds),
+    )
+    wam_backend_readiness["short_visual_sanity_launch_plan"] = (
+        short_visual_sanity_launch_plan
+    )
+    if short_visual_sanity_launch_plan.get("blockers"):
+        wam_backend_readiness["blockers"] = list(
+            wam_backend_readiness.get("blockers") or []
+        ) + [
+            str(item)
+            for item in short_visual_sanity_launch_plan.get("blockers") or []
+        ]
+        wam_backend_readiness["status"] = "blocked"
     if short_rollout_sanity_gate.get("blockers"):
         wam_backend_readiness["blockers"] = list(
             wam_backend_readiness.get("blockers") or []
@@ -1875,6 +2021,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "seed_conditioning_preflight": seed_conditioning_preflight,
             "provider_input_contract_preflight": provider_input_contract_preflight,
             "short_rollout_sanity_gate": short_rollout_sanity_gate,
+            "short_visual_sanity_launch_plan": short_visual_sanity_launch_plan,
             "use_provider_command": bool(args.use_provider_command),
             "oscar_provider": args.oscar_provider,
             "allow_paid_provider_launch": bool(args.allow_paid_provider_launch),

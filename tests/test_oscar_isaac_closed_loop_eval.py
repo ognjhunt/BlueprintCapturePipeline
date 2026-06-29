@@ -973,6 +973,7 @@ def test_closed_loop_cli_dry_run_writes_provider_input_contract_preflight(
     assert "rgb_context_single_frame_repeat_autoregressive_risk" in preflight[
         "autoregressive_risk_flags"
     ]
+    assert plan["short_visual_sanity_launch_plan"]["status"] == "not_required"
     assert Path(preflight["bundle_manifest_path"]).is_file()
     assert json.loads(capsys.readouterr().out)["status"] == "prepared"
 
@@ -1022,4 +1023,29 @@ def test_closed_loop_paid_long_run_requires_short_visual_sanity_after_input_risk
     assert "closed_loop_paid_long_wam_requires_passed_short_rollout_sanity" in plan[
         "blockers"
     ]
+    launch_plan = plan["short_visual_sanity_launch_plan"]
+    assert launch_plan["status"] == "ready"
+    assert launch_plan["required"] is True
+    assert launch_plan["provider"] == "runpod"
+    assert launch_plan["provider_resolution"] == "explicit_provider"
+    assert launch_plan["blockers"] == []
+    policy_observation_path = Path(launch_plan["policy_observation_path"])
+    assert policy_observation_path.is_file()
+    policy_observation = json.loads(policy_observation_path.read_text(encoding="utf-8"))
+    assert policy_observation["schema_version"] == "blueprint_policy_observation.v1"
+    assert policy_observation["visual_observation"]["camera_frame_path"] == str(
+        seed.resolve()
+    )
+    assert "blueprint_pipeline.persistent_wam_short_visual_sanity" in launch_plan[
+        "command_argv"
+    ]
+    assert launch_plan["command_argv"][
+        launch_plan["command_argv"].index("--transition-count") + 1
+    ] == "2"
+    assert launch_plan["expected_manifest_path"].endswith(
+        "persistent_wam_short_visual_sanity_manifest.json"
+    )
+    assert launch_plan["unlock_env"][
+        L.PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV
+    ] == launch_plan["expected_manifest_path"]
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
