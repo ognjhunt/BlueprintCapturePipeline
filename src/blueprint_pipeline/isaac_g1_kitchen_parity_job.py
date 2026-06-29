@@ -66,9 +66,13 @@ def _gemini_api_key_from_env() -> str:
 
 # diagnostics-streaming pod bootstrap for the parity runner
 BOOTSTRAP = r'''
-import os, sys, io, time, json, zipfile, threading, subprocess, urllib.request, pathlib
+import os, sys, io, time, json, zipfile, threading, subprocess, urllib.request, pathlib, shutil
 OUT="/workspace/out"; BUNDLE="/workspace/bundle"
 for d in (OUT, BUNDLE): pathlib.Path(d).mkdir(parents=True, exist_ok=True)
+for p in pathlib.Path(OUT).iterdir():
+    try:
+        shutil.rmtree(p) if p.is_dir() else p.unlink()
+    except Exception: pass
 PUT=os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL","")
 GETB=os.environ.get("BLUEPRINT_EVAL_MANIFEST_URI","")
 def putout():

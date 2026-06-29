@@ -134,6 +134,8 @@ def test_docker_start_cmd_runs_parity_runner() -> None:
     assert "google-genai" in body
     assert "--request" in body
     assert "/isaac-sim/python.sh /workspace/boot.py" in body
+    assert "pathlib.Path(OUT).iterdir()" in body
+    assert "shutil.rmtree(p)" in body
     assert 'mark("runner_done", rc=rc)' in body
     assert "while True:" in body and "putout()" in body
 

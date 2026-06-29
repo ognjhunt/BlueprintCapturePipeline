@@ -394,6 +394,55 @@ def test_watch_and_collect_stops_blocked_runner_pod_for_warm_reuse(tmp_path: Pat
     assert res["teardown"]["status"] == "stopped"
 
 
+def test_watch_and_collect_ignores_stale_result_before_runner_done(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import isaac_particlefield_render_job as job
+
+    class _FakeProvider:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.terminated: str | None = None
+
+        def stop(self, instance_id: str) -> dict:
+            self.stopped = instance_id
+            return {"status": "stopped", "http": 204}
+
+        def terminate(self, instance_id: str) -> dict:
+            self.terminated = instance_id
+            return {"status": "terminated", "http": 204}
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bootstrap.json", json.dumps({"phase": "kitchen_fetching"}))
+        zf.writestr("isaac_g1_kitchen_parity_result.json", json.dumps({
+            "status": "blocked",
+            "blockers": ["stale_previous_run"],
+        }))
+    payload_bytes = payload.getvalue()
+
+    class _Response:
+        def read(self) -> bytes:
+            return payload_bytes
+
+    clock = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr(job.time, "time", lambda: next(clock, 2.0))
+    monkeypatch.setattr(job.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(job.urllib.request, "urlopen", lambda _url, timeout=60: _Response())
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+    fake = _FakeProvider()
+
+    res = job.watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1)
+
+    assert res["status"] == "blocked"
+    assert res["last_bootstrap"]["phase"] == "kitchen_fetching"
+    assert res["runner_result"]["blockers"] == ["stale_previous_run"]
+    assert fake.stopped == "inst-9"
+    assert fake.terminated is None
+
+
 def test_runpod_terminate_is_delete_and_fail_closed(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.SECRETS", tmp_path)
     res = RunPodRenderProvider().terminate("podabc")

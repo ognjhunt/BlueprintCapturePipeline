@@ -42,9 +42,13 @@ _SPLAT_SUFFIXES = {".ply", ".spz", ".usdc", ".usd", ".usda", ".usdz"}
 # Diagnostics-streaming pod bootstrap: fetch bundle -> heartbeat-upload output every 25s ->
 # run the Isaac runner -> final upload. Runs under Isaac's python (guaranteed on the image).
 BOOTSTRAP = r'''
-import os, sys, io, time, json, zipfile, threading, subprocess, urllib.request, pathlib
+import os, sys, io, time, json, zipfile, threading, subprocess, urllib.request, pathlib, shutil
 OUT="/workspace/out"; BUNDLE="/workspace/bundle"
 for d in (OUT, BUNDLE): pathlib.Path(d).mkdir(parents=True, exist_ok=True)
+for p in pathlib.Path(OUT).iterdir():
+    try:
+        shutil.rmtree(p) if p.is_dir() else p.unlink()
+    except Exception: pass
 PUT=os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL","")
 GETB=os.environ.get("BLUEPRINT_EVAL_MANIFEST_URI","")
 CAMS=os.environ.get("CAMERAS_FILE","cameras.json")
@@ -324,7 +328,12 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
                 last_console_tail = console.read_text(encoding="utf-8", errors="replace")[-4000:]
             except Exception:  # noqa: BLE001
                 pass
-        if last.get("status") in ("completed", "blocked") or boot.get("phase") == "runner_done":
+        if boot.get("phase") == "runner_done":
+            done = True
+            break
+        if last.get("status") in ("completed", "blocked") and not boot:
+            # Legacy/no-bootstrap fallback. Current bootstraps always write bootstrap.json; when it is
+            # present, wait for runner_done so warm-restart stale outputs cannot terminate a fresh run.
             done = True
             break
     if done:
