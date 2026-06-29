@@ -219,6 +219,35 @@ def test_add_workspace_fill_light_is_idempotent_on_warm_stage() -> None:
     assert abs(float(val[0]) - 1.5) < 1e-6  # refreshed to the latest target
 
 
+def test_pose_arm_kinematic_extends_hand_to_target_not_just_upper_arm() -> None:
+    # The reach must place the GRIPPER at the object: aligning shoulder->HAND (not shoulder->elbow)
+    # swings the whole arm so the hand reaches the target. Guards the bug Codex's gate caught
+    # (effector left ~0.37m short when only the upper arm was aimed).
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdGeom, Gf  # type: ignore
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World/G1")
+    sh = UsdGeom.Xform.Define(stage, "/World/G1/right_shoulder_link")
+    UsdGeom.Xformable(sh.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(0.0, -0.18, 0.55))
+    el = UsdGeom.Xform.Define(stage, "/World/G1/right_shoulder_link/right_elbow_link")
+    UsdGeom.Xformable(el.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -0.25))
+    ha = UsdGeom.Xform.Define(stage, "/World/G1/right_shoulder_link/right_elbow_link/right_hand_link")
+    UsdGeom.Xformable(ha.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -0.25))  # arm hangs straight down
+
+    def hand_world():
+        t = UsdGeom.XformCache().GetLocalToWorldTransform(ha.GetPrim()).ExtractTranslation()
+        return (float(t[0]), float(t[1]), float(t[2]))
+
+    target = (0.45, -0.18, 0.55)  # forward at shoulder height
+    before = _dist(hand_world(), target)
+    posed = M._pose_arm_kinematic_usd(stage, "/World/G1", target, arm="right", reach_frac=1.0)
+    assert posed == 1
+    after = _dist(hand_world(), target)
+    assert after < before * 0.4  # hand swung from hanging-down to reaching the forward target
+    assert after < 0.2           # gripper lands within the gate's reach tolerance band
+
+
 def test_pov_headlamp_is_idempotent_and_front_of_camera() -> None:
     # The manipulation POV camera sees the arm's shadow side (fill light is at the door, beyond the
     # arm). A camera-side headlamp front-lights the arm+gripper. Must be idempotent on the warm stage
@@ -240,6 +269,12 @@ def test_pov_headlamp_is_idempotent_and_front_of_camera() -> None:
     pos = translate_ops[0].Get()
     # lamp sits toward the look-at from the (latest) camera eye, i.e. between camera and workspace
     assert -1.44 <= float(pos[0]) <= -1.00
+    # MUST be soft (large radius, capped intensity) so the close camera-side fill is not a firefly
+    # source on the nearby arm — passing the bright 30000 workspace value must be clamped.
+    from pxr import UsdLux  # type: ignore
+    light = UsdLux.SphereLight(prim)
+    assert float(light.GetRadiusAttr().Get()) >= 0.4
+    assert float(light.GetIntensityAttr().Get()) <= 6000.0
 
 
 def test_robot_neutral_descendant_xforms_restore_warm_stage_mutation() -> None:

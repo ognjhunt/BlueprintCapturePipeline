@@ -2036,9 +2036,11 @@ def _find_arm_link(links: dict, *keys: str):
 
 def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right",
                             reach_frac: float = 1.0) -> int:
-    """Kinematically pose the G1 arm(s) so the upper arm points at ``target`` — pure USD (rotate the
-    shoulder link about its pivot, children follow), NO physics tensor view, so it cannot trigger the
-    crash the articulation drive does. Returns the number of arms posed. GPU/USD only."""
+    """Kinematically pose the G1 arm(s) so the HAND/gripper reaches toward ``target`` — pure USD
+    (rotate the shoulder link about its pivot so the whole arm swings the hand at the object, children
+    follow), NO physics tensor view, so it cannot trigger the crash the articulation drive does. With
+    ``arm="both"`` both arms reach forward (the egocentric manipulation seed). Returns the number of
+    arms posed. GPU/USD only."""
     from pxr import Usd, UsdGeom, Gf  # type: ignore
     sides = ("left", "right") if arm == "both" else (arm,)
     root = stage.GetPrimAtPath(prim_path)
@@ -2048,12 +2050,17 @@ def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right"
     for side in sides:
         shoulder = (_find_arm_link(links, side, "shoulder", "pitch")
                     or _find_arm_link(links, side, "shoulder"))
-        elbow = _find_arm_link(links, side, "elbow")
-        if shoulder is None or elbow is None:
+        # Align shoulder->HAND with shoulder->target so the GRIPPER reaches the affordance. Rotating
+        # only the upper arm (shoulder->elbow) aims the bone but leaves the bent hand ~0.2-0.4m short of
+        # the object (Codex's manipulation_pov_geometry gate flagged exactly this). Fall back through
+        # wrist/elbow if a hand/palm link is absent.
+        effector = (_find_arm_link(links, side, "hand") or _find_arm_link(links, side, "palm")
+                    or _find_arm_link(links, side, "wrist") or _find_arm_link(links, side, "elbow"))
+        if shoulder is None or effector is None:
             continue
         xc = UsdGeom.XformCache()  # fresh cache per arm (previous arm's mutation invalidated it)
         sh_w = xc.GetLocalToWorldTransform(shoulder)
-        el_w = xc.GetLocalToWorldTransform(elbow)
+        el_w = xc.GetLocalToWorldTransform(effector)
         sp = sh_w.ExtractTranslation()
         ep = el_w.ExtractTranslation()
         axis, angle = arm_reach_rotation((sp[0], sp[1], sp[2]), (ep[0], ep[1], ep[2]),
@@ -4132,20 +4139,25 @@ def _add_pov_headlamp(stage, eye, look_at, *, intensity: float = 20000.0,
     """Camera-side fill light for the manipulation POV so the REACHING ARM + gripper are front-lit.
 
     The workspace fill light sits at the door/affordance, BEYOND the arm from the head-mounted camera,
-    so the camera otherwise sees only the arm's shadow side (it renders black). This places a small
-    bright sphere just in front of the camera eye, aimed toward the workspace, lighting the arm+gripper
-    the camera is looking at. Idempotent on a reused (warm --serve) stage."""
+    so the camera otherwise sees only the arm's shadow side (it renders black). This places a SOFT fill
+    in front of the camera eye, aimed toward the workspace, lighting the arms+grippers the camera sees.
+
+    It MUST be soft: a small, very bright sphere this close to the arm is a path-tracing firefly source
+    (salt-and-pepper grain that the denoiser can't recover). So use a LARGE radius + a CAPPED intensity
+    + a little more standoff -> even fill, no fireflies. Idempotent on a reused (warm --serve) stage."""
     from pxr import UsdLux, UsdGeom, Gf  # type: ignore
     fx, fy, fz = (float(look_at[0]) - float(eye[0]),
                   float(look_at[1]) - float(eye[1]),
                   float(look_at[2]) - float(eye[2]))
     length = math.sqrt(fx * fx + fy * fy + fz * fz) or 1e-6
-    pos = (float(eye[0]) + fx / length * 0.15,
-           float(eye[1]) + fy / length * 0.15,
-           float(eye[2]) + fz / length * 0.15 + 0.06)  # 15cm toward the workspace, a touch above
+    pos = (float(eye[0]) + fx / length * 0.30,
+           float(eye[1]) + fy / length * 0.30,
+           float(eye[2]) + fz / length * 0.30 + 0.10)  # 30cm toward the workspace, a touch above
     light = UsdLux.SphereLight.Define(stage, path)
-    light.CreateIntensityAttr(float(intensity))
-    light.CreateRadiusAttr(0.12)
+    # Cap intensity (callers pass the bright 30000 workspace value) and use a large soft radius so the
+    # close camera-side fill does not create fireflies on the nearby arm.
+    light.CreateIntensityAttr().Set(min(float(intensity), 6000.0))
+    light.CreateRadiusAttr().Set(0.5)
     xf = UsdGeom.Xformable(light.GetPrim())
     translate_op = next(
         (op for op in xf.GetOrderedXformOps() if op.GetOpType() == UsdGeom.XformOp.TypeTranslate),
@@ -4445,6 +4457,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 if str(manipulation_reach_arm) in {"left", "right"}
                 else "right"
             )
+            rendered_reach_arm = "both" if manipulation_cam else str(manipulation_reach_arm)
             pov_geometry_path = sdir / "manipulation_pov_geometry.json"
             pov_geometry_records: list[dict[str, Any]] = []
             pov_geometry_report: dict[str, Any] | None = None
@@ -4693,8 +4706,9 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 f"scenario {sid}: placement validation PASS "
                                 f"xy_error={placement_validation_manifest['ground_truth_placement'].get('xy_error_m')}"
                             )
-                    # Show the arm reaching in the RENDERED frame (pure USD, no physics tensor -> no
-                    # crash). The shoulder rotates so the upper arm points at the workspace target.
+                    # Show manipulation-ready arms in the RENDERED frame (pure USD, no physics tensor
+                    # -> no crash). For egocentric manipulation seeds both arms are forward by default;
+                    # the geometry gate still validates the task-side effector against the affordance.
                     if (kinematic_arm_pose and manipulation_reach
                             and effective_look_at is not None):
                         arm_frac = 1.0 if manipulation_cam else alpha
@@ -4703,13 +4717,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 stage,
                                 binding["prim_path"],
                                 effective_look_at,
-                                arm=manipulation_reach_arm,
+                                arm=rendered_reach_arm,
                                 reach_frac=arm_frac,
                             )
                             if step == 0:
                                 _log(
                                     f"scenario {sid}: kinematic arm pose requested "
-                                    f"arm={manipulation_reach_arm} posed_count={posed_count} "
+                                    f"arm={rendered_reach_arm} "
+                                    f"requested_arm={manipulation_reach_arm} "
+                                    f"posed_count={posed_count} "
                                     f"target={tuple(round(float(c), 3) for c in effective_look_at)}"
                                 )
                         except Exception as exc:  # noqa: BLE001 - pose is best-effort, never blocks frames
@@ -4808,7 +4824,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             # visible in the workspace. Navigation/follow shots can still ramp.
                             reach_frac = 1.0 if manipulation_cam else alpha
                             skel = compute_arm_reach_skeleton(skel, effective_look_at, reach_frac,
-                                                              arm=manipulation_reach_arm)
+                                                              arm=rendered_reach_arm)
                         lms = _project_skeleton(skel, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
                                                 vfov_deg=pov_vfov_deg, width=width, height=height)
                         if cap == 0:
@@ -5581,7 +5597,7 @@ def main(argv=None) -> int:
             return 1
         stage = _open_stage_local(kitchen_usd)
         _bind_proxy_robot(stage, "/World/G1")
-        reach_arm = args.manipulation_reach_arm if args.manipulation_reach_arm != "both" else "right"
+        reach_arm = args.manipulation_reach_arm
         summaries = []
         for sc in scenarios:
             sid = str(sc.get("scenario_id") or sc.get("episode_id") or f"scenario_{len(summaries)}")

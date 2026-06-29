@@ -235,6 +235,15 @@ def test_manipulation_ready_arm_pose_defaults_to_both_arms() -> None:
         M.manipulation_ready_arm_joint_deltas("center")
 
 
+def test_manipulation_pov_render_poses_both_arms_while_validating_task_side() -> None:
+    source = _RUNNER.read_text()
+    assert 'rendered_reach_arm = "both" if manipulation_cam else str(manipulation_reach_arm)' in source
+    assert "arm=rendered_reach_arm" in source
+    assert "arm=pov_reach_arm" in source
+    assert "reach_arm = args.manipulation_reach_arm" in source
+    assert 'if args.manipulation_reach_arm != "both" else "right"' not in source
+
+
 def test_apply_joint_deltas_updates_only_available_joint_targets() -> None:
     targets = [0.0, 0.0, 0.0]
     default = [1.0, 2.0, 3.0]
