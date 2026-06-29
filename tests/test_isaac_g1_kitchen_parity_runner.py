@@ -141,9 +141,26 @@ def test_robot_head_lens_eye_offsets_link_origin_out_of_head_mesh() -> None:
         },
     )
     assert low_eye[0] < -1.10
-    assert low_eye[2] > 1.35
+    assert 1.25 < low_eye[2] < 1.32
     assert low_meta["lens_height_correction_applied"] is True
-    assert low_meta["min_head_lens_z"] > 1.3
+    assert low_meta["min_head_lens_z"] > 1.2
+    assert 0.08 <= low_meta["shoulder_to_lens_z_m"] <= 0.18
+
+    bounded, bounded_meta = M._robot_head_lens_eye_from_mount(
+        (-0.86, 0.65, 0.84),
+        math.pi,
+        root_pose=(-1.04, 0.65, 0.84),
+        arm_points={"shoulder": (-0.87, 0.65, 1.13)},
+        head_bounds={
+            "source_prim_path": "/World/G1/torso_link/head_link",
+            "bbox_min_xyz": [-0.95, 0.55, 1.2],
+            "bbox_max_xyz": [-0.75, 0.75, 1.4],
+            "center_xyz": [-0.85, 0.65, 1.3],
+            "size_xyz": [0.2, 0.2, 0.2],
+        },
+    )
+    assert 1.30 < bounded[2] < 1.34
+    assert bounded_meta["head_lens_z_source"] == "head_bounds_center_above_shoulders"
 
     authored, authored_meta = M._robot_head_lens_eye_from_mount(
         (-1.0, 0.6, 1.35),
@@ -155,6 +172,20 @@ def test_robot_head_lens_eye_offsets_link_origin_out_of_head_mesh() -> None:
     assert authored == (-1.0, 0.6, 1.35)
     assert authored_meta["lens_offset_xyz_robot_frame"] == [0.0, 0.0, 0.0]
     assert authored_meta["lens_height_correction_applied"] is False
+
+
+def test_manipulation_seed_arm_target_keeps_low_handle_as_forward_seed() -> None:
+    shoulder = (0.0, 0.0, 1.2)
+    low_handle = (0.45, 0.0, 0.85)
+    high_handle = (0.45, 0.0, 1.45)
+
+    seed = M._manipulation_seed_arm_target_for_shoulder(shoulder, low_handle)
+    assert seed[:2] == low_handle[:2]
+    assert seed[2] > low_handle[2]
+    assert seed[2] < shoulder[2]
+
+    high_seed = M._manipulation_seed_arm_target_for_shoulder(shoulder, high_handle)
+    assert high_seed == high_handle
 
 
 def test_task_visual_qc_splits_verify_and_pov_rubrics(monkeypatch, tmp_path) -> None:

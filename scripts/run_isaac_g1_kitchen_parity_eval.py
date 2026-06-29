@@ -1094,6 +1094,23 @@ def _manipulation_camera_target_with_arm_context(
     return _weighted_xyz(pts) or aff
 
 
+def _manipulation_seed_arm_target_for_shoulder(shoulder, affordance) -> tuple[float, float, float]:
+    """Task-directed arm seed target that keeps the arm out instead of pre-reaching down.
+
+    The initial policy/WAM seed should show arms extended into the task corridor, not already solving
+    the manipulation. Horizontally, the seed points at the resolved affordance. Vertically, it never
+    drives the arm below a shoulder-relative forward posture unless the affordance itself is higher.
+    """
+    shoulder_z = float(shoulder[2])
+    affordance_z = float(affordance[2])
+    forward_seed_z = shoulder_z - max(0.04, min(0.10, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.12))
+    return (
+        float(affordance[0]),
+        float(affordance[1]),
+        max(affordance_z, forward_seed_z),
+    )
+
+
 def _projection_dict(px) -> dict[str, Any] | None:
     if px is None:
         return None
@@ -1138,6 +1155,20 @@ def _manipulation_pov_geometry_single(
     blockers: list[str] = []
     aff = (float(affordance[0]), float(affordance[1]), float(affordance[2]))
     target_px = project_point_to_pixel(aff, eye, target, up, vfov_deg, width, height)
+    target_projection = _projection_dict(target_px)
+    target_margin_px = None
+    horizontal_to_target_m = math.hypot(
+        float(target[0]) - float(eye[0]),
+        float(target[1]) - float(eye[1]),
+    )
+    pitch_down_deg = math.degrees(math.atan2(
+        max(0.0, float(eye[2]) - float(target[2])),
+        max(horizontal_to_target_m, 1e-6),
+    ))
+    if target_px is not None:
+        u_px = float(target_px[0])
+        v_px = float(target_px[1])
+        target_margin_px = min(u_px, float(width) - u_px, v_px, float(height) - v_px)
     projected: list[dict[str, Any]] = []
     available_roles = sorted(str(k) for k in (arm_points or {}).keys())
     for role in ("shoulder", "elbow", "wrist", "hand"):
@@ -1169,6 +1200,10 @@ def _manipulation_pov_geometry_single(
         blockers.append("manipulation_pov_arm_links_unavailable")
     if target_px is None:
         blockers.append("manipulation_pov_target_not_in_frame")
+    elif target_margin_px is not None and target_margin_px < min(float(width), float(height)) * 0.06:
+        blockers.append("manipulation_pov_target_near_frame_edge")
+    if pitch_down_deg > 60.0:
+        blockers.append("manipulation_pov_camera_pitched_down_too_far")
     if not effector_roles:
         blockers.append("manipulation_pov_arm_not_in_frame")
     if len(forearm_roles) < 2:
@@ -1240,7 +1275,9 @@ def _manipulation_pov_geometry_single(
         "reach_arm": arm,
         "target_affordance_xyz": [round(float(v), 6) for v in aff],
         "target_in_frame": target_px is not None,
-        "target_projection": _projection_dict(target_px),
+        "target_projection": target_projection,
+        "target_margin_px": round(float(target_margin_px), 2) if target_margin_px is not None else None,
+        "camera_pitch_down_deg": round(float(pitch_down_deg), 2),
         "available_arm_link_roles": available_roles,
         "arm_roles_in_frame": sorted(roles_in_frame),
         "arm_landmarks_in_frame": len(projected),
@@ -1349,6 +1386,8 @@ def _manipulation_pov_geometry(
         "target_affordance_xyz": primary.get("target_affordance_xyz"),
         "target_in_frame": bool(primary.get("target_in_frame")),
         "target_projection": target_px,
+        "target_margin_px": primary.get("target_margin_px"),
+        "camera_pitch_down_deg": primary.get("camera_pitch_down_deg"),
         "available_arm_link_roles": available_roles,
         "available_arm_link_roles_by_arm": {
             side: report.get("available_arm_link_roles") or []
@@ -1480,6 +1519,17 @@ def _select_manipulation_camera_target_for_visible_arm(
         hand = arm_points.get("hand")
         wrist = arm_points.get("wrist")
         elbow = arm_points.get("elbow")
+        shoulder = arm_points.get("shoulder")
+        forward_z = max(float(aff[2]), float(eye[2]) - 0.18)
+        if shoulder is not None:
+            try:
+                forward_seed = _manipulation_seed_arm_target_for_shoulder(shoulder, aff)
+                forward_z = max(forward_z, float(forward_seed[2]))
+            except Exception:  # noqa: BLE001
+                pass
+        forward_z = min(forward_z, float(eye[2]) - 0.03)
+        if forward_z > float(aff[2]):
+            candidates.append(("head_forward_affordance", (aff[0], aff[1], forward_z)))
         if hand is not None or wrist is not None:
             pts: list[tuple[Sequence[float], float]] = [(aff, 0.22)]
             if hand is not None:
@@ -1491,10 +1541,31 @@ def _select_manipulation_camera_target_for_visible_arm(
             weighted = _weighted_xyz(pts)
             if weighted is not None:
                 candidates.append(("forearm_weighted", weighted))
+                if forward_z > float(weighted[2]):
+                    candidates.append((
+                        "head_forward_forearm_context",
+                        (float(weighted[0]), float(weighted[1]), forward_z),
+                    ))
+            task_context_pts: list[tuple[Sequence[float], float]] = [(aff, 0.70)]
+            if hand is not None:
+                task_context_pts.append((hand, 0.18))
+            if wrist is not None:
+                task_context_pts.append((wrist, 0.12))
+            task_context = _weighted_xyz(task_context_pts)
+            if task_context is not None and forward_z > float(task_context[2]):
+                candidates.append((
+                    "head_forward_task_context",
+                    (float(task_context[0]), float(task_context[1]), forward_z),
+                ))
         if wrist is not None and hand is not None:
             weighted = _weighted_xyz([(aff, 0.35), (wrist, 0.30), (hand, 0.35)])
             if weighted is not None:
                 candidates.append(("effector_weighted", weighted))
+                if forward_z > float(weighted[2]):
+                    candidates.append((
+                        "head_forward_effector_context",
+                        (float(weighted[0]), float(weighted[1]), forward_z),
+                    ))
 
     best_name = candidates[0][0]
     best_target = candidates[0][1]
@@ -1533,6 +1604,23 @@ def _select_manipulation_camera_target_for_visible_arm(
             score += max(0.0, min(6.0, margin / max(float(height), 1.0) * 20.0))
             score -= (abs(u - float(width) * 0.5) / max(float(width), 1.0)) * 2.0
             score -= (abs(v - float(height) * 0.5) / max(float(height), 1.0)) * 2.0
+            useful_v_min = float(height) * 0.16
+            useful_v_max = float(height) * 0.58
+            if v < useful_v_min:
+                score -= min(14.0, (useful_v_min - v) / max(float(height), 1.0) * 40.0)
+            elif v > useful_v_max:
+                score -= min(8.0, (v - useful_v_max) / max(float(height), 1.0) * 24.0)
+        horizontal = math.hypot(
+            float(candidate[0]) - float(eye[0]),
+            float(candidate[1]) - float(eye[1]),
+        )
+        pitch_down_deg = math.degrees(math.atan2(
+            max(0.0, float(eye[2]) - float(candidate[2])),
+            max(horizontal, 1e-6),
+        ))
+        score -= min(8.0, max(0.0, pitch_down_deg - 18.0) / 6.0)
+        if name.startswith("head_forward_"):
+            score += 2.0
         if score > best_score:
             best_name = name
             best_target = candidate
@@ -1542,6 +1630,9 @@ def _select_manipulation_camera_target_for_visible_arm(
             "score": round(score, 3),
             "status": geom.get("status"),
             "target_in_frame": geom.get("target_in_frame"),
+            "target_projection": geom.get("target_projection"),
+            "target_margin_px": geom.get("target_margin_px"),
+            "pitch_down_deg": geom.get("camera_pitch_down_deg"),
             "arm_roles_in_frame": geom.get("arm_roles_in_frame"),
         })
     return best_target, {
@@ -2240,7 +2331,8 @@ def compute_arm_reach_skeleton(skeleton, target, reach_frac, *, arm: str = "righ
     shoulder = centroid(sh)
     hand_rest = centroid(hand)
     arm_len = length(sub(hand_rest, shoulder)) or 1e-6
-    to_target = sub(target, shoulder)
+    seed_target = _manipulation_seed_arm_target_for_shoulder(shoulder, target)
+    to_target = sub(seed_target, shoulder)
     tlen = length(to_target) or 1e-6
     reach_dist = min(arm_len, tlen)
     hand_reach = add(shoulder, scale(to_target, reach_dist / tlen))  # clamped along shoulder->target
@@ -2329,9 +2421,14 @@ def _pose_arm_kinematic_usd(stage, prim_path: str, target, *, arm: str = "right"
         el_w = xc.GetLocalToWorldTransform(effector)
         sp = sh_w.ExtractTranslation()
         ep = el_w.ExtractTranslation()
-        axis, angle = arm_reach_rotation((sp[0], sp[1], sp[2]), (ep[0], ep[1], ep[2]),
-                                         (float(target[0]), float(target[1]), float(target[2])),
-                                         reach_frac)
+        shoulder_xyz = (float(sp[0]), float(sp[1]), float(sp[2]))
+        seed_target = _manipulation_seed_arm_target_for_shoulder(shoulder_xyz, target)
+        axis, angle = arm_reach_rotation(
+            shoulder_xyz,
+            (float(ep[0]), float(ep[1]), float(ep[2])),
+            seed_target,
+            reach_frac,
+        )
         if angle < 1e-4:
             continue
         rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(*axis), math.degrees(angle)))
@@ -3982,6 +4079,79 @@ def _average_arm_link_points(
     return averaged
 
 
+def _robot_head_bounds_for_mount(stage, robot_prim_path: str, mount: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return world bounds for the robot's head/camera geometry near the selected mount.
+
+    Some G1 USD link prims expose a link origin at the body root while their mesh descendants carry the
+    visible head geometry. A lens derived from the link origin alone can land below the shoulders. This
+    bounded lookup only inspects the robot subtree and prefers the selected head/camera mount, falling
+    back to named head/neck/camera prims. It is robot-geometry based, not scene/task specific.
+    """
+    mount_path = str(mount.get("prim_path") or "")
+    candidate_paths: list[str] = []
+    if mount_path:
+        candidate_paths.append(mount_path)
+    try:
+        from pxr import Usd, UsdGeom  # type: ignore
+
+        root = stage.GetPrimAtPath(robot_prim_path)
+        if root and root.IsValid():
+            for prim in Usd.PrimRange(root):
+                name = prim.GetName().lower()
+                if not any(token in name for token in ("camera", "head", "neck", "face")):
+                    continue
+                try:
+                    if not prim.IsA(UsdGeom.Xformable):
+                        continue
+                except Exception:  # noqa: BLE001
+                    continue
+                path = str(prim.GetPath())
+                if path not in candidate_paths:
+                    candidate_paths.append(path)
+    except Exception:  # noqa: BLE001
+        pass
+
+    best: dict[str, Any] | None = None
+    best_score = -1.0
+    for path in candidate_paths[:64]:
+        try:
+            bbox = _world_bbox_for_prim(stage, path)
+        except Exception:  # noqa: BLE001
+            bbox = None
+        if not bbox:
+            continue
+        bmin = bbox.get("bbox_min_xyz") or ()
+        bmax = bbox.get("bbox_max_xyz") or ()
+        center = bbox.get("center_xyz") or ()
+        size = bbox.get("size_xyz") or ()
+        if len(bmin) < 3 or len(bmax) < 3 or len(center) < 3 or len(size) < 3:
+            continue
+        size_z = abs(float(size[2]))
+        size_xy = max(abs(float(size[0])), abs(float(size[1])))
+        if size_z < 0.04 or size_xy < 0.04:
+            continue
+        name = path.lower()
+        score = float(center[2])
+        if path == mount_path:
+            score += 2.0
+        if "camera" in name or "face" in name:
+            score += 1.0
+        elif "head" in name:
+            score += 0.7
+        elif "neck" in name:
+            score += 0.2
+        if score > best_score:
+            best_score = score
+            best = {
+                "source_prim_path": path,
+                "bbox_min_xyz": [round(float(v), 6) for v in bmin],
+                "bbox_max_xyz": [round(float(v), 6) for v in bmax],
+                "center_xyz": [round(float(v), 6) for v in center],
+                "size_xyz": [round(float(v), 6) for v in size],
+            }
+    return best
+
+
 def _robot_head_lens_eye_from_mount(
     mount_eye: Sequence[float],
     yaw: float,
@@ -3989,6 +4159,7 @@ def _robot_head_lens_eye_from_mount(
     authored_camera: bool = False,
     root_pose: Sequence[float] | None = None,
     arm_points: Mapping[str, Sequence[float]] | None = None,
+    head_bounds: Mapping[str, Sequence[float]] | None = None,
 ) -> tuple[tuple[float, float, float], dict[str, Any]]:
     """Return the render eye for the robot-mounted POV.
 
@@ -4001,25 +4172,85 @@ def _robot_head_lens_eye_from_mount(
             "lens_offset_xyz_robot_frame": [0.0, 0.0, 0.0],
             "raw_mount_eye_xyz": [round(v, 6) for v in raw_eye],
             "lens_height_correction_applied": False,
+            "head_lens_z_source": "authored_camera",
         }
     fx, fy = math.cos(float(yaw)), math.sin(float(yaw))
     forward_m = max(0.05, float(ROBOT_FOOTPRINT_HALF_EXTENT[0]) * 1.0)
+    head_bounds_json: dict[str, Any] | None = None
+    if head_bounds:
+        bmin = head_bounds.get("bbox_min_xyz")
+        bmax = head_bounds.get("bbox_max_xyz")
+        center = head_bounds.get("center_xyz")
+        size = head_bounds.get("size_xyz")
+        if bmin is not None and bmax is not None:
+            try:
+                # Place the fallback lens on the visible front of the head/face along the robot's
+                # current forward axis. This replaces the earlier fixed footprint-depth offset when
+                # the USD exposes usable head bounds.
+                corners = (
+                    (float(bmin[0]), float(bmin[1])),
+                    (float(bmin[0]), float(bmax[1])),
+                    (float(bmax[0]), float(bmin[1])),
+                    (float(bmax[0]), float(bmax[1])),
+                )
+                front_projection = max(x * fx + y * fy for x, y in corners)
+                raw_projection = raw_eye[0] * fx + raw_eye[1] * fy
+                derived_forward = front_projection - raw_projection
+                if derived_forward > 0.02:
+                    forward_m = max(0.03, derived_forward + 0.015)
+            except Exception:  # noqa: BLE001
+                pass
+        if all(value is not None for value in (bmin, bmax, center, size)):
+            try:
+                head_bounds_json = {
+                    "source_prim_path": head_bounds.get("source_prim_path"),
+                    "bbox_min_xyz": [round(float(v), 6) for v in bmin],  # type: ignore[arg-type]
+                    "bbox_max_xyz": [round(float(v), 6) for v in bmax],  # type: ignore[arg-type]
+                    "center_xyz": [round(float(v), 6) for v in center],  # type: ignore[arg-type]
+                    "size_xyz": [round(float(v), 6) for v in size],  # type: ignore[arg-type]
+                }
+            except Exception:  # noqa: BLE001
+                head_bounds_json = None
     up_m = max(0.015, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.03)
     shoulder_z_values = [
         float(arm_points[role][2])
         for role in ("shoulder",)
         if arm_points and arm_points.get(role) is not None
     ]
-    min_head_z = None
+    shoulder_z = max(shoulder_z_values) if shoulder_z_values else None
+    lens_z_floor = None
+    lens_z_source = "raw_mount_eye"
+    if head_bounds_json is not None:
+        try:
+            head_center_z = float(head_bounds_json["center_xyz"][2])
+            head_min_z = float(head_bounds_json["bbox_min_xyz"][2])
+            head_max_z = float(head_bounds_json["bbox_max_xyz"][2])
+            if (
+                head_max_z > head_min_z
+                and (shoulder_z is None or head_center_z > shoulder_z - 0.03)
+            ):
+                lens_z_floor = head_center_z
+                lens_z_source = "head_bounds_center_above_shoulders"
+        except Exception:  # noqa: BLE001
+            lens_z_floor = None
+    if lens_z_floor is None and shoulder_z is not None:
+        lens_z_floor = shoulder_z + max(
+            0.08,
+            min(0.16, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.20),
+        )
+        lens_z_source = "shoulder_relative_fallback"
     if root_pose is not None:
-        min_head_z = float(root_pose[2]) + max(0.50, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.84)
-    if shoulder_z_values:
-        shoulder_head_z = max(shoulder_z_values) + max(0.18, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.36)
-        min_head_z = shoulder_head_z if min_head_z is None else max(min_head_z, shoulder_head_z)
+        root_floor = float(root_pose[2]) + max(
+            0.38,
+            min(0.48, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.68),
+        )
+        if lens_z_floor is None or root_floor > lens_z_floor:
+            lens_z_floor = root_floor
+            lens_z_source = "root_height_fallback"
     corrected_z = raw_eye[2]
     height_corrected = False
-    if min_head_z is not None and corrected_z < min_head_z:
-        corrected_z = min_head_z
+    if lens_z_floor is not None and corrected_z < lens_z_floor:
+        corrected_z = lens_z_floor
         height_corrected = True
     eye = (
         raw_eye[0] + fx * forward_m,
@@ -4030,7 +4261,13 @@ def _robot_head_lens_eye_from_mount(
         "lens_offset_xyz_robot_frame": [round(forward_m, 6), 0.0, round(up_m, 6)],
         "raw_mount_eye_xyz": [round(v, 6) for v in raw_eye],
         "lens_height_correction_applied": bool(height_corrected),
-        "min_head_lens_z": round(float(min_head_z), 6) if min_head_z is not None else None,
+        "min_head_lens_z": round(float(lens_z_floor), 6) if lens_z_floor is not None else None,
+        "head_lens_z_source": lens_z_source,
+        "shoulder_to_lens_z_m": (
+            round(float((lens_z_floor or corrected_z) - shoulder_z), 6)
+            if shoulder_z is not None else None
+        ),
+        "head_geometry_bounds": head_bounds_json,
     }
 
 
@@ -4068,12 +4305,16 @@ def _robot_mounted_manipulation_cam_pose(
     else:
         arm_points = dict(arm_points_by_arm.get(reach_selection) or {})
     target = _manipulation_camera_target_with_arm_context(look_at, arm_points)
+    head_bounds = None
+    if mount.get("source") != "authored_robot_camera":
+        head_bounds = _robot_head_bounds_for_mount(stage, robot_prim_path, mount)
     eye, lens_meta = _robot_head_lens_eye_from_mount(
         mount["eye_xyz"],
         yaw,
         authored_camera=mount.get("source") == "authored_robot_camera",
         root_pose=root_pose,
         arm_points=arm_points,
+        head_bounds=head_bounds,
     )
     target_meta: dict[str, Any] = {}
     if vfov_deg is not None and width is not None and height is not None:
@@ -4795,9 +5036,9 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         except Exception:  # noqa: BLE001
             pass
         # POV camera: widen from USD's ~17deg telephoto default to the projection FOV so the frame
-        # shows the lit workspace (not a zoomed crop of the dark basin) AND the rendered view matches
-        # the skeleton projection. Overview gets a wide FOV so it frames the whole scene.
-        pov_vfov_deg = max(float(camera_vfov_deg), 68.0) if manipulation_cam else float(camera_vfov_deg)
+        # shows the forward task workspace and visible arms instead of a tight near-field crop, while
+        # keeping the rendered view aligned with skeleton projection. Overview frames the whole scene.
+        pov_vfov_deg = max(float(camera_vfov_deg), 90.0) if manipulation_cam else float(camera_vfov_deg)
         _set_camera_fov(stage, pov_cam, pov_vfov_deg, width, height)
         _set_camera_fov(stage, over_cam, 60.0, width, height)
         if verify_cam:
@@ -5847,7 +6088,7 @@ def render_local_preview(
         look_at = _surface_affordance_point_for_stance(stance_plan, root) or stance_plan.get("task_target_xyz")
     look_at = tuple(float(v) for v in look_at) if look_at is not None else None
 
-    pov_vfov_deg = max(float(camera_vfov_deg), 68.0)  # manipulation widen — mirrors the runner
+    pov_vfov_deg = max(float(camera_vfov_deg), 90.0)  # manipulation widen — mirrors the runner
     eye, tgt = manipulation_cam_pose(root, yaw, look_at=look_at, reach_arm=manipulation_reach_arm)
 
     skeleton_world = _rest_skeleton_world(nominal_g1_rest_offsets(), root, yaw)
