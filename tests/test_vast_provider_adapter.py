@@ -3628,10 +3628,26 @@ def test_vast_adapter_small_provider_helper_edges(
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY", "disabled")
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL", "true")
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OMIT_FPS_ARG", "true")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_NUM_STEPS", "35")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "temporal_rgb35")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_NUM_FRAMES", "49")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_HEIGHT", "480")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_WIDTH", "640")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_FPS", "12")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS", "1200")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER", "false")
     runtime_env = vpa._probe_env(job_dir=tmp_path / "runtime", enable_isaac_smoke=False)
     assert runtime_env["BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY"] == "disabled"
     assert runtime_env["BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL"] == "true"
     assert runtime_env["BLUEPRINT_OSCAR_WAM_OMIT_FPS_ARG"] == "true"
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_NUM_STEPS"] == "35"
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE"] == "temporal_rgb35"
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_NUM_FRAMES"] == "49"
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_HEIGHT"] == "480"
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_WIDTH"] == "640"
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_FPS"] == "12"
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS"] == "1200"
+    assert runtime_env["BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER"] == "false"
     assert runtime_env["MY_API_KEY"] == "forwarded-secret"
     monkeypatch.setenv(
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",

@@ -2702,8 +2702,10 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
             "commands": commands,
             "blockers": blockers,
         }
-    # Packages that must import for checkpoint download + a single inference. hf_transfer is
-    # required because the runtime enables HF_HUB_ENABLE_HF_TRANSFER (downloads fail without it).
+    # Packages that must import for checkpoint download + a single inference. Install
+    # hf_transfer when runtime deps are installed so fast Hugging Face transfer can be
+    # enabled, but the checkpoint path must still honor
+    # BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER=false on reusable images that do not ship it.
     required_packages = [
         "huggingface_hub",
         "hf_transfer",
@@ -3027,13 +3029,13 @@ def _checkpoint(work_dir: Path, python: str, *, timeout_seconds: float) -> tuple
     env["BLUEPRINT_OSCAR_WAM_HF_REPO"] = OSCAR_HF_REPO
     env["BLUEPRINT_OSCAR_WAM_CHECKPOINT_TARGET"] = str(target)
     env.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-    if os.environ.get("BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER", "true").strip().lower() in {
+    hf_transfer_enabled = os.environ.get("BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER", "true").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
-    }:
-        env.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    }
+    env["HF_HUB_ENABLE_HF_TRANSFER"] = "1" if hf_transfer_enabled else "0"
     target.mkdir(parents=True, exist_ok=True)
     detail = _run_checkpoint_download(
         [python, "-c", code],

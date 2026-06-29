@@ -429,6 +429,8 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
     assert "BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL" in runner_text
     assert "BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS" in runner_text
     assert "BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER" in runner_text
+    assert 'env["HF_HUB_ENABLE_HF_TRANSFER"] = "1" if hf_transfer_enabled else "0"' in runner_text
+    assert 'env.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")' not in runner_text
     assert "checkpoint_download_waiting" in runner_text
     assert "checkpoint_download_timeout_reached" in runner_text
     assert "start_new_session=True" in runner_text
