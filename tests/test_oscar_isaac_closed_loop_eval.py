@@ -1110,3 +1110,72 @@ def test_closed_loop_short_sanity_launch_plan_blocks_vast_authorization(
     assert launch_plan["claim_boundary"]["plan_is_no_spend"] is True
     assert len(plan["blockers"]) == len(set(plan["blockers"]))
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+
+
+def test_closed_loop_short_sanity_launch_plan_allows_fresh_vast_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("cv2")
+    seed, route = _write_seed_geometry_route(tmp_path)
+    key_file = tmp_path / "vast_api_key"
+    key_file.write_text("redacted-test-key\n", encoding="utf-8")
+    budget = tmp_path / "fresh_budget.json"
+    budget.write_text(
+        json.dumps({"schema_version": "vast_session_cost_summary.v4", "attempts": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
+    monkeypatch.setenv("VAST_API_KEY_FILE", str(key_file))
+    monkeypatch.setenv("VAST_SESSION_BUDGET_LEDGER_FILE", str(budget))
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_MAX_HOURLY_RATE", "0.25")
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_MAX_LIVE_MINUTES", "10")
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_SESSION_MAX_LIVE_MINUTES", "30")
+    monkeypatch.setenv("BLUEPRINT_VAST_WAM_HARD_CAP_USD", "0.50")
+
+    exit_code = L.main(
+        [
+            "--start-frame",
+            str(seed),
+            "--route-file",
+            str(route),
+            "--output-dir",
+            str(tmp_path / "closed_loop"),
+            "--wam-backend",
+            "oscar_wam",
+            "--use-provider-command",
+            "--oscar-provider",
+            "vast",
+            "--allow-paid-provider-launch",
+            "--steps",
+            "4",
+            "--oscar-guidance",
+            "4.25",
+            "--dry-run",
+        ]
+    )
+
+    assert exit_code == 2
+    plan = json.loads(
+        (tmp_path / "closed_loop" / "oscar_isaac_closed_loop_plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    launch_plan = plan["short_visual_sanity_launch_plan"]
+    assert launch_plan["status"] == "ready"
+    assert launch_plan["command_materialized"] is True
+    assert launch_plan["provider_launch_allowed_now"] is True
+    assert launch_plan["provider_launch_blockers"] == []
+    assert launch_plan["provider"] == "vast"
+    assert launch_plan["paid_provider_preflight"]["status"] == "ready"
+    assert launch_plan["paid_provider_preflight"]["budget_ledger_present"] is True
+    assert launch_plan["paid_provider_preflight"]["attempt_count"] == 0
+    assert Path(launch_plan["policy_observation_path"]).is_file()
+    assert launch_plan["blockers"] == []
+    assert "closed_loop_paid_long_wam_requires_passed_short_rollout_sanity" in plan[
+        "blockers"
+    ]
+    assert "short_visual_sanity_manifest_env_missing" in plan["blockers"]
+    assert "redacted-test-key" not in json.dumps(plan)
+    assert json.loads(capsys.readouterr().out)["status"] == "blocked"
