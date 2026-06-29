@@ -5002,6 +5002,39 @@ def _set_camera_fov(stage, cam_path: str, vfov_deg: float, width: int, height: i
         pass
 
 
+def _apply_robot_review_material(stage, robot_prim_path: str) -> int:
+    """Bind a neutral matte material to robot geometry so review renders can see G1 against dark targets.
+
+    This is intentionally robot-scoped and scene/task agnostic. It improves visual QC readability for
+    dark or reflective appliances without moving the robot, target, camera, or environment geometry.
+    """
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade  # type: ignore
+
+    robot = stage.GetPrimAtPath(robot_prim_path)
+    if not (robot and robot.IsValid()):
+        return 0
+    mat_path = "/World/Materials/RobotReviewVisible"
+    material = UsdShade.Material.Define(stage, mat_path)
+    shader = UsdShade.Shader.Define(stage, f"{mat_path}/PreviewSurface")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.82, 0.84, 0.86))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.72)
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+    bound = 0
+    for prim in Usd.PrimRange(robot):
+        try:
+            if not prim.IsA(UsdGeom.Gprim):
+                continue
+            UsdShade.MaterialBindingAPI(prim).Bind(material)
+            UsdGeom.Gprim(prim).CreateDisplayColorAttr([Gf.Vec3f(0.82, 0.84, 0.86)])
+            bound += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return bound
+
+
 def _add_workspace_fill_light(stage, target, *, intensity: float, height: float = 2.0,
                               path: str = "/World/WorkspaceFill") -> None:
     """Add a local sphere fill light above the manipulation workspace so the task surface and seeded
@@ -5303,6 +5336,12 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 _log(f"neutralized {n_dome} outdoor-HDRI dome light(s) -> enclosed neutral environment")
             except Exception as exc:  # noqa: BLE001
                 _log(f"environment neutralize skipped ({exc!r})")
+        if manipulation_cam or verify_cam:
+            try:
+                n_robot_mat = _apply_robot_review_material(stage, binding["prim_path"])
+                _log(f"robot review material bound to {n_robot_mat} G1 geometry prim(s)")
+            except Exception as exc:  # noqa: BLE001
+                _log(f"robot review material skipped ({exc!r})")
         _log(f"creating render products ({width}x{height})")
         over_annot = _make_render_product(over_cam, width, height)
         pov_annot = _make_render_product(pov_cam, width, height)

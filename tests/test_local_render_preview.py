@@ -277,6 +277,24 @@ def test_pov_headlamp_is_idempotent_and_front_of_camera() -> None:
     assert float(light.GetIntensityAttr().Get()) <= 6000.0
 
 
+def test_robot_review_material_binds_only_robot_geometry() -> None:
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdGeom, UsdShade  # type: ignore
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World/G1")
+    robot_mesh = UsdGeom.Mesh.Define(stage, "/World/G1/torso_mesh")
+    scene_mesh = UsdGeom.Mesh.Define(stage, "/World/Refrigerator/door_mesh")
+
+    bound = M._apply_robot_review_material(stage, "/World/G1")
+
+    assert bound == 1
+    robot_binding = UsdShade.MaterialBindingAPI(robot_mesh.GetPrim()).ComputeBoundMaterial()[0]
+    scene_binding = UsdShade.MaterialBindingAPI(scene_mesh.GetPrim()).ComputeBoundMaterial()[0]
+    assert robot_binding and str(robot_binding.GetPath()) == "/World/Materials/RobotReviewVisible"
+    assert not scene_binding
+
+
 def test_robot_neutral_descendant_xforms_restore_warm_stage_mutation() -> None:
     # Warm serve reuses one USD stage. A reach pose must not compound into the next job/frame.
     pytest.importorskip("pxr")
