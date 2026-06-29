@@ -36,6 +36,7 @@ from .oscar_wam_provider_command_adapter import run as run_oscar_wam_provider_ad
 from .wam_derived_observation_harness import run_wam_derived_observation_harness_step
 
 LOOP_SCHEMA_VERSION = "oscar_isaac_closed_loop_eval.v1"
+NEXT_OBSERVATION_SELECTION_SCHEMA_VERSION = "oscar_next_observation_selection.v1"
 
 # A WAM generation backend: given the current observation frame, the policy action, the step
 # index, and the action history, produce the next-observation frame path (and optional video).
@@ -47,6 +48,10 @@ WamGenerateNext = Callable[
 
 def _string(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _policy_observation(frame_path: str, target: Sequence[float], step_index: int) -> dict[str, Any]:
@@ -75,9 +80,9 @@ def build_oscar_per_step_request(
 
     OSCAR generates a short clip forward from the current observation (``current_frame_path``),
     conditioned on the task prompt and the projected G1 skeleton for this step's action. The
-    NEXT observation is the last frame of that clip. This is pure request shaping with no GPU or
-    OSCAR import, so it is fully unit-testable; the actual inference is the injected callable in
-    :func:`make_oscar_per_step_wam_backend`.
+    NEXT observation is selected from usable future frames of that clip. This is pure request
+    shaping with no GPU or OSCAR import, so it is fully unit-testable; the actual inference is the
+    injected callable in :func:`make_oscar_per_step_wam_backend`.
     """
     return {
         "schema_version": "oscar_per_step_generation_request.v1",
@@ -104,6 +109,7 @@ def build_wam_generation_step_input(
     task_prompt: str,
     next_observation_frame_path: str | Path | None = None,
     target_object_id: str = "task_target",
+    projected_skeleton_trace_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build the provider-bundle input for one per-step OSCAR WAM call."""
     frame = Path(current_frame_path).expanduser().resolve()
@@ -112,6 +118,10 @@ def build_wam_generation_step_input(
         "camera_frame_path": str(frame),
         "wam_generated_observation": step_index > 1,
     }
+    if projected_skeleton_trace_path:
+        trace_path = Path(projected_skeleton_trace_path).expanduser().resolve()
+        visual["g1_projected_skeleton_trace_jsonl"] = str(trace_path)
+        visual["projected_skeleton_trace_path"] = str(trace_path)
     out = Path(output_dir).expanduser().resolve()
     requested_next = (
         Path(next_observation_frame_path).expanduser()
@@ -203,6 +213,7 @@ def make_oscar_provider_command_wam_backend(
     timeout_seconds: float = 3600.0,
     adapter_run: Callable[[Sequence[str] | None], Mapping[str, Any]] = run_oscar_wam_provider_adapter,
     extract_next_frame: Callable[[str | Path, str | Path], Path | None] | None = None,
+    projected_skeleton_trace_path: str | Path | None = None,
 ) -> WamGenerateNext:
     """Drive one fresh OSCAR provider run per closed-loop step."""
     resolved_work = Path(work_dir).expanduser().resolve()
@@ -222,6 +233,7 @@ def make_oscar_provider_command_wam_backend(
             step_index=step_index,
             output_dir=step_dir,
             task_prompt=task_prompt,
+            projected_skeleton_trace_path=projected_skeleton_trace_path if step_index == 1 else None,
         )
         step_input_path = step_dir / "wam_generation_step_input.json"
         write_json(step_input_path, step_input)
@@ -259,7 +271,7 @@ def make_oscar_provider_command_wam_backend(
                 "fresh_provider_model_run_claimed": False,
                 "blockers": payload.get("blockers") or ["oscar_provider_video_missing"],
             }
-        extractor = extract_next_frame or extract_last_frame_via_opencv
+        extractor = extract_next_frame or extract_next_observation_frame_from_video
         next_frame = extractor(video, step_dir / "next_observation")
         if next_frame is None or not Path(next_frame).is_file():
             return {
@@ -378,34 +390,150 @@ def _step_backend_status(step_record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def extract_last_frame_via_opencv(video_path: str | Path, out_dir: str | Path) -> Path | None:
-    """Default ``extract_next_frame``: the last frame of an OSCAR clip is the next observation.
+def _frame_signal_stats(frame: Any, cv2: Any) -> dict[str, Any]:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
+    edges = cv2.Canny(gray, 50, 150)
+    return {
+        "mean_luma": round(float(gray.mean()), 3),
+        "std_luma": round(float(gray.std()), 3),
+        "luma_min": int(gray.min()),
+        "luma_max": int(gray.max()),
+        "luma_range": int(gray.max()) - int(gray.min()),
+        "dark_pixel_ratio": round(float((gray < 32).mean()), 6),
+        "bright_pixel_ratio": round(float((gray > 224).mean()), 6),
+        "edge_density": round(float((edges > 0).mean()), 6),
+    }
 
-    Uses OpenCV when available and falls back to ffmpeg on local control-plane machines that
-    download a provider MP4 but do not have cv2 installed. Returns the saved PNG path or None.
+
+def _next_observation_signal_blockers(stats: Mapping[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    mean_luma = float(stats.get("mean_luma") or 0.0)
+    std_luma = float(stats.get("std_luma") or 0.0)
+    luma_range = float(stats.get("luma_range") or 0.0)
+    dark_ratio = float(stats.get("dark_pixel_ratio") or 0.0)
+    bright_ratio = float(stats.get("bright_pixel_ratio") or 0.0)
+    edge_density = float(stats.get("edge_density") or 0.0)
+    if mean_luma < 25.0 or dark_ratio > 0.78:
+        blockers.append("next_observation_candidate_too_dark")
+    if mean_luma > 245.0 and bright_ratio > 0.90:
+        blockers.append("next_observation_candidate_overexposed")
+    if std_luma < 8.0 or luma_range < 32.0:
+        blockers.append("next_observation_candidate_flat_or_low_contrast")
+    if edge_density < 0.002:
+        blockers.append("next_observation_candidate_low_scene_structure")
+    if edge_density > 0.12 and std_luma < 28.0:
+        blockers.append("next_observation_candidate_static_noise_artifact")
+    return blockers
+
+
+def _write_selection_manifest(
+    out_dir: Path,
+    *,
+    status: str,
+    video_path: Path,
+    candidates: Sequence[Mapping[str, Any]],
+    selected_frame_index: int | None,
+    blockers: Sequence[str],
+    extraction_method: str,
+) -> None:
+    write_json(
+        out_dir / "next_observation_selection.json",
+        {
+            "schema_version": NEXT_OBSERVATION_SELECTION_SCHEMA_VERSION,
+            "status": status,
+            "video_path": str(video_path),
+            "selected_frame_index": selected_frame_index,
+            "extraction_method": extraction_method,
+            "candidate_count": len(candidates),
+            "candidates": list(candidates),
+            "blockers": list(blockers),
+            "claim_boundary": {
+                "selected_frame_is_generated_next_observation_candidate": status == "completed",
+                "visual_signal_gate_is_not_task_success_evidence": True,
+                "scene_or_task_specific_pixels_used": False,
+            },
+        },
+    )
+
+
+def extract_next_observation_frame_from_video(video_path: str | Path, out_dir: str | Path) -> Path | None:
+    """Default ``extract_next_frame`` for OSCAR clips.
+
+    The first video frame is treated as the seed/current observation. The next observation is the
+    earliest future frame with enough generic visual signal to feed the harness. This avoids
+    advancing the closed loop with late frames that have collapsed to dark/flat artifacts while
+    keeping the gate task- and scene-neutral.
     """
     resolved_out = Path(out_dir).expanduser()
     resolved_out.mkdir(parents=True, exist_ok=True)
+    resolved_video = Path(video_path).expanduser()
     try:
         import cv2  # local import: only needed where a real clip is produced
     except ImportError:
         cv2 = None
     if cv2 is not None:
-        capture = cv2.VideoCapture(str(video_path))
-        last_frame = None
+        capture = cv2.VideoCapture(str(resolved_video))
+        candidates: list[dict[str, Any]] = []
+        selected_index: int | None = None
+        selected_frame = None
         try:
+            frame_index = 0
             while True:
                 ok, frame = capture.read()
                 if not ok:
                     break
-                last_frame = frame
+                stats = _frame_signal_stats(frame, cv2)
+                blockers = (
+                    ["next_observation_candidate_is_seed_frame"]
+                    if frame_index == 0
+                    else _next_observation_signal_blockers(stats)
+                )
+                candidates.append(
+                    {
+                        "frame_index": frame_index,
+                        **stats,
+                        "blockers": blockers,
+                    }
+                )
+                if frame_index > 0 and not blockers:
+                    selected_index = frame_index
+                    selected_frame = frame.copy()
+                    break
+                frame_index += 1
         finally:
             capture.release()
-        if last_frame is None:
+        if selected_frame is None:
+            _write_selection_manifest(
+                resolved_out,
+                status="blocked",
+                video_path=resolved_video,
+                candidates=candidates,
+                selected_frame_index=None,
+                blockers=["no_usable_future_next_observation_frame"],
+                extraction_method="opencv_signal_gate",
+            )
             return None
         frame_path = resolved_out / "next_observation.png"
-        if not cv2.imwrite(str(frame_path), last_frame):
+        if not cv2.imwrite(str(frame_path), selected_frame):
+            _write_selection_manifest(
+                resolved_out,
+                status="blocked",
+                video_path=resolved_video,
+                candidates=candidates,
+                selected_frame_index=selected_index,
+                blockers=["next_observation_frame_write_failed"],
+                extraction_method="opencv_signal_gate",
+            )
             return None
+        _write_selection_manifest(
+            resolved_out,
+            status="completed",
+            video_path=resolved_video,
+            candidates=candidates,
+            selected_frame_index=selected_index,
+            blockers=[],
+            extraction_method="opencv_signal_gate",
+        )
         return frame_path
 
     frame_path = resolved_out / "next_observation.png"
@@ -419,10 +547,10 @@ def extract_last_frame_via_opencv(video_path: str | Path, out_dir: str | Path) -
                 "-loglevel",
                 "error",
                 "-y",
-                "-sseof",
-                "-1",
                 "-i",
-                str(video_path),
+                str(resolved_video),
+                "-vf",
+                "select=gte(n\\,1)",
                 "-frames:v",
                 "1",
                 str(frame_path),
@@ -434,7 +562,252 @@ def extract_last_frame_via_opencv(video_path: str | Path, out_dir: str | Path) -
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return frame_path if result.returncode == 0 and frame_path.is_file() else None
+    if result.returncode != 0 or not frame_path.is_file():
+        _write_selection_manifest(
+            resolved_out,
+            status="blocked",
+            video_path=resolved_video,
+            candidates=[],
+            selected_frame_index=None,
+            blockers=["ffmpeg_first_future_frame_extraction_failed"],
+            extraction_method="ffmpeg_first_future_frame",
+        )
+        return None
+    _write_selection_manifest(
+        resolved_out,
+        status="completed",
+        video_path=resolved_video,
+        candidates=[],
+        selected_frame_index=1,
+        blockers=[],
+        extraction_method="ffmpeg_first_future_frame",
+    )
+    return frame_path
+
+
+def extract_last_frame_via_opencv(video_path: str | Path, out_dir: str | Path) -> Path | None:
+    """Compatibility wrapper for older callers.
+
+    Despite the historical name, the closed-loop now extracts the earliest usable future frame
+    rather than blindly taking the last frame.
+    """
+    return extract_next_observation_frame_from_video(video_path, out_dir)
+
+
+def _geometry_sidecar_from_route(
+    route_payload: Mapping[str, Any],
+    *,
+    start_frame_path: str | Path,
+) -> Path | None:
+    candidates: list[Any] = [
+        route_payload.get("manipulation_pov_geometry_path"),
+        route_payload.get("seed_geometry_path"),
+        route_payload.get("geometry_path"),
+    ]
+    source_trace = _string(route_payload.get("source_trace"))
+    if source_trace:
+        candidates.append(Path(source_trace).expanduser().parent / "manipulation_pov_geometry.json")
+    start = Path(start_frame_path).expanduser()
+    candidates.append(start.parent / "manipulation_pov_geometry.json")
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if path.is_file():
+            return path.resolve()
+    return None
+
+
+def _infer_skeleton_segments(landmarks: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    ids = {_string(item.get("landmark_id")) for item in landmarks}
+    segments: list[dict[str, str]] = []
+    for prefix in ("left", "right"):
+        wrist = f"{prefix}_wrist_link"
+        hand = f"{prefix}_hand_link"
+        if wrist in ids and hand in ids:
+            segments.append({"from": wrist, "to": hand})
+    return segments
+
+
+def _scaled_projection_xy(
+    projection: Mapping[str, Any],
+    *,
+    x_scale: float,
+    y_scale: float,
+) -> tuple[float, float] | None:
+    if projection.get("available") is not True:
+        return None
+    try:
+        return float(projection.get("u_px")) * x_scale, float(projection.get("v_px")) * y_scale
+    except (TypeError, ValueError):
+        return None
+
+
+def _landmark_temporal_reach_fraction(landmark: Mapping[str, Any]) -> float:
+    text = f"{_string(landmark.get('landmark_id'))} {_string(landmark.get('link_role'))}".lower()
+    if "hand" in text or "gripper" in text:
+        return 0.70
+    if "wrist" in text:
+        return 0.45
+    if "elbow" in text or "forearm" in text:
+        return 0.25
+    if "shoulder" in text:
+        return 0.08
+    return 0.35
+
+
+def _temporal_projected_landmarks(
+    landmarks: Sequence[Mapping[str, Any]],
+    *,
+    target_projection_xy: tuple[float, float] | None,
+    progress: float,
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    bounded_progress = max(0.0, min(1.0, float(progress)))
+    for landmark in landmarks:
+        item = dict(landmark)
+        projection = dict(_mapping(item.get("image_projection")))
+        if target_projection_xy is not None and projection.get("available") is True:
+            try:
+                u_px = float(projection.get("u_px"))
+                v_px = float(projection.get("v_px"))
+            except (TypeError, ValueError):
+                output.append(item)
+                continue
+            reach = _landmark_temporal_reach_fraction(item) * bounded_progress
+            projection["u_px"] = round(u_px + (target_projection_xy[0] - u_px) * reach, 3)
+            projection["v_px"] = round(v_px + (target_projection_xy[1] - v_px) * reach, 3)
+        item["image_projection"] = projection
+        output.append(item)
+    return output
+
+
+def materialize_projected_skeleton_trace_from_seed_geometry(
+    *,
+    route_payload: Mapping[str, Any],
+    start_frame_path: str | Path,
+    output_dir: str | Path,
+    num_frames: int = 8,
+) -> Path | None:
+    """Convert a seed-render geometry sidecar into OSCAR's projected-skeleton trace format.
+
+    This uses route/seed metadata only. It does not know about kitchens, refrigerators, or fixed
+    coordinates; if no geometry sidecar is present, the caller simply proceeds without the trace.
+    """
+    geometry_path = _geometry_sidecar_from_route(route_payload, start_frame_path=start_frame_path)
+    if geometry_path is None:
+        return None
+    try:
+        payload = json.loads(geometry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    frames = payload.get("frames") if isinstance(payload.get("frames"), list) else [payload]
+    if not frames:
+        return None
+    row = next((item for item in frames if isinstance(item, Mapping)), None)
+    if row is None:
+        return None
+    raw_landmarks = row.get("projected_landmarks")
+    if not isinstance(raw_landmarks, Sequence) or isinstance(raw_landmarks, (str, bytes)):
+        return None
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        with Image.open(Path(start_frame_path).expanduser()) as image:
+            target_width, target_height = image.size
+    except Exception:
+        return None
+    seed_quality = row.get("seed_frame_quality") if isinstance(row.get("seed_frame_quality"), Mapping) else {}
+    image_size = seed_quality.get("image_size_px") if isinstance(seed_quality.get("image_size_px"), Sequence) else []
+    source_width = float(image_size[0]) if len(image_size) >= 2 else float(target_width)
+    source_height = float(image_size[1]) if len(image_size) >= 2 else float(target_height)
+    if source_width <= 0.0 or source_height <= 0.0:
+        return None
+    x_scale = float(target_width) / source_width
+    y_scale = float(target_height) / source_height
+    landmarks: list[dict[str, Any]] = []
+    for landmark in raw_landmarks:
+        if not isinstance(landmark, Mapping):
+            continue
+        projection = landmark.get("image_projection")
+        if not isinstance(projection, Mapping) or projection.get("available") is not True:
+            continue
+        projected_xy = _scaled_projection_xy(projection, x_scale=x_scale, y_scale=y_scale)
+        if projected_xy is None:
+            continue
+        landmarks.append(
+            {
+                "landmark_id": _string(landmark.get("landmark_id")),
+                "link_role": _string(landmark.get("link_role")),
+                "image_projection": {
+                    "available": True,
+                    "u_px": round(projected_xy[0], 3),
+                    "v_px": round(projected_xy[1], 3),
+                    "depth_m": projection.get("depth_m"),
+                },
+            }
+        )
+    if not landmarks:
+        return None
+    raw_segments = row.get("segments") if isinstance(row.get("segments"), Sequence) else []
+    segments = [
+        {"from": _string(segment.get("from")), "to": _string(segment.get("to"))}
+        for segment in raw_segments
+        if isinstance(segment, Mapping) and segment.get("from") and segment.get("to")
+    ]
+    if not segments:
+        segments = _infer_skeleton_segments(landmarks)
+    target_projection = row.get("target_projection")
+    target_projection_xy = (
+        _scaled_projection_xy(target_projection, x_scale=x_scale, y_scale=y_scale)
+        if isinstance(target_projection, Mapping)
+        else None
+    )
+    out = Path(output_dir).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    trace_path = out / "g1_projected_skeleton_trace.jsonl"
+    frame_count = max(1, int(num_frames)) if target_projection_xy is not None else 1
+    base_frame_index = int(row.get("frame_index") or row.get("step") or 0)
+    lines: list[str] = []
+    for trace_index in range(frame_count):
+        progress = trace_index / max(frame_count - 1, 1)
+        trace_landmarks = _temporal_projected_landmarks(
+            landmarks,
+            target_projection_xy=target_projection_xy,
+            progress=progress,
+        )
+        trace_row = {
+            "schema_version": "blueprint.g1.projected_upper_body_skeleton.v1",
+            "status": "completed",
+            "source_geometry_path": str(geometry_path),
+            "frame_index": base_frame_index + trace_index,
+            "temporal_progress": round(progress, 6),
+            "camera": _string(row.get("camera")) or "head_pov",
+            "image_size_px": [int(target_width), int(target_height)],
+            "source_image_size_px": [int(source_width), int(source_height)],
+            "target_projection": {
+                "available": target_projection_xy is not None,
+                "u_px": round(target_projection_xy[0], 3) if target_projection_xy else None,
+                "v_px": round(target_projection_xy[1], 3) if target_projection_xy else None,
+            },
+            "projected_landmark_count": len(trace_landmarks),
+            "landmarks": trace_landmarks,
+            "segments": segments,
+            "claim_boundary": {
+                "projected_skeleton_trace_derived_from_seed_render_geometry": True,
+                "temporal_rows_are_target_conditioning_from_resolved_affordance_projection": bool(
+                    target_projection_xy
+                ),
+                "not_a_learned_robot_policy_action": True,
+                "simulated_state_not_physical_robot_sensor_evidence": True,
+                "not_task_success_or_contact_proof": True,
+            },
+        }
+        lines.append(json.dumps(trace_row, sort_keys=True))
+    trace_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return trace_path
 
 
 def build_oscar_inference_argv(
@@ -848,7 +1221,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     out_dir = Path(args.output_dir).expanduser().resolve()
     ensure_dir(out_dir)
-    route = list(json.loads(Path(args.route_file).read_text(encoding="utf-8")).get("route_points") or [])
+    route_payload = json.loads(Path(args.route_file).read_text(encoding="utf-8"))
+    route = list(route_payload.get("route_points") or [])
+    projected_skeleton_trace_path = materialize_projected_skeleton_trace_from_seed_geometry(
+        route_payload=route_payload,
+        start_frame_path=args.start_frame,
+        output_dir=out_dir / "seed_conditioning",
+        num_frames=int(args.num_frames),
+    )
     harness_command = (
         shlex.split(args.harness_backend_command)
         if args.harness_backend_command
@@ -865,6 +1245,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "start_frame": args.start_frame,
             "start_frame_present": Path(args.start_frame).expanduser().is_file(),
             "route_point_count": len(route),
+            "projected_skeleton_trace_path": str(projected_skeleton_trace_path)
+            if projected_skeleton_trace_path
+            else None,
             "steps": int(args.steps),
             "task_prompt": args.task_prompt,
             "num_frames_per_step": int(args.num_frames),
@@ -895,6 +1278,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             provider=args.oscar_provider,
             allow_paid_provider_launch=bool(args.allow_paid_provider_launch),
             timeout_seconds=float(args.provider_timeout_seconds),
+            projected_skeleton_trace_path=projected_skeleton_trace_path,
         )
     else:
         import subprocess
@@ -903,7 +1287,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             oscar_repo=args.oscar_repo,
             checkpoint=args.checkpoint,
             run=subprocess.run,
-            extract_next_frame=extract_last_frame_via_opencv,
+            extract_next_frame=extract_next_observation_frame_from_video,
         )
         backend = make_oscar_per_step_wam_backend(
             oscar_generate=oscar_generate,

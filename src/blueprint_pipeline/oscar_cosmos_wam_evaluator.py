@@ -38,6 +38,10 @@ from .policy_model_runtime_proofs import (
     discover_openvla_provider_smoke_proof,
     discover_unitree_unifolm_provider_smoke_proof,
 )
+from .wam_backend_strategy import (
+    build_wam_backend_strategy_manifest,
+    get_wam_backend_strategy,
+)
 from .wam_generated_video_review import (
     validate_generated_mp4_for_review,
     visual_smoke_generated_rollouts_for_review,
@@ -45,7 +49,7 @@ from .wam_generated_video_review import (
 
 
 WAM_EVALUATOR_SCHEMA_VERSION = "oscar_cosmos_wam_evaluator.v1"
-DEFAULT_MODEL_CANDIDATES = ("oscar_wam", "cosmos_wam")
+DEFAULT_MODEL_CANDIDATES = ("cosmos3_wam", "oscar_wam", "cosmos_wam")
 LOCAL_MODEL_GATE_ENV = "BLUEPRINT_ALLOW_LOCAL_WAM_MODEL"
 WAM_SUCCESS_LABEL_GATE_ENV = "BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING"
 WAM_SUCCESS_LABEL_COMMAND_ENV = "BLUEPRINT_WAM_SUCCESS_LABEL_COMMAND"
@@ -167,9 +171,17 @@ MODEL_SOURCE_HINTS = {
     },
     "cosmos3_wam": {
         "provider": "nvidia_cosmos_family",
-        "source_urls": ["https://github.com/nvidia/cosmos"],
+        "source_urls": [
+            "https://github.com/NVIDIA/Cosmos",
+            "https://research.nvidia.com/labs/cosmos-lab/cosmos3/",
+            "https://research.nvidia.com/labs/cosmos-lab/cosmos3/technical-report.pdf",
+        ],
         "auth_groups": ["huggingface", "ngc"],
         "cloud_gpu_required_without_local_gpu": True,
+        "host_requirements": {
+            "accelerator": "NVIDIA CUDA GPU",
+            "note": "Cosmos 3 is preferred only as an explicitly configured adapter; model family choice is not rank-fidelity proof.",
+        },
     },
     "openvla_policy": {
         "provider": "openvla",
@@ -1143,6 +1155,7 @@ def build_policy_model_endpoint_readiness_manifest(
     for candidate in candidates:
         contract = MODEL_RUNTIME_CONTRACTS.get(candidate, {})
         source_hint = MODEL_SOURCE_HINTS.get(candidate, {})
+        backend_strategy = get_wam_backend_strategy(candidate)
         command_env, command = _first_configured_env(contract.get("command_envs", ()))
         checkpoint_env, checkpoint = _first_configured_env(
             _checkpoint_env_names_with_aliases(contract)
@@ -1220,6 +1233,13 @@ def build_policy_model_endpoint_readiness_manifest(
             {
                 "candidate_id": candidate,
                 "runtime_role": contract.get("runtime_role", "replaceable_model_adapter"),
+                "backend_strategy": backend_strategy,
+                "backend_recommendation_tier": backend_strategy.get(
+                    "recommendation_tier"
+                ),
+                "preferred_for_new_configured_learned_wam": bool(
+                    backend_strategy.get("preferred_for_new_configured_learned_wam")
+                ),
                 "status": "ready_for_real_model_endpoint"
                 if real_model_runtime_ready
                 else "blocked",
@@ -1671,6 +1691,7 @@ def discover_wam_model_runtimes(
     for candidate in candidates:
         contract = MODEL_RUNTIME_CONTRACTS.get(candidate, {})
         source_hint = MODEL_SOURCE_HINTS.get(candidate, {})
+        backend_strategy = get_wam_backend_strategy(candidate)
         command_env, command = _first_configured_env(contract.get("command_envs", ()))
         checkpoint_envs = tuple(contract.get("checkpoint_envs", ()))
         checkpoint_env, checkpoint = _first_configured_env(
@@ -1735,6 +1756,13 @@ def discover_wam_model_runtimes(
             {
                 "candidate_id": candidate,
                 "runtime_role": contract.get("runtime_role", "replaceable_wam_adapter"),
+                "backend_strategy": backend_strategy,
+                "backend_recommendation_tier": backend_strategy.get(
+                    "recommendation_tier"
+                ),
+                "preferred_for_new_configured_learned_wam": bool(
+                    backend_strategy.get("preferred_for_new_configured_learned_wam")
+                ),
                 "status": row_status,
                 "command_env": command_env,
                 "command_configured": bool(command),
@@ -1876,14 +1904,22 @@ def _candidate_matrix(
 ) -> dict[str, Any]:
     openvla_proof = _mapping(openvla_provider_smoke_proof)
     openvla_provider_smoke_completed = bool(openvla_proof.get("provider_smoke_completed"))
+    oscar_strategy = get_wam_backend_strategy("oscar_wam")
+    cosmos25_strategy = get_wam_backend_strategy("cosmos_wam")
+    cosmos3_strategy = get_wam_backend_strategy("cosmos3_wam")
+    cosmos3_super_strategy = get_wam_backend_strategy("cosmos3_super")
+    cosmos3_edge_strategy = get_wam_backend_strategy("cosmos3_edge")
     return {
         "schema_version": "policy_model_candidate_matrix.v1",
         "generated_at": generated_at,
         "status": "adapter_boundary_defined",
+        "preferred_configured_learned_wam_backend_candidate": "cosmos3_wam",
+        "preferred_configured_backend_is_not_permanent_dependency": True,
         "candidates": [
             {
                 "id": "oscar_wam",
                 "runtime_role": "action_conditioned_world_model_rollout_generator",
+                "backend_strategy": oscar_strategy,
                 "command_env": "BLUEPRINT_OSCAR_WAM_COMMAND",
                 "checkpoint_env": "BLUEPRINT_OSCAR_WAM_CHECKPOINT",
                 "auth_file_envs": ["HF_TOKEN_FILE", "HUGGINGFACE_HUB_TOKEN_FILE"],
@@ -1892,6 +1928,7 @@ def _candidate_matrix(
             {
                 "id": "cosmos_wam",
                 "runtime_role": "world_video_rollout_or_review_substrate",
+                "backend_strategy": cosmos25_strategy,
                 "command_env": "BLUEPRINT_COSMOS_WAM_COMMAND",
                 "checkpoint_env": "BLUEPRINT_COSMOS_WAM_CHECKPOINT",
                 "source_urls": [
@@ -1900,6 +1937,52 @@ def _candidate_matrix(
                 ],
                 "auth_file_envs": ["HF_TOKEN_FILE", "NGC_API_KEY_FILE"],
                 "cloud_gpu_provider_options": ["runpod", "vast"],
+            },
+            {
+                "id": "cosmos3_wam",
+                "runtime_role": "preferred_configured_world_action_model_evaluator_candidate",
+                "backend_strategy": cosmos3_strategy,
+                "command_env": "BLUEPRINT_COSMOS3_WAM_COMMAND",
+                "checkpoint_env": "BLUEPRINT_COSMOS3_WAM_CHECKPOINT",
+                "source_urls": [
+                    "https://github.com/NVIDIA/Cosmos",
+                    "https://research.nvidia.com/labs/cosmos-lab/cosmos3/",
+                    "https://research.nvidia.com/labs/cosmos-lab/cosmos3/technical-report.pdf",
+                ],
+                "auth_file_envs": ["HF_TOKEN_FILE", "NGC_API_KEY_FILE"],
+                "cloud_gpu_provider_options": ["runpod", "vast"],
+                "preferred_for_new_configured_learned_wam": True,
+                "auto_run_allowed_without_gate": False,
+                "claim_boundary": {
+                    "cosmos3_preference_is_not_universal_grading_proof": True,
+                    "requires_adapter_calibration_and_external_consistency_scorer": True,
+                    "generated_world_rank_fidelity_result_proven": False,
+                },
+            },
+            {
+                "id": "cosmos3_super",
+                "runtime_role": "high_cost_adjudication_candidate",
+                "backend_strategy": cosmos3_super_strategy,
+                "default_local_runtime_candidate": False,
+                "auto_run_allowed_without_gate": False,
+                "claim_boundary": {
+                    "high_cost_adjudication_candidate_not_default_local_path": True,
+                    "generated_world_rank_fidelity_result_proven": False,
+                },
+            },
+            {
+                "id": "cosmos3_edge",
+                "runtime_role": "announced_edge_candidate_not_default",
+                "backend_strategy": cosmos3_edge_strategy,
+                "release_status_from_primary_source": (
+                    "technical_report_says_included_in_later_release"
+                ),
+                "default_local_runtime_candidate": False,
+                "treat_as_released_default": False,
+                "claim_boundary": {
+                    "cosmos3_edge_treated_as_released_default": False,
+                    "generated_world_rank_fidelity_result_proven": False,
+                },
             },
             {
                 "id": "openvla_policy",
@@ -4050,6 +4133,21 @@ def run_oscar_cosmos_wam_evaluator(
         output_dir / "local_model_source_tree_discovery.json",
         _mapping(runtime_discovery.get("local_model_source_tree_discovery")),
     )
+    configured_backend_ids = [
+        _string(row.get("candidate_id"))
+        for row in runtime_discovery.get("candidates", []) or []
+        if isinstance(row, Mapping)
+        and (row.get("command_configured") or row.get("checkpoint_configured"))
+    ]
+    backend_strategy_manifest = build_wam_backend_strategy_manifest(
+        generated_at=generated,
+        selected_backend_ids=model_candidates,
+        configured_backend_ids=configured_backend_ids,
+    )
+    write_json(
+        output_dir / "wam_backend_strategy_manifest.json",
+        backend_strategy_manifest,
+    )
     openvla_provider_smoke_requested = bool(
         "openvla_policy" in model_candidates
         or os.getenv("BLUEPRINT_OPENVLA_PROVIDER_SMOKE_JOB_DIR")
@@ -5297,6 +5395,21 @@ def run_oscar_cosmos_wam_evaluator(
         "manipulation_loop_blockers": manipulation_loop_readiness.get("blockers", []),
         "unitree_g1_dexterous_manipulation_proven": False,
         "selected_model_candidate": runtime_discovery.get("selected_candidate"),
+        "wam_backend_strategy_manifest": str(output_dir / "wam_backend_strategy_manifest.json"),
+        "preferred_configured_learned_wam_backend_candidate": backend_strategy_manifest.get(
+            "preferred_configured_learned_wam_backend_candidate"
+        ),
+        "preferred_configured_backend_is_not_permanent_dependency": bool(
+            backend_strategy_manifest.get(
+                "preferred_configured_backend_is_not_permanent_dependency"
+            )
+        ),
+        "cosmos3_preference_is_not_universal_grading_proof": bool(
+            _mapping(backend_strategy_manifest.get("claim_boundary")).get(
+                "cosmos3_preference_does_not_prove_universal_all_task_grading"
+            )
+        ),
+        "model_choice_does_not_prove_generated_world_rank_fidelity": True,
         "action_conditioned_video_rollout_generated": learned_wam_model_output_available,
         "action_conditioned_video_rollout_available": learned_wam_model_output_available,
         "valid_reviewable_generated_video_available": bool(rollouts and visual_rollout_useful),
@@ -5330,6 +5443,7 @@ def run_oscar_cosmos_wam_evaluator(
         "fixture_policy_used_as_wam_model": False,
         "generated_outputs_are_raw_capture_evidence": False,
         "wam_rollout_is_robot_policy": False,
+        "cosmos3_wam_never_auto_runs_without_explicit_adapter_and_gates": True,
         "generated_world_rank_fidelity_result_proven": False,
         "generated_world_policy_evaluation_scope_proven": False,
         "official_unitree_controller_proven": bool(
@@ -5495,6 +5609,22 @@ def run_oscar_cosmos_wam_evaluator(
         "wam_manipulation_loop_readiness_status": manipulation_loop_readiness.get("status"),
         "manipulation_loop_blockers": manipulation_loop_readiness.get("blockers", []),
         "unitree_g1_dexterous_manipulation_proven": False,
+        "selected_model_candidate": runtime_discovery.get("selected_candidate"),
+        "preferred_configured_learned_wam_backend_candidate": backend_strategy_manifest.get(
+            "preferred_configured_learned_wam_backend_candidate"
+        ),
+        "preferred_configured_backend_is_not_permanent_dependency": bool(
+            backend_strategy_manifest.get(
+                "preferred_configured_backend_is_not_permanent_dependency"
+            )
+        ),
+        "cosmos3_wam_never_auto_runs_without_explicit_adapter_and_gates": True,
+        "cosmos3_preference_is_not_universal_grading_proof": bool(
+            _mapping(backend_strategy_manifest.get("claim_boundary")).get(
+                "cosmos3_preference_does_not_prove_universal_all_task_grading"
+            )
+        ),
+        "model_choice_does_not_prove_generated_world_rank_fidelity": True,
         "wam_success_label_from_generated_video": success_label_generated,
         "wam_success_label_judge_configured": success_label_judge_configured,
         "wam_success_label_judge_ran": success_label_judge_ran,
@@ -5527,6 +5657,7 @@ def run_oscar_cosmos_wam_evaluator(
         else success_label_blockers,
         "artifact_paths": {
             "wam_model_runtime_discovery": str(output_dir / "wam_model_runtime_discovery.json"),
+            "wam_backend_strategy_manifest": str(output_dir / "wam_backend_strategy_manifest.json"),
             "wam_rollout_input_manifest": str(output_dir / "wam_rollout_input_manifest.json"),
             "wam_action_conditioning_manifest": str(output_dir / "wam_action_conditioning_manifest.json"),
             "wam_generated_rollout_manifest": str(output_dir / "wam_generated_rollout_manifest.json"),

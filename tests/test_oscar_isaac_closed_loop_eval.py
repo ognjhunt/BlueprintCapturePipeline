@@ -217,6 +217,93 @@ def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_
     assert step_input["source_policy_action"]["task_prompt"] == "walk to the sink"
 
 
+def test_materialize_projected_skeleton_trace_from_seed_geometry_scales_to_seed(
+    tmp_path: Path,
+) -> None:
+    source_render = tmp_path / "render" / "frames" / "robot_pov_0000.png"
+    _write_frame(source_render, seed=9)
+    seed = tmp_path / "selected_seed.jpg"
+    _write_frame(seed, seed=10)
+    geometry = tmp_path / "render" / "manipulation_pov_geometry.json"
+    geometry.write_text(
+        json.dumps(
+            {
+                "schema_version": "manipulation_pov_geometry_index.v1",
+                "frames": [
+                    {
+                        "status": "PASS",
+                        "camera": "robot_pov",
+                        "seed_frame_quality": {"image_size_px": [128, 96]},
+                        "target_projection": {
+                            "available": True,
+                            "u_px": 100,
+                            "v_px": 60,
+                        },
+                        "projected_landmarks": [
+                            {
+                                "landmark_id": "left_wrist_link",
+                                "link_role": "wrist",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 64,
+                                    "v_px": 48,
+                                    "depth_m": 0.2,
+                                },
+                            },
+                            {
+                                "landmark_id": "left_hand_link",
+                                "link_role": "hand",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 96,
+                                    "v_px": 72,
+                                    "depth_m": 0.3,
+                                },
+                            },
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trace = tmp_path / "render" / "trace.jsonl"
+    trace.write_text("{}\n", encoding="utf-8")
+
+    out = L.materialize_projected_skeleton_trace_from_seed_geometry(
+        route_payload={"source_trace": str(trace)},
+        start_frame_path=seed,
+        output_dir=tmp_path / "conditioning",
+    )
+
+    assert out is not None and out.is_file()
+    rows = [
+        json.loads(line)
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 8
+    first = rows[0]
+    last = rows[-1]
+    assert first["image_size_px"] == [64, 48]
+    assert first["source_image_size_px"] == [128, 96]
+    assert first["target_projection"]["u_px"] == 50.0
+    assert first["target_projection"]["v_px"] == 30.0
+    assert first["projected_landmark_count"] == 2
+    assert first["landmarks"][0]["image_projection"]["u_px"] == 32.0
+    assert first["landmarks"][0]["image_projection"]["v_px"] == 24.0
+    assert first["segments"] == [{"from": "left_wrist_link", "to": "left_hand_link"}]
+    assert last["temporal_progress"] == 1.0
+    assert last["landmarks"][1]["image_projection"]["u_px"] > first["landmarks"][1]["image_projection"]["u_px"]
+    assert last["landmarks"][1]["image_projection"]["v_px"] < first["landmarks"][1]["image_projection"]["v_px"]
+    assert (
+        last["claim_boundary"][
+            "temporal_rows_are_target_conditioning_from_resolved_affordance_projection"
+        ]
+        is True
+    )
+
+
 def _real_backend_command(*, depth_kind: str = "depth_anything_3"):
     code = f"""
 import json, os
@@ -403,23 +490,72 @@ def test_local_oscar_subprocess_generate_blocks_on_nonzero(tmp_path: Path) -> No
     assert any("returncode" in b for b in out["blockers"])
 
 
-def test_extract_last_frame_via_opencv_roundtrip(tmp_path: Path) -> None:
+def test_extract_next_observation_selects_earliest_usable_future_frame(tmp_path: Path) -> None:
     cv2 = pytest.importorskip("cv2")
     import numpy as np
 
     video = tmp_path / "clip.mp4"
     writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (32, 24))
-    # 4 distinct frames; the last is solid-ish so we can verify it's the one extracted
-    for i in range(4):
-        frame = np.full((24, 32, 3), i * 60, dtype=np.uint8)
+    seed_frame = np.zeros((24, 32, 3), dtype=np.uint8)
+    seed_frame[:, ::2] = 220
+    usable_future = np.zeros((24, 32, 3), dtype=np.uint8)
+    usable_future[::2, :] = (235, 235, 235)
+    usable_future[:, ::4] = (24, 180, 240)
+    dark_late = np.full((24, 32, 3), 8, dtype=np.uint8)
+    for frame in (seed_frame, usable_future, dark_late, dark_late):
         writer.write(frame)
     writer.release()
 
-    out = L.extract_last_frame_via_opencv(video, tmp_path / "extracted")
+    out = L.extract_next_observation_frame_from_video(video, tmp_path / "extracted")
     assert out is not None and out.is_file()
     got = cv2.imread(str(out))
     assert got is not None and got.shape == (24, 32, 3)
-    assert int(got.mean()) > 120  # the brightest (last) frame, not an earlier dark one
+    assert int(got.mean()) > 80  # selected frame 1, not the late collapsed dark frame
+    selection = json.loads((tmp_path / "extracted" / "next_observation_selection.json").read_text(encoding="utf-8"))
+    assert selection["status"] == "completed"
+    assert selection["selected_frame_index"] == 1
+    assert selection["claim_boundary"]["scene_or_task_specific_pixels_used"] is False
+
+
+def test_extract_next_observation_blocks_when_future_frames_are_not_useful(tmp_path: Path) -> None:
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    video = tmp_path / "clip.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (32, 24))
+    seed_frame = np.zeros((24, 32, 3), dtype=np.uint8)
+    seed_frame[:, ::2] = 220
+    dark_future = np.full((24, 32, 3), 8, dtype=np.uint8)
+    for frame in (seed_frame, dark_future, dark_future):
+        writer.write(frame)
+    writer.release()
+
+    out = L.extract_next_observation_frame_from_video(video, tmp_path / "extracted")
+
+    assert out is None
+    selection = json.loads((tmp_path / "extracted" / "next_observation_selection.json").read_text(encoding="utf-8"))
+    assert selection["status"] == "blocked"
+    assert selection["selected_frame_index"] is None
+    assert "no_usable_future_next_observation_frame" in selection["blockers"]
+    assert any(
+        "next_observation_candidate_too_dark" in candidate["blockers"]
+        for candidate in selection["candidates"][1:]
+    )
+
+
+def test_extract_next_observation_blocks_static_noise_future_frame(tmp_path: Path) -> None:
+    stats = {
+        "mean_luma": 97.0,
+        "std_luma": 16.0,
+        "luma_range": 143,
+        "dark_pixel_ratio": 0.001,
+        "bright_pixel_ratio": 0.0,
+        "edge_density": 0.203,
+    }
+
+    blockers = L._next_observation_signal_blockers(stats)
+
+    assert "next_observation_candidate_static_noise_artifact" in blockers
 
 
 def test_extract_last_frame_uses_ffmpeg_when_cv2_missing(tmp_path: Path, monkeypatch) -> None:
@@ -442,10 +578,12 @@ def test_extract_last_frame_uses_ffmpeg_when_cv2_missing(tmp_path: Path, monkeyp
     monkeypatch.setattr(builtins, "__import__", fake_import)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    out = L.extract_last_frame_via_opencv(video, tmp_path / "extracted")
+    out = L.extract_next_observation_frame_from_video(video, tmp_path / "extracted")
 
     assert out == tmp_path / "extracted" / "next_observation.png"
     assert out.is_file()
+    selection = json.loads((tmp_path / "extracted" / "next_observation_selection.json").read_text(encoding="utf-8"))
+    assert selection["selected_frame_index"] == 1
 
 
 def test_closed_loop_blocks_on_empty_route(tmp_path: Path) -> None:

@@ -417,6 +417,42 @@ def test_low_res_smoke_profile_passes_decode_but_not_success_review_usefulness(
     ] is False
 
 
+def test_visual_smoke_fails_when_later_frames_become_static_noise(
+    tmp_path: Path,
+) -> None:
+    cv2 = pytest.importorskip("cv2")
+    video = tmp_path / "static_noise.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (640, 480))
+    assert writer.isOpened()
+    rng = np.random.default_rng(42)
+    for index in range(8):
+        if index == 0:
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            frame[:, :320] = (225, 225, 225)
+            frame[:, 320:] = (28, 60, 92)
+            cv2.rectangle(frame, (240, 130), (400, 350), (210, 210, 210), -1)
+            cv2.line(frame, (0, 240), (640, 240), (20, 20, 20), 5)
+            cv2.line(frame, (320, 0), (320, 480), (245, 245, 245), 5)
+        else:
+            frame = rng.integers(70, 140, (480, 640, 3), dtype=np.uint8)
+        writer.write(frame)
+    writer.release()
+
+    smoke = visual_smoke_generated_rollouts_for_review(
+        rollouts=[{"rollout_id": "rollout_static", "generated_video_path": str(video)}],
+        output_dir=tmp_path,
+        generated_at="now",
+        require_review_quality_profile=False,
+    )
+
+    assert smoke["status"] == "failed_visual_quality_smoke"
+    assert "generated_rollout_later_frames_static_noise_artifact" in smoke["blockers"]
+    assert (
+        smoke["rollouts"][0]["visual_quality_flags"]["later_frames_static_noise_artifact"]
+        is True
+    )
+
+
 def test_provider_completed_but_visual_quality_fails_on_dark_generated_frame(
     tmp_path: Path,
 ) -> None:

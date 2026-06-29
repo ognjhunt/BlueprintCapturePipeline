@@ -18,6 +18,15 @@ This keeps three claims separate:
 None of these are raw capture evidence, generated-world rank fidelity, deployment
 readiness, off-scope approval, SRCC proof, or real-world validation.
 
+SC3-Eval-style consistency is treated as a recipe layered on top of a configured
+world-action model, not as an automatic property of a model family. The recipe
+uses forward/inverse dynamics consistency, cross-view consistency, and
+uncertainty-driven early termination to decide whether a generated episode is
+reliable enough to keep or should be abstained from. In Blueprint those signals
+remain reliability and review signals only; they do not become generated-video
+success labels, policy-ranking outcomes, physical-robot proof, or public
+rank-fidelity claims.
+
 ## Artifacts
 
 The OSCAR/Cosmos WAM evaluator writes:

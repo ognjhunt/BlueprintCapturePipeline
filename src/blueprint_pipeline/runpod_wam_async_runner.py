@@ -16,6 +16,7 @@ from urllib.parse import urlparse, urlunparse
 from .common import ensure_dir, utc_now_iso, write_json
 from .runpod_provider_adapter import (
     RUNPOD_API_GATE_ENV,
+    RUNPOD_EXISTING_POD_ID_ENV,
     RUNPOD_API_KEY_FILE_ENV,
     RUNPOD_API_KEY_ENV,
     RUNPOD_REST_API_BASE,
@@ -42,6 +43,7 @@ RUNPOD_WAM_POLL_SCHEMA_VERSION = "runpod_wam_async_poll_manifest.v1"
 RUNPOD_WAM_DELETE_SCHEMA_VERSION = "runpod_wam_async_delete_manifest.v1"
 RUNPOD_WAM_STOP_SCHEMA_VERSION = "runpod_wam_async_stop_manifest.v1"
 RUNPOD_WAM_TEARDOWN_ACTION_ENV = "BLUEPRINT_RUNPOD_WAM_TEARDOWN_ACTION"
+RUNPOD_WAM_EXISTING_POD_ID_ENV = "BLUEPRINT_RUNPOD_WAM_EXISTING_POD_ID"
 RUNPOD_POD_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH"
 RUNPOD_UNITREE_GROOT_SONIC_FULL_LOOP_OVERRIDE_ENV = (
     "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
@@ -967,6 +969,29 @@ def _extract_pod_id(response: Mapping[str, Any]) -> str:
     return ""
 
 
+def _selected_existing_pod_id(explicit: str = "") -> str:
+    return (
+        _string(explicit)
+        or _string(os.getenv(RUNPOD_WAM_EXISTING_POD_ID_ENV))
+        or _string(os.getenv(RUNPOD_EXISTING_POD_ID_ENV))
+    )
+
+
+def _existing_pod_update_payload(pod_payload: Mapping[str, Any]) -> dict[str, Any]:
+    update_keys = {
+        "containerDiskInGb",
+        "dockerEntrypoint",
+        "dockerStartCmd",
+        "env",
+        "imageName",
+        "name",
+        "ports",
+        "volumeInGb",
+        "volumeMountPath",
+    }
+    return {key: pod_payload[key] for key in update_keys if key in pod_payload}
+
+
 def _pod_status(payload: Mapping[str, Any]) -> str:
     pod = _mapping(payload.get("pod")) or _mapping(payload.get("data")) or dict(payload)
     return (
@@ -1013,6 +1038,7 @@ def create_runpod_wam_async_run(
     allowed_cuda_versions: Sequence[str] = (),
     min_vcpu_per_gpu: int = 2,
     min_ram_per_gpu: int = 8,
+    existing_pod_id: str = "",
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
@@ -1250,15 +1276,51 @@ def create_runpod_wam_async_run(
         min_vcpu_per_gpu=min_vcpu_per_gpu,
         min_ram_per_gpu=min_ram_per_gpu,
     )
+    selected_existing_pod_id = _selected_existing_pod_id(existing_pod_id)
     try:
-        status_code, response = _runpod_request(
-            method="POST",
-            path="/pods",
-            api_key=api_key,
-            payload=payload,
-            timeout_seconds=45,
-        )
-        pod_id = _extract_pod_id(response)
+        if selected_existing_pod_id:
+            update_payload = _existing_pod_update_payload(payload)
+            update_status_code, update_response = _runpod_request(
+                method="POST",
+                path=f"/pods/{selected_existing_pod_id}/update",
+                api_key=api_key,
+                payload=update_payload,
+                timeout_seconds=45,
+            )
+            status_code, response = _runpod_request(
+                method="POST",
+                path=f"/pods/{selected_existing_pod_id}/start",
+                api_key=api_key,
+                payload={},
+                timeout_seconds=45,
+            )
+            pod_id = _extract_pod_id(response) or selected_existing_pod_id
+            launch_mode = "existing_pod_start"
+            warm_reuse_detail = {
+                "requested": True,
+                "existing_pod_id": selected_existing_pod_id,
+                "update_http_status_code": update_status_code,
+                "start_http_status_code": status_code,
+                "update_response_keys": sorted(update_response.keys()),
+                "start_response_keys": sorted(response.keys()),
+                "update_payload_keys": sorted(update_payload.keys()),
+                "raw_secret_values_recorded": False,
+            }
+        else:
+            status_code, response = _runpod_request(
+                method="POST",
+                path="/pods",
+                api_key=api_key,
+                payload=payload,
+                timeout_seconds=45,
+            )
+            pod_id = _extract_pod_id(response)
+            launch_mode = "fresh_pod_create"
+            warm_reuse_detail = {
+                "requested": False,
+                "existing_pod_id": "",
+                "raw_secret_values_recorded": False,
+            }
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")[:500]
         manifest = {
@@ -1272,6 +1334,12 @@ def create_runpod_wam_async_run(
             "runpod_error_preview": "REDACTED_SECRET" if api_key in error_body else error_body,
             "model_secret_env_status": model_secret_env_status,
             "provider_runtime_config_env_status": provider_runtime_config_env_status,
+            "pod_launch_mode": "existing_pod_start" if selected_existing_pod_id else "fresh_pod_create",
+            "warm_existing_pod": {
+                "requested": bool(selected_existing_pod_id),
+                "existing_pod_id": selected_existing_pod_id,
+                "raw_secret_values_recorded": False,
+            },
             "raw_secret_values_recorded": False,
         }
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
@@ -1299,6 +1367,8 @@ def create_runpod_wam_async_run(
         "job_dir": str(resolved_job_dir),
         "provider_bundle_kind": provider_bundle_kind,
         "pod_id": pod_id,
+        "pod_launch_mode": launch_mode,
+        "warm_existing_pod": warm_reuse_detail,
         "output_path": str(resolved_output),
         "public_base_url_present": bool(public_base_url),
         "explicit_provider_urls_used": direct_provider_urls,
@@ -1335,6 +1405,8 @@ def create_runpod_wam_async_run(
         "pod_id": pod_id,
         "http_status_code": status_code,
         "output_path": str(resolved_output),
+        "pod_launch_mode": launch_mode,
+        "warm_existing_pod": warm_reuse_detail,
         "pod_request_summary": _redacted_payload_summary(payload),
         "explicit_provider_urls_used": direct_provider_urls,
         "provider_bundle_url_redacted": _redact_provider_url(provider_bundle_url),

@@ -1090,6 +1090,31 @@ or generally superior outside the evaluator. Metrics such as MMRV, Spearman, and
 Pearson belong to calibration against paired real-world anchors, not to a
 default sim-only or fixture-only run.
 
+The preferred new learned-WAM evaluator candidate is `cosmos3_wam`
+(Cosmos3-Nano) when a real adapter, checkpoint/provider runtime, and explicit
+run gates are configured. This is not a permanent company dependency and not
+proof of universal grading. `oscar_wam` remains the OSCAR baseline/compatibility
+lane: OSCAR fine-tunes `Cosmos-Predict2.5-2B` on 180,657 filtered episodes
+(94,830 robot and 85,827 human egocentric) and reports skeleton-conditioned
+RoboArena policy-eval MMRV 0.571, Spearman 0.750, Pearson 0.852, and SISR delta
+1.73pp. Its GPT-5 success scorer matched 78/100 human labels, had specificity
+0.90, and missed about one third of real successes. `cosmos_wam` remains a
+legacy/advisory Cosmos-Predict2.5 baseline; NVIDIA's Cosmos-Predict2.5 repo says
+future releases, docs, and community support are focused on Cosmos 3.
+
+SC3-Eval is treated as a recipe: forward/inverse dynamics consistency,
+cross-view consistency, and uncertainty-driven early termination are
+reliability/abstention signals, not task-success labels or rank-fidelity proof.
+SC3-Eval initializes from Cosmos3-Nano and reports headline closed-loop Pearson
+0.929 / MMRV 0.119. Its in-distribution online split is 0.984 / 0.022 versus
+Cosmos-Predict2.5 at 0.897 / 0.090; on the out-of-distribution online split,
+Pearson is 0.870 versus 0.871 while MMRV is better at 0.171 versus 0.195. Its
+published scope is 381 hours in one table-bussing scene, 12 object categories,
+three camera views, seven policy checkpoints, and at most 20-second rollouts.
+`cosmos3_super` is a high-cost adjudication candidate, not the default local
+path; `cosmos3_edge` is not treated as a released/default runtime unless a
+future session reverifies availability from primary sources.
+
 When `eval_ready_task_grounding.json` is present, the OSCAR/Cosmos WAM evaluator
 copies it into the job directory, enriches task prompts with the selected
 task-object target, attaches the camera calibration quality gate, consumes the

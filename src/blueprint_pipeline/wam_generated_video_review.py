@@ -1517,6 +1517,7 @@ def visual_smoke_generated_rollouts_for_review(
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 luma_min = int(gray.min())
                 luma_max = int(gray.max())
+                std_luma = float(gray.std())
                 edges = cv2.Canny(gray, 50, 150)
                 edge_density = float((edges > 0).mean())
                 hist = cv2.calcHist(
@@ -1546,6 +1547,7 @@ def visual_smoke_generated_rollouts_for_review(
                         "frame_index": int(frame_index),
                         "path": str(sample_path),
                         "mean_luma": round(float(gray.mean()), 3),
+                        "std_luma": round(std_luma, 3),
                         "luma_min": luma_min,
                         "luma_max": luma_max,
                         "luma_range": luma_max - luma_min,
@@ -1582,6 +1584,15 @@ def visual_smoke_generated_rollouts_for_review(
                     for sample in later_samples
                 )
             )
+            later_static_or_noise_artifact = bool(
+                later_samples
+                and any(
+                    sample.get("edge_density_ratio_to_first", 0.0) > 3.0
+                    and sample.get("edge_density", 0.0) > 0.12
+                    and sample.get("std_luma", 0.0) < 28.0
+                    for sample in later_samples
+                )
+            )
             first_frame_not_scene_like = not first_preserves_scene
             quality_blockers = []
             if first_frame_not_scene_like:
@@ -1593,6 +1604,10 @@ def visual_smoke_generated_rollouts_for_review(
             if later_lost_scene_structure:
                 quality_blockers.append(
                     "generated_rollout_later_frames_lost_scene_structure"
+                )
+            if later_static_or_noise_artifact:
+                quality_blockers.append(
+                    "generated_rollout_later_frames_static_noise_artifact"
                 )
             review_usefulness_blockers = list(media_profile_blockers)
             if require_review_quality_profile:
@@ -1608,6 +1623,7 @@ def visual_smoke_generated_rollouts_for_review(
                         "first_frame_preserves_source_scene": first_preserves_scene,
                         "later_frames_flat_or_dark": later_flat_or_dark,
                         "later_frames_lost_scene_structure": later_lost_scene_structure,
+                        "later_frames_static_noise_artifact": later_static_or_noise_artifact,
                         "media_profile_reviewable_for_task_success": (
                             media_profile_reviewable
                         ),
@@ -1655,6 +1671,7 @@ def visual_smoke_generated_rollouts_for_review(
             "generated_rollout_first_frame_not_scene_like",
             "generated_rollout_later_frames_flat_or_dark",
             "generated_rollout_later_frames_lost_scene_structure",
+            "generated_rollout_later_frames_static_noise_artifact",
             "generated_rollout_video_resolution_too_low_for_task_success_review",
             "generated_rollout_video_fps_too_low_for_task_success_review",
             "generated_rollout_video_too_short_for_task_success_review",

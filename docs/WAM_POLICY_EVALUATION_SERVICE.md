@@ -17,7 +17,7 @@ The proof target is policy comparison inside a configured evaluator: policy A
 outperforms policies B and C on the same scenario matrix, observation protocol,
 and scoring protocol. This mirrors the evaluator framing in OSCAR
 (`https://arxiv.org/html/2606.04463v2`) and SC3-Eval
-(`https://arxiv.org/html/2606.18610v1`): generated or simulated rollouts can be
+(`https://arxiv.org/html/2606.18610v3`): generated or simulated rollouts can be
 used to rank policies, and evaluator quality is measured with rank fidelity and
 success-rate correlation when paired real-world anchors exist.
 
@@ -74,6 +74,50 @@ and `wam_eval_claim_boundary.json`.
 Forward/inverse consistency is a reliability signal for generated episodes. It
 can help decide whether to stop or distrust an evaluator rollout, but it is not
 itself a task-success label or policy-ranking outcome.
+
+## Backend Strategy
+
+The preferred new learned-WAM evaluator candidate is `cosmos3_wam`, modeled as
+Cosmos3-Nano behind the same replaceable adapter contract as the older
+OSCAR/Cosmos lanes. That preference is a backend strategy, not a permanent
+company dependency and not a public accuracy claim. It still requires an
+explicit adapter command, checkpoint or provider runtime, run gates, visual
+smoke, external success labels when used, external episode-consistency scoring
+when used, and accepted real-world anchors before any external rank-fidelity
+metric is claimed.
+
+The repo keeps the older lanes for baseline and compatibility:
+
+- `oscar_wam`: OSCAR fine-tunes `Cosmos-Predict2.5-2B` on 180,657 filtered
+  episodes: 94,830 robot episodes and 85,827 human egocentric episodes. Its
+  skeleton-conditioned RoboArena policy-eval result is MMRV 0.571, Spearman
+  0.750, Pearson 0.852, and SISR delta 1.73pp. Its GPT-5 generated-video
+  success scorer matched 78/100 human labels, had specificity 0.90, and missed
+  about one third of real successes, so Blueprint keeps generated-video success
+  labels separate from consistency and rank-fidelity calibration.
+- `cosmos_wam`: Cosmos-Predict2.5 remains a legacy/advisory baseline. NVIDIA's
+  Cosmos-Predict2.5 repository says the line is no longer under active
+  development and future releases, features, docs, and community support are
+  focused on Cosmos 3.
+- `cosmos3_wam`: Cosmos3-Nano is the preferred configured candidate for new
+  learned-WAM evaluator work. SC3-Eval initializes from Cosmos3-Nano and reports
+  headline closed-loop Pearson 0.929 and MMRV 0.119. Its in-distribution online
+  split is Pearson 0.984 / MMRV 0.022 versus Cosmos-Predict2.5 at 0.897 / 0.090.
+  On the out-of-distribution online split, SC3-Eval's Pearson is 0.870 versus
+  Cosmos-Predict2.5 at 0.871, while MMRV is better at 0.171 versus 0.195. That
+  supports a rank-fidelity preference, not universal grading.
+- `cosmos3_super`: high-cost adjudication candidate for contested rankings after
+  cheaper screens pass; not the default local path.
+- `cosmos3_edge`: the Cosmos 3 technical report describes Edge as a later
+  release, so Blueprint does not treat it as a released/default runtime unless a
+  future session reverifies availability from primary sources.
+
+SC3-Eval is a recipe, not just a checkpoint. Blueprint models its contribution
+as forward/inverse dynamics consistency, cross-view consistency, and
+uncertainty-driven early termination. These are reliability and abstention
+signals only. SC3-Eval's published scope is also narrow relative to Blueprint's
+goal: 381 hours in one physical table-bussing scene, 12 object categories, three
+camera views, seven policy checkpoints, and at most 20-second rollouts.
 
 ## Robot Policy Versus WAM
 

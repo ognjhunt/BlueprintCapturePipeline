@@ -287,6 +287,71 @@ def test_runpod_create_allows_unitree_groot_sonic_full_loop_bundle_without_overr
     assert "output-secret" not in persisted
 
 
+def test_runpod_create_reuses_dynamic_existing_pod_candidate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "wam_bundle.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_runtime/run_wam_provider_runtime.sh", "echo hi\n")
+    calls: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs["path"] == "/pods/warm-pod-123/update":
+            assert "gpuTypeIds" not in kwargs["payload"]
+            assert "gpuCount" not in kwargs["payload"]
+            assert kwargs["payload"]["imageName"] == "docker.io/example/wam:20260629"
+            assert kwargs["payload"]["env"]["BLUEPRINT_RUNPOD_PROVIDER_BUNDLE_KIND"] == "wam"
+            return 200, {"id": "warm-pod-123", "desiredStatus": "EXITED"}
+        if kwargs["path"] == "/pods/warm-pod-123/start":
+            assert kwargs["payload"] == {}
+            return 200, {"id": "warm-pod-123", "desiredStatus": "RUNNING"}
+        raise AssertionError(kwargs["path"])
+
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url="https://spaces.example/bundle.zip?X-Amz-Signature=bundle-secret",
+        provider_output_put_url="https://spaces.example/output.zip?X-Amz-Signature=output-secret",
+        allow_paid_runpod_launch=True,
+        skip_public_staging_verification=True,
+        image_name="docker.io/example/wam:20260629",
+        existing_pod_id="warm-pod-123",
+        generated_at="now",
+    )
+
+    assert [call["path"] for call in calls] == [
+        "/pods/warm-pod-123/update",
+        "/pods/warm-pod-123/start",
+    ]
+    assert manifest["status"] == "pod_created"
+    assert manifest["pod_id"] == "warm-pod-123"
+    assert manifest["pod_launch_mode"] == "existing_pod_start"
+    assert manifest["warm_existing_pod"]["requested"] is True
+    state = json.loads((tmp_path / "job" / "runpod_wam_async_state.json").read_text())
+    assert state["pod_id"] == "warm-pod-123"
+    assert state["pod_launch_mode"] == "existing_pod_start"
+    persisted = (tmp_path / "job" / "runpod_wam_async_create_manifest.json").read_text(
+        encoding="utf-8"
+    )
+    assert "runpod-secret-not-persisted" not in persisted
+    assert "bundle-secret" not in persisted
+    assert "output-secret" not in persisted
+
+
 def test_runpod_create_clears_stale_output_from_prior_run(
     tmp_path: Path,
     monkeypatch,

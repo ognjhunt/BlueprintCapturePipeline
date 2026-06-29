@@ -94,6 +94,14 @@ These should be deliberately replaceable:
 
 No repo should assume one specific model or provider is permanent.
 
+For current WAM evaluator work, Cosmos 3 can be treated as the preferred
+configured candidate when a real adapter, checkpoint/provider runtime, explicit
+run gates, consistency scorer, and calibration anchors exist. That preference
+must remain behind the same replaceable adapter boundary as OSCAR,
+Cosmos-Predict2.5, or any future model family. It is not universal grading
+proof, deployment approval, safety validation, physical-robot readiness, or a
+reason to weaken capture/provenance truth.
+
 ## Platform Moat
 
 Blueprint's moat should come from assets that get stronger when models commoditize:

@@ -74,7 +74,32 @@ def _write_projected_skeleton_trace(path: Path) -> None:
                 },
             ],
             "segments": [{"from": "left_hand", "to": "right_hand"}],
-        }
+        },
+        {
+            "schema_version": "blueprint.mujoco_g1.projected_upper_body_skeleton.v1",
+            "status": "completed",
+            "episode_id": "episode_0001",
+            "projected_landmark_count": 2,
+            "landmarks": [
+                {
+                    "landmark_id": "left_hand",
+                    "image_projection": {
+                        "available": True,
+                        "u_px": 27,
+                        "v_px": 23,
+                    },
+                },
+                {
+                    "landmark_id": "right_hand",
+                    "image_projection": {
+                        "available": True,
+                        "u_px": 37,
+                        "v_px": 23,
+                    },
+                },
+            ],
+            "segments": [{"from": "left_hand", "to": "right_hand"}],
+        },
     ]
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
@@ -701,6 +726,63 @@ def test_build_oscar_wam_provider_bundle_blocks_invalid_existing_conditioning_vi
     )
 
 
+def test_action_conditioned_projected_skeleton_trace_must_be_temporal(
+    tmp_path: Path,
+) -> None:
+    projected_trace = tmp_path / "g1_projected_skeleton_trace.jsonl"
+    projected_trace.write_text(
+        json.dumps(
+            {
+                "projected_landmark_count": 2,
+                "landmarks": [
+                    {
+                        "landmark_id": "left_hand",
+                        "image_projection": {"available": True, "u_px": 24, "v_px": 26},
+                    },
+                    {
+                        "landmark_id": "right_hand",
+                        "image_projection": {"available": True, "u_px": 40, "v_px": 26},
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    package = {
+        "schema_version": "blueprint_oscar_wam_input_package.v1",
+        "conditioning_video_review_validation": {"status": "completed", "blockers": []},
+        "conditioning_video_visual_smoke": {
+            "status": "failed_visual_quality_smoke",
+            "blockers": ["generated_rollout_first_frame_not_scene_like"],
+        },
+        "conditioning_video_decode_valid_for_review": True,
+        "conditioning_video_visually_useful_for_model_input": True,
+        "requested_output": {"action_conditioned_generation_required": True},
+        "skeleton_video": {
+            "conditioning_mode": "projected_g1_skeleton",
+            "projected_g1_skeleton_rendered": True,
+            "projected_g1_skeleton_landmark_draw_count": 2,
+            "projected_g1_skeleton_max_interframe_motion_px": 0.0,
+            "skeleton_stream_separate_from_rgb": True,
+            "skeleton_stream_texture_free": True,
+            "visual_signal": {"status": "completed", "blockers": []},
+        },
+        "projected_skeleton_trace": {
+            "path": str(projected_trace),
+            "used_for_conditioning": True,
+            "row_count": 1,
+            "projectable_row_count": 1,
+            "max_interframe_landmark_motion_px": 0.0,
+        },
+        "claim_boundary": {"projected_g1_skeleton_conditioning_used": True},
+    }
+
+    blockers = bundle_module._conditioning_video_input_blockers(package)
+
+    assert "oscar_input_projected_g1_skeleton_trace_not_temporal_action" in blockers
+
+
 def test_short_conditioning_video_can_stage_when_signal_is_useful_for_model_input(
     tmp_path: Path,
 ) -> None:
@@ -944,6 +1026,7 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
         )
     assert "provider_runtime/oscar_input/first_frame.png" in names
     assert "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4" in names
+    assert "provider_runtime/oscar_input/rgb_context.mp4" in names
     assert "provider_runtime/oscar_input/wam_auxiliary_observation_manifest.json" in names
     assert runtime_auxiliary["source_image_path"] == "provider_runtime/oscar_input/first_frame.png"
     assert str(tmp_path) not in json.dumps(runtime_auxiliary)
@@ -966,21 +1049,99 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
         ]
         is True
     )
+    assert input_package["rgb_video"]["path"] == "provider_runtime/oscar_input/rgb_context.mp4"
+    assert input_package["rgb_video"]["used_for_oscar_rgb_latent_context"] is True
+    assert input_package["rgb_video"]["rgb_context_mode"] == "single_frame_repeat"
+    assert (
+        input_package["oscar_rgb_context_runtime_contract"]["rgb_context_packaged"]
+        is True
+    )
     assert input_package["skeleton_video"]["visual_signal"]["auxiliary_target_overlay_used"] is True
     assert input_package["skeleton_video"]["visual_signal"]["auxiliary_target_bbox_used"] is True
-    assert input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is True
-    assert input_package["claim_boundary"]["auxiliary_observation_manifest_packaged"] is True
-    assert input_package["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
-    runtime_rollout = _read_json(
+
+
+def test_wam_generation_step_input_prefers_projected_skeleton_trace(
+    tmp_path: Path,
+) -> None:
+    source_frame = tmp_path / "policy_observation.jpg"
+    _write_review_png(source_frame)
+    projected_trace = tmp_path / "g1_projected_skeleton_trace.jsonl"
+    _write_projected_skeleton_trace(projected_trace)
+    step_input = tmp_path / "wam_generation_step_0001_input.json"
+    step_input.write_text(
+        json.dumps(
+            {
+                "schema_version": "wam_generation_step_input.v1",
+                "step_index": 1,
+                "source_policy_observation_frame_path": str(source_frame),
+                "source_policy_action": {
+                    "action_type": "accepted_direct_collision_checked_motion",
+                },
+                "current_policy_observation": {
+                    "task_id": "open_fridge",
+                    "target_object_id": "refrigerator",
+                    "robot_profile_id": "unitree_g1",
+                    "visual_observation": {
+                        "camera_id": "head_pov",
+                        "g1_projected_skeleton_trace_jsonl": str(projected_trace),
+                    },
+                },
+                "requested_output": {
+                    "next_observation_frame_path": str(tmp_path / "next.jpg"),
+                    "action_conditioned_generation_required": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "step-projected-bundle-job",
+        wam_rollout_input_manifest=step_input,
+        num_frames=8,
+        height=64,
+        width=64,
+        fps=5.0,
+        generated_at="2026-06-21T00:00:00+00:00",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["input_package_conditioning_video_blockers"] == []
+    bundle_path = Path(str(manifest["bundle_path"]))
+    with zipfile.ZipFile(bundle_path) as archive:
+        names = set(archive.namelist())
+    assert "provider_runtime/oscar_input/g1_projected_skeleton_trace.jsonl" in names
+    assert "provider_runtime/oscar_input/rgb_context.mp4" in names
+    runtime_manifest = _read_json(
         tmp_path
-        / "step-bundle-job"
+        / "step-projected-bundle-job"
         / "oscar_wam_provider_bundle"
         / "provider_runtime"
-        / "wam_rollout_input_manifest.json"
+        / "wam_provider_runtime_manifest.json"
     )
-    assert runtime_rollout["wam_auxiliary_observation_manifest_path"] == (
-        "provider_runtime/oscar_input/wam_auxiliary_observation_manifest.json"
+    input_package = runtime_manifest["input_package"]
+    assert input_package["skeleton_video"]["conditioning_mode"] == "projected_g1_skeleton"
+    assert input_package["skeleton_video"]["projected_g1_skeleton_rendered"] is True
+    assert input_package["projected_skeleton_trace"]["used_for_conditioning"] is True
+    assert (
+        input_package["oscar_projected_skeleton_runtime_contract"][
+            "projected_skeleton_trace_packaged"
+        ]
+        is True
     )
+    assert input_package["rgb_video"]["path"] == "provider_runtime/oscar_input/rgb_context.mp4"
+    assert input_package["rgb_video"]["used_for_oscar_rgb_latent_context"] is True
+    assert (
+        input_package["oscar_rgb_context_runtime_contract"]["projected_g1_rgb_context_enabled"]
+        is True
+    )
+    assert (
+        input_package["oscar_rgb_context_runtime_contract"][
+            "projected_g1_skeleton_conditioning_suppresses_rgb_context"
+        ]
+        is False
+    )
+    assert input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is False
 
 
 def test_oscar_wam_provider_bundle_zip_integrity_and_cli_edges(

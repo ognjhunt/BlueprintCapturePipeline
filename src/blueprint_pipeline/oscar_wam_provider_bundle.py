@@ -104,6 +104,183 @@ def _source_action_values(step_input: Mapping[str, Any]) -> list[float]:
     return result
 
 
+def _projected_skeleton_trace_path_from_wam_generation_step(
+    step_input: Mapping[str, Any],
+) -> Path | None:
+    observation = _mapping(step_input.get("current_policy_observation"))
+    visual = _mapping(observation.get("visual_observation"))
+    auxiliary = _mapping(step_input.get("auxiliary_observation"))
+    action_conditioning = _mapping(auxiliary.get("action_conditioning"))
+    candidates = [
+        step_input.get("g1_projected_skeleton_trace_jsonl"),
+        step_input.get("projected_skeleton_trace_path"),
+        visual.get("g1_projected_skeleton_trace_jsonl"),
+        visual.get("projected_skeleton_trace_path"),
+        observation.get("g1_projected_skeleton_trace_jsonl"),
+        observation.get("projected_skeleton_trace_path"),
+        action_conditioning.get("projected_skeleton_trace_path"),
+        action_conditioning.get("projected_hand_keypoint_trace_path"),
+    ]
+    for candidate in candidates:
+        text = _string(candidate)
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if path.is_file():
+            return path.resolve()
+    return None
+
+
+def _load_projected_skeleton_trace_rows(trace_path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in trace_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if isinstance(row, Mapping):
+                rows.append(dict(row))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return rows
+
+
+def _projected_landmark_pixel(landmark: Mapping[str, Any]) -> tuple[int, int] | None:
+    projection = _mapping(landmark.get("image_projection"))
+    if projection.get("available") is not True:
+        return None
+    try:
+        return int(round(float(projection.get("u_px")))), int(round(float(projection.get("v_px"))))
+    except (TypeError, ValueError):
+        return None
+
+
+def _projected_skeleton_trace_motion_px_max(rows: Sequence[Mapping[str, Any]]) -> float:
+    previous: dict[str, tuple[int, int]] | None = None
+    max_motion = 0.0
+    for row in rows:
+        landmarks = [
+            dict(item)
+            for item in (row.get("landmarks") or row.get("projected_landmarks") or [])
+            if isinstance(item, Mapping)
+        ]
+        current = {
+            _string(landmark.get("landmark_id")): point
+            for landmark in landmarks
+            if (point := _projected_landmark_pixel(landmark)) is not None
+            and _string(landmark.get("landmark_id"))
+        }
+        if previous:
+            for landmark_id, point in current.items():
+                old = previous.get(landmark_id)
+                if old is None:
+                    continue
+                dx = float(point[0] - old[0])
+                dy = float(point[1] - old[1])
+                max_motion = max(max_motion, (dx * dx + dy * dy) ** 0.5)
+        if current:
+            previous = current
+    return round(max_motion, 6)
+
+
+def _render_projected_skeleton_conditioning_video(
+    *,
+    trace_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: float,
+    num_frames: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    import cv2
+    import numpy as np
+
+    rows = _load_projected_skeleton_trace_rows(trace_path)
+    ensure_dir(output_path.parent)
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError("cv2_video_writer_failed_for_projected_skeleton_conditioning")
+    landmark_draw_counts: list[int] = []
+    for frame_index in range(max(1, int(num_frames))):
+        row = rows[min(frame_index, max(len(rows) - 1, 0))] if rows else {}
+        landmarks = [
+            dict(item)
+            for item in (row.get("landmarks") or row.get("projected_landmarks") or [])
+            if isinstance(item, Mapping)
+        ]
+        by_id = {
+            _string(landmark.get("landmark_id")): _projected_landmark_pixel(landmark)
+            for landmark in landmarks
+        }
+        canvas = np.zeros((height, width, 3), dtype=np.uint8)
+        segments = row.get("segments") if isinstance(row.get("segments"), Sequence) else []
+        for segment in segments:
+            if not isinstance(segment, Mapping):
+                continue
+            start = by_id.get(_string(segment.get("from")))
+            end = by_id.get(_string(segment.get("to")))
+            if start and end:
+                cv2.line(canvas, start, end, (255, 255, 255), 6, cv2.LINE_AA)
+        draw_count = 0
+        for landmark_id, point in by_id.items():
+            if not landmark_id or point is None:
+                continue
+            x, y = point
+            if x < -width or x > width * 2 or y < -height or y > height * 2:
+                continue
+            color = (255, 255, 255)
+            if "left" in landmark_id:
+                color = (255, 220, 90)
+            elif "right" in landmark_id:
+                color = (90, 220, 255)
+            cv2.circle(canvas, (x, y), max(5, width // 80), color, -1, cv2.LINE_AA)
+            draw_count += 1
+        landmark_draw_counts.append(draw_count)
+        writer.write(canvas)
+    writer.release()
+    projectable_rows = sum(
+        1
+        for row in rows
+        if int(row.get("projected_landmark_count") or len(row.get("landmarks") or [])) > 0
+    )
+    max_motion_px = _projected_skeleton_trace_motion_px_max(rows)
+    return (
+        {
+            "path": str(output_path),
+            "frame_count": max(1, int(num_frames)),
+            "fps": fps,
+            "width": width,
+            "height": height,
+            "conditioning_mode": "projected_g1_skeleton",
+            "conditioning_source": "projected_g1_skeleton_trace",
+            "projected_g1_skeleton_rendered": True,
+            "projected_g1_skeleton_landmark_draw_count": max(landmark_draw_counts or [0]),
+            "projected_g1_skeleton_trace_row_count": len(rows),
+            "projected_g1_skeleton_projectable_row_count": projectable_rows,
+            "projected_g1_skeleton_max_interframe_motion_px": max_motion_px,
+            "skeleton_stream_separate_from_rgb": True,
+            "skeleton_stream_texture_free": True,
+            "skeleton_stream_image_aligned_to_rgb": True,
+            "first_rgb_frame_anchors_scene_and_robot_appearance": True,
+            "visual_signal": {
+                "status": "completed" if max(landmark_draw_counts or [0]) > 0 else "warning_low_signal_projected_skeleton",
+                "blockers": []
+                if max(landmark_draw_counts or [0]) > 0
+                else ["projected_skeleton_no_landmarks_drawn"],
+                "trace_row_count": len(rows),
+                "projectable_row_count": projectable_rows,
+                "max_interframe_landmark_motion_px": max_motion_px,
+            },
+        },
+        rows,
+    )
+
+
 def _load_json_if_file(path_text: str) -> dict[str, Any]:
     if not path_text:
         return {}
@@ -431,6 +608,58 @@ def _materialize_step_first_frame(
     }
 
 
+def _render_static_rgb_context_video(
+    *,
+    source_frame: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: float,
+    num_frames: int,
+) -> dict[str, Any]:
+    import cv2
+    import numpy as np
+
+    frame = cv2.imread(str(source_frame), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise ValueError("source_policy_observation_frame_decode_failed")
+    resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+    ensure_dir(output_path.parent)
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        float(fps),
+        (width, height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError("cv2_video_writer_failed_for_oscar_rgb_context")
+    for _ in range(max(1, int(num_frames))):
+        writer.write(resized)
+    writer.release()
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+    return {
+        "path": str(output_path),
+        "source_policy_observation_frame_path": str(source_frame),
+        "source": "source_policy_observation_frame_repeated_rgb_context",
+        "frame_count": max(1, int(num_frames)),
+        "fps": fps,
+        "width": width,
+        "height": height,
+        "used_for_oscar_rgb_latent_context": True,
+        "rgb_context_mode": "single_frame_repeat",
+        "normalized_for_oscar_inference": True,
+        "visual_signal": {
+            "status": "completed",
+            "luma_mean": round(float(gray.mean()), 6),
+            "luma_range": int(gray.max()) - int(gray.min()),
+            "non_dark_fraction": round(
+                float(np.count_nonzero(gray > 12)) / float(width * height),
+                6,
+            ),
+        },
+    }
+
+
 def _render_step_action_conditioning_video(
     *,
     source_frame: Path,
@@ -650,17 +879,37 @@ def _materialize_oscar_input_package_from_wam_generation_step(
         width=width,
         height=height,
     )
-    action_values = _source_action_values(step_input)
-    skeleton_video = _render_step_action_conditioning_video(
+    rgb_context_video = _render_static_rgb_context_video(
         source_frame=source_frame,
-        action_values=action_values,
-        auxiliary_observation=auxiliary_observation,
-        output_path=package_dir / "blueprint_proxy_skeleton_conditioning.mp4",
+        output_path=package_dir / "rgb_context.mp4",
         width=width,
         height=height,
         fps=fps,
         num_frames=num_frames,
     )
+    action_values = _source_action_values(step_input)
+    projected_trace_path = _projected_skeleton_trace_path_from_wam_generation_step(step_input)
+    projected_trace_rows: list[dict[str, Any]] = []
+    if projected_trace_path is not None:
+        skeleton_video, projected_trace_rows = _render_projected_skeleton_conditioning_video(
+            trace_path=projected_trace_path,
+            output_path=package_dir / "blueprint_proxy_skeleton_conditioning.mp4",
+            width=width,
+            height=height,
+            fps=fps,
+            num_frames=num_frames,
+        )
+    else:
+        skeleton_video = _render_step_action_conditioning_video(
+            source_frame=source_frame,
+            action_values=action_values,
+            auxiliary_observation=auxiliary_observation,
+            output_path=package_dir / "blueprint_proxy_skeleton_conditioning.mp4",
+            width=width,
+            height=height,
+            fps=fps,
+            num_frames=num_frames,
+        )
     conditioning_validation = validate_generated_mp4_for_review(Path(skeleton_video["path"]))
     conditioning_visual_smoke = visual_smoke_generated_rollouts_for_review(
         rollouts=[
@@ -710,11 +959,16 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             ),
         },
         "rgb_video": {
-            "path": None,
-            "source": "single_policy_observation_frame_only",
-            "used_for_oscar_rgb_latent_context": False,
-            "rgb_context_mode": "never",
-            "omitted_for_wam_generation_step_single_frame_input": True,
+            "path": rgb_context_video["path"],
+            "source": "source_policy_observation_frame_repeated_rgb_context",
+            "used_for_oscar_rgb_latent_context": True,
+            "rgb_context_mode": "single_frame_repeat",
+            "single_frame_policy_observation_repeated_for_oscar_rgb_context": True,
+            "frame_count": rgb_context_video.get("frame_count"),
+            "fps": rgb_context_video.get("fps"),
+            "height": rgb_context_video.get("height"),
+            "width": rgb_context_video.get("width"),
+            "visual_signal": rgb_context_video.get("visual_signal"),
         },
         "source_review_video": {
             "camera": _string(_mapping(observation.get("visual_observation")).get("camera_id"))
@@ -724,12 +978,23 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             "single_frame_policy_observation_used": True,
         },
         "projected_skeleton_trace": {
-            "path": None,
-            "available": False,
-            "used_for_conditioning": False,
-            "row_count": 0,
-            "projectable_row_count": 0,
-            "conditioning_source": "policy_action_proxy_video_from_unitree_sonic_action_chunk",
+            "path": str(projected_trace_path) if projected_trace_path else None,
+            "available": projected_trace_path is not None,
+            "used_for_conditioning": projected_trace_path is not None,
+            "row_count": len(projected_trace_rows),
+            "projectable_row_count": sum(
+                1
+                for row in projected_trace_rows
+                if int(row.get("projected_landmark_count") or len(row.get("landmarks") or [])) > 0
+            ),
+            "conditioning_source": "projected_g1_skeleton_trace"
+            if projected_trace_path
+            else "policy_action_proxy_video_from_unitree_sonic_action_chunk",
+            "max_interframe_landmark_motion_px": skeleton_video.get(
+                "projected_g1_skeleton_max_interframe_motion_px"
+            )
+            if projected_trace_path
+            else None,
             "simulated_state_not_physical_robot_sensor_evidence": True,
         },
         "source_camera": _string(_mapping(observation.get("visual_observation")).get("camera_id"))
@@ -740,15 +1005,20 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             "wam_generation_step_input_materialized_for_oscar_provider": True,
             "source_frame_is_simulated_policy_observation": True,
             "single_frame_policy_observation_used_instead_of_review_video": True,
-            "policy_action_conditioning_proxy_video_used": True,
+            "policy_action_conditioning_proxy_video_used": projected_trace_path is None,
             "policy_action_conditioning_proxy_is_not_wam_output": True,
             "policy_action_conditioning_proxy_is_not_physical_robot_sensor_evidence": True,
-            "skeleton_conditioning_is_proxy_from_policy_action_chunk": True,
-            "projected_g1_skeleton_conditioning_used": False,
+            "skeleton_conditioning_is_proxy_from_policy_action_chunk": projected_trace_path is None,
+            "projected_g1_skeleton_conditioning_used": projected_trace_path is not None,
             "projected_g1_skeleton_conditioning_is_not_physical_robot_sensor_evidence": True,
+            "projected_g1_skeleton_conditioning_is_simulated_state": projected_trace_path is not None,
+            "first_rgb_frame_anchors_scene_and_robot_appearance": projected_trace_path is not None,
+            "separate_2d_skeleton_stream_aligned_to_rgb": projected_trace_path is not None,
+            "skeleton_stream_is_texture_free": projected_trace_path is not None,
             "rgb_video_uses_selected_review_video": False,
-            "rgb_video_used_for_oscar_rgb_latent_context": False,
-            "rgb_context_mode": "never",
+            "rgb_video_used_for_oscar_rgb_latent_context": True,
+            "rgb_context_mode": "single_frame_repeat",
+            "rgb_context_repeats_source_policy_observation_frame": True,
             "true_robot_proprioceptive_skeleton_available": False,
             "auxiliary_observation_manifest_packaged": bool(auxiliary_observation_manifest_path),
             "auxiliary_observation_is_conditioning_support": True,
@@ -788,6 +1058,10 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
     visual_signal = _mapping(skeleton_video.get("visual_signal"))
     claim_boundary = _mapping(input_package.get("claim_boundary"))
     projected_trace = _mapping(input_package.get("projected_skeleton_trace"))
+    requested_output = _mapping(input_package.get("requested_output"))
+    action_conditioned_required = bool(
+        requested_output.get("action_conditioned_generation_required")
+    )
     projected_conditioning_used = bool(
         projected_trace.get("used_for_conditioning")
         or claim_boundary.get("projected_g1_skeleton_conditioning_used")
@@ -820,6 +1094,21 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
             blockers.append("oscar_input_projected_g1_skeleton_trace_missing")
         if int(projected_trace.get("projectable_row_count") or 0) <= 0:
             blockers.append("oscar_input_projected_g1_skeleton_trace_empty")
+        if action_conditioned_required:
+            row_count = int(projected_trace.get("row_count") or 0)
+            try:
+                max_motion_px = float(
+                    projected_trace.get("max_interframe_landmark_motion_px")
+                    if projected_trace.get("max_interframe_landmark_motion_px") is not None
+                    else skeleton_video.get("projected_g1_skeleton_max_interframe_motion_px")
+                    or 0.0
+                )
+            except (TypeError, ValueError):
+                max_motion_px = 0.0
+            if row_count < 2:
+                blockers.append("oscar_input_projected_g1_skeleton_trace_not_temporal_action")
+            elif max_motion_px < 1.0:
+                blockers.append("oscar_input_projected_g1_skeleton_trace_static_action")
         if (
             pure_projected_skeleton_stream
             and int(skeleton_video.get("projected_g1_skeleton_landmark_draw_count") or 0) <= 0

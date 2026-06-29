@@ -10,6 +10,7 @@ import pytest
 
 from blueprint_pipeline import eval_ready_task_grounding as grounding
 from blueprint_pipeline import oscar_cosmos_wam_evaluator as evaluator
+from blueprint_pipeline import wam_backend_strategy as backend_strategy
 
 
 _WAM_RUNTIME_ENV_VARS = (
@@ -20,6 +21,9 @@ _WAM_RUNTIME_ENV_VARS = (
     "BLUEPRINT_COSMOS_WAM_COMMAND",
     "BLUEPRINT_COSMOS_WAM_PROVIDER_COMMAND",
     "BLUEPRINT_COSMOS_WAM_CHECKPOINT",
+    "BLUEPRINT_COSMOS3_WAM_COMMAND",
+    "BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND",
+    "BLUEPRINT_COSMOS3_WAM_CHECKPOINT",
     "BLUEPRINT_ALLOW_LOCAL_WAM_MODEL",
     "BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER",
     "BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH",
@@ -294,6 +298,154 @@ def _input_job(tmp_path: Path) -> Path:
         },
     )
     return job_dir
+
+
+def test_wam_backend_strategy_catalog_preserves_corrected_paper_boundaries() -> None:
+    manifest = backend_strategy.build_wam_backend_strategy_manifest(
+        generated_at="now",
+        selected_backend_ids=("cosmos3_wam", "oscar_wam", "cosmos_wam"),
+        configured_backend_ids=(),
+    )
+    by_id = {row["backend_id"]: row for row in manifest["backend_strategies"]}
+
+    assert manifest["preferred_configured_learned_wam_backend_candidate"] == "cosmos3_wam"
+    assert manifest["preferred_configured_backend_is_not_permanent_dependency"] is True
+    assert manifest["claim_boundary"][
+        "cosmos3_preference_does_not_prove_universal_all_task_grading"
+    ] is True
+    assert manifest["claim_boundary"][
+        "cosmos3_wam_never_auto_runs_without_explicit_adapter_and_gates"
+    ] is True
+
+    oscar = by_id["oscar_wam"]
+    assert oscar["base_model"] == "Cosmos-Predict2.5-2B"
+    assert oscar["fine_tuning_summary"]["filtered_episode_count"] == 180657
+    assert oscar["fine_tuning_summary"]["filtered_robot_episode_count"] == 94830
+    assert oscar["fine_tuning_summary"]["filtered_human_egocentric_episode_count"] == 85827
+    assert oscar["policy_eval_metrics"] == {
+        "metric_scope": "OSCAR skeleton-conditioned RoboArena policy-eval table",
+        "mmrv": 0.571,
+        "spearman": 0.750,
+        "pearson": 0.852,
+        "sisr_delta_pp": 1.73,
+    }
+    assert oscar["success_scorer_caveat"]["human_label_agreement_count"] == 78
+    assert oscar["success_scorer_caveat"]["specificity"] == 0.90
+    assert oscar["success_scorer_caveat"]["recall_caveat"] == (
+        "misses_about_one_third_of_real_successes"
+    )
+
+    cosmos25 = by_id["cosmos_wam"]
+    assert cosmos25["recommendation_tier"] == "legacy_baseline"
+    assert "no longer under active development" in cosmos25["migration_note"]
+
+    cosmos3 = by_id["cosmos3_wam"]
+    assert cosmos3["base_model"] == "Cosmos3-Nano"
+    assert cosmos3["preferred_for_new_configured_learned_wam"] is True
+    assert cosmos3["runtime_gates"]["auto_run_allowed_without_gate"] is False
+    assert cosmos3["sc3_eval_lineage"]["metrics"]["headline_closed_loop"] == {
+        "pearson": 0.929,
+        "mmrv": 0.119,
+        "scope": "overall SC3-Eval closed-loop result reported by the paper",
+    }
+    assert cosmos3["sc3_eval_lineage"]["metrics"]["in_distribution_online"][
+        "sc3_eval_pearson"
+    ] == 0.984
+    assert cosmos3["sc3_eval_lineage"]["metrics"]["in_distribution_online"][
+        "cosmos_predict25_mmrv"
+    ] == 0.090
+    assert cosmos3["sc3_eval_lineage"]["metrics"]["out_of_distribution_online"][
+        "sc3_eval_pearson"
+    ] == 0.870
+    assert cosmos3["sc3_eval_lineage"]["metrics"]["out_of_distribution_online"][
+        "cosmos_predict25_pearson"
+    ] == 0.871
+    assert cosmos3["sc3_eval_lineage"]["scope_caveat"] == {
+        "training_hours": 381,
+        "physical_scene_count": 1,
+        "object_category_count": 12,
+        "camera_view_count": 3,
+        "policy_checkpoint_count": 7,
+        "max_rollout_seconds": 20,
+        "blueprint_implication": "not proof of universal all-task or all-scene grading",
+    }
+    assert cosmos3["sc3_eval_lineage"]["recipe_contract"]["claim_boundary"][
+        "self_consistency_does_not_prove_generated_world_rank_fidelity"
+    ] is True
+
+    assert by_id["cosmos3_super"]["recommendation_tier"] == "high_cost_adjudication"
+    assert by_id["cosmos3_super"]["default_local_runtime_candidate"] is False
+    assert by_id["cosmos3_edge"]["release_status_from_primary_source"] == (
+        "technical_report_says_included_in_later_release"
+    )
+    assert by_id["cosmos3_edge"]["treat_as_released_default"] is False
+
+
+def test_wam_backend_strategy_is_emitted_without_auto_running_cosmos3(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_wam_runtime_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("HF_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("NGC_API_KEY_FILE", raising=False)
+    input_job = _input_job(tmp_path)
+
+    summary = evaluator.run_oscar_cosmos_wam_evaluator(
+        input_job_dir=input_job,
+        job_dir=tmp_path / "wam_strategy_job",
+        generated_at="now",
+    )
+
+    assert summary["preferred_configured_learned_wam_backend_candidate"] == "cosmos3_wam"
+    assert summary["preferred_configured_backend_is_not_permanent_dependency"] is True
+    assert summary["cosmos3_wam_never_auto_runs_without_explicit_adapter_and_gates"] is True
+    assert summary["cosmos3_preference_is_not_universal_grading_proof"] is True
+    assert summary["model_choice_does_not_prove_generated_world_rank_fidelity"] is True
+    assert summary["learned_wam_model_ran"] is False
+    assert summary["model_command_executed_this_invocation"] is False
+    assert summary["real_model_endpoint_ready"] is False
+
+    job_dir = tmp_path / "wam_strategy_job"
+    strategy = json.loads(
+        (job_dir / "wam_backend_strategy_manifest.json").read_text(encoding="utf-8")
+    )
+    by_id = {row["backend_id"]: row for row in strategy["backend_strategies"]}
+    assert by_id["cosmos3_wam"]["selected_for_this_run"] is True
+    assert by_id["cosmos3_wam"]["runtime_gates"]["auto_run_allowed_without_gate"] is False
+    assert by_id["cosmos_wam"]["recommendation_tier"] == "legacy_baseline"
+    assert by_id["cosmos3_edge"]["treat_as_released_default"] is False
+
+    readiness = json.loads(
+        (job_dir / "policy_model_endpoint_readiness_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cosmos3 = next(
+        row for row in readiness["candidates"] if row["candidate_id"] == "cosmos3_wam"
+    )
+    assert cosmos3["preferred_for_new_configured_learned_wam"] is True
+    assert cosmos3["real_model_runtime_ready"] is False
+    assert f"set_{evaluator.LOCAL_MODEL_GATE_ENV}=true" in cosmos3[
+        "what_is_needed_to_make_true"
+    ]
+
+    success_labels = json.loads(
+        (job_dir / "wam_success_labels.json").read_text(encoding="utf-8")
+    )
+    consistency = json.loads(
+        (job_dir / "wam_consistency_checks.json").read_text(encoding="utf-8")
+    )
+    truth = json.loads(
+        (job_dir / "policy_model_truth_boundary.json").read_text(encoding="utf-8")
+    )
+    assert success_labels["claim_boundary"][
+        "success_label_does_not_prove_forward_inverse_consistency"
+    ] is True
+    assert consistency["claim_boundary"][
+        "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity"
+    ] is True
+    assert truth["generated_world_rank_fidelity_result_proven"] is False
+    assert truth["model_choice_does_not_prove_generated_world_rank_fidelity"] is True
 
 
 def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
