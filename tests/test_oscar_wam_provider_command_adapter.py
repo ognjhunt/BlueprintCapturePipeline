@@ -107,6 +107,26 @@ def _write_provider_zip(
         runtime_result = {
             "status": "completed",
             "runtime": "oscar_wam_provider_runtime",
+            "runtime_settings": {
+                "num_frames": 8,
+                "height": 480,
+                "width": 640,
+                "fps": 15.0,
+                "num_steps": 35,
+                "guidance": 4.5,
+                "seed": 42,
+            },
+            "oscar_runtime_argv_contract": {
+                "rgb_context_packaged": True,
+                "rgb_video_arg_expected": True,
+                "skeleton_video_arg": "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
+            },
+            "input_signal_summary": {
+                "projected_skeleton_used": True,
+                "projected_skeleton_projectable_row_count": 8,
+                "rgb_context_mode": "single_frame_repeat",
+                "diagnostic_only_not_success_label": True,
+            },
         }
         if runtime_model_truth:
             runtime_result.update(
@@ -709,6 +729,9 @@ def test_provider_command_adapter_current_vast_run_requires_runtime_model_truth(
     assert payload["provider_runtime_result_proves_model_output"] is False
     assert payload["provider_learned_wam_model_ran"] is False
     assert payload["provider_generated_video_is_model_output"] is False
+    assert payload["provider_runtime_settings"]["guidance"] == 4.5
+    assert payload["provider_oscar_runtime_argv_contract"]["rgb_video_arg_expected"] is True
+    assert payload["provider_input_signal_summary"]["projected_skeleton_used"] is True
     assert payload["fresh_model_run_claimed"] is False
     assert payload["fresh_provider_model_run_claimed"] is False
     assert payload["fresh_model_command_executed_this_invocation"] is False

@@ -323,6 +323,15 @@ def _extract_provider_payload(
         )
         if runtime_result_payload:
             payload["provider_runtime_result_status"] = runtime_result_payload.get("status")
+            payload["provider_runtime_settings"] = runtime_result_payload.get(
+                "runtime_settings"
+            )
+            payload["provider_oscar_runtime_argv_contract"] = runtime_result_payload.get(
+                "oscar_runtime_argv_contract"
+            )
+            payload["provider_input_signal_summary"] = runtime_result_payload.get(
+                "input_signal_summary"
+            )
             payload["provider_learned_wam_model_ran"] = bool(
                 runtime_result_payload.get("learned_wam_model_ran")
             )

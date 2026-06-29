@@ -3336,6 +3336,7 @@ def main() -> int:
             height=runtime_manifest.get("height") or 480,
             width=runtime_manifest.get("width") or 640,
             num_steps=runtime_manifest.get("num_steps") or 35,
+            guidance=runtime_manifest.get("guidance") or 6.0,
             official_case_smoke=official_case_smoke or None,
         )
         if blockers:
@@ -3382,6 +3383,44 @@ def main() -> int:
     if generated_video.is_file() and generated_video_validation.get("status") != "completed":
         blockers.append("blocked_generated_oscar_mp4_not_reviewable")
         blockers.extend(generated_video_validation.get("blockers") or [])
+    input_package = _mapping(runtime_manifest.get("input_package"))
+    skeleton_package = _mapping(input_package.get("skeleton_video"))
+    skeleton_signal = _mapping(skeleton_package.get("visual_signal"))
+    rgb_package = _mapping(input_package.get("rgb_video"))
+    rgb_signal = _mapping(rgb_package.get("visual_signal"))
+    projected_trace = _mapping(input_package.get("projected_skeleton_trace"))
+    runtime_settings = {
+        "num_frames": runtime_manifest.get("num_frames") or 81,
+        "height": runtime_manifest.get("height") or 480,
+        "width": runtime_manifest.get("width") or 640,
+        "fps": runtime_manifest.get("fps") or 15.0,
+        "num_steps": runtime_manifest.get("num_steps") or 35,
+        "guidance": runtime_manifest.get("guidance") or 6.0,
+        "seed": runtime_manifest.get("seed") or 42,
+        "official_case_smoke": official_case_smoke or None,
+    }
+    input_signal_summary = {
+        "first_frame_luma_mean": _mapping(input_package.get("first_frame")).get("luma_mean"),
+        "first_frame_non_dark_fraction": _mapping(input_package.get("first_frame")).get(
+            "non_dark_fraction"
+        ),
+        "skeleton_conditioning_mode": skeleton_package.get("conditioning_mode"),
+        "skeleton_visual_signal_status": skeleton_signal.get("status"),
+        "skeleton_visual_signal_blockers": skeleton_signal.get("blockers") or [],
+        "projected_skeleton_used": bool(projected_trace.get("used_for_conditioning")),
+        "projected_skeleton_projectable_row_count": projected_trace.get("projectable_row_count"),
+        "projected_skeleton_max_interframe_motion_px": projected_trace.get(
+            "max_interframe_landmark_motion_px"
+        ),
+        "rgb_context_mode": rgb_package.get("rgb_context_mode"),
+        "rgb_context_packaged": bool(
+            _mapping(runtime_manifest.get("oscar_runtime_argv_contract")).get(
+                "rgb_context_packaged"
+            )
+        ),
+        "rgb_context_luma_mean": rgb_signal.get("luma_mean"),
+        "diagnostic_only_not_success_label": True,
+    }
     rollouts = []
     if generated_video_validation.get("status") == "completed" and not blockers:
         rollouts.append(
@@ -3411,6 +3450,9 @@ def main() -> int:
             "checkpoint_exists": bool(checkpoint_path and checkpoint_path.exists()),
         },
         "input_package": runtime_manifest.get("input_package"),
+        "runtime_settings": runtime_settings,
+        "oscar_runtime_argv_contract": runtime_manifest.get("oscar_runtime_argv_contract"),
+        "input_signal_summary": input_signal_summary,
         "generated_video_review_validation": generated_video_validation,
         "blockers": blockers,
         "raw_credentials_written_to_artifacts": False,
@@ -3428,6 +3470,9 @@ def main() -> int:
         "action_conditioned_video_rollout_generated": bool(rollouts),
         "learned_wam_model_ran": bool(rollouts),
         "generated_video_path": str(generated_video) if generated_video.is_file() else None,
+        "runtime_settings": runtime_settings,
+        "oscar_runtime_argv_contract": runtime_manifest.get("oscar_runtime_argv_contract"),
+        "input_signal_summary": input_signal_summary,
         "generated_video_review_validation": generated_video_validation,
         "rollout_input_manifest_path": str(rollout_input_path),
         "rollout_input_loaded": bool(rollout_input),

@@ -1593,6 +1593,54 @@ def visual_smoke_generated_rollouts_for_review(
                     for sample in later_samples
                 )
             )
+            first_failed_future_sample = next(
+                (
+                    sample
+                    for sample in later_samples
+                    if (
+                        sample.get("luma_range", 0) < 40
+                        or sample.get("mean_luma", 0.0) < 35.0
+                        or (
+                            sample.get("edge_density_ratio_to_first", 0.0) < 0.10
+                            and sample.get("histogram_correlation_to_first", 0.0) < 0.25
+                        )
+                        or (
+                            sample.get("edge_density_ratio_to_first", 0.0) > 3.0
+                            and sample.get("edge_density", 0.0) > 0.12
+                            and sample.get("std_luma", 0.0) < 28.0
+                        )
+                    )
+                ),
+                None,
+            )
+            future_quality_diagnostic = {
+                "source_sample_frame_index": samples[0].get("frame_index"),
+                "sampled_future_frame_count": len(later_samples),
+                "first_failed_future_frame_index": (
+                    first_failed_future_sample.get("frame_index")
+                    if first_failed_future_sample
+                    else None
+                ),
+                "first_failed_future_sample_index": (
+                    first_failed_future_sample.get("sample_index")
+                    if first_failed_future_sample
+                    else None
+                ),
+                "minimum_future_mean_luma": (
+                    min(float(sample.get("mean_luma") or 0.0) for sample in later_samples)
+                    if later_samples
+                    else None
+                ),
+                "minimum_future_edge_density_ratio_to_first": (
+                    min(
+                        float(sample.get("edge_density_ratio_to_first") or 0.0)
+                        for sample in later_samples
+                    )
+                    if later_samples
+                    else None
+                ),
+                "diagnostic_only_not_success_label": True,
+            }
             first_frame_not_scene_like = not first_preserves_scene
             quality_blockers = []
             if first_frame_not_scene_like:
@@ -1619,6 +1667,7 @@ def visual_smoke_generated_rollouts_for_review(
                     else "passed_visual_quality_smoke",
                     "frame_count": frame_count,
                     "sampled_frames": samples,
+                    "future_frame_quality_diagnostic": future_quality_diagnostic,
                     "visual_quality_flags": {
                         "first_frame_preserves_source_scene": first_preserves_scene,
                         "later_frames_flat_or_dark": later_flat_or_dark,

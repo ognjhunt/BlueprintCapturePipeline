@@ -453,6 +453,42 @@ def test_visual_smoke_fails_when_later_frames_become_static_noise(
     )
 
 
+def test_visual_smoke_reports_first_future_frame_collapse(
+    tmp_path: Path,
+) -> None:
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    video = tmp_path / "future_collapse.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (640, 480))
+    assert writer.isOpened()
+    first = np.zeros((480, 640, 3), dtype=np.uint8)
+    first[:, :320] = (230, 230, 230)
+    first[:, 320:] = (35, 65, 95)
+    cv2.rectangle(first, (240, 130), (400, 350), (210, 210, 210), -1)
+    cv2.line(first, (0, 240), (640, 240), (20, 20, 20), 5)
+    cv2.line(first, (320, 0), (320, 480), (245, 245, 245), 5)
+    writer.write(first)
+    for index in range(1, 6):
+        collapsed = np.full((480, 640, 3), max(8, 42 - index * 4), dtype=np.uint8)
+        writer.write(collapsed)
+    writer.release()
+
+    smoke = visual_smoke_generated_rollouts_for_review(
+        rollouts=[{"rollout_id": "rollout_collapse", "generated_video_path": str(video)}],
+        output_dir=tmp_path,
+        generated_at="now",
+        require_review_quality_profile=False,
+    )
+
+    rollout = smoke["rollouts"][0]
+    diagnostic = rollout["future_frame_quality_diagnostic"]
+    assert smoke["status"] == "failed_visual_quality_smoke"
+    assert "generated_rollout_later_frames_flat_or_dark" in smoke["blockers"]
+    assert diagnostic["first_failed_future_frame_index"] == 1
+    assert diagnostic["sampled_future_frame_count"] > 0
+    assert diagnostic["diagnostic_only_not_success_label"] is True
+
+
 def test_provider_completed_but_visual_quality_fails_on_dark_generated_frame(
     tmp_path: Path,
 ) -> None:
