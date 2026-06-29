@@ -1511,6 +1511,62 @@ def test_project_point_to_pixel() -> None:
     assert M.project_point_to_pixel((0.05, 50.0, 0.0), eye, target, up, 60.0, 640, 480) is None
 
 
+def test_manipulation_pov_geometry_requires_forearm_and_effector_in_frame() -> None:
+    eye, target = (0.0, 0.0, 1.0), (1.0, 0.0, 1.0)
+    affordance = (1.0, 0.0, 1.0)
+    visible = M._manipulation_pov_geometry(
+        arm_points={
+            "elbow": (0.7, -0.05, 1.02),
+            "wrist": (0.86, -0.03, 1.01),
+            "hand": (0.95, -0.02, 1.0),
+        },
+        affordance=affordance,
+        eye=eye,
+        target=target,
+        vfov_deg=68.0,
+        width=640,
+        height=480,
+        arm="right",
+    )
+    assert visible["status"] == "PASS"
+    assert {"elbow", "wrist", "hand"}.issubset(set(visible["arm_roles_in_frame"]))
+
+    cropped = M._manipulation_pov_geometry(
+        arm_points={
+            "elbow": (-0.4, -0.05, 1.02),
+            "wrist": (-0.3, -0.03, 1.01),
+            "hand": (-0.2, -0.02, 1.0),
+        },
+        affordance=affordance,
+        eye=eye,
+        target=target,
+        vfov_deg=68.0,
+        width=640,
+        height=480,
+        arm="right",
+    )
+    assert cropped["status"] == "FAIL"
+    assert "manipulation_pov_arm_not_in_frame" in cropped["blockers"]
+
+    visible_but_not_reaching = M._manipulation_pov_geometry(
+        arm_points={
+            "shoulder": (0.1, -0.05, 1.02),
+            "elbow": (0.2, -0.05, 1.02),
+            "wrist": (0.28, -0.03, 1.01),
+            "hand": (0.35, -0.02, 1.0),
+        },
+        affordance=affordance,
+        eye=eye,
+        target=target,
+        vfov_deg=68.0,
+        width=640,
+        height=480,
+        arm="right",
+    )
+    assert visible_but_not_reaching["status"] == "FAIL"
+    assert "manipulation_pov_effector_not_near_affordance" in visible_but_not_reaching["blockers"]
+
+
 def test_follow_cam_is_behind_and_above_robot() -> None:
     eye, target = M.follow_cam_pose((0.0, 0.0, 0.79), 0.0)  # facing +X
     assert eye[0] < 0.0           # behind the robot along -X

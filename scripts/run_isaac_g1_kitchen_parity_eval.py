@@ -1094,6 +1094,199 @@ def _manipulation_camera_target_with_arm_context(
     return _weighted_xyz(pts) or aff
 
 
+def _projection_dict(px) -> dict[str, Any] | None:
+    if px is None:
+        return None
+    return {
+        "available": True,
+        "u_px": round(float(px[0]), 2),
+        "v_px": round(float(px[1]), 2),
+        "depth_m": round(float(px[2]), 4),
+    }
+
+
+def _manipulation_pov_geometry(
+    *,
+    arm_points: Mapping[str, Sequence[float]] | None,
+    affordance,
+    eye,
+    target,
+    up=(0.0, 0.0, 1.0),
+    vfov_deg: float,
+    width: int,
+    height: int,
+    arm: str = "right",
+) -> dict[str, Any]:
+    """Machine-check that the actual USD arm links are visible in the head POV.
+
+    The articulated skeleton trace is optional and may be disabled for crash-safe kinematic renders,
+    so manipulation media needs an independent USD-link projection check. A visible gripper alone is
+    not enough for a useful seed frame; require the effector plus another forearm link in frame.
+    """
+    blockers: list[str] = []
+    aff = (float(affordance[0]), float(affordance[1]), float(affordance[2]))
+    target_px = project_point_to_pixel(aff, eye, target, up, vfov_deg, width, height)
+    projected: list[dict[str, Any]] = []
+    available_roles = sorted(str(k) for k in (arm_points or {}).keys())
+    for role in ("shoulder", "elbow", "wrist", "hand"):
+        pt = (arm_points or {}).get(role)
+        if pt is None:
+            continue
+        px = project_point_to_pixel(
+            (float(pt[0]), float(pt[1]), float(pt[2])),
+            eye,
+            target,
+            up,
+            vfov_deg,
+            width,
+            height,
+        )
+        proj = _projection_dict(px)
+        if proj is None:
+            continue
+        projected.append({
+            "landmark_id": f"{arm}_{role}_link",
+            "link_role": role,
+            "image_projection": proj,
+        })
+
+    roles_in_frame = {str(item["link_role"]) for item in projected}
+    effector_roles = roles_in_frame.intersection({"hand", "wrist"})
+    forearm_roles = roles_in_frame.intersection({"elbow", "wrist", "hand"})
+    if not available_roles:
+        blockers.append("manipulation_pov_arm_links_unavailable")
+    if target_px is None:
+        blockers.append("manipulation_pov_target_not_in_frame")
+    if not effector_roles:
+        blockers.append("manipulation_pov_arm_not_in_frame")
+    if len(forearm_roles) < 2:
+        blockers.append("manipulation_pov_forearm_not_in_frame")
+
+    effector_distances: dict[str, float] = {}
+    for role in ("wrist", "hand"):
+        pt = (arm_points or {}).get(role)
+        if pt is None:
+            continue
+        effector_distances[role] = round(
+            math.sqrt(sum((float(pt[i]) - aff[i]) ** 2 for i in range(3))),
+            4,
+        )
+    reach_tolerance_m = None
+    if arm_points and (arm_points.get("shoulder") is not None):
+        shoulder_pt = arm_points["shoulder"]
+        spans = []
+        for role in ("wrist", "hand"):
+            pt = arm_points.get(role)
+            if pt is None:
+                continue
+            spans.append(math.sqrt(sum((float(pt[i]) - float(shoulder_pt[i])) ** 2 for i in range(3))))
+        if spans:
+            reach_tolerance_m = round(max(0.28, min(0.65, max(spans) * 0.75)), 4)
+    if effector_distances and reach_tolerance_m is not None:
+        if min(effector_distances.values()) > reach_tolerance_m:
+            blockers.append("manipulation_pov_effector_not_near_affordance")
+
+    return {
+        "schema_version": "manipulation_pov_geometry.v1",
+        "status": "PASS" if not blockers else "FAIL",
+        "blockers": sorted(set(blockers)),
+        "camera": "robot_pov",
+        "reach_arm": arm,
+        "target_affordance_xyz": [round(float(v), 6) for v in aff],
+        "target_in_frame": target_px is not None,
+        "target_projection": _projection_dict(target_px),
+        "available_arm_link_roles": available_roles,
+        "arm_roles_in_frame": sorted(roles_in_frame),
+        "arm_landmarks_in_frame": len(projected),
+        "effector_distance_to_affordance_m": effector_distances,
+        "effector_affordance_tolerance_m": reach_tolerance_m,
+        "projected_landmarks": projected,
+        "claim_boundary": (
+            "This checks camera framing of USD robot links against the resolved task affordance. "
+            "It is not manipulation success or physical reach validation."
+        ),
+    }
+
+
+def _select_manipulation_camera_target_for_visible_arm(
+    affordance,
+    arm_points: Mapping[str, Sequence[float]] | None,
+    eye,
+    initial_target,
+    *,
+    vfov_deg: float,
+    width: int,
+    height: int,
+    arm: str = "right",
+) -> tuple[tuple[float, float, float], dict[str, Any]]:
+    """Pick a task-anchored look-at that keeps the active forearm in the head POV when possible."""
+    aff = (float(affordance[0]), float(affordance[1]), float(affordance[2]))
+    candidates: list[tuple[str, tuple[float, float, float]]] = [
+        ("affordance_arm_context", tuple(float(v) for v in initial_target)),
+        ("affordance", aff),
+    ]
+    if arm_points:
+        hand = arm_points.get("hand")
+        wrist = arm_points.get("wrist")
+        elbow = arm_points.get("elbow")
+        if hand is not None or wrist is not None:
+            pts: list[tuple[Sequence[float], float]] = [(aff, 0.22)]
+            if hand is not None:
+                pts.append((hand, 0.34))
+            if wrist is not None:
+                pts.append((wrist, 0.30))
+            if elbow is not None:
+                pts.append((elbow, 0.14))
+            weighted = _weighted_xyz(pts)
+            if weighted is not None:
+                candidates.append(("forearm_weighted", weighted))
+        if wrist is not None and hand is not None:
+            weighted = _weighted_xyz([(aff, 0.35), (wrist, 0.30), (hand, 0.35)])
+            if weighted is not None:
+                candidates.append(("effector_weighted", weighted))
+
+    best_name = candidates[0][0]
+    best_target = candidates[0][1]
+    best_score = -1.0
+    scored: list[dict[str, Any]] = []
+    for name, candidate in candidates:
+        geom = _manipulation_pov_geometry(
+            arm_points=arm_points,
+            affordance=aff,
+            eye=eye,
+            target=candidate,
+            vfov_deg=vfov_deg,
+            width=width,
+            height=height,
+            arm=arm,
+        )
+        roles = set(geom.get("arm_roles_in_frame") or [])
+        score = 0.0
+        if geom.get("target_in_frame"):
+            score += 6.0
+        if roles.intersection({"hand", "wrist"}):
+            score += 8.0
+        score += 2.0 * len(roles.intersection({"elbow", "wrist", "hand"}))
+        if len(roles.intersection({"elbow", "wrist", "hand"})) >= 2:
+            score += 5.0
+        if score > best_score:
+            best_name = name
+            best_target = candidate
+            best_score = score
+        scored.append({
+            "candidate": name,
+            "score": round(score, 3),
+            "status": geom.get("status"),
+            "target_in_frame": geom.get("target_in_frame"),
+            "arm_roles_in_frame": geom.get("arm_roles_in_frame"),
+        })
+    return best_target, {
+        "selected_camera_target": best_name,
+        "camera_target_score": round(best_score, 3),
+        "camera_target_candidates": scored,
+    }
+
+
 # ============================ Isaac-only (GPU worker) ============================
 
 def _boot_sim(headless: bool = True):
@@ -3462,6 +3655,9 @@ def _robot_mounted_manipulation_cam_pose(
     *,
     look_at=None,
     reach_arm: str = "right",
+    vfov_deg: float | None = None,
+    width: int | None = None,
+    height: int | None = None,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float], dict[str, Any]]:
     fallback_eye, fallback_target = manipulation_cam_pose(
         root_pose,
@@ -3481,11 +3677,28 @@ def _robot_mounted_manipulation_cam_pose(
         yaw,
         authored_camera=mount.get("source") == "authored_robot_camera",
     )
+    target_meta: dict[str, Any] = {}
+    if vfov_deg is not None and width is not None and height is not None:
+        target, target_meta = _select_manipulation_camera_target_for_visible_arm(
+            look_at,
+            arm_points,
+            eye,
+            target,
+            vfov_deg=float(vfov_deg),
+            width=int(width),
+            height=int(height),
+            arm=str(reach_arm),
+        )
     return eye, target, {
         "source": mount.get("source"),
         "mount_prim_path": mount.get("prim_path"),
         "mount_role": mount.get("mount_role"),
         "arm_link_points_used": sorted(arm_points),
+        "arm_link_points_xyz": {
+            key: [round(float(v), 6) for v in value]
+            for key, value in sorted(arm_points.items())
+        },
+        **target_meta,
         **lens_meta,
         "claim_boundary": (
             "POV camera is mounted from robot USD geometry when an authored camera/head/neck link "
@@ -3828,7 +4041,26 @@ def _make_render_product(camera_path: str, width: int, height: int):
     return annot
 
 
-def _save_rgb(annot, out_path: Path) -> bool:
+def _software_denoise_image(img):
+    """Best-effort CPU denoise for review PNGs when RTX/NGX denoising is unavailable on a pod."""
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+        from PIL import Image  # type: ignore
+        arr = np.asarray(img)
+        bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        den = cv2.fastNlMeansDenoisingColored(bgr, None, 6, 6, 7, 21)
+        return Image.fromarray(cv2.cvtColor(den, cv2.COLOR_BGR2RGB))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from PIL import ImageFilter  # type: ignore
+        return img.filter(ImageFilter.MedianFilter(size=3))
+    except Exception:  # noqa: BLE001
+        return img
+
+
+def _save_rgb(annot, out_path: Path, *, software_denoise: bool = False) -> bool:
     import numpy as np  # type: ignore
     from PIL import Image  # type: ignore
     data = annot.get_data()
@@ -3837,7 +4069,10 @@ def _save_rgb(annot, out_path: Path) -> bool:
     arr = np.asarray(data)
     if arr.ndim == 3 and arr.shape[2] == 4:
         arr = arr[:, :, :3]
-    Image.fromarray(arr.astype("uint8")).save(out_path)
+    img = Image.fromarray(arr.astype("uint8"))
+    if software_denoise:
+        img = _software_denoise_image(img)
+    img.save(out_path)
     return True
 
 
@@ -3862,7 +4097,11 @@ def _set_camera_fov(stage, cam_path: str, vfov_deg: float, width: int, height: i
     cam.GetHorizontalApertureAttr().Set(hap)
     cam.GetVerticalApertureAttr().Set(vap)
     try:
-        cam.GetClippingRangeAttr().Set((0.02, 1000.0))
+        # A small near plane keeps the head-mounted POV from embedding in its own head mesh, but a
+        # 0.01-0.02 near with a 1000-2000 far wrecks the depth-buffer precision the RTX denoiser relies
+        # on -> heavy salt-and-pepper grain. A 0.05/50 range (1000:1) avoids embedding and remains
+        # broad enough for room-scale manipulation scenes without wasting depth precision.
+        cam.GetClippingRangeAttr().Set((0.05, 50.0))
     except Exception:  # noqa: BLE001
         pass
 
@@ -3965,6 +4204,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   collision_approximation: str = "boundingCube",
                   verify_cam: bool = False,
                   manipulation_stand: bool = False,
+                  software_denoise: bool = True,
                   serve: bool = False, serve_dir: "Path | None" = None,
                   serve_idle_timeout_s: float = 600.0,
                   serve_max_jobs: "int | None" = None) -> dict:
@@ -4166,6 +4406,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         topdown_annot = (
             _make_render_product(topdown_cam_path, width, height) if manipulation_stand else None
         )
+        if software_denoise:
+            _log("software PNG denoise enabled for saved render frames")
         center, radius = scene_framing(scenarios)
         _place_camera(stage, over_cam,
                       (center[0] + radius * 1.4, center[1] - radius * 1.4, center[2] + radius * 1.1),
@@ -4198,8 +4440,39 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             placement_validation_blocker_recorded = False
             placement_topdown_frame_path: Path | None = None
             placement_topdown_layout_frame_path: Path | None = None
+            pov_reach_arm = (
+                str(manipulation_reach_arm)
+                if str(manipulation_reach_arm) in {"left", "right"}
+                else "right"
+            )
+            pov_geometry_path = sdir / "manipulation_pov_geometry.json"
+            pov_geometry_records: list[dict[str, Any]] = []
+            pov_geometry_report: dict[str, Any] | None = None
+            pov_geometry_blocker_recorded = False
             last_root_diagnostics: dict[str, Any] | None = None
             stance_plan_path = sdir / "task_stance_plan.json"
+            def _write_pov_geometry_report() -> dict[str, Any] | None:
+                if not pov_geometry_records:
+                    return None
+                geom_blockers = sorted({
+                    str(blocker)
+                    for record in pov_geometry_records
+                    for blocker in (record.get("blockers") or [])
+                })
+                report = {
+                    "schema_version": "manipulation_pov_geometry_index.v1",
+                    "status": "PASS" if not geom_blockers else "FAIL",
+                    "blockers": geom_blockers,
+                    "scenario_id": sid,
+                    "frames_checked": len(pov_geometry_records),
+                    "frames": pov_geometry_records,
+                    "claim_boundary": (
+                        "Frame geometry proves task-affordance and USD arm-link visibility in the "
+                        "render camera. It is not manipulation success or physical robot validation."
+                    ),
+                }
+                pov_geometry_path.write_text(json.dumps(report, indent=2))
+                return report
             if manipulation_stand:
                 stance_plan = preplanned_task_stance_plans.get(sid)
                 if stance_plan is None:
@@ -4426,8 +4699,19 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             and effective_look_at is not None):
                         arm_frac = 1.0 if manipulation_cam else alpha
                         try:
-                            _pose_arm_kinematic_usd(stage, binding["prim_path"], effective_look_at,
-                                                    arm=manipulation_reach_arm, reach_frac=arm_frac)
+                            posed_count = _pose_arm_kinematic_usd(
+                                stage,
+                                binding["prim_path"],
+                                effective_look_at,
+                                arm=manipulation_reach_arm,
+                                reach_frac=arm_frac,
+                            )
+                            if step == 0:
+                                _log(
+                                    f"scenario {sid}: kinematic arm pose requested "
+                                    f"arm={manipulation_reach_arm} posed_count={posed_count} "
+                                    f"target={tuple(round(float(c), 3) for c in effective_look_at)}"
+                                )
                         except Exception as exc:  # noqa: BLE001 - pose is best-effort, never blocks frames
                             if step == 0:
                                 _log(f"kinematic arm pose skipped ({exc!r})")
@@ -4445,17 +4729,54 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             decision.root_pose,
                             decision.yaw,
                             look_at=effective_look_at,
-                            reach_arm=manipulation_reach_arm,
+                            reach_arm=pov_reach_arm,
+                            vfov_deg=pov_vfov_deg,
+                            width=width,
+                            height=height,
                         )
                         if cap == 0:
                             _log(
                                 "scenario "
                                 f"{sid}: robot_pov camera source={cam_meta.get('source')} "
                                 f"mount={cam_meta.get('mount_prim_path')} "
-                                f"arm_links={cam_meta.get('arm_link_points_used')}"
+                                f"arm_links={cam_meta.get('arm_link_points_used')} "
+                                f"target_select={cam_meta.get('selected_camera_target')}"
                             )
                     else:
                         eye, tgt = follow_cam_pose(decision.root_pose, decision.yaw)
+                    if (
+                        manipulation_cam
+                        and manipulation_reach
+                        and effective_look_at is not None
+                        and cam_meta is not None
+                    ):
+                        pov_geom = _manipulation_pov_geometry(
+                            arm_points=cam_meta.get("arm_link_points_xyz") or {},
+                            affordance=effective_look_at,
+                            eye=eye,
+                            target=tgt,
+                            vfov_deg=pov_vfov_deg,
+                            width=width,
+                            height=height,
+                            arm=pov_reach_arm,
+                        )
+                        pov_geom = {
+                            **pov_geom,
+                            "step": step,
+                            "frame_index": cap,
+                            "camera_meta": cam_meta,
+                        }
+                        pov_geometry_records.append(pov_geom)
+                        pov_geometry_report = _write_pov_geometry_report()
+                        if cap == 0:
+                            _log(
+                                f"scenario {sid}: manipulation POV geometry "
+                                f"{pov_geom.get('status')} roles={pov_geom.get('arm_roles_in_frame')} "
+                                f"target_in_frame={pov_geom.get('target_in_frame')}"
+                            )
+                        if pov_geom.get("status") != "PASS" and not pov_geometry_blocker_recorded:
+                            blockers.append("manipulation_pov_geometry_failed")
+                            pov_geometry_blocker_recorded = True
                     _place_camera(stage, pov_cam, eye, tgt)  # POV camera (manipulation egocentric or follow)
                     if manipulation_cam and manipulation_reach and effective_look_at is not None:
                         # Front-light the reaching arm+gripper from the camera side (the workspace fill
@@ -4505,10 +4826,16 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     for _ in range(max(1, render_subframes)):
                         rep.orchestrator.step()
                     rdt = time.time() - ts
-                    over_ok = _save_rgb(over_annot, sdir / "frames" / f"overview_{cap:04d}.png")
-                    _save_rgb(pov_annot, sdir / "frames" / f"robot_pov_{cap:04d}.png")
+                    over_ok = _save_rgb(
+                        over_annot,
+                        sdir / "frames" / f"overview_{cap:04d}.png",
+                        software_denoise=software_denoise,
+                    )
+                    _save_rgb(pov_annot, sdir / "frames" / f"robot_pov_{cap:04d}.png",
+                              software_denoise=software_denoise)
                     if verify_annot is not None:
-                        _save_rgb(verify_annot, sdir / "frames" / f"verify_{cap:04d}.png")
+                        _save_rgb(verify_annot, sdir / "frames" / f"verify_{cap:04d}.png",
+                                  software_denoise=software_denoise)
                     if topdown_annot is not None and stance_plan is not None and debug_root_path is not None:
                         floor_z = float(decision.root_pose[2]) - ROBOT_PELVIS_HEIGHT_M
                         if stance_plan.get("floor_z_hint") is not None:
@@ -4534,7 +4861,11 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         for _ in range(max(1, render_subframes)):
                             rep.orchestrator.step()
                         placement_topdown_frame_path = sdir / "frames" / f"placement_topdown_{cap:04d}.png"
-                        _save_rgb(topdown_annot, placement_topdown_frame_path)
+                        _save_rgb(
+                            topdown_annot,
+                            placement_topdown_frame_path,
+                            software_denoise=software_denoise,
+                        )
                         placement_topdown_layout_frame_path = (
                             sdir / "frames" / f"placement_topdown_layout_{cap:04d}.png"
                         )
@@ -4611,6 +4942,16 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     blockers_now = set(placement_validation_manifest.get("blockers") or [])
                     if visual_qc.get("status") != "passed":
                         blockers_now.add("placement_visual_qc_failed")
+                    if pov_geometry_report is not None:
+                        placement_validation_manifest["manipulation_pov_geometry"] = {
+                            "status": pov_geometry_report.get("status"),
+                            "path": str(pov_geometry_path),
+                            "blockers": pov_geometry_report.get("blockers", []),
+                            "frames_checked": pov_geometry_report.get("frames_checked"),
+                        }
+                        if pov_geometry_report.get("status") != "PASS":
+                            blockers_now.add("manipulation_pov_geometry_failed")
+                            blockers_now.update(pov_geometry_report.get("blockers") or [])
                     placement_validation_manifest["blockers"] = sorted(blockers_now)
                     placement_validation_manifest["status"] = (
                         "PASS" if not placement_validation_manifest["blockers"] else "FAIL"
@@ -4658,6 +4999,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         placement_validation_manifest.get("visual_qc") or {}
                     ).get("status"),
                     "topdown_debug_frame": placement_validation_manifest.get("topdown_debug_frame"),
+                }
+            if pov_geometry_report is not None:
+                outcome["manipulation_pov_geometry"] = {
+                    "status": pov_geometry_report.get("status"),
+                    "path": str(pov_geometry_path),
+                    "blockers": pov_geometry_report.get("blockers", []),
+                    "frames_checked": pov_geometry_report.get("frames_checked"),
                 }
             outcomes.append(outcome)  # record BEFORE MP4 — MP4 is optional, frames already uploaded
             for name in ("overview", "robot_pov", "placement_topdown"):
@@ -5154,6 +5502,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "framing to the known workspace instead of the policy's noisy final yaw")
     ap.add_argument("--render-subframes", type=int, default=1,
                     help="RTX orchestrator steps accumulated per captured frame to denoise grain (e.g. 16)")
+    ap.add_argument("--no-software-denoise", action="store_true",
+                    help="disable CPU-side PNG denoise fallback for saved frames")
     ap.add_argument("--manipulation-reach", action="store_true",
                     help="pose the visible G1 arms into the workspace for manipulation POV review; "
                          "this is posed simulator media, not manipulation-success proof")
@@ -5280,6 +5630,7 @@ def main(argv=None) -> int:
         kinematic_arm_pose=args.kinematic_arm_pose,
         collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
         manipulation_stand=args.manipulation_stand,
+        software_denoise=not args.no_software_denoise,
         serve=args.serve,
         serve_dir=(Path(args.serve_dir) if args.serve_dir else None),
         serve_idle_timeout_s=args.serve_idle_timeout, serve_max_jobs=args.serve_max_jobs)
