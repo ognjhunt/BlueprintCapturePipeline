@@ -53,6 +53,7 @@ VAST_WAM_PUBLIC_IMAGE_ENV = "BLUEPRINT_VAST_WAM_PUBLIC_IMAGE"
 RUNPOD_WAM_PUBLIC_IMAGE_ENV = "BLUEPRINT_RUNPOD_WAM_PUBLIC_IMAGE"
 VAST_WAM_MIN_GPU_RAM_MB_ENV = "BLUEPRINT_VAST_WAM_MIN_GPU_RAM_MB"
 VAST_WAM_EXCLUDED_MACHINE_ID_ENV = "BLUEPRINT_VAST_WAM_EXCLUDED_MACHINE_ID"
+VAST_WAM_ALLOWED_MACHINE_ID_ENV = "BLUEPRINT_VAST_WAM_ALLOWED_MACHINE_ID"
 VAST_WAM_POLL_MAX_WAIT_SECONDS_ENV = "BLUEPRINT_VAST_WAM_POLL_MAX_WAIT_SECONDS"
 RUNPOD_WAM_CONTAINER_DISK_GB_ENV = "BLUEPRINT_RUNPOD_WAM_CONTAINER_DISK_GB"
 RUNPOD_WAM_VOLUME_GB_ENV = "BLUEPRINT_RUNPOD_WAM_VOLUME_GB"
@@ -513,9 +514,9 @@ def _public_image_for_provider(provider: str) -> str:
     return _vast_public_image_from_env()
 
 
-def _excluded_machine_ids_from_env() -> list[int]:
+def _machine_ids_from_env(name: str) -> list[int]:
     values: list[int] = []
-    for chunk in _string(os.getenv(VAST_WAM_EXCLUDED_MACHINE_ID_ENV)).replace(",", " ").split():
+    for chunk in _string(os.getenv(name)).replace(",", " ").split():
         try:
             machine_id = int(chunk)
         except ValueError:
@@ -642,7 +643,8 @@ def run_compute_provider(
         session_max_live_minutes=int(os.getenv("BLUEPRINT_VAST_WAM_SESSION_MAX_LIVE_MINUTES", "35")),
         startup_poll_seconds=int(os.getenv("BLUEPRINT_VAST_WAM_STARTUP_POLL_SECONDS", "120")),
         min_gpu_ram_mb=int(os.getenv(VAST_WAM_MIN_GPU_RAM_MB_ENV, "0")),
-        excluded_machine_ids=_excluded_machine_ids_from_env(),
+        excluded_machine_ids=_machine_ids_from_env(VAST_WAM_EXCLUDED_MACHINE_ID_ENV),
+        allowed_machine_ids=_machine_ids_from_env(VAST_WAM_ALLOWED_MACHINE_ID_ENV),
         container_disk_gb=_env_int(RUNPOD_WAM_CONTAINER_DISK_GB_ENV, 100),
         volume_gb=_env_int(RUNPOD_WAM_VOLUME_GB_ENV, 30),
         min_vcpu_per_gpu=_env_int(RUNPOD_WAM_MIN_VCPU_PER_GPU_ENV, 8),

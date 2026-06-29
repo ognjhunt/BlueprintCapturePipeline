@@ -131,6 +131,7 @@ class WamComputeLaunchSpec:
     session_max_live_minutes: int | None = 45
     min_gpu_ram_mb: int = 0
     excluded_machine_ids: Sequence[int] = ()
+    allowed_machine_ids: Sequence[int] = ()
     startup_poll_seconds: int = 90
     public_staging_verify_max_wait_seconds: int = 120
     public_staging_verify_retry_interval_seconds: float = 5.0
@@ -479,6 +480,7 @@ class VastWamComputeProvider(WamComputeProvider):
             "session_max_live_minutes": spec.session_max_live_minutes,
             "min_gpu_ram_mb": spec.min_gpu_ram_mb,
             "excluded_machine_ids": list(spec.excluded_machine_ids),
+            "allowed_machine_ids": list(spec.allowed_machine_ids),
             "raw_secret_values_recorded": False,
         }
 
@@ -526,6 +528,7 @@ class VastWamComputeProvider(WamComputeProvider):
                 session_max_live_minutes=spec.session_max_live_minutes,
                 min_gpu_ram_mb=spec.min_gpu_ram_mb,
                 excluded_machine_ids=spec.excluded_machine_ids,
+                allowed_machine_ids=spec.allowed_machine_ids,
                 startup_poll_seconds=spec.startup_poll_seconds,
                 public_staging_verify_max_wait_seconds=(
                     spec.public_staging_verify_max_wait_seconds
