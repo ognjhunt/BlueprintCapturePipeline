@@ -49,6 +49,16 @@ VAST_API_KEY_FILE_ENV = "VAST_API_KEY_FILE"
 PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV = (
     "BLUEPRINT_PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST"
 )
+UNITREE_G1_SONIC_STATE_DIMS = {
+    "left_leg": 6,
+    "right_leg": 6,
+    "waist": 3,
+    "left_arm": 7,
+    "right_arm": 7,
+    "left_hand": 7,
+    "right_hand": 7,
+    "projected_gravity": 3,
+}
 
 # A WAM generation backend: given the current observation frame, the policy action, the step
 # index, and the action history, produce the next-observation frame path (and optional video).
@@ -64,6 +74,15 @@ def _string(value: Any) -> str:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _neutral_unitree_g1_sonic_state() -> dict[str, list[float]]:
+    state = {
+        key: [0.0] * int(dim)
+        for key, dim in UNITREE_G1_SONIC_STATE_DIMS.items()
+    }
+    state["projected_gravity"] = [0.0, 0.0, -1.0]
+    return state
 
 
 def _policy_observation(frame_path: str, target: Sequence[float], step_index: int) -> dict[str, Any]:
@@ -154,11 +173,21 @@ def build_wam_generation_step_input(
         "current_policy_observation": {
             "schema_version": "blueprint_policy_observation.v1",
             "task_id": "isaac_g1_oscar_per_step_closed_loop",
+            "task_prompt": _string(task_prompt),
             "target_object_id": target_object_id,
             "robot_profile_id": "unitree_g1",
             "policy_source": "isaac_g1_policy",
             "camera_frame_path": str(frame),
             "visual_observation": visual,
+            "unitree_g1_sonic_state": _neutral_unitree_g1_sonic_state(),
+            "unitree_g1_sonic_state_source": "neutral_unitree_g1_sonic_contract_state",
+            "unitree_g1_sonic_state_metadata": {
+                "complete": True,
+                "robot_profile_id": "unitree_g1",
+                "state_vector_dims": dict(UNITREE_G1_SONIC_STATE_DIMS),
+                "neutral_state_for_initial_sim_observation": True,
+                "scene_or_task_specific_coordinates_hardcoded": False,
+            },
             "claim_boundary": {
                 "simulator_generated_world_observation_only": True,
                 "generated_wam_frame_is_support_artifact": step_index > 1,

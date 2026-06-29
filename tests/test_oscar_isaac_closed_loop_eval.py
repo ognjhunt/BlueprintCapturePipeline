@@ -1155,6 +1155,26 @@ def test_closed_loop_paid_long_run_requires_short_visual_sanity_after_input_risk
     assert policy_observation_path.is_file()
     policy_observation = json.loads(policy_observation_path.read_text(encoding="utf-8"))
     assert policy_observation["schema_version"] == "blueprint_policy_observation.v1"
+    assert policy_observation["task_prompt"] == plan["task_prompt"]
+    assert policy_observation["unitree_g1_sonic_state_source"] == (
+        "neutral_unitree_g1_sonic_contract_state"
+    )
+    assert policy_observation["unitree_g1_sonic_state_metadata"]["complete"] is True
+    assert policy_observation["unitree_g1_sonic_state_metadata"][
+        "scene_or_task_specific_coordinates_hardcoded"
+    ] is False
+    state = policy_observation["unitree_g1_sonic_state"]
+    assert {key: len(value) for key, value in state.items()} == {
+        "left_leg": 6,
+        "right_leg": 6,
+        "waist": 3,
+        "left_arm": 7,
+        "right_arm": 7,
+        "left_hand": 7,
+        "right_hand": 7,
+        "projected_gravity": 3,
+    }
+    assert state["projected_gravity"] == [0.0, 0.0, -1.0]
     assert policy_observation["visual_observation"]["camera_frame_path"] == str(
         seed.resolve()
     )
