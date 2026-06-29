@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
 import urllib.error
@@ -36,6 +37,12 @@ from .vast_provider_adapter import (
     DEFAULT_TARGET_SPEND_USD,
     DEFAULT_VAST_API_KEY_FILE,
     DEFAULT_WAM_ROLLOUT_VIDEO_COUNT,
+    VAST_API_GATE_ENV as _VAST_API_GATE_ENV,
+    VAST_MIN_RELIABILITY_ENV,
+    VAST_PREFERRED_GEOLOCATION_REGEX_ENV,
+    VAST_PREFERRED_GPU_KEYWORDS_ENV,
+    VAST_INSTANCE_LAUNCH_GATE_ENV as _VAST_INSTANCE_LAUNCH_GATE_ENV,
+    VAST_REQUIRE_DIRECT_PORT_ENV,
     VAST_API_KEY_FILE_ENV,
     VAST_FINAL_VALIDATION_SCHEMA_VERSION,
     VAST_GPU_SANITY_SCHEMA_VERSION,
@@ -55,6 +62,9 @@ from .vast_provider_adapter import (
     _create_payload,
     _create_request_summary,
     _env_int,
+    _env_float,
+    _env_csv,
+    _env_truthy,
     _fill_missing_phase_rows,
     _final_validation,
     _forwarded_secret_values,
@@ -106,6 +116,19 @@ DEFAULT_HEARTBEAT_URL = "https://example.com/"
 # letting the caller re-fire on a fresh offer. Default 12 minutes (override via env).
 VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV = "BLUEPRINT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS"
 DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS = 720
+VAST_API_GATE_ENV = _VAST_API_GATE_ENV
+VAST_INSTANCE_LAUNCH_GATE_ENV = _VAST_INSTANCE_LAUNCH_GATE_ENV
+DEFAULT_WAM_PREFERRED_GPU_KEYWORDS = (
+    "RTX 6000",
+    "RTX A6000",
+    "A6000",
+    "A40",
+    "L40",
+    "L40S",
+    "A100",
+    "H100",
+    "H200",
+)
 
 
 def _state_path(job_dir: Path) -> Path:
@@ -546,6 +569,11 @@ def create_async_vast_wam_run(
     min_gpu_ram_mb: int = 0,
     excluded_machine_ids: Sequence[int] = (),
     allowed_machine_ids: Sequence[int] = (),
+    min_reliability: float | None = None,
+    require_direct_port: bool | None = None,
+    preferred_gpu_keywords: Sequence[str] = (),
+    preferred_geolocation_regex: str = "",
+    prefer_isaac_rt: bool = False,
     startup_poll_seconds: int = 90,
     public_staging_verify_max_wait_seconds: int = 120,
     public_staging_verify_retry_interval_seconds: float = 5.0,
@@ -590,6 +618,25 @@ def create_async_vast_wam_run(
         provider_bundle_kind="wam",
     )
     resolved_disk_gb = _resolve_disk_gb(requested=disk_gb, enable_isaac_smoke=False)
+    resolved_min_reliability = max(
+        0.0,
+        float(
+            min_reliability
+            if min_reliability is not None
+            else _env_float(VAST_MIN_RELIABILITY_ENV, 0.0)
+        ),
+    )
+    resolved_require_direct_port = bool(
+        require_direct_port
+        if require_direct_port is not None
+        else _env_truthy(VAST_REQUIRE_DIRECT_PORT_ENV)
+    )
+    resolved_preferred_gpu_keywords = [
+        _string(item) for item in preferred_gpu_keywords if _string(item)
+    ] or _env_csv(VAST_PREFERRED_GPU_KEYWORDS_ENV, DEFAULT_WAM_PREFERRED_GPU_KEYWORDS)
+    resolved_preferred_geolocation_regex = _string(
+        preferred_geolocation_regex or os.getenv(VAST_PREFERRED_GEOLOCATION_REGEX_ENV)
+    )
     selected_container_image = _resolve_probe_image(
         public_image=public_image,
         isaac_image="",
@@ -946,6 +993,11 @@ def create_async_vast_wam_run(
             excluded_machine_ids=excluded_machine_ids,
             allowed_machine_ids=allowed_machine_ids,
             require_known_supported_isaac_driver=False,
+            min_reliability=resolved_min_reliability,
+            require_direct_port=resolved_require_direct_port,
+            preferred_gpu_keywords=resolved_preferred_gpu_keywords,
+            preferred_geolocation_regex=resolved_preferred_geolocation_regex,
+            prefer_isaac_rt=prefer_isaac_rt,
         )
         offer_blockers: list[str] = (
             []
@@ -961,6 +1013,11 @@ def create_async_vast_wam_run(
             "offer_count": len(offers),
             "max_hourly_rate_usd": max_hourly_rate,
             "min_gpu_ram_mb": int(min_gpu_ram_mb),
+            "min_reliability": resolved_min_reliability,
+            "require_direct_port": resolved_require_direct_port,
+            "preferred_gpu_keywords": list(resolved_preferred_gpu_keywords),
+            "preferred_geolocation_regex": resolved_preferred_geolocation_regex,
+            "prefer_isaac_rt": prefer_isaac_rt,
             "excluded_machine_ids": list(excluded_machine_ids),
             "allowed_machine_ids": list(allowed_machine_ids),
             "selected_offer": _offer_artifact_summary(selected_offer),
@@ -1188,6 +1245,11 @@ def create_async_vast_wam_run(
             "hard_cap_usd": hard_cap_usd,
             "max_hourly_rate_usd": max_hourly_rate,
             "min_gpu_ram_mb": int(min_gpu_ram_mb),
+            "min_reliability": resolved_min_reliability,
+            "require_direct_port": resolved_require_direct_port,
+            "preferred_gpu_keywords": list(resolved_preferred_gpu_keywords),
+            "preferred_geolocation_regex": resolved_preferred_geolocation_regex,
+            "prefer_isaac_rt": prefer_isaac_rt,
             "last_instance_status": status,
             "instance_observations": observations,
             "last_instance_payload_redacted": _redact_runtime_value(
@@ -1229,6 +1291,11 @@ def create_async_vast_wam_run(
             "output_path": str(resolved_output),
             "selected_offer": _offer_artifact_summary(selected_offer),
             "min_gpu_ram_mb": int(min_gpu_ram_mb),
+            "min_reliability": resolved_min_reliability,
+            "require_direct_port": resolved_require_direct_port,
+            "preferred_gpu_keywords": list(resolved_preferred_gpu_keywords),
+            "preferred_geolocation_regex": resolved_preferred_geolocation_regex,
+            "prefer_isaac_rt": prefer_isaac_rt,
             "explicit_provider_urls_used": direct_provider_urls,
             "provider_bundle_url_redacted": _redact_provider_url(provider_bundle_url),
             "provider_output_put_url_redacted": _redact_provider_url(provider_output_put_url),
@@ -1784,6 +1851,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
         help="Restrict Vast offer selection to this machine id; repeatable.",
     )
+    create.add_argument(
+        "--min-reliability",
+        type=float,
+        help=(
+            "Minimum Vast offer reliability. Defaults to "
+            f"{VAST_MIN_RELIABILITY_ENV} when set, otherwise no hard floor."
+        ),
+    )
+    create.add_argument(
+        "--require-direct-port",
+        action="store_true",
+        help=f"Require direct_port_count > 0. Can also be enabled with {VAST_REQUIRE_DIRECT_PORT_ENV}=true.",
+    )
+    create.add_argument(
+        "--preferred-gpu-keyword",
+        action="append",
+        default=[],
+        help=(
+            "Preferred GPU family keyword for WAM offer sorting; repeatable. "
+            f"Defaults to {VAST_PREFERRED_GPU_KEYWORDS_ENV} or workstation/datacenter families."
+        ),
+    )
+    create.add_argument(
+        "--preferred-geolocation-regex",
+        default="",
+        help=f"Regex used to prefer Vast geolocations before price; {VAST_PREFERRED_GEOLOCATION_REGEX_ENV} can also set it.",
+    )
+    create.add_argument(
+        "--prefer-isaac-rt",
+        action="store_true",
+        help="Use the Isaac rendering RTX-first pool for WAM offer sorting. Disabled by default for WAM.",
+    )
     create.add_argument("--startup-poll-seconds", type=int, default=90)
     create.add_argument("--public-staging-verify-max-wait-seconds", type=int, default=120)
     create.add_argument("--public-staging-verify-retry-interval-seconds", type=float, default=5.0)
@@ -1827,6 +1926,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             min_gpu_ram_mb=args.min_gpu_ram_mb,
             excluded_machine_ids=args.excluded_machine_id,
             allowed_machine_ids=args.allowed_machine_id,
+            min_reliability=args.min_reliability,
+            require_direct_port=args.require_direct_port or None,
+            preferred_gpu_keywords=args.preferred_gpu_keyword,
+            preferred_geolocation_regex=args.preferred_geolocation_regex,
+            prefer_isaac_rt=args.prefer_isaac_rt,
             startup_poll_seconds=args.startup_poll_seconds,
             public_staging_verify_max_wait_seconds=args.public_staging_verify_max_wait_seconds,
             public_staging_verify_retry_interval_seconds=args.public_staging_verify_retry_interval_seconds,

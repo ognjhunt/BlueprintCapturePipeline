@@ -61,6 +61,10 @@ VAST_API_GATE_ENV = "BLUEPRINT_ALLOW_VAST_API_CALLS"
 VAST_INSTANCE_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"
 VAST_FORWARD_SECRET_ENV_VARS_ENV = "BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS"
 VAST_WAM_MIN_GPU_RAM_MB_ENV = "BLUEPRINT_VAST_WAM_MIN_GPU_RAM_MB"
+VAST_MIN_RELIABILITY_ENV = "BLUEPRINT_VAST_MIN_RELIABILITY"
+VAST_REQUIRE_DIRECT_PORT_ENV = "BLUEPRINT_VAST_REQUIRE_DIRECT_PORT"
+VAST_PREFERRED_GPU_KEYWORDS_ENV = "BLUEPRINT_VAST_PREFERRED_GPU_KEYWORDS"
+VAST_PREFERRED_GEOLOCATION_REGEX_ENV = "BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX"
 VAST_WAM_NO_PROGRESS_SECONDS_ENV = "BLUEPRINT_VAST_WAM_NO_PROGRESS_SECONDS"
 VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV = (
     "BLUEPRINT_VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK"
@@ -364,6 +368,20 @@ def _env_int(name: str, default: int) -> int:
         return int(float(_string(os.getenv(name)) or default))
     except ValueError:
         return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(_string(os.getenv(name)) or default)
+    except ValueError:
+        return default
+
+
+def _env_csv(name: str, default: Sequence[str] = ()) -> list[str]:
+    text = _string(os.getenv(name))
+    if not text:
+        return list(default)
+    return [item.strip() for item in text.split(",") if item.strip()]
 
 
 def _write_jsonl_row(path: Path, row: Mapping[str, Any]) -> None:
@@ -1146,6 +1164,7 @@ def _offer_id(offer: Mapping[str, Any]) -> int | None:
 
 def _offer_hourly_rate(offer: Mapping[str, Any]) -> float | None:
     direct_keys = (
+        "hourly_rate_usd",
         "dph_total",
         "discounted_dph_total",
         "totalHour",
@@ -1171,6 +1190,7 @@ def _gpu_name(offer: Mapping[str, Any]) -> str:
         _string(offer.get("gpu_name"))
         or _string(offer.get("gpu_name_str"))
         or _string(offer.get("gpu_display_name"))
+        or _string(offer.get("gpu_model_slug")).replace("_", " ")
     )
 
 
@@ -1255,6 +1275,24 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         ),
         "raw_secret_values_recorded": False,
     }
+
+
+def _keyword_match_rank(value: Any, keywords: Sequence[str]) -> int:
+    if not keywords:
+        return 0
+    haystack = _string(value).lower()
+    return 0 if any(_string(keyword).lower() in haystack for keyword in keywords) else 1
+
+
+def _regex_match_rank(value: Any, pattern: str) -> int:
+    text = _string(value)
+    regex = _string(pattern)
+    if not regex:
+        return 0
+    try:
+        return 0 if re.search(regex, text, flags=re.IGNORECASE) else 1
+    except re.error:
+        return 1
 
 
 def _machine_id_set(values: Iterable[Any]) -> set[int]:
@@ -1407,6 +1445,11 @@ def _select_offer(
     excluded_machine_ids: Iterable[Any] = (),
     allowed_machine_ids: Iterable[Any] = (),
     require_known_supported_isaac_driver: bool = False,
+    min_reliability: float = 0.0,
+    require_direct_port: bool = False,
+    preferred_gpu_keywords: Sequence[str] = (),
+    preferred_geolocation_regex: str = "",
+    prefer_isaac_rt: bool = True,
 ) -> dict[str, Any] | None:
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
@@ -1418,6 +1461,17 @@ def _select_offer(
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
+        and (
+            not min_reliability
+            or (
+                _number(item.get("reliability")) is not None
+                and float(_number(item.get("reliability")) or 0.0) >= min_reliability
+            )
+        )
+        and (
+            not require_direct_port
+            or int(_number(item.get("direct_port_count")) or 0) > 0
+        )
         and not item["disallowed_for_isaac_rendering"]
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (
@@ -1435,12 +1489,16 @@ def _select_offer(
     if not candidates:
         return None
     rt_candidates = [item for item in candidates if item["isaac_rt_candidate"]]
-    selected_pool = rt_candidates or candidates
+    selected_pool = (rt_candidates or candidates) if prefer_isaac_rt else candidates
     return sorted(
         selected_pool,
         key=lambda item: (
             _driver_sort_rank(item),
             _driver_newer_branch_sort_rank(item),
+            _keyword_match_rank(item.get("gpu_name"), preferred_gpu_keywords),
+            _regex_match_rank(item.get("geolocation"), preferred_geolocation_regex),
+            -float(_number(item.get("reliability")) or 0.0),
+            -int(_number(item.get("direct_port_count")) or 0),
             float(item["hourly_rate_usd"] or 999),
             0 if item["isaac_rt_candidate"] else 1,
             str(item["gpu_name"]),
@@ -1476,6 +1534,11 @@ def _offer_selection_manifest(
     machine_avoidlist_path: Path,
     avoidlist_status: str | None,
     blockers: Sequence[str],
+    min_reliability: float = 0.0,
+    require_direct_port: bool = False,
+    preferred_gpu_keywords: Sequence[str] = (),
+    preferred_geolocation_regex: str = "",
+    prefer_isaac_rt: bool = True,
     create_retry_attempts: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     summaries = [_offer_summary(offer) for offer in offers]
@@ -1499,6 +1562,31 @@ def _offer_selection_manifest(
     allowed_offer_count = sum(
         1 for item in summaries if int(_number(item.get("machine_id")) or -1) in allowed
     )
+    quality_filtered_offer_count = sum(
+        1
+        for item in summaries
+        if item["ask_contract_id"]
+        and _number(item["hourly_rate_usd"]) is not None
+        and float(item["hourly_rate_usd"]) <= max_hourly_rate
+        and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
+        and (
+            not min_reliability
+            or (
+                _number(item.get("reliability")) is not None
+                and float(_number(item.get("reliability")) or 0.0) >= min_reliability
+            )
+        )
+        and (
+            not require_direct_port
+            or int(_number(item.get("direct_port_count")) or 0) > 0
+        )
+        and not item["disallowed_for_isaac_rendering"]
+        and int(_number(item.get("machine_id")) or -1) not in excluded
+        and (
+            not allowed
+            or int(_number(item.get("machine_id")) or -1) in allowed
+        )
+    )
     return {
         "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1509,6 +1597,12 @@ def _offer_selection_manifest(
         "max_hourly_rate_usd": max_hourly_rate,
         "min_gpu_ram_mb": min_gpu_ram_mb,
         "require_known_supported_isaac_driver": require_known_supported_isaac_driver,
+        "min_reliability": min_reliability,
+        "require_direct_port": require_direct_port,
+        "preferred_gpu_keywords": list(preferred_gpu_keywords),
+        "preferred_geolocation_regex": preferred_geolocation_regex,
+        "prefer_isaac_rt": prefer_isaac_rt,
+        "quality_filtered_offer_count": quality_filtered_offer_count,
         "known_supported_driver_offer_count": known_supported_offer_count,
         "known_unsupported_driver_offer_count": known_unsupported_driver_offer_count,
         "selected_offer": _offer_artifact_summary(selected_offer),
@@ -4092,6 +4186,11 @@ def run_vast_provider_adapter(
     verify_staging_urls: bool = False,
     allow_staging_output_put_probe: bool = False,
     require_known_supported_isaac_driver: bool = False,
+    min_reliability: float | None = None,
+    require_direct_port: bool | None = None,
+    preferred_gpu_keywords: Sequence[str] = (),
+    preferred_geolocation_regex: str = "",
+    prefer_isaac_rt: bool | None = None,
     vast_launch_lock_file: str | Path | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
@@ -4128,6 +4227,29 @@ def run_vast_provider_adapter(
             if min_gpu_ram_mb is not None
             else (_number(os.getenv(VAST_WAM_MIN_GPU_RAM_MB_ENV)) or 0)
         ),
+    )
+    resolved_min_reliability = max(
+        0.0,
+        float(
+            _number(min_reliability)
+            if min_reliability is not None
+            else _env_float(VAST_MIN_RELIABILITY_ENV, 0.0)
+        ),
+    )
+    resolved_require_direct_port = bool(
+        require_direct_port
+        if require_direct_port is not None
+        else _env_truthy(VAST_REQUIRE_DIRECT_PORT_ENV)
+    )
+    resolved_preferred_gpu_keywords = [
+        _string(item) for item in preferred_gpu_keywords if _string(item)
+    ] or _env_csv(VAST_PREFERRED_GPU_KEYWORDS_ENV)
+    resolved_preferred_geolocation_regex = _string(
+        preferred_geolocation_regex
+        or os.getenv(VAST_PREFERRED_GEOLOCATION_REGEX_ENV)
+    )
+    resolved_prefer_isaac_rt = (
+        provider_bundle_kind == "isaac" if prefer_isaac_rt is None else bool(prefer_isaac_rt)
     )
     avoidlist = _load_machine_avoidlist(resolved_machine_avoidlist_path)
     excluded_machine_ids = _avoidlist_machine_ids(resolved_machine_avoidlist_path)
@@ -5107,6 +5229,11 @@ def run_vast_provider_adapter(
                 excluded_machine_ids=excluded_machine_ids,
                 allowed_machine_ids=resolved_allowed_machine_ids,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
+                min_reliability=resolved_min_reliability,
+                require_direct_port=resolved_require_direct_port,
+                preferred_gpu_keywords=resolved_preferred_gpu_keywords,
+                preferred_geolocation_regex=resolved_preferred_geolocation_regex,
+                prefer_isaac_rt=resolved_prefer_isaac_rt,
             )
             offer_blockers: list[str] = []
             if not selected_offer:
@@ -5130,6 +5257,11 @@ def run_vast_provider_adapter(
                 machine_avoidlist_path=resolved_machine_avoidlist_path,
                 avoidlist_status=_string(avoidlist.get("status")) or None,
                 blockers=offer_blockers,
+                min_reliability=resolved_min_reliability,
+                require_direct_port=resolved_require_direct_port,
+                preferred_gpu_keywords=resolved_preferred_gpu_keywords,
+                preferred_geolocation_regex=resolved_preferred_geolocation_regex,
+                prefer_isaac_rt=resolved_prefer_isaac_rt,
                 create_retry_attempts=create_retry_attempts,
             )
             write_json(resolved_job_dir / "vast_offer_selection_manifest.json", offer_manifest)
@@ -5247,6 +5379,11 @@ def run_vast_provider_adapter(
                     machine_avoidlist_path=resolved_machine_avoidlist_path,
                     avoidlist_status=_string(avoidlist.get("status")) or None,
                     blockers=["vast_create_stale_offer_retry"],
+                    min_reliability=resolved_min_reliability,
+                    require_direct_port=resolved_require_direct_port,
+                    preferred_gpu_keywords=resolved_preferred_gpu_keywords,
+                    preferred_geolocation_regex=resolved_preferred_geolocation_regex,
+                    prefer_isaac_rt=resolved_prefer_isaac_rt,
                     create_retry_attempts=create_retry_attempts,
                 )
                 write_json(

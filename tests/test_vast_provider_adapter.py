@@ -2112,6 +2112,48 @@ def test_vast_adapter_restricts_to_allowed_machine_ids() -> None:
     assert selected["machine_id"] == 222
 
 
+def test_vast_adapter_wam_selection_can_prefer_workstation_gpu_over_isaac_rt_pool() -> None:
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "RTX 4090",
+                "gpu_ram_mb": 49140,
+                "dph_total": 0.39,
+                "driver_version": "580.159.03",
+                "machine_id": 111,
+                "reliability": 0.991,
+                "direct_port_count": 99,
+                "geolocation": "cn",
+            },
+            {
+                "id": 2,
+                "ask_contract_id": 2,
+                "gpu_name": "RTX A6000",
+                "gpu_ram_mb": 49140,
+                "dph_total": 0.55,
+                "driver_version": "580.159.03",
+                "machine_id": 222,
+                "reliability": 0.995,
+                "direct_port_count": 32,
+                "geolocation": "california_us",
+            },
+        ],
+        max_hourly_rate=0.80,
+        min_gpu_ram_mb=48000,
+        min_reliability=0.99,
+        require_direct_port=True,
+        preferred_gpu_keywords=("RTX A6000", "L40S", "A100"),
+        preferred_geolocation_regex="california|oregon|texas",
+        prefer_isaac_rt=False,
+    )
+
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2
+    assert selected["machine_id"] == 222
+
+
 def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
     tmp_path: Path,
     monkeypatch,

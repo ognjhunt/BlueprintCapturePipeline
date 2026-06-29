@@ -366,6 +366,10 @@ def test_create_forwards_allowed_machine_ids_to_offer_selection(
     assert manifest["reason"] == "no_vast_offer_selected"
     assert captured_select["excluded_machine_ids"] == [49407]
     assert captured_select["allowed_machine_ids"] == [16571]
+    assert captured_select["preferred_gpu_keywords"] == list(
+        runner.DEFAULT_WAM_PREFERRED_GPU_KEYWORDS
+    )
+    assert captured_select["prefer_isaac_rt"] is False
     offer_manifest = json.loads(
         (tmp_path / "allowed" / "vast_offer_selection_manifest.json").read_text(
             encoding="utf-8"
@@ -373,6 +377,10 @@ def test_create_forwards_allowed_machine_ids_to_offer_selection(
     )
     assert offer_manifest["excluded_machine_ids"] == [49407]
     assert offer_manifest["allowed_machine_ids"] == [16571]
+    assert offer_manifest["preferred_gpu_keywords"] == list(
+        runner.DEFAULT_WAM_PREFERRED_GPU_KEYWORDS
+    )
+    assert offer_manifest["prefer_isaac_rt"] is False
 
 
 def test_create_lock_inventory_offer_hard_cap_and_instance_blocks(

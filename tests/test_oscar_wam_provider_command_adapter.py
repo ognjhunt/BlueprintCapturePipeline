@@ -390,6 +390,10 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
     monkeypatch.setenv(adapter.VAST_WAM_MIN_GPU_RAM_MB_ENV, "48000")
     monkeypatch.setenv(adapter.VAST_WAM_EXCLUDED_MACHINE_ID_ENV, "134862, 42, bad, 134862")
     monkeypatch.setenv(adapter.VAST_WAM_ALLOWED_MACHINE_ID_ENV, "16571, bad, 16571")
+    monkeypatch.setenv(adapter.VAST_WAM_MIN_RELIABILITY_ENV, "0.99")
+    monkeypatch.setenv(adapter.VAST_WAM_REQUIRE_DIRECT_PORT_ENV, "true")
+    monkeypatch.setenv(adapter.VAST_WAM_PREFERRED_GPU_KEYWORDS_ENV, "RTX A6000,L40S,A100")
+    monkeypatch.setenv(adapter.VAST_WAM_PREFERRED_GEOLOCATION_REGEX_ENV, "california|oregon")
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_NUM_FRAMES", "49")
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_HEIGHT", "480")
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_WIDTH", "640")
@@ -472,6 +476,11 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
     assert captured_create["min_gpu_ram_mb"] == 48000
     assert captured_create["excluded_machine_ids"] == [134862, 42]
     assert captured_create["allowed_machine_ids"] == [16571]
+    assert captured_create["min_reliability"] == 0.99
+    assert captured_create["require_direct_port"] is True
+    assert captured_create["preferred_gpu_keywords"] == ["RTX A6000", "L40S", "A100"]
+    assert captured_create["preferred_geolocation_regex"] == "california|oregon"
+    assert captured_create["prefer_isaac_rt"] is False
     assert captured_bundle["num_frames"] == 49
     assert captured_bundle["height"] == 480
     assert captured_bundle["width"] == 640

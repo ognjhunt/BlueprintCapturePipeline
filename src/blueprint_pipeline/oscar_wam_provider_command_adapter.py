@@ -54,6 +54,13 @@ RUNPOD_WAM_PUBLIC_IMAGE_ENV = "BLUEPRINT_RUNPOD_WAM_PUBLIC_IMAGE"
 VAST_WAM_MIN_GPU_RAM_MB_ENV = "BLUEPRINT_VAST_WAM_MIN_GPU_RAM_MB"
 VAST_WAM_EXCLUDED_MACHINE_ID_ENV = "BLUEPRINT_VAST_WAM_EXCLUDED_MACHINE_ID"
 VAST_WAM_ALLOWED_MACHINE_ID_ENV = "BLUEPRINT_VAST_WAM_ALLOWED_MACHINE_ID"
+VAST_WAM_MIN_RELIABILITY_ENV = "BLUEPRINT_VAST_WAM_MIN_RELIABILITY"
+VAST_WAM_REQUIRE_DIRECT_PORT_ENV = "BLUEPRINT_VAST_WAM_REQUIRE_DIRECT_PORT"
+VAST_WAM_PREFERRED_GPU_KEYWORDS_ENV = "BLUEPRINT_VAST_WAM_PREFERRED_GPU_KEYWORDS"
+VAST_WAM_PREFERRED_GEOLOCATION_REGEX_ENV = (
+    "BLUEPRINT_VAST_WAM_PREFERRED_GEOLOCATION_REGEX"
+)
+VAST_WAM_PREFER_ISAAC_RT_ENV = "BLUEPRINT_VAST_WAM_PREFER_ISAAC_RT"
 VAST_WAM_POLL_MAX_WAIT_SECONDS_ENV = "BLUEPRINT_VAST_WAM_POLL_MAX_WAIT_SECONDS"
 RUNPOD_WAM_CONTAINER_DISK_GB_ENV = "BLUEPRINT_RUNPOD_WAM_CONTAINER_DISK_GB"
 RUNPOD_WAM_VOLUME_GB_ENV = "BLUEPRINT_RUNPOD_WAM_VOLUME_GB"
@@ -540,6 +547,10 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_csv(name: str) -> list[str]:
+    return [item.strip() for item in _string(os.getenv(name)).split(",") if item.strip()]
+
+
 def _poll_max_wait_seconds(timeout_seconds: float) -> int:
     return max(1, _env_int(VAST_WAM_POLL_MAX_WAIT_SECONDS_ENV, int(timeout_seconds)))
 
@@ -645,6 +656,13 @@ def run_compute_provider(
         min_gpu_ram_mb=int(os.getenv(VAST_WAM_MIN_GPU_RAM_MB_ENV, "0")),
         excluded_machine_ids=_machine_ids_from_env(VAST_WAM_EXCLUDED_MACHINE_ID_ENV),
         allowed_machine_ids=_machine_ids_from_env(VAST_WAM_ALLOWED_MACHINE_ID_ENV),
+        min_reliability=_env_float(VAST_WAM_MIN_RELIABILITY_ENV, 0.0),
+        require_direct_port=_env_truthy(VAST_WAM_REQUIRE_DIRECT_PORT_ENV),
+        preferred_gpu_keywords=_env_csv(VAST_WAM_PREFERRED_GPU_KEYWORDS_ENV),
+        preferred_geolocation_regex=_string(
+            os.getenv(VAST_WAM_PREFERRED_GEOLOCATION_REGEX_ENV)
+        ),
+        prefer_isaac_rt=_env_truthy(VAST_WAM_PREFER_ISAAC_RT_ENV),
         container_disk_gb=_env_int(RUNPOD_WAM_CONTAINER_DISK_GB_ENV, 100),
         volume_gb=_env_int(RUNPOD_WAM_VOLUME_GB_ENV, 30),
         min_vcpu_per_gpu=_env_int(RUNPOD_WAM_MIN_VCPU_PER_GPU_ENV, 8),

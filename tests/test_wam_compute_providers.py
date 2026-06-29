@@ -190,7 +190,16 @@ def test_run_wam_compute_job_normalizes_vast_result(
     )
 
     result = providers.run_wam_compute_job(
-        spec=_spec(bundle, max_wait_seconds=7, min_gpu_ram_mb=48000),
+        spec=_spec(
+            bundle,
+            max_wait_seconds=7,
+            min_gpu_ram_mb=48000,
+            min_reliability=0.99,
+            require_direct_port=True,
+            preferred_gpu_keywords=("RTX A6000", "L40S"),
+            preferred_geolocation_regex="california|oregon",
+            prefer_isaac_rt=False,
+        ),
         job_dir=tmp_path / "compute",
         provider_order=["vast"],
         allow_paid_launch=True,
@@ -204,6 +213,11 @@ def test_run_wam_compute_job_normalizes_vast_result(
     assert result.continuing_spend_from_this_run is False
     assert captured_create["allow_paid_vast_launch"] is True
     assert captured_create["min_gpu_ram_mb"] == 48000
+    assert captured_create["min_reliability"] == 0.99
+    assert captured_create["require_direct_port"] is True
+    assert captured_create["preferred_gpu_keywords"] == ("RTX A6000", "L40S")
+    assert captured_create["preferred_geolocation_regex"] == "california|oregon"
+    assert captured_create["prefer_isaac_rt"] is False
     assert captured_poll["max_wait_seconds"] == 7
     assert captured_poll["teardown"] is True
 

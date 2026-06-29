@@ -132,6 +132,11 @@ class WamComputeLaunchSpec:
     min_gpu_ram_mb: int = 0
     excluded_machine_ids: Sequence[int] = ()
     allowed_machine_ids: Sequence[int] = ()
+    min_reliability: float = 0.0
+    require_direct_port: bool = False
+    preferred_gpu_keywords: Sequence[str] = ()
+    preferred_geolocation_regex: str = ""
+    prefer_isaac_rt: bool = False
     startup_poll_seconds: int = 90
     public_staging_verify_max_wait_seconds: int = 120
     public_staging_verify_retry_interval_seconds: float = 5.0
@@ -481,6 +486,11 @@ class VastWamComputeProvider(WamComputeProvider):
             "min_gpu_ram_mb": spec.min_gpu_ram_mb,
             "excluded_machine_ids": list(spec.excluded_machine_ids),
             "allowed_machine_ids": list(spec.allowed_machine_ids),
+            "min_reliability": spec.min_reliability,
+            "require_direct_port": spec.require_direct_port,
+            "preferred_gpu_keywords": list(spec.preferred_gpu_keywords),
+            "preferred_geolocation_regex": spec.preferred_geolocation_regex,
+            "prefer_isaac_rt": spec.prefer_isaac_rt,
             "raw_secret_values_recorded": False,
         }
 
@@ -529,6 +539,11 @@ class VastWamComputeProvider(WamComputeProvider):
                 min_gpu_ram_mb=spec.min_gpu_ram_mb,
                 excluded_machine_ids=spec.excluded_machine_ids,
                 allowed_machine_ids=spec.allowed_machine_ids,
+                min_reliability=spec.min_reliability,
+                require_direct_port=spec.require_direct_port,
+                preferred_gpu_keywords=spec.preferred_gpu_keywords,
+                preferred_geolocation_regex=spec.preferred_geolocation_regex,
+                prefer_isaac_rt=spec.prefer_isaac_rt,
                 startup_poll_seconds=spec.startup_poll_seconds,
                 public_staging_verify_max_wait_seconds=(
                     spec.public_staging_verify_max_wait_seconds
