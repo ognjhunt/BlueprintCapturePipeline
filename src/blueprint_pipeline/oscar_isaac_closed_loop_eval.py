@@ -471,7 +471,14 @@ def make_oscar_provider_command_wam_backend(
     extract_next_frame: Callable[[str | Path, str | Path], Path | None] | None = None,
     projected_skeleton_trace_path: str | Path | None = None,
 ) -> WamGenerateNext:
-    """Drive one fresh OSCAR provider run per closed-loop step."""
+    """Drive one fresh OSCAR provider run per closed-loop step.
+
+    When a projected skeleton trace is available, keep it attached for every
+    autoregressive step. The generated observation changes per step, but the
+    provider still needs the action/robot visual-conditioning stream; dropping it
+    after the first frame makes later WAM calls much more likely to drift or
+    collapse while still looking structurally "wired."
+    """
     resolved_work = Path(work_dir).expanduser().resolve()
     ensure_dir(resolved_work)
 
@@ -489,7 +496,7 @@ def make_oscar_provider_command_wam_backend(
             step_index=step_index,
             output_dir=step_dir,
             task_prompt=task_prompt,
-            projected_skeleton_trace_path=projected_skeleton_trace_path if step_index == 1 else None,
+            projected_skeleton_trace_path=projected_skeleton_trace_path,
         )
         step_input_path = step_dir / "wam_generation_step_input.json"
         write_json(step_input_path, step_input)

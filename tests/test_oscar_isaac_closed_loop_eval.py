@@ -169,12 +169,32 @@ def test_oscar_per_step_backend_drives_the_loop(tmp_path: Path) -> None:
 def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_path: Path) -> None:
     start = _write_frame(tmp_path / "start.png", seed=4)
     captured: dict[str, object] = {}
+    captured_input_paths: list[str] = []
+    projected_trace = tmp_path / "g1_projected_skeleton_trace.jsonl"
+    projected_trace.write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint.g1.projected_upper_body_skeleton.v1",
+                "status": "completed",
+                "projected_landmark_count": 1,
+                "landmarks": [
+                    {
+                        "landmark_id": "right_hand",
+                        "image_projection": {"available": True, "u_px": 10, "v_px": 12},
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     def _fake_adapter(argv):
         captured["argv"] = list(argv or [])
         input_path = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_INPUT"])
         output_path = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"])
         captured["input_path"] = str(input_path)
+        captured_input_paths.append(str(input_path))
         captured["runtime_env"] = {
             "num_frames": os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_FRAMES"),
             "num_steps": os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_STEPS"),
@@ -215,6 +235,7 @@ def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_
         allow_paid_provider_launch=True,
         adapter_run=_fake_adapter,
         extract_next_frame=_extract,
+        projected_skeleton_trace_path=projected_trace,
     )
     result = backend(
         str(start),
@@ -240,6 +261,23 @@ def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_
     step_input = json.loads(Path(str(captured["input_path"])).read_text(encoding="utf-8"))
     assert step_input["schema_version"] == "wam_generation_step_input.v1"
     assert step_input["source_policy_action"]["task_prompt"] == "walk to the sink"
+    visual = step_input["current_policy_observation"]["visual_observation"]
+    assert visual["g1_projected_skeleton_trace_jsonl"] == str(projected_trace.resolve())
+
+    step2 = backend(
+        str(result["generated_frame_path"]),
+        {
+            "policy_action": "accepted_direct_collision_checked_motion",
+            "root_position": [0.25, 0, 0.79],
+        },
+        2,
+        [{"step_index": 1, "wam_generated_frame": result["generated_frame_path"]}],
+    )
+    assert step2["status"] == "completed"
+    step2_input = json.loads(Path(captured_input_paths[-1]).read_text(encoding="utf-8"))
+    step2_visual = step2_input["current_policy_observation"]["visual_observation"]
+    assert step2_visual["g1_projected_skeleton_trace_jsonl"] == str(projected_trace.resolve())
+    assert step2_visual["projected_skeleton_trace_path"] == str(projected_trace.resolve())
 
 
 def test_materialize_projected_skeleton_trace_from_seed_geometry_scales_to_seed(
