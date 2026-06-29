@@ -329,6 +329,9 @@ def _extract_provider_payload(
             payload["provider_oscar_runtime_argv_contract"] = runtime_result_payload.get(
                 "oscar_runtime_argv_contract"
             )
+            payload["provider_oscar_input_contract_diagnostic"] = (
+                runtime_result_payload.get("oscar_input_contract_diagnostic")
+            )
             payload["provider_input_signal_summary"] = runtime_result_payload.get(
                 "input_signal_summary"
             )

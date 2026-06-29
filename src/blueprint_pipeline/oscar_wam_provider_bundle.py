@@ -1117,6 +1117,175 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
     return sorted(set(blockers))
 
 
+def _oscar_input_contract_diagnostic(
+    input_package: Mapping[str, Any],
+    *,
+    num_frames: int,
+    height: int,
+    width: int,
+    fps: float,
+    num_steps: int,
+    guidance: float,
+    seed: int,
+) -> dict[str, Any]:
+    """Build a scene-agnostic diagnostic for the OSCAR runtime inputs."""
+
+    def _int_value(value: Any, default: int = 0) -> int:
+        if isinstance(value, bool):
+            return default
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+    def _float_value(value: Any, default: float = 0.0) -> float:
+        if isinstance(value, bool):
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    expected_frames = max(1, int(num_frames))
+    expected_height = int(height)
+    expected_width = int(width)
+    first_frame = _mapping(input_package.get("first_frame"))
+    skeleton_video = _mapping(input_package.get("skeleton_video"))
+    skeleton_signal = _mapping(skeleton_video.get("visual_signal"))
+    rgb_video = _mapping(input_package.get("rgb_video"))
+    rgb_signal = _mapping(rgb_video.get("visual_signal"))
+    projected_trace = _mapping(input_package.get("projected_skeleton_trace"))
+    prompt = _string(input_package.get("prompt"))
+    blockers: list[str] = []
+    warnings: list[str] = []
+    first_size = {
+        "width": _int_value(first_frame.get("width")),
+        "height": _int_value(first_frame.get("height")),
+    }
+    skeleton_size = {
+        "width": _int_value(skeleton_video.get("width")),
+        "height": _int_value(skeleton_video.get("height")),
+    }
+    rgb_size = {
+        "width": _int_value(rgb_video.get("width")),
+        "height": _int_value(rgb_video.get("height")),
+    }
+    if first_size["width"] <= 0 or first_size["height"] <= 0:
+        warnings.append("oscar_contract_first_frame_size_metadata_missing")
+    elif first_size != {"width": expected_width, "height": expected_height}:
+        blockers.append("oscar_contract_first_frame_size_mismatch")
+    if skeleton_size["width"] <= 0 or skeleton_size["height"] <= 0:
+        warnings.append("oscar_contract_skeleton_video_size_metadata_missing")
+    elif skeleton_size != {"width": expected_width, "height": expected_height}:
+        blockers.append("oscar_contract_skeleton_video_size_mismatch")
+    skeleton_frame_count = _int_value(skeleton_video.get("frame_count"))
+    if skeleton_frame_count <= 0:
+        warnings.append("oscar_contract_skeleton_video_frame_count_metadata_missing")
+    elif skeleton_frame_count < expected_frames:
+        blockers.append("oscar_contract_skeleton_video_too_short")
+    if skeleton_signal.get("status") not in {"completed", "ok"}:
+        blockers.append("oscar_contract_skeleton_visual_signal_not_completed")
+    if skeleton_signal.get("blockers"):
+        blockers.append("oscar_contract_skeleton_visual_signal_has_blockers")
+    if not prompt:
+        warnings.append("oscar_contract_prompt_missing_runtime_default_will_be_used")
+    if _float_value(first_frame.get("non_dark_fraction"), 1.0) < 0.80:
+        blockers.append("oscar_contract_first_frame_too_dark")
+    projected_used = bool(projected_trace.get("used_for_conditioning"))
+    if projected_used:
+        if _int_value(projected_trace.get("projectable_row_count")) <= 0:
+            blockers.append("oscar_contract_projected_skeleton_has_no_projectable_rows")
+        if _int_value(skeleton_video.get("projected_g1_skeleton_landmark_draw_count")) <= 0:
+            blockers.append("oscar_contract_projected_skeleton_draws_no_landmarks")
+        if _float_value(
+            skeleton_video.get("projected_g1_skeleton_max_interframe_motion_px")
+        ) <= 0.5:
+            warnings.append("oscar_contract_projected_skeleton_nearly_static")
+    rgb_used = bool(rgb_video.get("used_for_oscar_rgb_latent_context"))
+    rgb_context_mode = _string(rgb_video.get("rgb_context_mode")) or "not_configured"
+    if rgb_used:
+        if rgb_size["width"] <= 0 or rgb_size["height"] <= 0:
+            warnings.append("oscar_contract_rgb_context_size_metadata_missing")
+        elif rgb_size != {"width": expected_width, "height": expected_height}:
+            blockers.append("oscar_contract_rgb_context_size_mismatch")
+        rgb_frame_count = _int_value(rgb_video.get("frame_count"))
+        if rgb_frame_count <= 0:
+            warnings.append("oscar_contract_rgb_context_frame_count_metadata_missing")
+        elif rgb_frame_count < expected_frames:
+            blockers.append("oscar_contract_rgb_context_video_too_short")
+        if _float_value(rgb_signal.get("non_dark_fraction"), 1.0) < 0.80:
+            blockers.append("oscar_contract_rgb_context_too_dark")
+        if rgb_context_mode == "single_frame_repeat":
+            warnings.append("oscar_contract_rgb_context_single_frame_repeat")
+    elif projected_used:
+        warnings.append("oscar_contract_rgb_context_omitted_with_projected_skeleton")
+    if float(guidance) >= 6.0:
+        warnings.append("oscar_contract_guidance_high_for_contract_debug")
+    return {
+        "schema_version": "oscar_wam_runtime_input_contract_diagnostic.v1",
+        "status": "ready" if not blockers else "blocked",
+        "runtime_settings": {
+            "num_frames": expected_frames,
+            "height": expected_height,
+            "width": expected_width,
+            "fps": float(fps),
+            "num_steps": int(num_steps),
+            "guidance": float(guidance),
+            "seed": int(seed),
+        },
+        "prompt_present": bool(prompt),
+        "first_frame": {
+            "width": first_size["width"],
+            "height": first_size["height"],
+            "luma_mean": first_frame.get("luma_mean"),
+            "non_dark_fraction": first_frame.get("non_dark_fraction"),
+        },
+        "skeleton_video": {
+            "width": skeleton_size["width"],
+            "height": skeleton_size["height"],
+            "frame_count": _int_value(skeleton_video.get("frame_count")),
+            "conditioning_mode": skeleton_video.get("conditioning_mode"),
+            "visual_signal_status": skeleton_signal.get("status"),
+            "visual_signal_blockers": skeleton_signal.get("blockers") or [],
+        },
+        "projected_skeleton_trace": {
+            "used_for_conditioning": projected_used,
+            "row_count": projected_trace.get("row_count"),
+            "projectable_row_count": projected_trace.get("projectable_row_count"),
+            "max_interframe_landmark_motion_px": projected_trace.get(
+                "max_interframe_landmark_motion_px"
+            )
+            or skeleton_video.get("projected_g1_skeleton_max_interframe_motion_px"),
+        },
+        "rgb_context": {
+            "used_for_oscar_rgb_latent_context": rgb_used,
+            "rgb_context_mode": rgb_context_mode,
+            "width": rgb_size["width"],
+            "height": rgb_size["height"],
+            "frame_count": _int_value(rgb_video.get("frame_count")),
+            "visual_signal_status": rgb_signal.get("status"),
+            "luma_mean": rgb_signal.get("luma_mean"),
+            "non_dark_fraction": rgb_signal.get("non_dark_fraction"),
+        },
+        "blockers": blockers,
+        "warnings": warnings,
+        "likely_debug_focus": [
+            "oscar_runtime_input_contract",
+            "conditioning_stream_alignment",
+            "rgb_context_argument_contract",
+            "guidance_or_sampling_settings",
+        ]
+        if blockers or warnings
+        else [],
+        "claim_boundary": {
+            "diagnostic_is_no_spend": True,
+            "diagnostic_is_not_model_execution_proof": True,
+            "diagnostic_is_not_generated_rollout_quality_proof": True,
+            "scene_or_task_specific_pixels_used": False,
+        },
+    }
+
+
 def _package_uses_projected_g1_skeleton(input_package: Mapping[str, Any]) -> bool:
     claim_boundary = _mapping(input_package.get("claim_boundary"))
     projected_trace = _mapping(input_package.get("projected_skeleton_trace"))
@@ -3384,6 +3553,10 @@ def main() -> int:
         blockers.append("blocked_generated_oscar_mp4_not_reviewable")
         blockers.extend(generated_video_validation.get("blockers") or [])
     input_package = _mapping(runtime_manifest.get("input_package"))
+    input_contract_diagnostic = _mapping(
+        runtime_manifest.get("oscar_input_contract_diagnostic")
+        or input_package.get("oscar_input_contract_diagnostic")
+    )
     skeleton_package = _mapping(input_package.get("skeleton_video"))
     skeleton_signal = _mapping(skeleton_package.get("visual_signal"))
     rgb_package = _mapping(input_package.get("rgb_video"))
@@ -3419,6 +3592,9 @@ def main() -> int:
             )
         ),
         "rgb_context_luma_mean": rgb_signal.get("luma_mean"),
+        "input_contract_status": input_contract_diagnostic.get("status"),
+        "input_contract_blockers": input_contract_diagnostic.get("blockers") or [],
+        "input_contract_warnings": input_contract_diagnostic.get("warnings") or [],
         "diagnostic_only_not_success_label": True,
     }
     rollouts = []
@@ -3452,6 +3628,7 @@ def main() -> int:
         "input_package": runtime_manifest.get("input_package"),
         "runtime_settings": runtime_settings,
         "oscar_runtime_argv_contract": runtime_manifest.get("oscar_runtime_argv_contract"),
+        "oscar_input_contract_diagnostic": input_contract_diagnostic,
         "input_signal_summary": input_signal_summary,
         "generated_video_review_validation": generated_video_validation,
         "blockers": blockers,
@@ -3472,6 +3649,7 @@ def main() -> int:
         "generated_video_path": str(generated_video) if generated_video.is_file() else None,
         "runtime_settings": runtime_settings,
         "oscar_runtime_argv_contract": runtime_manifest.get("oscar_runtime_argv_contract"),
+        "oscar_input_contract_diagnostic": input_contract_diagnostic,
         "input_signal_summary": input_signal_summary,
         "generated_video_review_validation": generated_video_validation,
         "rollout_input_manifest_path": str(rollout_input_path),
@@ -3699,6 +3877,9 @@ def _write_runtime_files(
             "remote_runner_records_actual_argv_redacted_in_wam_runtime_result": True,
             "raw_secret_values_recorded": False,
         },
+        "oscar_input_contract_diagnostic": input_package.get(
+            "oscar_input_contract_diagnostic"
+        ),
         "truth_boundary": {
             "model_backend_replaceable": True,
             "generated_rollout_not_physical_robot_proof": True,
@@ -3801,6 +3982,19 @@ def build_oscar_wam_provider_bundle(
                 + str(materialization_error["message"])
             )
     conditioning_video_blockers: list[str] = []
+    input_contract_diagnostic: dict[str, Any] = {}
+    if not blockers:
+        input_contract_diagnostic = _oscar_input_contract_diagnostic(
+            input_package,
+            num_frames=num_frames,
+            height=height,
+            width=width,
+            fps=fps,
+            num_steps=num_steps,
+            guidance=guidance,
+            seed=seed,
+        )
+        input_package["oscar_input_contract_diagnostic"] = input_contract_diagnostic
     if not blockers:
         conditioning_video_blockers = _conditioning_video_input_blockers(input_package)
         blockers.extend(conditioning_video_blockers)
@@ -3844,6 +4038,7 @@ def build_oscar_wam_provider_bundle(
         "oscar_source_url": oscar_source_url,
         "oscar_hf_repo": oscar_hf_repo,
         "input_package_conditioning_video_blockers": conditioning_video_blockers,
+        "input_package_contract_diagnostic": input_contract_diagnostic,
         "input_package_materialization_error": materialization_error,
         "input_package_source_schema_version": rollout_manifest.get("schema_version"),
         "input_package_wam_auxiliary_observation_manifest_path": input_package.get(

@@ -121,10 +121,22 @@ def _write_provider_zip(
                 "rgb_video_arg_expected": True,
                 "skeleton_video_arg": "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
             },
+            "oscar_input_contract_diagnostic": {
+                "schema_version": "oscar_wam_runtime_input_contract_diagnostic.v1",
+                "status": "ready",
+                "rgb_context": {
+                    "used_for_oscar_rgb_latent_context": True,
+                    "rgb_context_mode": "single_frame_repeat",
+                },
+                "warnings": ["oscar_contract_rgb_context_single_frame_repeat"],
+                "blockers": [],
+                "claim_boundary": {"diagnostic_is_no_spend": True},
+            },
             "input_signal_summary": {
                 "projected_skeleton_used": True,
                 "projected_skeleton_projectable_row_count": 8,
                 "rgb_context_mode": "single_frame_repeat",
+                "input_contract_status": "ready",
                 "diagnostic_only_not_success_label": True,
             },
         }
@@ -731,7 +743,15 @@ def test_provider_command_adapter_current_vast_run_requires_runtime_model_truth(
     assert payload["provider_generated_video_is_model_output"] is False
     assert payload["provider_runtime_settings"]["guidance"] == 4.5
     assert payload["provider_oscar_runtime_argv_contract"]["rgb_video_arg_expected"] is True
+    assert payload["provider_oscar_input_contract_diagnostic"]["status"] == "ready"
+    assert (
+        payload["provider_oscar_input_contract_diagnostic"]["rgb_context"][
+            "rgb_context_mode"
+        ]
+        == "single_frame_repeat"
+    )
     assert payload["provider_input_signal_summary"]["projected_skeleton_used"] is True
+    assert payload["provider_input_signal_summary"]["input_contract_status"] == "ready"
     assert payload["fresh_model_run_claimed"] is False
     assert payload["fresh_provider_model_run_claimed"] is False
     assert payload["fresh_model_command_executed_this_invocation"] is False

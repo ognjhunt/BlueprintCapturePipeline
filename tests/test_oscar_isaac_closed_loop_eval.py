@@ -175,6 +175,15 @@ def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_
         input_path = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_INPUT"])
         output_path = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"])
         captured["input_path"] = str(input_path)
+        captured["runtime_env"] = {
+            "num_frames": os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_FRAMES"),
+            "num_steps": os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_STEPS"),
+            "guidance": os.environ.get("BLUEPRINT_OSCAR_WAM_GUIDANCE"),
+            "seed": os.environ.get("BLUEPRINT_OSCAR_WAM_SEED"),
+            "height": os.environ.get("BLUEPRINT_OSCAR_WAM_HEIGHT"),
+            "width": os.environ.get("BLUEPRINT_OSCAR_WAM_WIDTH"),
+            "fps": os.environ.get("BLUEPRINT_OSCAR_WAM_FPS"),
+        }
         video = output_path.parent / "oscar_generated_rollout.mp4"
         video.write_bytes(b"fake mp4")
         payload = {
@@ -195,6 +204,13 @@ def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_
     backend = L.make_oscar_provider_command_wam_backend(
         work_dir=tmp_path / "provider_loop",
         task_prompt="walk to the sink",
+        num_frames=12,
+        num_steps=27,
+        guidance=4.25,
+        seed=100,
+        height=240,
+        width=320,
+        fps=10.0,
         provider="runpod",
         allow_paid_provider_launch=True,
         adapter_run=_fake_adapter,
@@ -212,6 +228,15 @@ def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_
     assert result["fresh_provider_model_run_claimed"] is True
     assert Path(result["generated_frame_path"]).is_file()
     assert "--allow-paid-provider-launch" in captured["argv"]
+    assert captured["runtime_env"] == {
+        "num_frames": "12",
+        "num_steps": "27",
+        "guidance": "4.25",
+        "seed": "101",
+        "height": "240",
+        "width": "320",
+        "fps": "10.0",
+    }
     step_input = json.loads(Path(str(captured["input_path"])).read_text(encoding="utf-8"))
     assert step_input["schema_version"] == "wam_generation_step_input.v1"
     assert step_input["source_policy_action"]["task_prompt"] == "walk to the sink"

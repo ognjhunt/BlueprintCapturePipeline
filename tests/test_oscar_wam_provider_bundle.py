@@ -10,8 +10,8 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
-from blueprint_pipeline import oscar_wam_provider_bundle as bundle_module
-from blueprint_pipeline.oscar_wam_provider_bundle import build_oscar_wam_provider_bundle
+from blueprint_pipeline import oscar_wam_provider_bundle as bundle_module  # noqa: E402
+from blueprint_pipeline.oscar_wam_provider_bundle import build_oscar_wam_provider_bundle  # noqa: E402
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -1058,6 +1058,11 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
         input_package["oscar_rgb_context_runtime_contract"]["rgb_context_packaged"]
         is True
     )
+    contract = runtime_manifest["oscar_input_contract_diagnostic"]
+    assert contract["status"] == "ready"
+    assert contract["rgb_context"]["rgb_context_mode"] == "single_frame_repeat"
+    assert "oscar_contract_rgb_context_single_frame_repeat" in contract["warnings"]
+    assert input_package["oscar_input_contract_diagnostic"] == contract
     assert input_package["skeleton_video"]["visual_signal"]["auxiliary_target_overlay_used"] is True
     assert input_package["skeleton_video"]["visual_signal"]["auxiliary_target_bbox_used"] is True
 
@@ -1133,6 +1138,14 @@ def test_wam_generation_step_input_prefers_projected_skeleton_trace(
     )
     assert input_package["rgb_video"]["path"] == "provider_runtime/oscar_input/rgb_context.mp4"
     assert input_package["rgb_video"]["used_for_oscar_rgb_latent_context"] is True
+    contract = runtime_manifest["oscar_input_contract_diagnostic"]
+    assert manifest["input_package_contract_diagnostic"]["status"] == "ready"
+    assert contract["status"] == "ready"
+    assert contract["projected_skeleton_trace"]["used_for_conditioning"] is True
+    assert contract["rgb_context"]["used_for_oscar_rgb_latent_context"] is True
+    assert contract["rgb_context"]["rgb_context_mode"] == "single_frame_repeat"
+    assert "oscar_contract_rgb_context_single_frame_repeat" in contract["warnings"]
+    assert "oscar_contract_guidance_high_for_contract_debug" in contract["warnings"]
     assert (
         input_package["oscar_rgb_context_runtime_contract"]["projected_g1_rgb_context_enabled"]
         is True

@@ -288,6 +288,13 @@ def make_oscar_provider_command_wam_backend(
     *,
     work_dir: str | Path,
     task_prompt: str,
+    num_frames: int = 8,
+    num_steps: int = 35,
+    guidance: float = 6.0,
+    seed: int = 42,
+    height: int = 480,
+    width: int = 640,
+    fps: float = 15.0,
     provider: str = "runpod",
     allow_paid_provider_launch: bool = False,
     timeout_seconds: float = 3600.0,
@@ -334,6 +341,13 @@ def make_oscar_provider_command_wam_backend(
             {
                 "BLUEPRINT_WAM_ROLLOUT_INPUT": str(step_input_path),
                 "BLUEPRINT_WAM_ROLLOUT_OUTPUT": str(output_path),
+                "BLUEPRINT_OSCAR_WAM_NUM_FRAMES": str(max(1, int(num_frames))),
+                "BLUEPRINT_OSCAR_WAM_NUM_STEPS": str(max(1, int(num_steps))),
+                "BLUEPRINT_OSCAR_WAM_GUIDANCE": str(float(guidance)),
+                "BLUEPRINT_OSCAR_WAM_SEED": str(int(seed) + int(step_index)),
+                "BLUEPRINT_OSCAR_WAM_HEIGHT": str(int(height)),
+                "BLUEPRINT_OSCAR_WAM_WIDTH": str(int(width)),
+                "BLUEPRINT_OSCAR_WAM_FPS": str(float(fps)),
             }
         ):
             payload = dict(adapter_run(adapter_args) or {})
@@ -1287,6 +1301,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--task-prompt", default="walk to the sink")
     parser.add_argument("--num-frames", type=int, default=8, help="OSCAR clip length per step")
+    parser.add_argument("--oscar-num-steps", type=int, default=35)
+    parser.add_argument("--oscar-guidance", type=float, default=6.0)
+    parser.add_argument("--oscar-seed", type=int, default=42)
+    parser.add_argument("--oscar-height", type=int, default=480)
+    parser.add_argument("--oscar-width", type=int, default=640)
+    parser.add_argument("--oscar-fps", type=float, default=15.0)
     parser.add_argument(
         "--wam-backend",
         choices=SUPPORTED_CLOSED_LOOP_WAM_BACKENDS,
@@ -1355,6 +1375,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "steps": int(args.steps),
             "task_prompt": args.task_prompt,
             "num_frames_per_step": int(args.num_frames),
+            "oscar_runtime_settings": {
+                "num_frames": int(args.num_frames),
+                "num_steps": int(args.oscar_num_steps),
+                "guidance": float(args.oscar_guidance),
+                "seed": int(args.oscar_seed),
+                "height": int(args.oscar_height),
+                "width": int(args.oscar_width),
+                "fps": float(args.oscar_fps),
+            },
             "selected_wam_backend": args.wam_backend,
             "wam_backend_readiness_path": str(out_dir / "closed_loop_wam_backend_readiness.json"),
             "wam_backend_readiness": wam_backend_readiness,
@@ -1382,6 +1411,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         backend = make_oscar_provider_command_wam_backend(
             work_dir=out_dir / "oscar_generation",
             task_prompt=args.task_prompt,
+            num_frames=int(args.num_frames),
+            num_steps=int(args.oscar_num_steps),
+            guidance=float(args.oscar_guidance),
+            seed=int(args.oscar_seed),
+            height=int(args.oscar_height),
+            width=int(args.oscar_width),
+            fps=float(args.oscar_fps),
             provider=args.oscar_provider,
             allow_paid_provider_launch=bool(args.allow_paid_provider_launch),
             timeout_seconds=float(args.provider_timeout_seconds),
@@ -1393,6 +1429,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         oscar_generate = make_local_oscar_subprocess_generate(
             oscar_repo=args.oscar_repo,
             checkpoint=args.checkpoint,
+            num_steps=int(args.oscar_num_steps),
+            guidance=float(args.oscar_guidance),
+            height=int(args.oscar_height),
+            width=int(args.oscar_width),
+            fps=float(args.oscar_fps),
             run=subprocess.run,
             extract_next_frame=extract_next_observation_frame_from_video,
         )
@@ -1401,6 +1442,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             work_dir=out_dir / "oscar_generation",
             task_prompt=args.task_prompt,
             num_frames=int(args.num_frames),
+            seed=int(args.oscar_seed),
         )
     manifest = run_oscar_isaac_closed_loop(
         output_dir=out_dir,
