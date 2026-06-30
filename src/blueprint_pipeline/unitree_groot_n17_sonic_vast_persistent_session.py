@@ -1332,7 +1332,14 @@ def _copy_or_extract_wam_frame(payload: Mapping[str, Any], target_frame: Path) -
                         "status": "completed",
                         "source_kind": "video_first_frame",
                         "source_path": str(candidate),
+                        "selected_frame_index": 0,
+                        "future_frame_selected": False,
+                        "frame_selection_policy": "video_first_frame",
                         "materialized_frame_path": str(target_frame),
+                        "claim_boundary": {
+                            "video_first_frame_may_be_seed_or_minimal_motion_frame": True,
+                            "future_frame_rollout_quality_not_proven_by_this_materialization": True,
+                        },
                     }
     return {
         "status": "blocked",
@@ -4007,6 +4014,38 @@ def _postprocess_imported_persistent_session_artifacts(
     structural_wam_count = sum(1 for row in wam_rows if row.get("structural_fallback_used") is True)
     live_wam_count = int(imported.get("live_wam_generation_success_count") or 0)
     learned_wam_count = int(imported.get("learned_wam_model_success_count") or 0)
+    materialization_source_kind_counts: dict[str, int] = {}
+    materialized_future_frame_count = 0
+    video_first_frame_materialization_count = 0
+    for row in wam_calls:
+        materialization = _mapping(row.get("materialization"))
+        source_kind = _string(materialization.get("source_kind")) or "unknown"
+        materialization_source_kind_counts[source_kind] = (
+            materialization_source_kind_counts.get(source_kind, 0) + 1
+        )
+        if materialization.get("future_frame_selected") is True:
+            materialized_future_frame_count += 1
+        if source_kind == "video_first_frame":
+            video_first_frame_materialization_count += 1
+    materialization_summary = {
+        "schema_version": "persistent_wam_materialization_summary.v1",
+        "generated_at": generated_at,
+        "status": "completed",
+        "wam_call_count": len(wam_calls),
+        "source_kind_counts": materialization_source_kind_counts,
+        "video_first_frame_materialization_count": video_first_frame_materialization_count,
+        "materialized_future_frame_count": materialized_future_frame_count,
+        "all_materialized_frames_are_video_first_frames": bool(
+            wam_calls and video_first_frame_materialization_count == len(wam_calls)
+        ),
+        "claim_boundary": {
+            "video_first_frame_materialization_is_not_future_rollout_quality_proof": True,
+            "source_kind_summary_is_not_task_success_evidence": True,
+            "scene_or_task_specific_pixels_used": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+    }
+    write_json(job / "wam_materialization_summary.json", materialization_summary)
     write_json(
         job / "policy_action_model_command_discovery.json",
         {
@@ -4218,6 +4257,11 @@ def _postprocess_imported_persistent_session_artifacts(
         "visual_success": bool(visual_quality_report.get("visual_success")),
         "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
         "valid_mp4_or_provider_completed_is_not_visual_success": True,
+        "video_first_frame_materialization_is_not_future_rollout_quality_proof": (
+            video_first_frame_materialization_count > 0
+        ),
+        "materialized_future_frame_count": materialized_future_frame_count,
+        "video_first_frame_materialization_count": video_first_frame_materialization_count,
         "wam_rollout_visual_quality_report": str(job / "wam_rollout_visual_quality_report.json"),
         "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": structural_wam_count
         > 0,
@@ -4280,6 +4324,7 @@ def _postprocess_imported_persistent_session_artifacts(
         "wam_generation_command_discovery": str(job / "wam_generation_command_discovery.json"),
         "wam_generation_command_execution": str(job / "wam_generation_command_execution.json"),
         "wam_generation_command_output": str(job / "wam_generation_command_output.json"),
+        "wam_materialization_summary": str(job / "wam_materialization_summary.json"),
         "robot_policy_wam_loop_manifest": str(job / "robot_policy_wam_loop_manifest.json"),
         "manipulation_success_evaluator_results": str(
             job / "manipulation_success_evaluator_results.json"
@@ -4542,6 +4587,10 @@ def run_persistent_session(
             "generated_next_observation_count": int(
                 imported.get("generated_next_observation_count") or 0
             ),
+            "policy_observes_wam_generated_next_observation": bool(
+                imported.get("policy_observes_wam_generated_next_observation")
+            ),
+            "wam_evaluator_in_control_loop": bool(imported.get("wam_evaluator_in_control_loop")),
             "live_wam_generation_success_count": int(
                 imported.get("live_wam_generation_success_count") or 0
             ),
@@ -4584,6 +4633,7 @@ def run_persistent_session(
             ),
             "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
             "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
+            "wam_materialization_summary_path": postprocess.get("wam_materialization_summary"),
             "clean_frame_reanchoring": _mapping(imported.get("clean_frame_reanchoring")),
             "clean_frame_reanchor_event_count": int(
                 imported.get("clean_frame_reanchor_event_count") or 0

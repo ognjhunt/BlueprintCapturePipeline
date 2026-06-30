@@ -658,6 +658,8 @@ def test_run_persistent_session_imports_reused_worker_output(
                         "provider_instance_reused_for_policy_and_wam_loop": True,
                         "repeated_policy_calls_count": 12,
                         "generated_next_observation_count": 11,
+                        "policy_observes_wam_generated_next_observation": True,
+                        "wam_evaluator_in_control_loop": True,
                         "live_wam_generation_success_count": 0,
                         "learned_wam_model_success_count": 0,
                         "unitree_groot_n17_sonic_model_executed": True,
@@ -688,6 +690,11 @@ def test_run_persistent_session_imports_reused_worker_output(
     assert output["provider_instance_reused_for_policy_and_wam_loop"] is True
     assert output["repeated_policy_calls_count"] == 12
     assert output["generated_next_observation_count"] == 11
+    assert output["policy_observes_wam_generated_next_observation"] is True
+    assert output["wam_evaluator_in_control_loop"] is True
+    assert output["wam_materialization_summary_path"].endswith(
+        "wam_materialization_summary.json"
+    )
     assert output["provider_output_replay_used"] is False
     assert captured["provider_bundle_kind"] == "unitree_groot_n17_sonic"
     assert captured["enable_blueprint_bundle"] is True
@@ -703,8 +710,9 @@ def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: P
     job.mkdir()
     extraction_dir = tmp_path / "extracted"
     policy_calls_dir = extraction_dir / "policy_calls"
+    wam_calls_dir = extraction_dir / "wam_calls"
     policy_calls_dir.mkdir(parents=True)
-    (extraction_dir / "wam_calls").mkdir()
+    wam_calls_dir.mkdir()
     (policy_calls_dir / "policy_call_0000.json").write_text(
         json.dumps(
             {
@@ -724,6 +732,21 @@ def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: P
             }
         )
         + "\n",
+        encoding="utf-8",
+    )
+    (wam_calls_dir / "wam_call_0001.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 1,
+                "materialization": {
+                    "status": "completed",
+                    "source_kind": "video_first_frame",
+                    "selected_frame_index": 0,
+                    "future_frame_selected": False,
+                },
+            }
+        ),
         encoding="utf-8",
     )
     (extraction_dir / "robot_policy_wam_loop_trace.jsonl").write_text("", encoding="utf-8")
@@ -767,6 +790,17 @@ def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: P
     assert judge["structural_fallback_used"] is False
     assert "live learned WAM generations" in judge["reason"]
     assert "structural WAM fallback only" not in judge["reason"]
+    materialization = json.loads(
+        (job / "wam_materialization_summary.json").read_text(encoding="utf-8")
+    )
+    assert materialization["source_kind_counts"] == {"video_first_frame": 1}
+    assert materialization["video_first_frame_materialization_count"] == 1
+    assert materialization["materialized_future_frame_count"] == 0
+    claim_boundary = json.loads((job / "claim_boundary.json").read_text(encoding="utf-8"))
+    assert (
+        claim_boundary["video_first_frame_materialization_is_not_future_rollout_quality_proof"]
+        is True
+    )
 
 
 def test_vast_probe_env_forwards_persistent_inner_policy_command(

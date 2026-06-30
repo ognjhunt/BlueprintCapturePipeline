@@ -26,7 +26,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | # | ID | Lane | Effort | Depends on | Status | Task |
 |---|----|------|--------|-----------|--------|------|
 | 1 | T1 | Isaac | S | — | `done (gpu-pending)` | Emit Isaac per-frame camera contract (intrinsics K + camera world pose) |
-| 2 | T3 | Isaac | S | — | `todo` | Isaac native depth render pass (distance_to_image_plane annotator, co-registered with RGB) |
+| 2 | T3 | Isaac | S | — | `in-progress` | Isaac native depth render pass (distance_to_image_plane annotator, co-registered with RGB) |
 | 3 | T2 | MuJoCo | M | — | `todo` | MuJoCo native render-pass depth buffer (co-registered per-camera depth) |
 | 4 | T4 | Isaac | L | — | `todo` | Isaac closed loop: requery a pluggable LEARNED policy on the WAM-generated observation (replace the hardcoded deterministic stub) |
 | 5 | T5 | Isaac | S | T4 | `todo` | Isaac honest completion gating + in-loop drift reanchoring |
@@ -111,7 +111,7 @@ Hermetic (no-GPU): `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` — 
 ### 2. T3 — Isaac native depth render pass (distance_to_image_plane annotator, co-registered with RGB)
 
 - **Lane:** Isaac  |  **Effort:** S (small)  |  **Depends on:** none
-- **Status:** todo
+- **Status:** in-progress
 
 **Summary.** The Isaac kitchen-parity runner attaches only an "rgb" Replicator annotator per render product (`_make_render_product`, scripts/run_isaac_g1_kitchen_parity_eval.py:5125-5130, rgb at 5128), so it produces no native depth pass — matching the gap-analysis "Native depth render pass: 🟡 analytic pinhole only → both lanes" finding (docs/MUJOCO_VS_ISAAC_LANE_GAP_ANALYSIS.md lines 50, 94-95, 158, which explicitly prescribes adding a distance_to_image_plane annotator near :5128). Add an optional, opt-in `distance_to_image_plane` (depth) annotator attached to the SAME render products as RGB so depth frames are pixel-co-registered with the existing overview/pov RGB frames, plus a `_save_depth` writer and a per-scenario depth artifact record with an Isaac-only proof marker. This is a render-modality add only: it does not touch physics, the policy loop, or the swappable world-model backend.
 

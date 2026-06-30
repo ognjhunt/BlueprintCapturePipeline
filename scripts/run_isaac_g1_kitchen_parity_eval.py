@@ -5132,12 +5132,16 @@ def _prune_to_focus(stage, route_points, focus_radius: float, keep_substrings) -
     return {"kept": kept, "pruned": pruned, "kept_names": kept_names[:40]}
 
 
-def _make_render_product(camera_path: str, width: int, height: int):
+def _make_render_product(camera_path: str, width: int, height: int, *, with_depth: bool = False):
     import omni.replicator.core as rep  # type: ignore
     rp = rep.create.render_product(camera_path, (width, height))
     annot = rep.AnnotatorRegistry.get_annotator("rgb")
     annot.attach([rp])
-    return annot
+    if not with_depth:
+        return annot
+    depth_annot = rep.AnnotatorRegistry.get_annotator("distance_to_image_plane")
+    depth_annot.attach([rp])
+    return annot, depth_annot
 
 
 def _isaac_camera_contract(stage, cam_path: str, width: int, height: int) -> dict[str, Any]:
@@ -5493,6 +5497,32 @@ def _save_rgb(annot, out_path: Path, *, software_denoise: bool = False) -> bool:
     if software_denoise:
         img = _software_denoise_image(img)
     img.save(out_path)
+    return True
+
+
+def _save_depth(depth_annot, out_path: Path, *, npy_path: Path | None = None) -> bool:
+    import numpy as np  # type: ignore
+    from PIL import Image  # type: ignore
+
+    data = depth_annot.get_data()
+    if data is None or getattr(data, "size", 0) == 0:
+        return False
+    arr = np.asarray(data).astype("float32")
+    raw_path = npy_path or out_path.with_suffix(".npy")
+    np.save(raw_path, arr)
+
+    finite = np.isfinite(arr) & (arr > 0)
+    preview = np.zeros(arr.shape, dtype="uint8")
+    if np.any(finite):
+        valid = arr[finite]
+        dmin = float(valid.min())
+        dmax = float(valid.max())
+        if dmax > dmin:
+            norm = (arr - dmin) / (dmax - dmin)
+            preview = np.where(finite, np.clip(norm * 255.0, 0, 255), 0).astype("uint8")
+        else:
+            preview = np.where(finite, 255, 0).astype("uint8")
+    Image.fromarray(preview).save(out_path)
     return True
 
 
@@ -6044,6 +6074,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   verify_cam: bool = False,
                   manipulation_stand: bool = False,
                   software_denoise: bool = True,
+                  depth_pass: bool = False,
                   serve: bool = False, serve_dir: "Path | None" = None,
                   serve_idle_timeout_s: float = 600.0,
                   serve_max_jobs: "int | None" = None) -> dict:
@@ -6313,8 +6344,24 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             except Exception as exc:  # noqa: BLE001
                 _log(f"robot review material skipped ({exc!r})")
         _log(f"creating render products ({width}x{height})")
-        over_annot = _make_render_product(over_cam, width, height)
-        pov_annot = _make_render_product(pov_cam, width, height)
+        over_depth_annot = None
+        pov_depth_annot = None
+        if depth_pass:
+            over_annot, over_depth_annot = _make_render_product(
+                over_cam,
+                width,
+                height,
+                with_depth=True,
+            )
+            pov_annot, pov_depth_annot = _make_render_product(
+                pov_cam,
+                width,
+                height,
+                with_depth=True,
+            )
+        else:
+            over_annot = _make_render_product(over_cam, width, height)
+            pov_annot = _make_render_product(pov_cam, width, height)
         verify_annot = _make_render_product(verify_cam_path, width, height) if verify_cam else None
         topdown_annot = None
         topdown_enabled = bool(manipulation_stand)
@@ -6375,6 +6422,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             sdir = out_dir / sid
             (sdir / "frames").mkdir(parents=True, exist_ok=True)
             camera_contract_rows: list[dict[str, Any]] = []
+            depth_frames_written = 0
             stand_root = stand_yaw = None
             stance_plan = None
             scene_objects_for_validation: list[Any] = []
@@ -6895,6 +6943,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             over_frame_path,
                             cap,
                         )
+                    if over_ok and over_depth_annot is not None:
+                        if _save_depth(
+                            over_depth_annot,
+                            sdir / "frames" / f"overview_depth_{cap:04d}.png",
+                            npy_path=sdir / "frames" / f"overview_depth_{cap:04d}.npy",
+                        ):
+                            depth_frames_written += 1
                     pov_frame_path = sdir / "frames" / f"robot_pov_{cap:04d}.png"
                     pov_ok = _save_rgb(pov_annot, pov_frame_path,
                                        software_denoise=software_denoise)
@@ -6904,6 +6959,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             pov_frame_path,
                             cap,
                         )
+                    if pov_ok and pov_depth_annot is not None:
+                        if _save_depth(
+                            pov_depth_annot,
+                            sdir / "frames" / f"robot_pov_depth_{cap:04d}.png",
+                            npy_path=sdir / "frames" / f"robot_pov_depth_{cap:04d}.npy",
+                        ):
+                            depth_frames_written += 1
                     if manipulation_cam and manipulation_reach and pov_geometry_records:
                         frame_quality = (
                             _pov_seed_frame_quality(pov_frame_path)
@@ -7133,6 +7195,21 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 if isinstance(row.get("intrinsics"), Mapping)
                 and row["intrinsics"].get("available") is True
             )
+            if depth_pass:
+                outcome["depth_render_pass"] = {
+                    "schema_version": "isaac_g1_kitchen_parity_depth_pass.v1",
+                    "simulator_backend": "isaac",
+                    "annotator": "distance_to_image_plane",
+                    "depth_frames_written": int(depth_frames_written),
+                    "co_registered_with_rgb": True,
+                    "cameras": ["robot_pov", "overview"],
+                    "units": "meters",
+                    "depth_proven": depth_frames_written > 0,
+                    "claim_boundary": (
+                        "Isaac RTX depth render pass only; NOT MuJoCo evidence and not a "
+                        "policy/physics/success proof."
+                    ),
+                }
             if stance_plan is not None:
                 outcome["task_stance_plan"] = {
                     "status": stance_plan.get("status"),
@@ -7846,6 +7923,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--verify-cam", action="store_true",
                     help="render a 3rd-person verify_*.png that frames the whole robot at the workspace "
                          "(proves where it stands vs the egocentric POV)")
+    ap.add_argument("--depth-pass", action="store_true",
+                    help="attach a co-registered distance_to_image_plane depth annotator alongside "
+                         "RGB and save per-frame depth (.npy + preview PNG)")
     ap.add_argument("--manipulation-stand", action="store_true",
                     help="place the robot AT the scenario target facing --manipulation-look-at every "
                          "step (task start pose; no navigation/redirect) — for manipulation, not locomotion")
@@ -7950,6 +8030,7 @@ def main(argv=None) -> int:
         collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
         manipulation_stand=args.manipulation_stand,
         software_denoise=not args.no_software_denoise,
+        depth_pass=args.depth_pass,
         serve=args.serve,
         serve_dir=(Path(args.serve_dir) if args.serve_dir else None),
         serve_idle_timeout_s=args.serve_idle_timeout, serve_max_jobs=args.serve_max_jobs)

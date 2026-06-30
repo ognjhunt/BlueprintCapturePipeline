@@ -456,12 +456,17 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
     assert '"opencv-python-headless"' in runner_text
     assert '"--no-deps"' in runner_text
     assert '"opencv-python", "opencv-contrib-python"' in runner_text
+    assert "hf_transfer_disabled_retry" in runner_text
+    assert 'retry_env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"' in runner_text
     assert "oscar_loader_appends_model_subdirectory" in runner_text
     assert "_prepare_cuda_library_env" in runner_text
     assert "libcudart.so" in runner_text
     assert "cuda_lib_shims" in runner_text
     assert '"cuda_library_env"' in runner_text
     assert "official_case_smoke" in runner_text
+    assert runner_text.index("official_case_smoke = str(runtime_manifest") < runner_text.index(
+        "checkpoint_resolution_started"
+    )
     assert "official_oscar_case_assets_missing" in runner_text
     assert "gripper_scenario.mp4" in runner_text
     assert "rgb_context.mp4" in runner_text

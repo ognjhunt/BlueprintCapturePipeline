@@ -742,7 +742,8 @@ def test_camera_contract_emission_wired_in_render_loop() -> None:
     assert "def _isaac_camera_contract" in source
     assert "def _append_camera_contract_row(" in source
     assert "_isaac_camera_contract(" in source
-    assert "_append_camera_contract_row(pov_cam, pov_frame_path, cap)" in frame_save_region
+    assert "_isaac_camera_contract(stage, pov_cam, width, height)" in frame_save_region
+    assert "pov_frame_path" in frame_save_region
 
 
 def test_arm_reach_rotation_swings_rest_bone_toward_target() -> None:

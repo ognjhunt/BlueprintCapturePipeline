@@ -3294,6 +3294,18 @@ def _checkpoint(work_dir: Path, python: str, *, timeout_seconds: float) -> tuple
         target=target,
         timeout_seconds=timeout_seconds,
     )
+    if detail.get("returncode") != 0 and hf_transfer_enabled:
+        first_attempt = detail
+        retry_env = dict(env)
+        retry_env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+        detail = _run_checkpoint_download(
+            [python, "-c", code],
+            env=retry_env,
+            target=target,
+            timeout_seconds=timeout_seconds,
+        )
+        detail["hf_transfer_disabled_retry"] = True
+        detail["first_attempt_with_hf_transfer"] = first_attempt
     if detail.get("timed_out"):
         return None, {
             "status": "blocked",
@@ -3420,6 +3432,7 @@ def main() -> int:
     dependency_detail: dict[str, Any] = {"status": "not_run"}
     checkpoint_path: Path | None = None
     checkpoint_detail: dict[str, Any] = {"status": "not_run"}
+    official_case_smoke = str(runtime_manifest.get("official_case_smoke") or "").strip()
     if source_root is not None and not blockers:
         _phase("dependency_setup_started")
         dependency_detail = _ensure_dependencies(python, source_root)
@@ -3473,7 +3486,6 @@ def main() -> int:
         prompt = runtime_manifest.get("prompt") or "Predict the next robot-scene frames from Blueprint action conditioning."
         start_frame = "0"
         seed = str(runtime_manifest.get("seed") or 42)
-        official_case_smoke = str(runtime_manifest.get("official_case_smoke") or "").strip()
         if official_case_smoke:
             checkpoint_roots = [
                 checkpoint_path,
