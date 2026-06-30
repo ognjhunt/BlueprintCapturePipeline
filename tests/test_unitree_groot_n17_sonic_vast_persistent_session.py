@@ -145,6 +145,108 @@ def _write_reviewable_frame(path: Path, *, size: tuple[int, int] = (640, 480)) -
     return path
 
 
+def _write_episode_consistency_command(tmp_path: Path, *, inverse_consistent: bool) -> Path:
+    command = tmp_path / (
+        "persistent_consistency_pass.py"
+        if inverse_consistent
+        else "persistent_consistency_fail.py"
+    )
+    command.write_text(
+        f"""
+import json
+import os
+from pathlib import Path
+
+request = json.loads(Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_INPUT"]).read_text(encoding="utf-8"))
+assert request["schema_version"] == "wam_episode_consistency_request.v1"
+assert request["status"] == "ready_for_external_episode_scorer"
+assert request["claim_boundary"]["scorer_is_separate_from_wam_execution_and_evaluator"] is True
+rollout = request["rollouts"][0]
+payload = {{
+    "schema_version": "wam_episode_consistency.command.v1",
+    "status": "completed",
+    "provider": "fake-vlm-episode-consistency",
+    "model": "fake-vlm",
+    "rollout_checks": [
+        {{
+            "rollout_id": rollout["rollout_id"],
+            "scenario_eval_run_id": rollout["scenario_eval_run_id"],
+            "policy_id": rollout["policy_id"],
+            "model_candidate": rollout.get("model_candidate"),
+            "forward_consistent": True,
+            "inverse_consistent": {inverse_consistent!r},
+            "confidence": 0.89,
+            "rationale": "Reviewed generated video against the trace summary.",
+            "visual_evidence_used": True,
+            "action_trace_evidence_used": True,
+        }}
+    ],
+}}
+Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    return command
+
+
+def _write_persistent_postprocess_extraction(root: Path) -> Path:
+    extraction_dir = root / "extracted"
+    policy_calls_dir = extraction_dir / "policy_calls"
+    wam_calls_dir = extraction_dir / "wam_calls"
+    generated_dir = extraction_dir / "generated_next_observations"
+    policy_calls_dir.mkdir(parents=True)
+    wam_calls_dir.mkdir()
+    generated_dir.mkdir()
+    _write_reviewable_frame(generated_dir / "wam_generated_next_observation_step_0001.jpg")
+    (policy_calls_dir / "policy_call_0000.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 0,
+                "action": {"action": "open_refrigerator"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (extraction_dir / "wam_generated_next_observations.jsonl").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 1,
+                "structural_fallback_used": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (wam_calls_dir / "wam_call_0001.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 1,
+                "materialization": {
+                    "status": "completed",
+                    "source_kind": "video_future_frame",
+                    "selected_frame_index": 1,
+                    "future_frame_selected": True,
+                    "selection_quality_status": "passed_signal_gate",
+                    "selected_frame_signal_blockers": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (extraction_dir / "robot_policy_wam_loop_trace.jsonl").write_text(
+        json.dumps({"step_index": 1}) + "\n",
+        encoding="utf-8",
+    )
+    (extraction_dir / "robot_policy_wam_side_by_side_trace.jsonl").write_text(
+        json.dumps({"step_index": 1}) + "\n",
+        encoding="utf-8",
+    )
+    return extraction_dir
+
+
 def _write_dark_frame(path: Path, *, size: tuple[int, int] = (640, 480)) -> Path:
     image = Image.new("RGB", size, (8, 8, 8))
     draw = ImageDraw.Draw(image)
@@ -561,6 +663,69 @@ def test_persistent_session_bundle_uses_proven_policy_server_rewrite(
         ]
         is False
     )
+
+
+def test_persistent_session_bundle_packages_projected_skeleton_trace_for_runtime(
+    tmp_path: Path,
+) -> None:
+    frame = _write_reviewable_frame(tmp_path / "frame.jpg")
+    projected_trace = _write_projected_skeleton_trace(
+        tmp_path / "g1_projected_skeleton_trace.jsonl"
+    )
+    observation = {
+        "schema_version": "initial_policy_observation.v1",
+        "task_id": "open_refrigerator",
+        "target_object_id": "fridge_handle",
+        "camera_frame_path": str(frame),
+        "visual_observation": {
+            "camera_frame_path": str(frame),
+            "projected_skeleton_trace_path": str(projected_trace),
+        },
+        "unitree_g1_sonic_state": {"right_arm": [0.0] * 7},
+    }
+    observation_path = tmp_path / "observation.json"
+    observation_path.write_text(json.dumps({"observation": observation}), encoding="utf-8")
+
+    manifest = session.build_persistent_session_provider_bundle(
+        job_dir=tmp_path / "bundle",
+        policy_observation_path=observation_path,
+        loop_step_count=2,
+        use_live_wam=True,
+        allow_structural_wam_fallback=False,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "bundle_ready"
+    assert manifest["semantic_visual_qa_source_paths"]["projected_skeleton_trace"] == str(
+        projected_trace.resolve()
+    )
+    bundle_path = Path(str(manifest["bundle_path"]))
+    with zipfile.ZipFile(bundle_path) as archive:
+        names = set(archive.namelist())
+        session_input = json.loads(archive.read("provider_runtime/persistent_session_input.json"))
+        runtime_auxiliary = json.loads(
+            archive.read(
+                "provider_runtime/wam_auxiliary_observation/wam_auxiliary_observation_manifest.json"
+            )
+        )
+    assert session.RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH in names
+    visual = session_input["initial_observation"]["visual_observation"]
+    assert (
+        visual["projected_skeleton_trace_path"]
+        == session.RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH
+    )
+    assert (
+        visual["g1_projected_skeleton_trace_jsonl"]
+        == session.RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH
+    )
+    action_conditioning = runtime_auxiliary["action_conditioning"]
+    assert (
+        action_conditioning["projected_skeleton_trace_path"]
+        == session.RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH
+    )
+    assert str(tmp_path) not in visual["projected_skeleton_trace_path"]
+    assert str(tmp_path) not in visual["g1_projected_skeleton_trace_jsonl"]
+    assert str(tmp_path) not in json.dumps(runtime_auxiliary)
 
 
 def test_synthetic_fallback_cannot_build_live_wam_bundle_without_experimental_env(
@@ -1298,6 +1463,136 @@ def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
 
     labels = json.loads((job / "failure_labels.json").read_text(encoding="utf-8"))
     assert "wam_input_contract_high_risk" in labels["labels"]
+
+
+def test_postprocess_episode_consistency_failure_is_reliability_label_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = tmp_path / "job"
+    source_frame = _write_reviewable_frame(
+        job / "provider_bundle" / "provider_runtime" / "initial_policy_frame.png"
+    )
+    observation_path = _policy_observation(tmp_path / "observation.json", source_frame)
+    extraction_dir = _write_persistent_postprocess_extraction(tmp_path)
+    vast_run_dir = tmp_path / "vast-run"
+    vast_run_dir.mkdir()
+    command = _write_episode_consistency_command(tmp_path, inverse_consistent=False)
+
+    def fake_review_video(**kwargs):
+        review_video = job / "review_video" / "persistent_policy_wam_live_rollout_review.mp4"
+        review_video.parent.mkdir(parents=True, exist_ok=True)
+        review_video.write_bytes(b"fake mp4")
+        status = {
+            "status": "completed",
+            "review_video_path": str(review_video),
+            "ffprobe_command_ran": False,
+            "blockers": [],
+        }
+        (job / "video_review_status.json").write_text(
+            json.dumps(status),
+            encoding="utf-8",
+        )
+        return status
+
+    def fake_visual_quality(**kwargs):
+        report = {
+            "schema_version": "persistent_wam_visual_quality_report.v1",
+            "generated_at": kwargs["generated_at"],
+            "status": "passed_visual_quality_gate",
+            "visual_success": True,
+            "review_video_path": str(kwargs["review_video_path"]),
+            "blockers": [],
+            "claim_boundary": {
+                "visual_success_does_not_prove_task_success": True,
+            },
+        }
+        (job / "source_policy_observation_visual_qa.json").write_text(
+            json.dumps({"status": "passed_visual_quality_gate"}),
+            encoding="utf-8",
+        )
+        (job / "wam_rollout_visual_quality_report.json").write_text(
+            json.dumps(report),
+            encoding="utf-8",
+        )
+        return report
+
+    monkeypatch.setattr(session, "_write_review_video", fake_review_video)
+    monkeypatch.setattr(
+        session,
+        "write_persistent_wam_visual_quality_artifacts",
+        fake_visual_quality,
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING", "true")
+    monkeypatch.setenv(
+        "BLUEPRINT_WAM_EPISODE_CONSISTENCY_COMMAND",
+        f"{sys.executable} {command}",
+    )
+
+    postprocess = session._postprocess_imported_persistent_session_artifacts(
+        job=job,
+        extraction_dir=extraction_dir,
+        imported={
+            "status": "completed",
+            "persistent_provider_session_used": True,
+            "provider_instance_reused_for_policy_and_wam_loop": True,
+            "repeated_policy_calls_count": 2,
+            "generated_next_observation_count": 1,
+            "live_wam_generation_success_count": 1,
+            "learned_wam_model_success_count": 1,
+            "manipulation_success_evaluator_result": "success",
+            "policy_observes_wam_generated_next_observation": True,
+            "blockers": [],
+        },
+        generated_at="now",
+        policy_observation_path=observation_path,
+        vast_result={"estimated_cost_usd": 0.01},
+        vast_run_dir=vast_run_dir,
+    )
+
+    assert postprocess["forward_inverse_consistency_proven"] is False
+    assert postprocess["external_episode_consistency_scorer_ran"] is True
+    assert postprocess["wam_episode_consistency_early_termination_recommended"] is True
+    assert "wam_consistency_inverse_not_proven" in postprocess[
+        "wam_episode_consistency_blockers"
+    ]
+    assert "wam_consistency_inverse_not_proven" in postprocess["blockers"]
+
+    request = json.loads(
+        Path(postprocess["wam_episode_consistency_request"]).read_text(encoding="utf-8")
+    )
+    assert request["status"] == "ready_for_external_episode_scorer"
+    assert request["generated_rollout_visually_useful_for_success_review"] is True
+    consistency = json.loads(
+        Path(postprocess["wam_consistency_checks"]).read_text(encoding="utf-8")
+    )
+    assert consistency["forward_inverse_consistency_proven"] is False
+    assert consistency["external_episode_consistency_scorer_id"] == (
+        "fake-vlm-episode-consistency"
+    )
+    assert consistency["claim_boundary"][
+        "forward_inverse_consistency_does_not_prove_task_success"
+    ] is True
+
+    judge = json.loads(
+        (job / "manipulation_success_evaluator_results.json").read_text(encoding="utf-8")
+    )
+    assert judge["manipulation_success_proven"] is True
+    labels = json.loads((job / "failure_labels.json").read_text(encoding="utf-8"))
+    assert labels["labels"] == [
+        "wam_episode_consistency_early_termination_recommended",
+        "forward_inverse_consistency_not_proven",
+    ]
+    assert labels["task_success_not_failed_by_consistency_label"] is True
+    assert "task_success_not_proven" not in labels["labels"]
+
+    claim_boundary = json.loads((job / "claim_boundary.json").read_text(encoding="utf-8"))
+    assert claim_boundary["forward_inverse_consistency_proven"] is False
+    assert claim_boundary["success_proof_completed"] is True
+    assert (
+        claim_boundary["forward_inverse_consistency_does_not_prove_task_success"]
+        is True
+    )
 
 
 def test_copy_or_extract_wam_frame_prefers_usable_future_video_frame(tmp_path: Path) -> None:

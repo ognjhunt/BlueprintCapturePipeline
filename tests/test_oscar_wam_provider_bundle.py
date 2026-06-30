@@ -1202,6 +1202,124 @@ def test_wam_generation_step_input_prefers_projected_skeleton_trace(
     assert input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is False
 
 
+def test_seed_derived_projected_skeleton_trace_is_ranking_risk_not_policy_action(
+    tmp_path: Path,
+) -> None:
+    source_frame = tmp_path / "policy_observation.jpg"
+    _write_review_png(source_frame)
+    projected_trace = tmp_path / "seed_derived_g1_projected_skeleton_trace.jsonl"
+    projected_trace.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "schema_version": "blueprint.g1.projected_upper_body_skeleton.v1",
+                    "status": "completed",
+                    "frame_index": index,
+                    "projected_landmark_count": 2,
+                    "landmarks": [
+                        {
+                            "landmark_id": "left_hand",
+                            "image_projection": {
+                                "available": True,
+                                "u_px": 20 + index * 4,
+                                "v_px": 30,
+                            },
+                        },
+                        {
+                            "landmark_id": "right_hand",
+                            "image_projection": {
+                                "available": True,
+                                "u_px": 44 - index * 4,
+                                "v_px": 30,
+                            },
+                        },
+                    ],
+                    "segments": [{"from": "left_hand", "to": "right_hand"}],
+                    "claim_boundary": {
+                        "projected_skeleton_trace_derived_from_seed_render_geometry": True,
+                        "temporal_rows_are_target_conditioning_from_resolved_affordance_projection": True,
+                        "not_a_learned_robot_policy_action": True,
+                    },
+                }
+            )
+            for index in range(4)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    step_input = tmp_path / "wam_generation_step_0001_input.json"
+    step_input.write_text(
+        json.dumps(
+            {
+                "schema_version": "wam_generation_step_input.v1",
+                "step_index": 1,
+                "source_policy_observation_frame_path": str(source_frame),
+                "source_policy_action": {
+                    "action_type": "accepted_direct_collision_checked_motion",
+                },
+                "current_policy_observation": {
+                    "task_id": "open_fridge",
+                    "target_object_id": "refrigerator",
+                    "visual_observation": {
+                        "camera_id": "head_pov",
+                        "projected_skeleton_trace_path": str(projected_trace),
+                    },
+                },
+                "requested_output": {
+                    "next_observation_frame_path": str(tmp_path / "next.jpg"),
+                    "action_conditioned_generation_required": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "seed-derived-bundle-job",
+        wam_rollout_input_manifest=step_input,
+        num_frames=4,
+        height=64,
+        width=64,
+        fps=5.0,
+        generated_at="2026-06-21T00:00:00+00:00",
+    )
+
+    assert manifest["status"] == "completed"
+    runtime_manifest = _read_json(
+        tmp_path
+        / "seed-derived-bundle-job"
+        / "oscar_wam_provider_bundle"
+        / "provider_runtime"
+        / "wam_provider_runtime_manifest.json"
+    )
+    input_package = runtime_manifest["input_package"]
+    assert input_package["projected_skeleton_trace"]["used_for_conditioning"] is True
+    assert input_package["projected_skeleton_trace"]["seed_geometry_derived"] is True
+    assert (
+        input_package["claim_boundary"][
+            "projected_g1_skeleton_conditioning_is_policy_derived_action"
+        ]
+        is False
+    )
+    assert (
+        input_package["claim_boundary"][
+            "projected_g1_skeleton_conditioning_is_seed_or_target_derived"
+        ]
+        is True
+    )
+    contract = runtime_manifest["oscar_input_contract_diagnostic"]
+    assert contract["status"] == "ready"
+    assert "oscar_contract_projected_skeleton_not_policy_derived_action" in contract[
+        "warnings"
+    ]
+    assert "oscar_contract_projected_skeleton_target_conditioned" in contract["warnings"]
+    assert "projected_skeleton_not_policy_derived_action_ranking_risk" in contract[
+        "ranking_risk_flags"
+    ]
+    assert contract["policy_ranking_risk_level"] == "high"
+    assert contract["policy_ranking_claim_safe"] is False
+
+
 def test_oscar_wam_provider_bundle_zip_integrity_and_cli_edges(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

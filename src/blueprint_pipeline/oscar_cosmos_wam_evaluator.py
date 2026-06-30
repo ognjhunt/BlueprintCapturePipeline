@@ -3353,6 +3353,23 @@ def _unscored_wam_episode_consistency(
     }
 
 
+def _wam_consistency_blockers(consistency: Mapping[str, Any]) -> list[str]:
+    blockers = _string_list(consistency.get("blockers"))
+    blockers.extend(
+        _string_list(consistency.get("what_is_needed_to_make_forward_inverse_consistency_true"))
+    )
+    raw_checks = consistency.get("checks")
+    if isinstance(raw_checks, Sequence) and not isinstance(raw_checks, (str, bytes, bytearray)):
+        for item in raw_checks:
+            if not isinstance(item, Mapping):
+                continue
+            blockers.extend(_string_list(item.get("blockers")))
+            blocker = _string(item.get("blocker"))
+            if blocker:
+                blockers.append(blocker)
+    return sorted(dict.fromkeys(blocker for blocker in blockers if blocker))
+
+
 def _wam_rollout_blocked_reason(blockers: Sequence[str]) -> str:
     blocker_set = set(blockers)
     missing_runtime = "blocked_missing_wam_runtime" in blocker_set

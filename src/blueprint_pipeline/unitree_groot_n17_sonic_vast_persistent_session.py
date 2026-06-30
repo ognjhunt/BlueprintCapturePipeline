@@ -57,6 +57,16 @@ from .wam_generated_video_review import (
     assess_source_policy_observation_visual_qa,
     write_persistent_wam_visual_quality_artifacts,
 )
+from .oscar_cosmos_wam_evaluator import (
+    WAM_CONSISTENCY_COMMAND_ENV,
+    WAM_CONSISTENCY_COMMAND_OUTPUT,
+    WAM_CONSISTENCY_GATE_ENV,
+    _env_truthy as _wam_consistency_env_truthy,
+    _normalize_wam_episode_consistency,
+    _run_wam_consistency_command,
+    _unscored_wam_episode_consistency,
+    _wam_consistency_blockers,
+)
 
 
 SCHEMA_VERSION = "unitree_groot_n17_sonic_vast_persistent_session.v1"
@@ -64,6 +74,9 @@ BUNDLE_SCHEMA_VERSION = "unitree_groot_n17_sonic_wam_persistent_session_bundle.v
 OUTPUT_SCHEMA_VERSION = "unitree_groot_n17_sonic_wam_persistent_session_output.v1"
 DEFAULT_BUNDLE_FILENAME = "unitree_groot_n17_sonic_wam_persistent_session_bundle.zip"
 DEFAULT_OBJECT_STORE_KEY_PREFIX = "blueprint/unitree-groot-sonic-persistent-session"
+RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH = (
+    "provider_runtime/seed_conditioning/g1_projected_skeleton_trace.jsonl"
+)
 PERSISTENT_SESSION_JOB_ROOT_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PERSISTENT_SESSION_JOB_ROOT"
 PERSISTENT_SESSION_PUBLIC_IMAGE_ENV = "BLUEPRINT_VAST_UNITREE_WAM_PERSISTENT_SESSION_PUBLIC_IMAGE"
 PERSISTENT_SESSION_ALLOW_STRUCTURAL_WAM_FALLBACK_ENV = (
@@ -1180,6 +1193,23 @@ def _policy_observation_semantic_visual_evidence(
     }
 
 
+def _copy_projected_skeleton_trace_for_runtime(
+    source_path: Any,
+    *,
+    runtime_dir: Path,
+) -> Path | None:
+    source_text = _string(source_path)
+    if not source_text:
+        return None
+    source = Path(source_text).expanduser()
+    if not source.is_file():
+        return None
+    destination = runtime_dir / "seed_conditioning" / "g1_projected_skeleton_trace.jsonl"
+    ensure_dir(destination.parent)
+    shutil.copy2(source, destination)
+    return destination
+
+
 def _write_executable(path: Path, text: str) -> None:
     ensure_dir(path.parent)
     path.write_text(text, encoding="utf-8")
@@ -2036,6 +2066,7 @@ def main() -> int:
         allow_structural_fallback = bool(session_input.get("allow_structural_wam_fallback"))
         timeout_seconds = float(session_input.get("timeout_seconds") or 3600.0)
         initial_frame = runtime_dir / "initial_policy_frame.png"
+        runtime_projected_skeleton_trace = runtime_dir / "seed_conditioning" / "g1_projected_skeleton_trace.jsonl"
         clean_frame_reanchoring = _mapping(session_input.get("clean_frame_reanchoring"))
         clean_frame_reanchoring_enabled = bool(clean_frame_reanchoring.get("enabled"))
         try:
@@ -2046,6 +2077,11 @@ def main() -> int:
             clean_frame_reanchor_interval = 0
         visual = _mapping(observation.get("visual_observation"))
         visual["camera_frame_path"] = str(initial_frame)
+        if runtime_projected_skeleton_trace.is_file():
+            visual["g1_projected_skeleton_trace_jsonl"] = str(runtime_projected_skeleton_trace)
+            visual["projected_skeleton_trace_path"] = str(runtime_projected_skeleton_trace)
+            observation["g1_projected_skeleton_trace_jsonl"] = str(runtime_projected_skeleton_trace)
+            observation["projected_skeleton_trace_path"] = str(runtime_projected_skeleton_trace)
         runtime_auxiliary_observation_manifest = runtime_dir / "wam_auxiliary_observation" / "wam_auxiliary_observation_manifest.json"
         if runtime_auxiliary_observation_manifest.is_file():
             try:
@@ -2060,6 +2096,20 @@ def main() -> int:
                     runtime_auxiliary_payload["source_image_path"] = str(initial_frame)
                     runtime_auxiliary_payload["source_image_path_exists"] = initial_frame.is_file()
                     runtime_auxiliary_payload["runtime_paths_rewritten_for_provider_runtime"] = True
+                    if runtime_projected_skeleton_trace.is_file():
+                        action_conditioning = _mapping(
+                            runtime_auxiliary_payload.get("action_conditioning")
+                        )
+                        action_conditioning["projected_skeleton_trace_path"] = str(
+                            runtime_projected_skeleton_trace
+                        )
+                        action_conditioning["projected_hand_keypoint_trace_path"] = str(
+                            runtime_projected_skeleton_trace
+                        )
+                        action_conditioning[
+                            "projected_trace_runtime_path_rewritten_for_provider_runtime"
+                        ] = True
+                        runtime_auxiliary_payload["action_conditioning"] = action_conditioning
                     _write_json(runtime_auxiliary_observation_manifest, runtime_auxiliary_payload)
             except Exception:
                 pass
@@ -3199,11 +3249,16 @@ def build_persistent_session_provider_bundle(
     runtime_auxiliary_observation_manifest: dict[str, Any] = {}
     auxiliary_observation_manifest_path: Path | None = None
     runtime_auxiliary_observation_manifest_path: Path | None = None
+    runtime_projected_skeleton_trace_path: Path | None = None
     if frame_path is None:
         blockers.append("blocked_missing_policy_visual_observation_frame")
     else:
         shutil.copy2(frame_path, runtime_dir / "initial_policy_frame.png")
         shutil.copy2(frame_path, runtime_dir / "input_frame.png")
+        runtime_projected_skeleton_trace_path = _copy_projected_skeleton_trace_for_runtime(
+            semantic_visual_evidence.get("projected_skeleton_trace_path"),
+            runtime_dir=runtime_dir,
+        )
         write_json(runtime_dir / "source_policy_observation_visual_qa.json", source_visual_qa)
         auxiliary_observation_manifest = build_wam_auxiliary_observation_manifest(
             output_dir=job / "wam_auxiliary_observation",
@@ -3217,6 +3272,9 @@ def build_persistent_session_provider_bundle(
             robot_profile_id=_string(observation.get("robot_profile_id")) or None,
             task_id=_string(observation.get("task_id")) or None,
             target_object_id=_string(observation.get("target_object_id")) or None,
+            projected_skeleton_trace_path=semantic_visual_evidence.get(
+                "projected_skeleton_trace_path"
+            ),
         )
         auxiliary_observation_manifest_path = Path(
             str(auxiliary_observation_manifest["manifest_path"])
@@ -3225,6 +3283,19 @@ def build_persistent_session_provider_bundle(
         runtime_visual = _mapping(runtime_observation.get("visual_observation"))
         runtime_visual["camera_frame_path"] = str(runtime_dir / "initial_policy_frame.png")
         runtime_visual["source_image_path"] = str(runtime_dir / "initial_policy_frame.png")
+        if runtime_projected_skeleton_trace_path:
+            runtime_visual["g1_projected_skeleton_trace_jsonl"] = str(
+                runtime_projected_skeleton_trace_path
+            )
+            runtime_visual["projected_skeleton_trace_path"] = str(
+                runtime_projected_skeleton_trace_path
+            )
+            runtime_observation["g1_projected_skeleton_trace_jsonl"] = str(
+                runtime_projected_skeleton_trace_path
+            )
+            runtime_observation["projected_skeleton_trace_path"] = str(
+                runtime_projected_skeleton_trace_path
+            )
         runtime_observation["visual_observation"] = runtime_visual
         runtime_observation["camera_frame_path"] = str(runtime_dir / "initial_policy_frame.png")
         runtime_auxiliary_observation_manifest = build_wam_auxiliary_observation_manifest(
@@ -3239,6 +3310,7 @@ def build_persistent_session_provider_bundle(
             robot_profile_id=_string(runtime_observation.get("robot_profile_id")) or None,
             task_id=_string(runtime_observation.get("task_id")) or None,
             target_object_id=_string(runtime_observation.get("target_object_id")) or None,
+            projected_skeleton_trace_path=runtime_projected_skeleton_trace_path,
         )
         runtime_auxiliary_observation_manifest_path = Path(
             str(runtime_auxiliary_observation_manifest["manifest_path"])
@@ -3251,6 +3323,20 @@ def build_persistent_session_provider_bundle(
         )
         runtime_auxiliary_observation_manifest["source_image_path_exists"] = True
         runtime_auxiliary_observation_manifest["runtime_paths_rewritten_for_provider_bundle"] = True
+        if runtime_projected_skeleton_trace_path:
+            action_conditioning = _mapping(
+                runtime_auxiliary_observation_manifest.get("action_conditioning")
+            )
+            action_conditioning["projected_skeleton_trace_path"] = (
+                RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH
+            )
+            action_conditioning["projected_hand_keypoint_trace_path"] = (
+                RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH
+            )
+            action_conditioning[
+                "projected_trace_runtime_path_rewritten_for_provider_bundle"
+            ] = True
+            runtime_auxiliary_observation_manifest["action_conditioning"] = action_conditioning
         write_json(
             runtime_auxiliary_observation_manifest_path,
             runtime_auxiliary_observation_manifest,
@@ -3262,6 +3348,19 @@ def build_persistent_session_provider_bundle(
         visual["wam_auxiliary_observation_manifest_path"] = str(
             runtime_auxiliary_observation_manifest_path
         )
+        if runtime_projected_skeleton_trace_path:
+            visual["g1_projected_skeleton_trace_jsonl"] = (
+                RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH
+            )
+            visual["projected_skeleton_trace_path"] = (
+                RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH
+            )
+            observation["g1_projected_skeleton_trace_jsonl"] = (
+                RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH
+            )
+            observation["projected_skeleton_trace_path"] = (
+                RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH
+            )
         observation["visual_observation"] = visual
         observation["wam_auxiliary_observation_manifest_path"] = str(
             runtime_auxiliary_observation_manifest_path
@@ -4237,6 +4336,243 @@ def _write_review_video(
     return status
 
 
+def _persistent_episode_consistency_visual_status(
+    visual_quality_report: Mapping[str, Any],
+) -> str:
+    if visual_quality_report.get("visual_success"):
+        return "passed_visual_quality_smoke"
+    return _string(visual_quality_report.get("status")) or "failed_visual_quality_gate"
+
+
+def _write_persistent_episode_consistency_artifacts(
+    *,
+    job: Path,
+    extraction_dir: Path,
+    imported: Mapping[str, Any],
+    generated_at: str,
+    policy_observation: Mapping[str, Any],
+    visual_quality_report: Mapping[str, Any],
+    video_status: Mapping[str, Any],
+    policy_calls: Sequence[Mapping[str, Any]],
+    wam_rows: Sequence[Mapping[str, Any]],
+    side_rows: Sequence[Mapping[str, Any]],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    review_video_path = _string(
+        video_status.get("review_video_path")
+        or visual_quality_report.get("review_video_path")
+    )
+    visual_rollout_useful = bool(visual_quality_report.get("visual_success"))
+    has_review_video = bool(review_video_path and Path(review_video_path).expanduser().is_file())
+    rollout_id = "persistent_g1_wam_rollout_0001"
+    scenario_eval_run_id = "persistent_g1_wam_episode"
+    task_prompt = _string(policy_observation.get("task_prompt"))
+    task_id = _string(policy_observation.get("task_id")) or "unitree_groot_n17_sonic_persistent_session"
+    rollouts = (
+        [
+            {
+                "rollout_id": rollout_id,
+                "scenario_eval_run_id": scenario_eval_run_id,
+                "policy_id": POLICY_ID,
+                "task_id": task_id,
+                "model_candidate": "oscar_wam",
+                "generated_video_path": review_video_path,
+                "live_wam_generation_success_count": int(
+                    imported.get("live_wam_generation_success_count") or 0
+                ),
+                "learned_wam_model_success_count": int(
+                    imported.get("learned_wam_model_success_count") or 0
+                ),
+                "structural_fallback_used": any(
+                    bool(row.get("structural_fallback_used")) for row in wam_rows
+                ),
+            }
+        ]
+        if has_review_video
+        else []
+    )
+    request_path = job / "wam_episode_consistency_request.json"
+    output_path = job / WAM_CONSISTENCY_COMMAND_OUTPUT
+    checks_path = job / "wam_consistency_checks.json"
+    generated_results_path = job / "wam_generated_rollout_results.json"
+    visual_smoke_path = job / "wam_rollout_visual_quality_report.json"
+    visual_smoke_status = _persistent_episode_consistency_visual_status(visual_quality_report)
+    request = {
+        "schema_version": "wam_episode_consistency_request.v1",
+        "generated_at": generated_at,
+        "status": "ready_for_external_episode_scorer"
+        if rollouts and visual_rollout_useful
+        else "blocked_generated_rollout_visual_quality"
+        if rollouts
+        else "blocked_missing_generated_rollout",
+        "source_persistent_session_output_dir": str(extraction_dir),
+        "generated_rollout_results": str(generated_results_path),
+        "generated_rollout_visual_smoke": str(visual_smoke_path),
+        "generated_rollout_visual_smoke_status": visual_smoke_status,
+        "generated_rollout_visually_useful_for_success_review": visual_rollout_useful,
+        "rollouts": rollouts,
+        "task_prompts": [
+            {
+                "scenario_eval_run_id": scenario_eval_run_id,
+                "task_prompt": task_prompt,
+                "task_id": task_id,
+            }
+        ],
+        "source_trace_paths": {
+            "robot_policy_wam_loop_trace_jsonl": str(job / "robot_policy_wam_loop_trace.jsonl"),
+            "wam_generated_next_observations_jsonl": str(
+                job / "wam_generated_next_observations.jsonl"
+            ),
+            "robot_policy_wam_side_by_side_trace_jsonl": str(
+                job / "robot_policy_wam_side_by_side_trace.jsonl"
+            ),
+            "robot_policy_wam_loop_manifest": str(job / "robot_policy_wam_loop_manifest.json"),
+        },
+        "trace_summary": {
+            "policy_call_count": len(policy_calls),
+            "wam_transition_count": len(wam_rows),
+            "side_by_side_trace_row_count": len(side_rows),
+            "live_wam_generation_success_count": int(
+                imported.get("live_wam_generation_success_count") or 0
+            ),
+            "learned_wam_model_success_count": int(
+                imported.get("learned_wam_model_success_count") or 0
+            ),
+        },
+        "expected_output_path": str(output_path),
+        "consistency_label_contract": {
+            "required_top_level_keys": ["rollout_checks"],
+            "rollout_check_required_keys": [
+                "rollout_id",
+                "forward_consistent",
+                "inverse_consistent",
+                "confidence",
+                "rationale",
+            ],
+        },
+        "claim_boundary": {
+            "scorer_is_separate_from_wam_execution_and_evaluator": True,
+            "scorer_input_is_generated_video_and_trace_context_not_physical_robot": True,
+            "consistency_label_does_not_prove_task_success": True,
+            "consistency_label_does_not_prove_generated_world_rank_fidelity": True,
+            "raw_credentials_written_to_artifacts": False,
+        },
+    }
+    write_json(request_path, request)
+    write_json(
+        generated_results_path,
+        {
+            "schema_version": "persistent_wam_generated_rollout_results.v1",
+            "generated_at": generated_at,
+            "status": "completed" if rollouts else "blocked_missing_generated_rollout",
+            "rollouts": rollouts,
+            "blockers": [] if rollouts else ["missing_review_video_for_wam_episode_consistency"],
+            "claim_boundary": {
+                "generated_review_video_is_not_task_success_proof": True,
+                "generated_review_video_is_not_forward_inverse_consistency": True,
+            },
+        },
+    )
+    command = _string(os.getenv(WAM_CONSISTENCY_COMMAND_ENV))
+    allow_scoring = _wam_consistency_env_truthy(WAM_CONSISTENCY_GATE_ENV)
+    consistency_blockers: list[str] = []
+    command_result: dict[str, Any] | None = None
+    command_payload: dict[str, Any] = {}
+    if not rollouts:
+        consistency_blockers = ["missing_review_video_for_wam_episode_consistency"]
+    elif not visual_rollout_useful:
+        consistency_blockers = _string_list(visual_quality_report.get("blockers")) or [
+            "generated_rollout_not_visually_useful_for_consistency_proof"
+        ]
+    elif allow_scoring or command:
+        if not _wam_consistency_env_truthy(WAM_CONSISTENCY_GATE_ENV):
+            consistency_blockers.append(f"missing_env_{WAM_CONSISTENCY_GATE_ENV}")
+        if not command:
+            consistency_blockers.append("missing_wam_episode_consistency_command")
+        if not consistency_blockers:
+            command_payload, command_result = _run_wam_consistency_command(
+                command=command,
+                input_path=request_path,
+                output_path=output_path,
+                timeout_seconds=timeout_seconds,
+            )
+            if command_result.get("status") != "completed":
+                consistency_blockers.extend(
+                    _string_list(command_result.get("blockers"))
+                    or ["wam_episode_consistency_command_blocked"]
+                )
+    else:
+        consistency_blockers = ["requires_external_wam_episode_consistency_scorer"]
+
+    if command_payload and not consistency_blockers:
+        consistency = _normalize_wam_episode_consistency(
+            command_payload=command_payload,
+            rollouts=rollouts,
+            generated_at=generated_at,
+            action_conditioned_video_rollout_generated=bool(rollouts),
+            action_conditioned_video_rollout_available=bool(rollouts),
+            provider_output_replay_used=False,
+            success_label_generated=False,
+            visual_smoke_status=visual_smoke_status,
+            visual_rollout_useful=visual_rollout_useful,
+            command_result=command_result,
+        )
+    else:
+        consistency = _unscored_wam_episode_consistency(
+            generated_at=generated_at,
+            rollouts=rollouts,
+            action_conditioned_video_rollout_generated=bool(rollouts),
+            action_conditioned_video_rollout_available=bool(rollouts),
+            provider_output_replay_used=False,
+            success_label_generated=False,
+            visual_smoke_status=visual_smoke_status,
+            visual_rollout_useful=visual_rollout_useful,
+            blockers=consistency_blockers,
+            blocked_reason="blocked_missing_generated_rollout"
+            if not rollouts
+            else "blocked_generated_rollout_visual_quality"
+            if not visual_rollout_useful
+            else None,
+        )
+        if command_result is not None:
+            consistency["command_result"] = command_result
+    scoring_requested = bool(allow_scoring or command)
+    consistency["scoring_requested"] = scoring_requested
+    consistency["early_termination_recommended"] = bool(
+        scoring_requested and not consistency.get("forward_inverse_consistency_proven")
+    )
+    consistency["request_path"] = str(request_path)
+    write_json(checks_path, consistency)
+    return {
+        "schema_version": "persistent_wam_episode_consistency_summary.v1",
+        "generated_at": generated_at,
+        "status": consistency.get("status"),
+        "scoring_requested": scoring_requested,
+        "wam_episode_consistency_request": str(request_path),
+        "wam_episode_consistency_command": str(output_path) if output_path.is_file() else None,
+        "wam_consistency_checks": str(checks_path),
+        "external_episode_consistency_scorer_ran": bool(
+            consistency.get("external_episode_consistency_scorer_ran")
+        ),
+        "external_episode_consistency_scorer_required": bool(
+            consistency.get("external_episode_consistency_scorer_required")
+        ),
+        "forward_inverse_consistency_proven": bool(
+            consistency.get("forward_inverse_consistency_proven")
+        ),
+        "early_termination_recommended": bool(
+            consistency.get("early_termination_recommended")
+        ),
+        "blockers": _wam_consistency_blockers(consistency),
+        "claim_boundary": {
+            "forward_inverse_consistency_is_external_episode_label_not_wam_execution": True,
+            "forward_inverse_consistency_is_reliability_review_signal_only": True,
+            "forward_inverse_consistency_does_not_prove_task_success": True,
+            "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity": True,
+        },
+    }
+
+
 def _postprocess_imported_persistent_session_artifacts(
     *,
     job: Path,
@@ -4715,6 +5051,19 @@ def _postprocess_imported_persistent_session_artifacts(
             ),
         }
         write_json(job / "wam_rollout_visual_quality_report.json", visual_quality_report)
+    consistency_summary = _write_persistent_episode_consistency_artifacts(
+        job=job,
+        extraction_dir=extraction_dir,
+        imported=imported,
+        generated_at=generated_at,
+        policy_observation=policy_observation,
+        visual_quality_report=visual_quality_report,
+        video_status=video_status,
+        policy_calls=policy_calls,
+        wam_rows=wam_rows,
+        side_rows=side_rows,
+        timeout_seconds=_float_env("BLUEPRINT_WAM_EPISODE_CONSISTENCY_TIMEOUT_SECONDS", 60.0),
+    )
     claim_boundary = {
         "schema_version": "persistent_policy_wam_claim_boundary.v1",
         "generated_at": generated_at,
@@ -4732,6 +5081,22 @@ def _postprocess_imported_persistent_session_artifacts(
         "visual_success": bool(visual_quality_report.get("visual_success")),
         "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
         "valid_mp4_or_provider_completed_is_not_visual_success": True,
+        "forward_inverse_consistency_proven": bool(
+            consistency_summary.get("forward_inverse_consistency_proven")
+        ),
+        "external_episode_consistency_scorer_ran": bool(
+            consistency_summary.get("external_episode_consistency_scorer_ran")
+        ),
+        "wam_episode_consistency_early_termination_recommended": bool(
+            consistency_summary.get("early_termination_recommended")
+        ),
+        "wam_episode_consistency_request": consistency_summary.get(
+            "wam_episode_consistency_request"
+        ),
+        "wam_consistency_checks": consistency_summary.get("wam_consistency_checks"),
+        "forward_inverse_consistency_is_reliability_review_signal_only": True,
+        "forward_inverse_consistency_does_not_prove_task_success": True,
+        "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity": True,
         "video_first_frame_materialization_is_not_future_rollout_quality_proof": (
             video_first_frame_materialization_count > 0
         ),
@@ -4785,6 +5150,9 @@ def _postprocess_imported_persistent_session_artifacts(
             labels.append("autoregressive_chain_visual_drift_or_quality_blocked")
         if input_contract_high_risk_count:
             labels.append("wam_input_contract_high_risk")
+        if consistency_summary.get("early_termination_recommended"):
+            labels.append("wam_episode_consistency_early_termination_recommended")
+            labels.append("forward_inverse_consistency_not_proven")
         write_json(
             job / "failure_labels.json",
             {
@@ -4792,6 +5160,22 @@ def _postprocess_imported_persistent_session_artifacts(
                 "generated_at": generated_at,
                 "status": "completed",
                 "labels": sorted(set(labels)),
+                "raw_credentials_written_to_artifacts": False,
+            },
+        )
+    elif consistency_summary.get("early_termination_recommended"):
+        write_json(
+            job / "failure_labels.json",
+            {
+                "schema_version": "persistent_policy_wam_failure_labels.v1",
+                "generated_at": generated_at,
+                "status": "completed",
+                "labels": [
+                    "wam_episode_consistency_early_termination_recommended",
+                    "forward_inverse_consistency_not_proven",
+                ],
+                "task_success_not_failed_by_consistency_label": True,
+                "consistency_label_is_reliability_abstention_only": True,
                 "raw_credentials_written_to_artifacts": False,
             },
         )
@@ -4826,6 +5210,31 @@ def _postprocess_imported_persistent_session_artifacts(
         else None,
         "wam_rollout_frame_stats": str(job / "wam_rollout_frame_stats.jsonl"),
         "wam_rollout_visual_success": bool(visual_quality_report.get("visual_success")),
+        "wam_episode_consistency_request": consistency_summary.get(
+            "wam_episode_consistency_request"
+        ),
+        "wam_episode_consistency_command": consistency_summary.get(
+            "wam_episode_consistency_command"
+        ),
+        "wam_consistency_checks": consistency_summary.get("wam_consistency_checks"),
+        "forward_inverse_consistency_proven": bool(
+            consistency_summary.get("forward_inverse_consistency_proven")
+        ),
+        "external_episode_consistency_scorer_ran": bool(
+            consistency_summary.get("external_episode_consistency_scorer_ran")
+        ),
+        "external_episode_consistency_scorer_required": bool(
+            consistency_summary.get("external_episode_consistency_scorer_required")
+        ),
+        "wam_episode_consistency_early_termination_recommended": bool(
+            consistency_summary.get("early_termination_recommended")
+        ),
+        "wam_episode_consistency_blockers": _string_list(
+            consistency_summary.get("blockers")
+        ),
+        "blockers": _string_list(consistency_summary.get("blockers"))
+        if consistency_summary.get("early_termination_recommended")
+        else [],
         "claim_boundary": str(job / "claim_boundary.json"),
         "failure_labels": str(job / "failure_labels.json")
         if (job / "failure_labels.json").is_file()
@@ -4956,6 +5365,23 @@ def _finalize_runpod_persistent_session_output(
         ),
         "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
         "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
+        "wam_episode_consistency_request_path": postprocess.get("wam_episode_consistency_request"),
+        "wam_consistency_checks_path": postprocess.get("wam_consistency_checks"),
+        "forward_inverse_consistency_proven": bool(
+            postprocess.get("forward_inverse_consistency_proven")
+        ),
+        "external_episode_consistency_scorer_ran": bool(
+            postprocess.get("external_episode_consistency_scorer_ran")
+        ),
+        "external_episode_consistency_scorer_required": bool(
+            postprocess.get("external_episode_consistency_scorer_required")
+        ),
+        "wam_episode_consistency_early_termination_recommended": bool(
+            postprocess.get("wam_episode_consistency_early_termination_recommended")
+        ),
+        "wam_episode_consistency_blockers": _string_list(
+            postprocess.get("wam_episode_consistency_blockers")
+        ),
         "clean_frame_reanchoring": _mapping(imported.get("clean_frame_reanchoring")),
         "clean_frame_reanchor_event_count": int(imported.get("clean_frame_reanchor_event_count") or 0),
         "periodic_clean_frame_reanchoring_used": bool(
@@ -4979,6 +5405,17 @@ def _finalize_runpod_persistent_session_output(
             ),
             "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
             "visually_useful_rollout": bool(postprocess.get("wam_rollout_visual_success")),
+            "forward_inverse_consistency_proven": bool(
+                postprocess.get("forward_inverse_consistency_proven")
+            ),
+            "external_episode_consistency_scorer_ran": bool(
+                postprocess.get("external_episode_consistency_scorer_ran")
+            ),
+            "wam_episode_consistency_early_termination_recommended": bool(
+                postprocess.get("wam_episode_consistency_early_termination_recommended")
+            ),
+            "forward_inverse_consistency_is_reliability_review_signal_only": True,
+            "forward_inverse_consistency_does_not_prove_task_success": True,
             "generated_world_rank_fidelity_result_proven": False,
             "generated_world_policy_evaluation_scope_proven": False,
             "non_ranking_operational_claim_proven": False,
@@ -5303,6 +5740,25 @@ def run_persistent_session(
             "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
             "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
             "wam_materialization_summary_path": postprocess.get("wam_materialization_summary"),
+            "wam_episode_consistency_request_path": postprocess.get(
+                "wam_episode_consistency_request"
+            ),
+            "wam_consistency_checks_path": postprocess.get("wam_consistency_checks"),
+            "forward_inverse_consistency_proven": bool(
+                postprocess.get("forward_inverse_consistency_proven")
+            ),
+            "external_episode_consistency_scorer_ran": bool(
+                postprocess.get("external_episode_consistency_scorer_ran")
+            ),
+            "external_episode_consistency_scorer_required": bool(
+                postprocess.get("external_episode_consistency_scorer_required")
+            ),
+            "wam_episode_consistency_early_termination_recommended": bool(
+                postprocess.get("wam_episode_consistency_early_termination_recommended")
+            ),
+            "wam_episode_consistency_blockers": _string_list(
+                postprocess.get("wam_episode_consistency_blockers")
+            ),
             "clean_frame_reanchoring": _mapping(imported.get("clean_frame_reanchoring")),
             "clean_frame_reanchor_event_count": int(
                 imported.get("clean_frame_reanchor_event_count") or 0
@@ -5328,6 +5784,17 @@ def run_persistent_session(
                 ),
                 "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
                 "visually_useful_rollout": bool(postprocess.get("wam_rollout_visual_success")),
+                "forward_inverse_consistency_proven": bool(
+                    postprocess.get("forward_inverse_consistency_proven")
+                ),
+                "external_episode_consistency_scorer_ran": bool(
+                    postprocess.get("external_episode_consistency_scorer_ran")
+                ),
+                "wam_episode_consistency_early_termination_recommended": bool(
+                    postprocess.get("wam_episode_consistency_early_termination_recommended")
+                ),
+                "forward_inverse_consistency_is_reliability_review_signal_only": True,
+                "forward_inverse_consistency_does_not_prove_task_success": True,
                 "generated_world_rank_fidelity_result_proven": False,
                 "generated_world_policy_evaluation_scope_proven": False,
                 "non_ranking_operational_claim_proven": False,

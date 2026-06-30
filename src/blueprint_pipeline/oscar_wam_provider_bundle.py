@@ -183,6 +183,23 @@ def _projected_skeleton_trace_motion_px_max(rows: Sequence[Mapping[str, Any]]) -
     return round(max_motion, 6)
 
 
+def _projected_skeleton_trace_claim_boundary(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    summary = {
+        "projected_skeleton_trace_derived_from_seed_render_geometry": False,
+        "temporal_rows_are_target_conditioning_from_resolved_affordance_projection": False,
+        "not_a_learned_robot_policy_action": False,
+        "policy_derived_action_conditioning": False,
+        "simulated_state_not_physical_robot_sensor_evidence": False,
+    }
+    for row in rows:
+        claim_boundary = _mapping(row.get("claim_boundary"))
+        for key in summary:
+            summary[key] = bool(summary[key] or claim_boundary.get(key))
+    return summary
+
+
 def _render_projected_skeleton_conditioning_video(
     *,
     trace_path: Path,
@@ -924,6 +941,9 @@ def _materialize_oscar_input_package_from_wam_generation_step(
     )
     observation = _mapping(step_input.get("current_policy_observation"))
     requested_output = _mapping(step_input.get("requested_output"))
+    projected_trace_claim_boundary = _projected_skeleton_trace_claim_boundary(
+        projected_trace_rows
+    )
     manifest = {
         "schema_version": "blueprint_oscar_wam_input_package.v1",
         "status": "completed",
@@ -995,6 +1015,20 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             )
             if projected_trace_path
             else None,
+            "claim_boundary": projected_trace_claim_boundary,
+            "policy_derived_action_conditioning": bool(
+                projected_trace_claim_boundary.get("policy_derived_action_conditioning")
+            ),
+            "seed_geometry_derived": bool(
+                projected_trace_claim_boundary.get(
+                    "projected_skeleton_trace_derived_from_seed_render_geometry"
+                )
+            ),
+            "target_conditioning_from_resolved_affordance_projection": bool(
+                projected_trace_claim_boundary.get(
+                    "temporal_rows_are_target_conditioning_from_resolved_affordance_projection"
+                )
+            ),
             "simulated_state_not_physical_robot_sensor_evidence": True,
         },
         "source_camera": _string(_mapping(observation.get("visual_observation")).get("camera_id"))
@@ -1010,6 +1044,17 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             "policy_action_conditioning_proxy_is_not_physical_robot_sensor_evidence": True,
             "skeleton_conditioning_is_proxy_from_policy_action_chunk": projected_trace_path is None,
             "projected_g1_skeleton_conditioning_used": projected_trace_path is not None,
+            "projected_g1_skeleton_conditioning_is_policy_derived_action": bool(
+                projected_trace_claim_boundary.get("policy_derived_action_conditioning")
+            ),
+            "projected_g1_skeleton_conditioning_is_seed_or_target_derived": bool(
+                projected_trace_claim_boundary.get(
+                    "projected_skeleton_trace_derived_from_seed_render_geometry"
+                )
+                or projected_trace_claim_boundary.get(
+                    "temporal_rows_are_target_conditioning_from_resolved_affordance_projection"
+                )
+            ),
             "projected_g1_skeleton_conditioning_is_not_physical_robot_sensor_evidence": True,
             "projected_g1_skeleton_conditioning_is_simulated_state": projected_trace_path is not None,
             "first_rgb_frame_anchors_scene_and_robot_appearance": projected_trace_path is not None,
@@ -1161,6 +1206,7 @@ def _oscar_input_contract_diagnostic(
     warnings: list[str] = []
     autoregressive_risk_flags: list[str] = []
     high_risk_flags: list[str] = []
+    ranking_risk_flags: list[str] = []
     first_size = {
         "width": _int_value(first_frame.get("width")),
         "height": _int_value(first_frame.get("height")),
@@ -1195,6 +1241,7 @@ def _oscar_input_contract_diagnostic(
     if _float_value(first_frame.get("non_dark_fraction"), 1.0) < 0.80:
         blockers.append("oscar_contract_first_frame_too_dark")
     projected_used = bool(projected_trace.get("used_for_conditioning"))
+    projected_trace_claim_boundary = _mapping(projected_trace.get("claim_boundary"))
     if projected_used:
         if _int_value(projected_trace.get("projectable_row_count")) <= 0:
             blockers.append("oscar_contract_projected_skeleton_has_no_projectable_rows")
@@ -1207,6 +1254,16 @@ def _oscar_input_contract_diagnostic(
             autoregressive_risk_flags.append(
                 "projected_skeleton_nearly_static_autoregressive_risk"
             )
+        if projected_trace_claim_boundary.get("not_a_learned_robot_policy_action"):
+            warnings.append("oscar_contract_projected_skeleton_not_policy_derived_action")
+            ranking_risk_flags.append(
+                "projected_skeleton_not_policy_derived_action_ranking_risk"
+            )
+        if projected_trace_claim_boundary.get(
+            "temporal_rows_are_target_conditioning_from_resolved_affordance_projection"
+        ):
+            warnings.append("oscar_contract_projected_skeleton_target_conditioned")
+            ranking_risk_flags.append("projected_skeleton_target_conditioning_ranking_risk")
     conditioning_mode = _string(skeleton_video.get("conditioning_mode"))
     policy_action_proxy_used = bool(
         conditioning_mode == "unitree_sonic_policy_action_proxy_over_scene_frame"
@@ -1295,6 +1352,13 @@ def _oscar_input_contract_diagnostic(
                 "max_interframe_landmark_motion_px"
             )
             or skeleton_video.get("projected_g1_skeleton_max_interframe_motion_px"),
+            "policy_derived_action_conditioning": bool(
+                projected_trace.get("policy_derived_action_conditioning")
+            ),
+            "seed_geometry_derived": bool(projected_trace.get("seed_geometry_derived")),
+            "target_conditioning_from_resolved_affordance_projection": bool(
+                projected_trace.get("target_conditioning_from_resolved_affordance_projection")
+            ),
         },
         "rgb_context": {
             "used_for_oscar_rgb_latent_context": rgb_used,
@@ -1310,6 +1374,7 @@ def _oscar_input_contract_diagnostic(
         "warnings": warnings,
         "autoregressive_risk_flags": autoregressive_risk_flags,
         "high_risk_flags": high_risk_flags,
+        "ranking_risk_flags": ranking_risk_flags,
         "autoregressive_risk_level": "blocked"
         if blockers
         else "high"
@@ -1318,6 +1383,8 @@ def _oscar_input_contract_diagnostic(
         if autoregressive_risk_flags
         else "none",
         "short_rollout_sanity_recommended_before_scale_up": bool(autoregressive_risk_flags),
+        "policy_ranking_risk_level": "high" if ranking_risk_flags else "none",
+        "policy_ranking_claim_safe": not ranking_risk_flags,
         "likely_debug_focus": [
             "oscar_runtime_input_contract",
             "conditioning_stream_alignment",

@@ -33,8 +33,19 @@ from .isaac_g1_policy import (
     interpolate_route,
 )
 from .oscar_wam_provider_command_adapter import run as run_oscar_wam_provider_adapter
+from .oscar_cosmos_wam_evaluator import (
+    WAM_CONSISTENCY_COMMAND_ENV,
+    WAM_CONSISTENCY_COMMAND_OUTPUT,
+    WAM_CONSISTENCY_GATE_ENV,
+    _env_truthy as _wam_consistency_env_truthy,
+    _normalize_wam_episode_consistency,
+    _run_wam_consistency_command,
+    _unscored_wam_episode_consistency,
+    _wam_consistency_blockers,
+)
 from .wam_backend_strategy import get_wam_backend_strategy
 from .wam_derived_observation_harness import run_wam_derived_observation_harness_step
+from .wam_generated_video_review import visual_smoke_generated_rollouts_for_review
 from .wam_provider_runtime import WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE
 
 LOOP_SCHEMA_VERSION = "oscar_isaac_closed_loop_eval.v1"
@@ -79,6 +90,14 @@ PolicyEndpoint = Callable[
 
 def _string(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [item for item in (_string(item).strip() for item in value) if item]
+    return []
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -1786,6 +1805,227 @@ def evaluate_isaac_manipulation_success(
     }
 
 
+def _wam_consistency_command(explicit_command: str | None) -> str:
+    return _string(explicit_command) or _string(os.getenv(WAM_CONSISTENCY_COMMAND_ENV))
+
+
+def _wam_episode_consistency_requested(
+    *,
+    explicit_command: str | None,
+    allow_wam_consistency_scoring: bool,
+) -> bool:
+    return bool(allow_wam_consistency_scoring or _wam_consistency_command(explicit_command))
+
+
+def _score_closed_loop_step_episode_consistency(
+    *,
+    output_dir: Path,
+    generated_at: str,
+    step_index: int,
+    policy_id: str,
+    source_frame_path: str,
+    generated_frame_path: str,
+    wam_output: Mapping[str, Any],
+    action: Mapping[str, Any],
+    action_history: Sequence[Mapping[str, Any]],
+    task_prompts: Sequence[str],
+    wam_consistency_command: str | None,
+    allow_wam_consistency_scoring: bool,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    step_dir = output_dir / "wam_episode_consistency" / f"step_{step_index:04d}"
+    ensure_dir(step_dir)
+    generated_video = _string(wam_output.get("generated_video_path"))
+    rollouts = (
+        [
+            {
+                "rollout_id": f"oscar_isaac_closed_loop_step_{step_index:04d}",
+                "scenario_eval_run_id": f"isaac_closed_loop_step_{step_index:04d}",
+                "policy_id": policy_id,
+                "model_candidate": _string(wam_output.get("wam_backend")) or "oscar_wam",
+                "generated_video_path": generated_video,
+                "generated_frame_path": generated_frame_path,
+                "source_observation_frame_path": source_frame_path,
+                "step_index": step_index,
+            }
+        ]
+        if generated_video and Path(generated_video).expanduser().is_file()
+        else []
+    )
+    visual_smoke = visual_smoke_generated_rollouts_for_review(
+        rollouts=rollouts,
+        output_dir=step_dir / "visual_smoke",
+        generated_at=generated_at,
+        require_review_quality_profile=False,
+    )
+    visual_rollout_useful = bool(
+        _mapping(visual_smoke.get("claim_boundary")).get(
+            "visual_rollout_useful_for_task_success_review"
+        )
+    )
+    visual_smoke_path = step_dir / "wam_generated_rollout_visual_smoke.json"
+    write_json(visual_smoke_path, visual_smoke)
+    request_path = step_dir / "wam_episode_consistency_request.json"
+    output_path = step_dir / WAM_CONSISTENCY_COMMAND_OUTPUT
+    checks_path = step_dir / "wam_consistency_checks.json"
+    task_prompt = next((prompt for prompt in task_prompts if prompt), "")
+    request = {
+        "schema_version": "wam_episode_consistency_request.v1",
+        "generated_at": generated_at,
+        "status": "ready_for_external_episode_scorer"
+        if rollouts and visual_rollout_useful
+        else "blocked_generated_rollout_visual_quality"
+        if rollouts
+        else "blocked_missing_generated_rollout",
+        "source_isaac_closed_loop_output_dir": str(output_dir),
+        "generated_rollout_results": str(step_dir / "wam_generated_rollout_results.json"),
+        "generated_rollout_visual_smoke": str(visual_smoke_path),
+        "generated_rollout_visual_smoke_status": _string(visual_smoke.get("status")),
+        "generated_rollout_visually_useful_for_success_review": visual_rollout_useful,
+        "rollouts": rollouts,
+        "task_prompts": [
+            {
+                "scenario_eval_run_id": f"isaac_closed_loop_step_{step_index:04d}",
+                "task_prompt": task_prompt,
+                "task_id": "isaac_g1_oscar_per_step_closed_loop",
+            }
+        ],
+        "source_trace_paths": {
+            "source_observation_frame": source_frame_path,
+            "generated_next_observation_frame": generated_frame_path,
+            "generated_next_observation_video": generated_video or None,
+        },
+        "trace_summary": {
+            "action_row_count": len(action_history) + 1,
+            "current_step_index": step_index,
+            "current_action_type": action.get("action_type") or action.get("policy_action"),
+        },
+        "expected_output_path": str(output_path),
+        "consistency_label_contract": {
+            "required_top_level_keys": ["rollout_checks"],
+            "rollout_check_required_keys": [
+                "rollout_id",
+                "forward_consistent",
+                "inverse_consistent",
+                "confidence",
+                "rationale",
+            ],
+        },
+        "claim_boundary": {
+            "scorer_is_separate_from_wam_execution_and_evaluator": True,
+            "scorer_input_is_generated_video_and_trace_context_not_physical_robot": True,
+            "consistency_label_does_not_prove_task_success": True,
+            "consistency_label_does_not_prove_generated_world_rank_fidelity": True,
+            "raw_credentials_written_to_artifacts": False,
+        },
+    }
+    write_json(request_path, request)
+    write_json(
+        step_dir / "wam_generated_rollout_results.json",
+        {
+            "schema_version": "isaac_closed_loop_wam_generated_rollout_results.v1",
+            "generated_at": generated_at,
+            "status": "completed" if rollouts else "blocked_missing_generated_rollout",
+            "rollouts": rollouts,
+            "blockers": [] if rollouts else ["missing_generated_video_for_wam_episode_consistency"],
+            "claim_boundary": {
+                "generated_video_is_not_task_success_proof": True,
+                "generated_video_is_not_forward_inverse_consistency": True,
+            },
+        },
+    )
+
+    command = _wam_consistency_command(wam_consistency_command)
+    consistency_blockers: list[str] = []
+    command_result: dict[str, Any] | None = None
+    command_payload: dict[str, Any] = {}
+    if not rollouts:
+        consistency_blockers = ["missing_generated_video_for_wam_episode_consistency"]
+    elif not visual_rollout_useful:
+        consistency_blockers = _string_list(visual_smoke.get("blockers")) or [
+            "generated_rollout_not_visually_useful_for_consistency_proof"
+        ]
+    elif allow_wam_consistency_scoring or command:
+        if not _wam_consistency_env_truthy(WAM_CONSISTENCY_GATE_ENV):
+            consistency_blockers.append(f"missing_env_{WAM_CONSISTENCY_GATE_ENV}")
+        if not allow_wam_consistency_scoring:
+            consistency_blockers.append("missing_cli_allow_wam_consistency_scoring")
+        if not command:
+            consistency_blockers.append("missing_wam_episode_consistency_command")
+        if not consistency_blockers:
+            command_payload, command_result = _run_wam_consistency_command(
+                command=command,
+                input_path=request_path,
+                output_path=output_path,
+                timeout_seconds=timeout_seconds,
+            )
+            if command_result.get("status") != "completed":
+                consistency_blockers.extend(
+                    _string_list(command_result.get("blockers"))
+                    or ["wam_episode_consistency_command_blocked"]
+                )
+    else:
+        consistency_blockers = ["requires_external_wam_episode_consistency_scorer"]
+
+    if command_payload and not consistency_blockers:
+        consistency = _normalize_wam_episode_consistency(
+            command_payload=command_payload,
+            rollouts=rollouts,
+            generated_at=generated_at,
+            action_conditioned_video_rollout_generated=bool(rollouts),
+            action_conditioned_video_rollout_available=bool(rollouts),
+            provider_output_replay_used=False,
+            success_label_generated=False,
+            visual_smoke_status=_string(visual_smoke.get("status")),
+            visual_rollout_useful=visual_rollout_useful,
+            command_result=command_result,
+        )
+    else:
+        consistency = _unscored_wam_episode_consistency(
+            generated_at=generated_at,
+            rollouts=rollouts,
+            action_conditioned_video_rollout_generated=bool(rollouts),
+            action_conditioned_video_rollout_available=bool(rollouts),
+            provider_output_replay_used=False,
+            success_label_generated=False,
+            visual_smoke_status=_string(visual_smoke.get("status")),
+            visual_rollout_useful=visual_rollout_useful,
+            blockers=consistency_blockers,
+            blocked_reason="blocked_missing_generated_rollout"
+            if not rollouts
+            else "blocked_generated_rollout_visual_quality"
+            if not visual_rollout_useful
+            else None,
+        )
+        if command_result is not None:
+            consistency["command_result"] = command_result
+    scoring_requested = bool(allow_wam_consistency_scoring or command)
+    consistency["early_termination_recommended"] = bool(
+        scoring_requested and not consistency.get("forward_inverse_consistency_proven")
+    )
+    consistency["scoring_requested"] = scoring_requested
+    consistency["visual_smoke_path"] = str(visual_smoke_path)
+    consistency["request_path"] = str(request_path)
+    write_json(checks_path, consistency)
+    return {
+        "request": request,
+        "consistency": consistency,
+        "request_path": str(request_path),
+        "checks_path": str(checks_path),
+        "visual_smoke_path": str(visual_smoke_path),
+        "forward_inverse_consistency_proven": bool(
+            consistency.get("forward_inverse_consistency_proven")
+        ),
+        "external_episode_consistency_scorer_ran": bool(
+            consistency.get("external_episode_consistency_scorer_ran")
+        ),
+        "early_termination_recommended": bool(
+            consistency.get("early_termination_recommended")
+        ),
+        "blockers": _wam_consistency_blockers(consistency),
+    }
+
+
 def run_oscar_isaac_closed_loop(
     *,
     output_dir: str | Path,
@@ -1810,6 +2050,9 @@ def run_oscar_isaac_closed_loop(
     require_fresh_learned_policy_requery: bool = False,
     clean_frame_reanchor_interval: int = 0,
     policy_endpoint: PolicyEndpoint | None = None,
+    wam_consistency_command: str | None = None,
+    allow_wam_consistency_scoring: bool = False,
+    wam_consistency_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     resolved_out = Path(output_dir).expanduser().resolve()
@@ -1856,6 +2099,11 @@ def run_oscar_isaac_closed_loop(
     previous_endpoint_action_signature: str | None = None
     learned_policy_requery_count = 0
     policy_action_changed_count = 0
+    consistency_results: list[dict[str, Any]] = []
+    consistency_requested = _wam_episode_consistency_requested(
+        explicit_command=wam_consistency_command,
+        allow_wam_consistency_scoring=allow_wam_consistency_scoring,
+    )
 
     for step_index in range(1, bounded_steps + 1):
         # 1. policy acts
@@ -1901,6 +2149,32 @@ def run_oscar_isaac_closed_loop(
         )
         if require_fresh_oscar_provider and not fresh_oscar_provider:
             blockers.append(f"fresh_oscar_provider_model_run_not_proven_at_step_{step_index}")
+        consistency_result: dict[str, Any] = {}
+        consistency_early_termination = False
+        if consistency_requested:
+            consistency_result = _score_closed_loop_step_episode_consistency(
+                output_dir=resolved_out,
+                generated_at=generated,
+                step_index=step_index,
+                policy_id=policy_id,
+                source_frame_path=current_frame,
+                generated_frame_path=generated_frame,
+                wam_output=wam_output,
+                action=action,
+                action_history=action_history,
+                task_prompts=cleaned_target_prompts,
+                wam_consistency_command=wam_consistency_command,
+                allow_wam_consistency_scoring=allow_wam_consistency_scoring,
+                timeout_seconds=(
+                    float(wam_consistency_timeout_seconds)
+                    if wam_consistency_timeout_seconds is not None
+                    else float(backend_timeout_seconds)
+                ),
+            )
+            consistency_results.append(consistency_result)
+            consistency_early_termination = bool(
+                consistency_result.get("early_termination_recommended")
+            )
         clean_frame_reanchor_applied = bool(
             effective_reanchor_interval > 0 and step_index % effective_reanchor_interval == 0
         )
@@ -1953,6 +2227,7 @@ def run_oscar_isaac_closed_loop(
             previous_steps=step_records,
             previous_adapter_reports=adapter_reports,
             backend_kind=harness_backend_kind,
+            external_consistency=_mapping(consistency_result.get("consistency")),
             backend_command=harness_backend_command,
             allow_external_backend=allow_external_backend,
             backend_timeout_seconds=backend_timeout_seconds,
@@ -1971,7 +2246,10 @@ def run_oscar_isaac_closed_loop(
         adapter_reports.append(adapter_report)
 
         adapted_observation = _mapping(result.get("adapted_policy_observation"))
-        safe_for_policy_requery = bool(adapter_report.get("safe_for_policy_requery"))
+        adapter_safe_for_policy_requery = bool(adapter_report.get("safe_for_policy_requery"))
+        safe_for_policy_requery = bool(
+            adapter_safe_for_policy_requery and not consistency_early_termination
+        )
         policy_requeried_on_wam_observation = False
         policy_action_changed_vs_previous = False
         requery_status = "absent"
@@ -2024,10 +2302,25 @@ def run_oscar_isaac_closed_loop(
             "depth_completed": backend_status["depth_completed"],
             "da3_completed": backend_status["da3_completed"],
             "safe_for_policy_requery": safe_for_policy_requery,
+            "policy_adapter_safe_for_policy_requery": adapter_safe_for_policy_requery,
             "policy_requeried_on_wam_observation": policy_requeried_on_wam_observation,
             "policy_action_changed_vs_previous": policy_action_changed_vs_previous,
             "requery_status": requery_status,
             "clean_frame_reanchor_applied": clean_frame_reanchor_applied,
+            "wam_episode_consistency_request": consistency_result.get("request_path"),
+            "wam_consistency_checks": consistency_result.get("checks_path"),
+            "external_episode_consistency_scorer_ran": bool(
+                consistency_result.get("external_episode_consistency_scorer_ran")
+            ),
+            "forward_inverse_consistency_proven": bool(
+                consistency_result.get("forward_inverse_consistency_proven")
+            ),
+            "wam_episode_consistency_early_termination_recommended": (
+                consistency_early_termination
+            ),
+            "wam_episode_consistency_blockers": _string_list(
+                consistency_result.get("blockers")
+            ),
         }
         trace_rows.append(trace_row)
         proof_rows.append(
@@ -2046,11 +2339,30 @@ def run_oscar_isaac_closed_loop(
                 "depth_completed": backend_status["depth_completed"],
                 "da3_completed": backend_status["da3_completed"],
                 "safe_for_policy_requery": safe_for_policy_requery,
+                "policy_adapter_safe_for_policy_requery": adapter_safe_for_policy_requery,
                 "policy_requeried_on_wam_observation": policy_requeried_on_wam_observation,
                 "policy_action_changed_vs_previous": policy_action_changed_vs_previous,
                 "requery_status": requery_status,
+                "external_episode_consistency_scorer_ran": bool(
+                    consistency_result.get("external_episode_consistency_scorer_ran")
+                ),
+                "forward_inverse_consistency_proven": bool(
+                    consistency_result.get("forward_inverse_consistency_proven")
+                ),
+                "wam_episode_consistency_early_termination_recommended": (
+                    consistency_early_termination
+                ),
             }
         )
+        if consistency_early_termination:
+            step_blockers = _string_list(consistency_result.get("blockers")) or [
+                "wam_episode_consistency_not_proven"
+            ]
+            blockers.extend(
+                f"wam_episode_consistency_step_{step_index}:{blocker}"
+                for blocker in step_blockers
+            )
+            break
 
         # 4. feed forward: the generated frame becomes the next step's observation
         current_frame = next_policy_frame
@@ -2078,6 +2390,15 @@ def run_oscar_isaac_closed_loop(
         and (fresh_learned_policy_requery_steps >= 2 or policy_endpoint_requery_contract_proven)
     )
     wam_evaluator_in_control_loop = bool(generated_observation_count >= 1)
+    consistency_scorer_ran_steps = sum(
+        1 for row in proof_rows if row.get("external_episode_consistency_scorer_ran")
+    )
+    consistency_proven_steps = sum(
+        1 for row in proof_rows if row.get("forward_inverse_consistency_proven")
+    )
+    consistency_early_termination_recommended = any(
+        row.get("wam_episode_consistency_early_termination_recommended") for row in proof_rows
+    )
     if policy_endpoint is not None and not policy_endpoint_requery_contract_proven:
         blockers.append("blocked_learned_policy_requery_not_proven")
     if require_fresh_learned_policy_requery and fresh_learned_policy_requery_steps < 1:
@@ -2121,6 +2442,31 @@ def run_oscar_isaac_closed_loop(
         "depth_completed_steps": sum(1 for row in proof_rows if row.get("depth_completed")),
         "da3_completed_steps": sum(1 for row in proof_rows if row.get("da3_completed")),
         "feed_forward_verified": feed_forward_verified,
+        "wam_episode_consistency_requested": consistency_requested,
+        "external_episode_consistency_scorer_ran_steps": consistency_scorer_ran_steps,
+        "forward_inverse_consistency_proven_steps": consistency_proven_steps,
+        "forward_inverse_consistency_proven": bool(
+            consistency_results
+            and consistency_proven_steps == len(consistency_results)
+            and not consistency_early_termination_recommended
+        ),
+        "wam_episode_consistency_early_termination_recommended": (
+            consistency_early_termination_recommended
+        ),
+        "wam_episode_consistency_request_paths": [
+            str(item.get("request_path")) for item in consistency_results if item.get("request_path")
+        ],
+        "wam_consistency_checks_paths": [
+            str(item.get("checks_path")) for item in consistency_results if item.get("checks_path")
+        ],
+        "wam_episode_consistency_blockers": sorted(
+            {
+                str(blocker)
+                for item in consistency_results
+                for blocker in _string_list(item.get("blockers"))
+                if str(blocker)
+            }
+        ),
         "requirements": {
             "fresh_oscar_provider_required": bool(require_fresh_oscar_provider),
             "real_perception_backend_required": bool(require_real_perception_backend),
@@ -2186,6 +2532,17 @@ def run_oscar_isaac_closed_loop(
             ),
             "answer": manipulation_success_judge.get("answer"),
         },
+        "forward_inverse_consistency_proven": bool(
+            proof["forward_inverse_consistency_proven"]
+        ),
+        "external_episode_consistency_scorer_ran": bool(consistency_scorer_ran_steps),
+        "wam_episode_consistency_early_termination_recommended": bool(
+            consistency_early_termination_recommended
+        ),
+        "wam_episode_consistency_request_paths": list(
+            proof["wam_episode_consistency_request_paths"]
+        ),
+        "wam_consistency_checks_paths": list(proof["wam_consistency_checks_paths"]),
         "proof": proof,
         "blockers": blockers,
         "claim_boundary": (
@@ -2196,7 +2553,9 @@ def run_oscar_isaac_closed_loop(
             "clean policy observation back into the loop as drift control; it is not raw capture "
             "truth or task-success proof. Task success is judged in-process by the "
             "manipulation_success_evaluator and kept separate from structural loop proof; it is "
-            "not_proven unless a learned-policy task-success signal fired."
+            "not_proven unless a learned-policy task-success signal fired. Forward/inverse "
+            "episode consistency, when configured, is an external reliability/abstention "
+            "signal only and can block feed-forward policy requery without proving task success."
         ),
         "raw_secret_values_recorded": False,
     }
@@ -2256,6 +2615,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--require-da3-completed", action="store_true")
     parser.add_argument("--require-fresh-learned-policy-requery", action="store_true")
     parser.add_argument("--clean-frame-reanchor-interval", type=int, default=0)
+    parser.add_argument("--wam-consistency-command")
+    parser.add_argument("--allow-wam-consistency-scoring", action="store_true")
+    parser.add_argument("--wam-consistency-timeout-seconds", type=float)
     parser.add_argument(
         "--short-visual-sanity-manifest",
         default=None,
@@ -2427,6 +2789,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.require_fresh_learned_policy_requery
                 ),
                 "clean_frame_reanchor_interval": int(args.clean_frame_reanchor_interval),
+                "wam_episode_consistency_scoring_configured": bool(
+                    args.allow_wam_consistency_scoring or args.wam_consistency_command
+                ),
+                "wam_episode_consistency_command_configured": bool(
+                    args.wam_consistency_command
+                ),
             },
             "blockers": list(wam_backend_readiness.get("blockers") or []),
         }
@@ -2489,6 +2857,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         perception_target_prompts=list(args.perception_target_prompt or []),
         wam_backend_id=args.wam_backend,
         wam_backend_readiness=wam_backend_readiness,
+        wam_consistency_command=args.wam_consistency_command,
+        allow_wam_consistency_scoring=bool(args.allow_wam_consistency_scoring),
+        wam_consistency_timeout_seconds=args.wam_consistency_timeout_seconds,
     )
     print(json.dumps({"status": manifest["status"], "steps_executed": manifest.get("steps_executed")}, sort_keys=True))
     return 0 if manifest["status"] == "completed" else 2

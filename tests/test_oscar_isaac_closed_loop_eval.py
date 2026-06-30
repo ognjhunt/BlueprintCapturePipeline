@@ -42,6 +42,78 @@ def _stub_wam(work: Path):
     return _generate
 
 
+def _stub_wam_with_video(work: Path):
+    """A WAM stand-in that exposes a generated video artifact for consistency scoring."""
+
+    def _generate(current_frame, action, step_index, history):
+        out = work / "wam_generated" / f"step_{step_index:04d}.png"
+        _write_frame(out, seed=step_index * 17)
+        video = out.with_suffix(".mp4")
+        video.write_bytes(b"fake mp4")
+        return {
+            "generated_frame_path": str(out),
+            "generated_video_path": str(video),
+            "wam_backend": "oscar_wam",
+        }
+
+    return _generate
+
+
+def _write_episode_consistency_command(tmp_path: Path, *, inverse_consistent: bool) -> Path:
+    command = tmp_path / (
+        "wam_consistency_pass.py" if inverse_consistent else "wam_consistency_fail.py"
+    )
+    command.write_text(
+        f"""
+import json
+import os
+from pathlib import Path
+
+request = json.loads(Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_INPUT"]).read_text(encoding="utf-8"))
+assert request["schema_version"] == "wam_episode_consistency_request.v1"
+assert request["claim_boundary"]["scorer_is_separate_from_wam_execution_and_evaluator"] is True
+rollout = request["rollouts"][0]
+payload = {{
+    "schema_version": "wam_episode_consistency.command.v1",
+    "status": "completed",
+    "provider": "fake-vlm-episode-consistency",
+    "model": "fake-vlm",
+    "rollout_checks": [
+        {{
+            "rollout_id": rollout["rollout_id"],
+            "scenario_eval_run_id": rollout["scenario_eval_run_id"],
+            "policy_id": rollout["policy_id"],
+            "model_candidate": rollout.get("model_candidate"),
+            "forward_consistent": True,
+            "inverse_consistent": {inverse_consistent!r},
+            "confidence": 0.91,
+            "rationale": "The rollout was checked against action trace context.",
+            "visual_evidence_used": True,
+            "action_trace_evidence_used": True,
+        }}
+    ],
+}}
+Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    return command
+
+
+def _passed_visual_smoke(**kwargs):
+    return {
+        "schema_version": "wam_generated_rollout_visual_smoke.v1",
+        "generated_at": "now",
+        "status": "passed_visual_quality_smoke",
+        "blockers": [],
+        "rollout_count": len(kwargs.get("rollouts") or []),
+        "claim_boundary": {
+            "visual_rollout_useful_for_task_success_review": True,
+            "generated_video_is_not_task_success_proof": True,
+        },
+    }
+
+
 def _write_seed_geometry_route(tmp_path: Path) -> tuple[Path, Path]:
     render_dir = tmp_path / "render"
     source_render = render_dir / "frames" / "robot_pov_0000.png"
@@ -459,6 +531,100 @@ def test_closed_loop_emits_in_process_success_evaluator_not_proven_by_default(
     assert "feed_forward_verified" in manifest["proof"]
     assert "external judge" not in manifest["claim_boundary"]
     assert "manipulation_success_evaluator" in manifest["claim_boundary"]
+
+
+def test_closed_loop_external_episode_consistency_stays_separate_from_task_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=12)
+    command = _write_episode_consistency_command(tmp_path, inverse_consistent=True)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING", "true")
+    monkeypatch.setattr(L, "visual_smoke_generated_rollouts_for_review", _passed_visual_smoke)
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_stub_wam_with_video(tmp_path),
+        steps=2,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        wam_consistency_command=f"{sys.executable} {command}",
+        allow_wam_consistency_scoring=True,
+        wam_consistency_timeout_seconds=5.0,
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["steps_executed"] == 2
+    assert manifest["external_episode_consistency_scorer_ran"] is True
+    assert manifest["forward_inverse_consistency_proven"] is True
+    assert manifest["wam_episode_consistency_early_termination_recommended"] is False
+    assert manifest["manipulation_success_proven"] is False
+    assert manifest["success_proof"]["answer"] == "not_proven"
+    assert "task success" in manifest["claim_boundary"]
+
+    for request_path in manifest["wam_episode_consistency_request_paths"]:
+        request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+        assert request["schema_version"] == "wam_episode_consistency_request.v1"
+        assert request["rollouts"][0]["generated_video_path"].endswith(".mp4")
+    checks = json.loads(
+        Path(manifest["wam_consistency_checks_paths"][0]).read_text(encoding="utf-8")
+    )
+    assert checks["forward_inverse_consistency_proven"] is True
+    assert checks["claim_boundary"][
+        "forward_inverse_consistency_does_not_prove_task_success"
+    ] is True
+
+    judge = json.loads(
+        Path(manifest["manipulation_success_evaluator_results_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert judge["manipulation_success_proven"] is False
+
+
+def test_closed_loop_episode_consistency_failure_early_terminates_feed_forward(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=13)
+    command = _write_episode_consistency_command(tmp_path, inverse_consistent=False)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING", "true")
+    monkeypatch.setattr(L, "visual_smoke_generated_rollouts_for_review", _passed_visual_smoke)
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_stub_wam_with_video(tmp_path),
+        steps=3,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        wam_consistency_command=f"{sys.executable} {command}",
+        allow_wam_consistency_scoring=True,
+        wam_consistency_timeout_seconds=5.0,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["steps_executed"] == 1
+    assert manifest["external_episode_consistency_scorer_ran"] is True
+    assert manifest["forward_inverse_consistency_proven"] is False
+    assert manifest["wam_episode_consistency_early_termination_recommended"] is True
+    assert any(
+        blocker == "wam_episode_consistency_step_1:wam_consistency_inverse_not_proven"
+        for blocker in manifest["blockers"]
+    )
+    assert manifest["manipulation_success_proven"] is False
+
+    trace = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(trace) == 1
+    assert trace[0]["wam_episode_consistency_early_termination_recommended"] is True
+    assert "wam_consistency_inverse_not_proven" in trace[0]["wam_episode_consistency_blockers"]
 
 
 def test_isaac_manipulation_success_evaluator_proves_only_on_learned_signal() -> None:
