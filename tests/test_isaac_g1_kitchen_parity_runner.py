@@ -716,6 +716,35 @@ def test_camera_aperture_widens_fov_vs_default_telephoto() -> None:
     assert got_vfov > default_vfov + 25
 
 
+def test_camera_intrinsics_from_usd_aperture_matches_pinhole() -> None:
+    width, height, vfov = 1280, 960, 50.0
+    focal, hap, vap = M.camera_aperture_for_fov(vfov, width, height)
+
+    intr = M._camera_intrinsics_from_usd_aperture(focal, hap, vap, width, height)
+
+    got_vfov = 2 * math.degrees(math.atan(0.5 * height / intr["fy"]))
+    assert intr["available"] is True
+    assert got_vfov == pytest.approx(vfov, abs=1e-6)
+    assert intr["cx"] == pytest.approx(width / 2.0)
+    assert intr["cy"] == pytest.approx(height / 2.0)
+    assert intr["fx"] == pytest.approx(float(width) * float(focal) / float(hap))
+    assert intr["fy"] == pytest.approx(float(height) * float(focal) / float(vap))
+    assert intr["projection_method"] == "isaac_usd_camera_pinhole_from_focal_aperture"
+
+
+def test_camera_contract_emission_wired_in_render_loop() -> None:
+    source = _RUNNER.read_text()
+    frame_save_start = source.index("over_ok = _save_rgb(")
+    frame_save_end = source.index("cap += 1", frame_save_start)
+    frame_save_region = source[frame_save_start:frame_save_end]
+
+    assert "camera_contract.jsonl" in source
+    assert "def _isaac_camera_contract" in source
+    assert "def _append_camera_contract_row(" in source
+    assert "_isaac_camera_contract(" in source
+    assert "_append_camera_contract_row(pov_cam, pov_frame_path, cap)" in frame_save_region
+
+
 def test_arm_reach_rotation_swings_rest_bone_toward_target() -> None:
     # shoulder at origin; rest upper arm hangs down (-z); faucet is forward (+y), level
     shoulder = (0.0, 0.0, 0.0)
@@ -2200,8 +2229,8 @@ def test_topdown_debug_overlay_is_added_only_after_verify_and_pov_are_saved() ->
     source = _RUNNER.read_text()
     capture_start = source.index("debug_root_path = (")
     normal_render = source.index("_replicator_step_with_watchdog(", capture_start)
-    pov_save = source.index('_save_rgb(pov_annot, sdir / "frames" / f"robot_pov_', capture_start)
-    verify_save = source.index('_save_rgb(verify_annot, sdir / "frames" / f"verify_', capture_start)
+    pov_save = source.index("pov_ok = _save_rgb(pov_annot, pov_frame_path", capture_start)
+    verify_save = source.index("verify_ok = _save_rgb(", capture_start)
     overlay_update = source.index("_update_topdown_debug_scene(", capture_start)
     topdown_save = source.index("placement_topdown_frame_path =", overlay_update)
     overlay_remove = source.index("stage.RemovePrim(debug_root_path)", topdown_save)
@@ -2218,7 +2247,7 @@ def test_first_frame_warmup_runs_after_pov_camera_placement() -> None:
     warmup_log = source.index("first-frame warmup", pov_place)
     warmup_step = source.index('label=f"{sid}:frame:{cap}:warmup:{wi}"', warmup_log)
     frame_step = source.index('label=f"{sid}:frame:{cap}:rt_subframes:{capture_rt_subframes}"', warmup_step)
-    pov_save = source.index('_save_rgb(pov_annot, sdir / "frames" / f"robot_pov_', frame_step)
+    pov_save = source.index("pov_ok = _save_rgb(pov_annot, pov_frame_path", frame_step)
 
     assert 'label=f"{sid}:warmup:{wi}"' not in source
     assert pov_place < warmup_log < warmup_step < frame_step < pov_save

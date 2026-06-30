@@ -822,6 +822,13 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
             "events were not observed, so this does not prove support contact, full dynamic "
             "locomotion, learned balance control, or deployment readiness."
         )
+    camera_contract_frames = sum(
+        int(o.get("per_frame_camera_contract_frames") or 0) for o in outcomes
+    )
+    camera_contract_intrinsics_frames = sum(
+        int(o.get("per_frame_camera_contract_available_intrinsics_frames") or 0)
+        for o in outcomes
+    )
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": status,
@@ -832,6 +839,9 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
         "scenarios_executed": len(outcomes),
         "scenarios_passed": passed,
         "rendered_by_isaac_rtx": True,
+        "per_frame_camera_contract_emitted": camera_contract_frames > 0,
+        "per_frame_camera_contract_frames": camera_contract_frames,
+        "per_frame_camera_contract_available_intrinsics_frames": camera_contract_intrinsics_frames,
         "blockers": list(blockers),
         "scenarios": [
             {"scenario_id": s.get("scenario_id"), **o}
@@ -5130,6 +5140,55 @@ def _make_render_product(camera_path: str, width: int, height: int):
     return annot
 
 
+def _isaac_camera_contract(stage, cam_path: str, width: int, height: int) -> dict[str, Any]:
+    try:
+        from pxr import UsdGeom  # type: ignore
+
+        prim = stage.GetPrimAtPath(cam_path)
+        cam = UsdGeom.Camera(prim)
+        focal = cam.GetFocalLengthAttr().Get()
+        h_ap = cam.GetHorizontalApertureAttr().Get()
+        v_ap = cam.GetVerticalApertureAttr().Get()
+        proj_token = str(cam.GetProjectionAttr().Get() or "perspective")
+        xform_cache = UsdGeom.XformCache()
+        matrix = xform_cache.GetLocalToWorldTransform(cam.GetPrim())
+        translation = matrix.ExtractTranslation()
+        rotation = matrix.ExtractRotationMatrix()
+        if proj_token == "orthographic":
+            intrinsics = {
+                "available": False,
+                "projection_token": "orthographic",
+            }
+        else:
+            intrinsics = _camera_intrinsics_from_usd_aperture(
+                focal,
+                h_ap,
+                v_ap,
+                width,
+                height,
+            )
+        return {
+            "available": True,
+            "camera_id": str(cam_path).rsplit("/", 1)[-1],
+            "camera_path": cam_path,
+            "intrinsics": intrinsics,
+            "camera_world_xyz_m": [round(float(translation[i]), 6) for i in range(3)],
+            "camera_xmat_row_major": [
+                [round(float(rotation[i][j]), 8) for j in range(3)]
+                for i in range(3)
+            ],
+            "resolution": [int(width), int(height)],
+            "projection_token": proj_token,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "available": False,
+            "camera_path": cam_path,
+            "blockers": ["isaac_camera_contract_unavailable"],
+            "error": repr(exc),
+        }
+
+
 def _render_step_watchdog_seconds() -> float:
     raw = os.getenv("PARITY_RENDER_STEP_WATCHDOG_SECONDS", "").strip()
     if not raw:
@@ -5448,6 +5507,36 @@ def camera_aperture_for_fov(vfov_deg: float, width: int, height: int, focal_mm: 
     return float(focal_mm), hap, vap
 
 
+def _camera_intrinsics_from_usd_aperture(
+    focal_mm,
+    h_aperture_mm,
+    v_aperture_mm,
+    width: int,
+    height: int,
+) -> dict[str, Any]:
+    if focal_mm is None or not h_aperture_mm or not v_aperture_mm:
+        return {
+            "available": False,
+            "blockers": ["camera_aperture_unavailable"],
+        }
+    focal = float(focal_mm)
+    h_aperture = float(h_aperture_mm)
+    v_aperture = float(v_aperture_mm)
+    return {
+        "available": True,
+        "fx": float(width) * focal / h_aperture,
+        "fy": float(height) * focal / v_aperture,
+        "cx": float(width) / 2.0,
+        "cy": float(height) / 2.0,
+        "image_width": int(width),
+        "image_height": int(height),
+        "focal_length_mm": focal,
+        "horizontal_aperture_mm": h_aperture,
+        "vertical_aperture_mm": v_aperture,
+        "projection_method": "isaac_usd_camera_pinhole_from_focal_aperture",
+    }
+
+
 def _set_camera_fov(stage, cam_path: str, vfov_deg: float, width: int, height: int) -> None:
     """Set a USD camera's focal length + apertures so its vertical FOV == ``vfov_deg`` (matching the
     skeleton-projection FOV) instead of the narrow ~17deg default. GPU/USD only."""
@@ -5725,7 +5814,6 @@ def _create_robot_review_visual_proxies(
     if bbox:
         try:
             bmin = tuple(float(v) for v in bbox["bbox_min_xyz"])
-            bmax = tuple(float(v) for v in bbox["bbox_max_xyz"])
             center = tuple(float(v) for v in bbox["center_xyz"])
             size = tuple(max(0.01, float(v)) for v in bbox["size_xyz"])
             torso_center = (
@@ -6286,6 +6374,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             sid = sc["scenario_id"]
             sdir = out_dir / sid
             (sdir / "frames").mkdir(parents=True, exist_ok=True)
+            camera_contract_rows: list[dict[str, Any]] = []
             stand_root = stand_yaw = None
             stance_plan = None
             scene_objects_for_validation: list[Any] = []
@@ -6325,6 +6414,20 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 }
                 pov_geometry_path.write_text(json.dumps(report, indent=2))
                 return report
+
+            def _append_camera_contract_row(
+                contract: Mapping[str, Any],
+                frame_path: Path,
+                frame_index: int,
+            ) -> None:
+                row = dict(contract)
+                row.update({
+                    "frame_index": int(frame_index),
+                    "rgb_frame_path": str(frame_path),
+                    "scenario_id": sid,
+                })
+                camera_contract_rows.append(row)
+
             if manipulation_stand:
                 stance_plan = preplanned_task_stance_plans.get(sid)
                 if stance_plan is None:
@@ -6780,14 +6883,27 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         rt_subframes=capture_rt_subframes,
                     )
                     rdt = time.time() - ts
+                    over_frame_path = sdir / "frames" / f"overview_{cap:04d}.png"
                     over_ok = _save_rgb(
                         over_annot,
-                        sdir / "frames" / f"overview_{cap:04d}.png",
+                        over_frame_path,
                         software_denoise=software_denoise,
                     )
+                    if over_ok:
+                        _append_camera_contract_row(
+                            _isaac_camera_contract(stage, over_cam, width, height),
+                            over_frame_path,
+                            cap,
+                        )
                     pov_frame_path = sdir / "frames" / f"robot_pov_{cap:04d}.png"
-                    pov_ok = _save_rgb(pov_annot, sdir / "frames" / f"robot_pov_{cap:04d}.png",
+                    pov_ok = _save_rgb(pov_annot, pov_frame_path,
                                        software_denoise=software_denoise)
+                    if pov_ok:
+                        _append_camera_contract_row(
+                            _isaac_camera_contract(stage, pov_cam, width, height),
+                            pov_frame_path,
+                            cap,
+                        )
                     if manipulation_cam and manipulation_reach and pov_geometry_records:
                         frame_quality = (
                             _pov_seed_frame_quality(pov_frame_path)
@@ -6811,8 +6927,18 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             blockers.append("manipulation_pov_geometry_failed")
                             pov_geometry_blocker_recorded = True
                     if verify_annot is not None:
-                        _save_rgb(verify_annot, sdir / "frames" / f"verify_{cap:04d}.png",
-                                  software_denoise=software_denoise)
+                        verify_frame_path = sdir / "frames" / f"verify_{cap:04d}.png"
+                        verify_ok = _save_rgb(
+                            verify_annot,
+                            verify_frame_path,
+                            software_denoise=software_denoise,
+                        )
+                        if verify_ok:
+                            _append_camera_contract_row(
+                                _isaac_camera_contract(stage, verify_cam_path, width, height),
+                                verify_frame_path,
+                                cap,
+                            )
                     if topdown_enabled and stance_plan is not None and debug_root_path is not None:
                         floor_z = float(decision.root_pose[2]) - ROBOT_PELVIS_HEIGHT_M
                         if stance_plan.get("floor_z_hint") is not None:
@@ -6846,11 +6972,17 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             rt_subframes=capture_rt_subframes,
                         )
                         placement_topdown_frame_path = sdir / "frames" / f"placement_topdown_{cap:04d}.png"
-                        _save_rgb(
+                        topdown_ok = _save_rgb(
                             topdown_annot,
                             placement_topdown_frame_path,
                             software_denoise=software_denoise,
                         )
+                        if topdown_ok:
+                            _append_camera_contract_row(
+                                _isaac_camera_contract(stage, topdown_cam_path, width, height),
+                                placement_topdown_frame_path,
+                                cap,
+                            )
                         placement_topdown_layout_frame_path = (
                             sdir / "frames" / f"placement_topdown_layout_{cap:04d}.png"
                         )
@@ -6877,6 +7009,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         sf.write(json.dumps(r) + "\n")
                 total_lm = sum(r["projected_landmark_count"] for r in skel_rows)
                 _log(f"scenario {sid}: skeleton trace {len(skel_rows)} frames, {total_lm} total landmarks")
+            if camera_contract_rows:
+                camera_contract_path = sdir / "frames" / "camera_contract.jsonl"
+                with camera_contract_path.open("w", encoding="utf-8") as cf:
+                    for row in camera_contract_rows:
+                        cf.write(json.dumps(row) + "\n")
+                _log(
+                    f"scenario {sid}: camera contract rows {len(camera_contract_rows)} "
+                    f"written to {camera_contract_path}"
+                )
             scenario_contact_reports = [
                 r for r in physics_contact_reports if r.get("scenario_id") == sid
             ]
@@ -6984,6 +7125,14 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 collision_summary=summary, bounded_steps=len(actions), model_timestep_s=1.0 / float(fps))
             outcome["frames_captured"] = cap
             outcome["truncated"] = truncated
+            outcome["per_frame_camera_contract_emitted"] = bool(camera_contract_rows)
+            outcome["per_frame_camera_contract_frames"] = len(camera_contract_rows)
+            outcome["per_frame_camera_contract_available_intrinsics_frames"] = sum(
+                1
+                for row in camera_contract_rows
+                if isinstance(row.get("intrinsics"), Mapping)
+                and row["intrinsics"].get("available") is True
+            )
             if stance_plan is not None:
                 outcome["task_stance_plan"] = {
                     "status": stance_plan.get("status"),
@@ -7261,14 +7410,17 @@ def _draw_dry_render_preview(
     tb = stance_plan.get("task_target_bounds") if isinstance(stance_plan, dict) else None
     if tb:
         bmin, bmax = tb["bbox_min_xyz"], tb["bbox_max_xyz"]
-        xs += [bmin[0], bmax[0]]; ys += [bmin[1], bmax[1]]
+        xs += [bmin[0], bmax[0]]
+        ys += [bmin[1], bmax[1]]
     for obj in scene_objects[:60]:
         try:
-            xs += [obj.bbox_min[0], obj.bbox_max[0]]; ys += [obj.bbox_min[1], obj.bbox_max[1]]
+            xs += [obj.bbox_min[0], obj.bbox_max[0]]
+            ys += [obj.bbox_min[1], obj.bbox_max[1]]
         except Exception:  # noqa: BLE001
             continue
     if look_at is not None:
-        xs.append(float(look_at[0])); ys.append(float(look_at[1]))
+        xs.append(float(look_at[0]))
+        ys.append(float(look_at[1]))
     pad = 0.6
     minx, maxx, miny, maxy = min(xs) - pad, max(xs) + pad, min(ys) - pad, max(ys) + pad
     span = max(maxx - minx, maxy - miny, 1e-3)
@@ -7281,13 +7433,15 @@ def _draw_dry_render_preview(
 
     for obj in scene_objects[:60]:
         try:
-            p0 = w2s(obj.bbox_min[0], obj.bbox_min[1]); p1 = w2s(obj.bbox_max[0], obj.bbox_max[1])
+            p0 = w2s(obj.bbox_min[0], obj.bbox_min[1])
+            p1 = w2s(obj.bbox_max[0], obj.bbox_max[1])
             d.rectangle([min(p0[0], p1[0]), min(p0[1], p1[1]), max(p0[0], p1[0]), max(p0[1], p1[1])],
                         outline=(95, 100, 110))
         except Exception:  # noqa: BLE001
             continue
     if tb:
-        p0 = w2s(bmin[0], bmin[1]); p1 = w2s(bmax[0], bmax[1])
+        p0 = w2s(bmin[0], bmin[1])
+        p1 = w2s(bmax[0], bmax[1])
         d.rectangle([min(p0[0], p1[0]), min(p0[1], p1[1]), max(p0[0], p1[0]), max(p0[1], p1[1])],
                     outline=(240, 150, 40), width=2)
     # robot footprint (rotated rectangle) + facing arrow
@@ -7324,7 +7478,8 @@ def _draw_dry_render_preview(
     fw = PW - 36
     fh = int(fw * height / max(width, 1))
     if fh > PH - 46:
-        fh = PH - 46; fw = int(fh * width / max(height, 1))
+        fh = PH - 46
+        fw = int(fh * width / max(height, 1))
     d.rectangle([fx0, fy0, fx0 + fw, fy0 + fh], outline=(120, 125, 135))
 
     def proj(wp):
