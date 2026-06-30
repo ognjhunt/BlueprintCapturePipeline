@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 import types
@@ -14,8 +15,10 @@ from blueprint_pipeline.robot_eval_execution import build_simulator_command_arti
 from blueprint_pipeline.mujoco_g1_simulator_command import (
     _build_digital_twin_fidelity_qa,
     _collision_summary,
+    _convert_glb_to_obj,
     _episode_navigation_spec,
     _matrix_runs,
+    _obj_texture_material_summary,
     _obj_vertex_color_summary,
     _render_capture_steps,
     _scene_collision_contact_count,
@@ -139,6 +142,97 @@ def test_obj_vertex_color_summary_counts_rgb_vertices(tmp_path: Path) -> None:
     assert summary["vertex_rgb_fraction"] == 0.666667
 
 
+def test_obj_texture_material_summary_detects_map_kd_texture(tmp_path: Path) -> None:
+    obj_path = tmp_path / "scene.obj"
+    texture_path = tmp_path / "tex.png"
+    Image.new("RGB", (4, 4), color=(180, 90, 40)).save(texture_path)
+    (tmp_path / "material.mtl").write_text(
+        "newmtl scene\nmap_Kd tex.png\n",
+        encoding="utf-8",
+    )
+    obj_path.write_text(
+        "mtllib material.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",
+        encoding="utf-8",
+    )
+
+    summary = _obj_texture_material_summary(obj_path)
+
+    assert summary["status"] == "inspected"
+    assert summary["mtl_file"] == "material.mtl"
+    assert summary["map_kd_texture_file"] == "tex.png"
+    assert summary["map_kd_texture_path"] == str(texture_path.resolve())
+    assert summary["texture_exists"] is True
+
+    only_obj_dir = tmp_path / "only_obj"
+    only_obj_dir.mkdir()
+    only_obj = only_obj_dir / "only_scene.obj"
+    only_obj.write_text("v 0 0 0\n", encoding="utf-8")
+
+    missing = _obj_texture_material_summary(only_obj)
+
+    assert missing["status"] == "no_mtl"
+    assert missing["texture_exists"] is False
+    assert missing["map_kd_texture_file"] is None
+
+
+def test_convert_glb_to_obj_includes_texture_material_summary_and_keeps_signature(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    signature = inspect.signature(_convert_glb_to_obj)
+    assert list(signature.parameters) == ["glb_path", "obj_path", "collision_proxy_limit"]
+    assert signature.parameters["collision_proxy_limit"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["collision_proxy_limit"].default == 160
+
+    class FakeMesh:
+        is_empty = False
+        vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        faces = np.array([[0, 1, 2]])
+        bounds = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
+        extents = np.array([1.0, 1.0, 0.0])
+        centroid = np.array([0.33, 0.33, 0.0])
+
+        def export(self, obj_path: Path) -> None:
+            Image.new("RGB", (4, 4), color=(20, 140, 220)).save(obj_path.parent / "tex.png")
+            (obj_path.parent / "material.mtl").write_text(
+                "newmtl scene\nmap_Kd tex.png\n",
+                encoding="utf-8",
+            )
+            obj_path.write_text(
+                "mtllib material.mtl\n"
+                "v 0 0 0 0.1 0.2 0.3\n"
+                "v 1 0 0 0.4 0.5 0.6\n"
+                "v 0 1 0 0.7 0.8 0.9\n"
+                "f 1 2 3\n",
+                encoding="utf-8",
+            )
+
+    fake_trimesh = types.SimpleNamespace(
+        Scene=type("FakeScene", (), {}),
+        load=lambda _path, force=None: FakeMesh(),
+    )
+    monkeypatch.setitem(sys.modules, "trimesh", fake_trimesh)
+    monkeypatch.setattr(
+        "blueprint_pipeline.mujoco_g1_simulator_command._glb_visual_summary",
+        lambda _path: {"materials_count": 1},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.mujoco_g1_simulator_command._visual_object_semantics_summary",
+        lambda **_kwargs: {"status": "available"},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.mujoco_g1_simulator_command._collision_proxy_geoms_from_mesh",
+        lambda _mesh, max_proxies: ([], {"max_proxy_count": max_proxies}),
+    )
+
+    result = _convert_glb_to_obj(tmp_path / "scene.glb", tmp_path / "scene.obj")
+
+    assert "obj_texture_material_summary" in result
+    assert result["obj_texture_material_summary"]["texture_exists"] is True
+    assert result["obj_texture_material_summary"]["map_kd_texture_file"] == "tex.png"
+    assert result["obj_vertex_color_summary"]["has_vertex_rgb"] is True
+
+
 def test_mjcf_wrapper_has_separate_scene_collision_geom(tmp_path: Path) -> None:
     scene_obj = tmp_path / "scene.obj"
     g1_xml = tmp_path / "g1.xml"
@@ -157,6 +251,82 @@ def test_mjcf_wrapper_has_separate_scene_collision_geom(tmp_path: Path) -> None:
         'material="blueprint_scene_collision_mat" contype="1" conaffinity="1"'
         in xml
     )
+
+
+def test_mjcf_wrapper_binds_scene_texture_when_present(tmp_path: Path) -> None:
+    scene_obj = tmp_path / "scene.obj"
+    g1_xml = tmp_path / "g1.xml"
+    wrapper = tmp_path / "wrapper.xml"
+    texture = tmp_path / "tex.png"
+    scene_obj.write_text("v 0 0 0\n", encoding="utf-8")
+    g1_xml.write_text("<mujoco/>", encoding="utf-8")
+    Image.new("RGB", (4, 4), color=(50, 180, 100)).save(texture)
+
+    _write_mjcf_wrapper(scene_obj, g1_xml, wrapper, scene_texture_file=texture)
+    xml = wrapper.read_text(encoding="utf-8")
+
+    assert '<texture name="blueprint_scene_tex" type="2d"' in xml
+    assert 'texture="blueprint_scene_tex"' in xml
+    assert '<material name="blueprint_scene_mat" rgba="0.45 0.50 0.55 1"/>' not in xml
+
+
+def test_mjcf_wrapper_uses_exact_grey_scene_material_without_texture(
+    tmp_path: Path,
+) -> None:
+    scene_obj = tmp_path / "scene.obj"
+    g1_xml = tmp_path / "g1.xml"
+    wrapper = tmp_path / "wrapper.xml"
+    scene_obj.write_text("v 0 0 0\n", encoding="utf-8")
+    g1_xml.write_text("<mujoco/>", encoding="utf-8")
+
+    _write_mjcf_wrapper(scene_obj, g1_xml, wrapper)
+    xml = wrapper.read_text(encoding="utf-8")
+
+    assert '<material name="blueprint_scene_mat" rgba="0.45 0.50 0.55 1"/>' in xml
+    assert 'texture="blueprint_scene_tex"' not in xml
+
+
+def test_mujoco_loads_textured_scene_wrapper_when_available(tmp_path: Path) -> None:
+    mujoco = pytest.importorskip("mujoco")
+    scene_obj = tmp_path / "scene.obj"
+    g1_xml = tmp_path / "g1.xml"
+    wrapper = tmp_path / "wrapper.xml"
+    texture = tmp_path / "tex.png"
+    Image.new("RGB", (4, 4), color=(120, 40, 200)).save(texture)
+    scene_obj.write_text(
+        "\n".join(
+            [
+                "mtllib material.mtl",
+                "usemtl scene",
+                "v 0 0 0",
+                "v 1 0 0",
+                "v 0 1 0",
+                "v 0 0 1",
+                "vt 0 0",
+                "vt 1 0",
+                "vt 0 1",
+                "vt 1 1",
+                "f 1/1 2/2 3/3",
+                "f 1/1 2/2 4/4",
+                "f 1/1 3/3 4/4",
+                "f 2/2 3/3 4/4",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "material.mtl").write_text(
+        "newmtl scene\nmap_Kd tex.png\n",
+        encoding="utf-8",
+    )
+    g1_xml.write_text("<mujoco><worldbody/></mujoco>", encoding="utf-8")
+
+    _write_mjcf_wrapper(scene_obj, g1_xml, wrapper, scene_texture_file=texture)
+
+    model = mujoco.MjModel.from_xml_path(str(wrapper))
+
+    assert model.ntex >= 1
+    assert model.nmat >= 1
 
 
 def test_mjcf_wrapper_prefers_collision_proxy_boxes(tmp_path: Path) -> None:
@@ -235,6 +405,10 @@ def test_visual_artifact_summary_classifies_frames_and_records_material_evidence
             "has_vertex_rgb": True,
             "vertex_rgb_fraction": 1.0,
         },
+        "obj_texture_material_summary": {
+            "map_kd_texture_file": "tex.png",
+            "texture_exists": True,
+        },
         "mujoco_visual_fidelity_boundary": "test boundary",
     }
 
@@ -255,6 +429,13 @@ def test_visual_artifact_summary_classifies_frames_and_records_material_evidence
     assert summary["texture_material_evidence"]["status"] == (
         "materialized_vertex_color_scene_evidence_present"
     )
+    assert summary["texture_material_evidence"]["obj_map_kd_texture_present"] is True
+    assert summary["texture_material_evidence"]["obj_map_kd_texture_file"] == "tex.png"
+    assert (
+        summary["texture_material_evidence"]["mujoco_scene_material_mode"]
+        == "pbr_texture_bound"
+    )
+    assert summary["texture_material_evidence"]["white_scene_success_allowed"] is False
     assert summary["blank_scene_checks"]["status"] == "checked"
     assert summary["blank_scene_checks"]["all_frames_nonblank"] is True
 

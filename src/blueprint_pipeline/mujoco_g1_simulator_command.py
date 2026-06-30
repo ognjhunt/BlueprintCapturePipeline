@@ -317,6 +317,76 @@ def _obj_vertex_color_summary(obj_path: Path) -> dict[str, Any]:
     }
 
 
+def _obj_texture_material_summary(obj_path: Path) -> dict[str, Any]:
+    default = {
+        "status": "no_mtl",
+        "mtl_file": None,
+        "map_kd_texture_file": None,
+        "map_kd_texture_path": None,
+        "texture_exists": False,
+    }
+    try:
+        obj_dir = obj_path.parent
+        mtl_names: list[str] = []
+        if obj_path.is_file():
+            with obj_path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    parts = stripped.split(maxsplit=1)
+                    if len(parts) == 2 and parts[0].lower() == "mtllib":
+                        mtl_names.extend(name for name in parts[1].split() if name)
+        if mtl_names:
+            mtl_paths = [obj_dir / name for name in mtl_names]
+        else:
+            mtl_paths = sorted(obj_dir.glob("*.mtl"))
+        mtl_paths = [path for path in mtl_paths if path.is_file()]
+        if not mtl_paths:
+            return default
+        inspected_mtl_files: list[str] = []
+        for mtl_path in mtl_paths:
+            inspected_mtl_files.append(mtl_path.name)
+            try:
+                lines = mtl_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                parts = stripped.split(maxsplit=1)
+                if len(parts) != 2 or parts[0].lower() != "map_kd":
+                    continue
+                texture_ref = parts[1].strip().strip('"')
+                texture_path = Path(texture_ref)
+                if not texture_path.is_absolute():
+                    texture_path = mtl_path.parent / texture_path
+                texture_exists = texture_path.is_file()
+                return {
+                    "status": "inspected",
+                    "mtl_file": mtl_path.name,
+                    "inspected_mtl_files": inspected_mtl_files,
+                    "map_kd_texture_file": texture_ref,
+                    "map_kd_texture_path": str(texture_path.resolve())
+                    if texture_exists
+                    else str(texture_path),
+                    "texture_exists": texture_exists,
+                }
+        return {
+            **default,
+            "status": "inspected",
+            "mtl_file": inspected_mtl_files[0] if inspected_mtl_files else None,
+            "inspected_mtl_files": inspected_mtl_files,
+        }
+    except Exception as exc:  # pragma: no cover - defensive artifact inspection.
+        return {
+            **default,
+            "status": "error",
+            "error": type(exc).__name__,
+        }
+
+
 def _geometry_material_name(geometry: Any) -> str:
     visual = getattr(geometry, "visual", None)
     material = getattr(visual, "material", None)
@@ -502,6 +572,7 @@ def _convert_glb_to_obj(
     ensure_dir(obj_path.parent)
     mesh.export(obj_path)
     obj_vertex_color_summary = _obj_vertex_color_summary(obj_path)
+    obj_texture_material_summary = _obj_texture_material_summary(obj_path)
     glb_visual_summary = _glb_visual_summary(glb_path)
     visual_object_semantics_summary = _visual_object_semantics_summary(
         loaded_scene=loaded,
@@ -522,6 +593,7 @@ def _convert_glb_to_obj(
         "visual_asset_summary": glb_visual_summary,
         "visual_object_semantics_summary": visual_object_semantics_summary,
         "obj_vertex_color_summary": obj_vertex_color_summary,
+        "obj_texture_material_summary": obj_texture_material_summary,
         "collision_proxy_geoms": collision_proxy_geoms,
         "collision_proxy_summary": collision_proxy_summary,
         "mujoco_visual_fidelity_boundary": (
@@ -762,6 +834,7 @@ def _write_mjcf_wrapper(
     wrapper_path: Path,
     *,
     collision_proxies: Sequence[Mapping[str, Any]] | None = None,
+    scene_texture_file: str | Path | None = None,
     render_width: int = 640,
     render_height: int = 360,
 ) -> None:
@@ -794,6 +867,16 @@ def _write_mjcf_wrapper(
         )
     offwidth = max(1, int(render_width))
     offheight = max(1, int(render_height))
+    texture_path = Path(scene_texture_file) if scene_texture_file is not None else None
+    if texture_path is not None and texture_path.is_file():
+        scene_material_asset = (
+            f'    <texture name="blueprint_scene_tex" type="2d" file="{_xml_escape(texture_path.resolve())}"/>\n'
+            '    <material name="blueprint_scene_mat" texture="blueprint_scene_tex" texuniform="false"/>'
+        )
+    else:
+        scene_material_asset = (
+            '    <material name="blueprint_scene_mat" rgba="0.45 0.50 0.55 1"/>'
+        )
     wrapper = f"""<mujoco model="blueprint_mujoco_g1_simulator_command">
   <include file="{_xml_escape(g1_xml)}"/>
   <visual>
@@ -803,7 +886,7 @@ def _write_mjcf_wrapper(
   </visual>
   <asset>
     <mesh name="blueprint_scene_mesh" file="{_xml_escape(scene_obj)}"/>
-    <material name="blueprint_scene_mat" rgba="0.45 0.50 0.55 1"/>
+{scene_material_asset}
     <material name="blueprint_scene_collision_mat" rgba="0.05 0.75 0.35 0.18"/>
   </asset>
   <worldbody>
@@ -2169,7 +2252,9 @@ def _visual_artifact_summary(
     }
     all_frame_paths = [path for paths in groups.values() for path in paths]
     obj_summary = dict(mesh_info.get("obj_vertex_color_summary") or {})
+    obj_texture_summary = dict(mesh_info.get("obj_texture_material_summary") or {})
     glb_summary = dict(mesh_info.get("visual_asset_summary") or {})
+    obj_map_kd_texture_present = bool(obj_texture_summary.get("texture_exists"))
     texture_material_evidence = {
         "status": "materialized_vertex_color_scene_evidence_present"
         if obj_summary.get("has_vertex_rgb")
@@ -2182,6 +2267,11 @@ def _visual_artifact_summary(
         "glb_has_vertex_colors": glb_summary.get("has_vertex_colors"),
         "obj_has_vertex_rgb": obj_summary.get("has_vertex_rgb"),
         "obj_vertex_rgb_fraction": obj_summary.get("vertex_rgb_fraction"),
+        "obj_map_kd_texture_present": obj_map_kd_texture_present,
+        "obj_map_kd_texture_file": obj_texture_summary.get("map_kd_texture_file"),
+        "mujoco_scene_material_mode": "pbr_texture_bound"
+        if obj_map_kd_texture_present
+        else "flat_grey_override",
         "white_scene_success_allowed": False,
         "fidelity_boundary": mesh_info.get("mujoco_visual_fidelity_boundary"),
     }
@@ -3854,11 +3944,18 @@ def run_mujoco_g1_simulator_command(
     wrapper_xml = output_root / "blueprint_mujoco_g1_simulator_command.xml"
     _write_g1_xml_with_absolute_meshes(g1_xml, generated_g1_xml)
     collision_proxies = mesh_info.get("collision_proxy_geoms")
+    scene_texture_file = None
+    obj_texture_summary = _mapping(mesh_info.get("obj_texture_material_summary"))
+    if obj_texture_summary.get("texture_exists") is True:
+        map_kd_texture_path = _string(obj_texture_summary.get("map_kd_texture_path"))
+        if map_kd_texture_path:
+            scene_texture_file = Path(map_kd_texture_path)
     _write_mjcf_wrapper(
         scene_obj,
         generated_g1_xml,
         wrapper_xml,
         collision_proxies=collision_proxies if isinstance(collision_proxies, Sequence) else None,
+        scene_texture_file=scene_texture_file,
         render_width=render_width,
         render_height=render_height,
     )

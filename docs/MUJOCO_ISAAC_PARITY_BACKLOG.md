@@ -32,7 +32,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 5 | T5 | Isaac | S | T4 | `done` | Isaac honest completion gating + in-loop drift reanchoring |
 | 6 | T6 | Isaac | M | T4 | `done` | Isaac in-process manipulation success evaluator |
 | 7 | T7 | Shared | M | — | `done` | Photoreal observation handoff: Isaac/WAM frame -> MuJoCo policy visual channel |
-| 8 | T11 | MuJoCo | S | — | `todo` | MuJoCo texture/material preservation (GLB->OBJ keeps PBR map_Kd and binds a MuJoCo texture to the visual geom) |
+| 8 | T11 | MuJoCo | S | — | `done` | MuJoCo texture/material preservation (GLB->OBJ keeps PBR map_Kd and binds a MuJoCo texture to the visual geom) |
 | 9 | T12 | MuJoCo | S | — | `todo` | MuJoCo scene-derived lighting + shadows in the MJCF wrapper |
 | 10 | T8 | MuJoCo | M | — | `todo` | MuJoCo segmentation render pass |
 | 11 | T9 | Isaac | M | — | `todo` | Isaac native instance/semantic segmentation render pass |
@@ -489,7 +489,7 @@ Hermetic, GPU-free pytest. Add to tests/test_mujoco_g1_wam_vla_policy_endpoint_e
 ### 8. T11 — MuJoCo texture/material preservation (GLB->OBJ keeps PBR map_Kd and binds a MuJoCo texture to the visual geom)
 
 - **Lane:** MuJoCo  |  **Effort:** S (small)  |  **Depends on:** none
-- **Status:** todo
+- **Status:** done
 
 **Summary.** Today the MuJoCo G1 sim paints the captured scene with one flat grey material (rgba="0.45 0.50 0.55 1") and the GLB->OBJ converter drops the OBJ's PBR map_Kd texture from the rendered view, so a textured site looks visually meaningless to the policy/customer video. This task makes _convert_glb_to_obj capture the exported OBJ's MTL map_Kd texture (when the source GLB actually carries PBR), and makes _write_mjcf_wrapper emit a MuJoCo <texture>/<material> bound to the visual geom instead of the grey override — falling back to grey only when no PBR texture exists (many World Labs/Marble assets are collider-only). It narrows, does not close, the photoreal gap, and the grey override remains the verified fallback per-asset.
 
@@ -516,12 +516,12 @@ Hermetic, GPU-free pytest. Add to tests/test_mujoco_g1_wam_vla_policy_endpoint_e
 
 **Acceptance criteria:**
 
-- [ ] With a PBR-textured scene OBJ present (MTL with `map_Kd <file>` + the image file beside the OBJ), the generated MJCF wrapper (blueprint_mujoco_g1_simulator_command.xml) contains a `<texture ... file=...>` element and a `<material name="blueprint_scene_mat" texture="blueprint_scene_tex" ...>` element, and does NOT contain the literal grey string `rgba="0.45 0.50 0.55 1"` for blueprint_scene_mat.
-- [ ] When no PBR texture exists (scene_texture_file None or missing — e.g. collider-only/ColorVisuals GLB), the MJCF wrapper still contains exactly `<material name="blueprint_scene_mat" rgba="0.45 0.50 0.55 1"/>` (grey fallback preserved). This grey-literal check is asserted by a new/extended test (the pre-existing test_mjcf_wrapper_has_separate_scene_collision_geom asserts only the geom's material="blueprint_scene_mat" attribute, not the rgba literal; test_mjcf_wrapper_prefers_collision_proxy_boxes asserts only proxy boxes). Both pre-existing tests continue to pass unchanged under the default scene_texture_file=None kwarg.
-- [ ] _obj_texture_material_summary returns texture_exists=True only when an MTL with a map_Kd line AND the referenced image file both exist beside the OBJ; returns texture_exists=False (and no exception) when only scene.obj is present.
-- [ ] mesh_info returned by _convert_glb_to_obj contains a new key obj_texture_material_summary; the function signature is unchanged so official_g1_policy_handoff.py:1825 (which passes collision_proxy_limit and reads collision_proxy_geoms) still works.
-- [ ] _visual_artifact_summary's texture_material_evidence includes obj_map_kd_texture_present, obj_map_kd_texture_file, and mujoco_scene_material_mode in {pbr_texture_bound, flat_grey_override}; the existing status/white_scene_success_allowed:false fields are unchanged (no cross-lane/Isaac proof asserted; proof_boundary remains MuJoCo simulator-visual evidence and the claim_boundary keeps isaac_* proofs False).
-- [ ] A MuJoCo model built from a textured wrapper loads (MjModel.from_xml_path) with ntex>=1 and nmat>=1 (GPU-free model-parse check; no render context required).
+- [x] With a PBR-textured scene OBJ present (MTL with `map_Kd <file>` + the image file beside the OBJ), the generated MJCF wrapper (blueprint_mujoco_g1_simulator_command.xml) contains a `<texture ... file=...>` element and a `<material name="blueprint_scene_mat" texture="blueprint_scene_tex" ...>` element, and does NOT contain the literal grey string `rgba="0.45 0.50 0.55 1"` for blueprint_scene_mat.
+- [x] When no PBR texture exists (scene_texture_file None or missing — e.g. collider-only/ColorVisuals GLB), the MJCF wrapper still contains exactly `<material name="blueprint_scene_mat" rgba="0.45 0.50 0.55 1"/>` (grey fallback preserved). This grey-literal check is asserted by a new/extended test (the pre-existing test_mjcf_wrapper_has_separate_scene_collision_geom asserts only the geom's material="blueprint_scene_mat" attribute, not the rgba literal; test_mjcf_wrapper_prefers_collision_proxy_boxes asserts only proxy boxes). Both pre-existing tests continue to pass unchanged under the default scene_texture_file=None kwarg.
+- [x] _obj_texture_material_summary returns texture_exists=True only when an MTL with a map_Kd line AND the referenced image file both exist beside the OBJ; returns texture_exists=False (and no exception) when only scene.obj is present.
+- [x] mesh_info returned by _convert_glb_to_obj contains a new key obj_texture_material_summary; the function signature is unchanged so official_g1_policy_handoff.py:1825 (which passes collision_proxy_limit and reads collision_proxy_geoms) still works.
+- [x] _visual_artifact_summary's texture_material_evidence includes obj_map_kd_texture_present, obj_map_kd_texture_file, and mujoco_scene_material_mode in {pbr_texture_bound, flat_grey_override}; the existing status/white_scene_success_allowed:false fields are unchanged (no cross-lane/Isaac proof asserted; proof_boundary remains MuJoCo simulator-visual evidence and the claim_boundary keeps isaac_* proofs False).
+- [x] A MuJoCo model built from a textured wrapper loads (MjModel.from_xml_path) with ntex>=1 and nmat>=1 (GPU-free model-parse check; no render context required).
 
 **Verification:**
 
