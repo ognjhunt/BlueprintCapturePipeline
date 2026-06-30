@@ -228,7 +228,7 @@ def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
     assert sp["type"] == "on-demand"
     assert sp["rentable"] == {"eq": True}
     assert sp["num_gpus"] == {"eq": 1}
-    assert sp["dph_total"]["lte"] == pytest.approx(2.0)
+    assert sp["dph_total"]["lte"] == pytest.approx(5.0)
     # create-instance body: args mode runs our bootstrap via bash, env carries the signed urls
     cp = req["create_payload"]
     assert cp["image"] == "img:tag"

@@ -1390,6 +1390,9 @@ override it with
 `BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_HEARTBEAT_NO_PROGRESS_SECONDS`.
 `BLUEPRINT_VAST_WAM_NO_PROGRESS_SECONDS` remains the longer WAM/provider runtime
 watchdog and should not be used to justify a silent startup instance.
+Isaac G1 parity Vast render jobs default to a `$5/hr` offer cap; override with
+`--vast-max-hourly-rate <usd>` or
+`BLUEPRINT_ISAAC_G1_PARITY_VAST_MAX_HOURLY_RATE` for a specific run.
 
 Synthetic fallback initial observations and synthetic 2D WAM seeds are blocked
 from live or review-quality WAM provider bundles by default. Use

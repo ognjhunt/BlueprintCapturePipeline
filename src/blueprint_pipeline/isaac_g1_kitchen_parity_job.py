@@ -45,6 +45,7 @@ SCHEMA_VERSION = "isaac_g1_kitchen_parity_job.v1"
 WORKER_BUNDLE_DIR = "/workspace/bundle"
 DEFAULT_G1_USD_RELATIVE = "Isaac/Robots/Unitree/G1/g1.usd"
 DEFAULT_KITCHEN_MAIN_USD = "Collected_KitchenRoom/KitchenRoom.usd"
+DEFAULT_VAST_MAX_HOURLY_RATE_USD = 5.0
 PARITY_BUNDLE_REQUIRED_FILES = (
     "run_isaac_g1_kitchen_parity_eval.py",
     "isaac_g1_policy.py",
@@ -96,6 +97,21 @@ def parity_image() -> str:
 def _gemini_api_key_from_env() -> str:
     """Gemini key for worker-side visual QC, read from local env and never serialized to artifacts."""
     return (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+
+
+def _vast_max_hourly_rate_from_env(default: float = DEFAULT_VAST_MAX_HOURLY_RATE_USD) -> float:
+    value = (
+        os.getenv("BLUEPRINT_ISAAC_G1_PARITY_VAST_MAX_HOURLY_RATE")
+        or os.getenv("BLUEPRINT_VAST_RENDER_MAX_HOURLY_RATE")
+        or ""
+    ).strip()
+    if not value:
+        return float(default)
+    try:
+        parsed = float(value)
+    except ValueError:
+        return float(default)
+    return parsed if parsed > 0 else float(default)
 
 
 # diagnostics-streaming pod bootstrap for the parity runner
@@ -315,7 +331,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       gemini_api_key: str | None = None,
                       serve: bool = False, inbox_get_url: str = "",
                       serve_idle_timeout_s: float = 1800.0,
-                      serve_max_jobs: int | None = None) -> RenderLaunchSpec:
+                      serve_max_jobs: int | None = None,
+                      vast_max_hourly_rate_usd: float | None = None) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -389,6 +406,11 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         name="blueprint-isaac-g1-kitchen-parity", image=image, env=env,
         bootstrap_argv=docker_start_cmd(), entrypoint=["bash"],
         container_disk_gb=container_disk_gb, volume_gb=volume_gb,
+        max_hourly_rate_usd=(
+            float(vast_max_hourly_rate_usd)
+            if vast_max_hourly_rate_usd is not None and vast_max_hourly_rate_usd > 0
+            else _vast_max_hourly_rate_from_env()
+        ),
     )
 
 
@@ -604,6 +626,7 @@ def run_isaac_g1_kitchen_parity_job(
     collision_approximation: str = "",
     verify_cam: bool = False,
     manipulation_stand: bool = False,
+    vast_max_hourly_rate_usd: float | None = None,
     warm_candidates: Sequence[str] | None = None,
     warm_only: bool = False,
     serve: bool = False, serve_idle_timeout_s: float = 1800.0,
@@ -718,10 +741,12 @@ def run_isaac_g1_kitchen_parity_job(
                              kinematic_arm_pose=kinematic_arm_pose,
                              collision_approximation=collision_approximation, verify_cam=verify_cam,
                              manipulation_stand=manipulation_stand,
+                             vast_max_hourly_rate_usd=vast_max_hourly_rate_usd,
                              gemini_api_key=_gemini_api_key_from_env())
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
                                         "policy_id": policy_id, "steps": steps,
+                                        "vast_max_hourly_rate_usd": spec.max_hourly_rate_usd,
                                         "physics_articulation_drive": bool(
                                             physics_articulation_drive
                                             or dynamic_standing_contact_steps > 0
@@ -921,6 +946,8 @@ def main(argv=None) -> int:
                          "(must exceed the worker image pull time on a slow node)")
     ap.add_argument("--max-attempts", type=int, default=3,
                     help="cold-launch attempts before giving up")
+    ap.add_argument("--vast-max-hourly-rate", type=float, default=None,
+                    help="maximum Vast offer hourly rate; defaults to env or $5/hr")
     ap.add_argument("--articulated", action="store_true")
     ap.add_argument("--physics-articulation-drive", action="store_true")
     ap.add_argument("--dynamic-standing-contact-steps", type=int, default=0)
@@ -968,6 +995,7 @@ def main(argv=None) -> int:
         warm_candidates=tuple(args.warm_candidate or ()),
         warm_only=args.warm_only,
         marker_timeout=args.marker_timeout, max_attempts=args.max_attempts,
+        vast_max_hourly_rate_usd=args.vast_max_hourly_rate,
         articulated=args.articulated, cheap_collision=args.cheap_collision,
         physics_articulation_drive=args.physics_articulation_drive,
         dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,

@@ -109,6 +109,28 @@ def test_cli_forwards_provider_race_list(monkeypatch, tmp_path: Path) -> None:
     assert captured["provider"] == "runpod,vast"
 
 
+def test_cli_forwards_vast_max_hourly_rate(monkeypatch, tmp_path: Path) -> None:
+    scenarios_path = tmp_path / "scenarios.json"
+    scenarios_path.write_text(json.dumps(_SCENARIOS), encoding="utf-8")
+    captured: dict = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"status": "prepared"}
+
+    monkeypatch.setattr(J, "run_isaac_g1_kitchen_parity_job", fake_run)
+    rc = J.main([
+        "--scenarios", str(scenarios_path),
+        "--out-dir", str(tmp_path / "out"),
+        "--provider", "vast",
+        "--vast-max-hourly-rate", "4.75",
+    ])
+
+    assert rc == 0
+    assert captured["provider"] == "vast"
+    assert captured["vast_max_hourly_rate_usd"] == 4.75
+
+
 def test_build_parity_bundle_contains_runner_policy_request_and_assets(tmp_path: Path) -> None:
     # fake kitchen asset tree
     kdir = tmp_path / "kitchen_src"
@@ -179,6 +201,27 @@ def test_build_launch_spec_carries_policy_and_signed_urls(tmp_path: Path) -> Non
     assert spec.env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"].endswith("sig=B")
     assert spec.bootstrap_argv[0] == "-lc"
     assert spec.container_disk_gb >= 120
+    assert spec.max_hourly_rate_usd == 5.0
+
+
+def test_build_launch_spec_allows_vast_rate_override(monkeypatch, tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+
+    direct = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="p",
+        steps=8,
+        vast_max_hourly_rate_usd=4.25,
+    )
+    assert direct.max_hourly_rate_usd == 4.25
+
+    monkeypatch.setenv("BLUEPRINT_ISAAC_G1_PARITY_VAST_MAX_HOURLY_RATE", "3.75")
+    from_env = J.build_launch_spec(jd, image="img:tag", policy_id="p", steps=8)
+    assert from_env.max_hourly_rate_usd == 3.75
 
 
 def test_build_launch_spec_threads_gemini_key_only_when_supplied(tmp_path: Path) -> None:
@@ -358,6 +401,7 @@ def test_job_prepared_plan_without_spend(tmp_path: Path, monkeypatch) -> None:
     assert m["status"] == "prepared"
     assert m["provider"] == "vast"
     assert m["launch_request_shape"]["provider"] == "vast"
+    assert m["launch_request_shape"]["vast_max_hourly_rate_usd"] == 5.0
     assert m["scenario_ids"] == ["entry_to_sink", "narrow_passage_to_sink"]
     assert "git_evidence" in m
 

@@ -73,7 +73,7 @@ class RenderLaunchSpec:
     min_vcpu: int = 8
     min_ram_gb: int = 32
     # Vast offer selection (RT-capable GPU under this hourly rate / VRAM floor).
-    max_hourly_rate_usd: float = 2.0
+    max_hourly_rate_usd: float = 5.0
     min_gpu_ram_mb: int = 24000
 
     @property
