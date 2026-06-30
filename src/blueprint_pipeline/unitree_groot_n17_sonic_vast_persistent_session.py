@@ -1286,6 +1286,68 @@ def _extract_action(response: Mapping[str, Any]) -> dict[str, Any]:
     return dict(action) if isinstance(action, Mapping) else {}
 
 
+def _read_optional_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(parsed) if isinstance(parsed, Mapping) else {}
+
+
+def _materialize_future_frame_from_video(candidate: Path, target_frame: Path) -> dict[str, Any]:
+    selection_dir = target_frame.parent / f"{target_frame.stem}_future_frame_selection"
+    selection_manifest_path = selection_dir / "next_observation_selection.json"
+    try:
+        from blueprint_pipeline.oscar_isaac_closed_loop_eval import (
+            extract_next_observation_frame_from_video,
+        )
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "blockers": [f"future_frame_selector_import_failed:{type(exc).__name__}"],
+            "source_path": str(candidate),
+        }
+
+    selected_frame = extract_next_observation_frame_from_video(candidate, selection_dir)
+    selection = _read_optional_json(selection_manifest_path)
+    if selected_frame is None or not selected_frame.is_file():
+        return {
+            "status": "blocked",
+            "blockers": list(selection.get("blockers") or ["no_usable_future_next_observation_frame"]),
+            "source_path": str(candidate),
+            "future_frame_selected": False,
+            "frame_selection_policy": "earliest_signal_valid_future_frame",
+            "selection_manifest_path": str(selection_manifest_path)
+            if selection_manifest_path.is_file()
+            else None,
+            "selection_status": selection.get("status") or "blocked",
+        }
+
+    target_frame.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(selected_frame, target_frame)
+    return {
+        "status": "completed",
+        "source_kind": "video_future_frame",
+        "source_path": str(candidate),
+        "selected_frame_index": selection.get("selected_frame_index"),
+        "future_frame_selected": True,
+        "frame_selection_policy": "earliest_signal_valid_future_frame",
+        "selection_manifest_path": str(selection_manifest_path)
+        if selection_manifest_path.is_file()
+        else None,
+        "selection_status": selection.get("status") or "completed",
+        "extraction_method": selection.get("extraction_method"),
+        "materialized_frame_path": str(target_frame),
+        "claim_boundary": {
+            "selected_frame_is_generated_next_observation_candidate": True,
+            "visual_signal_gate_is_not_task_success_evidence": True,
+            "scene_or_task_specific_pixels_used": False,
+        },
+    }
+
+
 def _copy_or_extract_wam_frame(payload: Mapping[str, Any], target_frame: Path) -> dict[str, Any]:
     candidates: list[Path] = []
     for key in ("generated_next_observation_frame_path", "camera_frame_path", "frame_path", "image_path"):
@@ -1312,6 +1374,9 @@ def _copy_or_extract_wam_frame(payload: Mapping[str, Any], target_frame: Path) -
                 "materialized_frame_path": str(target_frame),
             }
         if candidate.is_file() and candidate.suffix.lower() in {".mp4", ".mov", ".m4v"}:
+            future_materialization = _materialize_future_frame_from_video(candidate, target_frame)
+            if future_materialization.get("status") == "completed":
+                return future_materialization
             try:
                 import cv2
             except Exception as exc:
@@ -1335,6 +1400,13 @@ def _copy_or_extract_wam_frame(payload: Mapping[str, Any], target_frame: Path) -
                         "selected_frame_index": 0,
                         "future_frame_selected": False,
                         "frame_selection_policy": "video_first_frame",
+                        "future_frame_selection_status": future_materialization.get("status"),
+                        "future_frame_selection_blockers": list(
+                            future_materialization.get("blockers") or []
+                        ),
+                        "future_frame_selection_manifest_path": future_materialization.get(
+                            "selection_manifest_path"
+                        ),
                         "materialized_frame_path": str(target_frame),
                         "claim_boundary": {
                             "video_first_frame_may_be_seed_or_minimal_motion_frame": True,

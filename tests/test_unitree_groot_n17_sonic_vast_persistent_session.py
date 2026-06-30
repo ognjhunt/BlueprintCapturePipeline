@@ -15,6 +15,15 @@ from blueprint_pipeline import unitree_groot_n17_sonic_vast_persistent_session a
 from blueprint_pipeline import persistent_wam_short_visual_sanity as short_sanity
 
 
+def _persistent_runner_namespace() -> dict[str, object]:
+    namespace: dict[str, object] = {
+        "__name__": "_persistent_session_runner_under_test",
+        "__file__": "persistent_session_runner_under_test.py",
+    }
+    exec(session.PERSISTENT_SESSION_RUNNER, namespace)
+    return namespace
+
+
 def _policy_observation(path: Path, frame: Path) -> Path:
     observation = {
         "schema_version": "initial_policy_observation.v1",
@@ -801,6 +810,80 @@ def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: P
         claim_boundary["video_first_frame_materialization_is_not_future_rollout_quality_proof"]
         is True
     )
+
+
+def test_copy_or_extract_wam_frame_prefers_usable_future_video_frame(tmp_path: Path) -> None:
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    video = tmp_path / "rollout.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (32, 24))
+    assert writer.isOpened()
+    seed_frame = np.zeros((24, 32, 3), dtype=np.uint8)
+    seed_frame[:, ::2] = 220
+    usable_future = np.zeros((24, 32, 3), dtype=np.uint8)
+    usable_future[::2, :] = (235, 235, 235)
+    usable_future[:, ::4] = (24, 180, 240)
+    collapsed_late = np.full((24, 32, 3), 8, dtype=np.uint8)
+    for frame in (seed_frame, usable_future, collapsed_late):
+        writer.write(frame)
+    writer.release()
+
+    target_frame = tmp_path / "generated" / "next.jpg"
+    namespace = _persistent_runner_namespace()
+    copy_or_extract = namespace["_copy_or_extract_wam_frame"]
+    materialization = copy_or_extract(
+        {"rollouts": [{"generated_video_path": str(video)}]},
+        target_frame,
+    )
+
+    assert materialization["status"] == "completed"
+    assert materialization["source_kind"] == "video_future_frame"
+    assert materialization["selected_frame_index"] == 1
+    assert materialization["future_frame_selected"] is True
+    assert materialization["frame_selection_policy"] == "earliest_signal_valid_future_frame"
+    assert materialization["claim_boundary"]["scene_or_task_specific_pixels_used"] is False
+    assert target_frame.is_file()
+    selection_path = Path(materialization["selection_manifest_path"])
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    assert selection["status"] == "completed"
+    assert selection["selected_frame_index"] == 1
+
+
+def test_copy_or_extract_wam_frame_marks_video_first_frame_fallback(tmp_path: Path) -> None:
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    video = tmp_path / "rollout.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (32, 24))
+    assert writer.isOpened()
+    seed_frame = np.zeros((24, 32, 3), dtype=np.uint8)
+    seed_frame[:, ::2] = 220
+    dark_future = np.full((24, 32, 3), 8, dtype=np.uint8)
+    for frame in (seed_frame, dark_future, dark_future):
+        writer.write(frame)
+    writer.release()
+
+    target_frame = tmp_path / "generated" / "next.jpg"
+    namespace = _persistent_runner_namespace()
+    copy_or_extract = namespace["_copy_or_extract_wam_frame"]
+    materialization = copy_or_extract(
+        {"rollouts": [{"generated_video_path": str(video)}]},
+        target_frame,
+    )
+
+    assert materialization["status"] == "completed"
+    assert materialization["source_kind"] == "video_first_frame"
+    assert materialization["selected_frame_index"] == 0
+    assert materialization["future_frame_selected"] is False
+    assert materialization["future_frame_selection_status"] == "blocked"
+    assert "no_usable_future_next_observation_frame" in materialization[
+        "future_frame_selection_blockers"
+    ]
+    assert materialization["claim_boundary"][
+        "future_frame_rollout_quality_not_proven_by_this_materialization"
+    ] is True
+    assert target_frame.is_file()
 
 
 def test_vast_probe_env_forwards_persistent_inner_policy_command(

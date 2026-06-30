@@ -746,6 +746,92 @@ def test_camera_contract_emission_wired_in_render_loop() -> None:
     assert "pov_frame_path" in frame_save_region
 
 
+def test_depth_pass_source_wiring_is_present() -> None:
+    source = _RUNNER.read_text()
+
+    assert "distance_to_image_plane" in source
+    assert "def _save_depth(" in source
+    assert "--depth-pass" in source
+    assert "depth_render_pass" in source
+
+
+def test_make_render_product_attaches_depth_to_same_render_product(monkeypatch) -> None:
+    render_product = object()
+    requested: list[object] = []
+    render_products: list[tuple[str, tuple[int, int]]] = []
+
+    class _Annotator:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.attached: list[list[object]] = []
+
+        def attach(self, products) -> None:
+            self.attached.append(list(products))
+
+    def render_product_fn(camera_path, resolution):
+        render_products.append((camera_path, tuple(resolution)))
+        return render_product
+
+    def get_annotator(name):
+        annot = _Annotator(name)
+        requested.append(annot)
+        return annot
+
+    fake_core = types.ModuleType("omni.replicator.core")
+    fake_core.create = types.SimpleNamespace(render_product=render_product_fn)
+    fake_core.AnnotatorRegistry = types.SimpleNamespace(get_annotator=get_annotator)
+    fake_replicator = types.ModuleType("omni.replicator")
+    fake_replicator.core = fake_core
+    fake_omni = types.ModuleType("omni")
+    fake_omni.replicator = fake_replicator
+    monkeypatch.setitem(sys.modules, "omni", fake_omni)
+    monkeypatch.setitem(sys.modules, "omni.replicator", fake_replicator)
+    monkeypatch.setitem(sys.modules, "omni.replicator.core", fake_core)
+
+    rgb, depth = M._make_render_product("/World/Cameras/pov", 64, 48, with_depth=True)
+
+    assert render_products[-1] == ("/World/Cameras/pov", (64, 48))
+    assert [annot.name for annot in requested] == ["rgb", "distance_to_image_plane"]
+    assert rgb.attached == [[render_product]]
+    assert depth.attached == [[render_product]]
+
+    requested.clear()
+    single = M._make_render_product("/World/Cameras/overview", 80, 60)
+
+    assert single.name == "rgb"
+    assert [annot.name for annot in requested] == ["rgb"]
+
+
+def test_save_depth_writes_lossless_npy_and_preview(tmp_path: Path) -> None:
+    import numpy as np
+
+    arr = np.array([[0.0, 1.25], [2.5, np.inf]], dtype=np.float32)
+
+    class _Annotator:
+        def __init__(self, data) -> None:
+            self._data = data
+
+        def get_data(self):
+            return self._data
+
+    preview_path = tmp_path / "depth.png"
+    raw_path = tmp_path / "depth.npy"
+
+    assert M._save_depth(_Annotator(arr), preview_path, npy_path=raw_path) is True
+    assert preview_path.exists()
+    np.testing.assert_array_equal(np.load(raw_path), arr)
+
+    none_path = tmp_path / "none.png"
+    assert M._save_depth(_Annotator(None), none_path) is False
+    assert not none_path.exists()
+    assert not none_path.with_suffix(".npy").exists()
+
+    empty_path = tmp_path / "empty.png"
+    assert M._save_depth(_Annotator(np.array([], dtype=np.float32)), empty_path) is False
+    assert not empty_path.exists()
+    assert not empty_path.with_suffix(".npy").exists()
+
+
 def test_arm_reach_rotation_swings_rest_bone_toward_target() -> None:
     # shoulder at origin; rest upper arm hangs down (-z); faucet is forward (+y), level
     shoulder = (0.0, 0.0, 0.0)
