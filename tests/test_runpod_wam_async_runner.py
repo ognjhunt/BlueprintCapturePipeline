@@ -746,6 +746,51 @@ def test_runpod_poll_can_stop_pod_for_warm_reuse_instead_of_delete(
     assert warm_candidate["image_name"] == "docker.io/example/wam:20260629"
 
 
+def test_runpod_stop_command_stops_running_pod_without_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-running-123",
+                "created_at_epoch": runner.time.time(),
+                "output_path": str(job_dir / "missing_output.zip"),
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+            }
+        ),
+        encoding="utf-8",
+    )
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    requests: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["path"] == "/pods/pod-running-123/stop":
+            return 200, {"id": "pod-running-123", "desiredStatus": "EXITED"}
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+
+    manifest = runner.stop_runpod_wam_async_run(job_dir=job_dir, generated_at="now")
+
+    assert manifest["status"] == "completed"
+    assert manifest["pod_id"] == "pod-running-123"
+    assert manifest["warm_candidate"]["status"] == "recorded"
+    assert warm_candidate_file.is_file()
+    assert [request["path"] for request in requests] == ["/pods/pod-running-123/stop"]
+
+
 def test_runpod_poll_stops_not_found_grace_when_delete_already_completed(
     tmp_path: Path,
     monkeypatch,

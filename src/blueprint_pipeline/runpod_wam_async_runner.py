@@ -2076,6 +2076,54 @@ def poll_runpod_wam_async_run(
     return manifest
 
 
+def stop_runpod_wam_async_run(
+    *,
+    job_dir: str | Path,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    generated = generated_at or utc_now_iso()
+    resolved_job_dir = Path(job_dir).expanduser().resolve()
+    state = _read_json(_state_path(resolved_job_dir))
+    pod_id = _string(state.get("pod_id"))
+    api_key, api_key_meta = _read_runpod_api_key()
+    if not pod_id or not api_key:
+        manifest = {
+            "schema_version": RUNPOD_WAM_STOP_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "job_dir": str(resolved_job_dir),
+            "pod_id": pod_id,
+            "blockers": [
+                "runpod_wam_state_missing_pod_id"
+                if not pod_id
+                else f"missing_env_{RUNPOD_API_KEY_ENV}_or_{RUNPOD_API_KEY_FILE_ENV}"
+            ],
+            "api_key_status": api_key_meta,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(resolved_job_dir / "runpod_wam_async_stop_manifest.json", manifest)
+        return manifest
+    manifest = _stop_pod(
+        job_dir=resolved_job_dir,
+        pod_id=pod_id,
+        api_key=api_key,
+        generated_at=generated,
+    )
+    manifest["api_key_status"] = api_key_meta
+    write_json(resolved_job_dir / "runpod_wam_async_stop_manifest.json", manifest)
+    state_update = {
+        **state,
+        "last_polled_at": generated,
+        "last_pod_status": "stop_requested",
+        "continuing_spend_from_this_run": bool(
+            manifest.get("continuing_spend_from_this_run")
+        ),
+        "raw_secret_values_recorded": False,
+    }
+    write_json(_state_path(resolved_job_dir), state_update)
+    return manifest
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2109,6 +2157,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     poll.add_argument("--max-wait-seconds", type=int, default=60)
     poll.add_argument("--retry-interval-seconds", type=int, default=5)
     poll.add_argument("--teardown", action="store_true")
+    stop = subparsers.add_parser("stop")
+    stop.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
     if args.command == "create":
         manifest = create_runpod_wam_async_run(
@@ -2137,13 +2187,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             min_vcpu_per_gpu=args.min_vcpu_per_gpu,
             min_ram_per_gpu=args.min_ram_per_gpu,
         )
-    else:
+    elif args.command == "poll":
         manifest = poll_runpod_wam_async_run(
             job_dir=args.job_dir,
             max_wait_seconds=args.max_wait_seconds,
             retry_interval_seconds=args.retry_interval_seconds,
             teardown=args.teardown,
         )
+    else:
+        manifest = stop_runpod_wam_async_run(job_dir=args.job_dir)
     print(json.dumps(manifest, sort_keys=True))
     return 0 if manifest.get("status") in {"pod_created", "running", "completed"} else 1
 
