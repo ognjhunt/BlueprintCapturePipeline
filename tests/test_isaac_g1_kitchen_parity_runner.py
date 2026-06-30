@@ -937,6 +937,9 @@ def test_author_scene_semantic_labels_skips_robot_and_debug_prims(monkeypatch) -
         def GetName(self):
             return self._name
 
+        def IsA(self, _schema) -> bool:
+            return True
+
     class _Stage:
         def Traverse(self):
             return [

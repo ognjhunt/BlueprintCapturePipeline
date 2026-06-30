@@ -35,7 +35,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 8 | T11 | MuJoCo | S | — | `done` | MuJoCo texture/material preservation (GLB->OBJ keeps PBR map_Kd and binds a MuJoCo texture to the visual geom) |
 | 9 | T12 | MuJoCo | S | — | `done` | MuJoCo scene-derived lighting + shadows in the MJCF wrapper |
 | 10 | T8 | MuJoCo | M | — | `done` | MuJoCo segmentation render pass |
-| 11 | T9 | Isaac | M | — | `in-progress` | Isaac native instance/semantic segmentation render pass |
+| 11 | T9 | Isaac | M | — | `done (gpu-pending)` | Isaac native instance/semantic segmentation render pass |
 | 12 | T13 | Isaac | M | — | `todo` | Isaac gravity-on dynamic stepping: turn the existing settle loop into a physics-proof path with displacement + fall verdict |
 | 13 | T14 | Isaac | L | T13 | `todo` | Isaac torque/effort drive (PD law port) + authored MassAPI/PhysicsMaterial on the resolved target only |
 | 14 | T10 | MuJoCo | M | — | `todo` | MuJoCo convex/OBB collision proxies (flag-gated) |
@@ -662,7 +662,8 @@ Hermetic, GPU-free pytest. Run: `.venv/bin/python -m pytest tests/test_mujoco_g1
 ### 11. T9 — Isaac native instance/semantic segmentation render pass
 
 - **Lane:** Isaac  |  **Effort:** M (medium)  |  **Depends on:** none
-- **Status:** in-progress
+- **Status:** done (gpu-pending)
+- **GPU-pending:** A real Isaac/RTX run with `--segmentation` must confirm non-empty `robot_pov_instance_*.png`/`robot_pov_semantic_*.png` frames and `segmentation_id_labels.json` resolve authored scene labels from Replicator output.
 
 **Summary.** Today the Isaac kitchen-parity runner attaches only an `rgb` Replicator annotator (`_make_render_product`, scripts/run_isaac_g1_kitchen_parity_eval.py:5125-5130), so masks come exclusively from external SAM3 with no deterministic ground-truth. Add a native `instance_segmentation` (+ `semantic_segmentation`) Replicator annotator pass that authors USD semantic labels onto scene prims and saves per-frame colorized mask PNGs + an id->label JSON, plus an Isaac-only proof field in the result, so success scoring gets free deterministic per-pixel object identity without changing the swappable RGB/policy path.
 
@@ -696,13 +697,13 @@ Hermetic, GPU-free pytest. Run: `.venv/bin/python -m pytest tests/test_mujoco_g1
 
 **Acceptance criteria:**
 
-- [ ] `_make_render_product(camera_path, w, h, with_segmentation=True)` requests Replicator annotators 'rgb', 'instance_segmentation', and 'semantic_segmentation' (the latter two with colorize) and attaches all three to the render product; with the default `with_segmentation=False` it requests only 'rgb' and returns the bare rgb annotator (verified by the hermetic fake-replicator test).
-- [ ] `_save_segmentation` writes one instance-mask PNG and one semantic-mask PNG per captured POV frame and a single `segmentation_id_labels.json` whose contents equal the annotator's `info.idToLabels` map (verified by fake-annotator test asserting files exist and JSON equals the injected map).
-- [ ] `_author_scene_semantic_labels` assigns a semantic label to named non-robot renderable prims and assigns NO label to any prim whose path/name contains g1/unitree/robot/placementdebug (verified by fake-stage test).
-- [ ] When `--segmentation` is passed, the result JSON contains `segmentation_pass` with `simulator_backend == "isaac_replicator"` and `native_segmentation_proven == True` ONLY when labeled_prim_count>0 AND instance_mask_frames>0; when the summary is absent the field is omitted (verified by build_result test).
-- [ ] The segmentation proof field and its docstrings reference Isaac/Replicator only and never assert a MuJoCo/mj_step segmentation claim — the non-interchangeable proof boundary holds (verified by source-grep test).
-- [ ] Importing the runner module still succeeds without isaacsim installed (existing `test_runner_imports_without_isaacsim` still passes), proving all Isaac/Replicator/semantics imports stay lazy.
-- [ ] When `--segmentation` is not passed, the existing RGB save path is behavior-unchanged and all current call sites of `_make_render_product` (over/pov/verify at :6228-6230, topdown at :6840) still receive the bare rgb annotator — no new annotators created and no extra files written (verified by the default-path branch of the fake-replicator test).
+- [x] `_make_render_product(camera_path, w, h, with_segmentation=True)` requests Replicator annotators 'rgb', 'instance_segmentation', and 'semantic_segmentation' (the latter two with colorize) and attaches all three to the render product; with the default `with_segmentation=False` it requests only 'rgb' and returns the bare rgb annotator (verified by the hermetic fake-replicator test).
+- [x] `_save_segmentation` writes one instance-mask PNG and one semantic-mask PNG per captured POV frame and a single `segmentation_id_labels.json` whose contents equal the annotator's `info.idToLabels` map (verified by fake-annotator test asserting files exist and JSON equals the injected map).
+- [x] `_author_scene_semantic_labels` assigns a semantic label to named non-robot renderable prims and assigns NO label to any prim whose path/name contains g1/unitree/robot/placementdebug (verified by fake-stage test).
+- [x] When `--segmentation` is passed, the result JSON contains `segmentation_pass` with `simulator_backend == "isaac_replicator"` and `native_segmentation_proven == True` ONLY when labeled_prim_count>0 AND instance_mask_frames>0; when the summary is absent the field is omitted (verified by build_result test).
+- [x] The segmentation proof field and its docstrings reference Isaac/Replicator only and never assert a MuJoCo/mj_step segmentation claim — the non-interchangeable proof boundary holds (verified by source-grep test).
+- [x] Importing the runner module still succeeds without isaacsim installed (existing `test_runner_imports_without_isaacsim` still passes), proving all Isaac/Replicator/semantics imports stay lazy.
+- [x] When `--segmentation` is not passed, the existing RGB save path is behavior-unchanged and all current call sites of `_make_render_product` (over/pov/verify at :6228-6230, topdown at :6840) still receive the bare rgb annotator — no new annotators created and no extra files written (verified by the default-path branch of the fake-replicator test).
 
 **Verification:**
 
