@@ -104,7 +104,7 @@ def test_build_perception_views_length_mismatch_raises() -> None:
 def test_end_to_end_sam3_da3_to_fused_object() -> None:
     # Two orthogonal ring cameras of one object at world (0,0,1) at range 3. Each view: a centered
     # SAM3 box + a constant DA3 depth of 3m. The adapter -> fusion must yield ONE object at (0,0,1).
-    center, radius = (0.0, 0.0, 1.0), 3.0
+    center = (0.0, 0.0, 1.0)
     cams = [
         _cam((0.0, -3.0, 1.0), center),   # looking +y
         _cam((3.0, 0.0, 1.0), center),    # looking -x

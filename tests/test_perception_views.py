@@ -98,7 +98,8 @@ def test_full_chain_bounds_to_fused_object() -> None:
     cams = view_ring_for_bounds(bbox_min, bbox_max, margin=1.6, n_azimuths=6, elevations_deg=(20.0,),
                                 width=640, height=480)
     radius = _dist(cams[0]["eye"], center)
-    det = lambda: [{"label": "sink", "bbox_px": (300, 220, 340, 260), "confidence": 0.9}]
+    def det():
+        return [{"label": "sink", "bbox_px": (300, 220, 340, 260), "confidence": 0.9}]
     views = assemble_views(cams, [det() for _ in cams], [(lambda px, py: radius) for _ in cams])
     objs = MultiViewPerceptionSceneSpatialIndex(views, merge_gap=0.25, min_views=1).objects()
     assert len(objs) == 1                            # all views fuse to one object...

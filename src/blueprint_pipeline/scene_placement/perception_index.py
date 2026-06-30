@@ -28,7 +28,7 @@ Conventions (must match the unit tests and the rest of the pipeline):
 from __future__ import annotations
 
 import math
-from typing import Callable, Dict, List, Mapping, Sequence, Tuple
+from typing import Callable, List, Mapping, Sequence, Tuple
 
 from .types import SceneObject, Vec3
 

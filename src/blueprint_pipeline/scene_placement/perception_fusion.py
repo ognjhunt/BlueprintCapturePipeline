@@ -46,7 +46,7 @@ no GPU, no SAM3/DA3, no network.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import List, Mapping, Optional, Sequence, Tuple
+from typing import List, Mapping, Optional, Sequence
 
 from .perception_index import PerceptionSceneSpatialIndex
 from .types import SceneObject, Vec3

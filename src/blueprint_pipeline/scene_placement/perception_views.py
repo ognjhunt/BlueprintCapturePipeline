@@ -19,7 +19,7 @@ no network. Output cameras use the same schema the perception backend already ac
 from __future__ import annotations
 
 import math
-from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, Sequence, Tuple
 
 from .types import Vec3
 

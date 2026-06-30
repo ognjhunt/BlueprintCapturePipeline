@@ -13,7 +13,7 @@ scene ─▶ SceneSpatialIndex ─▶ object catalog ─▶ resolve_target ─�
 
 Every stage is swappable and dependency-light: importing the package pulls in **no** isaacsim,
 torch, google-genai, or GPU. The heavy bits (USD `pxr`, the Gemini call, the PhysX probe, SAM3/DA3
-inference) are all lazy and/or injected. ~160 hermetic tests across 6 suites.
+inference) are all lazy and/or injected. 177 tests across 5 dedicated suites (test_scene_placement 94, test_placement_validation 43, test_perception_fusion 22, test_perception_views 7, test_perception_adapter 11).
 
 ## Scene backends (the swappable `SceneSpatialIndex`)
 

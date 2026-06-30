@@ -1343,6 +1343,28 @@ def test_compute_stand_pose_returns_standpose_type():
     assert isinstance(pose, StandPose)
 
 
+def test_compute_stand_pose_clearance_is_inert():
+    # placement.py documents ``clearance`` as INERT: it must NOT shift the standoff,
+    # the chosen pose, the yaw, or the clear flag. Pin that contract so a future
+    # footprint-inflation hook can't silently start applying it without a test
+    # noticing. Identical target + probe + every other arg; only clearance differs.
+    tgt = _target(cx=2.0, cy=3.0, hx=0.3, hy=0.3)
+
+    def probe(pose, yaw):
+        # Only the -y side is open (force a deterministic, non-trivial placement so
+        # the assertion exercises real probing rather than a fully-open scene).
+        x, y, _z = pose
+        return 0 if (y < tgt.centroid[1] - 0.1 and abs(x - tgt.centroid[0]) < 0.3) else 1
+
+    pose_zero = compute_stand_pose(tgt, probe=probe, clearance=0.0)
+    pose_half = compute_stand_pose(tgt, probe=probe, clearance=0.5)
+
+    assert pose_zero.position == pose_half.position
+    assert pose_zero.yaw == pose_half.yaw
+    assert pose_zero.standoff_m == pose_half.standoff_m
+    assert pose_zero.clear == pose_half.clear
+
+
 # =========================================================================== #
 # place_robot_for_task + build_scene_index — the package orchestrator/factory
 # (fake index + fake probe + fake generate; NO VLM / NO USD / NO GPU)
