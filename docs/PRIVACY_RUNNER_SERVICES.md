@@ -46,6 +46,38 @@ template hook. The command must write the requested output JSON path.
 - `PRIVACY_DEPTH_ANYTHING_COMMAND` or legacy `DEPTH_ANYTHING_COMMAND`
 - `PRIVACY_DEEPPRIVACY2_COMMAND` or legacy `DEEPPRIVACY2_COMMAND`
 
+## Runner Environment Variables
+
+The orchestrator in `src/blueprint_pipeline/privacy_processing.py` resolves each
+runner from these env vars. The `PRIVACY_`-prefixed name always wins; the bare
+(legacy) name is consulted only as a fallback. The HTTP `*_URL` runners have no
+legacy bare spelling. Every variable below is grep-verifiable in
+`privacy_processing.py`.
+
+| Runner | PRIVACY_-prefixed | Bare / legacy | Purpose |
+| --- | --- | --- | --- |
+| SAM3 detect | `PRIVACY_SAM3_URL` | (none) | HTTP `POST /run` endpoint |
+| SAM3 detect | `PRIVACY_SAM3_COMMAND` | `SAM3_COMMAND` | local/owner command template |
+| SAM3 detect | `PRIVACY_SAM3_TIMEOUT_SECONDS` | (none) | request timeout (default 3600) |
+| VIP inpaint | `PRIVACY_VIP_URL` | (none) | HTTP `POST /run` endpoint |
+| VIP inpaint | `PRIVACY_VIP_COMMAND` | `VIP_COMMAND` | local/owner command template |
+| VIP inpaint | `PRIVACY_VIP_TIMEOUT_SECONDS` | (none) | request timeout (default 7200) |
+| Depth Anything | `PRIVACY_DEPTH_ANYTHING_URL` | (none) | HTTP endpoint; falls back to `PRIVACY_VIP_URL` |
+| Depth Anything | `PRIVACY_DEPTH_ANYTHING_COMMAND` | `DEPTH_ANYTHING_COMMAND` | local/owner command template |
+| Depth Anything | `PRIVACY_DEPTH_ANYTHING_TIMEOUT_SECONDS` | (none) | request timeout (default 7200) |
+| DeepPrivacy2 | `PRIVACY_DEEPPRIVACY2_URL` | (none) | HTTP `POST /run` endpoint |
+| DeepPrivacy2 | `PRIVACY_DEEPPRIVACY2_COMMAND` | `DEEPPRIVACY2_COMMAND` | local/owner command template |
+| DeepPrivacy2 | `PRIVACY_DEEPPRIVACY2_TIMEOUT_SECONDS` | (none) | request timeout (default 7200) |
+
+Pipeline-level controls (read directly by `privacy_processing.py`):
+
+| Variable | Purpose |
+| --- | --- |
+| `PRIVACY_PIPELINE_ENABLED` | gate that turns privacy post-processing on |
+| `PRIVACY_FAIL_CLOSED` | fail-closed policy flag, defaults to true |
+| `PRIVACY_RUNNER_TOKEN` | bearer token added as `Authorization` on runner HTTP calls |
+| `PRIVACY_LOCAL_FULL_FRAME_REDACTION_ENABLED` | enable the local, full-frame redaction proof path (legacy alias `BLUEPRINT_PRIVACY_LOCAL_FULL_FRAME_REDACTION`) |
+
 `sam3-detect` request fields:
 
 - `masks_prefix_uri` or `masks_dir_path`
@@ -175,8 +207,12 @@ The services materialize remote weights locally at request time when necessary. 
 - `vip-inpaint` uses the repo-managed depth-guided inpainting backend, bundles
   Depth Anything 3 when configured, and supports both depth-only generation and
   depth-guided inpainting.
-- `deepprivacy2-anonymize` shells into a checked-out `deep_privacy2` repo and
-  uses `configs/anonymizers/face.py`.
+- `deepprivacy2-anonymize` shells into a checked-out DeepPrivacy2 repo located
+  at `${DEEPPRIVACY2_REPO_DIR:-/opt/deepprivacy2}` and runs its `anonymize.py`
+  against the anonymizer config at
+  `${DEEPPRIVACY2_REPO_DIR:-/opt/deepprivacy2}/configs/anonymizers/face.py`.
+  This config ships inside that checked-out repo; it is not a file in this
+  pipeline repository.
 
 ## Deployment Caveats
 

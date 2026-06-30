@@ -976,3 +976,82 @@ def test_privacy_postprocess_fail_closed_branches(monkeypatch, tmp_path: Path) -
     monkeypatch.setattr(pp, "_run_deepprivacy2", deep_without_segments)
     segments = _run_postprocess_for(segments_root, segments_pipeline, segments_raw)
     assert segments["reason"] == "deepprivacy2_face_segments_missing"
+
+
+def test_privacy_postprocess_fails_closed_with_no_runners_configured(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """With every runner URL/command unset and local redaction disabled, the
+    pipeline must fail closed at the first detection backend and must never
+    publish a final walkthrough derived from the raw capture.
+
+    No backend, GPU, or ffmpeg invocation is allowed: ffmpeg-touching helpers
+    are stubbed to raise so the test both avoids the ffmpeg dependency and
+    proves no raw-capture passthrough/redaction occurs.
+    """
+
+    capture_root, pipeline_dir, raw_video = _capture_paths(tmp_path, "no-runners")
+
+    monkeypatch.setenv("PRIVACY_PIPELINE_ENABLED", "true")
+    # Fail-closed is the default, but assert it explicitly for this edge.
+    monkeypatch.setenv("PRIVACY_FAIL_CLOSED", "true")
+    # Local full-frame redaction must be OFF so we exercise the runner path.
+    monkeypatch.delenv("PRIVACY_LOCAL_FULL_FRAME_REDACTION_ENABLED", raising=False)
+    monkeypatch.delenv("BLUEPRINT_PRIVACY_LOCAL_FULL_FRAME_REDACTION", raising=False)
+
+    # Clear every runner URL and command (PRIVACY_-prefixed + legacy bare).
+    for var in (
+        "PRIVACY_SAM3_URL",
+        "PRIVACY_SAM3_COMMAND",
+        "SAM3_COMMAND",
+        "PRIVACY_VIP_URL",
+        "PRIVACY_VIP_COMMAND",
+        "VIP_COMMAND",
+        "PRIVACY_DEPTH_ANYTHING_URL",
+        "PRIVACY_DEPTH_ANYTHING_COMMAND",
+        "DEPTH_ANYTHING_COMMAND",
+        "PRIVACY_DEEPPRIVACY2_URL",
+        "PRIVACY_DEEPPRIVACY2_COMMAND",
+        "DEEPPRIVACY2_COMMAND",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    # Guard: ffmpeg / raw-passthrough helpers must never run. If any fires it
+    # would mean a final walkthrough was being built from the raw capture.
+    def _forbidden(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("ffmpeg/raw passthrough must not run when failing closed")
+
+    monkeypatch.setattr(pp, "_copy_or_remux_video", _forbidden)
+    monkeypatch.setattr(pp, "_run_local_full_frame_redaction", _forbidden)
+    # Belt-and-suspenders: even if a helper slipped through, ffmpeg is absent.
+    monkeypatch.setattr(pp.shutil, "which", lambda _name: None)
+
+    result = run_privacy_postprocess(
+        bucket="bucket",
+        scene_id="scene-1",
+        capture_id="no-runners",
+        capture_root=capture_root,
+        pipeline_dir=pipeline_dir,
+        raw_video_path=raw_video,
+    )
+
+    # Documented fail-closed status + the first-backend not-configured reason.
+    assert result["status"] == "failed_closed"
+    assert result["reason"] == "sam3_runner_not_configured"
+    assert result["fail_closed"] is True
+    # No privacy-safe walkthrough was selected, and the raw capture was retained.
+    assert result["privacy_processed_video_uri"] is None
+    assert result["world_model_video_uri"] is None
+    assert result["raw_retained"] is True
+
+    # Crucially: no final walkthrough exists, so nothing leaks from raw capture.
+    assert not (capture_root / "privacy" / "final_walkthrough.mov").exists()
+
+    # The persisted manifest and verification report agree on fail-closed.
+    manifest = json.loads((pipeline_dir / "privacy_processing_manifest.json").read_text(encoding="utf-8"))
+    verification = json.loads((pipeline_dir / "privacy_verification_report.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed_closed"
+    assert manifest["reason"] == "sam3_runner_not_configured"
+    assert verification["status"] == "failed_closed"
+    assert verification["initial_detection"]["reason"] == "sam3_runner_not_configured"
