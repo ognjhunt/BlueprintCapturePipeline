@@ -318,9 +318,44 @@ def test_race_feeds_circuit_breaker_winner_success_and_launch_dud(tmp_path: Path
 
 def test_race_with_no_providers_is_blocked(tmp_path: Path):
     res = race_launch([], request={}, marker_check=_marker_check, marker_timeout=1,
-                      job_dir=tmp_path)
+                      job_dir=tmp_path, bundle_kind="unitree_groot_n17_sonic",
+                      readiness_marker="bootstrap.json")
     assert res["status"] == "blocked"
     assert res["reason"] == "no_providers"
+    assert res["schema"] == "provider_race.v2"
+    assert res["bundle_kind"] == "unitree_groot_n17_sonic"
+    assert res["readiness_marker"] == "bootstrap.json"
+
+
+def test_race_result_carries_bundle_labels_for_launched_and_default_shapes(tmp_path: Path):
+    fast = FakeProvider("fast", boots=True, marker_after=1)
+
+    labeled = race_launch(
+        [fast],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=1,
+        job_dir=tmp_path / "labeled",
+        bundle_kind="unitree_groot_n17_sonic",
+        readiness_marker="bootstrap.json",
+        sleep=_NO_SLEEP,
+    )
+    unlabeled = race_launch(
+        [FakeProvider("default", boots=True, marker_after=1)],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=1,
+        job_dir=tmp_path / "default",
+        sleep=_NO_SLEEP,
+    )
+
+    assert labeled["schema"] == "provider_race.v2"
+    assert labeled["status"] == "launched"
+    assert labeled["bundle_kind"] == "unitree_groot_n17_sonic"
+    assert labeled["readiness_marker"] == "bootstrap.json"
+    assert unlabeled["schema"] == "provider_race.v2"
+    assert unlabeled["bundle_kind"] is None
+    assert unlabeled["readiness_marker"] is None
 
 
 def test_race_passes_cold_flag_and_per_provider_request(tmp_path: Path):

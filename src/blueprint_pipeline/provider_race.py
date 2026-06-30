@@ -38,7 +38,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-SCHEMA_VERSION = "provider_race.v1"
+SCHEMA_VERSION = "provider_race.v2"
 
 
 # ----------------------------- circuit breaker -----------------------------
@@ -244,6 +244,8 @@ def race_launch(
     circuit_breaker: ProviderCircuitBreaker | None = None,
     terminate_losers: bool = True,
     launch_kwargs: Mapping[str, Any] | Callable[[object], Mapping[str, Any]] | None = None,
+    bundle_kind: str | None = None,
+    readiness_marker: str | None = None,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict:
@@ -297,7 +299,16 @@ def race_launch(
         runnable = providers
 
     if not runnable:
-        return _result(None, None, [], skipped_names, 0, reason="no_providers")
+        return _result(
+            None,
+            None,
+            [],
+            skipped_names,
+            0,
+            reason="no_providers",
+            bundle_kind=bundle_kind,
+            readiness_marker=readiness_marker,
+        )
 
     # 2) Shared race state. `winner_found` lets a losing thread abort its poll the instant
     #    someone wins, so a degraded provider never makes the job wait out its full timeout.
@@ -442,13 +453,32 @@ def race_launch(
                 circuit_breaker.record_dud(rec["provider"])
 
     if winner_idx is None:
-        return _result(None, None, records, skipped_names, terminated,
-                       reason="all_providers_dudded")
+        return _result(
+            None,
+            None,
+            records,
+            skipped_names,
+            terminated,
+            reason="all_providers_dudded",
+            bundle_kind=bundle_kind,
+            readiness_marker=readiness_marker,
+        )
     return _result(runnable[winner_idx], records[winner_idx], records, skipped_names,
-                   terminated, reason=None)
+                   terminated, reason=None, bundle_kind=bundle_kind,
+                   readiness_marker=readiness_marker)
 
 
-def _result(winner_provider, win_rec, records, skipped_names, terminated, *, reason) -> dict:
+def _result(
+    winner_provider,
+    win_rec,
+    records,
+    skipped_names,
+    terminated,
+    *,
+    reason,
+    bundle_kind: str | None = None,
+    readiness_marker: str | None = None,
+) -> dict:
     """Assemble the uniform race result (also the no-providers / all-dudded blocked shape)."""
     if win_rec is not None:
         return {
@@ -459,6 +489,8 @@ def _result(winner_provider, win_rec, records, skipped_names, terminated, *, rea
             "mode": win_rec["mode"],
             "winner_provider": winner_provider,
             "winner_launch": win_rec["launch"],
+            "bundle_kind": bundle_kind,
+            "readiness_marker": readiness_marker,
             "contenders": records,
             "skipped": skipped_names,
             "terminated_losers": terminated,
@@ -472,6 +504,8 @@ def _result(winner_provider, win_rec, records, skipped_names, terminated, *, rea
         "mode": None,
         "winner_provider": None,
         "winner_launch": None,
+        "bundle_kind": bundle_kind,
+        "readiness_marker": readiness_marker,
         "contenders": records,
         "skipped": skipped_names,
         "terminated_losers": terminated,
