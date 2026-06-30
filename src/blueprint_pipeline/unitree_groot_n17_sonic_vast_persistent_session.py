@@ -3456,6 +3456,25 @@ def _job_dir(root: str | Path | None = None) -> Path:
     return job.resolve()
 
 
+def _completed_runpod_resume_job(root: str | Path | None) -> Path | None:
+    if not root:
+        return None
+    root_path = Path(root).expanduser()
+    candidates = [root_path]
+    if root_path.is_dir():
+        candidates.extend(sorted((p for p in root_path.iterdir() if p.is_dir()), reverse=True))
+    for candidate in candidates:
+        runpod_dir = candidate / "runpod_persistent_session_run"
+        output_zip = runpod_dir / "runpod_provider_runtime_output.zip"
+        poll_manifest_path = runpod_dir / "runpod_wam_async_poll_manifest.json"
+        if not output_zip.is_file() or not poll_manifest_path.is_file():
+            continue
+        poll_manifest = _read_json(poll_manifest_path)
+        if poll_manifest.get("status") == "completed":
+            return candidate.resolve()
+    return None
+
+
 def _blocked_payload(
     *,
     generated_at: str,
@@ -4246,36 +4265,46 @@ def _postprocess_imported_persistent_session_artifacts(
             "raw_credentials_written_to_artifacts": False,
         },
     )
+    try:
+        policy_observation = _load_policy_observation(policy_observation_path)
+    except Exception:
+        policy_observation = {}
+    task_prompt = _string(policy_observation.get("task_prompt"))
+    target_object_id = _string(policy_observation.get("target_object_id"))
+    target_label = _string(policy_observation.get("target_label")) or target_object_id
     success_proven = bool(
         live_wam_count > 0
         and learned_wam_count > 0
         and imported.get("manipulation_success_evaluator_result") == "success"
     )
     if success_proven:
-        success_reason = "A live evaluator reported sink-handle success."
+        success_reason = "A live evaluator reported requested manipulation success."
     elif live_wam_count > 0:
         success_reason = (
             "The loop completed with live learned WAM generations, but no task-success "
-            "evaluator or physics state proved a sink-handle state transition."
+            "evaluator or physics state proved the requested manipulation state transition."
         )
     elif structural_wam_count > 0:
         success_reason = (
             "The loop completed with structural WAM fallback only; no live learned WAM or "
-            "physics state proved a sink-handle state transition."
+            "physics state proved the requested manipulation state transition."
         )
     else:
         success_reason = (
             "The loop did not produce a completed WAM generation or physics state proving a "
-            "sink-handle state transition."
+            "requested manipulation state transition."
         )
     judge = {
         "schema_version": "manipulation_success_evaluator_results.v1",
         "generated_at": generated_at,
         "status": "completed",
-        "question": "Did the sink handle end up turned on?",
+        "question": "Did the requested manipulation succeed?",
+        "task_prompt": task_prompt or None,
+        "target_object_id": target_object_id or None,
+        "target_label": target_label or None,
         "answer": "not_proven" if not success_proven else "yes",
-        "did_sink_handle_end_up_turned_on": bool(success_proven),
-        "sink_handle_turned_on_proven": bool(success_proven),
+        "did_target_manipulation_succeed": bool(success_proven),
+        "manipulation_success_proven": bool(success_proven),
         "success_proof_separate_from_structural_loop_proof": True,
         "structural_loop_completed": imported.get("status") == "completed",
         "live_wam_generation_success_count": live_wam_count,
@@ -4292,10 +4321,6 @@ def _postprocess_imported_persistent_session_artifacts(
         fps=float(os.getenv("BLUEPRINT_PERSISTENT_SESSION_REVIEW_FPS", "2.0")),
         structural_fallback_used=structural_wam_count > 0,
     )
-    try:
-        policy_observation = _load_policy_observation(policy_observation_path)
-    except Exception:
-        policy_observation = {}
     visual_profile_settings = _current_wam_visual_profile_settings()
     source_frame = job / "provider_bundle" / "provider_runtime" / "initial_policy_frame.png"
     generated_frame_paths = sorted((extraction_dir / "generated_next_observations").glob("*.jpg"))
@@ -4425,6 +4450,159 @@ def _postprocess_imported_persistent_session_artifacts(
         "estimated_cost_usd": vast_result.get("estimated_cost_usd"),
         "raw_credentials_written_to_artifacts": False,
     }
+
+
+def _runpod_teardown_manifest_path(runpod_dir: Path, poll_manifest: Mapping[str, Any]) -> Path:
+    teardown_action = _string(poll_manifest.get("teardown_action"))
+    if teardown_action == "stop":
+        return runpod_dir / "runpod_wam_async_stop_manifest.json"
+    if teardown_action == "delete":
+        return runpod_dir / "runpod_wam_async_delete_manifest.json"
+    stop_path = runpod_dir / "runpod_wam_async_stop_manifest.json"
+    if stop_path.is_file():
+        return stop_path
+    return runpod_dir / "runpod_wam_async_delete_manifest.json"
+
+
+def _finalize_runpod_persistent_session_output(
+    *,
+    job: Path,
+    generated_at: str,
+    policy_observation_path: str | Path,
+    git_evidence: Mapping[str, Any],
+    poll_manifest: Mapping[str, Any],
+    runpod_dir: Path,
+    output_zip: Path,
+    provider_output_resume_used: bool = False,
+) -> tuple[dict[str, Any], int]:
+    extraction_dir = job / "imported_persistent_session_output"
+    if extraction_dir.exists():
+        shutil.rmtree(extraction_dir)
+    ensure_dir(extraction_dir)
+    with zipfile.ZipFile(output_zip) as archive:
+        archive.extractall(extraction_dir)
+    imported_path = extraction_dir / "unitree_groot_n17_sonic_wam_persistent_session_output.json"
+    if not imported_path.is_file():
+        imported_path = extraction_dir / "unitree_groot_n17_sonic_policy_provider_output.json"
+    imported = _read_json(imported_path) if imported_path.is_file() else {}
+    postprocess = _postprocess_imported_persistent_session_artifacts(
+        job=job,
+        extraction_dir=extraction_dir,
+        imported=imported,
+        generated_at=generated_at,
+        policy_observation_path=policy_observation_path,
+        vast_result=poll_manifest,
+        vast_run_dir=runpod_dir,
+    )
+    completed = imported.get("status") == "completed"
+    classification = (
+        _write_runpod_live_wam_blocker_classification(
+            job=job,
+            generated_at=generated_at,
+            poll_manifest=poll_manifest,
+            extraction_dir=extraction_dir,
+            imported=imported,
+        )
+        if not completed
+        else {"status": "completed", "classified_blocker": "none"}
+    )
+    output = {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "completed" if completed else "blocked",
+        "provider": "runpod",
+        "policy_id": POLICY_ID,
+        "selected_candidate_id": POLICY_ID,
+        "job_dir": str(job),
+        "git_evidence": dict(git_evidence),
+        "persistent_provider_session_used": bool(imported.get("persistent_provider_session_used")),
+        "provider_instance_reused_for_policy_and_wam_loop": bool(
+            imported.get("provider_instance_reused_for_policy_and_wam_loop")
+        ),
+        "repeated_policy_calls_count": int(imported.get("repeated_policy_calls_count") or 0),
+        "generated_next_observation_count": int(
+            imported.get("generated_next_observation_count") or 0
+        ),
+        "live_wam_generation_success_count": int(
+            imported.get("live_wam_generation_success_count") or 0
+        ),
+        "learned_wam_model_success_count": int(
+            imported.get("learned_wam_model_success_count") or 0
+        ),
+        "unitree_groot_n17_sonic_model_executed": bool(
+            imported.get("unitree_groot_n17_sonic_model_executed")
+        ),
+        "unitree_groot_n17_sonic_policy_action_command_ran": bool(
+            imported.get("unitree_groot_n17_sonic_policy_action_command_ran")
+        ),
+        "unitree_policy_action_command_ran": bool(imported.get("unitree_policy_action_command_ran")),
+        "policy_action_model_command_ran": bool(imported.get("policy_action_model_command_ran")),
+        "provider_output_replay_used": bool(imported.get("provider_output_replay_used")),
+        "provider_output_resume_used": bool(provider_output_resume_used),
+        "blockers": []
+        if completed
+        else imported.get("blockers") or ["persistent_session_provider_output_blocked"],
+        "imported_provider_output_dir": str(extraction_dir),
+        "imported_provider_output_path": str(imported_path) if imported_path.is_file() else None,
+        "runpod_create_manifest_path": str(runpod_dir / "runpod_wam_async_create_manifest.json"),
+        "runpod_poll_manifest_path": str(runpod_dir / "runpod_wam_async_poll_manifest.json"),
+        "runpod_teardown_manifest_path": str(
+            _runpod_teardown_manifest_path(runpod_dir, poll_manifest)
+        ),
+        "provider_runtime_output_zip_path": str(output_zip),
+        "runpod_live_wam_blocker_classification_path": str(
+            job / "runpod_live_wam_blocker_classification.json"
+        )
+        if not completed
+        else None,
+        "classified_blocker": classification.get("classified_blocker"),
+        "continuing_spend_from_this_run": bool(
+            poll_manifest.get("continuing_spend_from_this_run")
+        ),
+        "postprocess_artifacts": postprocess,
+        "review_video_path": postprocess.get("review_video_path"),
+        "video_review_status_path": postprocess.get("video_review_status"),
+        "source_policy_observation_visual_qa_path": postprocess.get(
+            "source_policy_observation_visual_qa"
+        ),
+        "wam_rollout_visual_quality_report_path": postprocess.get(
+            "wam_rollout_visual_quality_report"
+        ),
+        "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
+        "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
+        "clean_frame_reanchoring": _mapping(imported.get("clean_frame_reanchoring")),
+        "clean_frame_reanchor_event_count": int(imported.get("clean_frame_reanchor_event_count") or 0),
+        "periodic_clean_frame_reanchoring_used": bool(
+            imported.get("periodic_clean_frame_reanchoring_used")
+        ),
+        "manipulation_success_evaluator_results_path": postprocess.get(
+            "manipulation_success_evaluator_results"
+        ),
+        "claim_boundary_path": postprocess.get("claim_boundary"),
+        "claim_boundary": {
+            "simulator_generated_world_proof_only": True,
+            "capture_truth": False,
+            "geometry_truth": False,
+            "collision_truth": False,
+            "persistent_provider_session_is_runtime_proof_not_task_success": True,
+            "valid_mp4_or_provider_completed_is_not_visual_success": True,
+            "provider_success": completed,
+            "provider_success_separate_from_visually_useful_rollout": True,
+            "periodic_clean_frame_reanchoring_used": bool(
+                imported.get("periodic_clean_frame_reanchoring_used")
+            ),
+            "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
+            "visually_useful_rollout": bool(postprocess.get("wam_rollout_visual_success")),
+            "generated_world_rank_fidelity_result_proven": False,
+            "generated_world_policy_evaluation_scope_proven": False,
+            "non_ranking_operational_claim_proven": False,
+            "accepted_anchor_manipulation_success_proven": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+    write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
+    return output, 0 if completed else 2
 
 
 def run_persistent_session(
@@ -4803,7 +4981,7 @@ def run_persistent_session_runpod(
     max_wait_seconds: int | None = None,
 ) -> tuple[dict[str, Any], int]:
     generated_at = utc_now_iso()
-    job = _job_dir(job_dir)
+    job = _completed_runpod_resume_job(job_dir) or _job_dir(job_dir)
     requested_loop_step_count = max(1, int(loop_step_count))
     allow_fallback = (
         _truthy(os.getenv(PERSISTENT_SESSION_ALLOW_STRUCTURAL_WAM_FALLBACK_ENV))
@@ -4811,6 +4989,22 @@ def run_persistent_session_runpod(
         else bool(allow_structural_wam_fallback)
     )
     git_evidence = launch_provenance.git_worktree_evidence()
+    resume_runpod_dir = job / "runpod_persistent_session_run"
+    resume_output_zip = resume_runpod_dir / "runpod_provider_runtime_output.zip"
+    resume_poll_manifest_path = resume_runpod_dir / "runpod_wam_async_poll_manifest.json"
+    if resume_output_zip.is_file() and resume_poll_manifest_path.is_file():
+        resume_poll_manifest = _read_json(resume_poll_manifest_path)
+        if resume_poll_manifest.get("status") == "completed":
+            return _finalize_runpod_persistent_session_output(
+                job=job,
+                generated_at=generated_at,
+                policy_observation_path=policy_observation_path,
+                git_evidence=git_evidence,
+                poll_manifest=resume_poll_manifest,
+                runpod_dir=resume_runpod_dir,
+                output_zip=resume_output_zip,
+                provider_output_resume_used=True,
+            )
     launch_gate = launch_provenance.evaluate_dirty_tree_paid_launch_gate(
         git_evidence=git_evidence,
         allow_paid=True,
@@ -5032,145 +5226,15 @@ def run_persistent_session_runpod(
             )
             write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
             return output, 2
-        extraction_dir = job / "imported_persistent_session_output"
-        ensure_dir(extraction_dir)
-        with zipfile.ZipFile(output_zip) as archive:
-            archive.extractall(extraction_dir)
-        imported_path = (
-            extraction_dir / "unitree_groot_n17_sonic_wam_persistent_session_output.json"
-        )
-        if not imported_path.is_file():
-            imported_path = extraction_dir / "unitree_groot_n17_sonic_policy_provider_output.json"
-        imported = _read_json(imported_path) if imported_path.is_file() else {}
-        postprocess = _postprocess_imported_persistent_session_artifacts(
+        return _finalize_runpod_persistent_session_output(
             job=job,
-            extraction_dir=extraction_dir,
-            imported=imported,
             generated_at=generated_at,
             policy_observation_path=policy_observation_path,
-            vast_result=poll_manifest,
-            vast_run_dir=runpod_dir,
+            git_evidence=git_evidence,
+            poll_manifest=poll_manifest,
+            runpod_dir=runpod_dir,
+            output_zip=output_zip,
         )
-        completed = imported.get("status") == "completed"
-        classification = (
-            _write_runpod_live_wam_blocker_classification(
-                job=job,
-                generated_at=generated_at,
-                poll_manifest=poll_manifest,
-                extraction_dir=extraction_dir,
-                imported=imported,
-            )
-            if not completed
-            else {"status": "completed", "classified_blocker": "none"}
-        )
-        output = {
-            "schema_version": SCHEMA_VERSION,
-            "generated_at": generated_at,
-            "status": "completed" if completed else "blocked",
-            "provider": "runpod",
-            "policy_id": POLICY_ID,
-            "selected_candidate_id": POLICY_ID,
-            "job_dir": str(job),
-            "git_evidence": git_evidence,
-            "persistent_provider_session_used": bool(
-                imported.get("persistent_provider_session_used")
-            ),
-            "provider_instance_reused_for_policy_and_wam_loop": bool(
-                imported.get("provider_instance_reused_for_policy_and_wam_loop")
-            ),
-            "repeated_policy_calls_count": int(imported.get("repeated_policy_calls_count") or 0),
-            "generated_next_observation_count": int(
-                imported.get("generated_next_observation_count") or 0
-            ),
-            "live_wam_generation_success_count": int(
-                imported.get("live_wam_generation_success_count") or 0
-            ),
-            "learned_wam_model_success_count": int(
-                imported.get("learned_wam_model_success_count") or 0
-            ),
-            "unitree_groot_n17_sonic_model_executed": bool(
-                imported.get("unitree_groot_n17_sonic_model_executed")
-            ),
-            "unitree_groot_n17_sonic_policy_action_command_ran": bool(
-                imported.get("unitree_groot_n17_sonic_policy_action_command_ran")
-            ),
-            "unitree_policy_action_command_ran": bool(
-                imported.get("unitree_policy_action_command_ran")
-            ),
-            "policy_action_model_command_ran": bool(
-                imported.get("policy_action_model_command_ran")
-            ),
-            "provider_output_replay_used": bool(imported.get("provider_output_replay_used")),
-            "blockers": []
-            if completed
-            else imported.get("blockers") or ["persistent_session_provider_output_blocked"],
-            "imported_provider_output_dir": str(extraction_dir),
-            "imported_provider_output_path": str(imported_path)
-            if imported_path.is_file()
-            else None,
-            "runpod_create_manifest_path": str(
-                runpod_dir / "runpod_wam_async_create_manifest.json"
-            ),
-            "runpod_poll_manifest_path": str(runpod_dir / "runpod_wam_async_poll_manifest.json"),
-            "runpod_teardown_manifest_path": str(
-                runpod_dir / "runpod_wam_async_delete_manifest.json"
-            ),
-            "provider_runtime_output_zip_path": str(output_zip),
-            "runpod_live_wam_blocker_classification_path": str(
-                job / "runpod_live_wam_blocker_classification.json"
-            )
-            if not completed
-            else None,
-            "classified_blocker": classification.get("classified_blocker"),
-            "continuing_spend_from_this_run": bool(
-                poll_manifest.get("continuing_spend_from_this_run")
-            ),
-            "postprocess_artifacts": postprocess,
-            "review_video_path": postprocess.get("review_video_path"),
-            "video_review_status_path": postprocess.get("video_review_status"),
-            "source_policy_observation_visual_qa_path": postprocess.get(
-                "source_policy_observation_visual_qa"
-            ),
-            "wam_rollout_visual_quality_report_path": postprocess.get(
-                "wam_rollout_visual_quality_report"
-            ),
-            "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
-            "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
-            "clean_frame_reanchoring": _mapping(imported.get("clean_frame_reanchoring")),
-            "clean_frame_reanchor_event_count": int(
-                imported.get("clean_frame_reanchor_event_count") or 0
-            ),
-            "periodic_clean_frame_reanchoring_used": bool(
-                imported.get("periodic_clean_frame_reanchoring_used")
-            ),
-            "manipulation_success_evaluator_results_path": postprocess.get(
-                "manipulation_success_evaluator_results"
-            ),
-            "claim_boundary_path": postprocess.get("claim_boundary"),
-            "claim_boundary": {
-                "simulator_generated_world_proof_only": True,
-                "capture_truth": False,
-                "geometry_truth": False,
-                "collision_truth": False,
-                "persistent_provider_session_is_runtime_proof_not_task_success": True,
-                "valid_mp4_or_provider_completed_is_not_visual_success": True,
-                "provider_success": completed,
-                "provider_success_separate_from_visually_useful_rollout": True,
-                "periodic_clean_frame_reanchoring_used": bool(
-                    imported.get("periodic_clean_frame_reanchoring_used")
-                ),
-                "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
-                "visually_useful_rollout": bool(postprocess.get("wam_rollout_visual_success")),
-                "generated_world_rank_fidelity_result_proven": False,
-                "generated_world_policy_evaluation_scope_proven": False,
-                "non_ranking_operational_claim_proven": False,
-                "accepted_anchor_manipulation_success_proven": False,
-            },
-            "raw_credentials_written_to_artifacts": False,
-            "secret_hashes_written_to_artifacts": False,
-        }
-        write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
-        return output, 0 if completed else 2
     finally:
         if previous_policy_command is None:
             os.environ.pop("BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND", None)

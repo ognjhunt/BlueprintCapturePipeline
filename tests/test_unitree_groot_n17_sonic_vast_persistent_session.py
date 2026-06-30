@@ -919,6 +919,10 @@ def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: P
         (job / "manipulation_success_evaluator_results.json").read_text(encoding="utf-8")
     )
     assert judge["answer"] == "not_proven"
+    assert judge["question"] == "Did the requested manipulation succeed?"
+    assert judge["did_target_manipulation_succeed"] is False
+    assert judge["manipulation_success_proven"] is False
+    assert "sink" not in json.dumps(judge).lower()
     assert judge["live_wam_generation_success_count"] == 1
     assert judge["structural_fallback_used"] is False
     assert "live learned WAM generations" in judge["reason"]
@@ -1030,6 +1034,109 @@ def test_vast_probe_env_forwards_persistent_inner_policy_command(
         == session.DEFAULT_INNER_POLICY_COMMAND
     )
     assert env[session.INNER_POLICY_COMMAND_ENV] == session.DEFAULT_INNER_POLICY_COMMAND
+
+
+def test_runpod_persistent_session_resumes_completed_output_without_paid_relaunch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    frame = _write_reviewable_frame(tmp_path / "frame.jpg")
+    observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    observation_payload = json.loads(observation_path.read_text(encoding="utf-8"))
+    observation_payload["observation"]["task_prompt"] = "open the refrigerator"
+    observation_payload["observation"]["target_object_id"] = "task_target"
+    observation_path.write_text(json.dumps(observation_payload), encoding="utf-8")
+    job = tmp_path / "jobs"
+    runpod_dir = job / "runpod_persistent_session_run"
+    output_zip = runpod_dir / "runpod_provider_runtime_output.zip"
+    runpod_dir.mkdir(parents=True)
+    (runpod_dir / "runpod_wam_async_create_manifest.json").write_text(
+        json.dumps({"status": "pod_created", "pod_id": "pod-123"}),
+        encoding="utf-8",
+    )
+    (runpod_dir / "runpod_wam_async_poll_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "pod_id": "pod-123",
+                "provider_command_status": "completed",
+                "runtime_result_status": "completed",
+                "output_zip_present": True,
+                "teardown_action": "stop",
+                "teardown_performed": True,
+                "continuing_spend_from_this_run": False,
+                "provider_command_blockers": [],
+                "runtime_result_blockers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runpod_dir / "runpod_wam_async_stop_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "pod_id": "pod-123",
+                "continuing_spend_from_this_run": False,
+                "stopped_pod_preserved_for_warm_reuse": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_policy_provider_output.json",
+            json.dumps(
+                {
+                    "status": "completed",
+                    "persistent_provider_session_used": True,
+                    "provider_instance_reused_for_policy_and_wam_loop": True,
+                    "repeated_policy_calls_count": 5,
+                    "generated_next_observation_count": 4,
+                    "live_wam_generation_success_count": 4,
+                    "learned_wam_model_success_count": 4,
+                    "policy_observes_wam_generated_next_observation": True,
+                    "unitree_groot_n17_sonic_model_executed": True,
+                    "unitree_groot_n17_sonic_policy_action_command_ran": True,
+                    "blockers": [],
+                }
+            ),
+        )
+        for index in range(1, 5):
+            archive.write(
+                frame,
+                f"generated_next_observations/wam_generated_next_observation_step_{index:04d}.jpg",
+            )
+
+    def fail_if_called(**kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("completed RunPod output should be finalized without paid relaunch")
+
+    monkeypatch.setattr(session, "stage_wam_provider_bundle_object_store", fail_if_called)
+    monkeypatch.setattr(session, "create_runpod_wam_async_run", fail_if_called)
+    monkeypatch.setattr(session, "poll_runpod_wam_async_run", fail_if_called)
+
+    output, exit_code = session.run_persistent_session_runpod(
+        policy_observation_path=observation_path,
+        job_dir=job,
+        loop_step_count=5,
+        timeout_seconds=60,
+    )
+
+    assert exit_code == 0
+    assert output["status"] == "completed"
+    assert output["provider_output_resume_used"] is True
+    assert output["generated_next_observation_count"] == 4
+    assert output["live_wam_generation_success_count"] == 4
+    assert output["learned_wam_model_success_count"] == 4
+    assert output["continuing_spend_from_this_run"] is False
+    assert output["runpod_teardown_manifest_path"].endswith("runpod_wam_async_stop_manifest.json")
+    result_path = job / "unitree_groot_n17_sonic_vast_persistent_session_result.json"
+    assert result_path.is_file()
+    judge = json.loads(
+        (job / "manipulation_success_evaluator_results.json").read_text(encoding="utf-8")
+    )
+    assert judge["task_prompt"] == "open the refrigerator"
+    assert judge["question"] == "Did the requested manipulation succeed?"
+    assert "sink" not in json.dumps(judge).lower()
 
 
 def test_runpod_persistent_session_defaults_to_wam_carrier_and_wait_floor(
