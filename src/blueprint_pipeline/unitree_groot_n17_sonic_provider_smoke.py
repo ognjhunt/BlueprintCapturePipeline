@@ -540,8 +540,10 @@ def _materialize_groot_model_path(
     safe_name = raw_model_path.replace("/", "__")
     local_dir = output_dir / "groot_runtime" / "model_snapshots" / safe_name
     script = r"""
+import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
@@ -549,17 +551,52 @@ from huggingface_hub import snapshot_download
 repo_id = sys.argv[1]
 local_dir = Path(sys.argv[2])
 local_dir.mkdir(parents=True, exist_ok=True)
-snapshot_path = snapshot_download(
-    repo_id=repo_id,
-    local_dir=str(local_dir),
-    allow_patterns=[
-        "config.json",
-        "model.safetensors.index.json",
-        "model-*.safetensors",
-        "processor/*",
-    ],
-    token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
-)
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+attempts = max(1, int(os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_ATTEMPTS", "3")))
+max_workers = max(1, int(os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_MAX_WORKERS", "1")))
+allow_patterns = [
+    "config.json",
+    "model.safetensors.index.json",
+    "model-*.safetensors",
+    "processor/*",
+]
+last_error = None
+snapshot_path = None
+for attempt in range(1, attempts + 1):
+    try:
+        snapshot_path = snapshot_download(
+            repo_id=repo_id,
+            local_dir=str(local_dir),
+            allow_patterns=allow_patterns,
+            token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
+            max_workers=max_workers,
+        )
+        print(
+            "BLUEPRINT_GROOT_MODEL_SNAPSHOT_ATTEMPT_COMPLETED:"
+            + json.dumps({"attempt": attempt, "max_workers": max_workers}, sort_keys=True)
+        )
+        break
+    except Exception as exc:  # noqa: BLE001 - surfaced through provider artifact, no secret values
+        last_error = exc
+        print(
+            "BLUEPRINT_GROOT_MODEL_SNAPSHOT_ATTEMPT_FAILED:"
+            + json.dumps(
+                {
+                    "attempt": attempt,
+                    "attempts": attempts,
+                    "error_type": type(exc).__name__,
+                    "hf_hub_disable_xet": os.environ.get("HF_HUB_DISABLE_XET"),
+                    "hf_hub_enable_hf_transfer": os.environ.get("HF_HUB_ENABLE_HF_TRANSFER"),
+                    "max_workers": max_workers,
+                },
+                sort_keys=True,
+            )
+        )
+        if attempt < attempts:
+            time.sleep(min(30, 2 ** attempt))
+if snapshot_path is None:
+    raise last_error or RuntimeError("snapshot_download_failed_without_exception")
 processor_config = Path(snapshot_path) / "processor" / "processor_config.json"
 if not processor_config.is_file():
     print("BLUEPRINT_GROOT_MODEL_SNAPSHOT_MISSING_PROCESSOR_CONFIG")
@@ -584,6 +621,20 @@ print("BLUEPRINT_GROOT_MODEL_SNAPSHOT_READY:" + snapshot_path)
             "raw_model_path": raw_model_path,
             "resolved_model_path": str(local_dir),
             "snapshot_download_ran": True,
+            "snapshot_download_attempts_configured": int(
+                os.environ.get(
+                    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_ATTEMPTS",
+                    "3",
+                )
+            ),
+            "snapshot_download_max_workers": int(
+                os.environ.get(
+                    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_MAX_WORKERS",
+                    "1",
+                )
+            ),
+            "hf_hub_disable_xet": env.get("HF_HUB_DISABLE_XET", "1"),
+            "hf_hub_enable_hf_transfer": env.get("HF_HUB_ENABLE_HF_TRANSFER", "0"),
             "allow_patterns": [
                 "config.json",
                 "model.safetensors.index.json",

@@ -133,7 +133,10 @@ def test_deterministic_policy_redirects_around_blocked_direct() -> None:
     pol.reset({"route_points": route, "start": route[0], "target": route[-1]})
     # block the exact 'direct' pose at step 0 (== start), allow anything offset
     start = route[0]
-    oracle = lambda pose, yaw: 1 if P.pose_distance(pose, start) < 1e-6 else 0
+
+    def oracle(pose, yaw):
+        return 1 if P.pose_distance(pose, start) < 1e-6 else 0
+
     d = pol.step(P.StepContext(step=0, num_steps=6, probe_collision=oracle))
     assert d.policy_action == "redirected_by_collision_probe"
     assert d.rejected_collision_probe_count >= 1

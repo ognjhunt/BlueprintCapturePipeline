@@ -426,6 +426,8 @@ def test_persistent_session_bundle_uses_proven_policy_server_rewrite(
     assert "_blueprint_outer_phase_callback" in provider_smoke
     assert "gr00t_model_snapshot_completed" in provider_smoke
     assert "gr00t_policy_server_process_started" in provider_smoke
+    assert "BLUEPRINT_GROOT_MODEL_SNAPSHOT_ATTEMPT_FAILED" in provider_smoke
+    assert "BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_MAX_WORKERS" in provider_smoke
     module_source = Path(str(session.__file__)).read_text(encoding="utf-8")
     assert 'or "wam"' in module_source
     assert (

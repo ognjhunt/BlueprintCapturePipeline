@@ -52,6 +52,11 @@ def test_groot_n17_sonic_provider_bundle_contains_runtime_contract(tmp_path: Pat
     assert "uv run --project" not in runner_text
     assert "venv_python" in runner_text
     assert "snapshot_download" in runner_text
+    assert "BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_ATTEMPTS" in runner_text
+    assert "BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_MAX_WORKERS" in runner_text
+    assert "HF_HUB_DISABLE_XET" in runner_text
+    assert "HF_HUB_ENABLE_HF_TRANSFER" in runner_text
+    assert "BLUEPRINT_GROOT_MODEL_SNAPSHOT_ATTEMPT_FAILED" in runner_text
     assert '"processor_config.json"' in runner_text
     assert "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE" in runner_text
     assert "system_python_minimal" in runner_text
