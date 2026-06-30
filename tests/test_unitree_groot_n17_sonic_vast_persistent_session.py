@@ -1149,6 +1149,157 @@ def test_postprocess_degraded_future_frames_fail_materialization_quality(
     )
 
 
+def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    source_frame = _write_reviewable_frame(
+        job / "provider_bundle" / "provider_runtime" / "initial_policy_frame.png"
+    )
+    observation_path = _policy_observation(tmp_path / "observation.json", source_frame)
+    extraction_dir = tmp_path / "extracted"
+    policy_calls_dir = extraction_dir / "policy_calls"
+    wam_calls_dir = extraction_dir / "wam_calls"
+    generated_dir = extraction_dir / "generated_next_observations"
+    policy_calls_dir.mkdir(parents=True)
+    wam_calls_dir.mkdir()
+    generated_dir.mkdir()
+    _write_reviewable_frame(generated_dir / "wam_generated_next_observation_step_0001.jpg")
+    (policy_calls_dir / "policy_call_0000.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 0,
+                "action": {"action": "open_refrigerator"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (extraction_dir / "wam_generated_next_observations.jsonl").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 1,
+                "structural_fallback_used": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (wam_calls_dir / "wam_call_0001.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 1,
+                "materialization": {
+                    "status": "completed",
+                    "source_kind": "video_future_frame",
+                    "selected_frame_index": 1,
+                    "future_frame_selected": True,
+                    "selection_quality_status": "passed_signal_gate",
+                    "selected_frame_signal_blockers": [],
+                },
+                "live_wam_payload_redacted": {
+                    "input_package": {
+                        "claim_boundary": {
+                            "policy_action_conditioning_proxy_video_used": True
+                        },
+                        "rgb_video": {"rgb_context_mode": "single_frame_repeat"},
+                        "projected_skeleton_trace": {"used_for_conditioning": False},
+                        "oscar_input_contract_diagnostic": {
+                            "schema_version": "oscar_wam_runtime_input_contract_diagnostic.v1",
+                            "status": "warning_high_risk",
+                            "skeleton_video": {
+                                "conditioning_mode": (
+                                    "unitree_sonic_policy_action_proxy_over_scene_frame"
+                                ),
+                                "policy_action_proxy_used": True,
+                            },
+                            "projected_skeleton_trace": {"used_for_conditioning": False},
+                            "rgb_context": {"rgb_context_mode": "single_frame_repeat"},
+                            "warnings": [
+                                "oscar_contract_policy_action_proxy_conditioning_without_projected_skeleton"
+                            ],
+                            "autoregressive_risk_flags": [
+                                "policy_action_proxy_without_projected_skeleton_autoregressive_risk"
+                            ],
+                            "high_risk_flags": [
+                                "policy_action_proxy_without_projected_skeleton_high_risk"
+                            ],
+                            "autoregressive_risk_level": "high",
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (extraction_dir / "robot_policy_wam_loop_trace.jsonl").write_text("", encoding="utf-8")
+    (extraction_dir / "robot_policy_wam_side_by_side_trace.jsonl").write_text(
+        "",
+        encoding="utf-8",
+    )
+    vast_run_dir = tmp_path / "vast-run"
+    vast_run_dir.mkdir()
+
+    postprocess = session._postprocess_imported_persistent_session_artifacts(
+        job=job,
+        extraction_dir=extraction_dir,
+        imported={
+            "status": "completed",
+            "persistent_provider_session_used": True,
+            "provider_instance_reused_for_policy_and_wam_loop": True,
+            "repeated_policy_calls_count": 2,
+            "generated_next_observation_count": 1,
+            "live_wam_generation_success_count": 1,
+            "learned_wam_model_success_count": 1,
+            "policy_observes_wam_generated_next_observation": True,
+            "blockers": [],
+        },
+        generated_at="now",
+        policy_observation_path=observation_path,
+        vast_result={"estimated_cost_usd": 0.01},
+        vast_run_dir=vast_run_dir,
+    )
+
+    input_contract = json.loads(
+        (job / "wam_input_contract_summary.json").read_text(encoding="utf-8")
+    )
+    assert postprocess["wam_input_contract_summary"].endswith(
+        "wam_input_contract_summary.json"
+    )
+    assert input_contract["status"] == "warning_high_risk"
+    assert input_contract["high_risk_input_contract_count"] == 1
+    assert input_contract["policy_action_proxy_conditioning_count"] == 1
+    assert input_contract["projected_skeleton_conditioning_count"] == 0
+    assert input_contract["contract_status_counts"] == {"warning_high_risk": 1}
+    assert input_contract["rgb_context_mode_counts"] == {"single_frame_repeat": 1}
+    assert (
+        "wam_input_contract_high_risk_policy_action_proxy_without_projected_skeleton"
+        in input_contract["blockers"]
+    )
+
+    visual_report = json.loads(
+        (job / "wam_rollout_visual_quality_report.json").read_text(encoding="utf-8")
+    )
+    assert visual_report["status"] == "failed_visual_quality_gate"
+    assert visual_report["visual_success"] is False
+    assert (
+        "wam_input_contract_high_risk_policy_action_proxy_without_projected_skeleton"
+        in visual_report["blockers"]
+    )
+    assert visual_report["input_contract_quality"]["high_risk_input_contract_count"] == 1
+    assert (
+        visual_report["claim_boundary"][
+            "high_risk_input_contract_is_not_visual_rollout_quality_proof"
+        ]
+        is True
+    )
+
+    labels = json.loads((job / "failure_labels.json").read_text(encoding="utf-8"))
+    assert "wam_input_contract_high_risk" in labels["labels"]
+
+
 def test_copy_or_extract_wam_frame_prefers_usable_future_video_frame(tmp_path: Path) -> None:
     cv2 = pytest.importorskip("cv2")
     import numpy as np

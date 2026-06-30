@@ -4276,6 +4276,15 @@ def _postprocess_imported_persistent_session_artifacts(
     materialized_future_frame_count = 0
     video_first_frame_materialization_count = 0
     degraded_future_frame_count = 0
+    input_contract_status_counts: dict[str, int] = {}
+    input_contract_warning_counts: dict[str, int] = {}
+    input_contract_risk_flag_counts: dict[str, int] = {}
+    input_contract_high_risk_flag_counts: dict[str, int] = {}
+    input_contract_conditioning_mode_counts: dict[str, int] = {}
+    input_contract_rgb_context_mode_counts: dict[str, int] = {}
+    input_contract_high_risk_count = 0
+    input_contract_projected_skeleton_used_count = 0
+    input_contract_policy_action_proxy_count = 0
     for row in wam_calls:
         materialization = _mapping(row.get("materialization"))
         source_kind = _string(materialization.get("source_kind")) or "unknown"
@@ -4300,6 +4309,87 @@ def _postprocess_imported_persistent_session_artifacts(
             )
         if source_kind == "video_first_frame":
             video_first_frame_materialization_count += 1
+        live_payload = _mapping(row.get("live_wam_payload_redacted"))
+        input_package = _mapping(live_payload.get("input_package"))
+        input_contract = _mapping(input_package.get("oscar_input_contract_diagnostic"))
+        if not input_contract:
+            input_contract = _mapping(live_payload.get("oscar_input_contract_diagnostic"))
+        skeleton_contract = _mapping(input_contract.get("skeleton_video"))
+        projected_contract = _mapping(input_contract.get("projected_skeleton_trace"))
+        rgb_contract = _mapping(input_contract.get("rgb_context"))
+        input_status = _string(input_contract.get("status"))
+        if input_status:
+            input_contract_status_counts[input_status] = (
+                input_contract_status_counts.get(input_status, 0) + 1
+            )
+        conditioning_mode = _string(skeleton_contract.get("conditioning_mode")) or _string(
+            _mapping(input_package.get("skeleton_video")).get("conditioning_mode")
+        )
+        if conditioning_mode:
+            input_contract_conditioning_mode_counts[conditioning_mode] = (
+                input_contract_conditioning_mode_counts.get(conditioning_mode, 0) + 1
+            )
+        rgb_context_mode = _string(rgb_contract.get("rgb_context_mode")) or _string(
+            _mapping(input_package.get("rgb_video")).get("rgb_context_mode")
+        )
+        if rgb_context_mode:
+            input_contract_rgb_context_mode_counts[rgb_context_mode] = (
+                input_contract_rgb_context_mode_counts.get(rgb_context_mode, 0) + 1
+            )
+        for warning in _string_list(input_contract.get("warnings")):
+            input_contract_warning_counts[warning] = (
+                input_contract_warning_counts.get(warning, 0) + 1
+            )
+        for flag in _string_list(input_contract.get("autoregressive_risk_flags")):
+            input_contract_risk_flag_counts[flag] = (
+                input_contract_risk_flag_counts.get(flag, 0) + 1
+            )
+        row_high_risk_flags = _string_list(input_contract.get("high_risk_flags"))
+        for flag in row_high_risk_flags:
+            input_contract_high_risk_flag_counts[flag] = (
+                input_contract_high_risk_flag_counts.get(flag, 0) + 1
+            )
+        projected_used = bool(
+            projected_contract.get("used_for_conditioning")
+            or _mapping(input_package.get("projected_skeleton_trace")).get("used_for_conditioning")
+        )
+        if projected_used:
+            input_contract_projected_skeleton_used_count += 1
+        policy_action_proxy_used = bool(
+            skeleton_contract.get("policy_action_proxy_used")
+            or _mapping(input_package.get("claim_boundary")).get(
+                "policy_action_conditioning_proxy_video_used"
+            )
+            or conditioning_mode == "unitree_sonic_policy_action_proxy_over_scene_frame"
+        )
+        if policy_action_proxy_used:
+            input_contract_policy_action_proxy_count += 1
+        inferred_high_risk = bool(
+            input_status == "warning_high_risk"
+            or input_contract.get("autoregressive_risk_level") == "high"
+            or row_high_risk_flags
+            or (
+                policy_action_proxy_used
+                and not projected_used
+                and rgb_context_mode == "single_frame_repeat"
+            )
+        )
+        if inferred_high_risk:
+            input_contract_high_risk_count += 1
+            if (
+                policy_action_proxy_used
+                and not projected_used
+                and rgb_context_mode == "single_frame_repeat"
+            ):
+                input_contract_high_risk_flag_counts[
+                    "policy_action_proxy_single_frame_repeat_without_projected_skeleton"
+                ] = (
+                    input_contract_high_risk_flag_counts.get(
+                        "policy_action_proxy_single_frame_repeat_without_projected_skeleton",
+                        0,
+                    )
+                    + 1
+                )
     future_frame_quality_blockers: list[str] = []
     if video_first_frame_materialization_count > 0:
         future_frame_quality_blockers.append(
@@ -4339,6 +4429,38 @@ def _postprocess_imported_persistent_session_artifacts(
         "raw_credentials_written_to_artifacts": False,
     }
     write_json(job / "wam_materialization_summary.json", materialization_summary)
+    input_contract_summary = {
+        "schema_version": "persistent_wam_input_contract_summary.v1",
+        "generated_at": generated_at,
+        "status": "warning_high_risk"
+        if input_contract_high_risk_count
+        else "completed"
+        if input_contract_status_counts
+        else "not_available",
+        "wam_call_count": len(wam_calls),
+        "contract_status_counts": input_contract_status_counts,
+        "contract_warning_counts": input_contract_warning_counts,
+        "contract_autoregressive_risk_flag_counts": input_contract_risk_flag_counts,
+        "contract_high_risk_flag_counts": input_contract_high_risk_flag_counts,
+        "conditioning_mode_counts": input_contract_conditioning_mode_counts,
+        "rgb_context_mode_counts": input_contract_rgb_context_mode_counts,
+        "high_risk_input_contract_count": input_contract_high_risk_count,
+        "projected_skeleton_conditioning_count": input_contract_projected_skeleton_used_count,
+        "policy_action_proxy_conditioning_count": input_contract_policy_action_proxy_count,
+        "blockers": [
+            "wam_input_contract_high_risk_policy_action_proxy_without_projected_skeleton"
+        ]
+        if input_contract_high_risk_count
+        else [],
+        "claim_boundary": {
+            "input_contract_summary_is_not_model_execution_proof": True,
+            "input_contract_summary_is_not_rollout_quality_proof": True,
+            "high_risk_input_contract_can_explain_but_not_prove_model_failure": True,
+            "scene_or_task_specific_pixels_used": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+    }
+    write_json(job / "wam_input_contract_summary.json", input_contract_summary)
     write_json(
         job / "policy_action_model_command_discovery.json",
         {
@@ -4553,10 +4675,14 @@ def _postprocess_imported_persistent_session_artifacts(
     future_frame_quality_blockers = _string_list(
         materialization_summary.get("future_frame_quality_blockers")
     )
-    if future_frame_quality_blockers:
+    input_contract_quality_blockers = _string_list(input_contract_summary.get("blockers"))
+    combined_quality_blockers = sorted(
+        set(future_frame_quality_blockers + input_contract_quality_blockers)
+    )
+    if combined_quality_blockers:
         visual_quality_report = dict(visual_quality_report)
         visual_quality_report["blockers"] = sorted(
-            set(_string_list(visual_quality_report.get("blockers")) + future_frame_quality_blockers)
+            set(_string_list(visual_quality_report.get("blockers")) + combined_quality_blockers)
         )
         visual_quality_report["status"] = "failed_visual_quality_gate"
         visual_quality_report["visual_success"] = False
@@ -4578,11 +4704,15 @@ def _postprocess_imported_persistent_session_artifacts(
             }
         )
         visual_quality_report["materialization_quality"] = materialization_quality
+        visual_quality_report["input_contract_quality"] = input_contract_summary
         visual_quality_report["claim_boundary"] = {
             **_mapping(visual_quality_report.get("claim_boundary")),
             "video_first_frame_materialization_is_not_future_rollout_quality_proof": True,
             "degraded_future_frame_materialization_is_not_visual_rollout_quality_proof": True,
             "future_frame_materialization_required_for_visual_success": True,
+            "high_risk_input_contract_is_not_visual_rollout_quality_proof": bool(
+                input_contract_high_risk_count
+            ),
         }
         write_json(job / "wam_rollout_visual_quality_report.json", visual_quality_report)
     claim_boundary = {
@@ -4611,6 +4741,10 @@ def _postprocess_imported_persistent_session_artifacts(
         "materialized_future_frame_count": materialized_future_frame_count,
         "video_first_frame_materialization_count": video_first_frame_materialization_count,
         "degraded_future_frame_count": degraded_future_frame_count,
+        "wam_input_contract_high_risk_count": input_contract_high_risk_count,
+        "high_risk_input_contract_is_not_visual_rollout_quality_proof": bool(
+            input_contract_high_risk_count
+        ),
         "wam_rollout_visual_quality_report": str(job / "wam_rollout_visual_quality_report.json"),
         "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": structural_wam_count
         > 0,
@@ -4649,6 +4783,8 @@ def _postprocess_imported_persistent_session_artifacts(
             labels.append("source_policy_observation_visual_qa_failed")
         if "autoregressive_chain_visual_drift_or_quality_blocked_long_rollout" in visual_blockers:
             labels.append("autoregressive_chain_visual_drift_or_quality_blocked")
+        if input_contract_high_risk_count:
+            labels.append("wam_input_contract_high_risk")
         write_json(
             job / "failure_labels.json",
             {
@@ -4674,6 +4810,7 @@ def _postprocess_imported_persistent_session_artifacts(
         "wam_generation_command_execution": str(job / "wam_generation_command_execution.json"),
         "wam_generation_command_output": str(job / "wam_generation_command_output.json"),
         "wam_materialization_summary": str(job / "wam_materialization_summary.json"),
+        "wam_input_contract_summary": str(job / "wam_input_contract_summary.json"),
         "robot_policy_wam_loop_manifest": str(job / "robot_policy_wam_loop_manifest.json"),
         "manipulation_success_evaluator_results": str(
             job / "manipulation_success_evaluator_results.json"

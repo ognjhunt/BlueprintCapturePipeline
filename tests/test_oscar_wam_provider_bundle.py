@@ -1073,13 +1073,30 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
         is True
     )
     contract = runtime_manifest["oscar_input_contract_diagnostic"]
-    assert contract["status"] == "ready"
+    assert contract["status"] == "warning_high_risk"
     assert contract["rgb_context"]["rgb_context_mode"] == "single_frame_repeat"
+    assert contract["skeleton_video"]["policy_action_proxy_used"] is True
+    assert contract["projected_skeleton_trace"]["used_for_conditioning"] is False
     assert "oscar_contract_rgb_context_single_frame_repeat" in contract["warnings"]
+    assert (
+        "oscar_contract_policy_action_proxy_conditioning_without_projected_skeleton"
+        in contract["warnings"]
+    )
+    assert "oscar_contract_single_frame_repeat_without_projected_skeleton" in contract[
+        "warnings"
+    ]
     assert "rgb_context_single_frame_repeat_autoregressive_risk" in contract[
         "autoregressive_risk_flags"
     ]
-    assert contract["autoregressive_risk_level"] == "monitor"
+    assert (
+        "policy_action_proxy_without_projected_skeleton_autoregressive_risk"
+        in contract["autoregressive_risk_flags"]
+    )
+    assert "single_frame_repeat_without_projected_skeleton_high_risk" in contract[
+        "high_risk_flags"
+    ]
+    assert "policy_action_to_skeleton_adapter" in contract["likely_debug_focus"]
+    assert contract["autoregressive_risk_level"] == "high"
     assert contract["short_rollout_sanity_recommended_before_scale_up"] is True
     assert input_package["oscar_input_contract_diagnostic"] == contract
     assert input_package["skeleton_video"]["visual_signal"]["auxiliary_target_overlay_used"] is True

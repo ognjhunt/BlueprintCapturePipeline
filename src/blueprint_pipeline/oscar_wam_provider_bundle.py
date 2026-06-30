@@ -1155,10 +1155,12 @@ def _oscar_input_contract_diagnostic(
     rgb_video = _mapping(input_package.get("rgb_video"))
     rgb_signal = _mapping(rgb_video.get("visual_signal"))
     projected_trace = _mapping(input_package.get("projected_skeleton_trace"))
+    source_action = _mapping(input_package.get("source_action"))
     prompt = _string(input_package.get("prompt"))
     blockers: list[str] = []
     warnings: list[str] = []
     autoregressive_risk_flags: list[str] = []
+    high_risk_flags: list[str] = []
     first_size = {
         "width": _int_value(first_frame.get("width")),
         "height": _int_value(first_frame.get("height")),
@@ -1205,6 +1207,19 @@ def _oscar_input_contract_diagnostic(
             autoregressive_risk_flags.append(
                 "projected_skeleton_nearly_static_autoregressive_risk"
             )
+    conditioning_mode = _string(skeleton_video.get("conditioning_mode"))
+    policy_action_proxy_used = bool(
+        conditioning_mode == "unitree_sonic_policy_action_proxy_over_scene_frame"
+        or _mapping(input_package.get("claim_boundary")).get(
+            "policy_action_conditioning_proxy_video_used"
+        )
+    )
+    if policy_action_proxy_used and not projected_used:
+        warnings.append("oscar_contract_policy_action_proxy_conditioning_without_projected_skeleton")
+        autoregressive_risk_flags.append(
+            "policy_action_proxy_without_projected_skeleton_autoregressive_risk"
+        )
+        high_risk_flags.append("policy_action_proxy_without_projected_skeleton_high_risk")
     rgb_used = bool(rgb_video.get("used_for_oscar_rgb_latent_context"))
     rgb_context_mode = _string(rgb_video.get("rgb_context_mode")) or "not_configured"
     if rgb_used:
@@ -1224,14 +1239,22 @@ def _oscar_input_contract_diagnostic(
             autoregressive_risk_flags.append(
                 "rgb_context_single_frame_repeat_autoregressive_risk"
             )
+            if not projected_used:
+                warnings.append(
+                    "oscar_contract_single_frame_repeat_without_projected_skeleton"
+                )
+                high_risk_flags.append(
+                    "single_frame_repeat_without_projected_skeleton_high_risk"
+                )
     elif projected_used:
         warnings.append("oscar_contract_rgb_context_omitted_with_projected_skeleton")
     if float(guidance) >= 6.0:
         warnings.append("oscar_contract_guidance_high_for_contract_debug")
         autoregressive_risk_flags.append("guidance_high_autoregressive_debug_risk")
+    status = "blocked" if blockers else "warning_high_risk" if high_risk_flags else "ready"
     return {
         "schema_version": "oscar_wam_runtime_input_contract_diagnostic.v1",
-        "status": "ready" if not blockers else "blocked",
+        "status": status,
         "runtime_settings": {
             "num_frames": expected_frames,
             "height": expected_height,
@@ -1253,8 +1276,16 @@ def _oscar_input_contract_diagnostic(
             "height": skeleton_size["height"],
             "frame_count": _int_value(skeleton_video.get("frame_count")),
             "conditioning_mode": skeleton_video.get("conditioning_mode"),
+            "policy_action_proxy_used": policy_action_proxy_used,
             "visual_signal_status": skeleton_signal.get("status"),
             "visual_signal_blockers": skeleton_signal.get("blockers") or [],
+        },
+        "source_action": {
+            "action_type": source_action.get("action_type"),
+            "action_chunk_value_count": source_action.get("action_chunk_value_count"),
+            "unitree_groot_n17_sonic_action_chunk_present": bool(
+                source_action.get("unitree_groot_n17_sonic_action_chunk_present")
+            ),
         },
         "projected_skeleton_trace": {
             "used_for_conditioning": projected_used,
@@ -1278,8 +1309,11 @@ def _oscar_input_contract_diagnostic(
         "blockers": blockers,
         "warnings": warnings,
         "autoregressive_risk_flags": autoregressive_risk_flags,
+        "high_risk_flags": high_risk_flags,
         "autoregressive_risk_level": "blocked"
         if blockers
+        else "high"
+        if high_risk_flags
         else "monitor"
         if autoregressive_risk_flags
         else "none",
@@ -1287,6 +1321,7 @@ def _oscar_input_contract_diagnostic(
         "likely_debug_focus": [
             "oscar_runtime_input_contract",
             "conditioning_stream_alignment",
+            "policy_action_to_skeleton_adapter",
             "rgb_context_argument_contract",
             "guidance_or_sampling_settings",
         ]
