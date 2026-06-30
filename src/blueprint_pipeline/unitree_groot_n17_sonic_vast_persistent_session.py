@@ -150,6 +150,12 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [text for item in value if (text := _string(item))]
+
+
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
@@ -4165,6 +4171,14 @@ def _postprocess_imported_persistent_session_artifacts(
         "all_materialized_frames_are_video_first_frames": bool(
             wam_calls and video_first_frame_materialization_count == len(wam_calls)
         ),
+        "future_frame_quality_status": "failed"
+        if video_first_frame_materialization_count > 0
+        else "passed",
+        "future_frame_quality_blockers": [
+            "wam_generated_next_observation_used_video_first_frame_fallback"
+        ]
+        if video_first_frame_materialization_count > 0
+        else [],
         "claim_boundary": {
             "video_first_frame_materialization_is_not_future_rollout_quality_proof": True,
             "source_kind_summary_is_not_task_success_evidence": True,
@@ -4384,6 +4398,36 @@ def _postprocess_imported_persistent_session_artifacts(
             "projected_skeleton_trace_path"
         ),
     )
+    future_frame_quality_blockers = _string_list(
+        materialization_summary.get("future_frame_quality_blockers")
+    )
+    if future_frame_quality_blockers:
+        visual_quality_report = dict(visual_quality_report)
+        visual_quality_report["blockers"] = sorted(
+            set(_string_list(visual_quality_report.get("blockers")) + future_frame_quality_blockers)
+        )
+        visual_quality_report["status"] = "failed_visual_quality_gate"
+        visual_quality_report["visual_success"] = False
+        materialization_quality = dict(visual_quality_report.get("materialization_quality") or {})
+        materialization_quality.update(
+            {
+                "schema_version": "persistent_wam_materialization_quality.v1",
+                "future_frame_quality_status": materialization_summary.get(
+                    "future_frame_quality_status"
+                ),
+                "future_frame_quality_blockers": future_frame_quality_blockers,
+                "materialized_future_frame_count": materialized_future_frame_count,
+                "video_first_frame_materialization_count": video_first_frame_materialization_count,
+                "video_first_frame_materialization_is_not_future_rollout_quality_proof": True,
+            }
+        )
+        visual_quality_report["materialization_quality"] = materialization_quality
+        visual_quality_report["claim_boundary"] = {
+            **_mapping(visual_quality_report.get("claim_boundary")),
+            "video_first_frame_materialization_is_not_future_rollout_quality_proof": True,
+            "future_frame_materialization_required_for_visual_success": True,
+        }
+        write_json(job / "wam_rollout_visual_quality_report.json", visual_quality_report)
     claim_boundary = {
         "schema_version": "persistent_policy_wam_claim_boundary.v1",
         "generated_at": generated_at,

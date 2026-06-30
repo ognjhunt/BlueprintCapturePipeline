@@ -980,6 +980,28 @@ def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: P
     assert materialization["source_kind_counts"] == {"video_first_frame": 1}
     assert materialization["video_first_frame_materialization_count"] == 1
     assert materialization["materialized_future_frame_count"] == 0
+    assert materialization["future_frame_quality_status"] == "failed"
+    assert "wam_generated_next_observation_used_video_first_frame_fallback" in materialization[
+        "future_frame_quality_blockers"
+    ]
+    visual_report = json.loads(
+        (job / "wam_rollout_visual_quality_report.json").read_text(encoding="utf-8")
+    )
+    assert visual_report["status"] == "failed_visual_quality_gate"
+    assert visual_report["visual_success"] is False
+    assert "wam_generated_next_observation_used_video_first_frame_fallback" in visual_report[
+        "blockers"
+    ]
+    assert (
+        visual_report["materialization_quality"][
+            "future_frame_materialization_required_for_visual_success"
+        ]
+        if "future_frame_materialization_required_for_visual_success"
+        in visual_report.get("materialization_quality", {})
+        else visual_report["claim_boundary"][
+            "future_frame_materialization_required_for_visual_success"
+        ]
+    )
     claim_boundary = json.loads((job / "claim_boundary.json").read_text(encoding="utf-8"))
     assert (
         claim_boundary["video_first_frame_materialization_is_not_future_rollout_quality_proof"]
