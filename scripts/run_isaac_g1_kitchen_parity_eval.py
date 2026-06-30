@@ -7467,11 +7467,25 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         if cap == 0:
                             _log(f"step {step}: skeleton {len(skel)} links -> {len(lms)} landmarks in POV frame")
                         skel_rows.append({
+                            "schema_version": "blueprint.isaac_g1.projected_upper_body_skeleton.v1",
                             "episode_id": sid,
                             "scenario_eval_run_id": sc.get("scenario_eval_run_id") or sid,
                             "step": step, "sim_time_s": round(step / float(fps), 6),
                             "camera": "robot_pov", "landmarks": lms,  # OSCAR reads row["landmarks"]
-                            "projected_landmark_count": len(lms)})
+                            "projected_landmark_count": len(lms),
+                            "claim_boundary": {
+                                "projected_skeleton_trace_derived_from_seed_render_geometry": bool(
+                                    manipulation_reach
+                                ),
+                                "temporal_rows_are_target_conditioning_from_resolved_affordance_projection": bool(
+                                    manipulation_reach and effective_look_at is not None
+                                ),
+                                "not_a_learned_robot_policy_action": True,
+                                "policy_derived_action_conditioning": False,
+                                "simulated_state_not_physical_robot_sensor_evidence": True,
+                                "isaac_render_skeleton_conditioning_support_only": True,
+                                "not_task_success_proof": True,
+                            }})
                     ts = time.time()
                     if cap == 0 and warmup_frames > 0:
                         _log(
