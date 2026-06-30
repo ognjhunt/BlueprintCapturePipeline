@@ -1288,6 +1288,110 @@ def test_wam_generation_step_input_accepts_policy_action_projected_skeleton_trac
     assert input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is False
 
 
+def test_wam_generation_step_input_flags_nominal_policy_action_projection_risk(
+    tmp_path: Path,
+) -> None:
+    source_frame = tmp_path / "policy_observation.jpg"
+    _write_review_png(source_frame)
+    projected_trace = tmp_path / "nominal_policy_action_projected_skeleton_trace.jsonl"
+    rows = []
+    for index in range(2):
+        rows.append(
+            {
+                "schema_version": "blueprint.g1.nominal_policy_action_projected_skeleton.v1",
+                "status": "completed",
+                "frame_index": index,
+                "projected_landmark_count": 2,
+                "landmarks": [
+                    {
+                        "landmark_id": "left_hand",
+                        "image_projection": {
+                            "available": True,
+                            "u_px": 24 + index * 4,
+                            "v_px": 26,
+                        },
+                    },
+                    {
+                        "landmark_id": "right_hand",
+                        "image_projection": {
+                            "available": True,
+                            "u_px": 40 - index * 4,
+                            "v_px": 26,
+                        },
+                    },
+                ],
+                "segments": [{"from": "left_hand", "to": "right_hand"}],
+                "claim_boundary": {
+                    "policy_derived_action_conditioning": True,
+                    "nominal_kinematic_projection_without_scene_or_wbc_bridge": True,
+                    "official_wbc_or_sim_bridge_used": False,
+                    "simulated_state_not_physical_robot_sensor_evidence": True,
+                },
+            }
+        )
+    projected_trace.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    step_input = tmp_path / "wam_generation_step_0001_input.json"
+    step_input.write_text(
+        json.dumps(
+            {
+                "schema_version": "wam_generation_step_input.v1",
+                "step_index": 1,
+                "source_policy_observation_frame_path": str(source_frame),
+                "source_policy_action": {
+                    "action_type": "unitree_g1_sonic_latent_action_chunk",
+                    "action_chunk": [0.1, 0.2],
+                    "policy_action_projected_skeleton_trace_path": str(projected_trace),
+                },
+                "current_policy_observation": {
+                    "task_id": "open_fridge",
+                    "target_object_id": "refrigerator",
+                    "robot_profile_id": "unitree_g1",
+                    "visual_observation": {"camera_id": "head_pov"},
+                },
+                "requested_output": {
+                    "next_observation_frame_path": str(tmp_path / "next.jpg"),
+                    "action_conditioned_generation_required": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "step-nominal-action-projected-bundle-job",
+        wam_rollout_input_manifest=step_input,
+        num_frames=2,
+        height=64,
+        width=64,
+        fps=5.0,
+        generated_at="2026-06-21T00:00:00+00:00",
+    )
+
+    runtime_manifest = _read_json(
+        tmp_path
+        / "step-nominal-action-projected-bundle-job"
+        / "oscar_wam_provider_bundle"
+        / "provider_runtime"
+        / "wam_provider_runtime_manifest.json"
+    )
+    diagnostic = runtime_manifest["oscar_input_contract_diagnostic"]
+    assert manifest["status"] == "completed"
+    assert diagnostic["status"] == "warning_high_risk"
+    assert "oscar_contract_projected_skeleton_nominal_action_projection" in diagnostic[
+        "warnings"
+    ]
+    assert "projected_skeleton_nominal_action_projection_high_risk" in diagnostic[
+        "high_risk_flags"
+    ]
+    assert (
+        "projected_skeleton_nominal_action_projection_without_scene_or_wbc_bridge"
+        in diagnostic["ranking_risk_flags"]
+    )
+
+
 def test_seed_derived_projected_skeleton_trace_is_ranking_risk_not_policy_action(
     tmp_path: Path,
 ) -> None:

@@ -194,6 +194,52 @@ def test_persistent_runner_accepts_policy_action_projected_skeleton_trace(
     assert contract["selected_projected_skeleton_trace_path"] == str(policy_trace)
 
 
+def test_persistent_runner_materializes_nominal_policy_action_trace_without_ranking_claim(
+    tmp_path: Path,
+) -> None:
+    namespace = _persistent_runner_namespace()
+    prepare = namespace["_prepare_action_conditioned_wam_inputs"]
+    sonic_frame = ([0.1] * 28) + ([0.0] * 36) + ([0.2] * 14)
+    source_action = {
+        "action_type": "unitree_g1_sonic_latent_action_chunk",
+        "action_chunk": [*sonic_frame, *sonic_frame],
+    }
+
+    _sanitized_observation, _sanitized_auxiliary, manifest_path, contract = prepare(
+        observation={
+            "visual_observation": {
+                "camera_id": "head_pov",
+                "width": 80,
+                "height": 60,
+            }
+        },
+        auxiliary_observation={},
+        auxiliary_manifest_path=str(tmp_path / "auxiliary.json"),
+        source_policy_action=source_action,
+        work_dir=tmp_path / "worker_step",
+    )
+
+    trace_path = Path(source_action["policy_action_projected_skeleton_trace_path"])
+    assert manifest_path == str(tmp_path / "auxiliary.json")
+    assert trace_path.is_file()
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 2
+    assert rows[0]["projected_landmark_count"] == 8
+    assert rows[0]["claim_boundary"]["policy_derived_action_conditioning"] is True
+    assert (
+        rows[0]["claim_boundary"]["nominal_kinematic_projection_without_scene_or_wbc_bridge"]
+        is True
+    )
+    assert contract["status"] == "nominal_policy_action_projected_skeleton_trace_available"
+    assert contract["policy_derived_projected_skeleton_trace_present"] is True
+    assert contract["ranking_safe_projected_skeleton_trace_present"] is False
+    assert contract["policy_ranking_claim_safe"] is False
+    assert (
+        "nominal_policy_action_projection_without_scene_or_wbc_bridge"
+        in contract["blockers"]
+    )
+
+
 def test_policy_action_decoding_contract_blocks_latent_without_pose_decoder() -> None:
     contract = session._policy_action_decoding_contract(
         {

@@ -203,6 +203,8 @@ def _projected_skeleton_trace_claim_boundary(
         "temporal_rows_are_target_conditioning_from_resolved_affordance_projection": False,
         "not_a_learned_robot_policy_action": False,
         "policy_derived_action_conditioning": False,
+        "nominal_kinematic_projection_without_scene_or_wbc_bridge": False,
+        "official_wbc_or_sim_bridge_used": False,
         "simulated_state_not_physical_robot_sensor_evidence": False,
     }
     for row in rows:
@@ -1291,6 +1293,14 @@ def _oscar_input_contract_diagnostic(
         ):
             warnings.append("oscar_contract_projected_skeleton_target_conditioned")
             ranking_risk_flags.append("projected_skeleton_target_conditioning_ranking_risk")
+        if projected_trace_claim_boundary.get(
+            "nominal_kinematic_projection_without_scene_or_wbc_bridge"
+        ):
+            warnings.append("oscar_contract_projected_skeleton_nominal_action_projection")
+            high_risk_flags.append("projected_skeleton_nominal_action_projection_high_risk")
+            ranking_risk_flags.append(
+                "projected_skeleton_nominal_action_projection_without_scene_or_wbc_bridge"
+            )
     conditioning_mode = _string(skeleton_video.get("conditioning_mode"))
     policy_action_proxy_used = bool(
         conditioning_mode == "unitree_sonic_policy_action_proxy_over_scene_frame"

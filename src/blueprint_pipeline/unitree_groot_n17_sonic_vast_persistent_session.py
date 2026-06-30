@@ -1685,6 +1685,169 @@ def _policy_derived_projected_skeleton_trace(path: Path) -> bool:
     )
 
 
+def _ranking_safe_policy_projected_skeleton_trace(path: Path) -> bool:
+    claim_boundary = _projected_skeleton_trace_claim_boundary(path)
+    return bool(
+        _policy_derived_projected_skeleton_trace(path)
+        and not claim_boundary.get("nominal_kinematic_projection_without_scene_or_wbc_bridge")
+        and claim_boundary.get("official_wbc_or_sim_bridge_used") is not False
+    )
+
+
+SONIC_ACTION_FRAME_DIM = 78
+SONIC_LATENT_FRAME_DIM = 64
+SONIC_SIM2SIM_UPPER_BODY_SLOT_COUNT = 28
+NOMINAL_POLICY_ACTION_TRACE_ENV = "BLUEPRINT_ENABLE_NOMINAL_POLICY_ACTION_SKELETON_TRACE"
+
+
+def _flatten_numbers(value: Any) -> list[float]:
+    numbers: list[float] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
+            for child in item:
+                visit(child)
+        elif isinstance(item, (int, float)) and not isinstance(item, bool):
+            value = float(item)
+            if value == value and value not in {float("inf"), float("-inf")}:
+                numbers.append(value)
+
+    visit(value)
+    return numbers
+
+
+def _mean_abs(values: Sequence[float]) -> float:
+    return sum(abs(float(item)) for item in values) / len(values) if values else 0.0
+
+
+def _clip(value: float, low: float, high: float) -> float:
+    return min(float(high), max(float(low), float(value)))
+
+
+def _visual_dimension(observation: Mapping[str, Any], key: str, default: int) -> int:
+    visual = _mapping(observation.get("visual_observation"))
+    for value in (visual.get(key), observation.get(key), os.environ.get(f"BLUEPRINT_OSCAR_WAM_{key.upper()}")):
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return int(default)
+
+
+def _nominal_policy_action_projected_landmarks(
+    frame: Sequence[float],
+    *,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    left = list(frame[:14])
+    right = list(frame[14:28])
+    left_reach = _clip(0.18 + _mean_abs(left[:7]) * 0.75, 0.18, 0.58)
+    right_reach = _clip(0.18 + _mean_abs(right[:7]) * 0.75, 0.18, 0.58)
+    left_lift = _clip(_mean_abs(left[7:14]) * 0.35, 0.0, 0.22)
+    right_lift = _clip(_mean_abs(right[7:14]) * 0.35, 0.0, 0.22)
+
+    def point(landmark_id: str, x_frac: float, y_frac: float) -> dict[str, Any]:
+        return {
+            "landmark_id": landmark_id,
+            "image_projection": {
+                "available": True,
+                "u_px": round(_clip(x_frac, 0.02, 0.98) * width, 2),
+                "v_px": round(_clip(y_frac, 0.02, 0.98) * height, 2),
+            },
+        }
+
+    return [
+        point("left_shoulder", 0.40, 0.94),
+        point("left_elbow", 0.38 - left_reach * 0.05, 0.82 - left_reach * 0.18 - left_lift),
+        point("left_wrist", 0.36 - left_reach * 0.08, 0.70 - left_reach * 0.26 - left_lift),
+        point("left_hand", 0.34 - left_reach * 0.10, 0.59 - left_reach * 0.32 - left_lift),
+        point("right_shoulder", 0.60, 0.94),
+        point("right_elbow", 0.62 + right_reach * 0.05, 0.82 - right_reach * 0.18 - right_lift),
+        point("right_wrist", 0.64 + right_reach * 0.08, 0.70 - right_reach * 0.26 - right_lift),
+        point("right_hand", 0.66 + right_reach * 0.10, 0.59 - right_reach * 0.32 - right_lift),
+    ]
+
+
+def _materialize_nominal_policy_action_projected_skeleton_trace(
+    *,
+    work_dir: Path | None,
+    observation: Mapping[str, Any],
+    source_policy_action: Mapping[str, Any],
+) -> Path | None:
+    if work_dir is None:
+        return None
+    if not _truthy(os.environ.get(NOMINAL_POLICY_ACTION_TRACE_ENV, "1")):
+        return None
+    values = _flatten_numbers(source_policy_action.get("action_chunk"))
+    if not values or len(values) % SONIC_ACTION_FRAME_DIM != 0:
+        return None
+    frames = [
+        values[index : index + SONIC_ACTION_FRAME_DIM]
+        for index in range(0, len(values), SONIC_ACTION_FRAME_DIM)
+    ]
+    if not any(
+        abs(item) > 1e-9
+        for frame in frames
+        for item in frame[:SONIC_SIM2SIM_UPPER_BODY_SLOT_COUNT]
+    ):
+        return None
+    width = _visual_dimension(observation, "width", 640)
+    height = _visual_dimension(observation, "height", 480)
+    trace_path = work_dir / "policy_action_nominal_projected_skeleton_trace.jsonl"
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    segments = [
+        {"from": "left_shoulder", "to": "left_elbow"},
+        {"from": "left_elbow", "to": "left_wrist"},
+        {"from": "left_wrist", "to": "left_hand"},
+        {"from": "right_shoulder", "to": "right_elbow"},
+        {"from": "right_elbow", "to": "right_wrist"},
+        {"from": "right_wrist", "to": "right_hand"},
+    ]
+    with trace_path.open("w", encoding="utf-8") as handle:
+        for index, frame in enumerate(frames):
+            landmarks = _nominal_policy_action_projected_landmarks(
+                frame,
+                width=width,
+                height=height,
+            )
+            handle.write(
+                json.dumps(
+                    {
+                        "schema_version": "blueprint.g1.nominal_policy_action_projected_skeleton.v1",
+                        "status": "completed",
+                        "frame_index": index,
+                        "step": index,
+                        "camera": _string(_mapping(observation.get("visual_observation")).get("camera_id"))
+                        or "head_pov",
+                        "landmarks": landmarks,
+                        "segments": segments,
+                        "projected_landmark_count": len(landmarks),
+                        "claim_boundary": {
+                            "policy_derived_action_conditioning": True,
+                            "not_a_learned_robot_policy_action": False,
+                            "nominal_kinematic_projection_without_scene_or_wbc_bridge": True,
+                            "official_wbc_or_sim_bridge_used": False,
+                            "simulated_state_not_physical_robot_sensor_evidence": True,
+                            "not_task_success_proof": True,
+                            "not_physical_robot_sensor_proof": True,
+                            "scene_or_task_specific_pixels_used": False,
+                        },
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    if isinstance(source_policy_action, dict):
+        source_policy_action["policy_action_projected_skeleton_trace_path"] = str(trace_path)
+    return trace_path
+
+
 def _projected_skeleton_trace_candidates(
     observation: Mapping[str, Any],
     auxiliary_observation: Mapping[str, Any],
@@ -1738,8 +1901,18 @@ def _prepare_action_conditioned_wam_inputs(
     auxiliary_observation: Mapping[str, Any],
     auxiliary_manifest_path: str,
     source_policy_action: Mapping[str, Any],
+    work_dir: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
     action_present = _action_payload_present(source_policy_action)
+    nominal_trace = (
+        _materialize_nominal_policy_action_projected_skeleton_trace(
+            work_dir=work_dir,
+            observation=observation,
+            source_policy_action=source_policy_action,
+        )
+        if action_present
+        else None
+    )
     candidates = _projected_skeleton_trace_candidates(
         observation,
         auxiliary_observation,
@@ -1749,6 +1922,9 @@ def _prepare_action_conditioned_wam_inputs(
     policy_derived_candidates = [
         path for path in candidates if path.is_file() and _policy_derived_projected_skeleton_trace(path)
     ]
+    ranking_safe_candidates = [
+        path for path in policy_derived_candidates if _ranking_safe_policy_projected_skeleton_trace(path)
+    ]
     contract = {
         "schema_version": "persistent_wam_policy_action_to_skeleton_contract.v1",
         "status": "not_required" if not action_present else "ready",
@@ -1756,13 +1932,16 @@ def _prepare_action_conditioned_wam_inputs(
         "projected_skeleton_trace_candidate_count": len(candidates),
         "projected_skeleton_trace_candidates": candidate_text,
         "policy_derived_projected_skeleton_trace_present": bool(policy_derived_candidates),
+        "ranking_safe_projected_skeleton_trace_present": bool(ranking_safe_candidates),
+        "nominal_policy_action_projected_skeleton_trace_path": str(nominal_trace) if nominal_trace else None,
         "seed_or_target_projected_skeleton_allowed": _truthy(
             os.environ.get(ALLOW_SEED_DERIVED_SKELETON_FOR_ACTION_WAM_ENV)
         ),
-        "policy_ranking_claim_safe": not action_present or bool(policy_derived_candidates),
+        "policy_ranking_claim_safe": not action_present or bool(ranking_safe_candidates),
         "blockers": [],
         "claim_boundary": {
             "policy_ranking_claim_safe_requires_policy_derived_action_conditioning": True,
+            "nominal_policy_action_projection_is_wam_conditioning_not_ranking_proof": True,
             "seed_or_target_skeleton_is_visual_smoke_only": True,
             "scene_or_task_specific_pixels_used": False,
         },
@@ -1770,8 +1949,19 @@ def _prepare_action_conditioned_wam_inputs(
     if not action_present:
         return dict(observation), dict(auxiliary_observation), auxiliary_manifest_path, contract
     if policy_derived_candidates:
-        contract["status"] = "policy_derived_projected_skeleton_trace_available"
+        selected = policy_derived_candidates[0]
+        selected_ranking_safe = _ranking_safe_policy_projected_skeleton_trace(selected)
+        contract["status"] = (
+            "policy_derived_projected_skeleton_trace_available"
+            if selected_ranking_safe
+            else "nominal_policy_action_projected_skeleton_trace_available"
+        )
         contract["selected_projected_skeleton_trace_path"] = str(policy_derived_candidates[0])
+        contract["selected_projected_skeleton_trace_policy_ranking_safe"] = selected_ranking_safe
+        if not selected_ranking_safe:
+            contract["blockers"] = [
+                "nominal_policy_action_projection_without_scene_or_wbc_bridge"
+            ]
         return dict(observation), dict(auxiliary_observation), auxiliary_manifest_path, contract
     if contract["seed_or_target_projected_skeleton_allowed"]:
         contract["status"] = "visual_smoke_seed_or_target_skeleton_allowed"
@@ -1966,6 +2156,7 @@ class WamWorker(BaseHTTPRequestHandler):
             auxiliary_observation=auxiliary_observation,
             auxiliary_manifest_path=auxiliary_manifest_path,
             source_policy_action=source_policy_action,
+            work_dir=step_dir,
         )
         step_input = {
             "schema_version": "wam_generation_step_input.v1",
