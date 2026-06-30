@@ -7841,6 +7841,180 @@ def _capture_policy_visual_observation(
         }
 
 
+def _segmentation_claim_boundary() -> dict[str, bool]:
+    return {
+        "simulated_segmentation_view": True,
+        "physical_robot_sensor_proof": False,
+        "mujoco_segmentation_is_diagnostic_not_default_policy_input": True,
+        "segmentation_is_mujoco_evidence_not_isaac_evidence": True,
+    }
+
+
+def _segmentation_unavailable_observation(
+    *,
+    run: Mapping[str, Any],
+    step: int,
+    camera_id: str,
+    blockers: Sequence[str],
+    error_type: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "schema_version": "policy_segmentation_observation.v1",
+        "available": False,
+        "episode_id": run.get("episode_id"),
+        "scenario_eval_run_id": run.get("scenario_eval_run_id"),
+        "task_id": run.get("task_id"),
+        "spawn_id": run.get("spawn_id"),
+        "step": int(step),
+        "camera_id": camera_id,
+        "segmentation_backend": "mujoco_renderer_native",
+        "segmentation_mask_path": None,
+        "instances": [],
+        "instance_count": 0,
+        "blockers": list(blockers),
+        "claim_boundary": _segmentation_claim_boundary(),
+    }
+    if error_type:
+        row["error_type"] = error_type
+    if error:
+        row["error"] = error[:300]
+    return row
+
+
+def _capture_segmentation_observation(
+    *,
+    job_dir: Path,
+    renderer: Any,
+    image_module: Any,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    run: Mapping[str, Any],
+    step: int,
+    camera_id: str,
+    root_position: Sequence[float],
+    yaw: float,
+    contact_metadata: dict[int, dict[str, Any]] | None,
+) -> dict[str, Any]:
+    if renderer is None:
+        return _segmentation_unavailable_observation(
+            run=run,
+            step=step,
+            camera_id=camera_id,
+            blockers=["policy_observation_renderer_unavailable"],
+        )
+    if not hasattr(renderer, "enable_segmentation_rendering"):
+        return _segmentation_unavailable_observation(
+            run=run,
+            step=step,
+            camera_id=camera_id,
+            blockers=["policy_segmentation_unsupported_renderer"],
+        )
+    try:
+        import numpy as np
+    except Exception as exc:  # pragma: no cover - environment dependency guard.
+        return _segmentation_unavailable_observation(
+            run=run,
+            step=step,
+            camera_id=camera_id,
+            blockers=["policy_segmentation_numpy_unavailable"],
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+    try:
+        fixed_camera_used = _has_fixed_camera(mujoco_module, model, camera_id)
+        camera = _camera_for_render(mujoco_module, model, camera_id, root_position, yaw)
+        segmentation_enabled = False
+        try:
+            renderer.enable_segmentation_rendering()
+            segmentation_enabled = True
+            renderer.update_scene(data, camera=camera)
+            segmentation = renderer.render()
+        finally:
+            if segmentation_enabled and hasattr(renderer, "disable_segmentation_rendering"):
+                renderer.disable_segmentation_rendering()
+        seg = np.asarray(segmentation)
+        if seg.ndim != 3 or seg.shape[2] < 2:
+            return _segmentation_unavailable_observation(
+                run=run,
+                step=step,
+                camera_id=camera_id,
+                blockers=["policy_segmentation_invalid_render_shape"],
+            )
+        object_ids = seg[..., 0].astype(np.int64, copy=False)
+        object_types = seg[..., 1].astype(np.int64, copy=False)
+        geom_type = int(mujoco_module.mjtObj.mjOBJ_GEOM)
+        geom_mask = object_types == geom_type
+        instances: list[dict[str, Any]] = []
+        for geom_id in sorted(int(value) for value in np.unique(object_ids[geom_mask])):
+            if geom_id < 0:
+                continue
+            pixel_count = int(np.count_nonzero(geom_mask & (object_ids == geom_id)))
+            if pixel_count <= 0:
+                continue
+            metadata = _contact_metadata_for_geom(
+                model=model,
+                mujoco_module=mujoco_module,
+                contact_metadata=contact_metadata,
+                geom_id=geom_id,
+            )
+            instances.append(
+                {
+                    "geom_id": geom_id,
+                    "geom_name": metadata.get("geom_name"),
+                    "body_id": metadata.get("body_id"),
+                    "body_name": metadata.get("body_name"),
+                    "pixel_count": pixel_count,
+                }
+            )
+        mask_path_text: str | None = None
+        mask_blockers: list[str] = []
+        if image_module is not None:
+            try:
+                mask_dir = (
+                    job_dir
+                    / "policy_segmentation_frames"
+                    / str(run.get("episode_id"))
+                    / camera_id
+                )
+                ensure_dir(mask_dir)
+                mask_path = mask_dir / f"step_{int(step):06d}.png"
+                image_module.fromarray(object_ids.astype(np.uint16)).save(mask_path)
+                mask_path_text = str(mask_path)
+            except Exception as exc:  # noqa: BLE001
+                mask_blockers.append(f"policy_segmentation_mask_save_failed:{type(exc).__name__}")
+        return {
+            "schema_version": "policy_segmentation_observation.v1",
+            "available": True,
+            "episode_id": run.get("episode_id"),
+            "scenario_eval_run_id": run.get("scenario_eval_run_id"),
+            "task_id": run.get("task_id"),
+            "spawn_id": run.get("spawn_id"),
+            "step": int(step),
+            "camera_id": camera_id,
+            "image_width": int(seg.shape[1]),
+            "image_height": int(seg.shape[0]),
+            "fixed_mujoco_camera_used": bool(fixed_camera_used),
+            "fixed_mujoco_camera_name": FIXED_G1_CAMERA_NAMES.get(camera_id),
+            "segmentation_backend": "mujoco_renderer_native",
+            "segmentation_mask_path": mask_path_text,
+            "instances": instances,
+            "instance_count": len(instances),
+            "blockers": mask_blockers,
+            "claim_boundary": _segmentation_claim_boundary(),
+        }
+    except Exception as exc:
+        return _segmentation_unavailable_observation(
+            run=run,
+            step=step,
+            camera_id=camera_id,
+            blockers=["policy_segmentation_capture_failed"],
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+
 def _episode_frame_steps(
     *,
     steps_per_episode: int,
@@ -8731,6 +8905,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
     rejected_actions: list[dict[str, Any]] = []
     endpoint_attempt_rows: list[dict[str, Any]] = []
     policy_visual_observation_rows: list[dict[str, Any]] = []
+    policy_segmentation_observation_rows: list[dict[str, Any]] = []
     g1_projected_skeleton_rows: list[dict[str, Any]] = []
     contact_rows: list[dict[str, Any]] = []
     manipulation_contacts: list[dict[str, Any]] = []
@@ -8871,6 +9046,7 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                     current_root_quat = [
                         float(value) for value in data.qpos[root_qpos + 3 : root_qpos + 7]
                     ]
+                    current_yaw = _yaw_from_quat(current_root_quat)
                     visual_observation = _capture_policy_visual_observation(
                         job_dir=job_dir,
                         renderer=renderer,
@@ -8882,9 +9058,27 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                         step=step,
                         camera_id="head_pov",
                         root_position=current_root_pos,
-                        yaw=_yaw_from_quat(current_root_quat),
+                        yaw=current_yaw,
                         root_qpos=root_qpos,
                     )
+                    segmentation_observation = _capture_segmentation_observation(
+                        job_dir=job_dir,
+                        renderer=renderer,
+                        image_module=image_module,
+                        mujoco_module=mujoco,
+                        model=model,
+                        data=data,
+                        run=run,
+                        step=step,
+                        camera_id="head_pov",
+                        root_position=current_root_pos,
+                        yaw=current_yaw,
+                        contact_metadata=contact_metadata,
+                    )
+                    visual_observation["segmentation_observation"] = (
+                        segmentation_observation
+                    )
+                    policy_segmentation_observation_rows.append(segmentation_observation)
                     policy_visual_observation_rows.append(visual_observation)
                     try:
                         g1_projected_skeleton_rows.append(
@@ -9643,6 +9837,41 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
                     g1_projected_skeleton_manifest.get("status") == "completed"
                 ),
                 "g1_projected_skeleton_trace_is_simulated_state_not_physical_proprioception": True,
+            },
+        },
+    )
+    write_json(
+        job_dir / "policy_segmentation_observations.json",
+        {
+            "schema_version": "policy_segmentation_observation_manifest.v1",
+            "generated_at": generated_at,
+            "status": "completed"
+            if any(row.get("available") for row in policy_segmentation_observation_rows)
+            else "blocked_no_policy_segmentation_observations",
+            "camera_id": "head_pov",
+            "observation_count": len(policy_segmentation_observation_rows),
+            "available_observation_count": sum(
+                1 for row in policy_segmentation_observation_rows if row.get("available")
+            ),
+            "segmentation_backend": "mujoco_renderer_native",
+            "observations": policy_segmentation_observation_rows,
+            "blockers": []
+            if any(row.get("available") for row in policy_segmentation_observation_rows)
+            else sorted(
+                {
+                    blocker
+                    for row in policy_segmentation_observation_rows
+                    for blocker in list(row.get("blockers") or [])
+                }
+            )
+            or ["policy_segmentation_unsupported_renderer"],
+            "claim_boundary": {
+                "simulated_segmentation_view": any(
+                    row.get("available") for row in policy_segmentation_observation_rows
+                ),
+                "physical_robot_sensor_proof": False,
+                "mujoco_segmentation_is_diagnostic_not_default_policy_input": True,
+                "segmentation_is_mujoco_evidence_not_isaac_evidence": True,
             },
         },
     )
@@ -11152,6 +11381,17 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "policy_visual_observation_available_count": sum(
             1 for row in policy_visual_observation_rows if row.get("available")
         ),
+        "mujoco_segmentation_diagnostic_available": any(
+            row.get("available") for row in policy_segmentation_observation_rows
+        ),
+        "segmentation_backend": "mujoco_renderer_native",
+        "policy_segmentation_observation_count": len(policy_segmentation_observation_rows),
+        "policy_segmentation_observation_available_count": sum(
+            1 for row in policy_segmentation_observation_rows if row.get("available")
+        ),
+        "policy_segmentation_observation_manifest": str(
+            job_dir / "policy_segmentation_observations.json"
+        ),
         "policy_visual_observation_trace": str(job_dir / "policy_visual_observation_trace.jsonl"),
         "policy_visual_observation_manifest": str(
             job_dir / "policy_visual_observation_manifest.json"
@@ -11484,6 +11724,17 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
         "policy_visual_observation_available_count": sum(
             1 for row in policy_visual_observation_rows if row.get("available")
         ),
+        "mujoco_segmentation_diagnostic_available": any(
+            row.get("available") for row in policy_segmentation_observation_rows
+        ),
+        "segmentation_backend": "mujoco_renderer_native",
+        "policy_segmentation_observation_count": len(policy_segmentation_observation_rows),
+        "policy_segmentation_observation_available_count": sum(
+            1 for row in policy_segmentation_observation_rows if row.get("available")
+        ),
+        "policy_segmentation_observation_manifest": str(
+            job_dir / "policy_segmentation_observations.json"
+        ),
         "g1_projected_skeleton_trace_status": g1_projected_skeleton_manifest.get("status"),
         "g1_projected_skeleton_trace_row_count": int(
             g1_projected_skeleton_manifest.get("row_count") or 0
@@ -11672,6 +11923,9 @@ def run_mujoco_g1_wam_vla_policy_endpoint_eval(
             ),
             "policy_visual_observation_trace_jsonl": str(
                 job_dir / "policy_visual_observation_trace.jsonl"
+            ),
+            "policy_segmentation_observation_manifest": str(
+                job_dir / "policy_segmentation_observations.json"
             ),
             "g1_projected_skeleton_trace_jsonl": str(g1_projected_skeleton_trace_path),
             "g1_projected_skeleton_manifest": str(job_dir / "g1_projected_skeleton_manifest.json"),

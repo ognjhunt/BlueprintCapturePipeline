@@ -34,7 +34,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 7 | T7 | Shared | M | — | `done` | Photoreal observation handoff: Isaac/WAM frame -> MuJoCo policy visual channel |
 | 8 | T11 | MuJoCo | S | — | `done` | MuJoCo texture/material preservation (GLB->OBJ keeps PBR map_Kd and binds a MuJoCo texture to the visual geom) |
 | 9 | T12 | MuJoCo | S | — | `done` | MuJoCo scene-derived lighting + shadows in the MJCF wrapper |
-| 10 | T8 | MuJoCo | M | — | `todo` | MuJoCo segmentation render pass |
+| 10 | T8 | MuJoCo | M | — | `done` | MuJoCo segmentation render pass |
 | 11 | T9 | Isaac | M | — | `todo` | Isaac native instance/semantic segmentation render pass |
 | 12 | T13 | Isaac | M | — | `todo` | Isaac gravity-on dynamic stepping: turn the existing settle loop into a physics-proof path with displacement + fall verdict |
 | 13 | T14 | Isaac | L | T13 | `todo` | Isaac torque/effort drive (PD law port) + authored MassAPI/PhysicsMaterial on the resolved target only |
@@ -601,7 +601,7 @@ Hermetic, GPU-free pytest (no mujoco/GPU needed; mujoco is not installed in this
 ### 10. T8 — MuJoCo segmentation render pass
 
 - **Lane:** MuJoCo  |  **Effort:** M (medium)  |  **Depends on:** none
-- **Status:** todo
+- **Status:** done
 
 **Summary.** MuJoCo has no segmentation render pass today; object identity in the eval is only string-matched body/geom names inside the contact code. Add a harness-side segmentation diagnostic that enables MuJoCo's native segmentation mode on the existing offscreen Renderer, then maps the per-pixel geom ids back to labels using the geom_id->{geom_name,body_name} map already built by _build_contact_metadata. This gives deterministic instance masks co-registered with the RGB policy frame for success scoring/gating, kept as a MuJoCo-only diagnostic artifact (not promoted into the policy's default consume schema, mirroring how depth is positioned).
 
@@ -632,13 +632,13 @@ Hermetic, GPU-free pytest (no mujoco/GPU needed; mujoco is not installed in this
 
 **Acceptance criteria:**
 
-- [ ] lane._capture_segmentation_observation, given a fake renderer whose render() returns a synthetic (H,W,2) seg array (type-channel using the fake's mjtObj.mjOBJ_GEOM value) and a contact_metadata map from _build_contact_metadata, returns available=True with an instances list where at least one entry's geom_name/body_name equals the name the fake mujoco mj_id2name returns for that geom id (proves per-pixel geom id is mapped to the contact code's body-name label).
-- [ ] Each instance summary's pixel_count equals the count of that geom id in seg[...,0] for pixels whose seg[...,1] == mujoco_module.mjtObj.mjOBJ_GEOM (the fake's value); instance_count equals the number of distinct geom-type instances.
-- [ ] The helper calls renderer.disable_segmentation_rendering() (verified via a flag/spy on the fake renderer) even after update_scene/render, so the shared renderer is returned to RGB mode (a subsequent RGB capture is unaffected).
-- [ ] When the renderer does not expose enable_segmentation_rendering, the helper returns available=False with blocker 'policy_segmentation_unsupported_renderer' and raises nothing.
-- [ ] The returned object's claim_boundary contains 'mujoco_segmentation_is_diagnostic_not_default_policy_input': True and 'segmentation_is_mujoco_evidence_not_isaac_evidence': True (marks it MuJoCo, not Isaac, not physical, evidence); lane._declared_policy_observation_schema_for_wam_loop()['supports_masks'] remains False (the policy consume schema is unchanged).
-- [ ] A render-enabled run through run_mujoco_g1_wam_vla_policy_endpoint_eval (the existing hermetic FakeRenderer at test line 2987 extended with enable/disable_segmentation_rendering and a (H,W,2)-returning render path) writes job_dir/'policy_segmentation_observations.json' and attaches visual_observation['segmentation_observation'] without breaking any existing assertion in test_wam_vla_contact_observation_camera_and_media_helpers.
-- [ ] No new top-level import of mujoco is added (the module imports mujoco lazily inside run_mujoco_g1_wam_vla_policy_endpoint_eval at line 8219); segmentation uses the mujoco_module already threaded through the helper, keeping the backend swappable and the test GPU-free (verifiable by grep/AST over the module top level).
+- [x] lane._capture_segmentation_observation, given a fake renderer whose render() returns a synthetic (H,W,2) seg array (type-channel using the fake's mjtObj.mjOBJ_GEOM value) and a contact_metadata map from _build_contact_metadata, returns available=True with an instances list where at least one entry's geom_name/body_name equals the name the fake mujoco mj_id2name returns for that geom id (proves per-pixel geom id is mapped to the contact code's body-name label).
+- [x] Each instance summary's pixel_count equals the count of that geom id in seg[...,0] for pixels whose seg[...,1] == mujoco_module.mjtObj.mjOBJ_GEOM (the fake's value); instance_count equals the number of distinct geom-type instances.
+- [x] The helper calls renderer.disable_segmentation_rendering() (verified via a flag/spy on the fake renderer) even after update_scene/render, so the shared renderer is returned to RGB mode (a subsequent RGB capture is unaffected).
+- [x] When the renderer does not expose enable_segmentation_rendering, the helper returns available=False with blocker 'policy_segmentation_unsupported_renderer' and raises nothing.
+- [x] The returned object's claim_boundary contains 'mujoco_segmentation_is_diagnostic_not_default_policy_input': True and 'segmentation_is_mujoco_evidence_not_isaac_evidence': True (marks it MuJoCo, not Isaac, not physical, evidence); lane._declared_policy_observation_schema_for_wam_loop()['supports_masks'] remains False (the policy consume schema is unchanged).
+- [x] A render-enabled run through run_mujoco_g1_wam_vla_policy_endpoint_eval (the existing hermetic FakeRenderer at test line 2987 extended with enable/disable_segmentation_rendering and a (H,W,2)-returning render path) writes job_dir/'policy_segmentation_observations.json' and attaches visual_observation['segmentation_observation'] without breaking any existing assertion in test_wam_vla_contact_observation_camera_and_media_helpers.
+- [x] No new top-level import of mujoco is added (the module imports mujoco lazily inside run_mujoco_g1_wam_vla_policy_endpoint_eval at line 8219); segmentation uses the mujoco_module already threaded through the helper, keeping the backend swappable and the test GPU-free (verifiable by grep/AST over the module top level).
 
 **Verification:**
 

@@ -2575,6 +2575,119 @@ def test_policy_visual_observation_depth_pass_writes_npy_and_restores_rgb(
     assert "policy_observation_depth_pass_unavailable" in no_depth_row["blockers"]
 
 
+def test_mujoco_segmentation_render_pass_maps_geom_ids_to_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import numpy as np
+
+    monkeypatch.setattr(lane, "_has_fixed_camera", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(lane, "_camera_for_render", lambda *_args, **_kwargs: "fake-camera")
+    fake_mujoco = SimpleNamespace(
+        mjtObj=SimpleNamespace(mjOBJ_GEOM=1, mjOBJ_BODY=2),
+        mj_id2name=lambda _model, obj, idx: {
+            (1, 0): "floor_geom",
+            (1, 1): "target_geom",
+            (2, 0): "floor_body",
+            (2, 1): "target_body",
+        }.get((obj, idx)),
+    )
+    model = SimpleNamespace(ngeom=2, geom_bodyid=[0, 1])
+    contact_metadata = lane._build_contact_metadata(model, fake_mujoco)
+
+    class FakeImageModule:
+        @staticmethod
+        def fromarray(_frame: object) -> "FakeImageModule":
+            return FakeImageModule()
+
+        def save(self, path: Path, **_kwargs: object) -> None:
+            Path(path).write_bytes(b"mask")
+
+    class SegFakeRenderer:
+        def __init__(self) -> None:
+            self.segmentation_enabled = False
+            self.disable_called = False
+            self.update_calls: list[tuple[bool, object]] = []
+
+        def enable_segmentation_rendering(self) -> None:
+            self.segmentation_enabled = True
+
+        def disable_segmentation_rendering(self) -> None:
+            self.disable_called = True
+            self.segmentation_enabled = False
+
+        def update_scene(self, _data: object, *, camera: object) -> None:
+            self.update_calls.append((self.segmentation_enabled, camera))
+
+        def render(self):
+            assert self.segmentation_enabled
+            geom_type = fake_mujoco.mjtObj.mjOBJ_GEOM
+            body_type = fake_mujoco.mjtObj.mjOBJ_BODY
+            return np.array(
+                [
+                    [[0, geom_type], [1, geom_type], [1, geom_type]],
+                    [[1, geom_type], [0, body_type], [-1, geom_type]],
+                ],
+                dtype=np.int32,
+            )
+
+    renderer = SegFakeRenderer()
+    row = lane._capture_segmentation_observation(
+        job_dir=tmp_path,
+        renderer=renderer,
+        image_module=FakeImageModule,
+        mujoco_module=fake_mujoco,
+        model=model,
+        data=SimpleNamespace(),
+        run={
+            "episode_id": "episode_0001",
+            "scenario_eval_run_id": "scenario-run-1",
+            "task_id": "task-1",
+            "spawn_id": "spawn-1",
+        },
+        step=7,
+        camera_id="head_pov",
+        root_position=(0.0, 0.0, 0.79),
+        yaw=0.0,
+        contact_metadata=contact_metadata,
+    )
+
+    assert row["available"] is True
+    assert renderer.disable_called is True
+    assert renderer.segmentation_enabled is False
+    assert renderer.update_calls == [(True, "fake-camera")]
+    assert row["instance_count"] == 2
+    by_geom = {instance["geom_id"]: instance for instance in row["instances"]}
+    assert by_geom[1]["geom_name"] == "target_geom"
+    assert by_geom[1]["body_name"] == "target_body"
+    assert by_geom[1]["pixel_count"] == 3
+    assert by_geom[0]["pixel_count"] == 1
+    assert row["segmentation_mask_path"] is not None
+    assert Path(row["segmentation_mask_path"]).is_file()
+    assert (
+        row["claim_boundary"]["mujoco_segmentation_is_diagnostic_not_default_policy_input"]
+        is True
+    )
+    assert row["claim_boundary"]["segmentation_is_mujoco_evidence_not_isaac_evidence"] is True
+    assert lane._declared_policy_observation_schema_for_wam_loop(None)["supports_masks"] is False
+
+    unsupported = lane._capture_segmentation_observation(
+        job_dir=tmp_path,
+        renderer=object(),
+        image_module=FakeImageModule,
+        mujoco_module=fake_mujoco,
+        model=model,
+        data=SimpleNamespace(),
+        run={"episode_id": "episode_0002"},
+        step=8,
+        camera_id="head_pov",
+        root_position=(0.0, 0.0, 0.79),
+        yaw=0.0,
+        contact_metadata=contact_metadata,
+    )
+    assert unsupported["available"] is False
+    assert "policy_segmentation_unsupported_renderer" in unsupported["blockers"]
+
+
 def test_wam_vla_contact_observation_camera_and_media_helpers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3293,11 +3406,20 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
     class FakeRenderer:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             self.closed = False
+            self.segmentation_enabled = False
+
+        def enable_segmentation_rendering(self) -> None:
+            self.segmentation_enabled = True
+
+        def disable_segmentation_rendering(self) -> None:
+            self.segmentation_enabled = False
 
         def update_scene(self, *_args: object, **_kwargs: object) -> None:
             return None
 
         def render(self) -> list[list[list[int]]]:
+            if self.segmentation_enabled:
+                return [[[1, fake_mujoco.mjtObj.mjOBJ_GEOM]]]
             return [[[0, 0, 0]]]
 
         def close(self) -> None:
@@ -3308,7 +3430,7 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
         def fromarray(_frame: object) -> "FakeImage":
             return FakeImage()
 
-        def save(self, path: Path) -> None:
+        def save(self, path: Path, **_kwargs: object) -> None:
             Path(path).write_bytes(b"png")
 
     fake_pil = ModuleType("PIL")
@@ -3334,6 +3456,36 @@ def test_wam_vla_lane_runs_with_fake_mujoco_and_cli(
         render=True,
         render_frame_count=2,
         generated_at="now",
+    )
+    assert render_summary["mujoco_segmentation_diagnostic_available"] is True
+    assert render_summary["segmentation_backend"] == "mujoco_renderer_native"
+    assert render_summary["policy_segmentation_observation_available_count"] >= 1
+    segmentation_manifest = json.loads(
+        (tmp_path / "render-job" / "policy_segmentation_observations.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert segmentation_manifest["status"] == "completed"
+    assert segmentation_manifest["available_observation_count"] >= 1
+    assert (
+        segmentation_manifest["claim_boundary"][
+            "mujoco_segmentation_is_diagnostic_not_default_policy_input"
+        ]
+        is True
+    )
+    visual_trace_rows = [
+        json.loads(line)
+        for line in (tmp_path / "render-job" / "policy_visual_observation_trace.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert visual_trace_rows
+    assert visual_trace_rows[0]["segmentation_observation"]["available"] is True
+    assert (
+        render_summary["artifact_paths"]["policy_segmentation_observation_manifest"].endswith(
+            "policy_segmentation_observations.json"
+        )
     )
     assert render_summary["artifact_paths"]["video_generation_status"].endswith("video_generation_status.json")
     video_status = json.loads(
