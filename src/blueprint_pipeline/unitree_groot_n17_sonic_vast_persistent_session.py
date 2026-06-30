@@ -4152,8 +4152,11 @@ def _postprocess_imported_persistent_session_artifacts(
     live_wam_count = int(imported.get("live_wam_generation_success_count") or 0)
     learned_wam_count = int(imported.get("learned_wam_model_success_count") or 0)
     materialization_source_kind_counts: dict[str, int] = {}
+    selection_quality_status_counts: dict[str, int] = {}
+    selected_frame_signal_blocker_counts: dict[str, int] = {}
     materialized_future_frame_count = 0
     video_first_frame_materialization_count = 0
+    degraded_future_frame_count = 0
     for row in wam_calls:
         materialization = _mapping(row.get("materialization"))
         source_kind = _string(materialization.get("source_kind")) or "unknown"
@@ -4162,29 +4165,55 @@ def _postprocess_imported_persistent_session_artifacts(
         )
         if materialization.get("future_frame_selected") is True:
             materialized_future_frame_count += 1
+        selection_quality_status = _string(materialization.get("selection_quality_status"))
+        if selection_quality_status:
+            selection_quality_status_counts[selection_quality_status] = (
+                selection_quality_status_counts.get(selection_quality_status, 0) + 1
+            )
+            if (
+                source_kind == "video_future_frame"
+                and selection_quality_status != "passed_signal_gate"
+            ):
+                degraded_future_frame_count += 1
+        for blocker in _string_list(materialization.get("selected_frame_signal_blockers")):
+            selected_frame_signal_blocker_counts[blocker] = (
+                selected_frame_signal_blocker_counts.get(blocker, 0) + 1
+            )
         if source_kind == "video_first_frame":
             video_first_frame_materialization_count += 1
+    future_frame_quality_blockers: list[str] = []
+    if video_first_frame_materialization_count > 0:
+        future_frame_quality_blockers.append(
+            "wam_generated_next_observation_used_video_first_frame_fallback"
+        )
+    if degraded_future_frame_count > 0:
+        future_frame_quality_blockers.append(
+            "wam_generated_next_observation_future_frame_degraded_visual_signal"
+        )
     materialization_summary = {
         "schema_version": "persistent_wam_materialization_summary.v1",
         "generated_at": generated_at,
         "status": "completed",
         "wam_call_count": len(wam_calls),
         "source_kind_counts": materialization_source_kind_counts,
+        "selection_quality_status_counts": selection_quality_status_counts,
+        "selected_frame_signal_blocker_counts": selected_frame_signal_blocker_counts,
         "video_first_frame_materialization_count": video_first_frame_materialization_count,
         "materialized_future_frame_count": materialized_future_frame_count,
+        "degraded_future_frame_count": degraded_future_frame_count,
         "all_materialized_frames_are_video_first_frames": bool(
             wam_calls and video_first_frame_materialization_count == len(wam_calls)
         ),
-        "future_frame_quality_status": "failed"
-        if video_first_frame_materialization_count > 0
-        else "passed",
-        "future_frame_quality_blockers": [
-            "wam_generated_next_observation_used_video_first_frame_fallback"
-        ]
-        if video_first_frame_materialization_count > 0
-        else [],
+        "all_materialized_future_frames_passed_signal_gate": bool(
+            materialized_future_frame_count > 0
+            and degraded_future_frame_count == 0
+            and video_first_frame_materialization_count == 0
+        ),
+        "future_frame_quality_status": "failed" if future_frame_quality_blockers else "passed",
+        "future_frame_quality_blockers": future_frame_quality_blockers,
         "claim_boundary": {
             "video_first_frame_materialization_is_not_future_rollout_quality_proof": True,
+            "degraded_future_frame_materialization_is_not_visual_rollout_quality_proof": True,
             "source_kind_summary_is_not_task_success_evidence": True,
             "scene_or_task_specific_pixels_used": False,
         },
@@ -4422,13 +4451,18 @@ def _postprocess_imported_persistent_session_artifacts(
                 "future_frame_quality_blockers": future_frame_quality_blockers,
                 "materialized_future_frame_count": materialized_future_frame_count,
                 "video_first_frame_materialization_count": video_first_frame_materialization_count,
+                "degraded_future_frame_count": degraded_future_frame_count,
+                "selection_quality_status_counts": selection_quality_status_counts,
+                "selected_frame_signal_blocker_counts": selected_frame_signal_blocker_counts,
                 "video_first_frame_materialization_is_not_future_rollout_quality_proof": True,
+                "degraded_future_frame_materialization_is_not_visual_rollout_quality_proof": True,
             }
         )
         visual_quality_report["materialization_quality"] = materialization_quality
         visual_quality_report["claim_boundary"] = {
             **_mapping(visual_quality_report.get("claim_boundary")),
             "video_first_frame_materialization_is_not_future_rollout_quality_proof": True,
+            "degraded_future_frame_materialization_is_not_visual_rollout_quality_proof": True,
             "future_frame_materialization_required_for_visual_success": True,
         }
         write_json(job / "wam_rollout_visual_quality_report.json", visual_quality_report)
@@ -4452,8 +4486,12 @@ def _postprocess_imported_persistent_session_artifacts(
         "video_first_frame_materialization_is_not_future_rollout_quality_proof": (
             video_first_frame_materialization_count > 0
         ),
+        "degraded_future_frame_materialization_is_not_visual_rollout_quality_proof": (
+            degraded_future_frame_count > 0
+        ),
         "materialized_future_frame_count": materialized_future_frame_count,
         "video_first_frame_materialization_count": video_first_frame_materialization_count,
+        "degraded_future_frame_count": degraded_future_frame_count,
         "wam_rollout_visual_quality_report": str(job / "wam_rollout_visual_quality_report.json"),
         "local_structural_wam_generator_is_not_live_oscar_or_cosmos_model": structural_wam_count
         > 0,

@@ -1018,6 +1018,137 @@ def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: P
     )
 
 
+def test_postprocess_degraded_future_frames_fail_materialization_quality(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    source_frame = _write_reviewable_frame(
+        job / "provider_bundle" / "provider_runtime" / "initial_policy_frame.png"
+    )
+    observation_path = _policy_observation(tmp_path / "observation.json", source_frame)
+    extraction_dir = tmp_path / "extracted"
+    policy_calls_dir = extraction_dir / "policy_calls"
+    wam_calls_dir = extraction_dir / "wam_calls"
+    generated_dir = extraction_dir / "generated_next_observations"
+    policy_calls_dir.mkdir(parents=True)
+    wam_calls_dir.mkdir()
+    generated_dir.mkdir()
+    _write_reviewable_frame(generated_dir / "wam_generated_next_observation_step_0001.jpg")
+    (policy_calls_dir / "policy_call_0000.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 0,
+                "action": {"action": "open_refrigerator"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (extraction_dir / "wam_generated_next_observations.jsonl").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 1,
+                "structural_fallback_used": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (wam_calls_dir / "wam_call_0001.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 1,
+                "materialization": {
+                    "status": "completed",
+                    "source_kind": "video_future_frame",
+                    "selected_frame_index": 1,
+                    "future_frame_selected": True,
+                    "selection_quality_status": "degraded_visual_signal",
+                    "selected_frame_signal_blockers": [
+                        "next_observation_candidate_low_scene_structure"
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (extraction_dir / "robot_policy_wam_loop_trace.jsonl").write_text("", encoding="utf-8")
+    (extraction_dir / "robot_policy_wam_side_by_side_trace.jsonl").write_text(
+        "",
+        encoding="utf-8",
+    )
+    vast_run_dir = tmp_path / "vast-run"
+    vast_run_dir.mkdir()
+
+    session._postprocess_imported_persistent_session_artifacts(
+        job=job,
+        extraction_dir=extraction_dir,
+        imported={
+            "status": "completed",
+            "persistent_provider_session_used": True,
+            "provider_instance_reused_for_policy_and_wam_loop": True,
+            "repeated_policy_calls_count": 2,
+            "generated_next_observation_count": 1,
+            "live_wam_generation_success_count": 1,
+            "learned_wam_model_success_count": 1,
+            "policy_observes_wam_generated_next_observation": True,
+            "blockers": [],
+        },
+        generated_at="now",
+        policy_observation_path=observation_path,
+        vast_result={"estimated_cost_usd": 0.01},
+        vast_run_dir=vast_run_dir,
+    )
+
+    materialization = json.loads(
+        (job / "wam_materialization_summary.json").read_text(encoding="utf-8")
+    )
+    assert materialization["source_kind_counts"] == {"video_future_frame": 1}
+    assert materialization["materialized_future_frame_count"] == 1
+    assert materialization["video_first_frame_materialization_count"] == 0
+    assert materialization["degraded_future_frame_count"] == 1
+    assert materialization["future_frame_quality_status"] == "failed"
+    assert materialization["selection_quality_status_counts"] == {
+        "degraded_visual_signal": 1
+    }
+    assert materialization["selected_frame_signal_blocker_counts"] == {
+        "next_observation_candidate_low_scene_structure": 1
+    }
+    assert "wam_generated_next_observation_future_frame_degraded_visual_signal" in (
+        materialization["future_frame_quality_blockers"]
+    )
+
+    visual_report = json.loads(
+        (job / "wam_rollout_visual_quality_report.json").read_text(encoding="utf-8")
+    )
+    assert visual_report["status"] == "failed_visual_quality_gate"
+    assert visual_report["visual_success"] is False
+    assert "wam_generated_next_observation_future_frame_degraded_visual_signal" in (
+        visual_report["blockers"]
+    )
+    assert visual_report["materialization_quality"]["degraded_future_frame_count"] == 1
+    assert visual_report["materialization_quality"]["selection_quality_status_counts"] == {
+        "degraded_visual_signal": 1
+    }
+    assert (
+        visual_report["claim_boundary"][
+            "degraded_future_frame_materialization_is_not_visual_rollout_quality_proof"
+        ]
+        is True
+    )
+
+    claim_boundary = json.loads((job / "claim_boundary.json").read_text(encoding="utf-8"))
+    assert claim_boundary["degraded_future_frame_count"] == 1
+    assert (
+        claim_boundary[
+            "degraded_future_frame_materialization_is_not_visual_rollout_quality_proof"
+        ]
+        is True
+    )
+
+
 def test_copy_or_extract_wam_frame_prefers_usable_future_video_frame(tmp_path: Path) -> None:
     cv2 = pytest.importorskip("cv2")
     import numpy as np
