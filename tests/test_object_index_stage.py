@@ -1018,3 +1018,141 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
     monkeypatch.setattr(oi, "run_object_index_stage", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
     assert oi.main(["--capture-root", str(capture_root)]) == 1
     assert "FAILED: boom" in capsys.readouterr().out
+
+
+def test_normalize_detection_payload_tolerates_malformed_backend_reports(tmp_path: Path) -> None:
+    """Malformed/partial backend payloads normalize to empty-but-valid output, no raise."""
+    keyframes = {0: _keyframe(tmp_path, 0)}
+
+    # Missing detections/objects keys entirely -> empty tuple, no raise.
+    detections, manip, artic, tasks = oi._normalize_detection_payload(
+        backend_name="b", payload={}, keyframes_by_index=keyframes
+    )
+    assert detections == []
+    assert (manip, artic, tasks) == ([], [], [])
+
+    # detections / items not a list -> ignored, empty detections.
+    assert oi._normalize_detection_payload(
+        backend_name="b", payload={"detections": "bad"}, keyframes_by_index=keyframes
+    )[0] == []
+    assert oi._normalize_detection_payload(
+        backend_name="b", payload={"items": {"x": 1}}, keyframes_by_index=keyframes
+    )[0] == []
+
+    # Detections missing bbox / label / score, plus non-mapping rows, all dropped.
+    detections, manip, artic, tasks = oi._normalize_detection_payload(
+        backend_name="b",
+        payload={
+            "detections": [
+                "string-row",
+                42,
+                None,
+                {"frame_index": 0, "label": "NoBox"},  # missing bbox -> dropped
+                {"frame_index": 0, "bbox": [0, 0, 10, 10]},  # missing label -> dropped
+                {"frame_index": 0, "label": "", "bbox": [0, 0, 10, 10]},  # blank label -> dropped
+                {"frame_index": 7, "label": "OffFrame", "bbox": [0, 0, 10, 10]},  # unknown keyframe -> dropped
+                {"frame_index": 0, "label": "GoodNoScore", "bbox": [1, 2, 9, 9]},  # kept, score defaults to 0.0
+            ],
+            # Non-list grounding collections must normalize to empty lists.
+            "manipulation_candidates": "bad",
+            "articulation_hints": 7,
+            "tasks": {"not": "a list"},
+        },
+        keyframes_by_index=keyframes,
+    )
+    assert [item["label"] for item in detections] == ["GoodNoScore"]
+    assert detections[0]["score"] == 0.0
+    assert (manip, artic, tasks) == ([], [], [])
+
+    # Mixed grounding collections: only mapping entries survive.
+    _, manip, artic, tasks = oi._normalize_detection_payload(
+        backend_name="b",
+        payload={
+            "manipulation_candidates": [{"id": "m"}, "bad", 3],
+            "articulation_hints": [{"id": "a"}, None],
+            "tasks": [{"id": "t"}, ["nested"]],
+        },
+        keyframes_by_index=keyframes,
+    )
+    assert manip == [{"id": "m"}]
+    assert artic == [{"id": "a"}]
+    assert tasks == [{"id": "t"}]
+
+
+def test_run_object_index_stage_normalizes_mixed_malformed_backend_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mix of ok-but-malformed / failed / skipped backends yields empty-but-valid artifacts.
+
+    Reuses the stage stubbing pattern (resolve context, keyframes, _run_backend_command)
+    and asserts the stage does not raise and records empty_index_cause.
+    """
+    capture_root, stage_context = _capture_tree(tmp_path / "stage")
+    monkeypatch.setattr(oi, "resolve_local_capture_context", lambda _capture_root: stage_context)
+    monkeypatch.setattr(oi, "load_raw_manifest", lambda *_args, **_kwargs: _manifest("walkthrough.mp4"))
+    monkeypatch.setattr(oi, "build_capture_enrichment_runner", lambda **_kwargs: None)
+    monkeypatch.setattr(oi, "_sample_keyframes", lambda **_kwargs: [_keyframe(tmp_path, 0)])
+    monkeypatch.setattr(oi, "_extract_keyframe_images", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(oi, "_resolve_video_path", lambda *_args, **_kwargs: stage_context.raw_root / "walkthrough.mp4")
+    monkeypatch.setattr(oi, "_command_from_env", lambda name: f"{name.lower()} {{INPUT_JSON}} {{OUTPUT_JSON}}")
+    monkeypatch.setattr(
+        oi,
+        "_backend_preflight_status",
+        lambda backend_name, command_template: {
+            "status": "ready",
+            "support_level": "optional" if backend_name in {"sam3", "splat_analyzer"} else "required",
+        },
+    )
+
+    def mixed_backend(backend_name: str, **_kwargs):
+        if backend_name == "yolo_world":
+            # ok status but the payload is structurally malformed in every field.
+            return {
+                "status": "ok",
+                "backend": backend_name,
+                "payload": {
+                    "detections": "not-a-list",
+                    "manipulation_candidates": {"bad": True},
+                    "articulation_hints": 5,
+                    "tasks": "nope",
+                },
+            }
+        if backend_name == "grounding_dino":
+            # ok status, detections present but each row is missing bbox/label/score.
+            return {
+                "status": "ok",
+                "backend": backend_name,
+                "payload": {
+                    "detections": [
+                        {"frame_index": 0, "label": "NoBox"},
+                        {"frame_index": 0, "bbox": [0, 0, 5, 5]},
+                        "garbage-row",
+                        99,
+                    ]
+                },
+            }
+        if backend_name == "sam3":
+            return {"status": "failed", "backend": backend_name, "reason": "model unavailable"}
+        return {"status": "skipped", "backend": backend_name, "reason": "missing_local_splat_asset"}
+
+    monkeypatch.setattr(oi, "_run_backend_command", mixed_backend)
+    monkeypatch.setattr(oi, "_copy_crop", lambda _frame, path, _bbox: path.write_bytes(b"crop"))
+
+    result = oi.run_object_index_stage(capture_root=capture_root, force_rebuild=True)
+
+    assert result["status"] == "built"
+    assert result["object_count"] == 0
+    report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
+    # No detections survived normalization -> empty index, valid cause recorded.
+    assert report["object_count"] == 0
+    assert report["empty_index_cause"] in {"zero_detections", "all_filtered", "backend_skipped"}
+    # Manifest + grounding artifacts are still written and structurally valid.
+    assert Path(result["manifest_path"]).is_file()
+    manifest_payload = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest_payload["objects"] == []
+    grounding = json.loads((stage_context.raw_root / "object_grounding_hints.json").read_text(encoding="utf-8"))
+    assert grounding["grounded_objects"] == []
+    assert grounding["manipulation_candidates"] == []
+    assert grounding["articulation_hints"] == []
+    assert grounding["tasks"] == []
