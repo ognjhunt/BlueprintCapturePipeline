@@ -1259,6 +1259,216 @@ def _evidence_tier(
     return "pre_screen_video"
 
 
+def _discover_raw_sidecars(
+    *,
+    raw_root: Path,
+    raw_prefix_uri: str,
+    manifest: Mapping[str, Any],
+    source: str,
+    source_device: str,
+) -> Dict[str, Any]:
+    """Probe the raw bundle for sidecar files and project them to gs:// URIs.
+
+    Pure raw-sidecar discovery extracted from :func:`build_capture_bundle_records`.
+    Returns the same per-sensor URIs, media metadata, geometry-readiness flags, and
+    pose-alignment values the orchestrator previously computed inline. No writes.
+    """
+    arkit_root = raw_root / "arkit"
+    arcore_root = raw_root / "arcore"
+    companion_phone_root = raw_root / "companion_phone"
+    has_metric_arkit_bundle = bool(
+        (arkit_root / "poses.jsonl").is_file()
+        and (arkit_root / "intrinsics.json").is_file()
+        and (arkit_root / "depth").is_dir()
+    )
+
+    arkit_poses_uri = join_gs_uri(raw_prefix_uri, "arkit/poses.jsonl") if (arkit_root / "poses.jsonl").is_file() else None
+    arkit_intrinsics_uri = join_gs_uri(raw_prefix_uri, "arkit/intrinsics.json") if (arkit_root / "intrinsics.json").is_file() else None
+    arkit_frames_uri = join_gs_uri(raw_prefix_uri, "arkit/frames.jsonl") if (arkit_root / "frames.jsonl").is_file() else None
+    arkit_depth_prefix_uri = join_gs_uri(raw_prefix_uri, "arkit/depth") if (arkit_root / "depth").is_dir() else None
+    arkit_confidence_prefix_uri = join_gs_uri(raw_prefix_uri, "arkit/confidence") if (arkit_root / "confidence").is_dir() else None
+    arcore_poses_uri = join_gs_uri(raw_prefix_uri, "arcore/poses.jsonl") if (arcore_root / "poses.jsonl").is_file() else None
+    arcore_intrinsics_uri = join_gs_uri(raw_prefix_uri, "arcore/session_intrinsics.json") if (arcore_root / "session_intrinsics.json").is_file() else None
+    arcore_frames_uri = join_gs_uri(raw_prefix_uri, "arcore/frames.jsonl") if (arcore_root / "frames.jsonl").is_file() else None
+    arcore_depth_manifest_uri = join_gs_uri(raw_prefix_uri, "arcore/depth_manifest.json") if (arcore_root / "depth_manifest.json").is_file() else None
+    arcore_confidence_manifest_uri = join_gs_uri(raw_prefix_uri, "arcore/confidence_manifest.json") if (arcore_root / "confidence_manifest.json").is_file() else None
+    arcore_depth_prefix_uri = join_gs_uri(raw_prefix_uri, "arcore/depth") if (arcore_root / "depth").is_dir() else None
+    arcore_confidence_prefix_uri = join_gs_uri(raw_prefix_uri, "arcore/confidence") if (arcore_root / "confidence").is_dir() else None
+    arcore_point_cloud_uri = join_gs_uri(raw_prefix_uri, "arcore/point_cloud.jsonl") if (arcore_root / "point_cloud.jsonl").is_file() else None
+    arcore_planes_uri = join_gs_uri(raw_prefix_uri, "arcore/planes.jsonl") if (arcore_root / "planes.jsonl").is_file() else None
+    arcore_tracking_state_uri = join_gs_uri(raw_prefix_uri, "arcore/tracking_state.jsonl") if (arcore_root / "tracking_state.jsonl").is_file() else None
+    arcore_light_estimates_uri = join_gs_uri(raw_prefix_uri, "arcore/light_estimates.jsonl") if (arcore_root / "light_estimates.jsonl").is_file() else None
+    companion_phone_poses_uri = join_gs_uri(raw_prefix_uri, "companion_phone/poses.jsonl") if (companion_phone_root / "poses.jsonl").is_file() else None
+    companion_phone_intrinsics_uri = join_gs_uri(raw_prefix_uri, "companion_phone/session_intrinsics.json") if (companion_phone_root / "session_intrinsics.json").is_file() else None
+    companion_phone_calibration_uri = join_gs_uri(raw_prefix_uri, "companion_phone/calibration.json") if (companion_phone_root / "calibration.json").is_file() else None
+    object_index_uri = join_gs_uri(raw_prefix_uri, "object_index.json") if (raw_root / "object_index.json").is_file() else None
+    motion_log_uri = join_gs_uri(raw_prefix_uri, "motion.jsonl") if (raw_root / "motion.jsonl").is_file() else None
+
+    video_candidates = _raw_video_candidates(raw_root)
+    raw_video_uri = (
+        join_gs_uri(raw_prefix_uri, video_candidates[0])
+        if video_candidates
+        else str(manifest.get("video_uri") or "").strip()
+        or None
+    )
+    frame_timestamps_uri = (
+        join_gs_uri(raw_prefix_uri, "glasses/frame_timestamps.jsonl")
+        if (raw_root / "glasses" / "frame_timestamps.jsonl").is_file()
+        else None
+    )
+    stream_metadata_uri = (
+        join_gs_uri(raw_prefix_uri, "glasses/stream_metadata.json")
+        if (raw_root / "glasses" / "stream_metadata.json").is_file()
+        else None
+    )
+    media_metadata = {
+        "source_device": source_device,
+        "capture_source": source,
+        "original_video_uri": raw_video_uri,
+        "original_video_path": str(raw_root / video_candidates[0]) if video_candidates else None,
+        "frame_timestamps_uri": frame_timestamps_uri,
+        "stream_metadata_uri": stream_metadata_uri,
+        "video_metadata": {
+            "width": try_parse_float(manifest.get("width"), 0.0),
+            "height": try_parse_float(manifest.get("height"), 0.0),
+            "fps_source": try_parse_float(manifest.get("fps_source"), 0.0),
+            "capture_start_epoch_ms": try_parse_float(manifest.get("capture_start_epoch_ms"), 0.0),
+        },
+    }
+    arkit_geometry_ready = bool(
+        arkit_poses_uri is not None
+        and arkit_intrinsics_uri is not None
+        and arkit_depth_prefix_uri is not None
+    )
+    arcore_geometry_present = bool(arcore_poses_uri is not None and arcore_intrinsics_uri is not None)
+    geometry_source = "arkit" if arkit_geometry_ready else "arcore" if arcore_geometry_present else None
+
+    pose_alignment = _inspect_pose_alignment(raw_root)
+    pose_match_rate = try_parse_float(
+        manifest.get("pose_match_rate"),
+        pose_alignment.get("pose_match_rate"),
+    )
+    p95_pose_delta_sec = try_parse_float(
+        manifest.get("p95_pose_delta_sec"),
+        pose_alignment.get("p95_pose_delta_sec"),
+    )
+    pose_alignment_ok = source != "iphone" or _iphone_pose_alignment_ok(
+        pose_match_rate,
+        p95_pose_delta_sec,
+    )
+
+    return {
+        "has_metric_arkit_bundle": has_metric_arkit_bundle,
+        "arkit_poses_uri": arkit_poses_uri,
+        "arkit_intrinsics_uri": arkit_intrinsics_uri,
+        "arkit_frames_uri": arkit_frames_uri,
+        "arkit_depth_prefix_uri": arkit_depth_prefix_uri,
+        "arkit_confidence_prefix_uri": arkit_confidence_prefix_uri,
+        "arcore_poses_uri": arcore_poses_uri,
+        "arcore_intrinsics_uri": arcore_intrinsics_uri,
+        "arcore_frames_uri": arcore_frames_uri,
+        "arcore_depth_manifest_uri": arcore_depth_manifest_uri,
+        "arcore_confidence_manifest_uri": arcore_confidence_manifest_uri,
+        "arcore_depth_prefix_uri": arcore_depth_prefix_uri,
+        "arcore_confidence_prefix_uri": arcore_confidence_prefix_uri,
+        "arcore_point_cloud_uri": arcore_point_cloud_uri,
+        "arcore_planes_uri": arcore_planes_uri,
+        "arcore_tracking_state_uri": arcore_tracking_state_uri,
+        "arcore_light_estimates_uri": arcore_light_estimates_uri,
+        "companion_phone_poses_uri": companion_phone_poses_uri,
+        "companion_phone_intrinsics_uri": companion_phone_intrinsics_uri,
+        "companion_phone_calibration_uri": companion_phone_calibration_uri,
+        "object_index_uri": object_index_uri,
+        "motion_log_uri": motion_log_uri,
+        "video_candidates": video_candidates,
+        "raw_video_uri": raw_video_uri,
+        "media_metadata": media_metadata,
+        "arkit_geometry_ready": arkit_geometry_ready,
+        "arcore_geometry_present": arcore_geometry_present,
+        "geometry_source": geometry_source,
+        "pose_match_rate": pose_match_rate,
+        "p95_pose_delta_sec": p95_pose_delta_sec,
+        "pose_alignment_ok": pose_alignment_ok,
+    }
+
+
+def _resolve_world_model_candidacy(
+    *,
+    manifest: Mapping[str, Any],
+    sidecars: Mapping[str, Any],
+    intake_complete: bool,
+    evidence_tier: str,
+    source: str,
+) -> Dict[str, Any]:
+    """Project the capture-mode / world-model candidacy policy.
+
+    Pure candidacy-policy projection extracted from
+    :func:`build_capture_bundle_records`. Bundles the world-model candidate flag,
+    its reasoning, and the normalized capture-mode block so the descriptor, metadata,
+    and qa-report assembly all reuse one consistent computation. No I/O.
+    """
+    arkit_poses_uri = sidecars["arkit_poses_uri"]
+    arkit_intrinsics_uri = sidecars["arkit_intrinsics_uri"]
+    arkit_depth_prefix_uri = sidecars["arkit_depth_prefix_uri"]
+    geometry_ready = sidecars["arkit_geometry_ready"]
+    geometry_source = sidecars["geometry_source"]
+    pose_match_rate = sidecars["pose_match_rate"]
+    p95_pose_delta_sec = sidecars["p95_pose_delta_sec"]
+
+    world_model_candidate = _canonical_world_model_candidate(
+        manifest=manifest,
+        arkit_poses_uri=arkit_poses_uri,
+        arkit_intrinsics_uri=arkit_intrinsics_uri,
+        arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+        intake_complete=intake_complete,
+        evidence_tier=evidence_tier,
+        capture_source=source,
+        pose_match_rate=pose_match_rate,
+        p95_pose_delta_sec=p95_pose_delta_sec,
+        geometry_ready=geometry_ready,
+        geometry_source=geometry_source,
+    )
+    world_model_candidate_reasoning = _world_model_candidate_reasoning(
+        manifest=manifest,
+        arkit_poses_uri=arkit_poses_uri,
+        arkit_intrinsics_uri=arkit_intrinsics_uri,
+        arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+        intake_complete=intake_complete,
+        capture_source=source,
+        pose_match_rate=pose_match_rate,
+        p95_pose_delta_sec=p95_pose_delta_sec,
+        geometry_ready=geometry_ready,
+        geometry_source=geometry_source,
+    )
+    capture_mode = _normalized_capture_mode(
+        manifest=manifest,
+        arkit_poses_uri=arkit_poses_uri,
+        arkit_intrinsics_uri=arkit_intrinsics_uri,
+        arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+        intake_complete=intake_complete,
+        evidence_tier=evidence_tier,
+        capture_source=source,
+        pose_match_rate=pose_match_rate,
+        p95_pose_delta_sec=p95_pose_delta_sec,
+        geometry_ready=geometry_ready,
+        geometry_source=geometry_source,
+    )
+    readiness_world_model_candidate = _canonical_world_model_candidate(
+        manifest=manifest,
+        arkit_poses_uri=arkit_poses_uri,
+        arkit_intrinsics_uri=arkit_intrinsics_uri,
+        arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+        intake_complete=intake_complete,
+        evidence_tier=evidence_tier,
+    )
+    return {
+        "world_model_candidate": world_model_candidate,
+        "world_model_candidate_reasoning": world_model_candidate_reasoning,
+        "capture_mode": capture_mode,
+        "readiness_world_model_candidate": readiness_world_model_candidate,
+    }
+
+
 def materialize_capture_bundle(
     *,
     bucket: str,
@@ -1323,14 +1533,14 @@ def build_capture_bundle_records(
     calibration_assets = _string_list(context.get("calibrationAssets") or manifest.get("calibration_assets"))
     uncertainty_priors = _dict_float(context.get("uncertaintyPriors") or manifest.get("uncertainty_priors"))
 
-    arkit_root = raw_root / "arkit"
-    arcore_root = raw_root / "arcore"
-    companion_phone_root = raw_root / "companion_phone"
-    has_metric_arkit_bundle = bool(
-        (arkit_root / "poses.jsonl").is_file()
-        and (arkit_root / "intrinsics.json").is_file()
-        and (arkit_root / "depth").is_dir()
+    sidecars = _discover_raw_sidecars(
+        raw_root=raw_root,
+        raw_prefix_uri=raw_prefix_uri,
+        manifest=manifest,
+        source=source,
+        source_device=source_device,
     )
+    has_metric_arkit_bundle = sidecars["has_metric_arkit_bundle"]
     modality = _capture_modality(
         manifest,
         context,
@@ -1338,120 +1548,34 @@ def build_capture_bundle_records(
         scaffolding_used,
         has_metric_arkit_bundle,
     )
-    arkit_poses_uri = None
-    arkit_intrinsics_uri = None
-    arkit_frames_uri = None
-    arkit_depth_prefix_uri = None
-    arkit_confidence_prefix_uri = None
-    arcore_poses_uri = None
-    arcore_intrinsics_uri = None
-    arcore_frames_uri = None
-    arcore_depth_manifest_uri = None
-    arcore_confidence_manifest_uri = None
-    arcore_depth_prefix_uri = None
-    arcore_confidence_prefix_uri = None
-    arcore_point_cloud_uri = None
-    arcore_planes_uri = None
-    arcore_tracking_state_uri = None
-    arcore_light_estimates_uri = None
-    companion_phone_poses_uri = None
-    companion_phone_intrinsics_uri = None
-    companion_phone_calibration_uri = None
-    object_index_uri = None
-    motion_log_uri = None
-    if (arkit_root / "poses.jsonl").is_file():
-        arkit_poses_uri = join_gs_uri(raw_prefix_uri, "arkit/poses.jsonl")
-    if (arkit_root / "intrinsics.json").is_file():
-        arkit_intrinsics_uri = join_gs_uri(raw_prefix_uri, "arkit/intrinsics.json")
-    if (arkit_root / "frames.jsonl").is_file():
-        arkit_frames_uri = join_gs_uri(raw_prefix_uri, "arkit/frames.jsonl")
-    if (arkit_root / "depth").is_dir():
-        arkit_depth_prefix_uri = join_gs_uri(raw_prefix_uri, "arkit/depth")
-    if (arkit_root / "confidence").is_dir():
-        arkit_confidence_prefix_uri = join_gs_uri(raw_prefix_uri, "arkit/confidence")
-    if (arcore_root / "poses.jsonl").is_file():
-        arcore_poses_uri = join_gs_uri(raw_prefix_uri, "arcore/poses.jsonl")
-    if (arcore_root / "session_intrinsics.json").is_file():
-        arcore_intrinsics_uri = join_gs_uri(raw_prefix_uri, "arcore/session_intrinsics.json")
-    if (arcore_root / "frames.jsonl").is_file():
-        arcore_frames_uri = join_gs_uri(raw_prefix_uri, "arcore/frames.jsonl")
-    if (arcore_root / "depth_manifest.json").is_file():
-        arcore_depth_manifest_uri = join_gs_uri(raw_prefix_uri, "arcore/depth_manifest.json")
-    if (arcore_root / "confidence_manifest.json").is_file():
-        arcore_confidence_manifest_uri = join_gs_uri(raw_prefix_uri, "arcore/confidence_manifest.json")
-    if (arcore_root / "depth").is_dir():
-        arcore_depth_prefix_uri = join_gs_uri(raw_prefix_uri, "arcore/depth")
-    if (arcore_root / "confidence").is_dir():
-        arcore_confidence_prefix_uri = join_gs_uri(raw_prefix_uri, "arcore/confidence")
-    if (arcore_root / "point_cloud.jsonl").is_file():
-        arcore_point_cloud_uri = join_gs_uri(raw_prefix_uri, "arcore/point_cloud.jsonl")
-    if (arcore_root / "planes.jsonl").is_file():
-        arcore_planes_uri = join_gs_uri(raw_prefix_uri, "arcore/planes.jsonl")
-    if (arcore_root / "tracking_state.jsonl").is_file():
-        arcore_tracking_state_uri = join_gs_uri(raw_prefix_uri, "arcore/tracking_state.jsonl")
-    if (arcore_root / "light_estimates.jsonl").is_file():
-        arcore_light_estimates_uri = join_gs_uri(raw_prefix_uri, "arcore/light_estimates.jsonl")
-    if (companion_phone_root / "poses.jsonl").is_file():
-        companion_phone_poses_uri = join_gs_uri(raw_prefix_uri, "companion_phone/poses.jsonl")
-    if (companion_phone_root / "session_intrinsics.json").is_file():
-        companion_phone_intrinsics_uri = join_gs_uri(raw_prefix_uri, "companion_phone/session_intrinsics.json")
-    if (companion_phone_root / "calibration.json").is_file():
-        companion_phone_calibration_uri = join_gs_uri(raw_prefix_uri, "companion_phone/calibration.json")
-    if (raw_root / "object_index.json").is_file():
-        object_index_uri = join_gs_uri(raw_prefix_uri, "object_index.json")
-    if (raw_root / "motion.jsonl").is_file():
-        motion_log_uri = join_gs_uri(raw_prefix_uri, "motion.jsonl")
-    video_candidates = _raw_video_candidates(raw_root)
-    raw_video_uri = (
-        join_gs_uri(raw_prefix_uri, video_candidates[0])
-        if video_candidates
-        else str(manifest.get("video_uri") or "").strip()
-        or None
-    )
-    frame_timestamps_uri = (
-        join_gs_uri(raw_prefix_uri, "glasses/frame_timestamps.jsonl")
-        if (raw_root / "glasses" / "frame_timestamps.jsonl").is_file()
-        else None
-    )
-    stream_metadata_uri = (
-        join_gs_uri(raw_prefix_uri, "glasses/stream_metadata.json")
-        if (raw_root / "glasses" / "stream_metadata.json").is_file()
-        else None
-    )
-    media_metadata = {
-        "source_device": source_device,
-        "capture_source": source,
-        "original_video_uri": raw_video_uri,
-        "original_video_path": str(raw_root / video_candidates[0]) if video_candidates else None,
-        "frame_timestamps_uri": frame_timestamps_uri,
-        "stream_metadata_uri": stream_metadata_uri,
-        "video_metadata": {
-            "width": try_parse_float(manifest.get("width"), 0.0),
-            "height": try_parse_float(manifest.get("height"), 0.0),
-            "fps_source": try_parse_float(manifest.get("fps_source"), 0.0),
-            "capture_start_epoch_ms": try_parse_float(manifest.get("capture_start_epoch_ms"), 0.0),
-        },
-    }
-    arkit_geometry_ready = bool(
-        arkit_poses_uri is not None
-        and arkit_intrinsics_uri is not None
-        and arkit_depth_prefix_uri is not None
-    )
-    arcore_geometry_present = bool(arcore_poses_uri is not None and arcore_intrinsics_uri is not None)
-    geometry_source = "arkit" if arkit_geometry_ready else "arcore" if arcore_geometry_present else None
-    pose_alignment = _inspect_pose_alignment(raw_root)
-    pose_match_rate = try_parse_float(
-        manifest.get("pose_match_rate"),
-        pose_alignment.get("pose_match_rate"),
-    )
-    p95_pose_delta_sec = try_parse_float(
-        manifest.get("p95_pose_delta_sec"),
-        pose_alignment.get("p95_pose_delta_sec"),
-    )
-    pose_alignment_ok = source != "iphone" or _iphone_pose_alignment_ok(
-        pose_match_rate,
-        p95_pose_delta_sec,
-    )
+    arkit_poses_uri = sidecars["arkit_poses_uri"]
+    arkit_intrinsics_uri = sidecars["arkit_intrinsics_uri"]
+    arkit_frames_uri = sidecars["arkit_frames_uri"]
+    arkit_depth_prefix_uri = sidecars["arkit_depth_prefix_uri"]
+    arkit_confidence_prefix_uri = sidecars["arkit_confidence_prefix_uri"]
+    arcore_poses_uri = sidecars["arcore_poses_uri"]
+    arcore_intrinsics_uri = sidecars["arcore_intrinsics_uri"]
+    arcore_frames_uri = sidecars["arcore_frames_uri"]
+    arcore_depth_manifest_uri = sidecars["arcore_depth_manifest_uri"]
+    arcore_confidence_manifest_uri = sidecars["arcore_confidence_manifest_uri"]
+    arcore_depth_prefix_uri = sidecars["arcore_depth_prefix_uri"]
+    arcore_confidence_prefix_uri = sidecars["arcore_confidence_prefix_uri"]
+    arcore_point_cloud_uri = sidecars["arcore_point_cloud_uri"]
+    arcore_planes_uri = sidecars["arcore_planes_uri"]
+    arcore_tracking_state_uri = sidecars["arcore_tracking_state_uri"]
+    arcore_light_estimates_uri = sidecars["arcore_light_estimates_uri"]
+    companion_phone_poses_uri = sidecars["companion_phone_poses_uri"]
+    companion_phone_intrinsics_uri = sidecars["companion_phone_intrinsics_uri"]
+    companion_phone_calibration_uri = sidecars["companion_phone_calibration_uri"]
+    object_index_uri = sidecars["object_index_uri"]
+    motion_log_uri = sidecars["motion_log_uri"]
+    raw_video_uri = sidecars["raw_video_uri"]
+    media_metadata = sidecars["media_metadata"]
+    arkit_geometry_ready = sidecars["arkit_geometry_ready"]
+    geometry_source = sidecars["geometry_source"]
+    pose_match_rate = sidecars["pose_match_rate"]
+    p95_pose_delta_sec = sidecars["p95_pose_delta_sec"]
+    pose_alignment_ok = sidecars["pose_alignment_ok"]
 
     frames_index_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/frames/index.jsonl"
     frames_dir = capture_root / "frames"
@@ -1508,6 +1632,17 @@ def build_capture_bundle_records(
         calibration_assets=calibration_assets,
         scaffolding_validation=scaffolding_validation,
     )
+    candidacy = _resolve_world_model_candidacy(
+        manifest=manifest,
+        sidecars=sidecars,
+        intake_complete=intake_complete,
+        evidence_tier=evidence_tier,
+        source=source,
+    )
+    world_model_candidate = candidacy["world_model_candidate"]
+    world_model_candidate_reasoning = candidacy["world_model_candidate_reasoning"]
+    capture_mode = candidacy["capture_mode"]
+    readiness_world_model_candidate = candidacy["readiness_world_model_candidate"]
     normalized_site_identity = _normalized_site_identity(manifest)
     normalized_capture_topology = _normalized_capture_topology(manifest)
     normalized_route_anchors = _normalized_route_anchors(manifest.get("route_anchors"))
@@ -1607,31 +1742,8 @@ def build_capture_bundle_records(
                 "companion_phone_calibration": companion_phone_calibration_uri is not None,
             },
             "operator_notes": [],
-            "world_model_candidate": _canonical_world_model_candidate(
-                manifest=manifest,
-                arkit_poses_uri=arkit_poses_uri,
-                arkit_intrinsics_uri=arkit_intrinsics_uri,
-                arkit_depth_prefix_uri=arkit_depth_prefix_uri,
-                intake_complete=intake_complete,
-                evidence_tier=evidence_tier,
-                capture_source=source,
-                pose_match_rate=pose_match_rate,
-                p95_pose_delta_sec=p95_pose_delta_sec,
-                geometry_ready=arkit_geometry_ready,
-                geometry_source=geometry_source,
-            ),
-            "world_model_candidate_reasoning": _world_model_candidate_reasoning(
-                manifest=manifest,
-                arkit_poses_uri=arkit_poses_uri,
-                arkit_intrinsics_uri=arkit_intrinsics_uri,
-                arkit_depth_prefix_uri=arkit_depth_prefix_uri,
-                intake_complete=intake_complete,
-                capture_source=source,
-                pose_match_rate=pose_match_rate,
-                p95_pose_delta_sec=p95_pose_delta_sec,
-                geometry_ready=arkit_geometry_ready,
-                geometry_source=geometry_source,
-            ),
+            "world_model_candidate": world_model_candidate,
+            "world_model_candidate_reasoning": world_model_candidate_reasoning,
             "geometry_source": geometry_source,
             "geometry_ready": arkit_geometry_ready,
         },
@@ -1640,19 +1752,7 @@ def build_capture_bundle_records(
         "route_anchors": normalized_route_anchors,
         "checkpoint_events": normalized_checkpoint_events,
         "relocalization_events": normalized_relocalization_events,
-        "capture_mode": _normalized_capture_mode(
-            manifest=manifest,
-            arkit_poses_uri=arkit_poses_uri,
-            arkit_intrinsics_uri=arkit_intrinsics_uri,
-            arkit_depth_prefix_uri=arkit_depth_prefix_uri,
-            intake_complete=intake_complete,
-            evidence_tier=evidence_tier,
-            capture_source=source,
-            pose_match_rate=pose_match_rate,
-            p95_pose_delta_sec=p95_pose_delta_sec,
-            geometry_ready=arkit_geometry_ready,
-            geometry_source=geometry_source,
-        ),
+        "capture_mode": capture_mode,
     }
 
     descriptor = {
@@ -1758,19 +1858,7 @@ def build_capture_bundle_records(
             "pose_alignment_ok": pose_alignment_ok,
             "has_metric_geometry": evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"},
             "intake_complete": intake_complete,
-            "world_model_candidate": _canonical_world_model_candidate(
-                manifest=manifest,
-                arkit_poses_uri=arkit_poses_uri,
-                arkit_intrinsics_uri=arkit_intrinsics_uri,
-                arkit_depth_prefix_uri=arkit_depth_prefix_uri,
-                intake_complete=intake_complete,
-                evidence_tier=evidence_tier,
-                capture_source=source,
-                pose_match_rate=pose_match_rate,
-                p95_pose_delta_sec=p95_pose_delta_sec,
-                geometry_ready=arkit_geometry_ready,
-                geometry_source=geometry_source,
-            ),
+            "world_model_candidate": world_model_candidate,
             "geometry_source": geometry_source,
             "geometry_ready": arkit_geometry_ready,
         },
@@ -1865,14 +1953,7 @@ def build_capture_bundle_records(
             ),
         },
         "scene_memory_readiness": {
-            "world_model_candidate": _canonical_world_model_candidate(
-                manifest=manifest,
-                arkit_poses_uri=arkit_poses_uri,
-                arkit_intrinsics_uri=arkit_intrinsics_uri,
-                arkit_depth_prefix_uri=arkit_depth_prefix_uri,
-                intake_complete=intake_complete,
-                evidence_tier=evidence_tier,
-            ),
+            "world_model_candidate": readiness_world_model_candidate,
             "recommended_lane": recommended_lane,
             "derived_only": True,
         },

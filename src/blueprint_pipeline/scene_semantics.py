@@ -806,98 +806,98 @@ def _infer_capture_review_with_gemini_video(
     return None
 
 
-def infer_capture_fidelity_review(
+def _failed_capture_fidelity_review(
     *,
-    capture_root: Path,
     raw_video_path: Optional[Path],
-    keyframe_path: Optional[Path],
-    descriptor: Mapping[str, Any],
-    qa_report: Mapping[str, Any],
-    task_hypothesis_report: Optional[Mapping[str, Any]] = None,
-    capture_context: Optional[Mapping[str, Any]] = None,
-    timeout_sec: int = 45,
+    review_mode: str,
 ) -> Dict[str, Any]:
-    qa_quality = qa_report.get("quality") if isinstance(qa_report.get("quality"), Mapping) else {}
-    review_mode = "video_file_upload"
-    review = None
-    if raw_video_path is not None and raw_video_path.is_file():
-        review = _infer_capture_review_with_gemini_video(
-            raw_video_path=raw_video_path,
-            descriptor=descriptor,
-            qa_report=qa_report,
-            task_hypothesis_report=task_hypothesis_report,
-            capture_context=capture_context,
-            timeout_sec=max(5, int(timeout_sec)),
-        )
+    """Assemble the fail-closed capture-fidelity review payload (no model result).
 
-    if review is None:
-        reasons = []
-        if raw_video_path is None or not raw_video_path.is_file():
-            reasons.append("raw walkthrough video is missing")
-        if not reasons:
-            reasons.append("Gemini raw-video review is unavailable or failed")
-        return {
-            "schema_version": "v1",
-            "review_type": "gemini_multimodal_capture_review",
-            "status": "failed",
-            "generated_at": _utc_now_iso(),
+    Pure assembly helper extracted from :func:`infer_capture_fidelity_review`; the
+    returned dict shape is identical to the prior inline ``review is None`` branch.
+    """
+    reasons = []
+    if raw_video_path is None or not raw_video_path.is_file():
+        reasons.append("raw walkthrough video is missing")
+    if not reasons:
+        reasons.append("Gemini raw-video review is unavailable or failed")
+    return {
+        "schema_version": "v1",
+        "review_type": "gemini_multimodal_capture_review",
+        "status": "failed",
+        "generated_at": _utc_now_iso(),
+        "provider_name": "gemini",
+        "provider_model": None,
+        "review_mode": review_mode,
+        "confidence": 0.0,
+        "summary": "Gemini multimodal review did not complete.",
+        "raw_video_present": bool(raw_video_path and raw_video_path.is_file()),
+        "raw_video_path": str(raw_video_path) if raw_video_path else None,
+        "keyframes_used": [],
+        "scores": {
+            "coverage": 0.0,
+            "visual_clarity": 0.0,
+            "lighting_stability": 0.0,
+            "motion_stability": 0.0,
+            "task_understanding": 0.0,
+            "world_model_fitness": 0.0,
+            "payout_quality": 0.0,
+        },
+        "bonus_signals": {
+            "complete_coverage": {"score": 0.0, "reason": "Gemini review unavailable."},
+            "multi_pass": {"score": 0.0, "reason": "Gemini review unavailable."},
+            "lidar_depth": {"score": 0.0, "reason": "Gemini review unavailable."},
+            "steady_walkthrough": {"score": 0.0, "reason": "Gemini review unavailable."},
+        },
+        "assessments": {
+            "blur": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Blur quality could not be reviewed.", default_impact="Manual review is required."),
+            "lighting": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Lighting quality could not be reviewed.", default_impact="Manual review is required."),
+            "motion_speed": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Motion speed could not be reviewed.", default_impact="Manual review is required."),
+            "doubling_back": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Doubling-back patterns could not be reviewed.", default_impact="Manual review is required."),
+            "coverage_completeness": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Coverage completeness could not be reviewed.", default_impact="Manual review is required."),
+            "task_zone_completeness": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Task-zone completeness could not be reviewed.", default_impact="Manual review is required."),
+            "occlusion_and_hidden_zone": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Hidden-zone quality could not be reviewed.", default_impact="Manual review is required."),
+            "depth_and_spatial_conditioning": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Depth and spatial conditioning could not be reviewed.", default_impact="Manual review is required."),
+        },
+        "findings": {
+            "missing_views": [],
+            "blur_observations": [],
+            "lighting_observations": [],
+            "occlusion_observations": [],
+            "task_scope_notes": [],
+            "blocker_summaries": reasons,
+            "recapture_recommendations": reasons,
+        },
+        "recommendations": {
+            "world_model_recommendation": "review_required",
+            "payout_recommendation": "review_required",
+        },
+        "provenance": {
             "provider_name": "gemini",
             "provider_model": None,
-            "review_mode": review_mode,
-            "confidence": 0.0,
-            "summary": "Gemini multimodal review did not complete.",
-            "raw_video_present": bool(raw_video_path and raw_video_path.is_file()),
-            "raw_video_path": str(raw_video_path) if raw_video_path else None,
+            "raw_response": None,
+            "input_mode": review_mode,
             "keyframes_used": [],
-            "scores": {
-                "coverage": 0.0,
-                "visual_clarity": 0.0,
-                "lighting_stability": 0.0,
-                "motion_stability": 0.0,
-                "task_understanding": 0.0,
-                "world_model_fitness": 0.0,
-                "payout_quality": 0.0,
-            },
-            "bonus_signals": {
-                "complete_coverage": {"score": 0.0, "reason": "Gemini review unavailable."},
-                "multi_pass": {"score": 0.0, "reason": "Gemini review unavailable."},
-                "lidar_depth": {"score": 0.0, "reason": "Gemini review unavailable."},
-                "steady_walkthrough": {"score": 0.0, "reason": "Gemini review unavailable."},
-            },
-            "assessments": {
-                "blur": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Blur quality could not be reviewed.", default_impact="Manual review is required."),
-                "lighting": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Lighting quality could not be reviewed.", default_impact="Manual review is required."),
-                "motion_speed": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Motion speed could not be reviewed.", default_impact="Manual review is required."),
-                "doubling_back": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Doubling-back patterns could not be reviewed.", default_impact="Manual review is required."),
-                "coverage_completeness": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Coverage completeness could not be reviewed.", default_impact="Manual review is required."),
-                "task_zone_completeness": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Task-zone completeness could not be reviewed.", default_impact="Manual review is required."),
-                "occlusion_and_hidden_zone": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Hidden-zone quality could not be reviewed.", default_impact="Manual review is required."),
-                "depth_and_spatial_conditioning": _normalize_assessment(None, default_score=0.0, default_status="review_required", default_summary="Depth and spatial conditioning could not be reviewed.", default_impact="Manual review is required."),
-            },
-            "findings": {
-                "missing_views": [],
-                "blur_observations": [],
-                "lighting_observations": [],
-                "occlusion_observations": [],
-                "task_scope_notes": [],
-                "blocker_summaries": reasons,
-                "recapture_recommendations": reasons,
-            },
-            "recommendations": {
-                "world_model_recommendation": "review_required",
-                "payout_recommendation": "review_required",
-            },
-            "provenance": {
-                "provider_name": "gemini",
-                "provider_model": None,
-                "raw_response": None,
-                "input_mode": review_mode,
-                "keyframes_used": [],
-                "raw_video_path": str(raw_video_path) if raw_video_path else None,
-                "video_analysis_fps": _gemini_video_analysis_fps(),
-            },
-        }
+            "raw_video_path": str(raw_video_path) if raw_video_path else None,
+            "video_analysis_fps": _gemini_video_analysis_fps(),
+        },
+    }
 
+
+def _assemble_capture_fidelity_review(
+    *,
+    review: Mapping[str, Any],
+    descriptor: Mapping[str, Any],
+    qa_report: Mapping[str, Any],
+    raw_video_path: Optional[Path],
+    review_mode: str,
+) -> Dict[str, Any]:
+    """Project a successful Gemini review payload into the public review dict.
+
+    Pure assembly helper extracted from :func:`infer_capture_fidelity_review`; the
+    returned dict shape is identical to the prior inline success branch.
+    """
+    qa_quality = qa_report.get("quality") if isinstance(qa_report.get("quality"), Mapping) else {}
     scores_raw = review.get("scores") if isinstance(review.get("scores"), Mapping) else {}
     bonus_signals_raw = review.get("bonus_signals") if isinstance(review.get("bonus_signals"), Mapping) else {}
     findings = {
@@ -1061,3 +1061,49 @@ def infer_capture_fidelity_review(
             "video_file_uri": review.get("video_file_uri"),
         },
     }
+
+
+def infer_capture_fidelity_review(
+    *,
+    capture_root: Path,
+    raw_video_path: Optional[Path],
+    keyframe_path: Optional[Path],
+    descriptor: Mapping[str, Any],
+    qa_report: Mapping[str, Any],
+    task_hypothesis_report: Optional[Mapping[str, Any]] = None,
+    capture_context: Optional[Mapping[str, Any]] = None,
+    timeout_sec: int = 45,
+) -> Dict[str, Any]:
+    """Run a Gemini raw-video capture-fidelity review.
+
+    Thin orchestrator over the prompt-build / model-call / response-parse helpers
+    (:func:`_gemini_capture_review_prompt`, :func:`_infer_capture_review_with_gemini_video`,
+    :func:`_extract_response_text`) and the assembly helpers
+    (:func:`_failed_capture_fidelity_review`, :func:`_assemble_capture_fidelity_review`).
+    Public signature and returned dict shape are unchanged.
+    """
+    review_mode = "video_file_upload"
+    review = None
+    if raw_video_path is not None and raw_video_path.is_file():
+        review = _infer_capture_review_with_gemini_video(
+            raw_video_path=raw_video_path,
+            descriptor=descriptor,
+            qa_report=qa_report,
+            task_hypothesis_report=task_hypothesis_report,
+            capture_context=capture_context,
+            timeout_sec=max(5, int(timeout_sec)),
+        )
+
+    if review is None:
+        return _failed_capture_fidelity_review(
+            raw_video_path=raw_video_path,
+            review_mode=review_mode,
+        )
+
+    return _assemble_capture_fidelity_review(
+        review=review,
+        descriptor=descriptor,
+        qa_report=qa_report,
+        raw_video_path=raw_video_path,
+        review_mode=review_mode,
+    )

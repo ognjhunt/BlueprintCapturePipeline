@@ -659,3 +659,187 @@ def test_scene_semantics_retries_transient_and_deletes_uploaded_file(monkeypatch
     assert result.confidence == 0.0
     assert client.calls == 2
     assert client.deleted == ["files/retry"]
+
+
+def test_default_model_cascade_is_pinned_exactly() -> None:
+    # The model cascade order is load-bearing (rate-limit + Gemini 3.0 first).
+    assert tuple(semantics._DEFAULT_MODEL_CASCADE) == (
+        "gemini-3-flash-preview",
+        "gemini-3-pro-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+    )
+    # No override env => the model-call helper walks the full cascade in order.
+    assert semantics._gemini_models_from_override(
+        "CAPTURE_FIDELITY_GEMINI_MODEL", "SCENE_SEMANTICS_GEMINI_MODEL"
+    ) == [
+        "gemini-3-flash-preview",
+        "gemini-3-pro-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+    ]
+
+
+def test_extract_response_text_drops_thought_parts(monkeypatch) -> None:
+    # A leading thought part must be skipped even when it carries text, and the
+    # top-level .text (when present) short-circuits part scanning.
+    thought_then_answer = SimpleNamespace(
+        text="",
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(thought=True, text="internal chain of thought"),
+                        SimpleNamespace(thought=False, text="visible answer"),
+                    ]
+                )
+            )
+        ],
+    )
+    assert semantics._extract_response_text(thought_then_answer) == "visible answer"
+
+    # If every part is a thought, nothing is returned (fail-closed to "").
+    all_thoughts = SimpleNamespace(
+        text="",
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(thought=True, text="only reasoning"),
+                        SimpleNamespace(thought=True, text="more reasoning"),
+                    ]
+                )
+            )
+        ],
+    )
+    assert semantics._extract_response_text(all_thoughts) == ""
+
+    # A non-empty top-level .text wins outright, ignoring any thought parts.
+    top_level = SimpleNamespace(
+        text="top level text",
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(parts=[SimpleNamespace(thought=False, text="part text")])
+            )
+        ],
+    )
+    assert semantics._extract_response_text(top_level) == "top level text"
+
+
+def test_failed_capture_fidelity_review_helper_shape(tmp_path: Path) -> None:
+    # No video at all => "raw walkthrough video is missing" blocker.
+    payload = semantics._failed_capture_fidelity_review(
+        raw_video_path=None, review_mode="video_file_upload"
+    )
+    assert payload["status"] == "failed"
+    assert payload["review_mode"] == "video_file_upload"
+    assert payload["raw_video_present"] is False
+    assert payload["raw_video_path"] is None
+    assert payload["findings"]["blocker_summaries"] == ["raw walkthrough video is missing"]
+    assert payload["findings"]["recapture_recommendations"] == ["raw walkthrough video is missing"]
+    assert set(payload["scores"]) == {
+        "coverage",
+        "visual_clarity",
+        "lighting_stability",
+        "motion_stability",
+        "task_understanding",
+        "world_model_fitness",
+        "payout_quality",
+    }
+    assert set(payload["assessments"]) == {
+        "blur",
+        "lighting",
+        "motion_speed",
+        "doubling_back",
+        "coverage_completeness",
+        "task_zone_completeness",
+        "occlusion_and_hidden_zone",
+        "depth_and_spatial_conditioning",
+    }
+    assert payload["recommendations"] == {
+        "world_model_recommendation": "review_required",
+        "payout_recommendation": "review_required",
+    }
+
+    # A present video that nevertheless failed the model call => the other reason.
+    video = tmp_path / "walkthrough.mov"
+    video.write_bytes(b"video")
+    present = semantics._failed_capture_fidelity_review(
+        raw_video_path=video, review_mode="video_file_upload"
+    )
+    assert present["raw_video_present"] is True
+    assert present["findings"]["blocker_summaries"] == [
+        "Gemini raw-video review is unavailable or failed"
+    ]
+
+
+def test_assemble_capture_fidelity_review_helper_projection(tmp_path: Path) -> None:
+    video = tmp_path / "walkthrough.mov"
+    video.write_bytes(b"video")
+    review = {
+        "model": "gemini-3-flash-preview",
+        "raw_text": '{"summary":"ok"}',
+        "confidence": 0.92,
+        "summary": "looks good",
+        "scores": {
+            "coverage": 0.9,
+            "visual_clarity": 0.85,
+            "lighting_stability": 0.8,
+            "motion_stability": 0.75,
+            "task_understanding": 0.7,
+            "world_model_fitness": 0.6,
+            "payout_quality": 0.55,
+        },
+        "bonus_signals": {
+            "complete_coverage": {"score": 0.9, "reason": "full sweep"},
+            "multi_pass": {"score": 0.8, "reason": "revisited"},
+            "lidar_depth": {"score": 1.0, "reason": "lidar present"},
+            "steady_walkthrough": {"score": 0.7, "reason": "steady"},
+        },
+        "blur_assessment": {"status": "good", "score": 0.9, "summary": "sharp", "impact": "low"},
+        "missing_views": ["under the sink"],
+        "occlusion_observations": ["counter edge"],
+        "world_model_recommendation": "good_candidate",
+        "payout_recommendation": "bonus",
+        "video_analysis_fps": 5.0,
+        "video_file_name": "files/1",
+        "video_file_uri": "uri://1",
+    }
+    out = semantics._assemble_capture_fidelity_review(
+        review=review,
+        descriptor={"capture_modality": "iphone_arkit_lidar"},
+        qa_report={"quality": {"pose_match_rate": 0.8}},
+        raw_video_path=video,
+        review_mode="video_file_upload",
+    )
+    assert out["status"] == "succeeded"
+    assert out["provider_model"] == "gemini-3-flash-preview"
+    assert out["review_mode"] == "video_file_upload"
+    assert out["confidence"] == 0.92
+    assert out["assessments"]["blur"]["status"] == "good"
+    # lidar bonus default flows from iphone_arkit_lidar modality.
+    assert out["bonus_signals"]["lidar_depth"]["score"] == 1.0
+    assert out["findings"]["missing_views"] == ["under the sink"]
+    assert out["recommendations"]["world_model_recommendation"] == "good_candidate"
+    assert out["provenance"]["raw_response"] == '{"summary":"ok"}'
+    assert out["provenance"]["video_file_uri"] == "uri://1"
+    # The thin orchestrator returns the identical projection when the model call
+    # is stubbed to yield this same review payload.
+    import blueprint_pipeline.scene_semantics as ss_mod
+
+    orig = ss_mod._infer_capture_review_with_gemini_video
+    try:
+        ss_mod._infer_capture_review_with_gemini_video = lambda **_kwargs: dict(review)
+        via_orchestrator = infer_capture_fidelity_review(
+            capture_root=tmp_path,
+            raw_video_path=video,
+            keyframe_path=None,
+            descriptor={"capture_modality": "iphone_arkit_lidar"},
+            qa_report={"quality": {"pose_match_rate": 0.8}},
+            task_hypothesis_report=None,
+        )
+    finally:
+        ss_mod._infer_capture_review_with_gemini_video = orig
+    via_orchestrator.pop("generated_at", None)
+    out.pop("generated_at", None)
+    assert via_orchestrator == out

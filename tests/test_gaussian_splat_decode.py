@@ -1,12 +1,15 @@
 """Tests for blueprint_pipeline.gaussian_splat_decode."""
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import struct
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+import blueprint_pipeline.gaussian_splat_decode as gsd
 from blueprint_pipeline.gaussian_splat_decode import (
     SplatData,
     convert_to_standard_ply,
@@ -120,3 +123,88 @@ def test_find_cli_in_real_repo() -> None:
     cli = find_splat_transform_cli()
     # Either present (installed) or cleanly absent; must not raise.
     assert cli is None or cli.name == "cli.mjs"
+
+
+def test_splat_data_contract_fields_and_dtypes() -> None:
+    """Pin the exact SplatData field set + array dtypes/shapes that the hot lane
+    (Isaac NuRec geometry analysis) imports this module as a leaf to rely on."""
+    field_names = tuple(f.name for f in dataclasses.fields(SplatData))
+    assert field_names == (
+        "count",
+        "xyz",
+        "opacity",
+        "f_dc",
+        "scales",
+        "quats",
+        "properties",
+    )
+
+    count = 6
+    splat = _make_splat(count)
+    assert isinstance(splat.count, int) and splat.count == count
+
+    # float32 geometry/color/opacity arrays with the documented column counts.
+    assert splat.xyz.dtype == np.float32 and splat.xyz.shape == (count, 3)
+    assert splat.f_dc.dtype == np.float32 and splat.f_dc.shape == (count, 3)
+    assert splat.scales.dtype == np.float32 and splat.scales.shape == (count, 3)
+    assert splat.quats.dtype == np.float32 and splat.quats.shape == (count, 4)
+    assert splat.opacity.dtype == np.float32 and splat.opacity.shape == (count,)
+    assert isinstance(splat.properties, tuple)
+
+
+def test_opacity_sigmoid_clip_bounds_and_aabb_shape() -> None:
+    """opacity_sigmoid clips raw logits to [-30, 30] before the sigmoid, so even
+    saturating logits stay strictly inside (0, 1); aabb() returns (min, max) (3,)."""
+    splat = SplatData(
+        count=3,
+        xyz=np.array([[0.0, 0.0, 0.0], [1.0, -2.0, 3.0], [-1.0, 4.0, -5.0]], dtype=np.float32),
+        opacity=np.array([-1000.0, 0.0, 1000.0], dtype=np.float32),
+        f_dc=np.zeros((3, 3), dtype=np.float32),
+        scales=np.zeros((3, 3), dtype=np.float32),
+        quats=np.zeros((3, 4), dtype=np.float32),
+        properties=(),
+    )
+    sig = splat.opacity_sigmoid
+    assert sig.shape == (3,)
+    # Clipping to [-30, 30] keeps the sigmoid finite and inside [0, 1]; no overflow
+    # warnings or NaNs even for saturating +/-1000 logits.
+    assert np.all((sig >= 0.0) & (sig <= 1.0))
+    assert np.all(np.isfinite(sig))
+    # The clip bound is exactly +/-30: the result matches sigmoid(clip(.., -30, 30)).
+    expected = 1.0 / (1.0 + np.exp(-np.clip(splat.opacity, -30.0, 30.0)))
+    np.testing.assert_allclose(sig, expected, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(sig[1], 0.5, rtol=0, atol=1e-12)
+
+    lo, hi = splat.aabb()
+    assert lo.shape == (3,) and hi.shape == (3,)
+    np.testing.assert_array_equal(lo, np.array([-1.0, -2.0, -5.0], dtype=np.float32))
+    np.testing.assert_array_equal(hi, np.array([1.0, 4.0, 3.0], dtype=np.float32))
+
+
+def test_public_api_signatures_pinned() -> None:
+    """Pin current public signatures so the hot-lane leaf contract cannot drift."""
+    assert (
+        str(inspect.signature(read_standard_3dgs_ply))
+        == "(path: 'str | Path') -> 'SplatData'"
+    )
+    assert (
+        str(inspect.signature(write_standard_3dgs_ply))
+        == "(splat: 'SplatData', path: 'str | Path') -> 'Path'"
+    )
+    assert (
+        str(inspect.signature(convert_to_standard_ply))
+        == "(src: 'str | Path', dst: 'str | Path', *, repo_root: 'str | Path | None' = None, "
+        "node: 'str' = 'node', timeout_seconds: 'int' = 900) -> 'dict'"
+    )
+    assert (
+        str(inspect.signature(find_splat_transform_cli))
+        == "(repo_root: 'str | Path | None' = None) -> 'Path | None'"
+    )
+    # All four are real callables exported from the module under their current names.
+    for name in (
+        "read_standard_3dgs_ply",
+        "write_standard_3dgs_ply",
+        "convert_to_standard_ply",
+        "find_splat_transform_cli",
+    ):
+        assert callable(getattr(gsd, name))

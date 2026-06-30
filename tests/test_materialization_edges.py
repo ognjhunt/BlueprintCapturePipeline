@@ -363,3 +363,183 @@ def test_uncertainty_edges_for_missing_video_and_unvalidated_scaffolding(
     )
     assert scaffolded["descriptor"]["capture_modality"] == "glasses_plus_scaffolding"
     assert scaffolded["qa_report"]["scaffolding_validation"]["validated_metric_bundle"] is False
+
+
+def test_discover_raw_sidecars_arkit_geometry_ready(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    raw_prefix = "gs://bucket/scenes/sc/captures/cap/raw"
+    # A full ARKit metric bundle: poses + intrinsics + depth dir => geometry ready.
+    _write_jsonl(raw / "arkit" / "poses.jsonl", [{"timestamp": 1.0, "frame_id": 0}, {"timestamp": 2.0, "frame_id": 1}])
+    _write_json(raw / "arkit" / "intrinsics.json", {"fx": 1.0})
+    _write_jsonl(raw / "arkit" / "frames.jsonl", [{"timestamp": 1.05, "frame_id": 0}, {"timestamp": 2.05, "frame_id": 1}])
+    (raw / "arkit" / "depth").mkdir(parents=True)
+    (raw / "arkit" / "confidence").mkdir(parents=True)
+    (raw / "object_index.json").write_text("{}", encoding="utf-8")
+    (raw / "walkthrough.mov").write_bytes(b"video")
+
+    sidecars = m._discover_raw_sidecars(
+        raw_root=raw,
+        raw_prefix_uri=raw_prefix,
+        manifest={"width": 1920, "height": 1080},
+        source="iphone",
+        source_device="iphone",
+    )
+
+    assert sidecars["has_metric_arkit_bundle"] is True
+    assert sidecars["arkit_geometry_ready"] is True
+    assert sidecars["geometry_source"] == "arkit"
+    assert sidecars["arkit_poses_uri"] == f"{raw_prefix}/arkit/poses.jsonl"
+    assert sidecars["arkit_depth_prefix_uri"] == f"{raw_prefix}/arkit/depth"
+    assert sidecars["arkit_confidence_prefix_uri"] == f"{raw_prefix}/arkit/confidence"
+    assert sidecars["object_index_uri"] == f"{raw_prefix}/object_index.json"
+    assert sidecars["raw_video_uri"] == f"{raw_prefix}/walkthrough.mov"
+    assert sidecars["media_metadata"]["original_video_uri"] == f"{raw_prefix}/walkthrough.mov"
+    assert sidecars["media_metadata"]["video_metadata"]["width"] == 1920.0
+    # ARKit present so iPhone pose alignment ok by default (no manifest overrides).
+    assert sidecars["pose_alignment_ok"] is True
+
+
+def test_discover_raw_sidecars_arcore_only_and_video_uri_fallback(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    raw_prefix = "gs://bucket/scenes/sc/captures/cap/raw"
+    _write_jsonl(raw / "arcore" / "poses.jsonl", [{"timestamp": 1.0}])
+    _write_json(raw / "arcore" / "session_intrinsics.json", {})
+    _write_json(raw / "arcore" / "depth_manifest.json", {})
+
+    sidecars = m._discover_raw_sidecars(
+        raw_root=raw,
+        raw_prefix_uri=raw_prefix,
+        # No on-disk video, but manifest declares an explicit video_uri => fallback.
+        manifest={"video_uri": "gs://elsewhere/video.mov"},
+        source="android",
+        source_device="android_arcore",
+    )
+
+    assert sidecars["has_metric_arkit_bundle"] is False
+    assert sidecars["arkit_geometry_ready"] is False
+    assert sidecars["arcore_geometry_present"] is True
+    assert sidecars["geometry_source"] == "arcore"
+    assert sidecars["arcore_poses_uri"] == f"{raw_prefix}/arcore/poses.jsonl"
+    assert sidecars["arcore_depth_manifest_uri"] == f"{raw_prefix}/arcore/depth_manifest.json"
+    assert sidecars["raw_video_uri"] == "gs://elsewhere/video.mov"
+    assert sidecars["media_metadata"]["original_video_path"] is None
+    # Non-iphone source short-circuits the iPhone pose-alignment gate to True.
+    assert sidecars["pose_alignment_ok"] is True
+
+
+def test_resolve_world_model_candidacy_bundles_policy_outputs() -> None:
+    manifest = {
+        "site_identity": {"site_id": "site-1"},
+        "capture_mode": {"requested_mode": "site_world_candidate"},
+        "capture_rights": {"derived_scene_generation_allowed": True},
+    }
+    raw_prefix = "gs://bucket/scenes/sc/captures/cap/raw"
+    sidecars = {
+        "arkit_poses_uri": f"{raw_prefix}/arkit/poses.jsonl",
+        "arkit_intrinsics_uri": f"{raw_prefix}/arkit/intrinsics.json",
+        "arkit_depth_prefix_uri": f"{raw_prefix}/arkit/depth",
+        "arkit_geometry_ready": True,
+        "geometry_source": "arkit",
+        "pose_match_rate": 0.95,
+        "p95_pose_delta_sec": 0.02,
+    }
+    candidacy = m._resolve_world_model_candidacy(
+        manifest=manifest,
+        sidecars=sidecars,
+        intake_complete=True,
+        evidence_tier="qualified_metric_capture",
+        source="iphone",
+    )
+
+    assert set(candidacy) == {
+        "world_model_candidate",
+        "world_model_candidate_reasoning",
+        "capture_mode",
+        "readiness_world_model_candidate",
+    }
+    # The bundle must equal the underlying helpers called with the same inputs,
+    # proving the extraction is a pure projection (no behavior change).
+    assert candidacy["world_model_candidate"] == m._canonical_world_model_candidate(
+        manifest=manifest,
+        arkit_poses_uri=sidecars["arkit_poses_uri"],
+        arkit_intrinsics_uri=sidecars["arkit_intrinsics_uri"],
+        arkit_depth_prefix_uri=sidecars["arkit_depth_prefix_uri"],
+        intake_complete=True,
+        evidence_tier="qualified_metric_capture",
+        capture_source="iphone",
+        pose_match_rate=0.95,
+        p95_pose_delta_sec=0.02,
+        geometry_ready=True,
+        geometry_source="arkit",
+    )
+    assert candidacy["capture_mode"] == m._normalized_capture_mode(
+        manifest=manifest,
+        arkit_poses_uri=sidecars["arkit_poses_uri"],
+        arkit_intrinsics_uri=sidecars["arkit_intrinsics_uri"],
+        arkit_depth_prefix_uri=sidecars["arkit_depth_prefix_uri"],
+        intake_complete=True,
+        evidence_tier="qualified_metric_capture",
+        capture_source="iphone",
+        pose_match_rate=0.95,
+        p95_pose_delta_sec=0.02,
+        geometry_ready=True,
+        geometry_source="arkit",
+    )
+    assert candidacy["readiness_world_model_candidate"] == m._canonical_world_model_candidate(
+        manifest=manifest,
+        arkit_poses_uri=sidecars["arkit_poses_uri"],
+        arkit_intrinsics_uri=sidecars["arkit_intrinsics_uri"],
+        arkit_depth_prefix_uri=sidecars["arkit_depth_prefix_uri"],
+        intake_complete=True,
+        evidence_tier="qualified_metric_capture",
+    )
+
+
+def test_build_records_reuses_candidacy_consistently(tmp_path: Path) -> None:
+    # The descriptor, metadata scene_memory_capture, and qa scene_memory_readiness
+    # must all surface the same candidacy projection after the refactor.
+    raw = _raw_root(tmp_path, scene_id="sc-cand", capture_id="cap-cand")
+    _write_json(
+        raw / "manifest.json",
+        {
+            "scene_id": "sc-cand",
+            "width": 1920,
+            "height": 1080,
+            "has_lidar": True,
+            "capture_profile_id": "iphone_arkit_lidar",
+            "capture_source": "iphone",
+            "capture_mode": {"requested_mode": "site_world_candidate"},
+            "capture_rights": {"derived_scene_generation_allowed": True},
+            "site_identity": {"site_id": "site-cand"},
+        },
+    )
+    (raw / "walkthrough.mov").write_bytes(b"video")
+    _write_json(raw / "intake_packet.json", {"workflowName": "wf", "taskSteps": ["a"], "zone": "z", "owner": "o"})
+    _write_jsonl(raw / "arkit" / "poses.jsonl", [{"timestamp": 1.0, "frame_id": 0}])
+    _write_json(raw / "arkit" / "intrinsics.json", {"fx": 1.0})
+    (raw / "arkit" / "depth").mkdir(parents=True)
+
+    result = m.build_capture_bundle_records(
+        bucket="bucket",
+        scene_id="sc-cand",
+        capture_id="cap-cand",
+        gcs_root=tmp_path,
+        write_frames_index=False,
+    )
+    descriptor = result["descriptor"]
+    qa_report = result["qa_report"]
+    smc = descriptor["metadata"]["scene_memory_capture"]
+
+    # The same candidacy projection surfaces in descriptor.quality and the
+    # scene_memory_capture block (single computation reused).
+    assert (
+        descriptor["quality"]["world_model_candidate"]
+        == smc["world_model_candidate"]
+    )
+    assert isinstance(smc["world_model_candidate_reasoning"], list)
+    assert smc["world_model_candidate_reasoning"]
+    # capture_mode lives in metadata; readiness candidate is exposed in qa_report.
+    assert "capture_mode" in descriptor["metadata"]
+    assert "world_model_candidate" in qa_report["scene_memory_readiness"]
