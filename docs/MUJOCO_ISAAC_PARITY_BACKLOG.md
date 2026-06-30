@@ -36,7 +36,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 9 | T12 | MuJoCo | S | — | `done` | MuJoCo scene-derived lighting + shadows in the MJCF wrapper |
 | 10 | T8 | MuJoCo | M | — | `done` | MuJoCo segmentation render pass |
 | 11 | T9 | Isaac | M | — | `done (gpu-pending)` | Isaac native instance/semantic segmentation render pass |
-| 12 | T13 | Isaac | M | — | `todo` | Isaac gravity-on dynamic stepping: turn the existing settle loop into a physics-proof path with displacement + fall verdict |
+| 12 | T13 | Isaac | M | — | `done (gpu-pending)` | Isaac gravity-on dynamic stepping: turn the existing settle loop into a physics-proof path with displacement + fall verdict |
 | 13 | T14 | Isaac | L | T13 | `todo` | Isaac torque/effort drive (PD law port) + authored MassAPI/PhysicsMaterial on the resolved target only |
 | 14 | T10 | MuJoCo | M | — | `todo` | MuJoCo convex/OBB collision proxies (flag-gated) |
 | 15 | T15 | Shared | L | — | `todo` | Provider-runtime convergence (shared race + git-gate + warm session + runtime preflight) |
@@ -726,7 +726,8 @@ Hermetic (no GPU): `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` must
 ### 12. T13 — Isaac gravity-on dynamic stepping: turn the existing settle loop into a physics-proof path with displacement + fall verdict
 
 - **Lane:** Isaac  |  **Effort:** M (medium)  |  **Depends on:** none
-- **Status:** todo
+- **Status:** done (gpu-pending)
+- **GPU-pending:** A real Isaac/RTX run with `--dynamic-standing-contact-steps 120 --steps 1` must confirm emitted physics articulation reports have `physics_integrated: true`, `gravity_on: true`, and a non-`unknown` `dynamic_settle_verdict`.
 
 **Summary.** The Isaac parity render runs gravity OFF holding a kinematic pose; the only gravity-on path, _settle_dynamic_standing_contacts, already steps PhysX under gravity (-9.81) per settle step but does NOT prove dynamics integrated -- it records before/after root pose without computing displacement or a stable/fell verdict, so an "Isaac physics pass" is indistinguishable from a frozen kinematic pose. This task makes the gravity-on settle the standard physics-proof path by computing per-step root displacement and emitting physics_integrated / verdict markers in the per-scenario report and the run-level contact summary, without crossing the blocked tensor-view drive boundary (the existing no-tensor-view USD-articulation mode stays the default). MuJoCo dynamics evidence is NOT reused; these markers are Isaac-only proof.
 
@@ -754,14 +755,14 @@ Hermetic (no GPU): `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` must
 
 **Acceptance criteria:**
 
-- [ ] _settle_dynamic_standing_contacts return dict gains keys gravity_on, physics_integrated, root_displacement_m, root_vertical_drop_m, dynamic_settle_verdict, and all pre-existing keys (status, schema_version, tensor_view_used, contact_report_setup, claim_boundary, root_pose_before_settle, root_pose_after_settle, etc.) are unchanged.
-- [ ] physics_integrated is True only when executed settle steps > 0 AND gravity_z < 0 AND both before/after root poses had a readable position_xyz (metrics.available True); otherwise False.
-- [ ] dynamic_settle_verdict is exactly one of {'fell','drifted','stable','no_motion','unknown'} and is 'fell' when root_vertical_drop_m exceeds 0.25 m.
-- [ ] summarize_physics_articulation_contact_reports returns additive keys any_physics_integrated (all-reports semantics: True only when every report has physics_integrated True), gravity_on_all, max_root_vertical_drop_m, verdict_counts; all originally-returned keys (scenario_count, completed_scenario_count, contact_event_count, support_contact_event_count, all_completed, all_have_support_contact_evidence, root_pose_teleport_during_physics_settle, claim_boundary) remain present and unchanged in semantics.
-- [ ] build_result proof_boundary includes a sentence stating the root integrated under gravity (with the max vertical drop) ONLY when contact reports show any_physics_integrated True, and that sentence is absent otherwise; the non-claim disclaimers (not dynamic locomotion / not learned balance / not deployment readiness) remain, and the existing test test_build_result_keeps_dynamic_standing_contacts_bounded (which omits physics_integrated) still passes because the append stays gated off.
-- [ ] No new call to art.set_world_pose, SingleArticulation drive, or any PhysX tensor-view API is introduced (the blocked tensor-view path is not touched); the no-tensor-view USD-articulation mode remains the gravity-on path.
-- [ ] The runner still imports with no isaacsim/physx dependency (test_runner_imports_without_isaacsim passes), proving the new logic is pure-Python and GPU-free.
-- [ ] Markers are Isaac-namespaced physics evidence (gravity_on/physics_integrated within the isaac_g1_physics_articulation_standing_contact_report.v1 schema) and do not assert any MuJoCo result; cross-lane proof is not claimed.
+- [x] _settle_dynamic_standing_contacts return dict gains keys gravity_on, physics_integrated, root_displacement_m, root_vertical_drop_m, dynamic_settle_verdict, and all pre-existing keys (status, schema_version, tensor_view_used, contact_report_setup, claim_boundary, root_pose_before_settle, root_pose_after_settle, etc.) are unchanged.
+- [x] physics_integrated is True only when executed settle steps > 0 AND gravity_z < 0 AND both before/after root poses had a readable position_xyz (metrics.available True); otherwise False.
+- [x] dynamic_settle_verdict is exactly one of {'fell','drifted','stable','no_motion','unknown'} and is 'fell' when root_vertical_drop_m exceeds 0.25 m.
+- [x] summarize_physics_articulation_contact_reports returns additive keys any_physics_integrated (all-reports semantics: True only when every report has physics_integrated True), gravity_on_all, max_root_vertical_drop_m, verdict_counts; all originally-returned keys (scenario_count, completed_scenario_count, contact_event_count, support_contact_event_count, all_completed, all_have_support_contact_evidence, root_pose_teleport_during_physics_settle, claim_boundary) remain present and unchanged in semantics.
+- [x] build_result proof_boundary includes a sentence stating the root integrated under gravity (with the max vertical drop) ONLY when contact reports show any_physics_integrated True, and that sentence is absent otherwise; the non-claim disclaimers (not dynamic locomotion / not learned balance / not deployment readiness) remain, and the existing test test_build_result_keeps_dynamic_standing_contacts_bounded (which omits physics_integrated) still passes because the append stays gated off.
+- [x] No new call to art.set_world_pose, SingleArticulation drive, or any PhysX tensor-view API is introduced (the blocked tensor-view path is not touched); the no-tensor-view USD-articulation mode remains the gravity-on path.
+- [x] The runner still imports with no isaacsim/physx dependency (test_runner_imports_without_isaacsim passes), proving the new logic is pure-Python and GPU-free.
+- [x] Markers are Isaac-namespaced physics evidence (gravity_on/physics_integrated within the isaac_g1_physics_articulation_standing_contact_report.v1 schema) and do not assert any MuJoCo result; cross-lane proof is not claimed.
 
 **Verification:**
 

@@ -2109,6 +2109,125 @@ def test_build_result_aggregates_and_labels_truthfully() -> None:
     assert res["scenarios"][0]["scenario_id"] == "a" and res["scenarios"][0]["task_success"] is True
 
 
+def test_root_displacement_metrics_reports_drop_and_missing_pose() -> None:
+    metrics = M._root_displacement_metrics(
+        {"available": True, "position_xyz": [0.0, 0.0, 1.0]},
+        {"available": True, "position_xyz": [0.3, 0.4, 0.7]},
+    )
+    missing = M._root_displacement_metrics(
+        {"available": False},
+        {"available": True, "position_xyz": [0.0, 0.0, 0.7]},
+    )
+
+    assert metrics["available"] is True
+    assert metrics["root_displacement_m"] == pytest.approx(math.sqrt(0.34), abs=1e-6)
+    assert metrics["root_vertical_drop_m"] == pytest.approx(0.3)
+    assert missing["available"] is False
+    assert missing["root_displacement_m"] == 0.0
+    assert missing["root_vertical_drop_m"] == 0.0
+
+
+def test_dynamic_standing_contact_report_emits_integration_fields(monkeypatch) -> None:
+    poses = iter(
+        [
+            {"available": True, "position_xyz": [0.0, 0.0, 1.0]},
+            {"available": True, "position_xyz": [0.0, 0.0, 0.6]},
+        ]
+    )
+    monkeypatch.setattr(M, "_safe_usd_root_world_pose", lambda *_args, **_kwargs: next(poses))
+    monkeypatch.setattr(M, "_enable_contact_reports", lambda *_args, **_kwargs: {"status": "ok"})
+    monkeypatch.setattr(M, "_contact_report_records", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(M, "_sim_step", lambda *_args, **_kwargs: None)
+
+    report = M._settle_dynamic_standing_contacts(
+        stage=object(),
+        art_ctx={"ctx": object(), "art": None, "gravity_z": -9.81},
+        robot_prim_path="/World/G1",
+        root_pose=(0.0, 0.0, 1.0),
+        yaw=0.0,
+        phase=0.0,
+        moving=False,
+        settle_steps=1,
+        scenario_id="scenario-a",
+    )
+
+    assert report["gravity_on"] is True
+    assert report["physics_integrated"] is True
+    assert report["root_vertical_drop_m"] == pytest.approx(0.4)
+    assert report["dynamic_settle_verdict"] == "fell"
+    assert report["tensor_view_used"] is False
+    assert report["root_pose_teleport_during_physics_settle"] is False
+    assert report["schema_version"] == "isaac_g1_physics_articulation_standing_contact_report.v1"
+
+
+def test_physics_contact_summary_aggregates_integration_verdicts() -> None:
+    reports = [
+        {
+            "status": "completed",
+            "contact_event_count": 1,
+            "support_contact_event_count": 1,
+            "root_pose_teleport_during_physics_settle": False,
+            "physics_integrated": True,
+            "gravity_on": True,
+            "root_vertical_drop_m": 0.02,
+            "dynamic_settle_verdict": "stable",
+        },
+        {
+            "status": "completed",
+            "contact_event_count": 1,
+            "support_contact_event_count": 1,
+            "root_pose_teleport_during_physics_settle": False,
+            "physics_integrated": True,
+            "gravity_on": True,
+            "root_vertical_drop_m": 0.03,
+            "dynamic_settle_verdict": "stable",
+        },
+    ]
+
+    summary = M.summarize_physics_articulation_contact_reports(reports)
+
+    assert summary["any_physics_integrated"] is True
+    assert summary["gravity_on_all"] is True
+    assert summary["max_root_vertical_drop_m"] == pytest.approx(0.03)
+    assert summary["verdict_counts"]["stable"] == 2
+
+
+def test_build_result_adds_gravity_integration_boundary_only_when_integrated() -> None:
+    integrated_report = {
+        "scenario_id": "sink_stand",
+        "status": "completed",
+        "contact_event_count": 2,
+        "support_contact_event_count": 1,
+        "root_pose_teleport_during_physics_settle": False,
+        "physics_integrated": True,
+        "gravity_on": True,
+        "root_vertical_drop_m": 0.02,
+        "dynamic_settle_verdict": "stable",
+    }
+    unintegrated_report = {**integrated_report, "physics_integrated": False}
+    base = {
+        "scenarios": [{"scenario_id": "sink_stand"}],
+        "outcomes": [{"task_success": True}],
+        "policy_id": "blueprint_default_walk_to_target_smoke_policy",
+        "kitchen_usd": "k.usd",
+        "g1_usd": "g1.usd",
+        "blockers": [],
+    }
+
+    integrated = M.build_result(
+        **base,
+        physics_articulation_contact_reports=[integrated_report],
+    )
+    unintegrated = M.build_result(
+        **base,
+        physics_articulation_contact_reports=[unintegrated_report],
+    )
+
+    assert "integrated under gravity" in integrated["proof_boundary"]
+    assert "max vertical drop 0.020 m" in integrated["proof_boundary"]
+    assert "integrated under gravity" not in unintegrated["proof_boundary"]
+
+
 def test_build_result_keeps_dynamic_standing_contacts_bounded() -> None:
     res = M.build_result(
         scenarios=[{"scenario_id": "sink_stand"}],

@@ -55,6 +55,9 @@ DRY_RENDER_NOT_RENDERED_NOTE = (
 # robot footprint half-extent (m) for the PhysX overlap probe (approx G1 standing bbox)
 ROBOT_FOOTPRINT_HALF_EXTENT = (0.28, 0.28, 0.62)
 ROBOT_PELVIS_HEIGHT_M = 0.79
+ROOT_FALL_VERTICAL_DROP_M = 0.25
+ROOT_DRIFT_VERTICAL_DROP_M = 0.05
+ROOT_DRIFT_DISPLACEMENT_M = 0.10
 PLACEMENT_GROUND_TRUTH_MAX_FOOTPRINT_CENTER_DELTA_M = 0.10
 TASK_STANCE_SCHEMA_VERSION = "task_stance_plan.v1"
 TASK_STANCE_TARGET_KEYS = (
@@ -816,6 +819,13 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
             "physics-stepped support/contact evidence, but it is still not full dynamic locomotion, "
             "not a learned balance controller, and not deployment readiness."
         )
+        if contact_summary.get("any_physics_integrated"):
+            proof_boundary += (
+                " The G1 root integrated under gravity during the settle "
+                f"(max vertical drop {float(contact_summary.get('max_root_vertical_drop_m') or 0.0):.3f} m); "
+                "this is Isaac physics evidence only and still not full dynamic locomotion, "
+                "learned balance, or deployment readiness."
+            )
     elif contact_summary["scenario_count"] > 0:
         proof_boundary = (
             "Isaac RTX-rendered kinematic walk-to-target preview plus opt-in PhysX articulation "
@@ -883,11 +893,27 @@ def summarize_physics_articulation_contact_reports(
     completed = [r for r in reports if r.get("status") == "completed"]
     contact_records = sum(int(r.get("contact_event_count") or 0) for r in reports)
     support_records = sum(int(r.get("support_contact_event_count") or 0) for r in reports)
+    any_physics_integrated = bool(
+        scenario_count and all(bool(r.get("physics_integrated")) for r in reports)
+    )
+    gravity_on_all = bool(scenario_count and all(bool(r.get("gravity_on")) for r in reports))
+    max_root_vertical_drop_m = max(
+        (float(r.get("root_vertical_drop_m") or 0.0) for r in reports),
+        default=0.0,
+    )
+    verdict_counts: dict[str, int] = {}
+    for report in reports:
+        verdict = str(report.get("dynamic_settle_verdict") or "unknown")
+        verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
     return {
         "scenario_count": scenario_count,
         "completed_scenario_count": len(completed),
         "contact_event_count": contact_records,
         "support_contact_event_count": support_records,
+        "any_physics_integrated": any_physics_integrated,
+        "gravity_on_all": gravity_on_all,
+        "max_root_vertical_drop_m": round(float(max_root_vertical_drop_m), 6),
+        "verdict_counts": verdict_counts,
         "all_completed": bool(scenario_count and len(completed) == scenario_count),
         "all_have_support_contact_evidence": bool(
             scenario_count and all(int(r.get("support_contact_event_count") or 0) > 0 for r in reports)
@@ -3029,6 +3055,41 @@ def _safe_usd_root_world_pose(stage, prim_path: str) -> dict[str, Any]:
         return {"available": False, "error": repr(exc)}
 
 
+def _root_displacement_metrics(
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        if not before.get("available") or not after.get("available"):
+            raise ValueError("root_pose_unavailable")
+        before_pos = before.get("position_xyz")
+        after_pos = after.get("position_xyz")
+        if (
+            not isinstance(before_pos, Sequence)
+            or isinstance(before_pos, (str, bytes))
+            or not isinstance(after_pos, Sequence)
+            or isinstance(after_pos, (str, bytes))
+            or len(before_pos) < 3
+            or len(after_pos) < 3
+        ):
+            raise ValueError("root_position_xyz_unavailable")
+        delta = [float(after_pos[index]) - float(before_pos[index]) for index in range(3)]
+        displacement = math.sqrt(sum(value * value for value in delta))
+        vertical_drop = max(0.0, float(before_pos[2]) - float(after_pos[2]))
+        return {
+            "available": True,
+            "root_displacement_m": round(float(displacement), 6),
+            "root_vertical_drop_m": round(float(vertical_drop), 6),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "available": False,
+            "root_displacement_m": 0.0,
+            "root_vertical_drop_m": 0.0,
+            "error": str(exc),
+        }
+
+
 def _path_from_encoded_sdf(value) -> str:
     try:
         from pxr import PhysicsSchemaTools  # type: ignore
@@ -3201,12 +3262,35 @@ def _settle_dynamic_standing_contacts(
         _safe_articulation_world_pose(art)
         if tensor_view_used else _safe_usd_root_world_pose(stage, robot_prim_path)
     )
+    metrics = _root_displacement_metrics(before, after)
+    gravity_on = float(art_ctx.get("gravity_z") or 0.0) < 0.0
+    physics_integrated = bool(executed > 0 and metrics.get("available") and gravity_on)
+    root_displacement_m = float(metrics.get("root_displacement_m") or 0.0)
+    root_vertical_drop_m = float(metrics.get("root_vertical_drop_m") or 0.0)
+    if not metrics.get("available"):
+        dynamic_settle_verdict = "unknown"
+    elif root_vertical_drop_m > ROOT_FALL_VERTICAL_DROP_M:
+        dynamic_settle_verdict = "fell"
+    elif (
+        root_vertical_drop_m >= ROOT_DRIFT_VERTICAL_DROP_M
+        or root_displacement_m > ROOT_DRIFT_DISPLACEMENT_M
+    ):
+        dynamic_settle_verdict = "drifted"
+    elif executed == 0:
+        dynamic_settle_verdict = "no_motion"
+    else:
+        dynamic_settle_verdict = "stable"
     support_records = [r for r in records if _is_support_contact(r)]
     return {
         "schema_version": "isaac_g1_physics_articulation_standing_contact_report.v1",
         "status": "completed" if executed == max(0, int(settle_steps)) and not errors else "blocked",
         "scenario_id": scenario_id,
         "gravity_z": art_ctx.get("gravity_z"),
+        "gravity_on": gravity_on,
+        "physics_integrated": physics_integrated,
+        "root_displacement_m": root_displacement_m,
+        "root_vertical_drop_m": root_vertical_drop_m,
+        "dynamic_settle_verdict": dynamic_settle_verdict,
         "tensor_view_used": tensor_view_used,
         "requested_settle_steps": int(settle_steps),
         "executed_settle_steps": executed,
