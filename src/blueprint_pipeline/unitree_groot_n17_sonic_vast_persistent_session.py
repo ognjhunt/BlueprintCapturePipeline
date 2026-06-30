@@ -19,6 +19,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from . import launch_provenance
 from .common import ensure_dir, utc_now_iso, write_json
 from .unitree_groot_n17_sonic_policy_runtime import POLICY_ID
 from .unitree_groot_n17_sonic_vast_policy_command import (
@@ -72,6 +73,7 @@ PERSISTENT_SESSION_USE_LIVE_WAM_ENV = "BLUEPRINT_PERSISTENT_SESSION_USE_LIVE_WAM
 PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV = (
     "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PERSISTENT_INNER_POLICY_COMMAND"
 )
+ALLOW_DIRTY_PAID_LAUNCH_ENV = "BLUEPRINT_ALLOW_DIRTY_PAID_LAUNCH"
 RUNPOD_FULL_LOOP_OVERRIDE_ENV = "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
 OSCAR_WAM_VISUAL_PROFILE_ENV = "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE"
 PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_ENV = "BLUEPRINT_ALLOW_PERSISTENT_WAM_LONG_REVIEW_ROLLOUT"
@@ -4443,6 +4445,25 @@ def run_persistent_session(
         if allow_structural_wam_fallback is None
         else bool(allow_structural_wam_fallback)
     )
+    git_evidence = launch_provenance.git_worktree_evidence()
+    launch_gate = launch_provenance.evaluate_dirty_tree_paid_launch_gate(
+        git_evidence=git_evidence,
+        allow_paid=_truthy(os.getenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")),
+        allow_dirty_paid_launch=_truthy(os.getenv(ALLOW_DIRTY_PAID_LAUNCH_ENV)),
+    )
+    if not launch_gate["launch_allowed"]:
+        output = _blocked_payload(
+            generated_at=generated_at,
+            job_dir=job,
+            blockers=launch_gate["blockers"],
+            details={
+                "git_evidence": git_evidence,
+                "note": launch_gate["note"],
+                "provider": "vast",
+            },
+        )
+        write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
+        return output, 2
     inner_policy_command = (
         _string(os.getenv(INNER_POLICY_COMMAND_ENV)) or DEFAULT_INNER_POLICY_COMMAND
     )
@@ -4473,7 +4494,8 @@ def run_persistent_session(
                 details={
                     "bundle_manifest_path": str(
                         job / "provider_bundle" / "persistent_session_provider_bundle_manifest.json"
-                    )
+                    ),
+                    "git_evidence": git_evidence,
                 },
             )
             write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
@@ -4500,7 +4522,8 @@ def run_persistent_session(
                         job
                         / "object_store_staging"
                         / "wam_provider_object_store_staging_manifest.json"
-                    )
+                    ),
+                    "git_evidence": git_evidence,
                 },
             )
             write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
@@ -4626,6 +4649,7 @@ def run_persistent_session(
                     )
                     if fallback_result is not None
                     else None,
+                    "git_evidence": git_evidence,
                 },
             )
             write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
@@ -4657,6 +4681,7 @@ def run_persistent_session(
             "policy_id": POLICY_ID,
             "selected_candidate_id": POLICY_ID,
             "job_dir": str(job),
+            "git_evidence": git_evidence,
             "persistent_provider_session_used": bool(
                 imported.get("persistent_provider_session_used")
             ),
@@ -4785,6 +4810,25 @@ def run_persistent_session_runpod(
         if allow_structural_wam_fallback is None
         else bool(allow_structural_wam_fallback)
     )
+    git_evidence = launch_provenance.git_worktree_evidence()
+    launch_gate = launch_provenance.evaluate_dirty_tree_paid_launch_gate(
+        git_evidence=git_evidence,
+        allow_paid=True,
+        allow_dirty_paid_launch=_truthy(os.getenv(ALLOW_DIRTY_PAID_LAUNCH_ENV)),
+    )
+    if not launch_gate["launch_allowed"]:
+        output = _blocked_payload(
+            generated_at=generated_at,
+            job_dir=job,
+            blockers=launch_gate["blockers"],
+            details={
+                "git_evidence": git_evidence,
+                "note": launch_gate["note"],
+                "provider": "runpod",
+            },
+        )
+        write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
+        return output, 2
     inner_policy_command = (
         _string(os.getenv(INNER_POLICY_COMMAND_ENV)) or DEFAULT_INNER_POLICY_COMMAND
     )
@@ -4841,6 +4885,7 @@ def run_persistent_session_runpod(
                         job / "provider_bundle" / "persistent_session_provider_bundle_manifest.json"
                     ),
                     "provider": "runpod",
+                    "git_evidence": git_evidence,
                 },
             )
             write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
@@ -4870,6 +4915,7 @@ def run_persistent_session_runpod(
                         / "wam_provider_object_store_staging_manifest.json"
                     ),
                     "provider": "runpod",
+                    "git_evidence": git_evidence,
                 },
             )
             write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
@@ -4911,6 +4957,7 @@ def run_persistent_session_runpod(
                         runpod_dir / "runpod_wam_async_create_manifest.json"
                     ),
                     "provider": "runpod",
+                    "git_evidence": git_evidence,
                 },
             )
             write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
@@ -4980,6 +5027,7 @@ def run_persistent_session_runpod(
                         job / "runpod_live_wam_blocker_classification.json"
                     ),
                     "classified_blocker": classification.get("classified_blocker"),
+                    "git_evidence": git_evidence,
                 },
             )
             write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
@@ -5023,6 +5071,7 @@ def run_persistent_session_runpod(
             "policy_id": POLICY_ID,
             "selected_candidate_id": POLICY_ID,
             "job_dir": str(job),
+            "git_evidence": git_evidence,
             "persistent_provider_session_used": bool(
                 imported.get("persistent_provider_session_used")
             ),

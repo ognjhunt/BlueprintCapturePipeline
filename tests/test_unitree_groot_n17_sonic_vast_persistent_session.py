@@ -15,6 +15,27 @@ from blueprint_pipeline import unitree_groot_n17_sonic_vast_persistent_session a
 from blueprint_pipeline import persistent_wam_short_visual_sanity as short_sanity
 
 
+def _clean_launch_git_evidence() -> dict[str, object]:
+    return {
+        "status": "available",
+        "repo_root": "/repo",
+        "git_sha": "0" * 40,
+        "dirty": False,
+        "dirty_entries_count": 0,
+        "dirty_entries": [],
+        "dirty_entries_truncated": False,
+    }
+
+
+@pytest.fixture(autouse=True)
+def clean_launch_provenance(monkeypatch) -> None:
+    monkeypatch.setattr(
+        session.launch_provenance,
+        "git_worktree_evidence",
+        _clean_launch_git_evidence,
+    )
+
+
 def _persistent_runner_namespace() -> dict[str, object]:
     namespace: dict[str, object] = {
         "__name__": "_persistent_session_runner_under_test",
@@ -719,6 +740,102 @@ def test_run_persistent_session_imports_reused_worker_output(
     assert captured["policy_command_env"] == session.DEFAULT_INNER_POLICY_COMMAND
     assert captured["persistent_inner_policy_command_env"] == session.DEFAULT_INNER_POLICY_COMMAND
     assert captured["vast_inner_policy_command_env"] == session.DEFAULT_INNER_POLICY_COMMAND
+
+
+def test_run_persistent_session_blocks_dirty_paid_launch_before_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"jpg")
+    observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
+    dirty_evidence = {
+        **_clean_launch_git_evidence(),
+        "dirty": True,
+        "dirty_entries_count": 1,
+        "dirty_entries": [" M src/blueprint_pipeline/example.py"],
+    }
+    monkeypatch.setattr(
+        session.launch_provenance,
+        "git_worktree_evidence",
+        lambda: dirty_evidence,
+    )
+
+    def fail_if_called(**kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("paid launch gate should block before provider preparation")
+
+    monkeypatch.setattr(session, "build_persistent_session_provider_bundle", fail_if_called)
+    monkeypatch.setattr(session, "stage_wam_provider_bundle_object_store", fail_if_called)
+    monkeypatch.setattr(session, "run_vast_provider_adapter", fail_if_called)
+
+    output, exit_code = session.run_persistent_session(
+        policy_observation_path=observation_path,
+        job_dir=tmp_path / "jobs",
+        loop_step_count=1,
+        use_live_wam=False,
+        allow_structural_wam_fallback=True,
+    )
+
+    result_path = (
+        Path(output["job_dir"]) / "unitree_groot_n17_sonic_vast_persistent_session_result.json"
+    )
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert exit_code == 2
+    assert output["status"] == "blocked"
+    assert output["blockers"] == ["dirty_worktree_paid_launch_blocked"]
+    assert output["details"]["provider"] == "vast"
+    assert output["details"]["git_evidence"]["dirty"] is True
+    assert output["details"]["note"] == session.launch_provenance.DIRTY_WORKTREE_PAID_LAUNCH_NOTE
+    assert result["blockers"] == output["blockers"]
+
+
+def test_runpod_persistent_session_blocks_dirty_paid_launch_before_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"jpg")
+    observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    dirty_evidence = {
+        **_clean_launch_git_evidence(),
+        "dirty": True,
+        "dirty_entries_count": 1,
+        "dirty_entries": [" M src/blueprint_pipeline/example.py"],
+    }
+    monkeypatch.setattr(
+        session.launch_provenance,
+        "git_worktree_evidence",
+        lambda: dirty_evidence,
+    )
+
+    def fail_if_called(**kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("paid launch gate should block before provider preparation")
+
+    monkeypatch.setattr(session, "build_persistent_session_provider_bundle", fail_if_called)
+    monkeypatch.setattr(session, "stage_wam_provider_bundle_object_store", fail_if_called)
+    monkeypatch.setattr(session, "create_runpod_wam_async_run", fail_if_called)
+    monkeypatch.setattr(session, "poll_runpod_wam_async_run", fail_if_called)
+
+    output, exit_code = session.run_persistent_session_runpod(
+        policy_observation_path=observation_path,
+        job_dir=tmp_path / "jobs",
+        loop_step_count=1,
+        use_live_wam=False,
+        allow_structural_wam_fallback=True,
+    )
+
+    result_path = (
+        Path(output["job_dir"]) / "unitree_groot_n17_sonic_vast_persistent_session_result.json"
+    )
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert exit_code == 2
+    assert output["status"] == "blocked"
+    assert output["blockers"] == ["dirty_worktree_paid_launch_blocked"]
+    assert output["details"]["provider"] == "runpod"
+    assert output["details"]["git_evidence"]["dirty"] is True
+    assert output["details"]["note"] == session.launch_provenance.DIRTY_WORKTREE_PAID_LAUNCH_NOTE
+    assert result["blockers"] == output["blockers"]
 
 
 def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: Path) -> None:

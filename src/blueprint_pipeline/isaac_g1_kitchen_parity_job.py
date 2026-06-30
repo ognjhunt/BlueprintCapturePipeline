@@ -20,10 +20,8 @@ dynamic locomotion, not a learned policy, not readiness.
 """
 from __future__ import annotations
 
-import io
 import json
 import os
-import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -36,6 +34,10 @@ from typing import Sequence
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
 from .isaac_particlefield_render_job import (
     DEFAULT_WARM_CANDIDATES, _read_secret, default_image, stage_bundle, watch_and_collect,
+)
+from .launch_provenance import (
+    evaluate_dirty_tree_paid_launch_gate,
+    git_worktree_evidence,
 )
 from .provider_race import boot_marker_present, race_launch
 
@@ -67,46 +69,7 @@ def _repo_root() -> Path:
 
 
 def _git_worktree_evidence(*, max_dirty_entries: int = 200) -> dict:
-    """Return the committed SHA + dirty state used as a paid-launch provenance boundary."""
-    root = _repo_root()
-
-    def _git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-
-    head = _git("rev-parse", "HEAD")
-    if head.returncode != 0:
-        return {
-            "status": "unavailable",
-            "repo_root": str(root),
-            "dirty": None,
-            "error": (head.stderr or head.stdout).strip()[:500],
-        }
-    status = _git("status", "--porcelain", "--untracked-files=all")
-    if status.returncode != 0:
-        return {
-            "status": "unavailable",
-            "repo_root": str(root),
-            "git_sha": head.stdout.strip(),
-            "dirty": None,
-            "error": (status.stderr or status.stdout).strip()[:500],
-        }
-    dirty_entries = [line for line in status.stdout.splitlines() if line.strip()]
-    return {
-        "status": "available",
-        "repo_root": str(root),
-        "git_sha": head.stdout.strip(),
-        "dirty": bool(dirty_entries),
-        "dirty_entries_count": len(dirty_entries),
-        "dirty_entries": dirty_entries[:max_dirty_entries],
-        "dirty_entries_truncated": len(dirty_entries) > max_dirty_entries,
-    }
+    return git_worktree_evidence(max_dirty_entries=max_dirty_entries)
 
 
 def _zip_dir(src_dir: Path, zip_path: Path) -> Path:
@@ -683,25 +646,16 @@ def run_isaac_g1_kitchen_parity_job(
     manifest["scenario_ids"] = [s.get("scenario_id") or s.get("id") for s in scenarios]
     git_evidence = _git_worktree_evidence()
     manifest["git_evidence"] = git_evidence
-    if allow_paid and not allow_dirty_paid_launch:
-        if git_evidence.get("status") != "available":
-            manifest["blockers"].append("git_worktree_evidence_unavailable")
-            manifest["status"] = "blocked"
-            manifest["note"] = (
-                "Paid launch blocked because the committed source boundary could not be "
-                "verified. Re-run only after git evidence is available, or pass the explicit "
-                "dirty-tree override and accept the provenance risk."
-            )
-            return manifest
-        if git_evidence.get("dirty"):
-            manifest["blockers"].append("dirty_worktree_paid_launch_blocked")
-            manifest["status"] = "blocked"
-            manifest["note"] = (
-                "Paid launch blocked from a dirty tree so cloud frames cannot be confused "
-                "with committed source. Commit/stash first, or pass the explicit dirty-tree "
-                "override and preserve this git_evidence in the launch manifest."
-            )
-            return manifest
+    launch_gate = evaluate_dirty_tree_paid_launch_gate(
+        git_evidence=git_evidence,
+        allow_paid=allow_paid,
+        allow_dirty_paid_launch=allow_dirty_paid_launch,
+    )
+    if not launch_gate["launch_allowed"]:
+        manifest["blockers"].extend(launch_gate["blockers"])
+        manifest["status"] = "blocked"
+        manifest["note"] = launch_gate["note"]
+        return manifest
     # Stage the large kitchen tree ONCE (reused across iterations); keep the code bundle tiny.
     # A caller may pass a previously-staged kitchen_url to skip the 1.2GB re-upload entirely.
     if kitchen_url:
