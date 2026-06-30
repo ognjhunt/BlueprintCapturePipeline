@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -30,6 +31,20 @@ TARGET_CENTER_MIN_Y = 0.12
 TARGET_CENTER_MAX_Y = 0.88
 TARGET_VISIBLE_AREA_RATIO_MIN = 0.55
 TARGET_MIN_FRAME_AREA_RATIO = 0.00035
+PROJECTED_ROBOT_MATERIAL_ROLES = {
+    "hand",
+    "wrist",
+    "gripper",
+    "end_effector",
+    "forearm",
+    "lower_arm",
+}
+PROJECTED_ROBOT_MATERIAL_MIN_REVIEW_POINTS = 2
+PROJECTED_ROBOT_MATERIAL_MIN_REVIEW_EDGE_DENSITY = 0.16
+PROJECTED_ROBOT_MATERIAL_MIN_REVIEW_STD_LUMA = 16.0
+PROJECTED_ROBOT_MATERIAL_REVIEW_REQUIRE_ENV = (
+    "BLUEPRINT_REQUIRE_PROJECTED_ROBOT_MATERIAL_DETAIL_FOR_REVIEW"
+)
 
 
 def _blocked(path: Path, blockers: list[str], **fields: Any) -> dict[str, Any]:
@@ -943,6 +958,230 @@ def _frame_visual_stats(
     return result
 
 
+def _trace_image_size(row: Mapping[str, Any]) -> tuple[float, float] | None:
+    size = row.get("image_size_px") or row.get("image_size")
+    if isinstance(size, Sequence) and not isinstance(size, (str, bytes)) and len(size) >= 2:
+        try:
+            return float(size[0]), float(size[1])
+        except (TypeError, ValueError):
+            return None
+    if isinstance(size, Mapping):
+        try:
+            return float(size.get("width") or 0), float(size.get("height") or 0)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _first_projected_robot_trace_row(path: Path) -> dict[str, Any] | None:
+    first_projectable: dict[str, Any] | None = None
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            text = line.strip()
+            if not text:
+                continue
+            row = json.loads(text)
+            if not isinstance(row, Mapping):
+                continue
+            landmarks = row.get("landmarks")
+            if not isinstance(landmarks, Sequence) or isinstance(landmarks, (str, bytes)):
+                continue
+            has_projected = False
+            for landmark in landmarks:
+                if not isinstance(landmark, Mapping):
+                    continue
+                projection = landmark.get("image_projection")
+                if isinstance(projection, Mapping) and projection.get("available") is True:
+                    has_projected = True
+                    break
+            if not has_projected:
+                continue
+            if int(row.get("frame_index") or 0) == 0:
+                return dict(row)
+            if first_projectable is None:
+                first_projectable = dict(row)
+    return first_projectable
+
+
+def _projected_robot_material_quality(
+    frame_path: str | Path | None,
+    *,
+    projected_skeleton_trace_path: str | Path | None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "schema_version": "projected_robot_material_quality.v1",
+        "status": "not_available",
+        "projected_skeleton_trace_path": str(Path(projected_skeleton_trace_path).expanduser())
+        if projected_skeleton_trace_path
+        else None,
+        "projected_skeleton_trace_used": False,
+        "projected_skeleton_trace_available": False,
+        "review_quality_gate_available": False,
+        "blockers": [],
+    }
+    if frame_path is None:
+        return result
+    if projected_skeleton_trace_path is None:
+        return result
+    trace_path = Path(projected_skeleton_trace_path).expanduser()
+    if not trace_path.is_file():
+        result.update(
+            {
+                "status": "blocked",
+                "blockers": ["projected_skeleton_trace_missing_for_robot_material_quality"],
+            }
+        )
+        return result
+    try:
+        from PIL import Image
+        import numpy as np
+    except Exception as exc:  # pragma: no cover - dependency/environment edge.
+        result.update(
+            {
+                "status": "blocked",
+                "blockers": [
+                    f"projected_robot_material_quality_dependency_import_failed:{type(exc).__name__}"
+                ],
+            }
+        )
+        return result
+    try:
+        row = _first_projected_robot_trace_row(trace_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        result.update(
+            {
+                "status": "blocked",
+                "blockers": [f"projected_skeleton_trace_unreadable:{type(exc).__name__}"],
+            }
+        )
+        return result
+    if not row:
+        result.update(
+            {
+                "status": "blocked",
+                "projected_skeleton_trace_available": True,
+                "blockers": ["projected_skeleton_trace_has_no_projected_robot_points"],
+            }
+        )
+        return result
+    try:
+        with Image.open(Path(frame_path).expanduser()) as image:
+            rgb = image.convert("RGB")
+            array = np.asarray(rgb).astype("float32")
+    except Exception as exc:
+        result.update(
+            {
+                "status": "blocked",
+                "projected_skeleton_trace_available": True,
+                "blockers": [f"source_policy_observation_frame_unreadable:{type(exc).__name__}"],
+            }
+        )
+        return result
+    height, width = array.shape[:2]
+    trace_size = _trace_image_size(row)
+    trace_width = trace_size[0] if trace_size and trace_size[0] > 0 else float(width)
+    trace_height = trace_size[1] if trace_size and trace_size[1] > 0 else float(height)
+    scale_x = float(width) / trace_width
+    scale_y = float(height) / trace_height
+    radius = max(12, int(round(min(width, height) * 0.045)))
+    luma = 0.2126 * array[:, :, 0] + 0.7152 * array[:, :, 1] + 0.0722 * array[:, :, 2]
+    gradient_y, gradient_x = np.gradient(luma)
+    gradient_magnitude = np.hypot(gradient_x, gradient_y)
+    landmarks = row.get("landmarks")
+    roi_metrics: list[dict[str, Any]] = []
+    if isinstance(landmarks, Sequence) and not isinstance(landmarks, (str, bytes)):
+        for landmark in landmarks:
+            if not isinstance(landmark, Mapping):
+                continue
+            role = _string(landmark.get("link_role") or landmark.get("role")).lower()
+            landmark_id = _string(landmark.get("landmark_id") or landmark.get("link_name"))
+            role_or_name = f"{role} {landmark_id}".lower()
+            if not (
+                role in PROJECTED_ROBOT_MATERIAL_ROLES
+                or any(token in role_or_name for token in PROJECTED_ROBOT_MATERIAL_ROLES)
+            ):
+                continue
+            projection = landmark.get("image_projection")
+            if not isinstance(projection, Mapping) or projection.get("available") is not True:
+                continue
+            try:
+                u_px = float(projection.get("u_px")) * scale_x
+                v_px = float(projection.get("v_px")) * scale_y
+            except (TypeError, ValueError):
+                continue
+            if not (0.0 <= u_px < width and 0.0 <= v_px < height):
+                continue
+            x0 = max(0, int(round(u_px)) - radius)
+            y0 = max(0, int(round(v_px)) - radius)
+            x1 = min(width, int(round(u_px)) + radius + 1)
+            y1 = min(height, int(round(v_px)) + radius + 1)
+            roi = luma[y0:y1, x0:x1]
+            roi_gradient = gradient_magnitude[y0:y1, x0:x1]
+            if roi.size <= 0:
+                continue
+            roi_metrics.append(
+                {
+                    "landmark_id": landmark_id or None,
+                    "link_role": role or None,
+                    "u_px": _round_float(u_px, 3),
+                    "v_px": _round_float(v_px, 3),
+                    "roi": {"x0": x0, "y0": y0, "x1": x1, "y1": y1},
+                    "std_luma": _round_float(float(roi.std()), 3),
+                    "edge_density": _round_float(float((roi_gradient > 18.0).mean()), 6),
+                }
+            )
+    if len(roi_metrics) < PROJECTED_ROBOT_MATERIAL_MIN_REVIEW_POINTS:
+        result.update(
+            {
+                "status": "blocked",
+                "projected_skeleton_trace_used": True,
+                "projected_skeleton_trace_available": True,
+                "review_quality_gate_available": False,
+                "frame_index": row.get("frame_index"),
+                "projected_robot_point_count": len(roi_metrics),
+                "minimum_projected_robot_point_count": PROJECTED_ROBOT_MATERIAL_MIN_REVIEW_POINTS,
+                "roi_radius_px": radius,
+                "roi_metrics": roi_metrics,
+                "blockers": ["projected_robot_material_quality_insufficient_projected_points"],
+            }
+        )
+        return result
+    mean_edge_density = sum(float(metric["edge_density"]) for metric in roi_metrics) / len(
+        roi_metrics
+    )
+    mean_std_luma = sum(float(metric["std_luma"]) for metric in roi_metrics) / len(roi_metrics)
+    blockers: list[str] = []
+    if mean_edge_density < PROJECTED_ROBOT_MATERIAL_MIN_REVIEW_EDGE_DENSITY:
+        blockers.append("source_policy_observation_projected_robot_material_low_detail")
+    if mean_std_luma < PROJECTED_ROBOT_MATERIAL_MIN_REVIEW_STD_LUMA:
+        blockers.append("source_policy_observation_projected_robot_material_flat")
+    result.update(
+        {
+            "status": "passed" if not blockers else "failed",
+            "projected_skeleton_trace_used": True,
+            "projected_skeleton_trace_available": True,
+            "review_quality_gate_available": True,
+            "frame_index": row.get("frame_index"),
+            "image_size_px": [int(width), int(height)],
+            "trace_image_size_px": [_round_float(trace_width, 3), _round_float(trace_height, 3)],
+            "roi_radius_px": radius,
+            "projected_robot_point_count": len(roi_metrics),
+            "minimum_projected_robot_point_count": PROJECTED_ROBOT_MATERIAL_MIN_REVIEW_POINTS,
+            "mean_projected_robot_roi_edge_density": _round_float(mean_edge_density, 6),
+            "minimum_mean_projected_robot_roi_edge_density": (
+                PROJECTED_ROBOT_MATERIAL_MIN_REVIEW_EDGE_DENSITY
+            ),
+            "mean_projected_robot_roi_std_luma": _round_float(mean_std_luma, 3),
+            "minimum_mean_projected_robot_roi_std_luma": (
+                PROJECTED_ROBOT_MATERIAL_MIN_REVIEW_STD_LUMA
+            ),
+            "roi_metrics": roi_metrics,
+            "blockers": blockers,
+        }
+    )
+    return result
+
+
 def _source_policy_observation_blockers(
     stats: Mapping[str, Any],
     *,
@@ -993,6 +1232,10 @@ def _source_policy_observation_blockers(
     return sorted(set(blockers))
 
 
+def _truthy_env(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def assess_source_policy_observation_visual_qa(
     frame_path: str | Path | None,
     *,
@@ -1002,6 +1245,7 @@ def assess_source_policy_observation_visual_qa(
     object_index: Mapping[str, Any] | Sequence[Any] | None = None,
     eval_ready_task_grounding: Mapping[str, Any] | None = None,
     semantic_artifact_base_dir: str | Path | None = None,
+    projected_skeleton_trace_path: str | Path | None = None,
     visual_profile: str = "smoke",
     review_quality_required: bool = False,
 ) -> dict[str, Any]:
@@ -1030,6 +1274,19 @@ def assess_source_policy_observation_visual_qa(
     )
     if semantic_target_quality.get("status") == "failed":
         blockers.extend(_string_list(semantic_target_quality.get("blockers")))
+    projected_robot_material_quality = _projected_robot_material_quality(
+        frame_path,
+        projected_skeleton_trace_path=projected_skeleton_trace_path,
+    )
+    material_quality_enforced = bool(
+        review_quality_required
+        and projected_skeleton_trace_path is not None
+        and _truthy_env(PROJECTED_ROBOT_MATERIAL_REVIEW_REQUIRE_ENV)
+    )
+    if material_quality_enforced:
+        material_status = _string(projected_robot_material_quality.get("status"))
+        if material_status in {"blocked", "failed"}:
+            blockers.extend(_string_list(projected_robot_material_quality.get("blockers")))
     passed = bool(stats.get("status") == "completed" and not blockers)
     semantic_status = _string(semantic_target_quality.get("status"))
     return {
@@ -1060,11 +1317,22 @@ def assess_source_policy_observation_visual_qa(
         ),
         "metrics": stats,
         "semantic_target_quality": semantic_target_quality,
+        "projected_robot_material_quality": projected_robot_material_quality,
+        "projected_robot_material_quality_enforced": material_quality_enforced,
         "blockers": sorted(set(blockers)),
         "claim_boundary": {
             "visual_qa_is_not_task_success_proof": True,
             "target_visibility_is_heuristic_without_detector": semantic_status == "not_available",
             "semantic_target_gates_are_initial_observation_quality_checks": True,
+            "projected_robot_material_quality_is_heuristic": bool(
+                projected_robot_material_quality.get("projected_skeleton_trace_used")
+            ),
+            "projected_robot_material_quality_is_advisory_unless_strict_env_enabled": (
+                not material_quality_enforced
+            ),
+            "projected_skeleton_trace_is_support_evidence_not_robot_sensor_truth": bool(
+                projected_robot_material_quality.get("projected_skeleton_trace_used")
+            ),
             "synthetic_labels_are_support_evidence_not_raw_capture_truth": bool(
                 semantic_target_quality.get("synthetic_label_evidence_used")
             ),
@@ -1264,6 +1532,7 @@ def write_persistent_wam_visual_quality_artifacts(
     structural_fallback_used: bool = False,
     target_object_id: str | None = None,
     task_id: str | None = None,
+    projected_skeleton_trace_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Write review-quality visual QA artifacts for a persistent policy/WAM rollout."""
     job = Path(job_dir).expanduser().resolve()
@@ -1274,6 +1543,7 @@ def write_persistent_wam_visual_quality_artifacts(
         generated_at=generated_at,
         target_object_id=target_object_id,
         task_id=task_id,
+        projected_skeleton_trace_path=projected_skeleton_trace_path,
         visual_profile=normalized_profile,
         review_quality_required=normalized_profile == "review_quality",
     )

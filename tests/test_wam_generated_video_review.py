@@ -53,6 +53,72 @@ def _write_mask(path: Path, *, size: tuple[int, int], box: tuple[int, int, int, 
     return path
 
 
+def _write_projected_skeleton_trace(
+    path: Path,
+    *,
+    size: tuple[int, int] = (640, 480),
+    points: list[tuple[str, str, float, float]] | None = None,
+) -> Path:
+    landmarks = []
+    for landmark_id, role, u_px, v_px in points or [
+        ("left_wrist_link", "wrist", 176.0, 390.0),
+        ("left_hand_link", "hand", 224.0, 330.0),
+        ("right_wrist_link", "wrist", 464.0, 390.0),
+        ("right_hand_link", "hand", 416.0, 330.0),
+    ]:
+        landmarks.append(
+            {
+                "landmark_id": landmark_id,
+                "link_role": role,
+                "image_projection": {
+                    "available": True,
+                    "u_px": u_px,
+                    "v_px": v_px,
+                    "depth_m": 0.35,
+                },
+            }
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "frame_index": 0,
+                "camera": "robot_pov",
+                "image_size_px": [size[0], size[1]],
+                "landmarks": landmarks,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _paint_projected_robot_regions(
+    path: Path,
+    *,
+    textured: bool,
+    size: tuple[int, int] = (640, 480),
+) -> Path:
+    frame = _write_good_frame(path, size=size)
+    image = Image.open(frame).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    points = [(176, 390), (224, 330), (464, 390), (416, 330)]
+    for x, y in points:
+        box = (x - 42, y - 42, x + 42, y + 42)
+        if not textured:
+            draw.rectangle(box, fill=(238, 238, 236))
+            continue
+        draw.rectangle(box, fill=(80, 86, 92))
+        for offset in range(-40, 42, 8):
+            shade = 210 if (offset // 8) % 2 == 0 else 38
+            draw.line((x - 42, y + offset, x + 42, y + offset), fill=(shade, shade, shade), width=3)
+            draw.line((x + offset, y - 42, x + offset, y + 42), fill=(shade, shade, shade), width=2)
+    image.save(frame)
+    return frame
+
+
 def _semantic_target(
     *,
     bbox: dict[str, int],
@@ -125,6 +191,86 @@ def test_source_policy_observation_visual_qa_good_frame_passes(tmp_path: Path) -
     assert qa["visual_success"] is True
     assert qa["target_visibility_status"] == "passed_visual_proxy"
     assert qa["blockers"] == []
+
+
+def test_source_policy_observation_visual_qa_records_low_detail_projected_robot_regions_as_advisory(
+    tmp_path: Path,
+) -> None:
+    frame = _paint_projected_robot_regions(tmp_path / "flat_robot.jpg", textured=False)
+    trace = _write_projected_skeleton_trace(tmp_path / "g1_projected_skeleton_trace.jsonl")
+
+    qa = assess_source_policy_observation_visual_qa(
+        frame,
+        generated_at="now",
+        target_object_id="fridge_handle",
+        task_id="open_refrigerator",
+        projected_skeleton_trace_path=trace,
+        visual_profile="review_quality",
+        review_quality_required=True,
+    )
+
+    assert qa["status"] == "passed_visual_quality_gate"
+    assert qa["blockers"] == []
+    assert qa["projected_robot_material_quality_enforced"] is False
+    material = qa["projected_robot_material_quality"]
+    assert material["status"] == "failed"
+    assert "source_policy_observation_projected_robot_material_low_detail" in material["blockers"]
+    assert material["projected_skeleton_trace_used"] is True
+    assert material["projected_robot_point_count"] == 4
+    assert qa["claim_boundary"]["projected_robot_material_quality_is_heuristic"] is True
+    assert (
+        qa["claim_boundary"][
+            "projected_robot_material_quality_is_advisory_unless_strict_env_enabled"
+        ]
+        is True
+    )
+
+
+def test_source_policy_observation_visual_qa_can_enforce_projected_robot_material_gate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    frame = _paint_projected_robot_regions(tmp_path / "flat_robot.jpg", textured=False)
+    trace = _write_projected_skeleton_trace(tmp_path / "g1_projected_skeleton_trace.jsonl")
+    monkeypatch.setenv("BLUEPRINT_REQUIRE_PROJECTED_ROBOT_MATERIAL_DETAIL_FOR_REVIEW", "true")
+
+    qa = assess_source_policy_observation_visual_qa(
+        frame,
+        generated_at="now",
+        target_object_id="fridge_handle",
+        task_id="open_refrigerator",
+        projected_skeleton_trace_path=trace,
+        visual_profile="review_quality",
+        review_quality_required=True,
+    )
+
+    assert qa["status"] == "failed_visual_quality_gate"
+    assert "source_policy_observation_projected_robot_material_low_detail" in qa["blockers"]
+    assert qa["projected_robot_material_quality_enforced"] is True
+
+
+def test_source_policy_observation_visual_qa_accepts_detailed_projected_robot_regions(
+    tmp_path: Path,
+) -> None:
+    frame = _paint_projected_robot_regions(tmp_path / "textured_robot.jpg", textured=True)
+    trace = _write_projected_skeleton_trace(tmp_path / "g1_projected_skeleton_trace.jsonl")
+
+    qa = assess_source_policy_observation_visual_qa(
+        frame,
+        generated_at="now",
+        target_object_id="fridge_handle",
+        task_id="open_refrigerator",
+        projected_skeleton_trace_path=trace,
+        visual_profile="review_quality",
+        review_quality_required=True,
+    )
+
+    assert qa["status"] == "passed_visual_quality_gate"
+    assert qa["blockers"] == []
+    material = qa["projected_robot_material_quality"]
+    assert material["status"] == "passed"
+    assert material["projected_skeleton_trace_used"] is True
+    assert material["mean_projected_robot_roi_edge_density"] >= 0.16
 
 
 def test_source_policy_observation_visual_qa_visible_semantic_target_passes(

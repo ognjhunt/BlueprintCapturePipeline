@@ -1037,12 +1037,32 @@ def _policy_observation_semantic_visual_evidence(
                 object_index = loaded
                 object_index_path = path
                 break
+    projected_skeleton_trace_path: Path | None = None
+    unresolved_projected_skeleton_trace_path: Path | None = None
+    for value in (
+        observation.get("projected_skeleton_trace_path"),
+        observation.get("g1_projected_skeleton_trace_jsonl"),
+        visual.get("projected_skeleton_trace_path"),
+        visual.get("g1_projected_skeleton_trace_jsonl"),
+    ):
+        path = _resolve_local_json_path(value, base_dir=base_dir)
+        if path is None:
+            continue
+        unresolved_projected_skeleton_trace_path = path
+        if path.is_file():
+            projected_skeleton_trace_path = path.resolve()
+            break
     artifact_base_dir = object_index_path.parent if object_index_path else base_dir
     return {
         "object_index": object_index if isinstance(object_index, (Mapping, list)) else None,
         "object_index_path": str(object_index_path) if object_index_path else None,
         "eval_ready_task_grounding": dict(eval_ready) if isinstance(eval_ready, Mapping) else None,
         "eval_ready_task_grounding_path": str(eval_ready_path) if eval_ready_path else None,
+        "projected_skeleton_trace_path": str(
+            projected_skeleton_trace_path or unresolved_projected_skeleton_trace_path
+        )
+        if (projected_skeleton_trace_path or unresolved_projected_skeleton_trace_path)
+        else None,
         "semantic_artifact_base_dir": str(artifact_base_dir),
     }
 
@@ -2950,6 +2970,7 @@ def build_persistent_session_provider_bundle(
         object_index=semantic_visual_evidence.get("object_index"),
         eval_ready_task_grounding=semantic_visual_evidence.get("eval_ready_task_grounding"),
         semantic_artifact_base_dir=semantic_visual_evidence.get("semantic_artifact_base_dir"),
+        projected_skeleton_trace_path=semantic_visual_evidence.get("projected_skeleton_trace_path"),
         visual_profile=visual_profile,
         review_quality_required=visual_profile == "review_quality",
     )
@@ -2977,6 +2998,9 @@ def build_persistent_session_provider_bundle(
             object_index=semantic_visual_evidence.get("object_index"),
             eval_ready_task_grounding=semantic_visual_evidence.get("eval_ready_task_grounding"),
             semantic_artifact_base_dir=semantic_visual_evidence.get("semantic_artifact_base_dir"),
+            projected_skeleton_trace_path=semantic_visual_evidence.get(
+                "projected_skeleton_trace_path"
+            ),
             visual_profile=visual_profile,
             review_quality_required=True,
         )
@@ -3001,6 +3025,9 @@ def build_persistent_session_provider_bundle(
                         ),
                         semantic_artifact_base_dir=semantic_visual_evidence.get(
                             "semantic_artifact_base_dir"
+                        ),
+                        projected_skeleton_trace_path=semantic_visual_evidence.get(
+                            "projected_skeleton_trace_path"
                         ),
                         visual_profile=visual_profile,
                         review_quality_required=True,
@@ -3306,6 +3333,9 @@ def build_persistent_session_provider_bundle(
                 "eval_ready_task_grounding": semantic_visual_evidence.get(
                     "eval_ready_task_grounding_path"
                 ),
+                "projected_skeleton_trace": semantic_visual_evidence.get(
+                    "projected_skeleton_trace_path"
+                ),
             },
             "runtime_entrypoint": "provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh",
             "runpod_wam_carrier_entrypoint": "provider_runtime/run_wam_provider_runtime.sh",
@@ -3397,6 +3427,9 @@ def build_persistent_session_provider_bundle(
             "object_index": semantic_visual_evidence.get("object_index_path"),
             "eval_ready_task_grounding": semantic_visual_evidence.get(
                 "eval_ready_task_grounding_path"
+            ),
+            "projected_skeleton_trace": semantic_visual_evidence.get(
+                "projected_skeleton_trace_path"
             ),
         },
         "loop_step_count": int(loop_step_count),
@@ -4269,6 +4302,14 @@ def _postprocess_imported_persistent_session_artifacts(
         policy_observation = _load_policy_observation(policy_observation_path)
     except Exception:
         policy_observation = {}
+    postprocess_visual_evidence = (
+        _policy_observation_semantic_visual_evidence(
+            policy_observation,
+            base_dir=Path(policy_observation_path).expanduser().parent,
+        )
+        if policy_observation
+        else {}
+    )
     task_prompt = _string(policy_observation.get("task_prompt"))
     target_object_id = _string(policy_observation.get("target_object_id"))
     target_label = _string(policy_observation.get("target_label")) or target_object_id
@@ -4339,6 +4380,9 @@ def _postprocess_imported_persistent_session_artifacts(
         structural_fallback_used=structural_wam_count > 0,
         target_object_id=_string(policy_observation.get("target_object_id")) or None,
         task_id=_string(policy_observation.get("task_id")) or None,
+        projected_skeleton_trace_path=postprocess_visual_evidence.get(
+            "projected_skeleton_trace_path"
+        ),
     )
     claim_boundary = {
         "schema_version": "persistent_policy_wam_claim_boundary.v1",

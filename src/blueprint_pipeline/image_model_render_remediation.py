@@ -194,6 +194,7 @@ def run_image_model_render_remediation(
     object_index: Mapping[str, Any] | Sequence[Any] | None = None,
     eval_ready_task_grounding: Mapping[str, Any] | None = None,
     semantic_artifact_base_dir: str | Path | None = None,
+    projected_skeleton_trace_path: str | Path | None = None,
     visual_profile: str = "review_quality",
     review_quality_required: bool = True,
     command: str | None = None,
@@ -388,6 +389,7 @@ def run_image_model_render_remediation(
         object_index=object_index,
         eval_ready_task_grounding=eval_ready_task_grounding,
         semantic_artifact_base_dir=semantic_artifact_base_dir,
+        projected_skeleton_trace_path=projected_skeleton_trace_path,
         visual_profile=visual_profile,
         review_quality_required=review_quality_required,
     )

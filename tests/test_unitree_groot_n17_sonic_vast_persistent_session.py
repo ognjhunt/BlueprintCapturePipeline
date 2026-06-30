@@ -145,6 +145,53 @@ def _write_dark_frame(path: Path, *, size: tuple[int, int] = (640, 480)) -> Path
     return path
 
 
+def _write_projected_skeleton_trace(path: Path) -> Path:
+    landmarks = []
+    for landmark_id, role, u_px, v_px in (
+        ("left_wrist_link", "wrist", 176.0, 390.0),
+        ("left_hand_link", "hand", 224.0, 330.0),
+        ("right_wrist_link", "wrist", 464.0, 390.0),
+        ("right_hand_link", "hand", 416.0, 330.0),
+    ):
+        landmarks.append(
+            {
+                "landmark_id": landmark_id,
+                "link_role": role,
+                "image_projection": {
+                    "available": True,
+                    "u_px": u_px,
+                    "v_px": v_px,
+                    "depth_m": 0.35,
+                },
+            }
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "camera": "robot_pov",
+                "frame_index": 0,
+                "image_size_px": [640, 480],
+                "landmarks": landmarks,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_flat_projected_robot_regions_frame(path: Path) -> Path:
+    frame = _write_reviewable_frame(path)
+    image = Image.open(frame).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    for x, y in ((176, 390), (224, 330), (464, 390), (416, 330)):
+        draw.rectangle((x - 42, y - 42, x + 42, y + 42), fill=(238, 238, 236))
+    image.save(frame)
+    return frame
+
+
 def _write_fake_image_model_remediator(path: Path) -> Path:
     path.write_text(
         """
@@ -1402,6 +1449,68 @@ def test_review_quality_profile_rejects_bad_source_frame_before_staging(
         )
     )
     assert "source_policy_observation_too_dark_for_review" in source_qa["blockers"]
+
+
+def test_review_quality_profile_records_projected_skeleton_robot_material_advisory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    frame = _write_flat_projected_robot_regions_frame(tmp_path / "frame.jpg")
+    trace = _write_projected_skeleton_trace(tmp_path / "g1_projected_skeleton_trace.jsonl")
+    observation = {
+        "schema_version": "initial_policy_observation.v1",
+        "task_id": "open_refrigerator",
+        "target_object_id": "fridge_handle",
+        "camera_frame_path": str(frame),
+        "visual_observation": {
+            "camera_frame_path": str(frame),
+            "projected_skeleton_trace_path": str(trace),
+        },
+        "unitree_g1_sonic_state": {
+            "left_leg": [0.0] * 6,
+            "right_leg": [0.0] * 6,
+            "waist": [0.0] * 3,
+            "left_arm": [0.0] * 7,
+            "right_arm": [0.0] * 7,
+            "left_hand": [0.0] * 7,
+            "right_hand": [0.0] * 7,
+            "projected_gravity": [0.0, 0.0, -1.0],
+        },
+    }
+    observation_path = tmp_path / "observation.json"
+    observation_path.write_text(json.dumps({"observation": observation}), encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "review_quality")
+
+    manifest = session.build_persistent_session_provider_bundle(
+        job_dir=tmp_path / "bundle",
+        policy_observation_path=observation_path,
+        loop_step_count=2,
+        use_live_wam=True,
+        allow_structural_wam_fallback=False,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "bundle_ready"
+    assert "source_policy_observation_visual_qa_failed_for_review_quality" not in manifest[
+        "blockers"
+    ]
+    assert manifest["semantic_visual_qa_source_paths"]["projected_skeleton_trace"] == str(
+        trace.resolve()
+    )
+    source_qa = json.loads(
+        (tmp_path / "bundle" / "source_policy_observation_visual_qa.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert source_qa["status"] == "passed_visual_quality_gate"
+    assert source_qa["blockers"] == []
+    assert source_qa["projected_robot_material_quality_enforced"] is False
+    material = source_qa["projected_robot_material_quality"]
+    assert material["projected_skeleton_trace_path"] == str(trace.resolve())
+    assert material["projected_skeleton_trace_used"] is True
+    assert "source_policy_observation_projected_robot_material_low_detail" in material[
+        "blockers"
+    ]
 
 
 def test_persistent_session_bundle_blocks_offscreen_semantic_initial_observation(
