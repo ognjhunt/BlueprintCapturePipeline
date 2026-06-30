@@ -1003,6 +1003,17 @@ def test_runpod_poll_ignores_unitree_groot_sonic_nonterminal_heartbeat(
                 }
             ),
         )
+        archive.writestr(
+            "wam_provider_output.json",
+            json.dumps(
+                {
+                    "schema_version": "wam_provider_output.v1",
+                    "status": "running",
+                    "runtime_phase": "runpod_wam_entrypoint_starting",
+                    "blockers": [],
+                }
+            ),
+        )
     (tmp_path / "job" / "runpod_wam_async_state.json").write_text(
         json.dumps(
             {
@@ -1057,6 +1068,192 @@ def test_runpod_poll_ignores_unitree_groot_sonic_nonterminal_heartbeat(
     assert read_count["value"] == 2
     assert (tmp_path / "job" / "runpod_provider_runtime_output_nonterminal.zip").is_file()
     assert (tmp_path / "job" / "runpod_wam_nonterminal_output_manifest.json").is_file()
+
+
+def test_runpod_poll_accepts_completed_policy_output_with_stale_wam_heartbeat(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_get_url_file = tmp_path / "provider_output_get_url.txt"
+    output_get_url_file.write_text(
+        "https://spaces.example/persistent-output.zip?X-Amz-Signature=download-secret\n",
+        encoding="utf-8",
+    )
+    output_get_url_file.chmod(0o600)
+    output_zip = tmp_path / "job" / "runpod_provider_runtime_output.zip"
+    (tmp_path / "job").mkdir()
+    completed_zip = tmp_path / "completed.zip"
+    with zipfile.ZipFile(completed_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_policy_provider_output.json",
+            json.dumps(
+                {
+                    "status": "completed",
+                    "blockers": [],
+                    "generated_next_observation_count": 4,
+                    "live_wam_generation_success_count": 4,
+                    "learned_wam_model_success_count": 4,
+                    "repeated_policy_calls_count": 5,
+                    "unitree_groot_n17_sonic_model_executed": True,
+                }
+            ),
+        )
+        archive.writestr(
+            "wam_provider_output.json",
+            json.dumps(
+                {
+                    "schema_version": "wam_provider_output.v1",
+                    "status": "running",
+                    "runtime_phase": "runpod_wam_entrypoint_starting",
+                    "blockers": [],
+                }
+            ),
+        )
+    (tmp_path / "job" / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "unitree_groot_n17_sonic",
+                "pod_id": "pod-123",
+                "output_path": str(output_zip),
+                "provider_output_get_url_file": {
+                    "path": str(output_get_url_file),
+                    "raw_secret_values_recorded": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return completed_zip.read_bytes()
+
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_runpod_request",
+        lambda **kwargs: (200, {"desiredStatus": "RUNNING"}),
+    )
+    monkeypatch.setattr(runner.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["runtime_result_status"] == "completed"
+    assert manifest["output_zip_present"] is True
+    assert manifest["last_nonterminal_output"] is None
+
+
+def test_runpod_poll_tolerates_transient_pod_status_url_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_get_url_file = tmp_path / "provider_output_get_url.txt"
+    output_get_url_file.write_text(
+        "https://spaces.example/persistent-output.zip?X-Amz-Signature=download-secret\n",
+        encoding="utf-8",
+    )
+    output_get_url_file.chmod(0o600)
+    output_zip = tmp_path / "job" / "runpod_provider_runtime_output.zip"
+    (tmp_path / "job").mkdir()
+    running_zip = tmp_path / "running.zip"
+    completed_zip = tmp_path / "completed.zip"
+    with zipfile.ZipFile(running_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_policy_provider_output.json",
+            json.dumps(
+                {
+                    "status": "running",
+                    "runtime_phase": "policy_infer_started",
+                    "blockers": [],
+                }
+            ),
+        )
+    with zipfile.ZipFile(completed_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_policy_provider_output.json",
+            json.dumps(
+                {
+                    "status": "completed",
+                    "blockers": [],
+                    "generated_next_observation_count": 1,
+                    "live_wam_generation_success_count": 1,
+                }
+            ),
+        )
+    (tmp_path / "job" / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "unitree_groot_n17_sonic",
+                "pod_id": "pod-123",
+                "output_path": str(output_zip),
+                "provider_output_get_url_file": {
+                    "path": str(output_get_url_file),
+                    "raw_secret_values_recorded": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    zip_sequence = [running_zip, completed_zip]
+    read_count = {"value": 0}
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            index = min(read_count["value"], len(zip_sequence) - 1)
+            read_count["value"] += 1
+            return zip_sequence[index].read_bytes()
+
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_runpod_request",
+        lambda **kwargs: (_ for _ in ()).throw(
+            runner.urllib.error.URLError("temporary dns failure")
+        ),
+    )
+    monkeypatch.setattr(runner.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        max_wait_seconds=2,
+        retry_interval_seconds=1,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["runtime_result_status"] == "completed"
+    assert manifest["pod_status"] == "status_probe_error"
+    assert manifest["pod_status_transient_error_count"] == 1
+    assert manifest["last_pod_status_error"]["error_type"] == "URLError"
+    assert "download-secret" not in (tmp_path / "job" / "runpod_wam_async_poll_manifest.json").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_runpod_poll_recognizes_oscar_wam_provider_output_heartbeat(

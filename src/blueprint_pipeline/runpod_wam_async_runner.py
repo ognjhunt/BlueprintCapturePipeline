@@ -1637,6 +1637,8 @@ def poll_runpod_wam_async_run(
     output_present = output_path.is_file()
     last_nonterminal_output: dict[str, Any] | None = None
     transient_not_found_count = 0
+    transient_pod_status_error_count = 0
+    last_pod_status_error: dict[str, Any] | None = None
     existing_teardown_completed = False
     while not blockers and time.monotonic() <= deadline:
         output_present = output_path.is_file()
@@ -1660,7 +1662,7 @@ def poll_runpod_wam_async_run(
                 # Fall back to the provider-output status so the first heartbeat is recognized as
                 # nonterminal and the poll keeps waiting for the model to finish.
                 heartbeat_status = runtime_status
-                if heartbeat_status not in nonterminal_statuses:
+                if not heartbeat_status:
                     heartbeat_status = _zip_wam_provider_output_status(output_path)
                 if heartbeat_status in nonterminal_statuses:
                     nonterminal_path = output_path.with_name(
@@ -1725,6 +1727,19 @@ def poll_runpod_wam_async_run(
             if exc.code not in {404, 410}:
                 blockers.append("runpod_pod_status_http_error")
             break
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            status_code = None
+            transient_pod_status_error_count += 1
+            pod_status = "status_probe_error"
+            last_pod_status_error = {
+                "error_type": type(exc).__name__,
+                "message_preview": str(exc)[:300],
+                "raw_secret_values_recorded": False,
+            }
+            if time.monotonic() + retry_interval_seconds > deadline:
+                break
+            time.sleep(max(1, retry_interval_seconds))
+            continue
         if output_present:
             break
         if time.monotonic() + retry_interval_seconds > deadline:
@@ -1795,6 +1810,8 @@ def poll_runpod_wam_async_run(
         "pod_status_http_status_code": status_code,
         "pod_status_not_found_grace_seconds": not_found_grace_seconds,
         "pod_status_transient_not_found_count": transient_not_found_count,
+        "pod_status_transient_error_count": transient_pod_status_error_count,
+        "last_pod_status_error": last_pod_status_error,
         "provider_command_status": provider_status,
         "provider_command_blockers": provider_blockers,
         "output_zip_present": output_present,
