@@ -67,6 +67,7 @@ VAST_REQUIRE_DIRECT_PORT_ENV = "BLUEPRINT_VAST_REQUIRE_DIRECT_PORT"
 VAST_PREFERRED_GPU_KEYWORDS_ENV = "BLUEPRINT_VAST_PREFERRED_GPU_KEYWORDS"
 VAST_PREFERRED_GEOLOCATION_REGEX_ENV = "BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX"
 VAST_WAM_NO_PROGRESS_SECONDS_ENV = "BLUEPRINT_VAST_WAM_NO_PROGRESS_SECONDS"
+VAST_HEARTBEAT_NO_PROGRESS_SECONDS_ENV = "BLUEPRINT_VAST_HEARTBEAT_NO_PROGRESS_SECONDS"
 VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV = (
     "BLUEPRINT_VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK"
 )
@@ -108,6 +109,7 @@ DEFAULT_TARGET_SPEND_USD = 0.35
 DEFAULT_HARD_CAP_USD = 0.75
 DEFAULT_MAX_LIVE_MINUTES = 45
 DEFAULT_SESSION_MAX_LIVE_MINUTES = 45
+DEFAULT_HEARTBEAT_NO_PROGRESS_SECONDS = 600
 DEFAULT_VIDEO_SMOKE_CAMERA_COUNT = 6
 DEFAULT_WAM_ROLLOUT_VIDEO_COUNT = 1
 DEFAULT_UNITREE_UNIFOLM_VIDEO_COUNT = 0
@@ -4209,6 +4211,7 @@ def run_vast_provider_adapter(
     min_compute_cap: int | None = None,
     poll_interval_seconds: int = 10,
     startup_timeout_seconds: int = 420,
+    heartbeat_no_progress_seconds: int | None = None,
     machine_avoidlist_path: str | Path | None = None,
     allowed_machine_ids: Iterable[Any] = (),
     session_budget_ledger_path: str | Path | None = None,
@@ -5532,6 +5535,14 @@ def run_vast_provider_adapter(
                 "BLUEPRINT_VAST_GPU_SANITY_BLOCKED",
             ]
         )
+        resolved_heartbeat_no_progress_seconds = (
+            _env_int(
+                VAST_HEARTBEAT_NO_PROGRESS_SECONDS_ENV,
+                DEFAULT_HEARTBEAT_NO_PROGRESS_SECONDS,
+            )
+            if heartbeat_no_progress_seconds is None
+            else heartbeat_no_progress_seconds
+        )
         onstart_logs = _request_logs_and_fetch(
             instance_id=instance_id,
             api_key=api_key,
@@ -5543,6 +5554,7 @@ def run_vast_provider_adapter(
             container_missing_retry_attempts=int(
                 os.environ.get(VAST_CONTAINER_MISSING_RETRY_ATTEMPTS_ENV, "2")
             ),
+            no_progress_seconds=resolved_heartbeat_no_progress_seconds,
         )
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
         if (
@@ -5590,6 +5602,19 @@ def run_vast_provider_adapter(
             if downstream_marker_seen and not heartbeat_ok
             else []
         )
+        heartbeat_log_break_reason = _string(onstart_logs.get("break_reason"))
+        heartbeat_no_progress_timeout = bool(
+            onstart_logs.get("no_progress_timeout_reached")
+            or heartbeat_log_break_reason == "no_log_progress_timeout"
+        )
+        heartbeat_blockers = []
+        if not startup_probe_ok:
+            if heartbeat_no_progress_timeout:
+                heartbeat_blockers.append("vast_heartbeat_no_log_progress_timeout")
+            if _log_result_has_container_missing(onstart_logs):
+                heartbeat_blockers.append("vast_heartbeat_container_missing")
+            heartbeat_blockers.append("vast_heartbeat_output_missing_success_marker")
+            heartbeat_blockers = _dedupe(heartbeat_blockers)
         heartbeat_manifest = {
             "schema_version": VAST_STARTUP_PROBE_SCHEMA_VERSION,
             "generated_at": generated_at,
@@ -5602,6 +5627,7 @@ def run_vast_provider_adapter(
             else ("downstream_provider_marker" if downstream_marker_seen else "none"),
             "downstream_provider_marker_seen": downstream_marker_seen,
             "heartbeat_url_kind": "public_echo_endpoint",
+            "heartbeat_no_progress_timeout_seconds": resolved_heartbeat_no_progress_seconds,
             "launch_mode_used": launch_mode,
             "disk_gb": resolved_disk_gb,
             "container_image": selected_container_image,
@@ -5614,9 +5640,7 @@ def run_vast_provider_adapter(
             "instance_observations": observations,
             "last_instance_payload": _redact_runtime_value(instance_payload, secret_values),
             "container_log_result": onstart_logs,
-            "blockers": []
-            if startup_probe_ok
-            else ["vast_heartbeat_output_missing_success_marker"],
+            "blockers": [] if startup_probe_ok else heartbeat_blockers,
             "warnings": heartbeat_warnings,
             "proof_boundary": "Heartbeat proves Vast instance startup plus command/log retrieval only.",
             **_truth_boundaries(),
@@ -5626,9 +5650,7 @@ def run_vast_provider_adapter(
             resolved_job_dir,
             "vast_heartbeat_completed_or_blocked",
             "completed" if startup_probe_ok else "blocked",
-            blockers=[]
-            if startup_probe_ok
-            else ["vast_heartbeat_output_missing_success_marker"],
+            blockers=[] if startup_probe_ok else heartbeat_blockers,
             proof_effect="vast_container_command_heartbeat_completed"
             if heartbeat_ok
             else (
@@ -5640,7 +5662,9 @@ def run_vast_provider_adapter(
             warnings=heartbeat_warnings,
         )
         if not heartbeat_ok and not downstream_marker_seen:
-            raise RuntimeError("vast_heartbeat_blocked")
+            raise RuntimeError(
+                heartbeat_blockers[0] if heartbeat_blockers else "vast_heartbeat_blocked"
+            )
 
         _append_phase(resolved_job_dir, "vast_gpu_sanity_started", "running", instance_id=instance_id)
         gpu_text = heartbeat_text
@@ -6249,6 +6273,8 @@ def run_vast_provider_adapter(
         startup_control_plane_blocked = any(
             blocker in {
                 "vast_heartbeat_blocked",
+                "vast_heartbeat_no_log_progress_timeout",
+                "vast_heartbeat_container_missing",
                 "vast_heartbeat_output_missing_success_marker",
                 "vast_probe_interrupted_before_completion",
             }
@@ -6497,6 +6523,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--poll-interval-seconds", type=int, default=10)
     parser.add_argument("--startup-timeout-seconds", type=int, default=420)
     parser.add_argument(
+        "--heartbeat-no-progress-seconds",
+        type=int,
+        default=None,
+        help=(
+            "Maximum seconds to wait with no onstart/request_logs progress before "
+            f"blocking startup. Defaults to {VAST_HEARTBEAT_NO_PROGRESS_SECONDS_ENV} "
+            f"or {DEFAULT_HEARTBEAT_NO_PROGRESS_SECONDS}."
+        ),
+    )
+    parser.add_argument(
         "--machine-avoidlist",
         help="Optional JSON avoidlist of Vast machine IDs to exclude from offer selection. Defaults to <job-dir>/vast_machine_avoidlist.json.",
     )
@@ -6586,6 +6622,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         disk_gb=args.disk_gb,
         poll_interval_seconds=args.poll_interval_seconds,
         startup_timeout_seconds=args.startup_timeout_seconds,
+        heartbeat_no_progress_seconds=args.heartbeat_no_progress_seconds,
         machine_avoidlist_path=args.machine_avoidlist,
         allowed_machine_ids=args.allowed_machine_id,
         session_budget_ledger_path=args.session_budget_ledger,

@@ -631,6 +631,10 @@ def test_run_persistent_session_imports_reused_worker_output(
     observation_path = _policy_observation(tmp_path / "observation.json", frame)
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
+    monkeypatch.setenv(
+        "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_HEARTBEAT_NO_PROGRESS_SECONDS",
+        "123",
+    )
     for env_name in session.ALLOWED_MACHINE_ID_ENVS:
         monkeypatch.delenv(env_name, raising=False)
     for env_name in session.EXCLUDED_MACHINE_ID_ENVS:
@@ -710,6 +714,7 @@ def test_run_persistent_session_imports_reused_worker_output(
     assert captured["provider_bundle_kind"] == "unitree_groot_n17_sonic"
     assert captured["enable_blueprint_bundle"] is True
     assert captured["min_compute_cap"] == 800
+    assert captured["heartbeat_no_progress_seconds"] == 123
     assert captured["allowed_machine_ids"] == []
     assert captured["policy_command_env"] == session.DEFAULT_INNER_POLICY_COMMAND
     assert captured["persistent_inner_policy_command_env"] == session.DEFAULT_INNER_POLICY_COMMAND

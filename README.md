@@ -1382,6 +1382,15 @@ unlock the long run. These artifacts prove only reviewability of model-derived
 support media, not task success, safety, generated-world rank fidelity, or raw
 capture truth.
 
+For paid Vast runs, keep startup/log transport bounded separately from WAM
+rollout runtime. `BLUEPRINT_VAST_HEARTBEAT_NO_PROGRESS_SECONDS` controls how
+long the Vast adapter waits for onstart/request_logs progress before writing
+`vast_heartbeat_no_log_progress_timeout`; Unitree GR00T/SONIC persistent runs can
+override it with
+`BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_HEARTBEAT_NO_PROGRESS_SECONDS`.
+`BLUEPRINT_VAST_WAM_NO_PROGRESS_SECONDS` remains the longer WAM/provider runtime
+watchdog and should not be used to justify a silent startup instance.
+
 Synthetic fallback initial observations and synthetic 2D WAM seeds are blocked
 from live or review-quality WAM provider bundles by default. Use
 `BLUEPRINT_ALLOW_SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT=true` only for an

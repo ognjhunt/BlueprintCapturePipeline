@@ -31,6 +31,7 @@ from .unitree_groot_n17_sonic_vast_policy_command import (
     VAST_LAUNCH_MODE_ENV,
 )
 from .vast_provider_adapter import (
+    DEFAULT_HEARTBEAT_NO_PROGRESS_SECONDS,
     DEFAULT_PUBLIC_CUDA_IMAGE,
     VAST_IMAGE_LOGIN_MODE_ENV,
     run_vast_provider_adapter,
@@ -4577,6 +4578,13 @@ def run_persistent_session(
                 ),
                 startup_timeout_seconds=_int_env(
                     "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_STARTUP_TIMEOUT_SECONDS", 1800
+                ),
+                heartbeat_no_progress_seconds=_int_env(
+                    "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_HEARTBEAT_NO_PROGRESS_SECONDS",
+                    _int_env(
+                        "BLUEPRINT_VAST_HEARTBEAT_NO_PROGRESS_SECONDS",
+                        DEFAULT_HEARTBEAT_NO_PROGRESS_SECONDS,
+                    ),
                 ),
                 machine_avoidlist_path=machine_avoidlist_path,
                 allowed_machine_ids=attempt_allowed_machine_ids,

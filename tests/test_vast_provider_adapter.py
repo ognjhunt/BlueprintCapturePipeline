@@ -30,6 +30,7 @@ def _isolate_vast_launch_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.delenv(vpa.VAST_WAM_MIN_GPU_RAM_MB_ENV, raising=False)
     monkeypatch.delenv(vpa.VAST_MIN_COMPUTE_CAP_ENV, raising=False)
     monkeypatch.delenv(vpa.VAST_IMAGE_LOGIN_MODE_ENV, raising=False)
+    monkeypatch.delenv(vpa.VAST_HEARTBEAT_NO_PROGRESS_SECONDS_ENV, raising=False)
     for env_name in vpa.HF_TOKEN_FILE_ENV_NAMES:
         monkeypatch.delenv(env_name, raising=False)
     monkeypatch.setenv(vpa.HF_TOKEN_FILE_ENV, str(tmp_path / "missing_hf_token"))
@@ -2642,6 +2643,76 @@ def test_vast_adapter_records_machine_avoidlist_on_heartbeat_blocker(
     )
     offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
     assert offer["selected_offer"]["machine_id"] == 909
+
+
+def test_vast_adapter_heartbeat_no_progress_has_startup_specific_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_WAM_NO_PROGRESS_SECONDS_ENV, "1200")
+    monkeypatch.setenv(vpa.VAST_HEARTBEAT_NO_PROGRESS_SECONDS_ENV, "2")
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["api_key"] == secret
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {"instances": []}
+        if kwargs["method"] == "POST":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 606,
+                        "ask_contract_id": 606,
+                        "gpu_name": "RTX 4090",
+                        "dph_total": 0.2,
+                        "driver_version": "580.95.05",
+                        "machine_id": 6060,
+                        "num_gpus": 1,
+                        "rentable": True,
+                    }
+                ]
+            }
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/asks/606/":
+            return 200, {"success": True, "new_contract": 6061}
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/6061/":
+            return 200, {"instances": {"actual_status": "running", "cur_state": "running"}}
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6061":
+            return 200, {"success": True, "result_url": "https://logs.example/empty-startup"}
+        if kwargs["method"] == "DELETE" and kwargs["path"] == "/instances/6061/":
+            return 200, {"success": True}
+        raise AssertionError(kwargs)
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: "")
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path / "empty-heartbeat",
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=1200,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "failed"
+    assert result["blockers"] == ["vast_heartbeat_no_log_progress_timeout"]
+    assert result["continuing_spend_from_this_run"] is False
+    startup = _read_json(tmp_path / "empty-heartbeat" / "vast_startup_probe_manifest.json")
+    assert startup["status"] == "blocked"
+    assert startup["blockers"][0] == "vast_heartbeat_no_log_progress_timeout"
+    log_result = startup["container_log_result"]
+    assert log_result["break_reason"] == "no_log_progress_timeout"
+    assert log_result["no_progress_timeout_seconds"] == 2
+    avoidlist = _read_json(tmp_path / "empty-heartbeat" / "vast_machine_avoidlist.json")
+    assert avoidlist["machine_ids"] == [6060]
 
 
 def test_vast_adapter_accepts_downstream_markers_when_heartbeat_url_fails(
@@ -5280,6 +5351,8 @@ def test_vast_adapter_main_prints_success_and_blocked_statuses(
             "0",
             "--startup-timeout-seconds",
             "1",
+            "--heartbeat-no-progress-seconds",
+            "2",
             "--machine-avoidlist",
             str(tmp_path / "avoid.json"),
             "--session-budget-ledger",
@@ -5295,6 +5368,7 @@ def test_vast_adapter_main_prints_success_and_blocked_statuses(
     assert "instance_ids=1,2" in output
     assert calls[0]["enable_blueprint_bundle"] is True
     assert calls[0]["disk_gb"] == 64
+    assert calls[0]["heartbeat_no_progress_seconds"] == 2
     assert calls[0]["session_budget_ledger_path"] == str(tmp_path / "session-cost.json")
     assert calls[0]["session_max_live_minutes"] == 12
     assert calls[0]["verify_staging_urls"] is True
