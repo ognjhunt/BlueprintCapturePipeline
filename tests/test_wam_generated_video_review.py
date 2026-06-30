@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 
 from blueprint_pipeline.wam_generated_video_review import (
     assess_source_policy_observation_visual_qa,
+    extract_next_observation_frame_from_video,
     validate_generated_mp4_for_review,
     visual_smoke_generated_rollouts_for_review,
     write_persistent_wam_visual_quality_artifacts,
@@ -561,6 +562,43 @@ def test_low_res_smoke_profile_passes_decode_but_not_success_review_usefulness(
     assert smoke["rollouts"][0]["visual_quality_flags"][
         "media_profile_reviewable_for_task_success"
     ] is False
+
+
+def test_next_observation_selector_uses_decodable_future_frame_with_signal_warnings(
+    tmp_path: Path,
+) -> None:
+    cv2 = pytest.importorskip("cv2")
+    video = tmp_path / "weak_future_signal.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (128, 96))
+    assert writer.isOpened()
+    seed = np.zeros((96, 128, 3), dtype=np.uint8)
+    seed[:, :64] = (225, 225, 225)
+    seed[:, 64:] = (25, 80, 130)
+    writer.write(seed)
+    smooth_gradient = np.tile(np.linspace(45, 130, 128, dtype=np.uint8), (96, 1))
+    weak_future = np.dstack((smooth_gradient, smooth_gradient, smooth_gradient))
+    writer.write(weak_future)
+    writer.release()
+
+    selected = extract_next_observation_frame_from_video(video, tmp_path / "selection")
+
+    assert selected is not None
+    assert selected.is_file()
+    manifest = json.loads(
+        (tmp_path / "selection" / "next_observation_selection.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["status"] == "completed"
+    assert manifest["selected_frame_index"] == 1
+    assert manifest["selection_quality_status"] == "degraded_visual_signal"
+    assert "next_observation_candidate_low_scene_structure" in manifest[
+        "selected_frame_signal_blockers"
+    ]
+    future_candidate = manifest["candidates"][1]
+    assert future_candidate["usable_future_frame"] is False
+    assert future_candidate["materializable_future_frame"] is True
+    assert manifest["claim_boundary"]["scene_or_task_specific_pixels_used"] is False
 
 
 def test_visual_smoke_fails_when_later_frames_become_static_noise(

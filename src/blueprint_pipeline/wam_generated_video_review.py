@@ -20,6 +20,11 @@ VISUAL_SMOKE_SCHEMA_VERSION = "wam_generated_rollout_visual_smoke.v1"
 SOURCE_POLICY_OBSERVATION_VISUAL_QA_SCHEMA_VERSION = "source_policy_observation_visual_qa.v1"
 PERSISTENT_WAM_VISUAL_QUALITY_SCHEMA_VERSION = "persistent_policy_wam_visual_quality_report.v1"
 PERSISTENT_WAM_FRAME_STATS_SCHEMA_VERSION = "persistent_policy_wam_frame_stats.v1"
+NEXT_OBSERVATION_SELECTION_SCHEMA_VERSION = "oscar_next_observation_selection.v1"
+NEXT_OBSERVATION_ADVISORY_SIGNAL_BLOCKERS = {
+    "next_observation_candidate_flat_or_low_contrast",
+    "next_observation_candidate_low_scene_structure",
+}
 
 REVIEW_QUALITY_MIN_WIDTH = 320
 REVIEW_QUALITY_MIN_HEIGHT = 256
@@ -956,6 +961,251 @@ def _frame_visual_stats(
         }
     )
     return result
+
+
+def _cv2_frame_signal_stats(frame: Any, cv2: Any) -> dict[str, Any]:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
+    edges = cv2.Canny(gray, 50, 150)
+    return {
+        "mean_luma": _round_float(float(gray.mean()), 3),
+        "std_luma": _round_float(float(gray.std()), 3),
+        "luma_min": int(gray.min()),
+        "luma_max": int(gray.max()),
+        "luma_range": int(gray.max()) - int(gray.min()),
+        "dark_pixel_ratio": _round_float(float((gray < 32).mean()), 6),
+        "bright_pixel_ratio": _round_float(float((gray > 224).mean()), 6),
+        "edge_density": _round_float(float((edges > 0).mean()), 6),
+    }
+
+
+def _next_observation_signal_blockers(stats: Mapping[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    mean_luma = float(stats.get("mean_luma") or 0.0)
+    std_luma = float(stats.get("std_luma") or 0.0)
+    luma_range = float(stats.get("luma_range") or 0.0)
+    dark_ratio = float(stats.get("dark_pixel_ratio") or 0.0)
+    bright_ratio = float(stats.get("bright_pixel_ratio") or 0.0)
+    edge_density = float(stats.get("edge_density") or 0.0)
+    if mean_luma < 25.0 or dark_ratio > 0.78:
+        blockers.append("next_observation_candidate_too_dark")
+    if mean_luma > 245.0 and bright_ratio > 0.90:
+        blockers.append("next_observation_candidate_overexposed")
+    if std_luma < 8.0 or luma_range < 32.0:
+        blockers.append("next_observation_candidate_flat_or_low_contrast")
+    if edge_density < 0.002:
+        blockers.append("next_observation_candidate_low_scene_structure")
+    if edge_density > 0.12 and std_luma < 28.0:
+        blockers.append("next_observation_candidate_static_noise_artifact")
+    return blockers
+
+
+def _write_next_observation_selection_manifest(
+    out_dir: Path,
+    *,
+    status: str,
+    video_path: Path,
+    candidates: Sequence[Mapping[str, Any]],
+    selected_frame_index: int | None,
+    blockers: Sequence[str],
+    extraction_method: str,
+    selection_quality_status: str | None = None,
+    selected_frame_signal_blockers: Sequence[str] | None = None,
+) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "next_observation_selection.json").write_text(
+        json.dumps(
+            {
+                "schema_version": NEXT_OBSERVATION_SELECTION_SCHEMA_VERSION,
+                "status": status,
+                "video_path": str(video_path),
+                "selected_frame_index": selected_frame_index,
+                "extraction_method": extraction_method,
+                "selection_quality_status": selection_quality_status
+                or ("passed_signal_gate" if status == "completed" else "blocked"),
+                "selected_frame_signal_blockers": list(selected_frame_signal_blockers or []),
+                "candidate_count": len(candidates),
+                "candidates": list(candidates),
+                "blockers": list(blockers),
+                "claim_boundary": {
+                    "selected_frame_is_generated_next_observation_candidate": (
+                        status == "completed"
+                    ),
+                    "visual_signal_gate_is_not_task_success_evidence": True,
+                    "scene_or_task_specific_pixels_used": False,
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def extract_next_observation_frame_from_video(
+    video_path: str | Path,
+    out_dir: str | Path,
+) -> Path | None:
+    """Select a non-seed frame from a generated rollout video.
+
+    Signal-valid future frames are preferred. If no future frame passes the
+    visual signal gate, the earliest decodable non-terminal future frame is
+    still materialized and labeled with signal warnings so downstream gates can
+    judge WAM quality without pretending frame 0 was a rollout result.
+    """
+    resolved_out = Path(out_dir).expanduser()
+    resolved_out.mkdir(parents=True, exist_ok=True)
+    resolved_video = Path(video_path).expanduser()
+    try:
+        import cv2  # type: ignore[import-not-found]
+    except ImportError:
+        cv2 = None
+    if cv2 is not None:
+        capture = cv2.VideoCapture(str(resolved_video))
+        candidates: list[dict[str, Any]] = []
+        selected_index: int | None = None
+        selected_frame = None
+        warning_index: int | None = None
+        warning_frame = None
+        warning_blockers: list[str] = []
+        try:
+            frame_index = 0
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                stats = _cv2_frame_signal_stats(frame, cv2)
+                blockers = (
+                    ["next_observation_candidate_is_seed_frame"]
+                    if frame_index == 0
+                    else _next_observation_signal_blockers(stats)
+                )
+                terminal_blockers = [
+                    blocker
+                    for blocker in blockers
+                    if blocker not in NEXT_OBSERVATION_ADVISORY_SIGNAL_BLOCKERS
+                    and blocker != "next_observation_candidate_is_seed_frame"
+                ]
+                materializable_future_frame = bool(frame_index > 0 and not terminal_blockers)
+                candidates.append(
+                    {
+                        "frame_index": frame_index,
+                        "metrics": stats,
+                        "blockers": blockers,
+                        "usable_future_frame": bool(frame_index > 0 and not blockers),
+                        "materializable_future_frame": materializable_future_frame,
+                        "terminal_signal_blockers": terminal_blockers,
+                    }
+                )
+                if frame_index > 0 and not blockers and selected_frame is None:
+                    selected_index = frame_index
+                    selected_frame = frame
+                    break
+                if (
+                    frame_index > 0
+                    and materializable_future_frame
+                    and warning_frame is None
+                ):
+                    warning_index = frame_index
+                    warning_frame = frame
+                    warning_blockers = list(blockers)
+                frame_index += 1
+        finally:
+            capture.release()
+        if selected_frame is not None and selected_index is not None:
+            selected_path = resolved_out / f"next_observation_frame_{selected_index:04d}.jpg"
+            if cv2.imwrite(str(selected_path), selected_frame):
+                _write_next_observation_selection_manifest(
+                    resolved_out,
+                    status="completed",
+                    video_path=resolved_video,
+                    candidates=candidates,
+                    selected_frame_index=selected_index,
+                    blockers=[],
+                    extraction_method="cv2_earliest_signal_valid_future_frame",
+                    selection_quality_status="passed_signal_gate",
+                )
+                return selected_path
+        if warning_frame is not None and warning_index is not None:
+            selected_path = resolved_out / f"next_observation_frame_{warning_index:04d}.jpg"
+            if cv2.imwrite(str(selected_path), warning_frame):
+                _write_next_observation_selection_manifest(
+                    resolved_out,
+                    status="completed",
+                    video_path=resolved_video,
+                    candidates=candidates,
+                    selected_frame_index=warning_index,
+                    blockers=[],
+                    extraction_method="cv2_earliest_decodable_future_frame_with_signal_warnings",
+                    selection_quality_status="degraded_visual_signal",
+                    selected_frame_signal_blockers=warning_blockers,
+                )
+                return selected_path
+        blockers = ["no_usable_future_next_observation_frame"]
+        if not candidates:
+            blockers.append("generated_video_has_no_readable_frames")
+        _write_next_observation_selection_manifest(
+            resolved_out,
+            status="blocked",
+            video_path=resolved_video,
+            candidates=candidates,
+            selected_frame_index=None,
+            blockers=blockers,
+            extraction_method="cv2_earliest_signal_valid_future_frame",
+        )
+        return None
+
+    try:
+        from PIL import Image, ImageSequence
+    except ImportError:
+        _write_next_observation_selection_manifest(
+            resolved_out,
+            status="blocked",
+            video_path=resolved_video,
+            candidates=[],
+            selected_frame_index=None,
+            blockers=["next_observation_video_decode_dependency_missing"],
+            extraction_method="pillow_sequence_fallback",
+        )
+        return None
+    try:
+        with Image.open(resolved_video) as image:
+            for frame_index, frame in enumerate(ImageSequence.Iterator(image)):
+                if frame_index == 0:
+                    continue
+                selected_path = resolved_out / f"next_observation_frame_{frame_index:04d}.jpg"
+                frame.convert("RGB").save(selected_path)
+                _write_next_observation_selection_manifest(
+                    resolved_out,
+                    status="completed",
+                    video_path=resolved_video,
+                    candidates=[{"frame_index": frame_index, "usable_future_frame": True}],
+                    selected_frame_index=frame_index,
+                    blockers=[],
+                    extraction_method="pillow_sequence_fallback",
+                )
+                return selected_path
+    except Exception as exc:
+        _write_next_observation_selection_manifest(
+            resolved_out,
+            status="blocked",
+            video_path=resolved_video,
+            candidates=[],
+            selected_frame_index=None,
+            blockers=[f"next_observation_video_decode_failed:{type(exc).__name__}"],
+            extraction_method="pillow_sequence_fallback",
+        )
+        return None
+    _write_next_observation_selection_manifest(
+        resolved_out,
+        status="blocked",
+        video_path=resolved_video,
+        candidates=[],
+        selected_frame_index=None,
+        blockers=["generated_video_has_no_future_frames"],
+        extraction_method="pillow_sequence_fallback",
+    )
+    return None
 
 
 def _trace_image_size(row: Mapping[str, Any]) -> tuple[float, float] | None:

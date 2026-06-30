@@ -1329,7 +1329,7 @@ def _materialize_future_frame_from_video(candidate: Path, target_frame: Path) ->
     selection_dir = target_frame.parent / f"{target_frame.stem}_future_frame_selection"
     selection_manifest_path = selection_dir / "next_observation_selection.json"
     try:
-        from blueprint_pipeline.oscar_isaac_closed_loop_eval import (
+        from blueprint_pipeline.wam_generated_video_review import (
             extract_next_observation_frame_from_video,
         )
     except Exception as exc:
@@ -1347,7 +1347,7 @@ def _materialize_future_frame_from_video(candidate: Path, target_frame: Path) ->
             "blockers": list(selection.get("blockers") or ["no_usable_future_next_observation_frame"]),
             "source_path": str(candidate),
             "future_frame_selected": False,
-            "frame_selection_policy": "earliest_signal_valid_future_frame",
+            "frame_selection_policy": "prefer_signal_valid_else_earliest_decodable_future_frame",
             "selection_manifest_path": str(selection_manifest_path)
             if selection_manifest_path.is_file()
             else None,
@@ -1362,11 +1362,15 @@ def _materialize_future_frame_from_video(candidate: Path, target_frame: Path) ->
         "source_path": str(candidate),
         "selected_frame_index": selection.get("selected_frame_index"),
         "future_frame_selected": True,
-        "frame_selection_policy": "earliest_signal_valid_future_frame",
+        "frame_selection_policy": "prefer_signal_valid_else_earliest_decodable_future_frame",
         "selection_manifest_path": str(selection_manifest_path)
         if selection_manifest_path.is_file()
         else None,
         "selection_status": selection.get("status") or "completed",
+        "selection_quality_status": selection.get("selection_quality_status"),
+        "selected_frame_signal_blockers": list(
+            selection.get("selected_frame_signal_blockers") or []
+        ),
         "extraction_method": selection.get("extraction_method"),
         "materialized_frame_path": str(target_frame),
         "claim_boundary": {

@@ -45,6 +45,15 @@ def _persistent_runner_namespace() -> dict[str, object]:
     return namespace
 
 
+def test_persistent_runner_future_frame_selector_uses_copied_runtime_module() -> None:
+    assert "from blueprint_pipeline.wam_generated_video_review import" in (
+        session.PERSISTENT_SESSION_RUNNER
+    )
+    assert "from blueprint_pipeline.oscar_isaac_closed_loop_eval import" not in (
+        session.PERSISTENT_SESSION_RUNNER
+    )
+
+
 def _policy_observation(path: Path, frame: Path) -> Path:
     observation = {
         "schema_version": "initial_policy_observation.v1",
@@ -1038,13 +1047,57 @@ def test_copy_or_extract_wam_frame_prefers_usable_future_video_frame(tmp_path: P
     assert materialization["source_kind"] == "video_future_frame"
     assert materialization["selected_frame_index"] == 1
     assert materialization["future_frame_selected"] is True
-    assert materialization["frame_selection_policy"] == "earliest_signal_valid_future_frame"
+    assert (
+        materialization["frame_selection_policy"]
+        == "prefer_signal_valid_else_earliest_decodable_future_frame"
+    )
+    assert materialization["selection_quality_status"] == "passed_signal_gate"
     assert materialization["claim_boundary"]["scene_or_task_specific_pixels_used"] is False
     assert target_frame.is_file()
     selection_path = Path(materialization["selection_manifest_path"])
     selection = json.loads(selection_path.read_text(encoding="utf-8"))
     assert selection["status"] == "completed"
     assert selection["selected_frame_index"] == 1
+
+
+def test_copy_or_extract_wam_frame_uses_warned_future_frame_before_seed_fallback(
+    tmp_path: Path,
+) -> None:
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    video = tmp_path / "rollout.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (128, 96))
+    assert writer.isOpened()
+    seed_frame = np.zeros((96, 128, 3), dtype=np.uint8)
+    seed_frame[:, :64] = (225, 225, 225)
+    seed_frame[:, 64:] = (25, 80, 130)
+    smooth_gradient = np.tile(np.linspace(45, 130, 128, dtype=np.uint8), (96, 1))
+    weak_future = np.dstack((smooth_gradient, smooth_gradient, smooth_gradient))
+    for frame in (seed_frame, weak_future):
+        writer.write(frame)
+    writer.release()
+
+    target_frame = tmp_path / "generated" / "next.jpg"
+    namespace = _persistent_runner_namespace()
+    copy_or_extract = namespace["_copy_or_extract_wam_frame"]
+    materialization = copy_or_extract(
+        {"rollouts": [{"generated_video_path": str(video)}]},
+        target_frame,
+    )
+
+    assert materialization["status"] == "completed"
+    assert materialization["source_kind"] == "video_future_frame"
+    assert materialization["selected_frame_index"] == 1
+    assert materialization["future_frame_selected"] is True
+    assert materialization["selection_quality_status"] == "degraded_visual_signal"
+    assert "next_observation_candidate_low_scene_structure" in materialization[
+        "selected_frame_signal_blockers"
+    ]
+    assert materialization["claim_boundary"][
+        "selected_frame_is_generated_next_observation_candidate"
+    ] is True
+    assert target_frame.is_file()
 
 
 def test_copy_or_extract_wam_frame_marks_video_first_frame_fallback(tmp_path: Path) -> None:
