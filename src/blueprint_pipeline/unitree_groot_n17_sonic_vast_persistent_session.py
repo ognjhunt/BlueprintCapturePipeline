@@ -5024,7 +5024,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy-observation", required=True)
     parser.add_argument("--job-dir")
-    parser.add_argument("--provider", choices=("runpod", "vast"), default="runpod")
+    parser.add_argument("--provider", choices=("runpod", "vast"), default="vast")
     parser.add_argument("--loop-step-count", type=int, default=12)
     parser.add_argument("--task-prompt")
     parser.add_argument("--timeout-seconds", type=float, default=3600.0)

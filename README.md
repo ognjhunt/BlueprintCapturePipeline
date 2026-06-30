@@ -1364,7 +1364,7 @@ attempting longer autoregressive loops:
 ```bash
 blueprint-run-persistent-wam-short-visual-sanity \
   --policy-observation /path/to/policy_observation.json \
-  --provider runpod \
+  --provider vast \
   --transition-count 2
 ```
 

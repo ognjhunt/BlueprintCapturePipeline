@@ -264,6 +264,56 @@ def _write_passed_short_sanity_manifest(root: Path, observation_path: Path) -> P
     return manifest
 
 
+def test_main_defaults_to_vast_provider(tmp_path: Path, monkeypatch, capsys) -> None:
+    observation_path = tmp_path / "observation.json"
+    observation_path.write_text("{}", encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_vast(**kwargs):
+        calls.append("vast")
+        return {"status": "completed", "provider": "vast", "received": kwargs}, 0
+
+    def fake_runpod(**kwargs):
+        calls.append("runpod")
+        return {"status": "blocked", "provider": "runpod", "received": kwargs}, 1
+
+    monkeypatch.setattr(session, "run_persistent_session", fake_vast)
+    monkeypatch.setattr(session, "run_persistent_session_runpod", fake_runpod)
+
+    exit_code = session.main(["--policy-observation", str(observation_path)])
+
+    assert exit_code == 0
+    assert calls == ["vast"]
+    output = json.loads(capsys.readouterr().out)
+    assert output["provider"] == "vast"
+
+
+def test_main_keeps_explicit_runpod_provider(tmp_path: Path, monkeypatch, capsys) -> None:
+    observation_path = tmp_path / "observation.json"
+    observation_path.write_text("{}", encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_vast(**kwargs):
+        calls.append("vast")
+        return {"status": "blocked", "provider": "vast", "received": kwargs}, 1
+
+    def fake_runpod(**kwargs):
+        calls.append("runpod")
+        return {"status": "completed", "provider": "runpod", "received": kwargs}, 0
+
+    monkeypatch.setattr(session, "run_persistent_session", fake_vast)
+    monkeypatch.setattr(session, "run_persistent_session_runpod", fake_runpod)
+
+    exit_code = session.main(
+        ["--policy-observation", str(observation_path), "--provider", "runpod"]
+    )
+
+    assert exit_code == 0
+    assert calls == ["runpod"]
+    output = json.loads(capsys.readouterr().out)
+    assert output["provider"] == "runpod"
+
+
 def _python_heredoc_chunks(script: str) -> list[str]:
     chunks: list[str] = []
     lines = script.splitlines()
