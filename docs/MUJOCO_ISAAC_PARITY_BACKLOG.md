@@ -30,7 +30,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 3 | T2 | MuJoCo | M | — | `done` | MuJoCo native render-pass depth buffer (co-registered per-camera depth) |
 | 4 | T4 | Isaac | L | — | `done` | Isaac closed loop: requery a pluggable LEARNED policy on the WAM-generated observation (replace the hardcoded deterministic stub) |
 | 5 | T5 | Isaac | S | T4 | `done` | Isaac honest completion gating + in-loop drift reanchoring |
-| 6 | T6 | Isaac | M | T4 | `todo` | Isaac in-process manipulation success evaluator |
+| 6 | T6 | Isaac | M | T4 | `done` | Isaac in-process manipulation success evaluator |
 | 7 | T7 | Shared | M | — | `todo` | Photoreal observation handoff: Isaac/WAM frame -> MuJoCo policy visual channel |
 | 8 | T11 | MuJoCo | S | — | `todo` | MuJoCo texture/material preservation (GLB->OBJ keeps PBR map_Kd and binds a MuJoCo texture to the visual geom) |
 | 9 | T12 | MuJoCo | S | — | `todo` | MuJoCo scene-derived lighting + shadows in the MJCF wrapper |
@@ -374,7 +374,7 @@ Hermetic, no GPU, but REQUIRES Pillow (module is gated by `pytest.importorskip("
 ### 6. T6 — Isaac in-process manipulation success evaluator
 
 - **Lane:** Isaac  |  **Effort:** M (medium)  |  **Depends on:** T4
-- **Status:** todo
+- **Status:** done
 
 **Summary.** Isaac's closed loop writes a trace and a manifest whose claim_boundary explicitly defers task success to "an external judge, not harness output alone" (oscar_isaac_closed_loop_eval.py:1874-1878), so an Isaac rollout never carries a success label and is not comparable to a MuJoCo rollout. Add an in-process manipulation_success_evaluator that runs after the trace is written, mirroring the MuJoCo persistent-session pattern (vast_persistent_session.py:4174-4212): compute success from in-loop signals, write a manipulation_success_evaluator_results.json, and keep success_proof strictly separate from the structural loop proof. Default to not_proven unless a genuine learned-policy task-success signal exists — never promote the kinematic route-reach or harness consistency checks to a success label.
 
@@ -400,12 +400,12 @@ Hermetic, no GPU, but REQUIRES Pillow (module is gated by `pytest.importorskip("
 
 **Acceptance criteria:**
 
-- [ ] run_oscar_isaac_closed_loop writes a file named manifest output dir / 'manipulation_success_evaluator_results.json' with schema_version == 'isaac_manipulation_success_evaluator_results.v1' on every run (completed or blocked).
-- [ ] The judge JSON contains simulator_backend == 'isaac' and success_proof_separate_from_structural_loop_proof == True; it never references mujoco/vast and is not imported from the MuJoCo lane (Isaac evidence stays non-interchangeable with MuJoCo evidence).
-- [ ] For the existing hermetic stub-WAM + DeterministicWalkToTargetPolicy run (no learned requery, no manipulation_success_signal), judge['answer'] == 'not_proven' and judge['manipulation_success_proven'] is False EVEN WHEN manifest['status'] == 'completed' and manifest['task_target_reached'] is True — proving kinematic route-reach and structural completion are not promoted to manipulation success.
-- [ ] judge['manipulation_success_proven'] is True only when learned_policy_requery_steps > 0 AND action_conditioned_steps > 0 AND proof['manipulation_success_signal'] == 'success'; a run with learned requeries but no success signal yields answer == 'not_proven' with the 'live-but-unjudged' reason.
-- [ ] manifest gains keys manipulation_success_evaluator_results_path, manipulation_success_proven, and success_proof, while manifest['status'] (structural completion gate at line 1824) and manifest['proof'] are unchanged in value/shape from pre-change behavior for the existing tests (assert via the existing assertions, e.g. manifest['proof']['feed_forward_verified'] still present and manifest['status'] still 'completed') — structural proof independent of success proof.
-- [ ] The claim_boundary string no longer says success 'requires an external judge' and instead states success is judged in-process and kept separate from structural loop proof.
+- [x] run_oscar_isaac_closed_loop writes a file named manifest output dir / 'manipulation_success_evaluator_results.json' with schema_version == 'isaac_manipulation_success_evaluator_results.v1' on every run (completed or blocked).
+- [x] The judge JSON contains simulator_backend == 'isaac' and success_proof_separate_from_structural_loop_proof == True; it never references mujoco/vast and is not imported from the MuJoCo lane (Isaac evidence stays non-interchangeable with MuJoCo evidence).
+- [x] For the existing hermetic stub-WAM + DeterministicWalkToTargetPolicy run (no learned requery, no manipulation_success_signal), judge['answer'] == 'not_proven' and judge['manipulation_success_proven'] is False EVEN WHEN manifest['status'] == 'completed' and manifest['task_target_reached'] is True — proving kinematic route-reach and structural completion are not promoted to manipulation success.
+- [x] judge['manipulation_success_proven'] is True only when learned_policy_requery_steps > 0 AND action_conditioned_steps > 0 AND proof['manipulation_success_signal'] == 'success'; a run with learned requeries but no success signal yields answer == 'not_proven' with the 'live-but-unjudged' reason.
+- [x] manifest gains keys manipulation_success_evaluator_results_path, manipulation_success_proven, and success_proof, while manifest['status'] (structural completion gate at line 1824) and manifest['proof'] are unchanged in value/shape from pre-change behavior for the existing tests (assert via the existing assertions, e.g. manifest['proof']['feed_forward_verified'] still present and manifest['status'] still 'completed') — structural proof independent of success proof.
+- [x] The claim_boundary string no longer says success 'requires an external judge' and instead states success is judged in-process and kept separate from structural loop proof.
 
 **Verification:**
 

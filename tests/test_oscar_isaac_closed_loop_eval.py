@@ -427,6 +427,80 @@ def test_clean_frame_reanchoring_feeds_seed_frame_back(tmp_path: Path) -> None:
     assert default_trace[1]["source_observation_frame"] == default_trace[0]["wam_generated_frame"]
 
 
+def test_closed_loop_emits_in_process_success_evaluator_not_proven_by_default(
+    tmp_path: Path,
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=11)
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_stub_wam(tmp_path),
+        steps=4,
+        harness_backend_kind="fixture",
+        generated_at="now",
+    )
+
+    judge_path = Path(manifest["manipulation_success_evaluator_results_path"])
+    assert judge_path.is_file()
+    judge = json.loads(judge_path.read_text(encoding="utf-8"))
+    assert judge["schema_version"] == "isaac_manipulation_success_evaluator_results.v1"
+    assert judge["simulator_backend"] == "isaac"
+    assert judge["success_proof_separate_from_structural_loop_proof"] is True
+    assert "mujoco" not in json.dumps(judge).lower()
+    assert "vast" not in json.dumps(judge).lower()
+    assert manifest["status"] == "completed"
+    assert manifest["task_target_reached"] is True
+    assert judge["answer"] == "not_proven"
+    assert judge["manipulation_success_proven"] is False
+    assert manifest["manipulation_success_proven"] is False
+    assert manifest["success_proof"]["success_proof_separate_from_structural_loop_proof"] is True
+    assert manifest["success_proof"]["structural_loop_completed"] is True
+    assert "feed_forward_verified" in manifest["proof"]
+    assert "external judge" not in manifest["claim_boundary"]
+    assert "manipulation_success_evaluator" in manifest["claim_boundary"]
+
+
+def test_isaac_manipulation_success_evaluator_proves_only_on_learned_signal() -> None:
+    proof = {
+        "learned_policy_requery_steps": 2,
+        "manipulation_success_signal": "success",
+        "fresh_oscar_provider_model_run_steps": 2,
+        "real_perception_backend_steps": 1,
+    }
+    trace_rows = [
+        {"policy_action_conditioned_on_wam_generated_observation": True},
+        {"policy_action_conditioned_on_wam_generated_observation": True},
+    ]
+    judge = L.evaluate_isaac_manipulation_success(
+        generated_at="now",
+        status="completed",
+        proof=proof,
+        trace_rows=trace_rows,
+        task_target_reached=True,
+        perception_target_prompts=["open the fridge"],
+    )
+    assert judge["manipulation_success_proven"] is True
+    assert judge["did_target_manipulation_succeed"] is True
+    assert judge["answer"] == "yes"
+    assert judge["question"] == "open the fridge"
+    assert judge["success_proof_separate_from_structural_loop_proof"] is True
+
+    unjudged = L.evaluate_isaac_manipulation_success(
+        generated_at="now",
+        status="completed",
+        proof={key: value for key, value in proof.items() if key != "manipulation_success_signal"},
+        trace_rows=trace_rows,
+        task_target_reached=True,
+        perception_target_prompts=[],
+    )
+    assert unjudged["manipulation_success_proven"] is False
+    assert unjudged["answer"] == "not_proven"
+    assert "no task-success signal" in unjudged["reason"]
+    assert unjudged["task_target_reached"] is True
+    assert unjudged["kinematic_route_reached_is_not_manipulation_success"] is True
+
+
 def test_closed_loop_blocks_on_missing_wam_frame(tmp_path: Path) -> None:
     start = _write_frame(tmp_path / "start.png", seed=1)
 

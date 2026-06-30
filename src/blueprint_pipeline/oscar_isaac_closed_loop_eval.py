@@ -1708,6 +1708,84 @@ def make_local_oscar_subprocess_generate(
     return _oscar_generate
 
 
+def evaluate_isaac_manipulation_success(
+    *,
+    generated_at: str,
+    status: str,
+    proof: Mapping[str, Any],
+    trace_rows: Sequence[Mapping[str, Any]],
+    task_target_reached: bool,
+    perception_target_prompts: Sequence[str],
+) -> dict[str, Any]:
+    def _count(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    learned_policy_requery_steps = _count(
+        proof.get("fresh_learned_policy_requery_steps")
+        or proof.get("learned_policy_requery_steps")
+        or proof.get("learned_policy_requery_count")
+        or proof.get("policy_requery_steps")
+    )
+    action_conditioned_steps = sum(
+        1
+        for row in trace_rows
+        if (
+            row.get("policy_action_conditioned_on_wam_generated_observation")
+            or row.get("policy_action_from_wam_requery")
+            or row.get("policy_requeried_fresh")
+        )
+    )
+    fresh_oscar_provider_steps = _count(proof.get("fresh_oscar_provider_model_run_steps"))
+    real_perception_steps = _count(proof.get("real_perception_backend_steps"))
+    structural_loop_completed = status == "completed"
+    success_signal = _string(proof.get("manipulation_success_signal")).lower()
+    success_proven = bool(
+        learned_policy_requery_steps > 0
+        and action_conditioned_steps > 0
+        and success_signal == "success"
+    )
+    if success_proven:
+        reason = "A live in-process learned-policy evaluator proved the manipulation target state transition."
+    elif learned_policy_requery_steps > 0 or action_conditioned_steps > 0:
+        reason = (
+            "Loop ran with live learned-policy requeries on WAM-generated observations, "
+            "but no task-success signal proved the manipulation."
+        )
+    elif structural_loop_completed:
+        reason = (
+            "Loop completed structurally (deterministic/no learned requery); "
+            "no manipulation success proven."
+        )
+    else:
+        reason = (
+            "Loop did not complete a learned-policy requery or produce a manipulation-success signal."
+        )
+    prompt = next((str(item) for item in perception_target_prompts if str(item).strip()), "")
+    return {
+        "schema_version": "isaac_manipulation_success_evaluator_results.v1",
+        "generated_at": generated_at,
+        "status": "completed",
+        "simulator_backend": "isaac",
+        "question": prompt or "Did the target manipulation succeed?",
+        "answer": "yes" if success_proven else "not_proven",
+        "did_target_manipulation_succeed": bool(success_proven),
+        "manipulation_success_proven": bool(success_proven),
+        "success_proof_separate_from_structural_loop_proof": True,
+        "structural_loop_completed": structural_loop_completed,
+        "kinematic_route_reached_is_not_manipulation_success": True,
+        "task_target_reached": bool(task_target_reached),
+        "learned_policy_requery_steps": learned_policy_requery_steps,
+        "action_conditioned_steps": action_conditioned_steps,
+        "fresh_oscar_provider_model_run_steps": fresh_oscar_provider_steps,
+        "real_perception_backend_steps": real_perception_steps,
+        "reason": reason,
+        "raw_secret_values_recorded": False,
+    }
+
+
 def run_oscar_isaac_closed_loop(
     *,
     output_dir: str | Path,
@@ -2052,6 +2130,16 @@ def run_oscar_isaac_closed_loop(
         },
         "per_step": proof_rows,
     }
+    manipulation_success_judge = evaluate_isaac_manipulation_success(
+        generated_at=generated,
+        status=status,
+        proof=proof,
+        trace_rows=trace_rows,
+        task_target_reached=reached,
+        perception_target_prompts=cleaned_target_prompts,
+    )
+    manipulation_success_judge_path = resolved_out / "manipulation_success_evaluator_results.json"
+    write_json(manipulation_success_judge_path, manipulation_success_judge)
     manifest = {
         "schema_version": LOOP_SCHEMA_VERSION,
         "generated_at": generated,
@@ -2081,6 +2169,23 @@ def run_oscar_isaac_closed_loop(
         "clean_frame_reanchor_event_count": len(clean_frame_reanchor_events),
         "clean_frame_reanchor_events": clean_frame_reanchor_events,
         "periodic_clean_frame_reanchoring_used": bool(clean_frame_reanchor_events),
+        "manipulation_success_evaluator_results_path": str(manipulation_success_judge_path),
+        "manipulation_success_proven": bool(
+            manipulation_success_judge.get("manipulation_success_proven")
+        ),
+        "success_proof": {
+            "manipulation_success_proven": bool(
+                manipulation_success_judge.get("manipulation_success_proven")
+            ),
+            "did_target_manipulation_succeed": bool(
+                manipulation_success_judge.get("did_target_manipulation_succeed")
+            ),
+            "success_proof_separate_from_structural_loop_proof": True,
+            "structural_loop_completed": bool(
+                manipulation_success_judge.get("structural_loop_completed")
+            ),
+            "answer": manipulation_success_judge.get("answer"),
+        },
         "proof": proof,
         "blockers": blockers,
         "claim_boundary": (
@@ -2089,7 +2194,9 @@ def run_oscar_isaac_closed_loop(
             "policy_observes_wam_generated_next_observation is true only when fresh learned-policy "
             "requery evidence is present. Clean-frame reanchoring, when enabled, feeds the initial "
             "clean policy observation back into the loop as drift control; it is not raw capture "
-            "truth or task-success proof."
+            "truth or task-success proof. Task success is judged in-process by the "
+            "manipulation_success_evaluator and kept separate from structural loop proof; it is "
+            "not_proven unless a learned-policy task-success signal fired."
         ),
         "raw_secret_values_recorded": False,
     }
