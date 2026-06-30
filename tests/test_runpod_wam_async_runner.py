@@ -24,13 +24,14 @@ def _python_heredoc_chunks(script: str) -> list[str]:
     return chunks
 
 
-def test_runpod_wam_defaults_to_48gb_gpu_classes() -> None:
+def test_runpod_wam_defaults_to_lower_cost_capable_gpu_classes_first() -> None:
     assert runner.DEFAULT_GPU_TYPE_IDS[:4] == (
-        "NVIDIA L40S",
-        "NVIDIA RTX 6000 Ada Generation",
-        "NVIDIA RTX A6000",
         "NVIDIA A40",
+        "NVIDIA RTX A5000",
+        "NVIDIA RTX A6000",
+        "NVIDIA L40S",
     )
+    assert "NVIDIA RTX 6000 Ada Generation" in runner.DEFAULT_GPU_TYPE_IDS
     assert "NVIDIA GeForce RTX 4090" not in runner.DEFAULT_GPU_TYPE_IDS
     assert "NVIDIA GeForce RTX 3090" not in runner.DEFAULT_GPU_TYPE_IDS
 
@@ -744,6 +745,68 @@ def test_runpod_poll_can_stop_pod_for_warm_reuse_instead_of_delete(
     warm_candidate = json.loads(warm_candidate_file.read_text())
     assert warm_candidate["pod_id"] == "pod-123"
     assert warm_candidate["image_name"] == "docker.io/example/wam:20260629"
+
+
+def test_runpod_poll_can_keep_successful_pod_running_for_hot_reuse(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("wam_runtime_result.json", json.dumps({"status": "completed"}))
+        archive.writestr("oscar_generated_rollout.mp4", b"fake-mp4")
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-hot-123",
+                "created_at_epoch": runner.time.time(),
+                "output_path": str(output_zip),
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+                "gpu_type_ids": ["NVIDIA A40", "NVIDIA L40S"],
+                "container_disk_gb": 240,
+                "volume_gb": 120,
+            }
+        ),
+        encoding="utf-8",
+    )
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    requests: list[dict[str, object]] = []
+
+    monkeypatch.setenv(runner.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "keep_on_success")
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", lambda **kwargs: requests.append(dict(kwargs)))
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        teardown=True,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["teardown_action"] == "keep_on_success"
+    assert manifest["teardown_performed"] is False
+    assert manifest["keep_running_on_success"] is True
+    assert manifest["keepalive_performed"] is True
+    assert manifest["continuing_spend_from_this_run"] is True
+    assert requests == []
+    assert (job_dir / "runpod_wam_async_keepalive_manifest.json").is_file()
+    assert not (job_dir / "runpod_wam_async_stop_manifest.json").exists()
+    assert not (job_dir / "runpod_wam_async_delete_manifest.json").exists()
+    warm_candidate = json.loads(warm_candidate_file.read_text())
+    assert warm_candidate["pod_id"] == "pod-hot-123"
+    assert warm_candidate["running_pod_preserved_for_hot_reuse"] is True
+    assert warm_candidate["gpu_type_ids"] == ["NVIDIA A40", "NVIDIA L40S"]
 
 
 def test_runpod_stop_command_stops_running_pod_without_output(

@@ -66,11 +66,11 @@ RUNPOD_ACTIVE_POD_STATUSES = {
     "pending_api_visibility",
 }
 DEFAULT_GPU_TYPE_IDS = (
-    "NVIDIA L40S",
-    "NVIDIA RTX 6000 Ada Generation",
-    "NVIDIA RTX A6000",
     "NVIDIA A40",
     "NVIDIA RTX A5000",
+    "NVIDIA RTX A6000",
+    "NVIDIA L40S",
+    "NVIDIA RTX 6000 Ada Generation",
 )
 DEFAULT_HF_TOKEN_FILES = (
     "~/.blueprint-secrets/hf_token",
@@ -1115,6 +1115,63 @@ def _write_stopped_warm_candidate(
     }
 
 
+def _write_running_warm_candidate(
+    *,
+    job_dir: Path,
+    pod_id: str,
+    generated_at: str,
+) -> dict[str, Any]:
+    candidate_path = _warm_candidate_path()
+    try:
+        state = _read_json(_state_path(job_dir))
+    except (OSError, ValueError) as exc:
+        return {
+            "status": "blocked",
+            "path": str(candidate_path),
+            "blockers": ["runpod_warm_candidate_state_unreadable"],
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    candidate = {
+        "schema_version": RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "pod_id": pod_id,
+        "provider_bundle_kind": _string(state.get("provider_bundle_kind")) or "wam",
+        "image_name": _string(state.get("image_name")),
+        "cloud_type": _string(state.get("cloud_type")) or "SECURE",
+        "gpu_type_ids": list(state.get("gpu_type_ids") or []),
+        "container_disk_gb": state.get("container_disk_gb"),
+        "volume_gb": state.get("volume_gb"),
+        "source_job_dir": str(job_dir),
+        "source_keepalive_poll_manifest_path": str(
+            job_dir / "runpod_wam_async_poll_manifest.json"
+        ),
+        "running_pod_preserved_for_hot_reuse": True,
+        "raw_secret_values_recorded": False,
+    }
+    try:
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(candidate_path, candidate)
+    except OSError as exc:
+        return {
+            "status": "blocked",
+            "path": str(candidate_path),
+            "blockers": ["runpod_warm_candidate_write_failed"],
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    return {
+        "status": "recorded",
+        "path": str(candidate_path),
+        "pod_id": pod_id,
+        "provider_bundle_kind": candidate["provider_bundle_kind"],
+        "image_name": candidate["image_name"],
+        "cloud_type": candidate["cloud_type"],
+        "running_pod_preserved_for_hot_reuse": True,
+        "raw_secret_values_recorded": False,
+    }
+
+
 def _existing_pod_update_payload(pod_payload: Mapping[str, Any]) -> dict[str, Any]:
     update_keys = {
         "containerDiskInGb",
@@ -1692,6 +1749,8 @@ def _teardown_action() -> str:
     action = _string(os.getenv(RUNPOD_WAM_TEARDOWN_ACTION_ENV)).lower()
     if action in {"stop", "stopped", "preserve", "warm"}:
         return "stop"
+    if action in {"keep", "keep_running", "keep_on_success", "hot", "hot_reuse"}:
+        return "keep_on_success"
     return "delete"
 
 
@@ -1954,22 +2013,38 @@ def poll_runpod_wam_async_run(
         and not output_present
         and pod_status_is_active
     )
-    should_teardown = bool(teardown and (output_present or pod_status_is_terminal))
+    teardown_action = _teardown_action()
+    keep_running_on_success = bool(
+        teardown
+        and teardown_action == "keep_on_success"
+        and output_present
+        and pod_id
+        and not pod_status_is_terminal
+    )
+    should_teardown = bool(
+        teardown
+        and (output_present or pod_status_is_terminal)
+        and not keep_running_on_success
+    )
     teardown_pending = bool(
         not blockers and should_teardown and pod_id and api_key and pod_status != "not_found"
     )
-    teardown_action = _teardown_action()
     teardown_manifest: dict[str, Any] | None = None
     continuing_spend = bool(
         pod_id
-        and not output_present
-        and (
-            nonterminal_running_output
-            or remote_runtime_running_without_terminal_output
-            or not should_teardown
-            or (teardown_manifest or {}).get("status") != "completed"
-        )
         and not pod_status_is_terminal
+        and (
+            keep_running_on_success
+            or (
+                not output_present
+                and (
+                    nonterminal_running_output
+                    or remote_runtime_running_without_terminal_output
+                    or not should_teardown
+                    or (teardown_manifest or {}).get("status") != "completed"
+                )
+            )
+        )
     )
     provider_status = (
         "completed"
@@ -1984,7 +2059,7 @@ def poll_runpod_wam_async_run(
     manifest = {
         "schema_version": RUNPOD_WAM_POLL_SCHEMA_VERSION,
         "generated_at": generated,
-        "status": "completed" if output_present and not continuing_spend else ("running" if continuing_spend else "blocked"),
+        "status": "completed" if output_present else ("running" if continuing_spend else "blocked"),
         "job_dir": str(resolved_job_dir),
         "provider_bundle_kind": provider_bundle_kind,
         "pod_id": pod_id,
@@ -2016,6 +2091,7 @@ def poll_runpod_wam_async_run(
         "teardown_action": teardown_action if teardown else "not_requested",
         "teardown_pending": teardown_pending,
         "teardown_performed": existing_teardown_completed,
+        "keep_running_on_success": keep_running_on_success,
         "continuing_spend_from_this_run": continuing_spend,
         "api_key_status": api_key_meta,
         "raw_secret_values_recorded": False,
@@ -2061,6 +2137,34 @@ def poll_runpod_wam_async_run(
                 if teardown_action == "stop"
                 else "runpod_wam_async_delete_manifest.json"
             )
+        )
+    elif keep_running_on_success:
+        warm_candidate = _write_running_warm_candidate(
+            job_dir=resolved_job_dir,
+            pod_id=pod_id,
+            generated_at=generated,
+        )
+        keepalive_manifest = {
+            "schema_version": "runpod_wam_async_keepalive_manifest.v1",
+            "generated_at": generated,
+            "status": "completed",
+            "job_dir": str(resolved_job_dir),
+            "pod_id": pod_id,
+            "teardown_action": "keep_on_success",
+            "output_zip_present": output_present,
+            "continuing_spend_from_this_run": True,
+            "warm_candidate": warm_candidate,
+            "warm_candidate_path": warm_candidate.get("path"),
+            "raw_secret_values_recorded": False,
+        }
+        write_json(resolved_job_dir / "runpod_wam_async_keepalive_manifest.json", keepalive_manifest)
+        continuing_spend = True
+        manifest["keepalive_performed"] = True
+        manifest["continuing_spend_from_this_run"] = True
+        manifest["warm_candidate"] = warm_candidate
+        manifest["warm_candidate_path"] = warm_candidate.get("path")
+        manifest["keepalive_manifest_path"] = str(
+            resolved_job_dir / "runpod_wam_async_keepalive_manifest.json"
         )
     write_json(resolved_job_dir / "runpod_wam_async_poll_manifest.json", manifest)
     state_update = {
