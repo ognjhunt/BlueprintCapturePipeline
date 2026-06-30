@@ -450,9 +450,11 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
     assert "image_runtime_worldsim_extra_unavailable" in runner_text
     assert "GUI_OPENCV_REQUIREMENT_NAMES" in runner_text
     assert "_pip_uninstall_argv" in runner_text
+    assert "opencv_headless_repair_always_runs" in runner_text
     assert "filtered_gui_opencv_requirements" in runner_text
     assert "opencv_headless_import_failed_after_dependencies" in runner_text
     assert '"opencv-python-headless"' in runner_text
+    assert '"--no-deps"' in runner_text
     assert '"opencv-python", "opencv-contrib-python"' in runner_text
     assert "oscar_loader_appends_model_subdirectory" in runner_text
     assert "_prepare_cuda_library_env" in runner_text

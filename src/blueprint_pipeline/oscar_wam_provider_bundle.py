@@ -3016,24 +3016,25 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
         commands.append(
             _run(_pip_install_argv(python, "-r", str(filtered_req)), cwd=source_root, timeout=2400)
         )
-        commands.append(
-            _run(
-                _pip_uninstall_argv(python, "-y", "opencv-python", "opencv-contrib-python"),
-                cwd=source_root,
-                timeout=600,
-            )
+    commands.append(
+        _run(
+            _pip_uninstall_argv(python, "-y", "opencv-python", "opencv-contrib-python"),
+            cwd=source_root,
+            timeout=600,
         )
-        commands.append(
-            _run(
-                _pip_install_argv(
-                    python,
-                    "--force-reinstall",
-                    "opencv-python-headless",
-                ),
-                cwd=source_root,
-                timeout=900,
-            )
+    )
+    commands.append(
+        _run(
+            _pip_install_argv(
+                python,
+                "--force-reinstall",
+                "--no-deps",
+                "opencv-python-headless",
+            ),
+            cwd=source_root,
+            timeout=900,
         )
+    )
     framework_after_requirements = _framework_probe(python, source_root)
     framework_after_requirements_payload = _mapping(framework_after_requirements.get("payload"))
     should_attempt_real_te_install = os.environ.get(
@@ -3091,6 +3092,7 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
         "transformer_engine_optional": transformer_engine_optional,
         "attempted_real_transformer_engine_install": should_attempt_real_te_install,
         "allow_break_system_packages": allow_break_system_packages,
+        "opencv_headless_repair_always_runs": True,
         "filtered_gui_opencv_requirements": gui_opencv_lines if req.is_file() else [],
         "commands": commands,
         "blockers": blockers,
