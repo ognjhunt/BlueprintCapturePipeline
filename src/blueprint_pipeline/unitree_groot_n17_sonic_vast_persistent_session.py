@@ -1634,6 +1634,8 @@ ALLOW_SEED_DERIVED_SKELETON_FOR_ACTION_WAM_ENV = (
 PROJECTED_SKELETON_TRACE_KEYS = (
     "g1_projected_skeleton_trace_jsonl",
     "projected_skeleton_trace_path",
+    "policy_derived_projected_skeleton_trace_path",
+    "policy_action_projected_skeleton_trace_path",
 )
 
 
@@ -1686,11 +1688,14 @@ def _policy_derived_projected_skeleton_trace(path: Path) -> bool:
 def _projected_skeleton_trace_candidates(
     observation: Mapping[str, Any],
     auxiliary_observation: Mapping[str, Any],
+    source_policy_action: Mapping[str, Any],
 ) -> list[Path]:
     visual = _mapping(observation.get("visual_observation"))
     action_conditioning = _mapping(auxiliary_observation.get("action_conditioning"))
     candidates: list[Path] = []
     for value in (
+        *(source_policy_action.get(key) for key in PROJECTED_SKELETON_TRACE_KEYS),
+        source_policy_action.get("projected_hand_keypoint_trace_path"),
         *(observation.get(key) for key in PROJECTED_SKELETON_TRACE_KEYS),
         *(visual.get(key) for key in PROJECTED_SKELETON_TRACE_KEYS),
         action_conditioning.get("projected_skeleton_trace_path"),
@@ -1735,7 +1740,11 @@ def _prepare_action_conditioned_wam_inputs(
     source_policy_action: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
     action_present = _action_payload_present(source_policy_action)
-    candidates = _projected_skeleton_trace_candidates(observation, auxiliary_observation)
+    candidates = _projected_skeleton_trace_candidates(
+        observation,
+        auxiliary_observation,
+        source_policy_action,
+    )
     candidate_text = [str(path) for path in candidates]
     policy_derived_candidates = [
         path for path in candidates if path.is_file() and _policy_derived_projected_skeleton_trace(path)

@@ -111,13 +111,25 @@ def _projected_skeleton_trace_path_from_wam_generation_step(
     visual = _mapping(observation.get("visual_observation"))
     auxiliary = _mapping(step_input.get("auxiliary_observation"))
     action_conditioning = _mapping(auxiliary.get("action_conditioning"))
+    source_action = _mapping(step_input.get("source_policy_action"))
     candidates = [
+        source_action.get("g1_projected_skeleton_trace_jsonl"),
+        source_action.get("projected_skeleton_trace_path"),
+        source_action.get("policy_derived_projected_skeleton_trace_path"),
+        source_action.get("policy_action_projected_skeleton_trace_path"),
+        source_action.get("projected_hand_keypoint_trace_path"),
         step_input.get("g1_projected_skeleton_trace_jsonl"),
         step_input.get("projected_skeleton_trace_path"),
+        step_input.get("policy_derived_projected_skeleton_trace_path"),
+        step_input.get("policy_action_projected_skeleton_trace_path"),
         visual.get("g1_projected_skeleton_trace_jsonl"),
         visual.get("projected_skeleton_trace_path"),
+        visual.get("policy_derived_projected_skeleton_trace_path"),
+        visual.get("policy_action_projected_skeleton_trace_path"),
         observation.get("g1_projected_skeleton_trace_jsonl"),
         observation.get("projected_skeleton_trace_path"),
+        observation.get("policy_derived_projected_skeleton_trace_path"),
+        observation.get("policy_action_projected_skeleton_trace_path"),
         action_conditioning.get("projected_skeleton_trace_path"),
         action_conditioning.get("projected_hand_keypoint_trace_path"),
     ]

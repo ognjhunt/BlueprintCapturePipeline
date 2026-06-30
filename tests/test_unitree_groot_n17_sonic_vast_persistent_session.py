@@ -156,6 +156,44 @@ def test_persistent_runner_keeps_policy_derived_skeleton_trace(
     assert contract["selected_projected_skeleton_trace_path"] == str(policy_trace)
 
 
+def test_persistent_runner_accepts_policy_action_projected_skeleton_trace(
+    tmp_path: Path,
+) -> None:
+    namespace = _persistent_runner_namespace()
+    prepare = namespace["_prepare_action_conditioned_wam_inputs"]
+    policy_trace = tmp_path / "policy_action_projected_trace.jsonl"
+    policy_trace.write_text(
+        json.dumps(
+            {
+                "claim_boundary": {
+                    "policy_derived_action_conditioning": True,
+                    "simulated_state_not_physical_robot_sensor_evidence": True,
+                },
+                "projected_landmark_count": 1,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    sanitized_observation, _sanitized_auxiliary, manifest_path, contract = prepare(
+        observation={"visual_observation": {}},
+        auxiliary_observation={},
+        auxiliary_manifest_path=str(tmp_path / "auxiliary.json"),
+        source_policy_action={
+            "action_chunk": [0.1, 0.2],
+            "policy_action_projected_skeleton_trace_path": str(policy_trace),
+        },
+    )
+
+    assert manifest_path == str(tmp_path / "auxiliary.json")
+    assert sanitized_observation["visual_observation"] == {}
+    assert contract["status"] == "policy_derived_projected_skeleton_trace_available"
+    assert contract["policy_derived_projected_skeleton_trace_present"] is True
+    assert contract["policy_ranking_claim_safe"] is True
+    assert contract["selected_projected_skeleton_trace_path"] == str(policy_trace)
+
+
 def test_policy_action_decoding_contract_blocks_latent_without_pose_decoder() -> None:
     contract = session._policy_action_decoding_contract(
         {

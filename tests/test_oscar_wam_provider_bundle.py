@@ -1226,6 +1226,68 @@ def test_wam_generation_step_input_prefers_projected_skeleton_trace(
     assert input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is False
 
 
+def test_wam_generation_step_input_accepts_policy_action_projected_skeleton_trace(
+    tmp_path: Path,
+) -> None:
+    source_frame = tmp_path / "policy_observation.jpg"
+    _write_review_png(source_frame)
+    projected_trace = tmp_path / "policy_action_projected_skeleton_trace.jsonl"
+    _write_projected_skeleton_trace(projected_trace)
+    step_input = tmp_path / "wam_generation_step_0001_input.json"
+    step_input.write_text(
+        json.dumps(
+            {
+                "schema_version": "wam_generation_step_input.v1",
+                "step_index": 1,
+                "source_policy_observation_frame_path": str(source_frame),
+                "source_policy_action": {
+                    "action_type": "unitree_g1_sonic_latent_action_chunk",
+                    "action_chunk": [0.1, 0.2],
+                    "policy_action_projected_skeleton_trace_path": str(projected_trace),
+                },
+                "current_policy_observation": {
+                    "task_id": "open_fridge",
+                    "target_object_id": "refrigerator",
+                    "robot_profile_id": "unitree_g1",
+                    "visual_observation": {"camera_id": "head_pov"},
+                },
+                "requested_output": {
+                    "next_observation_frame_path": str(tmp_path / "next.jpg"),
+                    "action_conditioned_generation_required": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "step-policy-action-projected-bundle-job",
+        wam_rollout_input_manifest=step_input,
+        num_frames=8,
+        height=64,
+        width=64,
+        fps=5.0,
+        generated_at="2026-06-21T00:00:00+00:00",
+    )
+
+    assert manifest["status"] == "completed"
+    runtime_manifest = _read_json(
+        tmp_path
+        / "step-policy-action-projected-bundle-job"
+        / "oscar_wam_provider_bundle"
+        / "provider_runtime"
+        / "wam_provider_runtime_manifest.json"
+    )
+    input_package = runtime_manifest["input_package"]
+    assert input_package["skeleton_video"]["conditioning_mode"] == "projected_g1_skeleton"
+    assert input_package["projected_skeleton_trace"]["used_for_conditioning"] is True
+    assert input_package["projected_skeleton_trace"]["path"] == (
+        "provider_runtime/oscar_input/g1_projected_skeleton_trace.jsonl"
+    )
+    assert input_package["source_action"]["action_chunk_value_count"] == 2
+    assert input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is False
+
+
 def test_seed_derived_projected_skeleton_trace_is_ranking_risk_not_policy_action(
     tmp_path: Path,
 ) -> None:
