@@ -941,6 +941,9 @@ def _materialize_oscar_input_package_from_wam_generation_step(
     )
     observation = _mapping(step_input.get("current_policy_observation"))
     requested_output = _mapping(step_input.get("requested_output"))
+    policy_action_to_skeleton_contract = _mapping(
+        step_input.get("policy_action_to_skeleton_contract")
+    )
     projected_trace_claim_boundary = _projected_skeleton_trace_claim_boundary(
         projected_trace_rows
     )
@@ -972,6 +975,7 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             "action_chunk_value_count": len(action_values),
             "unitree_groot_n17_sonic_action_chunk_present": bool(action_values),
         },
+        "policy_action_to_skeleton_contract": policy_action_to_skeleton_contract,
         "requested_output": {
             "next_observation_frame_path": requested_output.get("next_observation_frame_path"),
             "action_conditioned_generation_required": bool(
@@ -1065,6 +1069,14 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             "rgb_context_mode": "single_frame_repeat",
             "rgb_context_repeats_source_policy_observation_frame": True,
             "true_robot_proprioceptive_skeleton_available": False,
+            "policy_action_to_skeleton_contract_packaged": bool(
+                policy_action_to_skeleton_contract
+            ),
+            "policy_action_to_skeleton_policy_ranking_claim_safe": bool(
+                policy_action_to_skeleton_contract.get("policy_ranking_claim_safe")
+            )
+            if policy_action_to_skeleton_contract
+            else None,
             "auxiliary_observation_manifest_packaged": bool(auxiliary_observation_manifest_path),
             "auxiliary_observation_is_conditioning_support": True,
             "raw_auxiliary_modalities_consumed_by_public_oscar_entrypoint": False,
@@ -1201,6 +1213,9 @@ def _oscar_input_contract_diagnostic(
     rgb_signal = _mapping(rgb_video.get("visual_signal"))
     projected_trace = _mapping(input_package.get("projected_skeleton_trace"))
     source_action = _mapping(input_package.get("source_action"))
+    policy_action_to_skeleton_contract = _mapping(
+        input_package.get("policy_action_to_skeleton_contract")
+    )
     prompt = _string(input_package.get("prompt"))
     blockers: list[str] = []
     warnings: list[str] = []
@@ -1277,6 +1292,13 @@ def _oscar_input_contract_diagnostic(
             "policy_action_proxy_without_projected_skeleton_autoregressive_risk"
         )
         high_risk_flags.append("policy_action_proxy_without_projected_skeleton_high_risk")
+        ranking_risk_flags.append("policy_action_proxy_without_decoded_skeleton_ranking_risk")
+    if (
+        policy_action_to_skeleton_contract
+        and not policy_action_to_skeleton_contract.get("policy_ranking_claim_safe")
+    ):
+        warnings.append("oscar_contract_policy_action_to_skeleton_not_ranking_safe")
+        ranking_risk_flags.append("policy_action_to_skeleton_contract_not_ranking_safe")
     rgb_used = bool(rgb_video.get("used_for_oscar_rgb_latent_context"))
     rgb_context_mode = _string(rgb_video.get("rgb_context_mode")) or "not_configured"
     if rgb_used:
@@ -1343,6 +1365,23 @@ def _oscar_input_contract_diagnostic(
             "unitree_groot_n17_sonic_action_chunk_present": bool(
                 source_action.get("unitree_groot_n17_sonic_action_chunk_present")
             ),
+        },
+        "policy_action_to_skeleton_contract": {
+            "status": policy_action_to_skeleton_contract.get("status"),
+            "source_policy_action_present": bool(
+                policy_action_to_skeleton_contract.get("source_policy_action_present")
+            ),
+            "policy_derived_projected_skeleton_trace_present": bool(
+                policy_action_to_skeleton_contract.get(
+                    "policy_derived_projected_skeleton_trace_present"
+                )
+            ),
+            "policy_ranking_claim_safe": bool(
+                policy_action_to_skeleton_contract.get("policy_ranking_claim_safe")
+            )
+            if policy_action_to_skeleton_contract
+            else None,
+            "blockers": policy_action_to_skeleton_contract.get("blockers") or [],
         },
         "projected_skeleton_trace": {
             "used_for_conditioning": projected_used,

@@ -989,6 +989,16 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
                     "action_chunk": [0.12, -0.05, 0.18, 0.03],
                     "unitree_groot_n17_sonic_action_chunk_present": True,
                 },
+                "policy_action_to_skeleton_contract": {
+                    "schema_version": "persistent_wam_policy_action_to_skeleton_contract.v1",
+                    "status": "no_policy_derived_projected_skeleton_trace_available",
+                    "source_policy_action_present": True,
+                    "policy_derived_projected_skeleton_trace_present": False,
+                    "policy_ranking_claim_safe": False,
+                    "blockers": [
+                        "policy_action_to_projected_skeleton_decoder_missing_for_ranking_safe_wam"
+                    ],
+                },
                 "current_policy_observation": {
                     "task_id": "turn_on_sink_handle",
                     "target_object_id": "Sink054_handle",
@@ -1055,6 +1065,7 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
     )
     input_package = runtime_manifest["input_package"]
     assert input_package["source_action"]["unitree_groot_n17_sonic_action_chunk_present"] is True
+    assert input_package["policy_action_to_skeleton_contract"]["policy_ranking_claim_safe"] is False
     assert input_package["wam_auxiliary_observation_manifest_path"] == (
         "provider_runtime/oscar_input/wam_auxiliary_observation_manifest.json"
     )
@@ -1082,6 +1093,9 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
         "oscar_contract_policy_action_proxy_conditioning_without_projected_skeleton"
         in contract["warnings"]
     )
+    assert "oscar_contract_policy_action_to_skeleton_not_ranking_safe" in contract[
+        "warnings"
+    ]
     assert "oscar_contract_single_frame_repeat_without_projected_skeleton" in contract[
         "warnings"
     ]
@@ -1095,6 +1109,16 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
     assert "single_frame_repeat_without_projected_skeleton_high_risk" in contract[
         "high_risk_flags"
     ]
+    assert "policy_action_proxy_without_decoded_skeleton_ranking_risk" in contract[
+        "ranking_risk_flags"
+    ]
+    assert "policy_action_to_skeleton_contract_not_ranking_safe" in contract[
+        "ranking_risk_flags"
+    ]
+    assert contract["policy_ranking_claim_safe"] is False
+    assert contract["policy_action_to_skeleton_contract"]["status"] == (
+        "no_policy_derived_projected_skeleton_trace_available"
+    )
     assert "policy_action_to_skeleton_adapter" in contract["likely_debug_focus"]
     assert contract["autoregressive_risk_level"] == "high"
     assert contract["short_rollout_sanity_recommended_before_scale_up"] is True

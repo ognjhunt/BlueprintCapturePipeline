@@ -54,6 +54,108 @@ def test_persistent_runner_future_frame_selector_uses_copied_runtime_module() ->
     )
 
 
+def test_persistent_runner_strips_seed_skeleton_until_policy_derived(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(
+        "BLUEPRINT_ALLOW_SEED_DERIVED_SKELETON_FOR_ACTION_CONDITIONED_WAM",
+        raising=False,
+    )
+    namespace = _persistent_runner_namespace()
+    prepare = namespace["_prepare_action_conditioned_wam_inputs"]
+    seed_trace = tmp_path / "seed_projected_trace.jsonl"
+    seed_trace.write_text(
+        json.dumps(
+            {
+                "claim_boundary": {
+                    "projected_skeleton_trace_derived_from_seed_render_geometry": True,
+                    "temporal_rows_are_target_conditioning_from_resolved_affordance_projection": True,
+                    "not_a_learned_robot_policy_action": True,
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    observation = {
+        "visual_observation": {
+            "projected_skeleton_trace_path": str(seed_trace),
+            "g1_projected_skeleton_trace_jsonl": str(seed_trace),
+        }
+    }
+    auxiliary = {
+        "action_conditioning": {
+            "projected_skeleton_trace_path": str(seed_trace),
+            "projected_hand_keypoint_trace_path": str(seed_trace),
+        }
+    }
+
+    sanitized_observation, sanitized_auxiliary, manifest_path, contract = prepare(
+        observation=observation,
+        auxiliary_observation=auxiliary,
+        auxiliary_manifest_path=str(tmp_path / "auxiliary.json"),
+        source_policy_action={"action_chunk": [0.1, 0.2]},
+    )
+
+    assert manifest_path == ""
+    assert "projected_skeleton_trace_path" not in sanitized_observation["visual_observation"]
+    assert "g1_projected_skeleton_trace_jsonl" not in sanitized_observation[
+        "visual_observation"
+    ]
+    action_conditioning = sanitized_auxiliary["action_conditioning"]
+    assert "projected_skeleton_trace_path" not in action_conditioning
+    assert "projected_hand_keypoint_trace_path" not in action_conditioning
+    assert action_conditioning["projected_trace_removed_for_policy_ranking_safety"] is True
+    assert contract["policy_ranking_claim_safe"] is False
+    assert contract["status"] == (
+        "stripped_seed_or_target_projected_skeleton_for_policy_action_conditioning"
+    )
+    assert contract["blockers"] == [
+        "policy_action_to_projected_skeleton_decoder_missing_for_ranking_safe_wam"
+    ]
+
+
+def test_persistent_runner_keeps_policy_derived_skeleton_trace(
+    tmp_path: Path,
+) -> None:
+    namespace = _persistent_runner_namespace()
+    prepare = namespace["_prepare_action_conditioned_wam_inputs"]
+    policy_trace = tmp_path / "policy_projected_trace.jsonl"
+    policy_trace.write_text(
+        json.dumps(
+            {
+                "claim_boundary": {
+                    "policy_derived_action_conditioning": True,
+                    "simulated_state_not_physical_robot_sensor_evidence": True,
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    observation = {
+        "visual_observation": {
+            "projected_skeleton_trace_path": str(policy_trace),
+        }
+    }
+
+    sanitized_observation, _sanitized_auxiliary, manifest_path, contract = prepare(
+        observation=observation,
+        auxiliary_observation={},
+        auxiliary_manifest_path=str(tmp_path / "auxiliary.json"),
+        source_policy_action={"action_chunk": [0.1, 0.2]},
+    )
+
+    assert manifest_path == str(tmp_path / "auxiliary.json")
+    assert sanitized_observation["visual_observation"]["projected_skeleton_trace_path"] == str(
+        policy_trace
+    )
+    assert contract["status"] == "policy_derived_projected_skeleton_trace_available"
+    assert contract["policy_ranking_claim_safe"] is True
+    assert contract["selected_projected_skeleton_trace_path"] == str(policy_trace)
+
+
 def _policy_observation(path: Path, frame: Path) -> Path:
     observation = {
         "schema_version": "initial_policy_observation.v1",

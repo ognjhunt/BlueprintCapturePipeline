@@ -1238,7 +1238,7 @@ import traceback
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from urllib import request as urllib_request
 from urllib import error as urllib_error
 
@@ -1628,6 +1628,167 @@ def _float_config(name: str, default: float) -> float:
         return float(default)
 
 
+ALLOW_SEED_DERIVED_SKELETON_FOR_ACTION_WAM_ENV = (
+    "BLUEPRINT_ALLOW_SEED_DERIVED_SKELETON_FOR_ACTION_CONDITIONED_WAM"
+)
+PROJECTED_SKELETON_TRACE_KEYS = (
+    "g1_projected_skeleton_trace_jsonl",
+    "projected_skeleton_trace_path",
+)
+
+
+def _action_payload_present(action: Mapping[str, Any]) -> bool:
+    if not action:
+        return False
+    for key in ("action_chunk", "sonic_latent_action", "motion_token"):
+        value = action.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return bool(value)
+        if _string(value):
+            return True
+    if action.get("unitree_groot_n17_sonic_action_chunk_present"):
+        return True
+    if action.get("unitree_groot_n17_sonic_action_payload_present"):
+        return True
+    for key in ("hand_targets", "left_hand_joints", "right_hand_joints"):
+        if action.get(key):
+            return True
+    return False
+
+
+def _projected_skeleton_trace_claim_boundary(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if isinstance(row, Mapping):
+                return _mapping(row.get("claim_boundary"))
+    except Exception:
+        return {}
+    return {}
+
+
+def _policy_derived_projected_skeleton_trace(path: Path) -> bool:
+    claim_boundary = _projected_skeleton_trace_claim_boundary(path)
+    return bool(
+        claim_boundary.get("policy_derived_action_conditioning")
+        and not claim_boundary.get("not_a_learned_robot_policy_action")
+        and not claim_boundary.get("projected_skeleton_trace_derived_from_seed_render_geometry")
+        and not claim_boundary.get(
+            "temporal_rows_are_target_conditioning_from_resolved_affordance_projection"
+        )
+    )
+
+
+def _projected_skeleton_trace_candidates(
+    observation: Mapping[str, Any],
+    auxiliary_observation: Mapping[str, Any],
+) -> list[Path]:
+    visual = _mapping(observation.get("visual_observation"))
+    action_conditioning = _mapping(auxiliary_observation.get("action_conditioning"))
+    candidates: list[Path] = []
+    for value in (
+        *(observation.get(key) for key in PROJECTED_SKELETON_TRACE_KEYS),
+        *(visual.get(key) for key in PROJECTED_SKELETON_TRACE_KEYS),
+        action_conditioning.get("projected_skeleton_trace_path"),
+        action_conditioning.get("projected_hand_keypoint_trace_path"),
+    ):
+        text = _string(value)
+        if text:
+            candidates.append(Path(text).expanduser())
+    return candidates
+
+
+def _strip_projected_skeleton_conditioning(
+    observation: Mapping[str, Any],
+    auxiliary_observation: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    sanitized_observation = json.loads(json.dumps(dict(observation)))
+    sanitized_visual = _mapping(sanitized_observation.get("visual_observation"))
+    for key in PROJECTED_SKELETON_TRACE_KEYS:
+        sanitized_observation.pop(key, None)
+        sanitized_visual.pop(key, None)
+    sanitized_observation["visual_observation"] = sanitized_visual
+
+    sanitized_auxiliary = json.loads(json.dumps(dict(auxiliary_observation)))
+    action_conditioning = _mapping(sanitized_auxiliary.get("action_conditioning"))
+    projected_trace_removed = False
+    for key in ("projected_skeleton_trace_path", "projected_hand_keypoint_trace_path"):
+        projected_trace_removed = projected_trace_removed or key in action_conditioning
+        action_conditioning.pop(key, None)
+        action_conditioning.pop(f"local_{key}_omitted_from_runtime_manifest", None)
+    if projected_trace_removed:
+        action_conditioning["projected_trace_removed_for_policy_ranking_safety"] = True
+    if action_conditioning:
+        sanitized_auxiliary["action_conditioning"] = action_conditioning
+    return sanitized_observation, sanitized_auxiliary
+
+
+def _prepare_action_conditioned_wam_inputs(
+    *,
+    observation: Mapping[str, Any],
+    auxiliary_observation: Mapping[str, Any],
+    auxiliary_manifest_path: str,
+    source_policy_action: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
+    action_present = _action_payload_present(source_policy_action)
+    candidates = _projected_skeleton_trace_candidates(observation, auxiliary_observation)
+    candidate_text = [str(path) for path in candidates]
+    policy_derived_candidates = [
+        path for path in candidates if path.is_file() and _policy_derived_projected_skeleton_trace(path)
+    ]
+    contract = {
+        "schema_version": "persistent_wam_policy_action_to_skeleton_contract.v1",
+        "status": "not_required" if not action_present else "ready",
+        "source_policy_action_present": action_present,
+        "projected_skeleton_trace_candidate_count": len(candidates),
+        "projected_skeleton_trace_candidates": candidate_text,
+        "policy_derived_projected_skeleton_trace_present": bool(policy_derived_candidates),
+        "seed_or_target_projected_skeleton_allowed": _truthy(
+            os.environ.get(ALLOW_SEED_DERIVED_SKELETON_FOR_ACTION_WAM_ENV)
+        ),
+        "policy_ranking_claim_safe": not action_present or bool(policy_derived_candidates),
+        "blockers": [],
+        "claim_boundary": {
+            "policy_ranking_claim_safe_requires_policy_derived_action_conditioning": True,
+            "seed_or_target_skeleton_is_visual_smoke_only": True,
+            "scene_or_task_specific_pixels_used": False,
+        },
+    }
+    if not action_present:
+        return dict(observation), dict(auxiliary_observation), auxiliary_manifest_path, contract
+    if policy_derived_candidates:
+        contract["status"] = "policy_derived_projected_skeleton_trace_available"
+        contract["selected_projected_skeleton_trace_path"] = str(policy_derived_candidates[0])
+        return dict(observation), dict(auxiliary_observation), auxiliary_manifest_path, contract
+    if contract["seed_or_target_projected_skeleton_allowed"]:
+        contract["status"] = "visual_smoke_seed_or_target_skeleton_allowed"
+        contract["policy_ranking_claim_safe"] = False
+        contract["blockers"] = [
+            "seed_or_target_projected_skeleton_used_for_visual_smoke_not_policy_ranking"
+        ]
+        return dict(observation), dict(auxiliary_observation), auxiliary_manifest_path, contract
+    sanitized_observation, sanitized_auxiliary = _strip_projected_skeleton_conditioning(
+        observation,
+        auxiliary_observation,
+    )
+    contract["status"] = (
+        "stripped_seed_or_target_projected_skeleton_for_policy_action_conditioning"
+        if candidates
+        else "no_policy_derived_projected_skeleton_trace_available"
+    )
+    contract["blockers"] = [
+        "policy_action_to_projected_skeleton_decoder_missing_for_ranking_safe_wam"
+    ]
+    contract["auxiliary_manifest_path_cleared_to_prevent_unsanitized_reload"] = bool(
+        auxiliary_manifest_path
+    )
+    return sanitized_observation, sanitized_auxiliary, "", contract
+
+
 class PolicyWorker(BaseHTTPRequestHandler):
     policy_command = ""
     command_source = ""
@@ -1785,16 +1946,29 @@ class WamWorker(BaseHTTPRequestHandler):
                     )
                 except Exception:
                     auxiliary_observation = {}
+        source_policy_action = _mapping(payload.get("source_policy_action"))
+        (
+            current_policy_observation,
+            auxiliary_observation,
+            auxiliary_manifest_path,
+            policy_action_to_skeleton_contract,
+        ) = _prepare_action_conditioned_wam_inputs(
+            observation=current_policy_observation,
+            auxiliary_observation=auxiliary_observation,
+            auxiliary_manifest_path=auxiliary_manifest_path,
+            source_policy_action=source_policy_action,
+        )
         step_input = {
             "schema_version": "wam_generation_step_input.v1",
             "generated_at": payload.get("generated_at"),
             "step_index": step_index,
             "wam_evaluator_backend": "persistent_oscar_wam_worker",
             "source_policy_observation_frame_path": str(source_frame),
-            "source_policy_action": _mapping(payload.get("source_policy_action")),
+            "source_policy_action": source_policy_action,
             "current_policy_observation": current_policy_observation,
             "wam_auxiliary_observation_manifest_path": auxiliary_manifest_path or None,
             "auxiliary_observation": auxiliary_observation,
+            "policy_action_to_skeleton_contract": policy_action_to_skeleton_contract,
             "requested_output": {
                 "next_observation_frame_path": str(target_frame),
                 "action_conditioned_generation_required": True,
@@ -1802,6 +1976,7 @@ class WamWorker(BaseHTTPRequestHandler):
             "claim_boundary": {
                 "wam_generation_is_not_robot_policy": True,
                 "physical_robot_sensor_proof": False,
+                "policy_action_to_skeleton_contract_is_input_provenance_not_task_success": True,
             },
         }
         step_input_path = step_dir / "wam_generation_step_input.json"
