@@ -172,6 +172,44 @@ def test_groot_sonic_is_fail_closed_off_gpu() -> None:
         g.reset({"instruction": "walk to the sink"})
 
 
+def test_groot_sonic_injected_infer_returns_step_decision_without_gpu() -> None:
+    calls: list[dict] = []
+
+    def _infer(obs):
+        calls.append(dict(obs))
+        return {
+            "root_position": [0.25, 0.5, 0.79],
+            "root_yaw_radians": 0.125,
+            "joint_targets": {"left_shoulder_pitch_joint": 0.2},
+        }
+
+    policy = P.make_policy("groot_sonic", infer=_infer)
+    assert isinstance(policy, P.Groot17SonicPolicy)
+    policy.reset({"instruction": "open the fridge"})
+    decision = policy.step(
+        P.StepContext(
+            step=2,
+            num_steps=4,
+            camera_rgb="frame-1",
+            joint_state={"left_shoulder_pitch_joint": 0.0},
+            instruction="open the fridge",
+        )
+    )
+
+    assert calls == [
+        {
+            "camera_rgb": "frame-1",
+            "joint_state": {"left_shoulder_pitch_joint": 0.0},
+            "instruction": "open the fridge",
+            "step": 2,
+        }
+    ]
+    assert decision.root_pose == (0.25, 0.5, 0.79)
+    assert decision.yaw == 0.125
+    assert decision.policy_action == "learned_policy_action"
+    assert decision.joint_targets == {"left_shoulder_pitch_joint": 0.2}
+
+
 def test_gait_joint_deltas_match_mujoco_source() -> None:
     joints = list(P.G1_GAIT_JOINTS)
     addr = {n: i for i, n in enumerate(joints)}

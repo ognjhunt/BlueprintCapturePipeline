@@ -259,8 +259,13 @@ class Groot17SonicPolicy(G1Policy):
     DEFAULT_CHECKPOINT = "LucaFrat/groot-bs16"
     EMBODIMENT_TAG = "UNITREE_G1_SONIC"
 
-    def __init__(self, checkpoint: str | None = None) -> None:
+    def __init__(
+        self,
+        checkpoint: str | None = None,
+        infer: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+    ) -> None:
         self.checkpoint = checkpoint or self.DEFAULT_CHECKPOINT
+        self.infer = infer
         self._engine = None
 
     def available(self) -> dict:
@@ -273,6 +278,8 @@ class Groot17SonicPolicy(G1Policy):
 
     def reset(self, scenario: Mapping[str, Any]) -> None:
         self.instruction = str(scenario.get("instruction") or scenario.get("task_text") or "")
+        if self.infer is not None:
+            return
         avail = self.available()
         if not avail.get("available"):
             raise RuntimeError(f"groot_sonic_unavailable:{avail.get('reason')}")
@@ -280,6 +287,29 @@ class Groot17SonicPolicy(G1Policy):
         raise NotImplementedError("Groot17SonicPolicy.reset: GPU-worker load not implemented in this process")
 
     def step(self, ctx: StepContext) -> StepDecision:
+        if self.infer is not None:
+            obs = {
+                "camera_rgb": ctx.camera_rgb,
+                "joint_state": ctx.joint_state,
+                "instruction": ctx.instruction or getattr(self, "instruction", ""),
+                "step": ctx.step,
+            }
+            response = dict(self.infer(obs) or {})
+            raw_root = response.get("root_position") or response.get("root_pose") or (0.0, 0.0, 0.793)
+            root = rounded_pose(raw_root)
+            raw_desired = response.get("desired_root_position") or root
+            yaw = float(response.get("root_yaw_radians", response.get("yaw", 0.0)) or 0.0)
+            return StepDecision(
+                root_pose=root,
+                yaw=yaw,
+                desired_root_position=rounded_pose(raw_desired),
+                route_segment_index=int(response.get("route_segment_index") or 0),
+                policy_action=str(response.get("policy_action") or "learned_policy_action"),
+                collision_probe_candidate_count=0,
+                rejected_collision_probe_count=0,
+                rejected_probes=[],
+                joint_targets=response.get("joint_targets"),
+            )
         raise NotImplementedError("Groot17SonicPolicy.step runs only on the GPU worker")
 
 
@@ -290,7 +320,7 @@ def make_policy(policy_id: str | None = None, **kwargs) -> G1Policy:
     if key in {DeterministicWalkToTargetPolicy.policy_id, "deterministic", "walk_to_target"}:
         return DeterministicWalkToTargetPolicy()
     if key in {Groot17SonicPolicy.policy_id, "groot", "groot_sonic", "groot_n17_sonic"}:
-        return Groot17SonicPolicy(checkpoint=kwargs.get("checkpoint"))
+        return Groot17SonicPolicy(checkpoint=kwargs.get("checkpoint"), infer=kwargs.get("infer"))
     raise ValueError(f"unknown_policy_id:{policy_id!r} (known: "
                      f"{DeterministicWalkToTargetPolicy.policy_id}, {Groot17SonicPolicy.policy_id})")
 

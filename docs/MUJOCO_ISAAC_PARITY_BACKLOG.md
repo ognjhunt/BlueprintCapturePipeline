@@ -28,7 +28,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 1 | T1 | Isaac | S | — | `done (gpu-pending)` | Emit Isaac per-frame camera contract (intrinsics K + camera world pose) |
 | 2 | T3 | Isaac | S | — | `done (gpu-pending)` | Isaac native depth render pass (distance_to_image_plane annotator, co-registered with RGB) |
 | 3 | T2 | MuJoCo | M | — | `done` | MuJoCo native render-pass depth buffer (co-registered per-camera depth) |
-| 4 | T4 | Isaac | L | — | `todo` | Isaac closed loop: requery a pluggable LEARNED policy on the WAM-generated observation (replace the hardcoded deterministic stub) |
+| 4 | T4 | Isaac | L | — | `done` | Isaac closed loop: requery a pluggable LEARNED policy on the WAM-generated observation (replace the hardcoded deterministic stub) |
 | 5 | T5 | Isaac | S | T4 | `todo` | Isaac honest completion gating + in-loop drift reanchoring |
 | 6 | T6 | Isaac | M | T4 | `todo` | Isaac in-process manipulation success evaluator |
 | 7 | T7 | Shared | M | — | `todo` | Photoreal observation handoff: Isaac/WAM frame -> MuJoCo policy visual channel |
@@ -236,7 +236,7 @@ Hermetic, GPU-free: `pytest tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py
 ### 4. T4 — Isaac closed loop: requery a pluggable LEARNED policy on the WAM-generated observation (replace the hardcoded deterministic stub)
 
 - **Lane:** Isaac  |  **Effort:** L (large)  |  **Depends on:** none
-- **Status:** todo
+- **Status:** done
 
 **Summary.** Today the Isaac closed loop hardcodes `DeterministicWalkToTargetPolicy` at oscar_isaac_closed_loop_eval.py:1679 and walks a fixed route by step index, ignoring the WAM-generated frame; `Groot17SonicPolicy.step` raises NotImplementedError (isaac_g1_policy.py:283). So Isaac proves render+conditioning+perception but never policy-on-generated-world — the actual purpose of the eval. Make the in-loop policy/endpoint pluggable and requery it on the harness-adapted WAM observation each step (mirroring the MuJoCo loop at mujoco_g1_wam_vla_policy_endpoint_eval.py:4609-4636), while keeping the backend swappable and the loop hermetically testable with no GPU.
 
@@ -268,13 +268,13 @@ Hermetic, GPU-free: `pytest tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py
 
 **Acceptance criteria:**
 
-- [ ] run_oscar_isaac_closed_loop accepts a `policy_endpoint` kwarg; calling it WITHOUT one yields the same manifest `status` and `loop_kind` as today and the existing test_closed_loop_runs_policy_wam_harness_per_step (and the other no-endpoint tests test_oscar_per_step_backend_drives_the_loop, test_closed_loop_proof_requirements_pass_with_fresh_oscar_sam3_da3) pass unchanged. (Note: a `simulator_backend` proof key may be added even on the no-endpoint path; this is allowed because no existing test asserts proof-dict equality or proof-key absence — only specific proof values.)
-- [ ] When a `policy_endpoint` is supplied, the endpoint is invoked exactly once per executed step, and each invocation receives the harness-adapted WAM-generated observation (NOT the seed frame): the `camera_frame_path` in the observation passed at step N equals the WAM frame generated at step N (the loop's `generated_frame`), verifiable from the captured calls in the test.
-- [ ] The returned action is a function of the generated observation: a test that perturbs the generated frame yields a different returned `root_position` (action changes when the observation's camera_frame_path/frame content changes).
-- [ ] manifest['proof']['policy_observes_wam_generated_next_observation'] is True only when learned_policy_requery_count>=2 AND policy_action_changed_count>=1; otherwise False.
-- [ ] manifest['proof'] contains learned_policy_requery_count, policy_action_changed_count, and simulator_backend=='isaac'; the manifest does NOT emit any MuJoCo-specific proof flag (no unitree_*_policy_action_command_ran key) — Isaac evidence stays distinct from MuJoCo evidence.
-- [ ] Groot17SonicPolicy.step no longer unconditionally raises: with an injected `infer` callable (and reset called with infer set, which must not raise) it returns a StepDecision carrying joint_targets and policy_action=='learned_policy_action'; with NO injected infer it still fail-closes (reset raises RuntimeError off-GPU via available(), and step raises NotImplementedError on the GPU path) — confirmed compatible with the existing test_groot_sonic_is_fail_closed_off_gpu.
-- [ ] isaac_g1_policy.py still imports zero physics/sim/GPU modules at module import time (no mujoco/physx/isaacsim/gr00t import at top level — the only gr00t import is inside available() at line 268); the learned path is reachable purely via injection.
+- [x] run_oscar_isaac_closed_loop accepts a `policy_endpoint` kwarg; calling it WITHOUT one yields the same manifest `status` and `loop_kind` as today and the existing test_closed_loop_runs_policy_wam_harness_per_step (and the other no-endpoint tests test_oscar_per_step_backend_drives_the_loop, test_closed_loop_proof_requirements_pass_with_fresh_oscar_sam3_da3) pass unchanged. (Note: a `simulator_backend` proof key may be added even on the no-endpoint path; this is allowed because no existing test asserts proof-dict equality or proof-key absence — only specific proof values.)
+- [x] When a `policy_endpoint` is supplied, the endpoint is invoked exactly once per executed step, and each invocation receives the harness-adapted WAM-generated observation (NOT the seed frame): the `camera_frame_path` in the observation passed at step N equals the WAM frame generated at step N (the loop's `generated_frame`), verifiable from the captured calls in the test.
+- [x] The returned action is a function of the generated observation: a test that perturbs the generated frame yields a different returned `root_position` (action changes when the observation's camera_frame_path/frame content changes).
+- [x] manifest['proof']['policy_observes_wam_generated_next_observation'] is True only when learned_policy_requery_count>=2 AND policy_action_changed_count>=1; otherwise False.
+- [x] manifest['proof'] contains learned_policy_requery_count, policy_action_changed_count, and simulator_backend=='isaac'; the manifest does NOT emit any MuJoCo-specific proof flag (no unitree_*_policy_action_command_ran key) — Isaac evidence stays distinct from MuJoCo evidence.
+- [x] Groot17SonicPolicy.step no longer unconditionally raises: with an injected `infer` callable (and reset called with infer set, which must not raise) it returns a StepDecision carrying joint_targets and policy_action=='learned_policy_action'; with NO injected infer it still fail-closes (reset raises RuntimeError off-GPU via available(), and step raises NotImplementedError on the GPU path) — confirmed compatible with the existing test_groot_sonic_is_fail_closed_off_gpu.
+- [x] isaac_g1_policy.py still imports zero physics/sim/GPU modules at module import time (no mujoco/physx/isaacsim/gr00t import at top level — the only gr00t import is inside available() at line 268); the learned path is reachable purely via injection.
 
 **Verification:**
 

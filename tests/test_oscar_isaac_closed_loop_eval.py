@@ -241,6 +241,64 @@ def test_closed_loop_runs_policy_wam_harness_per_step(tmp_path: Path) -> None:
     assert trace[1]["source_observation_frame"] == trace[0]["wam_generated_frame"]
 
 
+def test_closed_loop_requeries_learned_policy_on_wam_observation(tmp_path: Path) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=5)
+    route = [(-4.25, -3.35, 0.79), (-1.0, -1.0, 0.79), (1.75, 1.25, 0.79)]
+    endpoint_calls: list[dict[str, object]] = []
+    endpoint_actions: list[dict[str, object]] = []
+
+    def _policy_endpoint(obs, history, step_index):
+        frame_path = Path(str(obs.get("camera_frame_path")))
+        nested_visual = obs.get("visual_observation") or {}
+        assert str(frame_path) == str(nested_visual.get("camera_frame_path"))
+        red_channel = Image.open(frame_path).getpixel((0, 0))[0]
+        action = {
+            "root_position": [round(red_channel / 100.0, 6), round(step_index / 10.0, 6), 0.79],
+            "root_yaw_radians": round(red_channel / 1000.0, 6),
+            "policy_action": "learned_policy_action",
+        }
+        endpoint_calls.append(
+            {"step_index": step_index, "camera_frame_path": str(frame_path), "history": list(history)}
+        )
+        endpoint_actions.append(action)
+        return action
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=route,
+        wam_generate_next=_stub_wam(tmp_path),
+        steps=3,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        policy_endpoint=_policy_endpoint,
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["proof"]["simulator_backend"] == "isaac"
+    assert manifest["proof"]["learned_policy_requery_count"] == 3
+    assert manifest["proof"]["policy_action_changed_count"] >= 2
+    assert manifest["proof"]["policy_observes_wam_generated_next_observation"] is True
+    assert not any(str(key).startswith("unitree_") for key in manifest["proof"])
+
+    trace = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(endpoint_calls) == manifest["steps_executed"] == 3
+    for call, row in zip(endpoint_calls, trace):
+        assert call["camera_frame_path"] == row["wam_generated_frame"]
+        assert call["camera_frame_path"] != str(start.resolve())
+    assert endpoint_actions[0]["root_position"] != endpoint_actions[1]["root_position"]
+    assert trace[0]["policy_action_from_wam_requery"] is False
+    assert trace[1]["policy_action_from_wam_requery"] is True
+    assert trace[1]["root_position"] == endpoint_actions[0]["root_position"]
+    assert trace[2]["root_position"] == endpoint_actions[1]["root_position"]
+    assert all(row["policy_requeried_on_wam_observation"] is True for row in trace)
+    assert all(row["requery_status"] == "completed" for row in trace)
+
+
 def test_closed_loop_blocks_on_missing_wam_frame(tmp_path: Path) -> None:
     start = _write_frame(tmp_path / "start.png", seed=1)
 

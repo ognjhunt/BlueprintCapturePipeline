@@ -67,6 +67,12 @@ WamGenerateNext = Callable[
     [str, Mapping[str, Any], int, Sequence[Mapping[str, Any]]], Mapping[str, Any]
 ]
 
+# A learned policy endpoint: given the harness-adapted WAM-generated observation,
+# prior action history, and step index, return the next action dict.
+PolicyEndpoint = Callable[
+    [Mapping[str, Any], Sequence[Mapping[str, Any]], int], Mapping[str, Any]
+]
+
 
 def _string(value: Any) -> str:
     return "" if value is None else str(value)
@@ -74,6 +80,69 @@ def _string(value: Any) -> str:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _callable_label(value: Any) -> str:
+    module = getattr(value, "__module__", None)
+    name = getattr(value, "__qualname__", None) or getattr(value, "__name__", None)
+    if module and name:
+        return f"{module}.{name}"
+    return type(value).__name__
+
+
+def _xyz_list(value: Any, fallback: Sequence[float] | None = None) -> list[float]:
+    source: Sequence[Any] | None
+    if isinstance(value, (list, tuple)) and len(value) >= 3:
+        source = value
+    elif fallback is not None and len(fallback) >= 3:
+        source = fallback
+    else:
+        source = (0.0, 0.0, 0.793)
+    return [round(float(source[0]), 6), round(float(source[1]), 6), round(float(source[2]), 6)]
+
+
+def _endpoint_action_signature(action: Mapping[str, Any]) -> str:
+    root = action.get("root_position") or action.get("root_pose")
+    yaw = action.get("root_yaw_radians", action.get("yaw"))
+    signature = {
+        "root_position": _xyz_list(root),
+        "root_yaw_radians": yaw,
+        "policy_action": _string(action.get("policy_action") or action.get("motion_token")),
+        "joint_targets": action.get("joint_targets"),
+    }
+    return json.dumps(signature, sort_keys=True, default=str)
+
+
+def _action_record_from_policy_endpoint(
+    *,
+    base_action: Mapping[str, Any],
+    endpoint_action: Mapping[str, Any],
+    requery_source_step_index: int,
+) -> dict[str, Any]:
+    action = dict(base_action)
+    root = _xyz_list(
+        endpoint_action.get("root_position") or endpoint_action.get("root_pose"),
+        action.get("root_position"),
+    )
+    action["root_position"] = root
+    action["desired_root_position"] = _xyz_list(
+        endpoint_action.get("desired_root_position"),
+        root,
+    )
+    yaw = endpoint_action.get("root_yaw_radians", endpoint_action.get("yaw"))
+    if yaw is not None:
+        action["root_yaw_radians"] = round(float(yaw), 6)
+    action["policy_action"] = _string(
+        endpoint_action.get("policy_action")
+        or endpoint_action.get("motion_token")
+        or "learned_policy_action"
+    )
+    if "joint_targets" in endpoint_action:
+        action["joint_targets"] = endpoint_action.get("joint_targets")
+    action["policy_requeried_on_generated_observation"] = True
+    action["policy_requery_source_step_index"] = int(requery_source_step_index)
+    action["policy_action_source"] = "policy_endpoint_requery_on_wam_generated_observation"
+    return action
 
 
 def _neutral_unitree_g1_sonic_state() -> dict[str, list[float]]:
@@ -1657,6 +1726,7 @@ def run_oscar_isaac_closed_loop(
     perception_target_prompts: Sequence[str] | None = None,
     wam_backend_id: str = "oscar_wam",
     wam_backend_readiness: Mapping[str, Any] | None = None,
+    policy_endpoint: PolicyEndpoint | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     resolved_out = Path(output_dir).expanduser().resolve()
@@ -1687,6 +1757,11 @@ def run_oscar_isaac_closed_loop(
     trace_rows: list[dict[str, Any]] = []
     proof_rows: list[dict[str, Any]] = []
     blockers: list[str] = []
+    pending_policy_endpoint_action: dict[str, Any] | None = None
+    pending_policy_endpoint_source_step: int | None = None
+    previous_endpoint_action_signature: str | None = None
+    learned_policy_requery_count = 0
+    policy_action_changed_count = 0
 
     for step_index in range(1, bounded_steps + 1):
         # 1. policy acts
@@ -1697,6 +1772,19 @@ def run_oscar_isaac_closed_loop(
         action = action_record(
             decision=decision, step=step_index - 1, sim_time_s=sim_time_s, target=target
         )
+        policy_action_from_wam_requery = False
+        if pending_policy_endpoint_action is not None:
+            action = _action_record_from_policy_endpoint(
+                base_action=action,
+                endpoint_action=pending_policy_endpoint_action,
+                requery_source_step_index=pending_policy_endpoint_source_step or (step_index - 1),
+            )
+            policy_action_from_wam_requery = True
+            pending_policy_endpoint_action = None
+            pending_policy_endpoint_source_step = None
+        else:
+            action["policy_requeried_on_generated_observation"] = False
+            action["policy_action_source"] = "isaac_g1_policy.DeterministicWalkToTargetPolicy"
         action_history.append(action)
 
         # 2. WAM generates the NEXT observation conditioned on the action
@@ -1772,10 +1860,46 @@ def run_oscar_isaac_closed_loop(
             blockers.append(f"da3_provider_not_completed_at_step_{step_index}")
         step_records.append(step_record)
         adapter_reports.append(adapter_report)
+
+        adapted_observation = _mapping(result.get("adapted_policy_observation"))
+        safe_for_policy_requery = bool(adapter_report.get("safe_for_policy_requery"))
+        policy_requeried_on_wam_observation = False
+        policy_action_changed_vs_previous = False
+        requery_status = "absent"
+        if policy_endpoint is not None:
+            if safe_for_policy_requery:
+                try:
+                    learned_action = dict(
+                        policy_endpoint(adapted_observation, list(action_history), step_index)
+                        or {}
+                    )
+                    learned_policy_requery_count += 1
+                    signature = _endpoint_action_signature(learned_action)
+                    policy_action_changed_vs_previous = (
+                        previous_endpoint_action_signature is not None
+                        and signature != previous_endpoint_action_signature
+                    )
+                    if policy_action_changed_vs_previous:
+                        policy_action_changed_count += 1
+                    previous_endpoint_action_signature = signature
+                    pending_policy_endpoint_action = learned_action
+                    pending_policy_endpoint_source_step = step_index
+                    policy_requeried_on_wam_observation = True
+                    requery_status = "completed"
+                except Exception as exc:  # noqa: BLE001
+                    blockers.append(
+                        f"learned_policy_requery_failed_at_step_{step_index}:{type(exc).__name__}"
+                    )
+                    requery_status = "failed"
+            else:
+                requery_status = "skipped_unsafe"
+
         trace_row = {
             "step_index": step_index,
             "policy_action": action.get("policy_action"),
             "root_position": action.get("root_position"),
+            "policy_action_source": action.get("policy_action_source"),
+            "policy_action_from_wam_requery": policy_action_from_wam_requery,
             "source_observation_frame": current_frame,
             "wam_generated_frame": generated_frame,
             "wam_generated_video": wam_output.get("generated_video_path"),
@@ -1789,12 +1913,17 @@ def run_oscar_isaac_closed_loop(
             "sam3_completed": backend_status["sam3_completed"],
             "depth_completed": backend_status["depth_completed"],
             "da3_completed": backend_status["da3_completed"],
+            "safe_for_policy_requery": safe_for_policy_requery,
+            "policy_requeried_on_wam_observation": policy_requeried_on_wam_observation,
+            "policy_action_changed_vs_previous": policy_action_changed_vs_previous,
+            "requery_status": requery_status,
         }
         trace_rows.append(trace_row)
         proof_rows.append(
             {
                 "step_index": step_index,
                 "policy_action_recorded": bool(action.get("policy_action")),
+                "policy_action_from_wam_requery": policy_action_from_wam_requery,
                 "source_observation_frame": current_frame,
                 "wam_generated_frame": generated_frame,
                 "wam_generated_video": wam_output.get("generated_video_path"),
@@ -1804,6 +1933,10 @@ def run_oscar_isaac_closed_loop(
                 "sam3_completed": backend_status["sam3_completed"],
                 "depth_completed": backend_status["depth_completed"],
                 "da3_completed": backend_status["da3_completed"],
+                "safe_for_policy_requery": safe_for_policy_requery,
+                "policy_requeried_on_wam_observation": policy_requeried_on_wam_observation,
+                "policy_action_changed_vs_previous": policy_action_changed_vs_previous,
+                "requery_status": requery_status,
             }
         )
 
@@ -1821,6 +1954,11 @@ def run_oscar_isaac_closed_loop(
         and interpolate_route(route, 1.0)[0]
         and sum((a - b) ** 2 for a, b in zip(final_pose, target)) ** 0.5 < 0.25
     )
+    policy_observes_wam_generated_next_observation = bool(
+        learned_policy_requery_count >= 2 and policy_action_changed_count >= 1
+    )
+    if policy_endpoint is not None and not policy_observes_wam_generated_next_observation:
+        blockers.append("blocked_learned_policy_requery_not_proven")
     status = "completed" if trace_rows and not blockers else "blocked"
     feed_forward_verified = all(
         trace_rows[index]["source_observation_frame"]
@@ -1828,9 +1966,19 @@ def run_oscar_isaac_closed_loop(
         for index in range(1, len(trace_rows))
     )
     proof = {
-        "policy_source": "isaac_g1_policy.DeterministicWalkToTargetPolicy",
+        "policy_source": (
+            f"policy_endpoint:{_callable_label(policy_endpoint)}"
+            if policy_endpoint is not None
+            else "isaac_g1_policy.DeterministicWalkToTargetPolicy"
+        ),
+        "simulator_backend": "isaac",
         "selected_wam_backend": _string(wam_backend_id) or "oscar_wam",
         "isaac_policy_actions_recorded": len(action_history),
+        "learned_policy_requery_count": learned_policy_requery_count,
+        "policy_action_changed_count": policy_action_changed_count,
+        "policy_observes_wam_generated_next_observation": (
+            policy_observes_wam_generated_next_observation
+        ),
         "oscar_per_step_generation_calls": sum(
             1 for row in proof_rows if row.get("oscar_per_step_backend")
         ),
