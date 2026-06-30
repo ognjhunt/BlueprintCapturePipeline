@@ -27,7 +27,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 |---|----|------|--------|-----------|--------|------|
 | 1 | T1 | Isaac | S | — | `done (gpu-pending)` | Emit Isaac per-frame camera contract (intrinsics K + camera world pose) |
 | 2 | T3 | Isaac | S | — | `done (gpu-pending)` | Isaac native depth render pass (distance_to_image_plane annotator, co-registered with RGB) |
-| 3 | T2 | MuJoCo | M | — | `todo` | MuJoCo native render-pass depth buffer (co-registered per-camera depth) |
+| 3 | T2 | MuJoCo | M | — | `done` | MuJoCo native render-pass depth buffer (co-registered per-camera depth) |
 | 4 | T4 | Isaac | L | — | `todo` | Isaac closed loop: requery a pluggable LEARNED policy on the WAM-generated observation (replace the hardcoded deterministic stub) |
 | 5 | T5 | Isaac | S | T4 | `todo` | Isaac honest completion gating + in-loop drift reanchoring |
 | 6 | T6 | Isaac | M | T4 | `todo` | Isaac in-process manipulation success evaluator |
@@ -176,7 +176,7 @@ Hermetic, GPU-free: `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` (ex
 ### 3. T2 — MuJoCo native render-pass depth buffer (co-registered per-camera depth)
 
 - **Lane:** MuJoCo  |  **Effort:** M (medium)  |  **Depends on:** none
-- **Status:** todo
+- **Status:** done
 
 **Summary.** Today the MuJoCo WAM/VLA endpoint eval renders only flat-shaded RGB and exposes `supports_depth=False`; the sole "depth" is an analytic pinhole projection of a single known 3D point (`_project_world_xyz_to_camera_pixel`, line 6405), not a per-pixel render pass. Add a real `mujoco.Renderer.enable_depth_rendering`-backed depth pass co-registered with each policy RGB frame, persist a per-camera depth artifact + min/max metadata, and flip the declared schema flag to `supports_depth=True` so RGBD-capable policies and WAM perception can request it. Keep this strictly a MuJoCo-lane capability — do not let it claim Isaac/sensor depth proof.
 
@@ -205,13 +205,13 @@ Hermetic, GPU-free: `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` (ex
 
 **Acceptance criteria:**
 
-- [ ] `_declared_policy_observation_schema_for_wam_loop(None)` returns `supports_depth == True`, includes `"depth"` in `modalities`, and `"depth_frame_path"` in `fields` (was `supports_depth=False` with no depth modality before).
-- [ ] When `_capture_policy_visual_observation` runs with a renderer exposing `enable_depth_rendering`, the returned row has `available == True`, `depth_available == True`, `depth_is_render_pass == True`, a non-None `depth_frame_path` pointing to a file that exists on disk, and `depth_max_m > depth_min_m` (i.e. the depth pass is per-pixel/non-constant, NOT the single-point analytic projection in `_project_world_xyz_to_camera_pixel` at line 6405).
-- [ ] The depth pass is co-registered with RGB: depth `update_scene` uses the same `camera` object and the same renderer dimensions as the RGB pass, and the test asserts the depth array shape (H, W) equals the RGB frame's (H, W).
-- [ ] RGB capture and the secondary video PNG render path (lines 9054-9069) still produce RGB frames after the depth pass — the renderer is left in RGB mode after every `_capture_policy_visual_observation` call, proven by the test asserting the last `enable_depth_rendering(model, ...)` toggle was `False`.
-- [ ] On a renderer without `enable_depth_rendering`, the observation still returns `available == True` with RGB, `depth_available == False`, and blocker `policy_observation_depth_pass_unavailable` in `blockers` (graceful degradation, no hard failure).
-- [ ] The new/extended claim_boundary keys mark depth as MuJoCo simulator geometry, not physical-sensor or Isaac depth (`mujoco_render_pass_depth_is_simulator_geometry_not_physical_sensor` on the observation row / `mujoco_render_pass_depth_co_registered_with_rgb` on the schema); no field asserts cross-lane (Isaac) or physical-sensor depth proof.
-- [ ] `pytest tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py -q` passes with no GPU and no real `mujoco` module installed (confirmed `mujoco` raises ModuleNotFoundError locally; all MuJoCo tests stub it via `monkeypatch.setitem(sys.modules, 'mujoco', fake_mujoco)`).
+- [x] `_declared_policy_observation_schema_for_wam_loop(None)` returns `supports_depth == True`, includes `"depth"` in `modalities`, and `"depth_frame_path"` in `fields` (was `supports_depth=False` with no depth modality before).
+- [x] When `_capture_policy_visual_observation` runs with a renderer exposing `enable_depth_rendering`, the returned row has `available == True`, `depth_available == True`, `depth_is_render_pass == True`, a non-None `depth_frame_path` pointing to a file that exists on disk, and `depth_max_m > depth_min_m` (i.e. the depth pass is per-pixel/non-constant, NOT the single-point analytic projection in `_project_world_xyz_to_camera_pixel` at line 6405).
+- [x] The depth pass is co-registered with RGB: depth `update_scene` uses the same `camera` object and the same renderer dimensions as the RGB pass, and the test asserts the depth array shape (H, W) equals the RGB frame's (H, W).
+- [x] RGB capture and the secondary video PNG render path (lines 9054-9069) still produce RGB frames after the depth pass — the renderer is left in RGB mode after every `_capture_policy_visual_observation` call, proven by the test asserting the last `enable_depth_rendering(model, ...)` toggle was `False`.
+- [x] On a renderer without `enable_depth_rendering`, the observation still returns `available == True` with RGB, `depth_available == False`, and blocker `policy_observation_depth_pass_unavailable` in `blockers` (graceful degradation, no hard failure).
+- [x] The new/extended claim_boundary keys mark depth as MuJoCo simulator geometry, not physical-sensor or Isaac depth (`mujoco_render_pass_depth_is_simulator_geometry_not_physical_sensor` on the observation row / `mujoco_render_pass_depth_co_registered_with_rgb` on the schema); no field asserts cross-lane (Isaac) or physical-sensor depth proof.
+- [x] `pytest tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py -q` passes with no GPU and no real `mujoco` module installed (confirmed `mujoco` raises ModuleNotFoundError locally; all MuJoCo tests stub it via `monkeypatch.setitem(sys.modules, 'mujoco', fake_mujoco)`).
 
 **Verification:**
 

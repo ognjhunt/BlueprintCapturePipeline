@@ -2754,7 +2754,7 @@ def _declared_policy_observation_schema_for_wam_loop(
         "schema_version": "wam_policy_observation_adapter_declared_schema.v1",
         "policy_id": selected_candidate_id,
         "schema_id": OBSERVATION_SCHEMA_ID,
-        "modalities": ["rgb", "nominal_state"],
+        "modalities": ["rgb", "depth", "nominal_state"],
         "fields": [
             "schema_version",
             "camera_frame_path",
@@ -2770,15 +2770,18 @@ def _declared_policy_observation_schema_for_wam_loop(
             "contact_state",
             "route_task_state",
             "object_state",
+            "depth_frame_path",
             "allowed_action_schema",
             "safety_limits",
         ],
-        "supports_depth": False,
+        "supports_depth": True,
         "supports_masks": False,
         "supports_state": True,
         "claim_boundary": {
-            "policy_schema_does_not_request_harness_masks_or_depth_by_default": True,
+            "policy_schema_requests_mujoco_render_pass_depth_when_available": True,
+            "policy_schema_does_not_request_harness_masks_by_default": True,
             "harness_outputs_available_for_diagnostics_and_gating": True,
+            "mujoco_render_pass_depth_co_registered_with_rgb": True,
         },
     }
 
@@ -7689,6 +7692,45 @@ def _capture_policy_visual_observation(
         ensure_dir(frame_dir)
         frame_path = frame_dir / f"step_{int(step):06d}.jpg"
         image_module.fromarray(frame).save(frame_path, quality=85)
+        depth_available = False
+        depth_frame_path: str | None = None
+        depth_encoding: str | None = None
+        depth_min_m: float | None = None
+        depth_max_m: float | None = None
+        depth_is_render_pass = False
+        depth_blockers: list[str] = []
+        if hasattr(renderer, "enable_depth_rendering"):
+            try:
+                import numpy as np
+
+                depth_path = frame_dir / f"step_{int(step):06d}_depth.npy"
+                depth_mode_enabled = False
+                try:
+                    # The renderer is shared with review-video capture; always restore RGB mode so
+                    # later renderer.render() calls keep returning RGB frames.
+                    renderer.enable_depth_rendering(model, True)
+                    depth_mode_enabled = True
+                    renderer.update_scene(data, camera=camera)
+                    depth = renderer.render()
+                finally:
+                    if depth_mode_enabled:
+                        try:
+                            renderer.enable_depth_rendering(model, False)
+                        except Exception:  # noqa: BLE001
+                            pass
+                depth_arr = np.asarray(depth, dtype=np.float32)
+                np.save(depth_path, depth_arr)
+                finite = depth_arr[np.isfinite(depth_arr)]
+                depth_min_m = float(finite.min()) if finite.size else None
+                depth_max_m = float(finite.max()) if finite.size else None
+                depth_available = True
+                depth_frame_path = str(depth_path)
+                depth_encoding = "npy_float32_meters"
+                depth_is_render_pass = True
+            except Exception:
+                depth_blockers.append("policy_observation_depth_pass_unavailable")
+        else:
+            depth_blockers.append("policy_observation_depth_pass_unavailable")
         unitree_g1_sonic_state, unitree_g1_sonic_state_metadata = (
             _build_unitree_g1_sonic_state_from_mujoco(
                 mujoco_module=mujoco_module,
@@ -7710,6 +7752,12 @@ def _capture_policy_visual_observation(
             "image_width": int(frame.shape[1]),
             "image_height": int(frame.shape[0]),
             "image_encoding": "jpeg",
+            "depth_available": bool(depth_available),
+            "depth_frame_path": depth_frame_path,
+            "depth_encoding": depth_encoding,
+            "depth_min_m": depth_min_m,
+            "depth_max_m": depth_max_m,
+            "depth_is_render_pass": bool(depth_is_render_pass),
             "fixed_mujoco_camera_used": bool(fixed_camera_used),
             "fixed_mujoco_camera_name": FIXED_G1_CAMERA_NAMES.get(camera_id),
             "egocentric_sensor_view": camera_id in EGOCENTRIC_VIDEO_CAMERAS,
@@ -7718,13 +7766,14 @@ def _capture_policy_visual_observation(
             "unitree_g1_sonic_state": unitree_g1_sonic_state,
             "unitree_g1_sonic_state_source": "simulated_mujoco_qpos_joint_groups",
             "unitree_g1_sonic_state_metadata": unitree_g1_sonic_state_metadata,
-            "blockers": [],
+            "blockers": depth_blockers,
             "claim_boundary": {
                 "simulated_camera_view": True,
                 "physical_robot_sensor_proof": False,
                 "visual_observation_path_can_feed_vla_policy_endpoint": True,
                 "unitree_g1_sonic_state_is_simulated_mujoco_state": True,
                 "unitree_g1_sonic_state_is_physical_proprioception": False,
+                "mujoco_render_pass_depth_is_simulator_geometry_not_physical_sensor": True,
             },
         }
     except Exception as exc:

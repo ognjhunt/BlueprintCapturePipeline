@@ -1012,7 +1012,9 @@ Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload
     )
     latest_adapter = adapter_report["latest_policy_adapter_report"]
     assert "objects" in latest_adapter["fields_withheld_due_to_contract"]
-    assert "depth_estimates" in latest_adapter["fields_withheld_due_to_contract"]
+    assert "depth_estimates" not in latest_adapter["fields_withheld_due_to_contract"]
+    assert "depth_estimates" in latest_adapter["fields_supplied_to_policy"]
+    assert "depth_estimates" in latest_adapter["adapted_policy_observation"]
     assert "objects" not in latest_adapter["adapted_policy_observation"]
     harness_checks = json.loads(Path(loop["wam_perception_harness_checks"]).read_text(encoding="utf-8"))
     assert harness_checks["forward_inverse_consistency_proven"] is False
@@ -2267,6 +2269,127 @@ def test_wam_vla_policy_action_normalization_endpoint_and_scoring(
         )
         assert success is expected_success
         assert isinstance(labels, list)
+
+
+def test_policy_visual_observation_depth_pass_writes_npy_and_restores_rgb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import numpy as np
+
+    schema = lane._declared_policy_observation_schema_for_wam_loop(None)
+    assert schema["supports_depth"] is True
+    assert "depth" in schema["modalities"]
+    assert "depth_frame_path" in schema["fields"]
+    assert schema["claim_boundary"]["mujoco_render_pass_depth_co_registered_with_rgb"] is True
+
+    monkeypatch.setattr(lane, "_has_fixed_camera", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(lane, "_camera_for_render", lambda *_args, **_kwargs: "fake-camera")
+    monkeypatch.setattr(
+        lane,
+        "_build_unitree_g1_sonic_state_from_mujoco",
+        lambda **_kwargs: (
+            {"joint_positions": [0.0]},
+            {"complete": True},
+        ),
+    )
+
+    class FakeImageModule:
+        @staticmethod
+        def fromarray(_frame: object) -> "FakeImageModule":
+            return FakeImageModule()
+
+        def save(self, path: Path, **_kwargs: object) -> None:
+            Path(path).write_bytes(b"jpg")
+
+    class DepthRenderer:
+        def __init__(self) -> None:
+            self.depth_mode = False
+            self.toggles: list[bool] = []
+            self.update_calls: list[tuple[bool, object]] = []
+
+        def enable_depth_rendering(self, _model: object, flag: bool) -> None:
+            self.depth_mode = bool(flag)
+            self.toggles.append(bool(flag))
+
+        def update_scene(self, _data: object, *, camera: object) -> None:
+            self.update_calls.append((self.depth_mode, camera))
+
+        def render(self):
+            if self.depth_mode:
+                return np.array([[1.0, 1.5], [2.0, 3.0]], dtype=np.float32)
+            return np.zeros((2, 2, 3), dtype=np.uint8)
+
+    renderer = DepthRenderer()
+    row = lane._capture_policy_visual_observation(
+        job_dir=tmp_path,
+        renderer=renderer,
+        image_module=FakeImageModule,
+        mujoco_module=SimpleNamespace(),
+        model=object(),
+        data=SimpleNamespace(),
+        run={
+            "episode_id": "episode_0001",
+            "scenario_eval_run_id": "scenario-run-1",
+            "task_id": "task-1",
+            "spawn_id": "spawn-1",
+        },
+        step=3,
+        camera_id="head_pov",
+        root_position=(0.0, 0.0, 0.79),
+        yaw=0.0,
+        root_qpos=0,
+    )
+
+    assert row["available"] is True
+    assert row["depth_available"] is True
+    assert row["depth_is_render_pass"] is True
+    assert row["depth_encoding"] == "npy_float32_meters"
+    assert row["depth_frame_path"] is not None
+    depth_path = Path(row["depth_frame_path"])
+    assert depth_path.exists()
+    depth = np.load(depth_path)
+    assert depth.shape == (row["image_height"], row["image_width"])
+    assert row["depth_max_m"] > row["depth_min_m"]
+    assert renderer.update_calls == [(False, "fake-camera"), (True, "fake-camera")]
+    assert renderer.toggles[-1] is False
+    assert (
+        row["claim_boundary"][
+            "mujoco_render_pass_depth_is_simulator_geometry_not_physical_sensor"
+        ]
+        is True
+    )
+
+    class RgbOnlyRenderer:
+        def update_scene(self, _data: object, *, camera: object) -> None:
+            return None
+
+        def render(self):
+            return np.zeros((2, 2, 3), dtype=np.uint8)
+
+    no_depth_row = lane._capture_policy_visual_observation(
+        job_dir=tmp_path,
+        renderer=RgbOnlyRenderer(),
+        image_module=FakeImageModule,
+        mujoco_module=SimpleNamespace(),
+        model=object(),
+        data=SimpleNamespace(),
+        run={
+            "episode_id": "episode_0002",
+            "scenario_eval_run_id": "scenario-run-2",
+            "task_id": "task-2",
+            "spawn_id": "spawn-2",
+        },
+        step=4,
+        camera_id="head_pov",
+        root_position=(0.0, 0.0, 0.79),
+        yaw=0.0,
+        root_qpos=0,
+    )
+
+    assert no_depth_row["available"] is True
+    assert no_depth_row["depth_available"] is False
+    assert no_depth_row["depth_frame_path"] is None
+    assert "policy_observation_depth_pass_unavailable" in no_depth_row["blockers"]
 
 
 def test_wam_vla_contact_observation_camera_and_media_helpers(
