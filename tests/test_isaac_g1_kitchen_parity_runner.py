@@ -2192,6 +2192,267 @@ def test_physics_contact_summary_aggregates_integration_verdicts() -> None:
     assert summary["verdict_counts"]["stable"] == 2
 
 
+def test_pd_leg_joint_efforts_matches_mujoco_law() -> None:
+    tau_static = M._pd_leg_joint_efforts([0.1], [0.0], [0.0], kp=100.0, kd=2.0)
+    tau_damped = M._pd_leg_joint_efforts([0.1], [0.0], [1.0], kp=100.0, kd=2.0)
+
+    assert tau_static.tolist() == pytest.approx([10.0])
+    assert tau_damped.tolist() == pytest.approx([8.0])
+    assert str(tau_static.dtype) == "float32"
+
+
+def test_author_target_contact_material_scopes_authoring_to_target(monkeypatch) -> None:
+    target_path = "/World/Kitchen/Sink054"
+    target_mutations: set[str] = set()
+    material_values: dict[str, float] = {}
+    bind_purposes: list[str] = []
+
+    class _Attr:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def Set(self, value):
+            material_values[self.name] = value
+
+    class _Prim:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def IsValid(self) -> bool:
+            return True
+
+        def GetPath(self):
+            return self.path
+
+    class _Stage:
+        def __init__(self) -> None:
+            self.prim = _Prim(target_path)
+            self.material_paths: list[str] = []
+
+        def GetPrimAtPath(self, path: str):
+            return self.prim if path == target_path else None
+
+    class _MassAPI:
+        def __init__(self, prim) -> None:
+            self.prim = prim
+
+        @staticmethod
+        def Apply(prim):
+            target_mutations.add(str(prim.GetPath()))
+            return _MassAPI(prim)
+
+        def CreateMassAttr(self, _value=None):
+            return _Attr("mass")
+
+        def CreateDensityAttr(self, _value=None):
+            return _Attr("density")
+
+    class _MaterialAPI:
+        @staticmethod
+        def Apply(_prim):
+            return _MaterialAPI()
+
+        def CreateStaticFrictionAttr(self, _value=None):
+            return _Attr("static_friction")
+
+        def CreateDynamicFrictionAttr(self, _value=None):
+            return _Attr("dynamic_friction")
+
+        def CreateRestitutionAttr(self, _value=None):
+            return _Attr("restitution")
+
+    class _MeshCollisionAPI:
+        def __init__(self, prim) -> None:
+            self.prim = prim
+
+        @staticmethod
+        def Apply(prim):
+            target_mutations.add(str(prim.GetPath()))
+            return _MeshCollisionAPI(prim)
+
+        def CreateApproximationAttr(self):
+            return _Attr("approximation")
+
+    class _MaterialObject:
+        def __init__(self, prim) -> None:
+            self.prim = prim
+
+        def GetPrim(self):
+            return self.prim
+
+    class _Material:
+        @staticmethod
+        def Define(stage, path: str):
+            stage.material_paths.append(path)
+            return _MaterialObject(_Prim(path))
+
+    class _BindingAPI:
+        def __init__(self, prim) -> None:
+            self.prim = prim
+
+        @staticmethod
+        def Apply(prim):
+            target_mutations.add(str(prim.GetPath()))
+            return _BindingAPI(prim)
+
+        def Bind(self, _material, materialPurpose=None, purpose=None):
+            bind_purposes.append(str(materialPurpose or purpose))
+
+    fake_usd_physics = types.SimpleNamespace(
+        MassAPI=_MassAPI,
+        MaterialAPI=_MaterialAPI,
+        MeshCollisionAPI=_MeshCollisionAPI,
+        Tokens=types.SimpleNamespace(convexDecomposition="convexDecomposition"),
+    )
+    fake_usd_shade = types.SimpleNamespace(
+        Material=_Material,
+        MaterialBindingAPI=_BindingAPI,
+        Tokens=types.SimpleNamespace(physics="physics"),
+    )
+    fake_pxr = types.SimpleNamespace(UsdPhysics=fake_usd_physics, UsdShade=fake_usd_shade)
+    monkeypatch.setitem(sys.modules, "pxr", fake_pxr)
+    monkeypatch.setitem(sys.modules, "pxr.UsdPhysics", fake_usd_physics)
+    monkeypatch.setitem(sys.modules, "pxr.UsdShade", fake_usd_shade)
+
+    diag = M._author_target_contact_material(
+        _Stage(),
+        target_path,
+        friction=0.7,
+        restitution=0.1,
+        mass=3.0,
+        density=12.0,
+    )
+
+    assert diag["status"] == "authored"
+    assert diag["target_prim_path"] == target_path
+    assert set(diag["mutated_prim_paths"]) == {target_path}
+    assert target_mutations == {target_path}
+    assert material_values["mass"] == pytest.approx(3.0)
+    assert material_values["density"] == pytest.approx(12.0)
+    assert material_values["static_friction"] == pytest.approx(0.7)
+    assert material_values["dynamic_friction"] == pytest.approx(0.7)
+    assert material_values["restitution"] == pytest.approx(0.1)
+    assert material_values["approximation"] == "convexDecomposition"
+    assert bind_purposes == ["physics"]
+    assert diag["bind_purpose"] == "physics"
+
+
+def test_effort_drive_args_and_result_defaults() -> None:
+    defaults = M.build_arg_parser().parse_args(["--out-dir", "out"])
+    flagged = M.build_arg_parser().parse_args([
+        "--out-dir",
+        "out",
+        "--effort-drive",
+        "--author-target-contact-material",
+    ])
+
+    assert defaults.effort_drive is False
+    assert defaults.author_target_contact_material is False
+    assert flagged.effort_drive is True
+    assert flagged.author_target_contact_material is True
+    assert M.run_scenarios.__kwdefaults__["effort_drive"] is False
+    assert M.run_scenarios.__kwdefaults__["torque_drive"] is False
+    assert M.run_scenarios.__kwdefaults__["author_target_contact_material"] is False
+
+    res = M.build_result(
+        scenarios=[{"scenario_id": "s0"}],
+        outcomes=[{"task_success": True}],
+        policy_id="p",
+        kitchen_usd="k.usd",
+        g1_usd="g.usd",
+        blockers=[],
+    )
+    assert res["actuator_output_mode"] == "position_target"
+    assert "authored_target_contact_material" not in res
+
+
+def test_effort_drive_fails_closed_without_tensor_view(monkeypatch) -> None:
+    poses = iter(
+        [
+            {"available": True, "position_xyz": [0.0, 0.0, 1.0]},
+            {"available": True, "position_xyz": [0.0, 0.0, 1.0]},
+        ]
+    )
+    monkeypatch.setattr(M, "_safe_usd_root_world_pose", lambda *_args, **_kwargs: next(poses))
+    monkeypatch.setattr(M, "_enable_contact_reports", lambda *_args, **_kwargs: {"status": "ok"})
+    monkeypatch.setattr(M, "_contact_report_records", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(M, "_sim_step", lambda *_args, **_kwargs: None)
+
+    report = M._settle_dynamic_standing_contacts(
+        stage=object(),
+        art_ctx={"ctx": object(), "art": None, "gravity_z": -9.81},
+        robot_prim_path="/World/G1",
+        root_pose=(0.0, 0.0, 1.0),
+        yaw=0.0,
+        phase=0.0,
+        moving=False,
+        settle_steps=1,
+        scenario_id="scenario-effort-fallback",
+        effort_drive=True,
+    )
+
+    assert report["status"] == "completed"
+    assert report["joint_command_mode"] == "usd_physx_articulation_default_drives_no_tensor_view"
+    assert report["actuator_output_mode"] == "position_target_fallback"
+    assert "effort_drive_requested_without_tensor_view" in report["effort_drive_blockers"]
+
+
+def test_effort_drive_uses_joint_efforts_with_live_tensor_view(monkeypatch) -> None:
+    class _Art:
+        def __init__(self) -> None:
+            self.efforts: list[list[float]] = []
+
+        def get_joint_positions(self):
+            return [0.0]
+
+        def get_joint_velocities(self):
+            return [0.0]
+
+    art = _Art()
+    poses = iter(
+        [
+            {"available": True, "position_xyz": [0.0, 0.0, 1.0]},
+            {"available": True, "position_xyz": [0.0, 0.0, 1.0]},
+        ]
+    )
+    monkeypatch.setattr(M, "_safe_articulation_world_pose", lambda *_args, **_kwargs: next(poses))
+    monkeypatch.setattr(M, "_enable_contact_reports", lambda *_args, **_kwargs: {"status": "ok"})
+    monkeypatch.setattr(M, "_contact_report_records", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(M, "_sim_step", lambda *_args, **_kwargs: None)
+
+    def fake_apply(fake_art, efforts):
+        fake_art.efforts.append([float(v) for v in efforts])
+        return "articulation_action_joint_efforts"
+
+    monkeypatch.setattr(M, "_apply_articulation_joint_efforts", fake_apply)
+
+    report = M._settle_dynamic_standing_contacts(
+        stage=object(),
+        art_ctx={
+            "ctx": object(),
+            "art": art,
+            "gravity_z": -9.81,
+            "default": [0.0],
+            "dof_index": {},
+        },
+        robot_prim_path="/World/G1",
+        root_pose=(0.0, 0.0, 1.0),
+        yaw=0.0,
+        phase=0.0,
+        moving=False,
+        settle_steps=1,
+        scenario_id="scenario-effort",
+        effort_drive=True,
+        effort_kp=100.0,
+        effort_kd=2.0,
+    )
+
+    assert report["joint_command_mode"] == "articulation_action_joint_efforts"
+    assert report["actuator_output_mode"] == "effort"
+    assert report["effort_drive_blockers"] == []
+    assert art.efforts
+
+
 def test_build_result_adds_gravity_integration_boundary_only_when_integrated() -> None:
     integrated_report = {
         "scenario_id": "sink_stand",

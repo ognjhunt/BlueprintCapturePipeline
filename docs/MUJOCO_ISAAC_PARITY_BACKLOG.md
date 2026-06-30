@@ -37,7 +37,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 10 | T8 | MuJoCo | M | — | `done` | MuJoCo segmentation render pass |
 | 11 | T9 | Isaac | M | — | `done (gpu-pending)` | Isaac native instance/semantic segmentation render pass |
 | 12 | T13 | Isaac | M | — | `done (gpu-pending)` | Isaac gravity-on dynamic stepping: turn the existing settle loop into a physics-proof path with displacement + fall verdict |
-| 13 | T14 | Isaac | L | T13 | `todo` | Isaac torque/effort drive (PD law port) + authored MassAPI/PhysicsMaterial on the resolved target only |
+| 13 | T14 | Isaac | L | T13 | `done (gpu-pending)` | Isaac torque/effort drive (PD law port) + authored MassAPI/PhysicsMaterial on the resolved target only |
 | 14 | T10 | MuJoCo | M | — | `todo` | MuJoCo convex/OBB collision proxies (flag-gated) |
 | 15 | T15 | Shared | L | — | `todo` | Provider-runtime convergence (shared race + git-gate + warm session + runtime preflight) |
 
@@ -785,7 +785,8 @@ Hermetic (no GPU): `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` must
 ### 13. T14 — Isaac torque/effort drive (PD law port) + authored MassAPI/PhysicsMaterial on the resolved target only
 
 - **Lane:** Isaac  |  **Effort:** L (large)  |  **Depends on:** T13
-- **Status:** todo
+- **Status:** done (gpu-pending)
+- **GPU-pending:** A real Isaac/RTX run with a G1 USD whose PhysX tensor view survives joint effort drive/read must confirm non-trivial force-integrated `actuator_output_mode == "effort"` standing-contact behavior under gravity; hermetic tests cover the PD law, target-only material authoring, default-off plumbing, live-fake effort mode, and fail-closed fallback.
 
 **Summary.** The Isaac kitchen-parity runner drives the G1 with position targets only (`art.apply_action(ArticulationAction(joint_positions=...))` at run_isaac_g1_kitchen_parity_eval.py:2522) and authors no friction/mass/restitution on interaction objects, so an "Isaac pass" carries no force-level contact realism — the gap-analysis matrix (docs/MUJOCO_VS_ISAAC_LANE_GAP_ANALYSIS.md:54, Priority 4 :125-127) flags torque/effort control and authored contact material as Isaac-behind-MuJoCo. Add an effort/torque drive that ports MuJoCo's verified PD law `tau=(target-q)*kp + (0-dq)*kd` (mujoco_g1_wam_vla_policy_endpoint_eval.py:7217) emitted as `ArticulationAction(joint_efforts=...)`, gated behind the existing `physics_articulation_drive` opt-in, and author `UsdPhysics.MassAPI` + a PhysicsMaterial + per-prim `convexDecomposition` on the *resolved task-target prim only* (the prim_path already resolved in `_resolve_task_target_from_stage`), keeping the default position-target/boundingCube path untouched so backends stay swappable.
 
@@ -819,13 +820,13 @@ Hermetic (no GPU): `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` must
 
 **Acceptance criteria:**
 
-- [ ] `_pd_leg_joint_efforts(target_q=[0.1], q=[0.0], dq=[0.0], kp=100.0, kd=2.0)` returns approximately [10.0]; with dq=[1.0] it returns approximately [8.0] — exactly matching the MuJoCo law `(target-q)*kp + (0-dq)*kd` (mujoco_g1_wam_vla_policy_endpoint_eval.py:7217).
-- [ ] When `effort_drive=True` and the articulation tensor view is live, `_settle_dynamic_standing_contacts` returns a report whose `joint_command_mode` is `articulation_action_joint_efforts` (or `direct_joint_effort_set`) and `actuator_output_mode == 'effort'`; when `effort_drive=True` but tensor_view_used is False (art is None) it fails closed (records a blocker and falls back to the position path) without raising; when False the report is byte-identical to today's position-target settle (`joint_command_mode` starts with `articulation_action_position_targets`).
-- [ ] `_author_target_contact_material(stage, target_prim_path, ...)` applies MassAPI + a PhysicsMaterial bound with the `physics` material purpose (friction+restitution) + `convexDecomposition` approximation to exactly the one resolved target prim and to NO other prim (verified by a call-recording fake stage: the set of mutated prim paths == {target_prim_path} and bind_purpose == 'physics').
-- [ ] With `--author-target-contact-material` off, no MassAPI/PhysicsMaterial is authored and the global collision approximation path (`_force_cheap_collision`, boundingCube default at 5066-5085) is unchanged — assert no extra prims mutated.
-- [ ] Both `--effort-drive` and `--author-target-contact-material` default to False in the parsed args, and `run_scenarios` defaults leave `actuator_output_mode` == position-target, so the existing default render/settle path is unaffected.
-- [ ] The result JSON (from `build_result`, lines 798-847) gains `actuator_output_mode` and (when active) `authored_target_contact_material`, and the `proof_boundary` string (807-824) for an effort-drive run names torque/effort PD drive while still NOT claiming learned balance, task success, or MuJoCo-equivalent contact-force/physics evidence, and NOT reusing the existing kinematic 'parity with the MuJoCo preview controller' phrasing as physics equivalence (Isaac-only marker preserved).
-- [ ] `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` passes including the new cases, and the runner still imports without isaacsim/pxr at module load (test_runner_imports_without_isaacsim stays green; today the suite is 82 passed / 1 skipped / 83 collected).
+- [x] `_pd_leg_joint_efforts(target_q=[0.1], q=[0.0], dq=[0.0], kp=100.0, kd=2.0)` returns approximately [10.0]; with dq=[1.0] it returns approximately [8.0] — exactly matching the MuJoCo law `(target-q)*kp + (0-dq)*kd` (mujoco_g1_wam_vla_policy_endpoint_eval.py:7217).
+- [x] When `effort_drive=True` and the articulation tensor view is live, `_settle_dynamic_standing_contacts` returns a report whose `joint_command_mode` is `articulation_action_joint_efforts` (or `direct_joint_effort_set`) and `actuator_output_mode == 'effort'`; when `effort_drive=True` but tensor_view_used is False (art is None) it fails closed (records a blocker and falls back to the position path) without raising; when False the report is byte-identical to today's position-target settle (`joint_command_mode` starts with `articulation_action_position_targets`).
+- [x] `_author_target_contact_material(stage, target_prim_path, ...)` applies MassAPI + a PhysicsMaterial bound with the `physics` material purpose (friction+restitution) + `convexDecomposition` approximation to exactly the one resolved target prim and to NO other prim (verified by a call-recording fake stage: the set of mutated prim paths == {target_prim_path} and bind_purpose == 'physics').
+- [x] With `--author-target-contact-material` off, no MassAPI/PhysicsMaterial is authored and the global collision approximation path (`_force_cheap_collision`, boundingCube default at 5066-5085) is unchanged — assert no extra prims mutated.
+- [x] Both `--effort-drive` and `--author-target-contact-material` default to False in the parsed args, and `run_scenarios` defaults leave `actuator_output_mode` == position-target, so the existing default render/settle path is unaffected.
+- [x] The result JSON (from `build_result`, lines 798-847) gains `actuator_output_mode` and (when active) `authored_target_contact_material`, and the `proof_boundary` string (807-824) for an effort-drive run names torque/effort PD drive while still NOT claiming learned balance, task success, or MuJoCo-equivalent contact-force/physics evidence, and NOT reusing the existing kinematic 'parity with the MuJoCo preview controller' phrasing as physics equivalence (Isaac-only marker preserved).
+- [x] `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` passes including the new cases, and the runner still imports without isaacsim/pxr at module load (test_runner_imports_without_isaacsim stays green; today the suite is 82 passed / 1 skipped / 83 collected).
 
 **Verification:**
 

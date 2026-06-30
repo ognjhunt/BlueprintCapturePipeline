@@ -55,6 +55,8 @@ DRY_RENDER_NOT_RENDERED_NOTE = (
 # robot footprint half-extent (m) for the PhysX overlap probe (approx G1 standing bbox)
 ROBOT_FOOTPRINT_HALF_EXTENT = (0.28, 0.28, 0.62)
 ROBOT_PELVIS_HEIGHT_M = 0.79
+DEFAULT_ISAAC_LEG_KP = 100.0
+DEFAULT_ISAAC_LEG_KD = 2.0
 ROOT_FALL_VERTICAL_DROP_M = 0.25
 ROOT_DRIFT_VERTICAL_DROP_M = 0.05
 ROOT_DRIFT_DISPLACEMENT_M = 0.10
@@ -802,7 +804,9 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
                  policy_id: str, kitchen_usd: str, g1_usd: str | None,
                  blockers: Sequence[str],
                  physics_articulation_contact_reports: Sequence[Mapping[str, Any]] | None = None,
-                 segmentation_summary: Mapping[str, Any] | None = None) -> dict:
+                 segmentation_summary: Mapping[str, Any] | None = None,
+                 actuator_output_mode: str | None = None,
+                 authored_target_contact_material: Any | None = None) -> dict:
     passed = sum(1 for o in outcomes if o.get("task_success"))
     status = "completed" if outcomes and not blockers else "blocked"
     contact_summary = summarize_physics_articulation_contact_reports(
@@ -833,6 +837,25 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
             "events were not observed, so this does not prove support contact, full dynamic "
             "locomotion, learned balance control, or deployment readiness."
         )
+    contact_reports = list(physics_articulation_contact_reports or [])
+    reported_actuator_modes = [
+        str(r.get("actuator_output_mode"))
+        for r in contact_reports
+        if r.get("actuator_output_mode")
+    ]
+    if actuator_output_mode is None:
+        if "effort" in reported_actuator_modes:
+            actuator_output_mode = "effort"
+        elif "position_target_fallback" in reported_actuator_modes:
+            actuator_output_mode = "position_target_fallback"
+        else:
+            actuator_output_mode = "position_target"
+    if actuator_output_mode == "effort":
+        proof_boundary += (
+            " Effort-drive samples use a physics torque/effort PD drive ported from the MuJoCo "
+            "law; this is not learned balance control, not task success proof, not "
+            "MuJoCo-equivalent contact-force proof, and not safety validation."
+        )
     camera_contract_frames = sum(
         int(o.get("per_frame_camera_contract_frames") or 0) for o in outcomes
     )
@@ -853,6 +876,7 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
         "per_frame_camera_contract_emitted": camera_contract_frames > 0,
         "per_frame_camera_contract_frames": camera_contract_frames,
         "per_frame_camera_contract_available_intrinsics_frames": camera_contract_intrinsics_frames,
+        "actuator_output_mode": actuator_output_mode,
         "blockers": list(blockers),
         "scenarios": [
             {"scenario_id": s.get("scenario_id"), **o}
@@ -860,10 +884,12 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
         ],
         "proof_boundary": proof_boundary,
     }
+    if authored_target_contact_material is not None:
+        result["authored_target_contact_material"] = authored_target_contact_material
     if contact_summary["scenario_count"] > 0:
         result["physics_articulation_standing_contact_summary"] = contact_summary
         result["physics_articulation_standing_contact_reports"] = [
-            dict(report) for report in physics_articulation_contact_reports or []
+            dict(report) for report in contact_reports
         ]
     if segmentation_summary is not None:
         seg_summary = dict(segmentation_summary)
@@ -2569,6 +2595,26 @@ def _joint_targets_for_pose(
     return targets
 
 
+def _pd_leg_joint_efforts(
+    target_q,
+    q,
+    dq,
+    *,
+    kp=DEFAULT_ISAAC_LEG_KP,
+    kd=DEFAULT_ISAAC_LEG_KD,
+):
+    """Port the MuJoCo PD effort law without importing MuJoCo configuration."""
+    import numpy as np  # type: ignore
+
+    target_arr = np.asarray(target_q, dtype="float32")
+    q_arr = np.asarray(q, dtype="float32")
+    dq_arr = np.asarray(dq, dtype="float32")
+    kp_arr = np.asarray(kp, dtype="float32")
+    kd_arr = np.asarray(kd, dtype="float32")
+    tau = (target_arr - q_arr) * kp_arr + (np.zeros_like(dq_arr) - dq_arr) * kd_arr
+    return np.asarray(tau, dtype="float32")
+
+
 def _apply_articulation_joint_targets(art, targets):
     """Prefer Isaac's articulation action path, falling back to direct joint state writes on older
     worker images. The return value is persisted in the contact report for auditability."""
@@ -2579,6 +2625,17 @@ def _apply_articulation_joint_targets(art, targets):
     except Exception:  # noqa: BLE001
         art.set_joint_positions(targets)
         return "direct_joint_state_position_set"
+
+
+def _apply_articulation_joint_efforts(art, efforts):
+    """Apply generalized joint efforts, with a direct setter fallback for older worker images."""
+    try:
+        from isaacsim.core.utils.types import ArticulationAction  # type: ignore
+        art.apply_action(ArticulationAction(joint_efforts=efforts))
+        return "articulation_action_joint_efforts"
+    except Exception:  # noqa: BLE001
+        art.set_joint_efforts(efforts)
+        return "direct_joint_effort_set"
 
 
 def _drive_g1_walk(
@@ -3213,6 +3270,9 @@ def _settle_dynamic_standing_contacts(
     manipulation_ready: bool = False,
     manipulation_reach_arm: str = "both",
     root_pose_seeded_before_tensor_view: bool = True,
+    effort_drive: bool = False,
+    effort_kp=DEFAULT_ISAAC_LEG_KP,
+    effort_kd=DEFAULT_ISAAC_LEG_KD,
 ) -> dict[str, Any]:
     """Run a bounded PhysX standing/contact settle without mutating the G1 USD xform after the
     articulation tensor view exists.
@@ -3226,6 +3286,11 @@ def _settle_dynamic_standing_contacts(
     tensor_view_used = art is not None
     targets = None
     command_mode = "usd_physx_articulation_default_drives_no_tensor_view"
+    actuator_output_mode = "position_target"
+    effort_blockers: list[str] = []
+    if effort_drive and not tensor_view_used:
+        actuator_output_mode = "position_target_fallback"
+        effort_blockers.append("effort_drive_requested_without_tensor_view")
     if tensor_view_used:
         targets = _joint_targets_for_pose(
             art_ctx["default"],
@@ -3238,7 +3303,25 @@ def _settle_dynamic_standing_contacts(
         # Do not call art.set_world_pose() here. On the official G1 USD that invalidates the
         # PhysX tensor view with the same failure as mutating the USD root xform after initialization.
         # Dynamic-standing mode pre-seeds the root USD transform before the physics context is played.
-        command_mode = _apply_articulation_joint_targets(art, targets)
+        if effort_drive:
+            try:
+                command_mode = _apply_articulation_joint_efforts(
+                    art,
+                    _pd_leg_joint_efforts(
+                        targets,
+                        art.get_joint_positions(),
+                        art.get_joint_velocities(),
+                        kp=effort_kp,
+                        kd=effort_kd,
+                    ),
+                )
+                actuator_output_mode = "effort"
+            except Exception as exc:  # noqa: BLE001
+                effort_blockers.append(f"effort_drive_initial_command_failed:{exc!r}")
+                command_mode = _apply_articulation_joint_targets(art, targets)
+                actuator_output_mode = "position_target_fallback"
+        else:
+            command_mode = _apply_articulation_joint_targets(art, targets)
     before = (
         _safe_articulation_world_pose(art)
         if tensor_view_used else _safe_usd_root_world_pose(stage, robot_prim_path)
@@ -3250,7 +3333,25 @@ def _settle_dynamic_standing_contacts(
     for _ in range(max(0, int(settle_steps))):
         try:
             if tensor_view_used:
-                _apply_articulation_joint_targets(art, targets)
+                if effort_drive and not effort_blockers:
+                    try:
+                        command_mode = _apply_articulation_joint_efforts(
+                            art,
+                            _pd_leg_joint_efforts(
+                                targets,
+                                art.get_joint_positions(),
+                                art.get_joint_velocities(),
+                                kp=effort_kp,
+                                kd=effort_kd,
+                            ),
+                        )
+                        actuator_output_mode = "effort"
+                    except Exception as exc:  # noqa: BLE001
+                        effort_blockers.append(f"effort_drive_step_command_failed:{exc!r}")
+                        command_mode = _apply_articulation_joint_targets(art, targets)
+                        actuator_output_mode = "position_target_fallback"
+                else:
+                    _apply_articulation_joint_targets(art, targets)
             _sim_step(ctx, render=False)
             executed += 1
             if len(records) < 80:
@@ -3281,7 +3382,7 @@ def _settle_dynamic_standing_contacts(
     else:
         dynamic_settle_verdict = "stable"
     support_records = [r for r in records if _is_support_contact(r)]
-    return {
+    report = {
         "schema_version": "isaac_g1_physics_articulation_standing_contact_report.v1",
         "status": "completed" if executed == max(0, int(settle_steps)) and not errors else "blocked",
         "scenario_id": scenario_id,
@@ -3314,6 +3415,24 @@ def _settle_dynamic_standing_contacts(
             "deployment readiness."
         ),
     }
+    if effort_drive:
+        def _jsonable_gain(value):  # noqa: ANN001
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                return [float(v) for v in value]
+            try:
+                return float(value)
+            except Exception:  # noqa: BLE001
+                return repr(value)
+
+        report.update({
+            "actuator_output_mode": actuator_output_mode,
+            "pd_gains": {
+                "kp": _jsonable_gain(effort_kp),
+                "kd": _jsonable_gain(effort_kd),
+            },
+            "effort_drive_blockers": effort_blockers,
+        })
+    return report
 
 
 def _overlap_probe(robot_prim_path: str, ground_prim_path: str = "/World/GroundPlane"):
@@ -5295,6 +5414,79 @@ def _force_cheap_collision(stage, approximation: str = "boundingCube") -> int:
     return n
 
 
+def _author_target_contact_material(
+    stage,
+    target_prim_path,
+    *,
+    friction: float = 0.85,
+    restitution: float = 0.02,
+    mass: float | None = 2.0,
+    density: float | None = None,
+) -> dict[str, Any]:
+    """Best-effort contact material authoring scoped to the resolved task target prim only."""
+    diag: dict[str, Any] = {
+        "schema_version": "isaac_target_contact_material_authoring.v1",
+        "status": "blocked",
+        "target_prim_path": str(target_prim_path or ""),
+        "mass_kg": mass,
+        "density_kg_per_m3": density,
+        "static_friction": float(friction),
+        "dynamic_friction": float(friction),
+        "restitution": float(restitution),
+        "approximation": "convexDecomposition",
+        "bind_purpose": "physics",
+        "mutated_prim_paths": [],
+        "blockers": [],
+    }
+    try:
+        from pxr import UsdPhysics, UsdShade  # type: ignore
+
+        prim = stage.GetPrimAtPath(str(target_prim_path))
+        if not prim or (hasattr(prim, "IsValid") and not prim.IsValid()):
+            diag["blockers"].append("target_prim_unavailable")
+            return diag
+
+        mutated_paths = {str(target_prim_path)}
+        mass_api = UsdPhysics.MassAPI.Apply(prim)
+        if mass is not None and hasattr(mass_api, "CreateMassAttr"):
+            mass_api.CreateMassAttr(float(mass)).Set(float(mass))
+        if density is not None and hasattr(mass_api, "CreateDensityAttr"):
+            mass_api.CreateDensityAttr(float(density)).Set(float(density))
+
+        material_path = (
+            f"/World/BlueprintPhysicsMaterials/"
+            f"{_safe_prim_segment(str(target_prim_path).strip('/').replace('/', '_'))}_contact"
+        )
+        material = UsdShade.Material.Define(stage, material_path)
+        material_prim = material.GetPrim() if hasattr(material, "GetPrim") else material
+        material_api = UsdPhysics.MaterialAPI.Apply(material_prim)
+        if hasattr(material_api, "CreateStaticFrictionAttr"):
+            material_api.CreateStaticFrictionAttr(float(friction)).Set(float(friction))
+        if hasattr(material_api, "CreateDynamicFrictionAttr"):
+            material_api.CreateDynamicFrictionAttr(float(friction)).Set(float(friction))
+        if hasattr(material_api, "CreateRestitutionAttr"):
+            material_api.CreateRestitutionAttr(float(restitution)).Set(float(restitution))
+
+        mesh_api = UsdPhysics.MeshCollisionAPI.Apply(prim)
+        mesh_api.CreateApproximationAttr().Set(UsdPhysics.Tokens.convexDecomposition)
+
+        bind_api = UsdShade.MaterialBindingAPI.Apply(prim)
+        physics_purpose = getattr(getattr(UsdShade, "Tokens", object()), "physics", "physics")
+        try:
+            bind_api.Bind(material, materialPurpose=physics_purpose)
+        except TypeError:
+            bind_api.Bind(material, purpose=physics_purpose)
+
+        diag.update({
+            "status": "authored",
+            "mutated_prim_paths": sorted(mutated_paths),
+            "material_prim_path": material_path,
+        })
+    except Exception as exc:  # noqa: BLE001
+        diag["blockers"].append(f"target_contact_material_authoring_failed:{exc!r}")
+    return diag
+
+
 def _prune_to_focus(stage, route_points, focus_radius: float, keep_substrings) -> dict:
     """Task-aware scene subset: deactivate kitchen object prims whose placement is farther than
     ``focus_radius`` (m, xy) from the robot's route, keeping the task region + structural shell
@@ -6364,6 +6556,9 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   software_denoise: bool = True,
                   depth_pass: bool = False,
                   segmentation: bool = False,
+                  effort_drive: bool = False,
+                  torque_drive: bool = False,
+                  author_target_contact_material: bool = False,
                   serve: bool = False, serve_dir: "Path | None" = None,
                   serve_idle_timeout_s: float = 600.0,
                   serve_max_jobs: "int | None" = None) -> dict:
@@ -6420,6 +6615,9 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
     blockers: list[str] = []
     outcomes: list[dict] = []
     physics_contact_reports: list[dict[str, Any]] = []
+    effective_effort_drive = bool(effort_drive or torque_drive)
+    authored_target_contact_material_records: list[dict[str, Any]] = []
+    authored_target_contact_material_paths: set[str] = set()
     segmentation_summary: dict[str, Any] = {
         "schema_version": "isaac_g1_kitchen_parity_segmentation_summary.v1",
         "enabled": bool(segmentation),
@@ -6438,6 +6636,10 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             blockers.append("physics_articulation_dynamic_standing_contact_requires_single_step")
         if len(scenarios) != 1:
             blockers.append("physics_articulation_dynamic_standing_contact_requires_single_scenario")
+    if effective_effort_drive and not physics_articulation_drive:
+        blockers.append("effort_drive_requires_physics_articulation_drive")
+    if author_target_contact_material and not physics_articulation_drive:
+        blockers.append("target_contact_material_requires_physics_articulation_drive")
     try:
         _log(f"opening kitchen USD: {kitchen_usd}")
         stage = _open_stage(_resolve_asset_uri(kitchen_usd))
@@ -6846,6 +7048,35 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         f"{tuple(round(float(c), 2) for c in stand_root)} yaw={stand_yaw:.2f} "
                         f"after {len(stance_plan.get('candidates', []))} candidate probe(s)"
                     )
+                    if physics_articulation_drive and author_target_contact_material:
+                        selected = (
+                            ((stance_plan.get("target_resolution") or {}).get("selected") or {})
+                            if isinstance(stance_plan.get("target_resolution"), Mapping)
+                            else {}
+                        )
+                        target_prim_path = str(selected.get("prim_path") or "")
+                        if target_prim_path and target_prim_path not in authored_target_contact_material_paths:
+                            material_diag = _author_target_contact_material(
+                                stage,
+                                target_prim_path,
+                                friction=0.85,
+                                restitution=0.02,
+                                mass=2.0,
+                                density=None,
+                            )
+                            material_diag["scenario_id"] = sid
+                            authored_target_contact_material_records.append(material_diag)
+                            authored_target_contact_material_paths.add(target_prim_path)
+                            (sdir / "target_contact_material_authoring.json").write_text(
+                                json.dumps(material_diag, indent=2)
+                            )
+                            _log(
+                                f"scenario {sid}: target contact material authoring "
+                                f"{material_diag.get('status')} target={target_prim_path}"
+                            )
+                        elif not target_prim_path:
+                            blockers.append("target_contact_material_target_prim_unresolved")
+                            _log(f"scenario {sid}: target contact material requested but target prim missing")
                 else:
                     blockers.append("task_stance_plan_failed")
                     _log(
@@ -6963,6 +7194,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             manipulation_ready=bool(manipulation_reach),
                             manipulation_reach_arm=manipulation_reach_arm,
                             root_pose_seeded_before_tensor_view=sid in dynamic_seed_decisions,
+                            effort_drive=effective_effort_drive,
                         )
                         report["step"] = step
                         physics_contact_reports.append(report)
@@ -7699,7 +7931,14 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             result = build_result(scenarios=scenarios, outcomes=outcomes, policy_id=policy_id,
                                   kitchen_usd=kitchen_usd, g1_usd=g1_usd, blockers=blockers,
                                   physics_articulation_contact_reports=physics_contact_reports,
-                                  segmentation_summary=segmentation_summary if segmentation else None)
+                                  segmentation_summary=segmentation_summary if segmentation else None,
+                                  authored_target_contact_material=({
+                                      "schema_version": (
+                                          "isaac_target_contact_material_authoring_summary.v1"
+                                      ),
+                                      "enabled": True,
+                                      "records": authored_target_contact_material_records,
+                                  } if author_target_contact_material else None))
             (out_dir / "isaac_g1_kitchen_parity_result.json").write_text(json.dumps(result, indent=2))
         finally:
             try:
@@ -8288,6 +8527,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="(opt-in, default off) drive the G1 via the physics articulation tensor view. "
                          "All root seeds stay on the articulation API; the pure-USD root xform fallback "
                          "is used only when this is off.")
+    ap.add_argument("--effort-drive", action="store_true",
+                    help="(opt-in, requires --physics-articulation-drive) drive settle joints with "
+                         "ported PD joint_efforts instead of position targets")
+    ap.add_argument("--author-target-contact-material", action="store_true",
+                    help="(opt-in, requires --physics-articulation-drive) author MassAPI, physics "
+                         "material, and convexDecomposition on the resolved task target prim only")
     ap.add_argument("--dynamic-standing-contact-steps", type=int, default=0,
                     help="opt-in PhysX standing/contact settle steps per sampled placement. This "
                          "forces --articulated, enables gravity, avoids the SingleArticulation "
@@ -8410,6 +8655,8 @@ def main(argv=None) -> int:
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
         fill_light_intensity=args.fill_light_intensity,
         physics_articulation_drive=args.physics_articulation_drive,
+        effort_drive=args.effort_drive,
+        author_target_contact_material=args.author_target_contact_material,
         dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
         neutral_environment=args.neutral_environment,
         kinematic_arm_pose=args.kinematic_arm_pose,
