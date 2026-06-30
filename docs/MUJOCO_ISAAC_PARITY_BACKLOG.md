@@ -26,7 +26,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | # | ID | Lane | Effort | Depends on | Status | Task |
 |---|----|------|--------|-----------|--------|------|
 | 1 | T1 | Isaac | S | — | `done (gpu-pending)` | Emit Isaac per-frame camera contract (intrinsics K + camera world pose) |
-| 2 | T3 | Isaac | S | — | `in-progress` | Isaac native depth render pass (distance_to_image_plane annotator, co-registered with RGB) |
+| 2 | T3 | Isaac | S | — | `done (gpu-pending)` | Isaac native depth render pass (distance_to_image_plane annotator, co-registered with RGB) |
 | 3 | T2 | MuJoCo | M | — | `todo` | MuJoCo native render-pass depth buffer (co-registered per-camera depth) |
 | 4 | T4 | Isaac | L | — | `todo` | Isaac closed loop: requery a pluggable LEARNED policy on the WAM-generated observation (replace the hardcoded deterministic stub) |
 | 5 | T5 | Isaac | S | T4 | `todo` | Isaac honest completion gating + in-loop drift reanchoring |
@@ -111,7 +111,8 @@ Hermetic (no-GPU): `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` — 
 ### 2. T3 — Isaac native depth render pass (distance_to_image_plane annotator, co-registered with RGB)
 
 - **Lane:** Isaac  |  **Effort:** S (small)  |  **Depends on:** none
-- **Status:** in-progress
+- **Status:** done (gpu-pending)
+- **GPU-pending:** A real Isaac/RTX run must confirm the live `distance_to_image_plane` buffers are non-constant and co-registered with the saved RGB frames.
 
 **Summary.** The Isaac kitchen-parity runner attaches only an "rgb" Replicator annotator per render product (`_make_render_product`, scripts/run_isaac_g1_kitchen_parity_eval.py:5125-5130, rgb at 5128), so it produces no native depth pass — matching the gap-analysis "Native depth render pass: 🟡 analytic pinhole only → both lanes" finding (docs/MUJOCO_VS_ISAAC_LANE_GAP_ANALYSIS.md lines 50, 94-95, 158, which explicitly prescribes adding a distance_to_image_plane annotator near :5128). Add an optional, opt-in `distance_to_image_plane` (depth) annotator attached to the SAME render products as RGB so depth frames are pixel-co-registered with the existing overview/pov RGB frames, plus a `_save_depth` writer and a per-scenario depth artifact record with an Isaac-only proof marker. This is a render-modality add only: it does not touch physics, the policy loop, or the swappable world-model backend.
 
@@ -146,13 +147,13 @@ Hermetic (no-GPU): `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` — 
 
 **Acceptance criteria:**
 
-- [ ] Runner source contains the string 'distance_to_image_plane' attached to a Replicator render product, a `def _save_depth(` function, a `--depth-pass` CLI flag, and a `depth_render_pass` outcome key (asserted by hermetic source tests via _RUNNER.read_text()).
-- [ ] `_make_render_product(camera_path, width, height, with_depth=True)` (driven by a fake omni.replicator.core injected via monkeypatch.setitem(sys.modules,...)) requests BOTH annotators by name 'rgb' AND 'distance_to_image_plane' and attaches both to the SAME render_product object returned by `rep.create.render_product(...)` — proving pixel co-registration via shared camera+resolution.
-- [ ] `_make_render_product(...)` with default/with_depth=False still returns the single rgb annotator object (back-compat: existing callers at 6228-6230 and the lazy topdown caller at 6840 are unaffected).
-- [ ] `_save_depth` given a HxW float32 numpy array writes a .npy that reloads bit-exact (lossless meters, no uint8 truncation) and returns True; given None or empty data it returns False and writes nothing.
-- [ ] When `--depth-pass` is set, the per-scenario outcome includes `depth_render_pass` with `simulator_backend='isaac'`, `annotator='distance_to_image_plane'`, `units='meters'`, `co_registered_with_rgb=True`, and `depth_proven` True only when `depth_frames_written>0`; the claim_boundary explicitly scopes the evidence to Isaac (so it cannot be read as MuJoCo/physics/policy/success proof), matching the non-interchangeable proof boundary in docs/MUJOCO_VS_ISAAC_LANE_GAP_ANALYSIS.md line 34.
-- [ ] Default run (no --depth-pass) produces byte-identical behavior and artifacts to before (flag is purely additive); full `pytest` stays green (baseline 82 passed/1 skipped in the runner test file).
-- [ ] The change touches only render-modality code paths; no physics step, policy loop, or world-model backend selection is modified (backends remain swappable).
+- [x] Runner source contains the string 'distance_to_image_plane' attached to a Replicator render product, a `def _save_depth(` function, a `--depth-pass` CLI flag, and a `depth_render_pass` outcome key (asserted by hermetic source tests via _RUNNER.read_text()).
+- [x] `_make_render_product(camera_path, width, height, with_depth=True)` (driven by a fake omni.replicator.core injected via monkeypatch.setitem(sys.modules,...)) requests BOTH annotators by name 'rgb' AND 'distance_to_image_plane' and attaches both to the SAME render_product object returned by `rep.create.render_product(...)` — proving pixel co-registration via shared camera+resolution.
+- [x] `_make_render_product(...)` with default/with_depth=False still returns the single rgb annotator object (back-compat: existing callers at 6228-6230 and the lazy topdown caller at 6840 are unaffected).
+- [x] `_save_depth` given a HxW float32 numpy array writes a .npy that reloads bit-exact (lossless meters, no uint8 truncation) and returns True; given None or empty data it returns False and writes nothing.
+- [x] When `--depth-pass` is set, the per-scenario outcome includes `depth_render_pass` with `simulator_backend='isaac'`, `annotator='distance_to_image_plane'`, `units='meters'`, `co_registered_with_rgb=True`, and `depth_proven` True only when `depth_frames_written>0`; the claim_boundary explicitly scopes the evidence to Isaac (so it cannot be read as MuJoCo/physics/policy/success proof), matching the non-interchangeable proof boundary in docs/MUJOCO_VS_ISAAC_LANE_GAP_ANALYSIS.md line 34.
+- [x] Default run (no --depth-pass) produces byte-identical behavior and artifacts to before (flag is purely additive); full `pytest` stays green (baseline 82 passed/1 skipped in the runner test file).
+- [x] The change touches only render-modality code paths; no physics step, policy loop, or world-model backend selection is modified (backends remain swappable).
 
 **Verification:**
 
