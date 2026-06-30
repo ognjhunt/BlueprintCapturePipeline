@@ -223,6 +223,69 @@ def test_policy_action_decoding_contract_blocks_latent_without_pose_decoder() ->
     assert contract["tensor_summaries"]["sonic_latent_action"]["shape"] == [1, 2, 2]
 
 
+def test_policy_action_decoding_contract_reports_bridgeable_sonic_action_chunk() -> None:
+    sonic_frame = ([0.1] * 28) + ([0.0] * 36) + ([0.2] * 14)
+    contract = session._policy_action_decoding_contract(
+        {
+            "action_type": "unitree_g1_sonic_latent_action_chunk",
+            "action_chunk": [*sonic_frame, *sonic_frame],
+            "sonic_latent_action": [[[0.1] * 64, [0.2] * 64]],
+            "hand_targets": {
+                "left_hand_joints": [[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+                "right_hand_joints": [[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+            },
+        },
+        generated_at="now",
+    )
+
+    assert contract["status"] == "sonic_action_chunk_available_requires_bridge"
+    assert contract["decoded_control_target_nonzero"] is False
+    assert contract["bridgeable_sonic_action_chunk"] is True
+    assert (
+        "policy_action_requires_scene_or_wbc_bridge_for_projected_skeleton"
+        in contract["blockers"]
+    )
+    assert contract["sonic_action_frame_summary"]["frame_count"] == 2
+    assert contract["sonic_action_frame_summary"]["hand_control_tail_nonzero_count"] == 28
+    assert (
+        contract["sonic_action_frame_summary"]["sim2sim_upper_body_slot_nonzero_count"]
+        == 56
+    )
+    assert (
+        contract["claim_boundary"][
+            "sonic_action_chunk_requires_bridge_before_wam_ranking_claim"
+        ]
+        is True
+    )
+
+
+def test_bridge_readiness_reports_missing_scene_for_bridgeable_sonic_action_chunk(
+    tmp_path: Path,
+) -> None:
+    readiness = session._write_policy_action_bridge_readiness(
+        job=tmp_path,
+        extraction_dir=tmp_path / "imported",
+        action_contract={
+            "latent_action_present": True,
+            "decoded_control_target_nonzero": False,
+            "bridgeable_sonic_action_chunk": True,
+        },
+        generated_at="now",
+    )
+
+    assert readiness["status"] == "blocked_missing_scene_bridge_for_sonic_action_chunk"
+    assert readiness["bridgeable_sonic_action_chunk"] is True
+    assert (
+        readiness["bridge_candidates"][0]["requires"][0]
+        == "policy_action_40x78_sonic_action_chunk"
+    )
+    assert readiness["bridge_candidates"][0]["available"] is False
+    assert (
+        "blocked_missing_mujoco_scene_manifest_for_unitree_sonic_sim2sim_bridge"
+        in readiness["blockers"]
+    )
+
+
 def _policy_observation(path: Path, frame: Path) -> Path:
     observation = {
         "schema_version": "initial_policy_observation.v1",

@@ -4344,6 +4344,81 @@ def _numeric_tensor_summary(name: str, value: Any) -> dict[str, Any]:
     }
 
 
+SONIC_ACTION_FRAME_DIM = 78
+SONIC_LATENT_FRAME_DIM = 64
+SONIC_HAND_CONTROL_FRAME_DIM = SONIC_ACTION_FRAME_DIM - SONIC_LATENT_FRAME_DIM
+SONIC_SIM2SIM_UPPER_BODY_SLOT_COUNT = 28
+
+
+def _sonic_action_frame_summary(action_chunk: Any) -> dict[str, Any]:
+    values = _numeric_values(action_chunk)
+    frame_count = (
+        len(values) // SONIC_ACTION_FRAME_DIM
+        if values and len(values) % SONIC_ACTION_FRAME_DIM == 0
+        else 0
+    )
+    summary = {
+        "present": bool(values),
+        "value_count": len(values),
+        "expected_frame_dim": SONIC_ACTION_FRAME_DIM,
+        "frame_count": frame_count,
+        "bridgeable_sonic_action_chunk": frame_count > 0,
+        "latent_prefix_dim": SONIC_LATENT_FRAME_DIM,
+        "hand_control_tail_dim": SONIC_HAND_CONTROL_FRAME_DIM,
+        "hand_control_tail_value_count": 0,
+        "hand_control_tail_nonzero_count": 0,
+        "hand_control_tail_mean_abs": None,
+        "sim2sim_upper_body_slot_count_per_frame": SONIC_SIM2SIM_UPPER_BODY_SLOT_COUNT,
+        "sim2sim_upper_body_slot_value_count": 0,
+        "sim2sim_upper_body_slot_nonzero_count": 0,
+        "sim2sim_upper_body_slot_mean_abs": None,
+        "claim_boundary": {
+            "sonic_action_chunk_is_policy_output": bool(values),
+            "sonic_action_chunk_is_not_a_projected_skeleton": True,
+            "sonic_action_chunk_requires_scene_or_wbc_bridge_for_pose_trace": bool(values),
+            "sim2sim_upper_body_slot_mapping_is_blueprint_bridge_not_official_wbc": True,
+        },
+    }
+    if frame_count <= 0:
+        blockers = []
+        if values:
+            blockers.append("sonic_action_chunk_not_evenly_divisible_by_78")
+        summary["blockers"] = blockers
+        return summary
+    frames = [
+        values[index : index + SONIC_ACTION_FRAME_DIM]
+        for index in range(0, len(values), SONIC_ACTION_FRAME_DIM)
+    ]
+    hand_tail_values = [
+        item for frame in frames for item in frame[SONIC_LATENT_FRAME_DIM:SONIC_ACTION_FRAME_DIM]
+    ]
+    upper_body_values = [
+        item for frame in frames for item in frame[:SONIC_SIM2SIM_UPPER_BODY_SLOT_COUNT]
+    ]
+    hand_tail_nonzero = sum(1 for item in hand_tail_values if abs(item) > 1e-9)
+    upper_body_nonzero = sum(1 for item in upper_body_values if abs(item) > 1e-9)
+    summary.update(
+        {
+            "hand_control_tail_value_count": len(hand_tail_values),
+            "hand_control_tail_nonzero_count": hand_tail_nonzero,
+            "hand_control_tail_mean_abs": (
+                sum(abs(item) for item in hand_tail_values) / len(hand_tail_values)
+                if hand_tail_values
+                else None
+            ),
+            "sim2sim_upper_body_slot_value_count": len(upper_body_values),
+            "sim2sim_upper_body_slot_nonzero_count": upper_body_nonzero,
+            "sim2sim_upper_body_slot_mean_abs": (
+                sum(abs(item) for item in upper_body_values) / len(upper_body_values)
+                if upper_body_values
+                else None
+            ),
+            "blockers": [],
+        }
+    )
+    return summary
+
+
 def _policy_action_decoding_contract(
     action: Mapping[str, Any],
     *,
@@ -4368,9 +4443,17 @@ def _policy_action_decoding_contract(
             action.get("right_hand_joints") or hand_targets.get("right_hand_joints"),
         ),
     }
+    sonic_frame_summary = _sonic_action_frame_summary(action.get("action_chunk"))
     latent_present = any(
         summaries[key]["numeric_count"] > 0
         for key in ("action_chunk", "sonic_latent_action", "motion_token")
+    )
+    bridgeable_sonic_action_chunk = bool(
+        sonic_frame_summary.get("bridgeable_sonic_action_chunk")
+        and (
+            int(sonic_frame_summary.get("hand_control_tail_nonzero_count") or 0) > 0
+            or int(sonic_frame_summary.get("sim2sim_upper_body_slot_nonzero_count") or 0) > 0
+        )
     )
     decoded_target_keys = ("joint_targets", "arm_targets", "left_hand_joints", "right_hand_joints")
     decoded_target_present = any(summaries[key]["numeric_count"] > 0 for key in decoded_target_keys)
@@ -4386,6 +4469,9 @@ def _policy_action_decoding_contract(
     if decoded_target_nonzero:
         status = "decoded_control_targets_available"
         blockers: list[str] = []
+    elif bridgeable_sonic_action_chunk:
+        status = "sonic_action_chunk_available_requires_bridge"
+        blockers = ["policy_action_requires_scene_or_wbc_bridge_for_projected_skeleton"]
     elif latent_present:
         status = "blocked_latent_action_without_pose_decoder"
         blockers = ["policy_action_latent_without_decoded_pose_targets"]
@@ -4405,14 +4491,22 @@ def _policy_action_decoding_contract(
         "latent_action_present": latent_present,
         "decoded_control_target_present": decoded_target_present,
         "decoded_control_target_nonzero": decoded_target_nonzero,
+        "bridgeable_sonic_action_chunk": bridgeable_sonic_action_chunk,
         "policy_derived_projected_skeleton_trace_present": False,
         "policy_ranking_claim_safe": False,
         "tensor_summaries": summaries,
+        "sonic_action_frame_summary": sonic_frame_summary,
         "warnings": warnings,
         "blockers": blockers,
         "claim_boundary": {
             "policy_action_decoding_contract_is_payload_introspection_only": True,
             "latent_action_is_not_a_decoded_robot_pose_or_skeleton": latent_present,
+            "sonic_action_chunk_is_not_a_decoded_pose_or_projected_skeleton": bool(
+                sonic_frame_summary.get("present")
+            ),
+            "sonic_action_chunk_requires_bridge_before_wam_ranking_claim": bool(
+                bridgeable_sonic_action_chunk
+            ),
             "decoded_control_targets_are_not_task_success_proof": True,
             "policy_ranking_claim_safe_requires_policy_derived_projected_skeleton": True,
             "scene_or_task_specific_pixels_used": False,
@@ -4472,12 +4566,19 @@ def _write_policy_action_bridge_readiness(
     scene_manifest = _mujoco_scene_manifest_path(job, extraction_dir)
     latent_action_present = bool(action_contract.get("latent_action_present"))
     decoded_targets_nonzero = bool(action_contract.get("decoded_control_target_nonzero"))
+    bridgeable_sonic_action_chunk = bool(action_contract.get("bridgeable_sonic_action_chunk"))
     sim2sim_execution = job / "unitree_groot_n17_sonic_sim2sim_execution.json"
     if decoded_targets_nonzero:
         status = "decoded_control_targets_available"
         blockers: list[str] = []
+    elif bridgeable_sonic_action_chunk and scene_manifest is not None:
+        status = "ready_for_sim2sim_sonic_action_trace_bridge"
+        blockers = []
+    elif bridgeable_sonic_action_chunk:
+        status = "blocked_missing_scene_bridge_for_sonic_action_chunk"
+        blockers = ["blocked_missing_mujoco_scene_manifest_for_unitree_sonic_sim2sim_bridge"]
     elif latent_action_present and scene_manifest is not None:
-        status = "ready_for_sim2sim_action_trace_bridge"
+        status = "ready_for_sim2sim_latent_action_trace_bridge"
         blockers = []
     elif latent_action_present:
         status = "blocked_missing_scene_bridge_for_latent_action"
@@ -4491,6 +4592,7 @@ def _write_policy_action_bridge_readiness(
         "status": status,
         "latent_action_present": latent_action_present,
         "decoded_control_target_nonzero": decoded_targets_nonzero,
+        "bridgeable_sonic_action_chunk": bridgeable_sonic_action_chunk,
         "mujoco_scene_manifest_path": str(scene_manifest) if scene_manifest else None,
         "mujoco_scene_manifest_candidates": [
             str(path) for path in _mujoco_scene_manifest_candidates(job, extraction_dir)
@@ -4503,10 +4605,10 @@ def _write_policy_action_bridge_readiness(
                 "id": "unitree_groot_n17_sonic_sim2sim_command",
                 "kind": "simulator_only_mujoco_action_trace_bridge",
                 "requires": [
-                    "policy_action_latent_tensor",
+                    "policy_action_40x78_sonic_action_chunk",
                     "mujoco_scene_manifest_with_unitree_upper_body_actuators",
                 ],
-                "available": bool(latent_action_present and scene_manifest is not None),
+                "available": bool(bridgeable_sonic_action_chunk and scene_manifest is not None),
             },
             {
                 "id": "official_groot_wholebodycontrol_sim2sim",
