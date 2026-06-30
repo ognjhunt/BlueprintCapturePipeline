@@ -686,6 +686,120 @@ def test_launch_with_marker_retry_stops_flaky_warm_restart(tmp_path: Path, monke
     assert fp.stopped == ["pod0"]
 
 
+def test_launch_with_marker_retry_blocks_warm_only_without_marker_poll(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+
+    class _WarmOnlyBlockedProvider:
+        def __init__(self) -> None:
+            self.launch_calls: list[tuple[bool, bool]] = []
+            self.stopped: list[str] = []
+            self.terminated: list[str] = []
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            self.launch_calls.append((cold, allow_cold_fallback))
+            assert allow_cold_fallback is False
+            return {
+                "status": "blocked",
+                "blockers": ["warm_restart_failed_cold_fallback_disabled"],
+                "attempts": [{"pod_id": "stale-warm"}],
+            }
+
+        def stop(self, iid):
+            self.stopped.append(iid)
+            return {"status": "stopped"}
+
+        def terminate(self, iid):
+            self.terminated.append(iid)
+            return {"status": "terminated"}
+
+    fp = _WarmOnlyBlockedProvider()
+    monkeypatch.setattr(
+        J.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("marker polled")),
+    )
+
+    res = J.launch_with_marker_retry(
+        fp,
+        jd,
+        {"img": "x"},
+        max_attempts=3,
+        marker_timeout=2,
+        poll=1,
+        cold=False,
+        allow_cold_fallback=False,
+    )
+
+    assert res["status"] == "blocked"
+    assert res["blockers"] == ["warm_restart_failed_cold_fallback_disabled"]
+    assert res["attempts"][0]["result"] == "launch_call_failed"
+    assert fp.launch_calls == [(False, False)]
+    assert fp.stopped == []
+    assert fp.terminated == []
+
+
+def test_job_warm_only_blocks_without_cold_spend(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
+    )
+
+    def _fake_stage(bundle_zip, job_dir, *, key_prefix):
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+        (job_dir / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+        (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+        return {"status": "completed", "manifest": {}}
+
+    class _WarmOnlyProvider:
+        name = "runpod"
+
+        def __init__(self) -> None:
+            self.launch_calls: list[tuple[bool, bool]] = []
+
+        def available(self) -> dict:
+            return {"provider": self.name, "available": True}
+
+        def build_request(self, spec, job_dir):
+            return {"env": dict(spec.env), "image": spec.image}
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            self.launch_calls.append((cold, allow_cold_fallback))
+            return {
+                "status": "blocked",
+                "blockers": ["warm_restart_failed_cold_fallback_disabled"],
+            }
+
+    provider = _WarmOnlyProvider()
+    monkeypatch.setattr(J, "stage_bundle", _fake_stage)
+    monkeypatch.setattr(J, "get_render_provider", lambda name, warm_candidates=(): provider)
+    monkeypatch.setattr(
+        J,
+        "watch_and_collect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("collected")),
+    )
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="runpod",
+        allow_paid=True,
+        warm_candidates=("stale-warm",),
+        warm_only=True,
+    )
+
+    assert m["status"] == "blocked"
+    assert "warm_restart_failed_cold_fallback_disabled" in m["blockers"]
+    assert "launch_failed_all_attempts_flaky" in m["blockers"]
+    assert provider.launch_calls == [(False, False)]
+
+
 def test_await_warm_serve_ready_requires_matching_launch_session(
     tmp_path: Path,
     monkeypatch,

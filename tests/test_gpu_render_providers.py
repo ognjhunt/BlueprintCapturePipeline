@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -193,6 +194,31 @@ def test_runpod_warm_update_failure_does_not_start_stale_command(tmp_path: Path,
     assert ("POST", "/pods/warm-1/start") not in calls
 
 
+def test_runpod_teardown_404_is_already_gone_success(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_key(_self):
+        return "rp-key"
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        calls.append((method, path))
+        assert key == "rp-key"
+        return 404, {"error": "pod not found"}
+
+    monkeypatch.setattr(RunPodRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
+
+    stop = RunPodRenderProvider().stop("pod-missing")
+    terminate = RunPodRenderProvider().terminate("pod-missing")
+
+    assert stop == {"status": "stopped", "http": 404, "already_gone": True}
+    assert terminate == {"status": "terminated", "http": 404, "already_gone": True}
+    assert calls == [
+        ("POST", "/pods/pod-missing/stop"),
+        ("DELETE", "/pods/pod-missing"),
+    ]
+
+
 # ----------------------------- Vast translation -----------------------------
 
 def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
@@ -227,6 +253,90 @@ def test_vast_stop_fail_closed_without_key(tmp_path: Path, monkeypatch) -> None:
     res = VastRenderProvider().stop("12345")
     assert res["status"] == "blocked"
     assert "vast_api_key_missing" in res["blockers"]
+
+
+def test_vast_launch_writes_started_instance_id(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_key(_self):
+        return "vast-key"
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        calls.append((method, path))
+        assert api_key == "vast-key"
+        if method == "POST" and path == "/bundles/":
+            return 200, {"offers": [{"id": "raw-offer"}]}
+        if method == "PUT" and path == "/asks/ask-1/":
+            return 200, {"new_contract": 12345}
+        raise AssertionError((method, path, payload, timeout_seconds))
+
+    offer = {
+        "ask_contract_id": "ask-1",
+        "gpu_name": "RTX 4090",
+        "hourly_rate_usd": 0.44,
+    }
+
+    monkeypatch.setattr(VastRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._offers_from_response", lambda _resp: [offer])
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._select_offer", lambda offers, **_kw: offers[0])
+
+    req = VastRenderProvider().build_request(_spec(), tmp_path)
+    res = VastRenderProvider().launch(tmp_path, req)
+
+    assert res["status"] == "launched"
+    assert res["instance_id"] == "12345"
+    assert res["mode"] == "vast_on_demand"
+    assert (tmp_path / "started_vast_instance_id.txt").read_text() == "12345"
+    assert calls == [("POST", "/bundles/"), ("PUT", "/asks/ask-1/")]
+
+
+def test_vast_terminate_delegates_to_destroy_instance_delete(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_key(_self):
+        return "vast-key"
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=30):
+        calls.append((method, path))
+        assert api_key == "vast-key"
+        assert payload is None
+        return 204, {}
+
+    monkeypatch.setattr(VastRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+
+    res = VastRenderProvider().terminate("inst-123")
+
+    assert res["status"] == "stopped"
+    assert res["http"] == 204
+    assert calls == [("DELETE", "/instances/inst-123/")]
+
+
+def test_vast_teardown_404_is_already_gone_success(monkeypatch) -> None:
+    def fake_key(_self):
+        return "vast-key"
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=30):
+        assert method == "DELETE"
+        assert path == "/instances/inst-missing/"
+        assert api_key == "vast-key"
+        raise urllib.error.HTTPError(
+            url="https://console.vast.ai/api/v0/instances/inst-missing/",
+            code=404,
+            msg="not found",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr(VastRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+
+    assert VastRenderProvider().stop("inst-missing") == {
+        "status": "stopped",
+        "http": 404,
+        "already_gone": True,
+    }
 
 
 # ----------------------------- availability reflects secrets -----------------------------

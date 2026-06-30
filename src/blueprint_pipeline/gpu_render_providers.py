@@ -227,6 +227,8 @@ class RunPodRenderProvider(GpuRenderProvider):
         if not key:
             return {"status": "blocked", "blockers": ["runpod_api_key_missing"]}
         s, _ = _runpod_call("POST", f"/pods/{instance_id}/stop", {}, key=key)
+        if s == 404:
+            return {"status": "stopped", "http": s, "already_gone": True}
         return {"status": "stopped" if s in (200, 201, 204) else "stop_failed", "http": s}
 
     def terminate(self, instance_id: str) -> dict:
@@ -236,6 +238,8 @@ class RunPodRenderProvider(GpuRenderProvider):
         if not key:
             return {"status": "blocked", "blockers": ["runpod_api_key_missing"]}
         s, _ = _runpod_call("DELETE", f"/pods/{instance_id}", None, key=key)
+        if s == 404:
+            return {"status": "terminated", "http": s, "already_gone": True}
         return {"status": "terminated" if s in (200, 201, 204) else "terminate_failed", "http": s}
 
 
@@ -338,6 +342,8 @@ class VastRenderProvider(GpuRenderProvider):
                 "attempts": attempts}
 
     def stop(self, instance_id: str) -> dict:
+        # Vast has no warm-preserving stopped state here: DELETE /instances destroys
+        # the instance. Do not route warm-pool preservation through this provider.
         key = self._key()
         if not key:
             return {"status": "blocked", "blockers": ["vast_api_key_missing"]}
@@ -346,9 +352,13 @@ class VastRenderProvider(GpuRenderProvider):
             s, _ = _api_json(method="DELETE", path=f"/instances/{instance_id}/",
                              api_key=key, timeout_seconds=30)
         except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return {"status": "stopped", "http": e.code, "already_gone": True}
             return {"status": "stop_failed", "http": e.code}
         except Exception as e:  # noqa: BLE001
             return {"status": "stop_failed", "error": repr(e)[:200]}
+        if s == 404:
+            return {"status": "stopped", "http": s, "already_gone": True}
         return {"status": "stopped" if s in (200, 201, 204) else "stop_failed", "http": s}
 
 

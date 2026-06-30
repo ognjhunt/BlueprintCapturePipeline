@@ -482,6 +482,13 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
         )
         if launch.get("status") != "launched":
             attempts.append({"attempt": attempt, "result": "launch_call_failed", "detail": launch})
+            blockers = {str(b) for b in (launch.get("blockers") or [])}
+            if "warm_restart_failed_cold_fallback_disabled" in blockers:
+                return {
+                    "status": "blocked",
+                    "blockers": ["warm_restart_failed_cold_fallback_disabled"],
+                    "attempts": attempts,
+                }
             continue
         iid = launch["instance_id"]
         t0 = time.time()
@@ -819,6 +826,9 @@ def run_isaac_g1_kitchen_parity_job(
                                           allow_cold_fallback=not warm_only)
         manifest["launch"] = launch
     if launch.get("status") != "launched":
+        for blocker in launch.get("blockers") or []:
+            if blocker not in manifest["blockers"]:
+                manifest["blockers"].append(blocker)
         manifest["blockers"].append("launch_failed_all_attempts_flaky")
         return manifest
     if serve:
