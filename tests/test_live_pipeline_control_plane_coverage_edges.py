@@ -88,35 +88,49 @@ def test_simulator_command_parsing_and_status_helpers(monkeypatch: pytest.Monkey
 
 
 def test_next_inputs_field_sources_and_policy_modality_edges() -> None:
-    next_inputs = lcp._control_plane_next_inputs_needed(
+    # POSITIVE: every wired arg drives next-input guidance; ready ones stay silent.
+    ready_inputs = lcp._control_plane_next_inputs_needed(
         capture_root=Path("/tmp/capture"),
         job_request_inbox=Path("/tmp/inbox"),
         setup_manifest={"sections": {}},
         webapp_upstream_truth_ready=True,
-        real_robot_pov_ready=True,
         live_closure_evidence_ready=True,
-        deployment_outcomes_ready=True,
-        deployment_prediction_match_keys_ready=False,
-        deployment_owner_evidence_ready=False,
         policy_package_ready=True,
         followup_request_queues={"ready": True, "queues": ["skip", {"safe_processing_command": "process inbox"}]},
     )
-    assert not any("exact prediction join keys" in item for item in next_inputs)
-    assert "process inbox" in next_inputs
+    assert not any("live closure evidence" in item for item in ready_inputs)
+    assert not any("policy package" in item for item in ready_inputs)
+    assert "process inbox" in ready_inputs
 
-    owner_inputs = lcp._control_plane_next_inputs_needed(
+    unready_inputs = lcp._control_plane_next_inputs_needed(
         capture_root=Path("/tmp/capture"),
         job_request_inbox=Path("/tmp/inbox"),
         setup_manifest={"sections": {}},
         webapp_upstream_truth_ready=True,
-        real_robot_pov_ready=True,
-        live_closure_evidence_ready=True,
-        deployment_outcomes_ready=True,
-        deployment_prediction_match_keys_ready=True,
-        deployment_owner_evidence_ready=False,
-        policy_package_ready=True,
+        live_closure_evidence_ready=False,
+        policy_package_ready=False,
     )
-    assert not any("owner evidence" in item for item in owner_inputs)
+    assert any("live closure evidence" in item for item in unready_inputs)
+    assert any("policy package" in item for item in unready_inputs)
+
+    # Dead deployment/POV params were removed: passing them must raise TypeError so
+    # the call site cannot silently feed ignored flags into the function again.
+    for dead_kwarg in (
+        "real_robot_pov_ready",
+        "deployment_outcomes_ready",
+        "deployment_prediction_match_keys_ready",
+        "deployment_owner_evidence_ready",
+    ):
+        with pytest.raises(TypeError):
+            lcp._control_plane_next_inputs_needed(
+                capture_root=Path("/tmp/capture"),
+                job_request_inbox=Path("/tmp/inbox"),
+                setup_manifest={"sections": {}},
+                webapp_upstream_truth_ready=True,
+                live_closure_evidence_ready=True,
+                policy_package_ready=True,
+                **{dead_kwarg: True},
+            )
 
     payload = {"owner_system": {"request_id": "owner-request"}}
     assert lcp._field_value_from_sources(payload, "request_id", [{}]) == "owner-request"

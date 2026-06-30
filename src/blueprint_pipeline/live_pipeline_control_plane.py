@@ -333,11 +333,7 @@ def _control_plane_next_inputs_needed(
     job_request_inbox: Path | None,
     setup_manifest: Mapping[str, Any],
     webapp_upstream_truth_ready: bool | None = None,
-    real_robot_pov_ready: bool = False,
     live_closure_evidence_ready: bool = False,
-    deployment_outcomes_ready: bool = False,
-    deployment_prediction_match_keys_ready: bool = False,
-    deployment_owner_evidence_ready: bool = False,
     policy_package_ready: bool = False,
     followup_request_queues: Mapping[str, Any] | None = None,
 ) -> List[str]:
@@ -2091,16 +2087,8 @@ def run_live_pipeline_control_plane(
                 job_request_inbox=inbox_path,
                 setup_manifest=setup_manifest,
                 webapp_upstream_truth_ready=webapp_upstream_truth_ready,
-                real_robot_pov_ready=bool(staged_inputs.get("real_robot_pov_ready")),
                 live_closure_evidence_ready=bool(
                     staged_inputs.get("live_closure_evidence_ready")
-                ),
-                deployment_outcomes_ready=bool(staged_inputs.get("deployment_outcomes_ready")),
-                deployment_prediction_match_keys_ready=bool(
-                    staged_inputs.get("deployment_outcomes_prediction_match_keys_ready")
-                ),
-                deployment_owner_evidence_ready=bool(
-                    staged_inputs.get("deployment_outcomes_owner_evidence_ready")
                 ),
                 policy_package_ready=bool(staged_inputs.get("policy_package_ready"))
                 or bool(webapp_inbox_truth.get("accepted_policy_package_request_count")),

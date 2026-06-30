@@ -207,19 +207,43 @@ def test_capture_handoff_blocker_edges(tmp_path: Path) -> None:
 
 
 def test_trigger_control_plane_edges(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No subprocess may be spawned while the trigger is gated/unconfigured.
+    def _no_subprocess(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("subprocess.run must not be invoked when trigger is gated")
+
+    monkeypatch.setattr(service.subprocess, "run", _no_subprocess)
+
+    # command set but allow-env unset -> blocked, no spawn, exact missing-env blocker.
     monkeypatch.setenv(service.INTAKE_TRIGGER_ENV, "echo trigger")
     monkeypatch.delenv(service.INTAKE_ALLOW_TRIGGER_ENV, raising=False)
-    assert service._trigger_control_plane()["status"] == "blocked"
+    blocked = service._trigger_control_plane()
+    assert blocked["status"] == "blocked"
+    assert blocked["performed"] is False
+    assert blocked["command_configured"] is True
+    assert blocked["blockers"] == [
+        f"missing_env_{service.INTAKE_ALLOW_TRIGGER_ENV}"
+    ]
+    assert service.INTAKE_ALLOW_TRIGGER_ENV == "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER"
+
+    # no command configured -> not_configured, no spawn, command_configured False.
+    monkeypatch.delenv(service.INTAKE_TRIGGER_ENV, raising=False)
+    monkeypatch.setenv(service.INTAKE_ALLOW_TRIGGER_ENV, "true")
+    not_configured = service._trigger_control_plane()
+    assert not_configured["status"] == "not_configured"
+    assert not_configured["performed"] is False
+    assert not_configured["command_configured"] is False
 
     class Completed:
         returncode = 0
         stdout = "x" * 2100
         stderr = "err"
 
+    monkeypatch.setenv(service.INTAKE_TRIGGER_ENV, "echo trigger")
     monkeypatch.setenv(service.INTAKE_ALLOW_TRIGGER_ENV, "true")
     monkeypatch.setattr(service.subprocess, "run", lambda *_args, **_kwargs: Completed())
     triggered = service._trigger_control_plane()
     assert triggered["status"] == "triggered"
+    assert triggered["performed"] is True
     assert len(triggered["stdout_tail"]) == 2000
 
 
