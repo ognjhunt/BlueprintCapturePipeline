@@ -33,7 +33,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 6 | T6 | Isaac | M | T4 | `done` | Isaac in-process manipulation success evaluator |
 | 7 | T7 | Shared | M | — | `done` | Photoreal observation handoff: Isaac/WAM frame -> MuJoCo policy visual channel |
 | 8 | T11 | MuJoCo | S | — | `done` | MuJoCo texture/material preservation (GLB->OBJ keeps PBR map_Kd and binds a MuJoCo texture to the visual geom) |
-| 9 | T12 | MuJoCo | S | — | `todo` | MuJoCo scene-derived lighting + shadows in the MJCF wrapper |
+| 9 | T12 | MuJoCo | S | — | `done` | MuJoCo scene-derived lighting + shadows in the MJCF wrapper |
 | 10 | T8 | MuJoCo | M | — | `todo` | MuJoCo segmentation render pass |
 | 11 | T9 | Isaac | M | — | `todo` | Isaac native instance/semantic segmentation render pass |
 | 12 | T13 | Isaac | M | — | `todo` | Isaac gravity-on dynamic stepping: turn the existing settle loop into a physics-proof path with displacement + fall verdict |
@@ -544,7 +544,7 @@ Hermetic, GPU-free pytest. Add tests to tests/test_mujoco_g1_simulator_command.p
 ### 9. T12 — MuJoCo scene-derived lighting + shadows in the MJCF wrapper
 
 - **Lane:** MuJoCo  |  **Effort:** S (small)  |  **Depends on:** none
-- **Status:** todo
+- **Status:** done
 
 **Summary.** The MuJoCo MJCF wrapper currently lights every scene with one fixed headlight plus one hardcoded directional light at a constant world position, and emits no explicit shadow/quality settings, so renders are flat and scene-size-independent. Thread the scene bounds/centroid from mesh_info into _write_mjcf_wrapper and emit scene-derived directional + fill lights positioned relative to the actual scene extent, with explicit shadow casting + a <quality shadowsize> element, to narrow (not close) the visual-plausibility gap called out as Priority 4 / roadmap step 7. This is a MuJoCo-only diagnostic-render improvement and must not be presented as photoreal or as cross-lane (Isaac) evidence.
 
@@ -572,13 +572,13 @@ Hermetic, GPU-free pytest. Add tests to tests/test_mujoco_g1_simulator_command.p
 
 **Acceptance criteria:**
 
-- [ ] The generated MJCF wrapper string contains a <quality ... shadowsize=...> element with a non-zero shadowsize (this element is absent today; pinning it makes shadow-map allocation explicit for the offscreen render path).
-- [ ] When scene_bounds is supplied, the wrapper contains at least two distinct <light> elements with distinct name= attributes (e.g. blueprint_key and blueprint_fill), at least one of which has castshadow="true".
-- [ ] When scene_bounds is supplied, the key light's pos attribute is NOT the legacy literal pos="0 -4 8" — proving the position is derived from the scene geometry rather than hardcoded.
-- [ ] When scene_bounds/scene_centroid are omitted (None), the wrapper still parses as XML (xml.etree.ElementTree.fromstring succeeds) and contains a directional light (directional="true"), preserving backward compatibility for all existing callers and the two existing wrapper tests (lines 142, 162).
-- [ ] The scene visual material rgba is unchanged (still 0.45 0.50 0.55 1 at line 806) — this task changes lighting only, not materials, so it does not silently overlap the separate P0a texture task.
-- [ ] No new field or doc string emitted by this run asserts photoreal fidelity or implies Isaac-equivalent render evidence; the wrapper's existing mujoco_visual_fidelity_boundary text at lines 527-531 remains the truth boundary and is not weakened.
-- [ ] pytest tests/test_mujoco_g1_simulator_command.py -k 'mjcf_wrapper' passes with the two new tests plus the two pre-existing wrapper tests green.
+- [x] The generated MJCF wrapper string contains a <quality ... shadowsize=...> element with a non-zero shadowsize (this element is absent today; pinning it makes shadow-map allocation explicit for the offscreen render path).
+- [x] When scene_bounds is supplied, the wrapper contains at least two distinct <light> elements with distinct name= attributes (e.g. blueprint_key and blueprint_fill), at least one of which has castshadow="true".
+- [x] When scene_bounds is supplied, the key light's pos attribute is NOT the legacy literal pos="0 -4 8" — proving the position is derived from the scene geometry rather than hardcoded.
+- [x] When scene_bounds/scene_centroid are omitted (None), the wrapper still parses as XML (xml.etree.ElementTree.fromstring succeeds) and contains a directional light (directional="true"), preserving backward compatibility for all existing callers and the two existing wrapper tests (lines 142, 162).
+- [x] The scene visual material rgba is unchanged (still 0.45 0.50 0.55 1 at line 806) — this task changes lighting only, not materials, so it does not silently overlap the separate P0a texture task.
+- [x] No new field or doc string emitted by this run asserts photoreal fidelity or implies Isaac-equivalent render evidence; the wrapper's existing mujoco_visual_fidelity_boundary text at lines 527-531 remains the truth boundary and is not weakened.
+- [x] pytest tests/test_mujoco_g1_simulator_command.py -k 'mjcf_wrapper' passes with the two new tests plus the two pre-existing wrapper tests green.
 
 **Verification:**
 

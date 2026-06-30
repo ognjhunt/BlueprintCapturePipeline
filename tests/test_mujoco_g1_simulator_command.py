@@ -4,6 +4,7 @@ import inspect
 import json
 import sys
 import types
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
@@ -251,6 +252,55 @@ def test_mjcf_wrapper_has_separate_scene_collision_geom(tmp_path: Path) -> None:
         'material="blueprint_scene_collision_mat" contype="1" conaffinity="1"'
         in xml
     )
+
+
+def test_mjcf_wrapper_uses_scene_derived_lights_and_shadow_quality(
+    tmp_path: Path,
+) -> None:
+    scene_obj = tmp_path / "scene.obj"
+    g1_xml = tmp_path / "g1.xml"
+    wrapper = tmp_path / "wrapper.xml"
+    scene_obj.write_text("v 0 0 0\n", encoding="utf-8")
+    g1_xml.write_text("<mujoco/>", encoding="utf-8")
+
+    _write_mjcf_wrapper(
+        scene_obj,
+        g1_xml,
+        wrapper,
+        scene_bounds=[[-3.0, -2.0, 0.0], [3.0, 2.0, 2.5]],
+        scene_centroid=[0.0, 0.0, 1.25],
+    )
+    xml = wrapper.read_text(encoding="utf-8")
+    root = ET.fromstring(xml)
+    quality = root.find("./visual/quality")
+    lights = root.findall("./worldbody/light")
+    light_names = {light.attrib.get("name") for light in lights}
+    key_light = next(light for light in lights if light.attrib.get("name") == "blueprint_key")
+
+    assert quality is not None
+    assert int(quality.attrib["shadowsize"]) > 0
+    assert {"blueprint_key", "blueprint_fill"}.issubset(light_names)
+    assert key_light.attrib["castshadow"] == "true"
+    assert key_light.attrib["pos"] != "0 -4 8"
+    assert '<material name="blueprint_scene_mat" rgba="0.45 0.50 0.55 1"/>' in xml
+
+
+def test_mjcf_wrapper_without_scene_bounds_keeps_parseable_directional_light(
+    tmp_path: Path,
+) -> None:
+    scene_obj = tmp_path / "scene.obj"
+    g1_xml = tmp_path / "g1.xml"
+    wrapper = tmp_path / "wrapper.xml"
+    scene_obj.write_text("v 0 0 0\n", encoding="utf-8")
+    g1_xml.write_text("<mujoco/>", encoding="utf-8")
+
+    _write_mjcf_wrapper(scene_obj, g1_xml, wrapper)
+    xml = wrapper.read_text(encoding="utf-8")
+    root = ET.fromstring(xml)
+    lights = root.findall("./worldbody/light")
+
+    assert any(light.attrib.get("directional") == "true" for light in lights)
+    assert any(light.attrib.get("pos") == "0 -4 8" for light in lights)
 
 
 def test_mjcf_wrapper_binds_scene_texture_when_present(tmp_path: Path) -> None:

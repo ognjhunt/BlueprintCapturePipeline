@@ -828,6 +828,83 @@ def _xml_vec(values: Sequence[Any]) -> str:
     return " ".join(_xml_float(value) for value in values)
 
 
+def _direction_to_target(origin: Sequence[float], target: Sequence[float]) -> list[float]:
+    delta = [float(target[index]) - float(origin[index]) for index in range(3)]
+    magnitude = math.sqrt(sum(value * value for value in delta))
+    if magnitude <= 1e-9:
+        return [0.0, 0.0, -1.0]
+    return [round(value / magnitude, 6) for value in delta]
+
+
+def _mjcf_scene_lighting_assets(
+    scene_bounds: Sequence[Sequence[float]] | None,
+    scene_centroid: Sequence[float] | None,
+) -> tuple[str, str]:
+    legacy_headlight = (
+        '    <headlight diffuse="0.8 0.8 0.8" ambient="0.25 0.25 0.25" '
+        'specular="0.6 0.6 0.6"/>'
+    )
+    legacy_light = (
+        '    <light name="blueprint_key" pos="0 -4 8" dir="0 0 -1" '
+        'directional="true"/>'
+    )
+    if (
+        not isinstance(scene_bounds, Sequence)
+        or isinstance(scene_bounds, (str, bytes))
+        or len(scene_bounds) < 2
+    ):
+        return legacy_headlight, legacy_light
+    raw_lower = _float_triplet(scene_bounds[0])
+    raw_upper = _float_triplet(scene_bounds[1])
+    if raw_lower is None or raw_upper is None:
+        return legacy_headlight, legacy_light
+    lower = [min(raw_lower[index], raw_upper[index]) for index in range(3)]
+    upper = [max(raw_lower[index], raw_upper[index]) for index in range(3)]
+    spans = [upper[index] - lower[index] for index in range(3)]
+    if any(value <= 0.0 for value in spans):
+        return legacy_headlight, legacy_light
+    centroid = _float_triplet(scene_centroid)
+    if centroid is None:
+        centroid = [(lower[index] + upper[index]) / 2.0 for index in range(3)]
+    span_x = max(spans[0], 1.0)
+    span_y = max(spans[1], 1.0)
+    span_z = max(spans[2], 1.0)
+    scene_diag = max(spans)
+    key_pos = [
+        centroid[0] - 0.6 * span_x,
+        centroid[1] - 0.9 * span_y,
+        upper[2] + max(2.0, 0.8 * scene_diag),
+    ]
+    fill_pos = [
+        centroid[0] + 0.75 * span_x,
+        centroid[1] + 0.65 * span_y,
+        upper[2] + max(1.5, 0.5 * span_z),
+    ]
+    key_dir = _direction_to_target(key_pos, centroid)
+    fill_dir = _direction_to_target(fill_pos, centroid)
+    headlight = (
+        '    <headlight diffuse="0.45 0.45 0.45" ambient="0.22 0.22 0.22" '
+        'specular="0.45 0.45 0.45"/>'
+    )
+    lights = "\n".join(
+        [
+            (
+                f'    <light name="blueprint_key" pos="{_xml_vec(key_pos)}" '
+                f'dir="{_xml_vec(key_dir)}" directional="true" castshadow="true" '
+                'diffuse="0.85 0.82 0.76" ambient="0.08 0.08 0.08" '
+                'specular="0.35 0.35 0.35"/>'
+            ),
+            (
+                f'    <light name="blueprint_fill" pos="{_xml_vec(fill_pos)}" '
+                f'dir="{_xml_vec(fill_dir)}" directional="true" castshadow="false" '
+                'diffuse="0.35 0.40 0.48" ambient="0.05 0.05 0.06" '
+                'specular="0.1 0.1 0.12"/>'
+            ),
+        ]
+    )
+    return headlight, lights
+
+
 def _write_mjcf_wrapper(
     scene_obj: Path,
     g1_xml: Path,
@@ -835,6 +912,8 @@ def _write_mjcf_wrapper(
     *,
     collision_proxies: Sequence[Mapping[str, Any]] | None = None,
     scene_texture_file: str | Path | None = None,
+    scene_bounds: Sequence[Sequence[float]] | None = None,
+    scene_centroid: Sequence[float] | None = None,
     render_width: int = 640,
     render_height: int = 360,
 ) -> None:
@@ -877,11 +956,16 @@ def _write_mjcf_wrapper(
         scene_material_asset = (
             '    <material name="blueprint_scene_mat" rgba="0.45 0.50 0.55 1"/>'
         )
+    headlight_asset, scene_lights = _mjcf_scene_lighting_assets(
+        scene_bounds,
+        scene_centroid,
+    )
     wrapper = f"""<mujoco model="blueprint_mujoco_g1_simulator_command">
   <include file="{_xml_escape(g1_xml)}"/>
   <visual>
-    <headlight diffuse="0.8 0.8 0.8" ambient="0.25 0.25 0.25" specular="0.6 0.6 0.6"/>
+{headlight_asset}
     <global offwidth="{offwidth}" offheight="{offheight}" azimuth="140" elevation="-20"/>
+    <quality shadowsize="4096"/>
     <map znear="0.01" zfar="200"/>
   </visual>
   <asset>
@@ -890,7 +974,7 @@ def _write_mjcf_wrapper(
     <material name="blueprint_scene_collision_mat" rgba="0.05 0.75 0.35 0.18"/>
   </asset>
   <worldbody>
-    <light name="blueprint_key" pos="0 -4 8" dir="0 0 -1" directional="true"/>
+{scene_lights}
     <geom name="blueprint_reference_floor" type="plane" size="8 8 0.05" rgba="0.18 0.20 0.22 1"
       contype="1" conaffinity="1"/>
     <geom name="blueprint_scene_visual" type="mesh" mesh="blueprint_scene_mesh"
@@ -3956,6 +4040,8 @@ def run_mujoco_g1_simulator_command(
         wrapper_xml,
         collision_proxies=collision_proxies if isinstance(collision_proxies, Sequence) else None,
         scene_texture_file=scene_texture_file,
+        scene_bounds=mesh_info.get("bounds"),
+        scene_centroid=mesh_info.get("centroid"),
         render_width=render_width,
         render_height=render_height,
     )
