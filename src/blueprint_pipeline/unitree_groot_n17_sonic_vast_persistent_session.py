@@ -129,6 +129,7 @@ DEFAULT_INNER_POLICY_COMMAND = (
 RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV = {
     OSCAR_WAM_VISUAL_PROFILE_ENV: "smoke",
     "BLUEPRINT_OSCAR_WAM_NUM_STEPS": "2",
+    "BLUEPRINT_OSCAR_WAM_GUIDANCE": "3.5",
     "BLUEPRINT_OSCAR_WAM_NUM_FRAMES": "9",
     "BLUEPRINT_OSCAR_WAM_HEIGHT": "128",
     "BLUEPRINT_OSCAR_WAM_WIDTH": "128",
@@ -140,6 +141,7 @@ RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV = {
 RUNPOD_WAM_CARRIER_REVIEW_QUALITY_DEFAULT_ENV = {
     OSCAR_WAM_VISUAL_PROFILE_ENV: "review_quality",
     "BLUEPRINT_OSCAR_WAM_NUM_STEPS": "2",
+    "BLUEPRINT_OSCAR_WAM_GUIDANCE": "3.5",
     "BLUEPRINT_OSCAR_WAM_NUM_FRAMES": "24",
     "BLUEPRINT_OSCAR_WAM_HEIGHT": "480",
     "BLUEPRINT_OSCAR_WAM_WIDTH": "640",
@@ -212,6 +214,10 @@ def _current_wam_visual_profile_settings() -> dict[str, Any]:
         "num_steps": _int_env(
             "BLUEPRINT_OSCAR_WAM_NUM_STEPS",
             int(defaults["BLUEPRINT_OSCAR_WAM_NUM_STEPS"]),
+        ),
+        "guidance": _float_env(
+            "BLUEPRINT_OSCAR_WAM_GUIDANCE",
+            float(defaults["BLUEPRINT_OSCAR_WAM_GUIDANCE"]),
         ),
         "num_frames": _int_env(
             "BLUEPRINT_OSCAR_WAM_NUM_FRAMES",
@@ -1615,6 +1621,13 @@ def _structural_wam_frame(source_frame: Path, target_frame: Path, step_index: in
     }
 
 
+def _float_config(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 class PolicyWorker(BaseHTTPRequestHandler):
     policy_command = ""
     command_source = ""
@@ -1806,6 +1819,7 @@ class WamWorker(BaseHTTPRequestHandler):
                     wam_rollout_input_manifest=step_input_path,
                     timeout_seconds=int(self.timeout_seconds),
                     num_steps=int(os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_STEPS", "12")),
+                    guidance=_float_config("BLUEPRINT_OSCAR_WAM_GUIDANCE", 3.5),
                     num_frames=int(os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_FRAMES", "24")),
                     height=int(os.environ.get("BLUEPRINT_OSCAR_WAM_HEIGHT", "480")),
                     width=int(os.environ.get("BLUEPRINT_OSCAR_WAM_WIDTH", "640")),
@@ -4616,9 +4630,11 @@ def _postprocess_imported_persistent_session_artifacts(
     input_contract_warning_counts: dict[str, int] = {}
     input_contract_risk_flag_counts: dict[str, int] = {}
     input_contract_high_risk_flag_counts: dict[str, int] = {}
+    input_contract_ranking_risk_flag_counts: dict[str, int] = {}
     input_contract_conditioning_mode_counts: dict[str, int] = {}
     input_contract_rgb_context_mode_counts: dict[str, int] = {}
     input_contract_high_risk_count = 0
+    input_contract_policy_ranking_risk_count = 0
     input_contract_projected_skeleton_used_count = 0
     input_contract_policy_action_proxy_count = 0
     for row in wam_calls:
@@ -4685,6 +4701,13 @@ def _postprocess_imported_persistent_session_artifacts(
             input_contract_high_risk_flag_counts[flag] = (
                 input_contract_high_risk_flag_counts.get(flag, 0) + 1
             )
+        row_ranking_risk_flags = _string_list(input_contract.get("ranking_risk_flags"))
+        for flag in row_ranking_risk_flags:
+            input_contract_ranking_risk_flag_counts[flag] = (
+                input_contract_ranking_risk_flag_counts.get(flag, 0) + 1
+            )
+        if input_contract.get("policy_ranking_claim_safe") is False or row_ranking_risk_flags:
+            input_contract_policy_ranking_risk_count += 1
         projected_used = bool(
             projected_contract.get("used_for_conditioning")
             or _mapping(input_package.get("projected_skeleton_trace")).get("used_for_conditioning")
@@ -4778,9 +4801,12 @@ def _postprocess_imported_persistent_session_artifacts(
         "contract_warning_counts": input_contract_warning_counts,
         "contract_autoregressive_risk_flag_counts": input_contract_risk_flag_counts,
         "contract_high_risk_flag_counts": input_contract_high_risk_flag_counts,
+        "contract_ranking_risk_flag_counts": input_contract_ranking_risk_flag_counts,
         "conditioning_mode_counts": input_contract_conditioning_mode_counts,
         "rgb_context_mode_counts": input_contract_rgb_context_mode_counts,
         "high_risk_input_contract_count": input_contract_high_risk_count,
+        "policy_ranking_risk_input_contract_count": input_contract_policy_ranking_risk_count,
+        "policy_ranking_claim_safe": input_contract_policy_ranking_risk_count == 0,
         "projected_skeleton_conditioning_count": input_contract_projected_skeleton_used_count,
         "policy_action_proxy_conditioning_count": input_contract_policy_action_proxy_count,
         "blockers": [
@@ -4792,6 +4818,7 @@ def _postprocess_imported_persistent_session_artifacts(
             "input_contract_summary_is_not_model_execution_proof": True,
             "input_contract_summary_is_not_rollout_quality_proof": True,
             "high_risk_input_contract_can_explain_but_not_prove_model_failure": True,
+            "policy_ranking_claim_safe_requires_policy_derived_action_conditioning": True,
             "scene_or_task_specific_pixels_used": False,
         },
         "raw_credentials_written_to_artifacts": False,

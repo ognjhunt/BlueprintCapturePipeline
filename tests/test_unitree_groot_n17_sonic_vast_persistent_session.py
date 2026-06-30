@@ -1391,7 +1391,11 @@ def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
                             "high_risk_flags": [
                                 "policy_action_proxy_without_projected_skeleton_high_risk"
                             ],
+                            "ranking_risk_flags": [
+                                "projected_skeleton_not_policy_derived_action_ranking_risk"
+                            ],
                             "autoregressive_risk_level": "high",
+                            "policy_ranking_claim_safe": False,
                         },
                     }
                 },
@@ -1435,6 +1439,11 @@ def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
     )
     assert input_contract["status"] == "warning_high_risk"
     assert input_contract["high_risk_input_contract_count"] == 1
+    assert input_contract["policy_ranking_risk_input_contract_count"] == 1
+    assert input_contract["policy_ranking_claim_safe"] is False
+    assert input_contract["contract_ranking_risk_flag_counts"] == {
+        "projected_skeleton_not_policy_derived_action_ranking_risk": 1
+    }
     assert input_contract["policy_action_proxy_conditioning_count"] == 1
     assert input_contract["projected_skeleton_conditioning_count"] == 0
     assert input_contract["contract_status_counts"] == {"warning_high_risk": 1}
@@ -1889,6 +1898,7 @@ def test_runpod_persistent_session_defaults_to_wam_carrier_and_wait_floor(
             "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE"
         )
         captured["wam_num_steps"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_STEPS")
+        captured["wam_guidance"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_GUIDANCE")
         captured["wam_num_frames"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_FRAMES")
         captured["wam_height"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_HEIGHT")
         captured["wam_width"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_WIDTH")
@@ -1958,6 +1968,7 @@ def test_runpod_persistent_session_defaults_to_wam_carrier_and_wait_floor(
     assert captured["wam_carrier_enabled"] == "true"
     assert captured["wam_visual_profile"] == "smoke"
     assert captured["wam_num_steps"] == "2"
+    assert captured["wam_guidance"] == "3.5"
     assert captured["wam_num_frames"] == "9"
     assert captured["wam_height"] == "128"
     assert captured["wam_width"] == "128"
@@ -1991,6 +2002,7 @@ def test_runpod_persistent_session_review_quality_profile_uses_higher_fidelity_d
         captured["wam_visual_profile"] = session.os.environ.get(
             "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE"
         )
+        captured["wam_guidance"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_GUIDANCE")
         captured["wam_num_frames"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_FRAMES")
         captured["wam_height"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_HEIGHT")
         captured["wam_width"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_WIDTH")
@@ -2036,6 +2048,7 @@ def test_runpod_persistent_session_review_quality_profile_uses_higher_fidelity_d
     assert exit_code == 2
     assert output["status"] == "blocked"
     assert captured["wam_visual_profile"] == "review_quality"
+    assert captured["wam_guidance"] == "3.5"
     assert captured["wam_num_frames"] == "24"
     assert captured["wam_height"] == "480"
     assert captured["wam_width"] == "640"
