@@ -35,7 +35,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 8 | T11 | MuJoCo | S | — | `done` | MuJoCo texture/material preservation (GLB->OBJ keeps PBR map_Kd and binds a MuJoCo texture to the visual geom) |
 | 9 | T12 | MuJoCo | S | — | `done` | MuJoCo scene-derived lighting + shadows in the MJCF wrapper |
 | 10 | T8 | MuJoCo | M | — | `done` | MuJoCo segmentation render pass |
-| 11 | T9 | Isaac | M | — | `todo` | Isaac native instance/semantic segmentation render pass |
+| 11 | T9 | Isaac | M | — | `in-progress` | Isaac native instance/semantic segmentation render pass |
 | 12 | T13 | Isaac | M | — | `todo` | Isaac gravity-on dynamic stepping: turn the existing settle loop into a physics-proof path with displacement + fall verdict |
 | 13 | T14 | Isaac | L | T13 | `todo` | Isaac torque/effort drive (PD law port) + authored MassAPI/PhysicsMaterial on the resolved target only |
 | 14 | T10 | MuJoCo | M | — | `todo` | MuJoCo convex/OBB collision proxies (flag-gated) |
@@ -662,7 +662,7 @@ Hermetic, GPU-free pytest. Run: `.venv/bin/python -m pytest tests/test_mujoco_g1
 ### 11. T9 — Isaac native instance/semantic segmentation render pass
 
 - **Lane:** Isaac  |  **Effort:** M (medium)  |  **Depends on:** none
-- **Status:** todo
+- **Status:** in-progress
 
 **Summary.** Today the Isaac kitchen-parity runner attaches only an `rgb` Replicator annotator (`_make_render_product`, scripts/run_isaac_g1_kitchen_parity_eval.py:5125-5130), so masks come exclusively from external SAM3 with no deterministic ground-truth. Add a native `instance_segmentation` (+ `semantic_segmentation`) Replicator annotator pass that authors USD semantic labels onto scene prims and saves per-frame colorized mask PNGs + an id->label JSON, plus an Isaac-only proof field in the result, so success scoring gets free deterministic per-pixel object identity without changing the swappable RGB/policy path.
 

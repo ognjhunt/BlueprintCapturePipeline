@@ -798,7 +798,8 @@ def mp4_command(frames_glob: str, fps: int, out_path: str) -> list[str]:
 def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[Mapping[str, Any]],
                  policy_id: str, kitchen_usd: str, g1_usd: str | None,
                  blockers: Sequence[str],
-                 physics_articulation_contact_reports: Sequence[Mapping[str, Any]] | None = None) -> dict:
+                 physics_articulation_contact_reports: Sequence[Mapping[str, Any]] | None = None,
+                 segmentation_summary: Mapping[str, Any] | None = None) -> dict:
     passed = sum(1 for o in outcomes if o.get("task_success"))
     status = "completed" if outcomes and not blockers else "blocked"
     contact_summary = summarize_physics_articulation_contact_reports(
@@ -854,6 +855,24 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
         result["physics_articulation_standing_contact_reports"] = [
             dict(report) for report in physics_articulation_contact_reports or []
         ]
+    if segmentation_summary is not None:
+        seg_summary = dict(segmentation_summary)
+        labeled_prim_count = int(seg_summary.get("labeled_prim_count") or 0)
+        instance_mask_frames = int(seg_summary.get("instance_mask_frames") or 0)
+        result["segmentation_pass"] = {
+            "schema_version": "isaac_g1_kitchen_parity_segmentation.v1",
+            "simulator_backend": "isaac_replicator",
+            "native_segmentation_proven": bool(
+                labeled_prim_count > 0 and instance_mask_frames > 0
+            ),
+            "labeled_prim_count": labeled_prim_count,
+            "instance_mask_frames": instance_mask_frames,
+            "semantic_mask_frames": int(seg_summary.get("semantic_mask_frames") or 0),
+            "id_label_path": seg_summary.get("id_label_path"),
+            "sample_labels": list(seg_summary.get("sample_labels") or [])[:40],
+            "blockers": list(seg_summary.get("blockers") or []),
+            "source": "replicator_instance_semantic_annotator",
+        }
     return result
 
 
@@ -3663,6 +3682,103 @@ def _scene_objects_for_stage(stage) -> list[Any]:
     return filtered
 
 
+def _semantic_label_from_prim_name(name: str) -> str:
+    try:
+        from blueprint_pipeline.scene_placement.usd_index import _clean_label  # type: ignore
+
+        label = str(_clean_label(name))
+    except Exception:  # noqa: BLE001
+        label = str(name).replace("_", " ").strip().lower()
+        while label and label[-1].isdigit():
+            label = label[:-1].rstrip("_- .")
+    return label or "scene_object"
+
+
+def _author_scene_semantic_labels(
+    stage,
+    *,
+    robot_prim_path: str | None,
+    keep_substrings: Sequence[str] = (),
+) -> dict[str, Any]:
+    try:
+        from pxr import UsdGeom  # type: ignore
+    except Exception:
+        UsdGeom = None  # type: ignore[assignment]
+    add_semantics = None
+    try:
+        from semantics.schema_editor import add_prim_semantics  # type: ignore
+
+        add_semantics = add_prim_semantics
+    except Exception:
+        try:
+            from omni.isaac.core.utils.semantics import add_update_semantics  # type: ignore
+
+            add_semantics = add_update_semantics
+        except Exception as exc:
+            return {
+                "schema_version": "isaac_scene_semantic_label_authoring.v1",
+                "labeled_prim_count": 0,
+                "sample_labels": [],
+                "keep_substrings": list(keep_substrings),
+                "blockers": ["isaac_semantics_authoring_api_unavailable"],
+                "error": repr(exc),
+            }
+    blockers: list[str] = []
+    sample_labels: list[dict[str, str]] = []
+    labeled_count = 0
+    robot_path = str(robot_prim_path or "")
+    skip_tokens = ("g1", "unitree", "robot", "placementdebug")
+    try:
+        prims = list(stage.Traverse())
+    except Exception as exc:
+        return {
+            "schema_version": "isaac_scene_semantic_label_authoring.v1",
+            "labeled_prim_count": 0,
+            "sample_labels": [],
+            "keep_substrings": list(keep_substrings),
+            "blockers": ["isaac_stage_traversal_unavailable"],
+            "error": repr(exc),
+        }
+    for prim in prims:
+        try:
+            prim_path = str(prim.GetPath())
+            prim_name = str(prim.GetName())
+        except Exception:
+            continue
+        text = f"{prim_path} {prim_name}".lower()
+        if robot_path and prim_path.startswith(robot_path):
+            continue
+        if any(token in text for token in skip_tokens):
+            continue
+        if UsdGeom is not None:
+            try:
+                if not (prim.IsA(UsdGeom.Gprim) or prim.IsA(UsdGeom.Imageable)):
+                    continue
+            except Exception:
+                continue
+        label = _semantic_label_from_prim_name(prim_name)
+        try:
+            try:
+                add_semantics(prim, semantic_label=label, type_label="class")
+            except TypeError:
+                try:
+                    add_semantics(prim, label, "class")
+                except TypeError:
+                    add_semantics(prim, label)
+            labeled_count += 1
+            if len(sample_labels) < 40:
+                sample_labels.append({"prim_path": prim_path, "semantic_label": label})
+        except Exception as exc:  # noqa: BLE001
+            blockers.append(f"semantic_label_authoring_failed:{type(exc).__name__}")
+    return {
+        "schema_version": "isaac_scene_semantic_label_authoring.v1",
+        "labeled_prim_count": labeled_count,
+        "sample_labels": sample_labels,
+        "keep_substrings": list(keep_substrings),
+        "blockers": sorted(set(blockers)),
+    }
+
+
 def _placement_obstacles_for_stage(
     stage,
     *,
@@ -5132,16 +5248,44 @@ def _prune_to_focus(stage, route_points, focus_radius: float, keep_substrings) -
     return {"kept": kept, "pruned": pruned, "kept_names": kept_names[:40]}
 
 
-def _make_render_product(camera_path: str, width: int, height: int, *, with_depth: bool = False):
+def _make_render_product(
+    camera_path: str,
+    width: int,
+    height: int,
+    *,
+    with_depth: bool = False,
+    with_segmentation: bool = False,
+):
     import omni.replicator.core as rep  # type: ignore
     rp = rep.create.render_product(camera_path, (width, height))
     annot = rep.AnnotatorRegistry.get_annotator("rgb")
     annot.attach([rp])
-    if not with_depth:
+    if not with_depth and not with_segmentation:
         return annot
-    depth_annot = rep.AnnotatorRegistry.get_annotator("distance_to_image_plane")
-    depth_annot.attach([rp])
-    return annot, depth_annot
+    annots: dict[str, Any] = {"rgb": annot}
+    if with_depth:
+        depth_annot = rep.AnnotatorRegistry.get_annotator("distance_to_image_plane")
+        depth_annot.attach([rp])
+        annots["depth"] = depth_annot
+    if with_segmentation:
+        inst_annot = rep.AnnotatorRegistry.get_annotator(
+            "instance_segmentation",
+            init_params={"colorize": True},
+        )
+        sem_annot = rep.AnnotatorRegistry.get_annotator(
+            "semantic_segmentation",
+            init_params={"colorize": True},
+        )
+        inst_annot.attach([rp])
+        sem_annot.attach([rp])
+        annots["instance"] = inst_annot
+        annots["semantic"] = sem_annot
+    if with_depth and not with_segmentation:
+        depth_annot = annots["depth"]
+        return annot, depth_annot
+    if with_segmentation:
+        return annots
+    return annot
 
 
 def _isaac_camera_contract(stage, cam_path: str, width: int, height: int) -> dict[str, Any]:
@@ -5524,6 +5668,66 @@ def _save_depth(depth_annot, out_path: Path, *, npy_path: Path | None = None) ->
             preview = np.where(finite, 255, 0).astype("uint8")
     Image.fromarray(preview).save(out_path)
     return True
+
+
+def _segmentation_payload(data: Any) -> Any:
+    if isinstance(data, Mapping):
+        for key in ("data", "image", "rgba"):
+            if data.get(key) is not None:
+                return data.get(key)
+        return None
+    return data
+
+
+def _save_segmentation(
+    seg_annots: Mapping[str, Any],
+    *,
+    instance_png: Path,
+    semantic_png: Path,
+    id_label_json: Path,
+) -> dict[str, Any]:
+    import numpy as np  # type: ignore
+    from PIL import Image  # type: ignore
+
+    blockers: list[str] = []
+
+    def _save_one(annot: Any, out_path: Path) -> tuple[bool, Any]:
+        if annot is None:
+            return False, None
+        data = annot.get_data()
+        payload = _segmentation_payload(data)
+        if payload is None or getattr(payload, "size", 0) == 0:
+            return False, data
+        arr = np.asarray(payload)
+        if arr.size == 0:
+            return False, data
+        Image.fromarray(arr.astype("uint8")).save(out_path)
+        return True, data
+
+    instance_png.parent.mkdir(parents=True, exist_ok=True)
+    instance_saved, instance_data = _save_one(seg_annots.get("instance"), instance_png)
+    semantic_saved, semantic_data = _save_one(seg_annots.get("semantic"), semantic_png)
+    if not instance_saved:
+        blockers.append("instance_segmentation_mask_not_saved")
+    if not semantic_saved:
+        blockers.append("semantic_segmentation_mask_not_saved")
+    instance_info = instance_data.get("info") if isinstance(instance_data, Mapping) else {}
+    if not isinstance(instance_info, Mapping):
+        instance_info = {}
+    id_to_labels = instance_info.get("idToLabels") or {}
+    id_label_json.parent.mkdir(parents=True, exist_ok=True)
+    id_label_json.write_text(json.dumps(id_to_labels, indent=2, sort_keys=True), encoding="utf-8")
+    return {
+        "schema_version": "isaac_segmentation_frame_save.v1",
+        "instance_saved": bool(instance_saved),
+        "semantic_saved": bool(semantic_saved),
+        "instance_png": str(instance_png) if instance_saved else None,
+        "semantic_png": str(semantic_png) if semantic_saved else None,
+        "id_label_json": str(id_label_json),
+        "id_to_labels": id_to_labels,
+        "blockers": blockers,
+        "semantic_data_present": semantic_data is not None,
+    }
 
 
 def camera_aperture_for_fov(vfov_deg: float, width: int, height: int, focal_mm: float = 20.0):
@@ -6075,6 +6279,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   manipulation_stand: bool = False,
                   software_denoise: bool = True,
                   depth_pass: bool = False,
+                  segmentation: bool = False,
                   serve: bool = False, serve_dir: "Path | None" = None,
                   serve_idle_timeout_s: float = 600.0,
                   serve_max_jobs: "int | None" = None) -> dict:
@@ -6131,6 +6336,16 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
     blockers: list[str] = []
     outcomes: list[dict] = []
     physics_contact_reports: list[dict[str, Any]] = []
+    segmentation_summary: dict[str, Any] = {
+        "schema_version": "isaac_g1_kitchen_parity_segmentation_summary.v1",
+        "enabled": bool(segmentation),
+        "labeled_prim_count": 0,
+        "instance_mask_frames": 0,
+        "semantic_mask_frames": 0,
+        "id_label_path": None,
+        "sample_labels": [],
+        "blockers": [],
+    }
     result = None
     if dynamic_standing_contact_steps > 0:
         articulated = True
@@ -6163,6 +6378,20 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             _log(
                 "G1 visual mesh/Gprim readiness FAILED after candidate load attempts; "
                 "link projections will be treated as geometry-only evidence"
+            )
+        if segmentation:
+            label_summary = _author_scene_semantic_labels(
+                stage,
+                robot_prim_path=binding.get("prim_path"),
+                keep_substrings=keep_substrings,
+            )
+            segmentation_summary["labeled_prim_count"] = int(
+                label_summary.get("labeled_prim_count") or 0
+            )
+            segmentation_summary["sample_labels"] = list(label_summary.get("sample_labels") or [])
+            segmentation_summary["blockers"] = list(label_summary.get("blockers") or [])
+            (out_dir / "segmentation_semantic_label_authoring.json").write_text(
+                json.dumps(label_summary, indent=2)
             )
         robot_neutral_xforms: dict[str, Any] = {}
         if kinematic_arm_pose or manipulation_reach:
@@ -6346,6 +6575,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         _log(f"creating render products ({width}x{height})")
         over_depth_annot = None
         pov_depth_annot = None
+        pov_seg_annots = None
         if depth_pass:
             over_annot, over_depth_annot = _make_render_product(
                 over_cam,
@@ -6353,15 +6583,35 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 height,
                 with_depth=True,
             )
-            pov_annot, pov_depth_annot = _make_render_product(
-                pov_cam,
-                width,
-                height,
-                with_depth=True,
-            )
+            if segmentation:
+                pov_seg_annots = _make_render_product(
+                    pov_cam,
+                    width,
+                    height,
+                    with_depth=True,
+                    with_segmentation=True,
+                )
+                pov_annot = pov_seg_annots["rgb"]
+                pov_depth_annot = pov_seg_annots["depth"]
+            else:
+                pov_annot, pov_depth_annot = _make_render_product(
+                    pov_cam,
+                    width,
+                    height,
+                    with_depth=True,
+                )
         else:
             over_annot = _make_render_product(over_cam, width, height)
-            pov_annot = _make_render_product(pov_cam, width, height)
+            if segmentation:
+                pov_seg_annots = _make_render_product(
+                    pov_cam,
+                    width,
+                    height,
+                    with_segmentation=True,
+                )
+                pov_annot = pov_seg_annots["rgb"]
+            else:
+                pov_annot = _make_render_product(pov_cam, width, height)
         verify_annot = _make_render_product(verify_cam_path, width, height) if verify_cam else None
         topdown_annot = None
         topdown_enabled = bool(manipulation_stand)
@@ -6423,6 +6673,10 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             (sdir / "frames").mkdir(parents=True, exist_ok=True)
             camera_contract_rows: list[dict[str, Any]] = []
             depth_frames_written = 0
+            segmentation_instance_frames = 0
+            segmentation_semantic_frames = 0
+            segmentation_blockers: list[str] = list(segmentation_summary.get("blockers") or [])
+            segmentation_id_label_path = sdir / "frames" / "segmentation_id_labels.json"
             stand_root = stand_yaw = None
             stance_plan = None
             scene_objects_for_validation: list[Any] = []
@@ -6959,6 +7213,18 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             pov_frame_path,
                             cap,
                         )
+                    if pov_ok and segmentation and pov_seg_annots is not None:
+                        seg_save = _save_segmentation(
+                            pov_seg_annots,
+                            instance_png=sdir / "frames" / f"robot_pov_instance_{cap:04d}.png",
+                            semantic_png=sdir / "frames" / f"robot_pov_semantic_{cap:04d}.png",
+                            id_label_json=segmentation_id_label_path,
+                        )
+                        if seg_save.get("instance_saved"):
+                            segmentation_instance_frames += 1
+                        if seg_save.get("semantic_saved"):
+                            segmentation_semantic_frames += 1
+                        segmentation_blockers.extend(seg_save.get("blockers") or [])
                     if pov_ok and pov_depth_annot is not None:
                         if _save_depth(
                             pov_depth_annot,
@@ -7210,6 +7476,38 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         "policy/physics/success proof."
                     ),
                 }
+            if segmentation:
+                segmentation_summary["instance_mask_frames"] = int(
+                    segmentation_summary.get("instance_mask_frames") or 0
+                ) + int(segmentation_instance_frames)
+                segmentation_summary["semantic_mask_frames"] = int(
+                    segmentation_summary.get("semantic_mask_frames") or 0
+                ) + int(segmentation_semantic_frames)
+                if segmentation_id_label_path.is_file() and not segmentation_summary.get(
+                    "id_label_path"
+                ):
+                    segmentation_summary["id_label_path"] = str(segmentation_id_label_path)
+                segmentation_summary["blockers"] = sorted(set(segmentation_blockers))
+                outcome["segmentation"] = {
+                    "schema_version": "isaac_g1_kitchen_parity_segmentation_scenario.v1",
+                    "status": "PASS"
+                    if int(segmentation_summary.get("labeled_prim_count") or 0) > 0
+                    and segmentation_instance_frames > 0
+                    else "FAIL",
+                    "labeled_prim_count": int(
+                        segmentation_summary.get("labeled_prim_count") or 0
+                    ),
+                    "instance_mask_frames": int(segmentation_instance_frames),
+                    "semantic_mask_frames": int(segmentation_semantic_frames),
+                    "id_label_path": str(segmentation_id_label_path)
+                    if segmentation_id_label_path.is_file()
+                    else None,
+                    "blockers": sorted(set(segmentation_blockers)),
+                    "claim_boundary": (
+                        "Isaac Replicator native instance/semantic segmentation diagnostic only; "
+                        "not MuJoCo evidence, physical sensor proof, or task-success proof."
+                    ),
+                }
             if stance_plan is not None:
                 outcome["task_stance_plan"] = {
                     "status": stance_plan.get("status"),
@@ -7316,7 +7614,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 blockers.append("physics_articulation_dynamic_standing_contact_stopped_before_outcome")
             result = build_result(scenarios=scenarios, outcomes=outcomes, policy_id=policy_id,
                                   kitchen_usd=kitchen_usd, g1_usd=g1_usd, blockers=blockers,
-                                  physics_articulation_contact_reports=physics_contact_reports)
+                                  physics_articulation_contact_reports=physics_contact_reports,
+                                  segmentation_summary=segmentation_summary if segmentation else None)
             (out_dir / "isaac_g1_kitchen_parity_result.json").write_text(json.dumps(result, indent=2))
         finally:
             try:
@@ -7926,6 +8225,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--depth-pass", action="store_true",
                     help="attach a co-registered distance_to_image_plane depth annotator alongside "
                          "RGB and save per-frame depth (.npy + preview PNG)")
+    ap.add_argument("--segmentation", action="store_true",
+                    help="attach native Replicator instance/semantic segmentation annotators and "
+                         "save deterministic masks (Isaac-only diagnostic)")
     ap.add_argument("--manipulation-stand", action="store_true",
                     help="place the robot AT the scenario target facing --manipulation-look-at every "
                          "step (task start pose; no navigation/redirect) — for manipulation, not locomotion")
@@ -8031,6 +8333,7 @@ def main(argv=None) -> int:
         manipulation_stand=args.manipulation_stand,
         software_denoise=not args.no_software_denoise,
         depth_pass=args.depth_pass,
+        segmentation=args.segmentation,
         serve=args.serve,
         serve_dir=(Path(args.serve_dir) if args.serve_dir else None),
         serve_idle_timeout_s=args.serve_idle_timeout, serve_max_jobs=args.serve_max_jobs)

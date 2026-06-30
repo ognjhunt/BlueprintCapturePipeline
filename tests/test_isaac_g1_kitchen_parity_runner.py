@@ -802,6 +802,56 @@ def test_make_render_product_attaches_depth_to_same_render_product(monkeypatch) 
     assert [annot.name for annot in requested] == ["rgb"]
 
 
+def test_make_render_product_attaches_segmentation_annotators(monkeypatch) -> None:
+    render_product = object()
+    calls: list[tuple[str, object]] = []
+
+    class _Annotator:
+        def __init__(self, name: str, init_params=None) -> None:
+            self.name = name
+            self.init_params = init_params
+            self.attached: list[list[object]] = []
+
+        def attach(self, products) -> None:
+            self.attached.append(list(products))
+
+    def get_annotator(name, init_params=None):
+        calls.append((name, init_params))
+        return _Annotator(name, init_params)
+
+    fake_core = types.ModuleType("omni.replicator.core")
+    fake_core.create = types.SimpleNamespace(
+        render_product=lambda _camera_path, _resolution: render_product
+    )
+    fake_core.AnnotatorRegistry = types.SimpleNamespace(get_annotator=get_annotator)
+    fake_replicator = types.ModuleType("omni.replicator")
+    fake_replicator.core = fake_core
+    fake_omni = types.ModuleType("omni")
+    fake_omni.replicator = fake_replicator
+    monkeypatch.setitem(sys.modules, "omni", fake_omni)
+    monkeypatch.setitem(sys.modules, "omni.replicator", fake_replicator)
+    monkeypatch.setitem(sys.modules, "omni.replicator.core", fake_core)
+
+    annots = M._make_render_product("/World/Cameras/pov", 64, 48, with_segmentation=True)
+
+    assert [name for name, _params in calls] == [
+        "rgb",
+        "instance_segmentation",
+        "semantic_segmentation",
+    ]
+    assert calls[1][1] == {"colorize": True}
+    assert calls[2][1] == {"colorize": True}
+    assert annots["rgb"].attached == [[render_product]]
+    assert annots["instance"].attached == [[render_product]]
+    assert annots["semantic"].attached == [[render_product]]
+
+    calls.clear()
+    single = M._make_render_product("/World/Cameras/overview", 80, 60)
+
+    assert single.name == "rgb"
+    assert calls == [("rgb", None)]
+
+
 def test_save_depth_writes_lossless_npy_and_preview(tmp_path: Path) -> None:
     import numpy as np
 
@@ -830,6 +880,134 @@ def test_save_depth_writes_lossless_npy_and_preview(tmp_path: Path) -> None:
     assert M._save_depth(_Annotator(np.array([], dtype=np.float32)), empty_path) is False
     assert not empty_path.exists()
     assert not empty_path.with_suffix(".npy").exists()
+
+
+def test_save_segmentation_writes_masks_and_id_labels(tmp_path: Path) -> None:
+    import numpy as np
+
+    pytest.importorskip("PIL.Image")
+    mask = np.array(
+        [
+            [[255, 0, 0, 255], [0, 255, 0, 255]],
+            [[0, 0, 255, 255], [255, 255, 0, 255]],
+        ],
+        dtype=np.uint8,
+    )
+
+    class _Annotator:
+        def __init__(self, data) -> None:
+            self._data = data
+
+        def get_data(self):
+            return self._data
+
+    result = M._save_segmentation(
+        {
+            "instance": _Annotator(
+                {"data": mask, "info": {"idToLabels": {"1": {"class": "fridge"}}}}
+            ),
+            "semantic": _Annotator({"data": mask}),
+        },
+        instance_png=tmp_path / "seg" / "instance.png",
+        semantic_png=tmp_path / "seg" / "semantic.png",
+        id_label_json=tmp_path / "seg" / "id_labels.json",
+    )
+
+    assert result["instance_saved"] is True
+    assert result["semantic_saved"] is True
+    assert result["blockers"] == []
+    assert Path(result["instance_png"]).is_file()
+    assert Path(result["semantic_png"]).is_file()
+    assert json.loads(Path(result["id_label_json"]).read_text(encoding="utf-8")) == {
+        "1": {"class": "fridge"}
+    }
+
+
+def test_author_scene_semantic_labels_skips_robot_and_debug_prims(monkeypatch) -> None:
+    labeled: list[tuple[str, str, str]] = []
+
+    class _Prim:
+        def __init__(self, path: str, name: str) -> None:
+            self._path = path
+            self._name = name
+
+        def GetPath(self):
+            return self._path
+
+        def GetName(self):
+            return self._name
+
+    class _Stage:
+        def Traverse(self):
+            return [
+                _Prim("/World/G1/body", "body"),
+                _Prim("/World/PlacementDebug/box", "box"),
+                _Prim("/World/Kitchen/Counter_12", "Counter_12"),
+            ]
+
+    def add_prim_semantics(prim, semantic_label=None, type_label=None):
+        labeled.append((str(prim.GetPath()), str(semantic_label), str(type_label)))
+
+    fake_semantics = types.ModuleType("semantics")
+    fake_schema_editor = types.ModuleType("semantics.schema_editor")
+    fake_schema_editor.add_prim_semantics = add_prim_semantics
+    fake_semantics.schema_editor = fake_schema_editor
+    monkeypatch.setitem(sys.modules, "semantics", fake_semantics)
+    monkeypatch.setitem(sys.modules, "semantics.schema_editor", fake_schema_editor)
+
+    summary = M._author_scene_semantic_labels(
+        _Stage(),
+        robot_prim_path="/World/G1",
+        keep_substrings=("room", "floor"),
+    )
+
+    assert summary["labeled_prim_count"] == 1
+    assert labeled == [("/World/Kitchen/Counter_12", "counter", "class")]
+    assert summary["sample_labels"][0]["semantic_label"] == "counter"
+
+
+def test_build_result_segmentation_pass_is_isaac_only_and_gated() -> None:
+    base = {
+        "scenarios": [{"scenario_id": "s0"}],
+        "outcomes": [{"task_success": True}],
+        "policy_id": "p",
+        "kitchen_usd": "k.usd",
+        "g1_usd": "g.usd",
+        "blockers": [],
+    }
+
+    no_seg = M.build_result(**base)
+    proven = M.build_result(
+        **base,
+        segmentation_summary={
+            "labeled_prim_count": 2,
+            "instance_mask_frames": 1,
+            "semantic_mask_frames": 1,
+        },
+    )
+    unproven = M.build_result(
+        **base,
+        segmentation_summary={
+            "labeled_prim_count": 2,
+            "instance_mask_frames": 0,
+            "semantic_mask_frames": 1,
+        },
+    )
+
+    assert "segmentation_pass" not in no_seg
+    assert proven["segmentation_pass"]["simulator_backend"] == "isaac_replicator"
+    assert proven["segmentation_pass"]["native_segmentation_proven"] is True
+    assert unproven["segmentation_pass"]["native_segmentation_proven"] is False
+
+
+def test_segmentation_pass_field_is_not_a_mujoco_marker() -> None:
+    source = _RUNNER.read_text()
+    start = source.index('"segmentation_pass"')
+    segment = source[start : source.index("return result", start)]
+
+    assert '"simulator_backend": "isaac_replicator"' in segment
+    assert "replicator_instance_semantic_annotator" in segment
+    assert '"simulator_backend": "mujoco"' not in segment
 
 
 def test_arm_reach_rotation_swings_rest_bone_toward_target() -> None:
