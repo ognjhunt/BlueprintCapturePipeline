@@ -42,8 +42,11 @@ RUNPOD_WAM_CREATE_SCHEMA_VERSION = "runpod_wam_async_create_manifest.v1"
 RUNPOD_WAM_POLL_SCHEMA_VERSION = "runpod_wam_async_poll_manifest.v1"
 RUNPOD_WAM_DELETE_SCHEMA_VERSION = "runpod_wam_async_delete_manifest.v1"
 RUNPOD_WAM_STOP_SCHEMA_VERSION = "runpod_wam_async_stop_manifest.v1"
+RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION = "runpod_wam_warm_candidate.v1"
 RUNPOD_WAM_TEARDOWN_ACTION_ENV = "BLUEPRINT_RUNPOD_WAM_TEARDOWN_ACTION"
 RUNPOD_WAM_EXISTING_POD_ID_ENV = "BLUEPRINT_RUNPOD_WAM_EXISTING_POD_ID"
+RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV = "BLUEPRINT_RUNPOD_WAM_WARM_CANDIDATE_FILE"
+RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV = "BLUEPRINT_RUNPOD_WAM_DISABLE_WARM_CANDIDATE"
 RUNPOD_POD_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH"
 RUNPOD_UNITREE_GROOT_SONIC_FULL_LOOP_OVERRIDE_ENV = (
     "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
@@ -75,6 +78,7 @@ DEFAULT_HF_TOKEN_FILES = (
     "~/.blueprint-secrets/huggingface_token",
     "~/.blueprint-secrets/huggingface_token.txt",
 )
+DEFAULT_RUNPOD_WAM_WARM_CANDIDATE_FILE = "~/.blueprint-cache/runpod_wam_warm_candidate.json"
 PROVIDER_RUNTIME_CONFIG_ENV_KEYS = (
     "BLUEPRINT_OSCAR_WAM_ATTEMPT_TRANSFORMER_ENGINE_INSTALL",
     "BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL",
@@ -978,6 +982,139 @@ def _selected_existing_pod_id(explicit: str = "") -> str:
     )
 
 
+def _warm_candidate_path() -> Path:
+    return Path(
+        _string(os.getenv(RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV))
+        or DEFAULT_RUNPOD_WAM_WARM_CANDIDATE_FILE
+    ).expanduser()
+
+
+def _read_compatible_warm_candidate(
+    *,
+    provider_bundle_kind: str,
+    image_name: str,
+    cloud_type: str,
+) -> dict[str, Any]:
+    candidate_path = _warm_candidate_path()
+    if _env_truthy(RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV):
+        return {
+            "status": "disabled",
+            "path": str(candidate_path),
+            "disable_env": RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV,
+            "raw_secret_values_recorded": False,
+        }
+    if not candidate_path.is_file():
+        return {
+            "status": "missing",
+            "path": str(candidate_path),
+            "raw_secret_values_recorded": False,
+        }
+    try:
+        payload = _read_json(candidate_path)
+    except (OSError, ValueError) as exc:
+        return {
+            "status": "unreadable",
+            "path": str(candidate_path),
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    pod_id = _string(payload.get("pod_id"))
+    mismatches: dict[str, dict[str, str]] = {}
+    expected = {
+        "provider_bundle_kind": provider_bundle_kind,
+        "image_name": image_name,
+        "cloud_type": cloud_type,
+    }
+    for key, expected_value in expected.items():
+        actual_value = _string(payload.get(key))
+        if actual_value != expected_value:
+            mismatches[key] = {
+                "candidate": actual_value,
+                "requested": expected_value,
+            }
+    if not pod_id:
+        return {
+            "status": "incompatible",
+            "reason": "warm_candidate_missing_pod_id",
+            "path": str(candidate_path),
+            "raw_secret_values_recorded": False,
+        }
+    if mismatches:
+        return {
+            "status": "incompatible",
+            "reason": "warm_candidate_request_mismatch",
+            "path": str(candidate_path),
+            "mismatches": mismatches,
+            "raw_secret_values_recorded": False,
+        }
+    return {
+        "status": "selected",
+        "path": str(candidate_path),
+        "pod_id": pod_id,
+        "provider_bundle_kind": provider_bundle_kind,
+        "image_name": image_name,
+        "cloud_type": cloud_type,
+        "recorded_at": payload.get("generated_at"),
+        "source_stop_manifest_path": payload.get("source_stop_manifest_path"),
+        "source_job_dir": payload.get("source_job_dir"),
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _write_stopped_warm_candidate(
+    *,
+    job_dir: Path,
+    pod_id: str,
+    generated_at: str,
+) -> dict[str, Any]:
+    candidate_path = _warm_candidate_path()
+    try:
+        state = _read_json(_state_path(job_dir))
+    except (OSError, ValueError) as exc:
+        return {
+            "status": "blocked",
+            "path": str(candidate_path),
+            "blockers": ["runpod_warm_candidate_state_unreadable"],
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    candidate = {
+        "schema_version": RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "pod_id": pod_id,
+        "provider_bundle_kind": _string(state.get("provider_bundle_kind")) or "wam",
+        "image_name": _string(state.get("image_name")),
+        "cloud_type": _string(state.get("cloud_type")) or "SECURE",
+        "gpu_type_ids": list(state.get("gpu_type_ids") or []),
+        "container_disk_gb": state.get("container_disk_gb"),
+        "volume_gb": state.get("volume_gb"),
+        "source_job_dir": str(job_dir),
+        "source_stop_manifest_path": str(job_dir / "runpod_wam_async_stop_manifest.json"),
+        "stopped_pod_preserved_for_warm_reuse": True,
+        "raw_secret_values_recorded": False,
+    }
+    try:
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(candidate_path, candidate)
+    except OSError as exc:
+        return {
+            "status": "blocked",
+            "path": str(candidate_path),
+            "blockers": ["runpod_warm_candidate_write_failed"],
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    return {
+        "status": "recorded",
+        "path": str(candidate_path),
+        "pod_id": pod_id,
+        "provider_bundle_kind": candidate["provider_bundle_kind"],
+        "image_name": candidate["image_name"],
+        "cloud_type": candidate["cloud_type"],
+        "raw_secret_values_recorded": False,
+    }
+
+
 def _existing_pod_update_payload(pod_payload: Mapping[str, Any]) -> dict[str, Any]:
     update_keys = {
         "containerDiskInGb",
@@ -1277,7 +1414,26 @@ def create_runpod_wam_async_run(
         min_vcpu_per_gpu=min_vcpu_per_gpu,
         min_ram_per_gpu=min_ram_per_gpu,
     )
-    selected_existing_pod_id = _selected_existing_pod_id(existing_pod_id)
+    explicit_existing_pod_id = _selected_existing_pod_id(existing_pod_id)
+    warm_candidate = (
+        {
+            "status": "not_considered",
+            "reason": "explicit_existing_pod_id_configured",
+            "pod_id": explicit_existing_pod_id,
+            "raw_secret_values_recorded": False,
+        }
+        if explicit_existing_pod_id
+        else _read_compatible_warm_candidate(
+            provider_bundle_kind=provider_bundle_kind,
+            image_name=image_name,
+            cloud_type=cloud_type,
+        )
+    )
+    selected_existing_pod_id = explicit_existing_pod_id or (
+        _string(warm_candidate.get("pod_id"))
+        if warm_candidate.get("status") == "selected"
+        else ""
+    )
     try:
         if selected_existing_pod_id:
             update_payload = _existing_pod_update_payload(payload)
@@ -1300,6 +1456,10 @@ def create_runpod_wam_async_run(
             warm_reuse_detail = {
                 "requested": True,
                 "existing_pod_id": selected_existing_pod_id,
+                "selection_source": "explicit_existing_pod_id"
+                if explicit_existing_pod_id
+                else "dynamic_warm_candidate",
+                "dynamic_warm_candidate": warm_candidate,
                 "update_http_status_code": update_status_code,
                 "start_http_status_code": status_code,
                 "update_response_keys": sorted(update_response.keys()),
@@ -1320,6 +1480,8 @@ def create_runpod_wam_async_run(
             warm_reuse_detail = {
                 "requested": False,
                 "existing_pod_id": "",
+                "selection_source": "none",
+                "dynamic_warm_candidate": warm_candidate,
                 "raw_secret_values_recorded": False,
             }
     except urllib.error.HTTPError as exc:
@@ -1339,6 +1501,12 @@ def create_runpod_wam_async_run(
             "warm_existing_pod": {
                 "requested": bool(selected_existing_pod_id),
                 "existing_pod_id": selected_existing_pod_id,
+                "selection_source": "explicit_existing_pod_id"
+                if explicit_existing_pod_id
+                else "dynamic_warm_candidate"
+                if selected_existing_pod_id
+                else "none",
+                "dynamic_warm_candidate": warm_candidate,
                 "raw_secret_values_recorded": False,
             },
             "raw_secret_values_recorded": False,
@@ -1486,6 +1654,19 @@ def _stop_pod(
         response = {}
         status = "completed" if exc.code in {404, 410} else "blocked"
         blockers = [] if status == "completed" else ["runpod_stop_pod_http_error"]
+    warm_candidate = (
+        _write_stopped_warm_candidate(
+            job_dir=job_dir,
+            pod_id=pod_id,
+            generated_at=generated_at,
+        )
+        if status == "completed"
+        else {
+            "status": "not_recorded",
+            "reason": "runpod_stop_not_completed",
+            "raw_secret_values_recorded": False,
+        }
+    )
     manifest = {
         "schema_version": RUNPOD_WAM_STOP_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1496,6 +1677,8 @@ def _stop_pod(
         "response_keys": sorted(response.keys()),
         "blockers": blockers,
         "stopped_pod_preserved_for_warm_reuse": status == "completed",
+        "warm_candidate": warm_candidate,
+        "warm_candidate_path": warm_candidate.get("path"),
         "gpu_spend_released_if_provider_honors_stop": status == "completed",
         "stopped_volume_storage_may_continue_billing": status == "completed",
         "continuing_spend_from_this_run": status != "completed",

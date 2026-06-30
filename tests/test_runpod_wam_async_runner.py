@@ -352,6 +352,137 @@ def test_runpod_create_reuses_dynamic_existing_pod_candidate(
     assert "output-secret" not in persisted
 
 
+def test_runpod_create_reuses_recorded_warm_candidate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "wam_bundle.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_runtime/run_wam_provider_runtime.sh", "echo hi\n")
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    warm_candidate_file.write_text(
+        json.dumps(
+            {
+                "schema_version": runner.RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION,
+                "generated_at": "prior",
+                "pod_id": "warm-file-pod-123",
+                "provider_bundle_kind": "wam",
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+                "stopped_pod_preserved_for_warm_reuse": True,
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs["path"] == "/pods/warm-file-pod-123/update":
+            return 200, {"id": "warm-file-pod-123", "desiredStatus": "EXITED"}
+        if kwargs["path"] == "/pods/warm-file-pod-123/start":
+            return 200, {"id": "warm-file-pod-123", "desiredStatus": "RUNNING"}
+        raise AssertionError(kwargs["path"])
+
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url="https://spaces.example/bundle.zip",
+        provider_output_put_url="https://spaces.example/output.zip",
+        allow_paid_runpod_launch=True,
+        skip_public_staging_verification=True,
+        image_name="docker.io/example/wam:20260629",
+        generated_at="now",
+    )
+
+    assert [call["path"] for call in calls] == [
+        "/pods/warm-file-pod-123/update",
+        "/pods/warm-file-pod-123/start",
+    ]
+    assert manifest["pod_launch_mode"] == "existing_pod_start"
+    assert manifest["warm_existing_pod"]["selection_source"] == "dynamic_warm_candidate"
+    assert manifest["warm_existing_pod"]["dynamic_warm_candidate"]["status"] == "selected"
+    assert manifest["warm_existing_pod"]["existing_pod_id"] == "warm-file-pod-123"
+
+
+def test_runpod_create_ignores_incompatible_warm_candidate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "wam_bundle.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_runtime/run_wam_provider_runtime.sh", "echo hi\n")
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    warm_candidate_file.write_text(
+        json.dumps(
+            {
+                "schema_version": runner.RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION,
+                "generated_at": "prior",
+                "pod_id": "warm-file-pod-123",
+                "provider_bundle_kind": "wam",
+                "image_name": "docker.io/example/other:20260629",
+                "cloud_type": "SECURE",
+                "stopped_pod_preserved_for_warm_reuse": True,
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs["path"] == "/pods":
+            return 200, {"id": "fresh-pod-123"}
+        raise AssertionError(kwargs["path"])
+
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url="https://spaces.example/bundle.zip",
+        provider_output_put_url="https://spaces.example/output.zip",
+        allow_paid_runpod_launch=True,
+        skip_public_staging_verification=True,
+        image_name="docker.io/example/wam:20260629",
+        generated_at="now",
+    )
+
+    assert [call["path"] for call in calls] == ["/pods"]
+    assert manifest["pod_launch_mode"] == "fresh_pod_create"
+    assert manifest["warm_existing_pod"]["dynamic_warm_candidate"]["status"] == "incompatible"
+    assert (
+        manifest["warm_existing_pod"]["dynamic_warm_candidate"]["reason"]
+        == "warm_candidate_request_mismatch"
+    )
+
+
 def test_runpod_create_clears_stale_output_from_prior_run(
     tmp_path: Path,
     monkeypatch,
@@ -563,6 +694,11 @@ def test_runpod_poll_can_stop_pod_for_warm_reuse_instead_of_delete(
                 "pod_id": "pod-123",
                 "created_at_epoch": runner.time.time(),
                 "output_path": str(output_zip),
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+                "gpu_type_ids": ["NVIDIA L40S"],
+                "container_disk_gb": 240,
+                "volume_gb": 120,
             }
         ),
         encoding="utf-8",
@@ -578,6 +714,8 @@ def test_runpod_poll_can_stop_pod_for_warm_reuse_instead_of_delete(
         raise AssertionError(f"unexpected runpod request: {kwargs}")
 
     monkeypatch.setenv(runner.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "stop")
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
     monkeypatch.setattr(
         runner,
         "_read_runpod_api_key",
@@ -600,6 +738,12 @@ def test_runpod_poll_can_stop_pod_for_warm_reuse_instead_of_delete(
     assert (job_dir / "runpod_wam_async_stop_manifest.json").is_file()
     assert not (job_dir / "runpod_wam_async_delete_manifest.json").exists()
     assert any(request["path"] == "/pods/pod-123/stop" for request in requests)
+    stop_manifest = json.loads((job_dir / "runpod_wam_async_stop_manifest.json").read_text())
+    assert stop_manifest["warm_candidate"]["status"] == "recorded"
+    assert stop_manifest["warm_candidate_path"] == str(warm_candidate_file)
+    warm_candidate = json.loads(warm_candidate_file.read_text())
+    assert warm_candidate["pod_id"] == "pod-123"
+    assert warm_candidate["image_name"] == "docker.io/example/wam:20260629"
 
 
 def test_runpod_poll_stops_not_found_grace_when_delete_already_completed(
