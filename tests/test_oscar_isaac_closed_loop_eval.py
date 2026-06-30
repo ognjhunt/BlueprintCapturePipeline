@@ -299,6 +299,134 @@ def test_closed_loop_requeries_learned_policy_on_wam_observation(tmp_path: Path)
     assert all(row["requery_status"] == "completed" for row in trace)
 
 
+def test_completion_does_not_overclaim_without_learned_requery(tmp_path: Path) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=8)
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_stub_wam(tmp_path),
+        steps=4,
+        harness_backend_kind="fixture",
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["steps_executed"] == 4
+    assert manifest["policy_observes_wam_generated_next_observation"] is False
+    assert manifest["wam_evaluator_in_control_loop"] is True
+    assert manifest["clean_frame_reanchoring"] == {
+        "enabled": False,
+        "interval_steps": None,
+        "source_frame_kind": "initial_policy_observation_clean_frame",
+    }
+    assert manifest["clean_frame_reanchor_event_count"] == 0
+    assert manifest["periodic_clean_frame_reanchoring_used"] is False
+    assert manifest["proof"]["fresh_learned_policy_requery_steps"] == 0
+    assert manifest["proof"]["policy_observes_wam_generated_next_observation"] is False
+
+    trace = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert trace[1]["source_observation_frame"] == trace[0]["wam_generated_frame"]
+    assert all(row["clean_frame_reanchor_applied"] is False for row in trace)
+
+
+def test_require_fresh_learned_policy_requery_blocks_deterministic_and_passes_with_signal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=9)
+    route = [(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)]
+    blocked = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "blocked",
+        start_frame_path=start,
+        route_points=route,
+        wam_generate_next=_stub_wam(tmp_path),
+        steps=3,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        require_fresh_learned_policy_requery=True,
+    )
+    assert blocked["status"] == "blocked"
+    assert "fresh_learned_policy_requery_not_proven" in blocked["blockers"]
+
+    original_action_record = L.action_record
+
+    def _fresh_action_record(**kwargs):
+        record = original_action_record(**kwargs)
+        record["policy_requeried_on_generated_observation"] = True
+        record["policy_action_source"] = "test_fresh_learned_policy_requery"
+        return record
+
+    monkeypatch.setattr(L, "action_record", _fresh_action_record)
+    completed = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "completed",
+        start_frame_path=start,
+        route_points=route,
+        wam_generate_next=_stub_wam(tmp_path),
+        steps=3,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        require_fresh_learned_policy_requery=True,
+    )
+    assert completed["status"] == "completed"
+    assert completed["proof"]["fresh_learned_policy_requery_steps"] == 3
+    assert completed["policy_observes_wam_generated_next_observation"] is True
+    assert completed["wam_evaluator_in_control_loop"] is True
+
+
+def test_clean_frame_reanchoring_feeds_seed_frame_back(tmp_path: Path) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=10)
+    route = [(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)]
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "reanchor",
+        start_frame_path=start,
+        route_points=route,
+        wam_generate_next=_stub_wam(tmp_path),
+        steps=4,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        clean_frame_reanchor_interval=2,
+    )
+    trace = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    resolved_start = str(start.resolve())
+    assert manifest["status"] == "completed"
+    assert manifest["clean_frame_reanchor_event_count"] == 2
+    assert manifest["periodic_clean_frame_reanchoring_used"] is True
+    assert manifest["clean_frame_reanchoring"]["enabled"] is True
+    assert manifest["clean_frame_reanchoring"]["interval_steps"] == 2
+    assert [event["step_index"] for event in manifest["clean_frame_reanchor_events"]] == [2, 4]
+    assert manifest["clean_frame_reanchor_events"][0]["next_policy_observation_frame_path"] == resolved_start
+    assert trace[1]["clean_frame_reanchor_applied"] is True
+    assert trace[2]["source_observation_frame"] == resolved_start
+    assert manifest["proof"]["feed_forward_verified"] is True
+
+    default = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "default",
+        start_frame_path=start,
+        route_points=route,
+        wam_generate_next=_stub_wam(tmp_path),
+        steps=3,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        clean_frame_reanchor_interval=0,
+    )
+    default_trace = [
+        json.loads(line)
+        for line in Path(default["trace_path"]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert default["clean_frame_reanchoring"]["enabled"] is False
+    assert default["clean_frame_reanchor_event_count"] == 0
+    assert default_trace[1]["source_observation_frame"] == default_trace[0]["wam_generated_frame"]
+
+
 def test_closed_loop_blocks_on_missing_wam_frame(tmp_path: Path) -> None:
     start = _write_frame(tmp_path / "start.png", seed=1)
 

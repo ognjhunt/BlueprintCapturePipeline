@@ -49,6 +49,9 @@ VAST_API_KEY_FILE_ENV = "VAST_API_KEY_FILE"
 PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV = (
     "BLUEPRINT_PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST"
 )
+PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_ENV = (
+    "BLUEPRINT_PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_STEPS"
+)
 UNITREE_G1_SONIC_STATE_DIMS = {
     "left_leg": 6,
     "right_leg": 6,
@@ -1726,6 +1729,8 @@ def run_oscar_isaac_closed_loop(
     perception_target_prompts: Sequence[str] | None = None,
     wam_backend_id: str = "oscar_wam",
     wam_backend_readiness: Mapping[str, Any] | None = None,
+    require_fresh_learned_policy_requery: bool = False,
+    clean_frame_reanchor_interval: int = 0,
     policy_endpoint: PolicyEndpoint | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
@@ -1751,6 +1756,17 @@ def run_oscar_isaac_closed_loop(
     oracle = probe_collision or (lambda pose, yaw: 0)
 
     current_frame = str(Path(start_frame_path).expanduser().resolve())
+    initial_clean_frame = current_frame
+    try:
+        configured_reanchor_interval = int(clean_frame_reanchor_interval)
+    except (TypeError, ValueError):
+        configured_reanchor_interval = 0
+    effective_reanchor_interval = max(
+        0,
+        configured_reanchor_interval
+        or _int_env(PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_ENV, 0),
+    )
+    clean_frame_reanchor_events: list[dict[str, Any]] = []
     action_history: list[dict[str, Any]] = []
     step_records: list[dict[str, Any]] = []
     adapter_reports: list[dict[str, Any]] = []
@@ -1783,8 +1799,9 @@ def run_oscar_isaac_closed_loop(
             pending_policy_endpoint_action = None
             pending_policy_endpoint_source_step = None
         else:
-            action["policy_requeried_on_generated_observation"] = False
-            action["policy_action_source"] = "isaac_g1_policy.DeterministicWalkToTargetPolicy"
+            action.setdefault("policy_requeried_on_generated_observation", False)
+            action.setdefault("policy_action_source", "isaac_g1_policy.DeterministicWalkToTargetPolicy")
+        policy_requeried_fresh = bool(action.get("policy_requeried_on_generated_observation"))
         action_history.append(action)
 
         # 2. WAM generates the NEXT observation conditioned on the action
@@ -1806,6 +1823,20 @@ def run_oscar_isaac_closed_loop(
         )
         if require_fresh_oscar_provider and not fresh_oscar_provider:
             blockers.append(f"fresh_oscar_provider_model_run_not_proven_at_step_{step_index}")
+        clean_frame_reanchor_applied = bool(
+            effective_reanchor_interval > 0 and step_index % effective_reanchor_interval == 0
+        )
+        next_policy_frame = initial_clean_frame if clean_frame_reanchor_applied else generated_frame
+        if clean_frame_reanchor_applied:
+            clean_frame_reanchor_events.append(
+                {
+                    "step_index": step_index,
+                    "generated_next_observation_frame_path": generated_frame,
+                    "next_policy_observation_frame_path": next_policy_frame,
+                    "source_frame_kind": "initial_policy_observation_clean_frame",
+                    "interval_steps": effective_reanchor_interval,
+                }
+            )
 
         # 3. perception harness (SAM3/DA3) analyses the generated frame immediately
         result = run_wam_derived_observation_harness_step(
@@ -1900,6 +1931,7 @@ def run_oscar_isaac_closed_loop(
             "root_position": action.get("root_position"),
             "policy_action_source": action.get("policy_action_source"),
             "policy_action_from_wam_requery": policy_action_from_wam_requery,
+            "policy_requeried_fresh": policy_requeried_fresh,
             "source_observation_frame": current_frame,
             "wam_generated_frame": generated_frame,
             "wam_generated_video": wam_output.get("generated_video_path"),
@@ -1917,6 +1949,7 @@ def run_oscar_isaac_closed_loop(
             "policy_requeried_on_wam_observation": policy_requeried_on_wam_observation,
             "policy_action_changed_vs_previous": policy_action_changed_vs_previous,
             "requery_status": requery_status,
+            "clean_frame_reanchor_applied": clean_frame_reanchor_applied,
         }
         trace_rows.append(trace_row)
         proof_rows.append(
@@ -1924,6 +1957,7 @@ def run_oscar_isaac_closed_loop(
                 "step_index": step_index,
                 "policy_action_recorded": bool(action.get("policy_action")),
                 "policy_action_from_wam_requery": policy_action_from_wam_requery,
+                "policy_requeried_fresh": policy_requeried_fresh,
                 "source_observation_frame": current_frame,
                 "wam_generated_frame": generated_frame,
                 "wam_generated_video": wam_output.get("generated_video_path"),
@@ -1941,7 +1975,7 @@ def run_oscar_isaac_closed_loop(
         )
 
         # 4. feed forward: the generated frame becomes the next step's observation
-        current_frame = generated_frame
+        current_frame = next_policy_frame
 
     trace_path = resolved_out / "oscar_isaac_closed_loop_trace.jsonl"
     with trace_path.open("w", encoding="utf-8") as handle:
@@ -1954,15 +1988,29 @@ def run_oscar_isaac_closed_loop(
         and interpolate_route(route, 1.0)[0]
         and sum((a - b) ** 2 for a, b in zip(final_pose, target)) ** 0.5 < 0.25
     )
-    policy_observes_wam_generated_next_observation = bool(
+    fresh_learned_policy_requery_steps = sum(
+        1 for row in proof_rows if row.get("policy_requeried_fresh")
+    )
+    generated_observation_count = sum(1 for row in proof_rows if row.get("wam_generated_frame"))
+    policy_endpoint_requery_contract_proven = bool(
         learned_policy_requery_count >= 2 and policy_action_changed_count >= 1
     )
-    if policy_endpoint is not None and not policy_observes_wam_generated_next_observation:
+    policy_observes_wam_generated_next_observation = bool(
+        generated_observation_count >= 1
+        and (fresh_learned_policy_requery_steps >= 2 or policy_endpoint_requery_contract_proven)
+    )
+    wam_evaluator_in_control_loop = bool(generated_observation_count >= 1)
+    if policy_endpoint is not None and not policy_endpoint_requery_contract_proven:
         blockers.append("blocked_learned_policy_requery_not_proven")
+    if require_fresh_learned_policy_requery and fresh_learned_policy_requery_steps < 1:
+        blockers.append("fresh_learned_policy_requery_not_proven")
     status = "completed" if trace_rows and not blockers else "blocked"
     feed_forward_verified = all(
-        trace_rows[index]["source_observation_frame"]
-        == trace_rows[index - 1]["wam_generated_frame"]
+        trace_rows[index]["source_observation_frame"] == trace_rows[index - 1]["wam_generated_frame"]
+        or (
+            bool(trace_rows[index - 1].get("clean_frame_reanchor_applied"))
+            and trace_rows[index]["source_observation_frame"] == initial_clean_frame
+        )
         for index in range(1, len(trace_rows))
     )
     proof = {
@@ -1975,10 +2023,13 @@ def run_oscar_isaac_closed_loop(
         "selected_wam_backend": _string(wam_backend_id) or "oscar_wam",
         "isaac_policy_actions_recorded": len(action_history),
         "learned_policy_requery_count": learned_policy_requery_count,
+        "fresh_learned_policy_requery_steps": fresh_learned_policy_requery_steps,
         "policy_action_changed_count": policy_action_changed_count,
+        "generated_observation_count": generated_observation_count,
         "policy_observes_wam_generated_next_observation": (
             policy_observes_wam_generated_next_observation
         ),
+        "wam_evaluator_in_control_loop": wam_evaluator_in_control_loop,
         "oscar_per_step_generation_calls": sum(
             1 for row in proof_rows if row.get("oscar_per_step_backend")
         ),
@@ -1997,6 +2048,7 @@ def run_oscar_isaac_closed_loop(
             "real_perception_backend_required": bool(require_real_perception_backend),
             "sam3_completed_required": bool(require_sam3_completed),
             "da3_completed_required": bool(require_da3_completed),
+            "fresh_learned_policy_requery_required": bool(require_fresh_learned_policy_requery),
         },
         "per_step": proof_rows,
     }
@@ -2017,12 +2069,27 @@ def run_oscar_isaac_closed_loop(
         "harness_dir": str(harness_dir),
         "selected_wam_backend": _string(wam_backend_id) or "oscar_wam",
         "wam_backend_readiness": dict(wam_backend_readiness or {}),
+        "policy_observes_wam_generated_next_observation": proof[
+            "policy_observes_wam_generated_next_observation"
+        ],
+        "wam_evaluator_in_control_loop": proof["wam_evaluator_in_control_loop"],
+        "clean_frame_reanchoring": {
+            "enabled": bool(effective_reanchor_interval > 0),
+            "interval_steps": int(effective_reanchor_interval) or None,
+            "source_frame_kind": "initial_policy_observation_clean_frame",
+        },
+        "clean_frame_reanchor_event_count": len(clean_frame_reanchor_events),
+        "clean_frame_reanchor_events": clean_frame_reanchor_events,
+        "periodic_clean_frame_reanchoring_used": bool(clean_frame_reanchor_events),
         "proof": proof,
         "blockers": blockers,
         "claim_boundary": (
             "Per-step closed loop: policy action -> WAM-generated next observation -> SAM3/DA3 "
             "perception harness, repeated. Harness derives support observations from WAM pixels; "
-            "task success still requires an external judge, not harness output alone."
+            "policy_observes_wam_generated_next_observation is true only when fresh learned-policy "
+            "requery evidence is present. Clean-frame reanchoring, when enabled, feeds the initial "
+            "clean policy observation back into the loop as drift control; it is not raw capture "
+            "truth or task-success proof."
         ),
         "raw_secret_values_recorded": False,
     }
@@ -2080,6 +2147,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--require-real-perception-backend", action="store_true")
     parser.add_argument("--require-sam3-completed", action="store_true")
     parser.add_argument("--require-da3-completed", action="store_true")
+    parser.add_argument("--require-fresh-learned-policy-requery", action="store_true")
+    parser.add_argument("--clean-frame-reanchor-interval", type=int, default=0)
     parser.add_argument(
         "--short-visual-sanity-manifest",
         default=None,
@@ -2247,6 +2316,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "real_perception_backend_required": bool(args.require_real_perception_backend),
                 "sam3_completed_required": bool(args.require_sam3_completed),
                 "da3_completed_required": bool(args.require_da3_completed),
+                "fresh_learned_policy_requery_required": bool(
+                    args.require_fresh_learned_policy_requery
+                ),
+                "clean_frame_reanchor_interval": int(args.clean_frame_reanchor_interval),
             },
             "blockers": list(wam_backend_readiness.get("blockers") or []),
         }
@@ -2304,6 +2377,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         require_real_perception_backend=bool(args.require_real_perception_backend),
         require_sam3_completed=bool(args.require_sam3_completed),
         require_da3_completed=bool(args.require_da3_completed),
+        require_fresh_learned_policy_requery=bool(args.require_fresh_learned_policy_requery),
+        clean_frame_reanchor_interval=int(args.clean_frame_reanchor_interval),
         perception_target_prompts=list(args.perception_target_prompt or []),
         wam_backend_id=args.wam_backend,
         wam_backend_readiness=wam_backend_readiness,

@@ -29,7 +29,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 2 | T3 | Isaac | S | — | `done (gpu-pending)` | Isaac native depth render pass (distance_to_image_plane annotator, co-registered with RGB) |
 | 3 | T2 | MuJoCo | M | — | `done` | MuJoCo native render-pass depth buffer (co-registered per-camera depth) |
 | 4 | T4 | Isaac | L | — | `done` | Isaac closed loop: requery a pluggable LEARNED policy on the WAM-generated observation (replace the hardcoded deterministic stub) |
-| 5 | T5 | Isaac | S | T4 | `todo` | Isaac honest completion gating + in-loop drift reanchoring |
+| 5 | T5 | Isaac | S | T4 | `done` | Isaac honest completion gating + in-loop drift reanchoring |
 | 6 | T6 | Isaac | M | T4 | `todo` | Isaac in-process manipulation success evaluator |
 | 7 | T7 | Shared | M | — | `todo` | Photoreal observation handoff: Isaac/WAM frame -> MuJoCo policy visual channel |
 | 8 | T11 | MuJoCo | S | — | `todo` | MuJoCo texture/material preservation (GLB->OBJ keeps PBR map_Kd and binds a MuJoCo texture to the visual geom) |
@@ -298,7 +298,7 @@ python3 -m pytest tests/test_oscar_isaac_closed_loop_eval.py tests/test_isaac_g1
 ### 5. T5 — Isaac honest completion gating + in-loop drift reanchoring
 
 - **Lane:** Isaac  |  **Effort:** S (small)  |  **Depends on:** T4
-- **Status:** todo
+- **Status:** done
 
 **Summary.** Today the Isaac per-step closed loop marks `status="completed"` whenever any trace rows exist and there are no blockers (oscar_isaac_closed_loop_eval.py:1824), with NO requirement that a learned policy was actually requeried against the WAM-generated observation, and it carries none of MuJoCo's honest in-loop fields — so an Isaac "pass" overclaims relative to MuJoCo's gate (vast_persistent_session.py:2086-2095 completion gate; honest fields at :2114-2115). This task strengthens Isaac completion to require fresh learned-policy requery counts, adds `policy_observes_wam_generated_next_observation` / `wam_evaluator_in_control_loop` proof fields, and adds an optional clean-frame reanchoring path that feeds the seed frame back into the policy observation at a configurable interval to fight autoregressive drift — mirroring the MuJoCo persistent-session implementation while keeping the WAM backend swappable.
 
@@ -343,15 +343,15 @@ python3 -m pytest tests/test_oscar_isaac_closed_loop_eval.py tests/test_isaac_g1
 
 **Acceptance criteria:**
 
-- [ ] Default behavior unchanged: calling run_oscar_isaac_closed_loop with the existing _stub_wam and no new flags still returns status=='completed' with steps_executed==4 (existing test_closed_loop_runs_policy_wam_harness_per_step at line 210 still passes).
-- [ ] Every manifest now contains top-level keys `policy_observes_wam_generated_next_observation`, `wam_evaluator_in_control_loop`, and `clean_frame_reanchoring`, and proof contains `fresh_learned_policy_requery_steps`, even when the in-loop policy is the deterministic stub.
-- [ ] With the deterministic stub (no action key `policy_requeried_on_generated_observation`), manifest['policy_observes_wam_generated_next_observation'] is False and proof['fresh_learned_policy_requery_steps']==0 — Isaac does NOT overclaim policy-on-generated-world.
-- [ ] When require_fresh_learned_policy_requery=True and no action carries policy_requeried_on_generated_observation, manifest['status']=='blocked' and 'fresh_learned_policy_requery_not_proven' is in manifest['blockers'].
-- [ ] When the per-step action carries policy_requeried_on_generated_observation=True on >=2 steps AND a WAM backend produced >=1 generated frame, manifest['policy_observes_wam_generated_next_observation'] is True and wam_evaluator_in_control_loop is True.
-- [ ] With clean_frame_reanchor_interval=2 over 4 steps: manifest['clean_frame_reanchor_event_count']==2, periodic_clean_frame_reanchoring_used is True, and for each reanchored transition the NEXT trace row's source_observation_frame equals the original resolved start frame (not the prior WAM frame), while feed_forward_verified remains True.
-- [ ] clean_frame_reanchor_interval==0 (default) yields clean_frame_reanchoring.enabled False, zero events, and feed-forward equals the prior WAM frame on every transition (no behavior change vs today; matches existing assertion at test line 241).
-- [ ] All proof/manifest markers remain Isaac-lane only (selected_wam_backend / loop_kind unchanged); no field asserts or implies MuJoCo physics evidence — the non-interchangeable proof boundary is preserved.
-- [ ] The WAM backend stays swappable: the reanchoring/gating logic reads only wam_output / action keys and the injected wam_generate_next callable; no backend is hardcoded.
+- [x] Default behavior unchanged: calling run_oscar_isaac_closed_loop with the existing _stub_wam and no new flags still returns status=='completed' with steps_executed==4 (existing test_closed_loop_runs_policy_wam_harness_per_step at line 210 still passes).
+- [x] Every manifest now contains top-level keys `policy_observes_wam_generated_next_observation`, `wam_evaluator_in_control_loop`, and `clean_frame_reanchoring`, and proof contains `fresh_learned_policy_requery_steps`, even when the in-loop policy is the deterministic stub.
+- [x] With the deterministic stub (no action key `policy_requeried_on_generated_observation`), manifest['policy_observes_wam_generated_next_observation'] is False and proof['fresh_learned_policy_requery_steps']==0 — Isaac does NOT overclaim policy-on-generated-world.
+- [x] When require_fresh_learned_policy_requery=True and no action carries policy_requeried_on_generated_observation, manifest['status']=='blocked' and 'fresh_learned_policy_requery_not_proven' is in manifest['blockers'].
+- [x] When the per-step action carries policy_requeried_on_generated_observation=True on >=2 steps AND a WAM backend produced >=1 generated frame, manifest['policy_observes_wam_generated_next_observation'] is True and wam_evaluator_in_control_loop is True.
+- [x] With clean_frame_reanchor_interval=2 over 4 steps: manifest['clean_frame_reanchor_event_count']==2, periodic_clean_frame_reanchoring_used is True, and for each reanchored transition the NEXT trace row's source_observation_frame equals the original resolved start frame (not the prior WAM frame), while feed_forward_verified remains True.
+- [x] clean_frame_reanchor_interval==0 (default) yields clean_frame_reanchoring.enabled False, zero events, and feed-forward equals the prior WAM frame on every transition (no behavior change vs today; matches existing assertion at test line 241).
+- [x] All proof/manifest markers remain Isaac-lane only (selected_wam_backend / loop_kind unchanged); no field asserts or implies MuJoCo physics evidence — the non-interchangeable proof boundary is preserved.
+- [x] The WAM backend stays swappable: the reanchoring/gating logic reads only wam_output / action keys and the injected wam_generate_next callable; no backend is hardcoded.
 
 **Verification:**
 
