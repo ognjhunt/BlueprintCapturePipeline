@@ -1983,6 +1983,104 @@ def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
     assert "wam_input_contract_high_risk" in labels["labels"]
 
 
+def test_postprocess_labels_nominal_projected_skeleton_risk_without_proxy(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    source_frame = _write_reviewable_frame(
+        job / "provider_bundle" / "provider_runtime" / "initial_policy_frame.png"
+    )
+    observation_path = _policy_observation(tmp_path / "observation.json", source_frame)
+    extraction_dir = _write_persistent_postprocess_extraction(tmp_path)
+    (extraction_dir / "wam_calls" / "wam_call_0001.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 1,
+                "materialization": {
+                    "status": "completed",
+                    "source_kind": "video_future_frame",
+                    "selected_frame_index": 1,
+                    "future_frame_selected": True,
+                    "selection_quality_status": "passed_signal_gate",
+                    "selected_frame_signal_blockers": [],
+                },
+                "live_wam_payload_redacted": {
+                    "input_package": {
+                        "skeleton_video": {"conditioning_mode": "projected_g1_skeleton"},
+                        "rgb_video": {"rgb_context_mode": "single_frame_repeat"},
+                        "projected_skeleton_trace": {"used_for_conditioning": True},
+                        "oscar_input_contract_diagnostic": {
+                            "schema_version": "oscar_wam_runtime_input_contract_diagnostic.v1",
+                            "status": "warning_high_risk",
+                            "skeleton_video": {
+                                "conditioning_mode": "projected_g1_skeleton",
+                                "policy_action_proxy_used": False,
+                            },
+                            "projected_skeleton_trace": {"used_for_conditioning": True},
+                            "rgb_context": {"rgb_context_mode": "single_frame_repeat"},
+                            "warnings": [
+                                "oscar_contract_projected_skeleton_nominal_action_projection",
+                                "oscar_contract_policy_action_to_skeleton_not_ranking_safe",
+                            ],
+                            "autoregressive_risk_flags": [
+                                "rgb_context_single_frame_repeat_autoregressive_risk"
+                            ],
+                            "high_risk_flags": [
+                                "projected_skeleton_nominal_action_projection_high_risk"
+                            ],
+                            "ranking_risk_flags": [
+                                "projected_skeleton_nominal_action_projection_without_scene_or_wbc_bridge",
+                                "policy_action_to_skeleton_contract_not_ranking_safe",
+                            ],
+                            "autoregressive_risk_level": "high",
+                            "policy_ranking_claim_safe": False,
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    vast_run_dir = tmp_path / "vast-run"
+    vast_run_dir.mkdir()
+
+    session._postprocess_imported_persistent_session_artifacts(
+        job=job,
+        extraction_dir=extraction_dir,
+        imported={
+            "status": "completed",
+            "persistent_provider_session_used": True,
+            "provider_instance_reused_for_policy_and_wam_loop": True,
+            "repeated_policy_calls_count": 2,
+            "generated_next_observation_count": 1,
+            "live_wam_generation_success_count": 1,
+            "learned_wam_model_success_count": 1,
+            "policy_observes_wam_generated_next_observation": True,
+            "blockers": [],
+        },
+        generated_at="now",
+        policy_observation_path=observation_path,
+        vast_result={"estimated_cost_usd": 0.01},
+        vast_run_dir=vast_run_dir,
+    )
+
+    input_contract = json.loads(
+        (job / "wam_input_contract_summary.json").read_text(encoding="utf-8")
+    )
+    assert input_contract["projected_skeleton_conditioning_count"] == 1
+    assert input_contract["policy_action_proxy_conditioning_count"] == 0
+    assert (
+        "wam_input_contract_high_risk_projected_skeleton_nominal_action_projection"
+        in input_contract["blockers"]
+    )
+    assert (
+        "wam_input_contract_high_risk_policy_action_proxy_without_projected_skeleton"
+        not in input_contract["blockers"]
+    )
+    assert "wam_input_contract_policy_ranking_claim_not_safe" in input_contract["blockers"]
+
+
 def test_postprocess_episode_consistency_failure_is_reliability_label_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

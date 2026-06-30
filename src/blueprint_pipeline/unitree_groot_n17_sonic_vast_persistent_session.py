@@ -5705,6 +5705,29 @@ def _postprocess_imported_persistent_session_artifacts(
         "raw_credentials_written_to_artifacts": False,
     }
     write_json(job / "wam_materialization_summary.json", materialization_summary)
+    input_contract_blockers: list[str] = []
+    if input_contract_high_risk_count:
+        if (
+            input_contract_policy_action_proxy_count
+            and input_contract_projected_skeleton_used_count == 0
+        ):
+            input_contract_blockers.append(
+                "wam_input_contract_high_risk_policy_action_proxy_without_projected_skeleton"
+            )
+        if (
+            input_contract_high_risk_flag_counts.get(
+                "projected_skeleton_nominal_action_projection_high_risk", 0
+            )
+            > 0
+        ):
+            input_contract_blockers.append(
+                "wam_input_contract_high_risk_projected_skeleton_nominal_action_projection"
+            )
+        if not input_contract_blockers:
+            input_contract_blockers.append("wam_input_contract_high_risk")
+    if input_contract_policy_ranking_risk_count:
+        input_contract_blockers.append("wam_input_contract_policy_ranking_claim_not_safe")
+
     input_contract_summary = {
         "schema_version": "persistent_wam_input_contract_summary.v1",
         "generated_at": generated_at,
@@ -5726,11 +5749,7 @@ def _postprocess_imported_persistent_session_artifacts(
         "policy_ranking_claim_safe": input_contract_policy_ranking_risk_count == 0,
         "projected_skeleton_conditioning_count": input_contract_projected_skeleton_used_count,
         "policy_action_proxy_conditioning_count": input_contract_policy_action_proxy_count,
-        "blockers": [
-            "wam_input_contract_high_risk_policy_action_proxy_without_projected_skeleton"
-        ]
-        if input_contract_high_risk_count
-        else [],
+        "blockers": input_contract_blockers,
         "claim_boundary": {
             "input_contract_summary_is_not_model_execution_proof": True,
             "input_contract_summary_is_not_rollout_quality_proof": True,
