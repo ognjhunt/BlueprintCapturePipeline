@@ -181,9 +181,16 @@ def test_convert_glb_to_obj_includes_texture_material_summary_and_keeps_signatur
     monkeypatch,
 ) -> None:
     signature = inspect.signature(_convert_glb_to_obj)
-    assert list(signature.parameters) == ["glb_path", "obj_path", "collision_proxy_limit"]
+    assert list(signature.parameters) == [
+        "glb_path",
+        "obj_path",
+        "collision_proxy_limit",
+        "collision_proxy_mode",
+    ]
     assert signature.parameters["collision_proxy_limit"].kind is inspect.Parameter.KEYWORD_ONLY
     assert signature.parameters["collision_proxy_limit"].default == 160
+    assert signature.parameters["collision_proxy_mode"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["collision_proxy_mode"].default == "aabb"
 
     class FakeMesh:
         is_empty = False
@@ -223,7 +230,10 @@ def test_convert_glb_to_obj_includes_texture_material_summary_and_keeps_signatur
     )
     monkeypatch.setattr(
         "blueprint_pipeline.mujoco_g1_simulator_command._collision_proxy_geoms_from_mesh",
-        lambda _mesh, max_proxies: ([], {"max_proxy_count": max_proxies}),
+        lambda _mesh, max_proxies, mode="aabb": (
+            [],
+            {"max_proxy_count": max_proxies, "collision_proxy_mode": mode},
+        ),
     )
 
     result = _convert_glb_to_obj(tmp_path / "scene.glb", tmp_path / "scene.obj")
@@ -568,7 +578,13 @@ def _seed_fake_capture_and_g1(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
     (g1_root / "assets").mkdir(parents=True)
     (g1_root / "g1.xml").write_text("<mujoco><worldbody/></mujoco>", encoding="utf-8")
 
-    def fake_convert(_glb_path: Path, obj_path: Path) -> dict[str, object]:
+    def fake_convert(
+        _glb_path: Path,
+        obj_path: Path,
+        *,
+        collision_proxy_mode: str = "aabb",
+    ) -> dict[str, object]:
+        assert collision_proxy_mode == "aabb"
         obj_path.parent.mkdir(parents=True, exist_ok=True)
         obj_path.write_text("v 0 0 0 0.1 0.2 0.3\n", encoding="utf-8")
         return {
@@ -697,7 +713,13 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
         encoding="utf-8",
     )
 
-    def fake_convert(_glb_path: Path, obj_path: Path) -> dict[str, object]:
+    def fake_convert(
+        _glb_path: Path,
+        obj_path: Path,
+        *,
+        collision_proxy_mode: str = "aabb",
+    ) -> dict[str, object]:
+        assert collision_proxy_mode == "aabb"
         obj_path.parent.mkdir(parents=True, exist_ok=True)
         obj_path.write_text("v 0 0 0 0.1 0.2 0.3\n", encoding="utf-8")
         return {

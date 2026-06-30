@@ -869,7 +869,15 @@ def test_mujoco_runtime_render_and_error_branches(
     (g1_root / "assets").mkdir(parents=True)
     (g1_root / "g1.xml").write_text("<mujoco><worldbody/></mujoco>", encoding="utf-8")
 
-    def fake_convert(_glb_path: Path, obj_path: Path) -> dict[str, object]:
+    converted_modes: list[str] = []
+
+    def fake_convert(
+        _glb_path: Path,
+        obj_path: Path,
+        *,
+        collision_proxy_mode: str = "aabb",
+    ) -> dict[str, object]:
+        converted_modes.append(collision_proxy_mode)
         obj_path.parent.mkdir(parents=True, exist_ok=True)
         obj_path.write_text("v 0 0 0 0.1 0.2 0.3\n", encoding="utf-8")
         return {
@@ -965,6 +973,7 @@ def test_mujoco_runtime_render_and_error_branches(
         max_rendered_steps=2,
     )
     assert payload["step_count_source"] == "duration_seconds_and_model_timestep"
+    assert converted_modes == ["aabb"]
     assert payload["rendered_episode_count"] == 2
     assert payload["scene_collision_proxy_geoms_enabled"] is True
     assert "collision_dynamics_not_validated" in payload["robot_team_handoff_blockers"]

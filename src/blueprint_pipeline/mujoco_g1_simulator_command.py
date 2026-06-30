@@ -554,7 +554,11 @@ def _visual_object_semantics_summary(
 
 
 def _convert_glb_to_obj(
-    glb_path: Path, obj_path: Path, *, collision_proxy_limit: int = 160
+    glb_path: Path,
+    obj_path: Path,
+    *,
+    collision_proxy_limit: int = 160,
+    collision_proxy_mode: str = "aabb",
 ) -> dict[str, Any]:
     try:
         import trimesh  # type: ignore[import-not-found]
@@ -580,7 +584,7 @@ def _convert_glb_to_obj(
         visual_summary=glb_visual_summary,
     )
     collision_proxy_geoms, collision_proxy_summary = _collision_proxy_geoms_from_mesh(
-        mesh, max_proxies=collision_proxy_limit
+        mesh, max_proxies=collision_proxy_limit, mode=collision_proxy_mode
     )
     return {
         "source_glb": str(glb_path),
@@ -702,9 +706,164 @@ def _write_g1_xml_with_absolute_meshes(source_xml: Path, output_xml: Path) -> No
     tree.write(output_xml, encoding="utf-8", xml_declaration=False)
 
 
+def _rotation_matrix_to_quaternion(rotation: Any) -> list[float]:
+    import numpy as np  # type: ignore[import-not-found]
+
+    matrix = np.asarray(rotation, dtype=float)
+    trace = float(matrix[0, 0] + matrix[1, 1] + matrix[2, 2])
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * scale
+        x = (matrix[2, 1] - matrix[1, 2]) / scale
+        y = (matrix[0, 2] - matrix[2, 0]) / scale
+        z = (matrix[1, 0] - matrix[0, 1]) / scale
+    elif matrix[0, 0] > matrix[1, 1] and matrix[0, 0] > matrix[2, 2]:
+        scale = math.sqrt(1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2]) * 2.0
+        w = (matrix[2, 1] - matrix[1, 2]) / scale
+        x = 0.25 * scale
+        y = (matrix[0, 1] + matrix[1, 0]) / scale
+        z = (matrix[0, 2] + matrix[2, 0]) / scale
+    elif matrix[1, 1] > matrix[2, 2]:
+        scale = math.sqrt(1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2]) * 2.0
+        w = (matrix[0, 2] - matrix[2, 0]) / scale
+        x = (matrix[0, 1] + matrix[1, 0]) / scale
+        y = 0.25 * scale
+        z = (matrix[1, 2] + matrix[2, 1]) / scale
+    else:
+        scale = math.sqrt(1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1]) * 2.0
+        w = (matrix[1, 0] - matrix[0, 1]) / scale
+        x = (matrix[0, 2] + matrix[2, 0]) / scale
+        y = (matrix[1, 2] + matrix[2, 1]) / scale
+        z = 0.25 * scale
+    quat = np.asarray([w, x, y, z], dtype=float)
+    norm = float(np.linalg.norm(quat))
+    if norm > 1e-12:
+        quat = quat / norm
+    return [round(float(value), 8) for value in quat]
+
+
+def _aabb_collision_proxy(
+    component_index: int,
+    lower: Sequence[float],
+    upper: Sequence[float],
+    extents: Sequence[float],
+    volume: float,
+) -> dict[str, Any]:
+    margin = 0.035
+    pos = [(lower[index] + upper[index]) / 2.0 for index in range(3)]
+    size = [max(0.025, extents[index] / 2.0 + margin) for index in range(3)]
+    return {
+        "source_component_index": component_index,
+        "name": f"component_{component_index:04d}",
+        "pos": [round(value, 6) for value in pos],
+        "size": [round(value, 6) for value in size],
+        "bounds": [
+            [round(value, 6) for value in lower],
+            [round(value, 6) for value in upper],
+        ],
+        "extents": [round(value, 6) for value in extents],
+        "volume_m3_estimate": round(volume, 6),
+    }
+
+
+def _obb_proxy_from_component(
+    component_index: int,
+    component: Any,
+    lower: Sequence[float],
+    upper: Sequence[float],
+    extents: Sequence[float],
+    volume: float,
+) -> dict[str, Any] | None:
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+        import trimesh  # type: ignore[import-not-found]
+
+        to_origin, obb_extents = trimesh.bounds.oriented_bounds(component)
+        transform = np.linalg.inv(np.asarray(to_origin, dtype=float))
+        obb_extents_array = np.asarray(obb_extents, dtype=float)
+        proxy = _aabb_collision_proxy(component_index, lower, upper, extents, volume)
+        proxy["pos"] = [round(float(value), 6) for value in transform[:3, 3]]
+        proxy["size"] = [
+            round(max(0.025, float(obb_extents_array[index]) / 2.0 + 0.035), 6)
+            for index in range(3)
+        ]
+        proxy["quat"] = _rotation_matrix_to_quaternion(transform[:3, :3])
+        return proxy
+    except Exception:
+        return None
+
+
+def _convex_decomposition_vertices_from_component(
+    component: Any,
+    *,
+    backend: str | None,
+    max_vertices: int = 512,
+) -> list[list[float]]:
+    if not backend:
+        return []
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+
+        if backend == "coacd":
+            import coacd  # type: ignore[import-not-found]
+
+            vertices = np.asarray(getattr(component, "vertices", []), dtype=float)
+            faces = np.asarray(getattr(component, "faces", []), dtype=np.int32)
+            pieces = coacd.run_coacd(coacd.Mesh(vertices, faces))
+        elif backend == "trimesh_vhacd":
+            import trimesh  # type: ignore[import-not-found]
+
+            decomposition = getattr(getattr(trimesh, "decomposition", None), "convex_decomposition", None)
+            if decomposition is None:
+                return []
+            pieces = decomposition(component)
+        else:
+            return []
+        if not isinstance(pieces, Sequence) or isinstance(pieces, (str, bytes)):
+            pieces = [pieces]
+        out: list[list[float]] = []
+        for piece in pieces:
+            piece_vertices = None
+            if isinstance(piece, Sequence) and not isinstance(piece, (str, bytes)) and piece:
+                piece_vertices = piece[0]
+            if piece_vertices is None:
+                piece_vertices = getattr(piece, "vertices", None)
+            try:
+                for vertex in np.asarray(piece_vertices, dtype=float)[:max_vertices]:
+                    out.append([round(float(coord), 6) for coord in vertex[:3]])
+                    if len(out) >= max_vertices:
+                        return out
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
 def _collision_proxy_geoms_from_mesh(
-    mesh: Any, *, max_proxies: int = 160
+    mesh: Any, *, max_proxies: int = 160, mode: str = "aabb"
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    requested_mode = str(mode or "aabb").strip().lower()
+    if requested_mode not in {"aabb", "obb", "convex"}:
+        requested_mode = "aabb"
+    convex_decomposition_status = None
+    convex_backend: str | None = None
+    if requested_mode == "convex":
+        try:
+            import coacd  # noqa: F401  # type: ignore[import-not-found]
+
+            convex_backend = "coacd"
+        except Exception:
+            try:
+                import trimesh  # type: ignore[import-not-found]
+
+                if getattr(getattr(trimesh, "decomposition", None), "convex_decomposition", None):
+                    convex_backend = "trimesh_vhacd"
+            except Exception:
+                convex_backend = None
+        convex_decomposition_status = (
+            "unavailable_fell_back_to_aabb" if convex_backend is None else "available"
+        )
     try:
         components = list(mesh.split(only_watertight=False))
     except Exception:
@@ -717,6 +876,8 @@ def _collision_proxy_geoms_from_mesh(
         "degenerate": 0,
     }
     skipped_indexes: dict[str, list[int]] = {key: [] for key in skipped}
+    obb_fallback_indexes: list[int] = []
+    convex_decomposition_generated_count = 0
     for component_index, component in enumerate(components):
         try:
             bounds = component.bounds
@@ -751,23 +912,30 @@ def _collision_proxy_geoms_from_mesh(
             skipped["degenerate"] += 1
             skipped_indexes["degenerate"].append(component_index)
             continue
-        margin = 0.035
-        pos = [(lower[index] + upper[index]) / 2.0 for index in range(3)]
-        size = [max(0.025, extents[index] / 2.0 + margin) for index in range(3)]
-        proxies.append(
-            {
-                "source_component_index": component_index,
-                "name": f"component_{component_index:04d}",
-                "pos": [round(value, 6) for value in pos],
-                "size": [round(value, 6) for value in size],
-                "bounds": [
-                    [round(value, 6) for value in lower],
-                    [round(value, 6) for value in upper],
-                ],
-                "extents": [round(value, 6) for value in extents],
-                "volume_m3_estimate": round(volume, 6),
-            }
-        )
+        if (
+            requested_mode in {"obb", "convex"}
+            and convex_decomposition_status != "unavailable_fell_back_to_aabb"
+        ):
+            proxy = _obb_proxy_from_component(
+                component_index, component, lower, upper, extents, volume
+            )
+            if proxy is None:
+                obb_fallback_indexes.append(component_index)
+                proxy = _aabb_collision_proxy(component_index, lower, upper, extents, volume)
+        else:
+            proxy = _aabb_collision_proxy(component_index, lower, upper, extents, volume)
+        if (
+            requested_mode == "convex"
+            and convex_decomposition_status != "unavailable_fell_back_to_aabb"
+        ):
+            convex_vertices = _convex_decomposition_vertices_from_component(
+                component,
+                backend=convex_backend,
+            )
+            proxy["convex_hull_vertices"] = convex_vertices
+            if convex_vertices:
+                convex_decomposition_generated_count += 1
+        proxies.append(proxy)
     proxies.sort(key=lambda item: float(item["volume_m3_estimate"]), reverse=True)
     bounded = proxies[: max(0, max_proxies)]
     covered_component_indexes = sorted(
@@ -789,11 +957,17 @@ def _collision_proxy_geoms_from_mesh(
         - set(reference_floor_covered_indexes)
         - set(intentionally_excluded_indexes)
     )
+    generation_methods = {
+        "aabb": "component_aabb_obstacle_proxies_excluding_floor_overhead_and_scene_shell",
+        "obb": "component_obb_obstacle_proxies_excluding_floor_overhead_and_scene_shell",
+        "convex": "component_convex_decomposition_obstacle_proxies_excluding_floor_overhead_and_scene_shell",
+    }
     summary = {
         "status": "generated" if bounded else "not_generated",
         "source_component_count": len(components),
         "proxy_count": len(bounded),
         "max_proxy_count": max_proxies,
+        "collision_proxy_mode": requested_mode,
         "skipped": skipped,
         "skipped_source_component_indexes": skipped_indexes,
         "component_coverage": {
@@ -810,13 +984,29 @@ def _collision_proxy_geoms_from_mesh(
             "component_proxy_coverage_complete": not uncovered_component_indexes
             and not truncated_component_indexes,
         },
-        "generation_method": "component_aabb_obstacle_proxies_excluding_floor_overhead_and_scene_shell",
+        "generation_method": generation_methods[requested_mode],
         "proof_boundary": (
             "Obstacle proxies are conservative MuJoCo box colliders derived from scene "
             "components. They are better than colliding with the entire visual mesh, but "
             "still need robot-team review before customer safety claims."
         ),
     }
+    if requested_mode == "obb":
+        summary["obb_fallback_component_indexes"] = sorted(obb_fallback_indexes)
+    if requested_mode == "convex":
+        if convex_decomposition_status != "unavailable_fell_back_to_aabb":
+            convex_decomposition_status = (
+                "generated"
+                if convex_decomposition_generated_count > 0
+                else f"{convex_backend}_available_decomposition_failed_box_proxy_emitted"
+            )
+        summary["convex_decomposition_status"] = convex_decomposition_status
+        summary["convex_decomposition_backend"] = convex_backend
+        summary["convex_decomposition_generated_proxy_count"] = (
+            convex_decomposition_generated_count
+        )
+        if obb_fallback_indexes:
+            summary["obb_fallback_component_indexes"] = sorted(obb_fallback_indexes)
     return bounded, summary
 
 
@@ -931,10 +1121,21 @@ def _write_mjcf_wrapper(
         ):
             continue
         proxy_id = _safe_id(proxy.get("name"), fallback=f"proxy_{index:03d}")
+        quat_attr = ""
+        quat = proxy.get("quat")
+        if (
+            isinstance(quat, Sequence)
+            and not isinstance(quat, (str, bytes))
+            and len(quat) >= 4
+        ):
+            try:
+                quat_attr = f' quat="{_xml_vec(quat[:4])}"'
+            except Exception:
+                quat_attr = ""
         proxy_geoms.append(
             "    "
             f'<geom name="blueprint_collision_proxy_{index:03d}_{_xml_escape(proxy_id)}" '
-            f'type="box" pos="{_xml_vec(pos[:3])}" size="{_xml_vec(size[:3])}" '
+            f'type="box" pos="{_xml_vec(pos[:3])}" size="{_xml_vec(size[:3])}"{quat_attr} '
             'rgba="0.05 0.75 0.35 0.18" contype="1" conaffinity="1" group="3"/>'
         )
     if proxy_geoms:
@@ -3972,6 +4173,7 @@ def run_mujoco_g1_simulator_command(
     menagerie_ref: str = DEFAULT_MENAGERIE_REF,
     manipulation_ready_arms: bool = False,
     manipulation_reach_arm: str = "both",
+    collision_proxy_mode: str = "aabb",
 ) -> dict[str, Any]:
     if platform.system().lower() == "linux":
         os.environ.setdefault("MUJOCO_GL", "egl")
@@ -4015,7 +4217,11 @@ def run_mujoco_g1_simulator_command(
 
     scene_glb = _find_scene_glb(root)
     scene_obj = output_root / "capture_scene_for_mujoco.obj"
-    mesh_info = _convert_glb_to_obj(scene_glb, scene_obj)
+    mesh_info = _convert_glb_to_obj(
+        scene_glb,
+        scene_obj,
+        collision_proxy_mode=collision_proxy_mode,
+    )
 
     resolved_g1_root = _resolve_g1_model_root(
         explicit_root=g1_model_root,
@@ -5671,7 +5877,7 @@ def run_mujoco_g1_simulator_command(
     return payload
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture-root", type=Path, default=None)
     parser.add_argument("--g1-model-root", type=Path, default=None)
@@ -5712,6 +5918,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=["right", "left", "both"],
         help="Which simulated arm is posed when --manipulation-ready-arms is enabled.",
     )
+    parser.add_argument(
+        "--collision-proxy-mode",
+        default="aabb",
+        choices=["aabb", "obb", "convex"],
+        help=(
+            "MuJoCo scene collision proxy shape: aabb (fast, coarse, default), obb "
+            "(oriented bounding boxes), or convex (coacd/VHACD decomposition when "
+            "available); mirrors Isaac --collision-approximation for the MuJoCo lane."
+        ),
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_arg_parser()
     args = parser.parse_args(argv)
 
     capture_root_env = os.environ.get("BLUEPRINT_CAPTURE_ROOT")
@@ -5737,6 +5958,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         menagerie_ref=args.menagerie_ref,
         manipulation_ready_arms=args.manipulation_ready_arms,
         manipulation_reach_arm=args.manipulation_reach_arm,
+        collision_proxy_mode=args.collision_proxy_mode,
     )
     print(
         json.dumps(

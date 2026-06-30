@@ -38,7 +38,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 11 | T9 | Isaac | M | — | `done (gpu-pending)` | Isaac native instance/semantic segmentation render pass |
 | 12 | T13 | Isaac | M | — | `done (gpu-pending)` | Isaac gravity-on dynamic stepping: turn the existing settle loop into a physics-proof path with displacement + fall verdict |
 | 13 | T14 | Isaac | L | T13 | `done (gpu-pending)` | Isaac torque/effort drive (PD law port) + authored MassAPI/PhysicsMaterial on the resolved target only |
-| 14 | T10 | MuJoCo | M | — | `todo` | MuJoCo convex/OBB collision proxies (flag-gated) |
+| 14 | T10 | MuJoCo | M | — | `done` | MuJoCo convex/OBB collision proxies (flag-gated) |
 | 15 | T15 | Shared | L | — | `todo` | Provider-runtime convergence (shared race + git-gate + warm session + runtime preflight) |
 
 **Dependency notes:** The backlog is a clean DAG with three edges and eleven independent roots. T4 (Isaac learned-policy requery on the WAM-generated observation) is a fan-out hub unlocking both T5 (honest completion gating + in-loop drift reanchoring) and T6 (in-process manipulation success evaluator): you cannot strengthen completion gates to require fresh learned-policy requery counts, nor emit a genuine success label, until the policy is actually requeried in-loop. T13 (Isaac gravity-on dynamic stepping with displacement + fall verdict) unlocks T14 (torque/effort PD drive + authored MassAPI/PhysicsMaterial), since force-level contact realism is only provable once the gravity-on settle emits a physics_integrated verdict. Everything else — T1, T2, T3, T7, T8, T9, T10, T11, T12, T15 — is an independent root with no dependencies.
@@ -850,7 +850,7 @@ Hermetic (no GPU): `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` — 
 ### 14. T10 — MuJoCo convex/OBB collision proxies (flag-gated)
 
 - **Lane:** MuJoCo  |  **Effort:** M (medium)  |  **Depends on:** none
-- **Status:** todo
+- **Status:** done
 
 **Summary.** Per-component proxies in MuJoCo are axis-aligned boxes (`_collision_proxy_geoms_from_mesh`, lines 633-748) that over-approximate non-boxy footprints (e.g. an L-counter becomes one big AABB), inflating false collisions versus Isaac's convexHull. Add an optional oriented-bounding-box (OBB, via trimesh `bounds.oriented_bounds`) proxy mode plus an optional convex-decomposition (coacd/VHACD) mode, gated behind a new `--collision-proxy-mode` flag that mirrors Isaac's `--collision-approximation`, while keeping the import-free AABB path as the fast default so existing runs are byte-for-byte unchanged. This is a MuJoCo-lane fidelity fix only; it produces MuJoCo collision evidence and must not be presented as Isaac evidence.
 
@@ -887,14 +887,14 @@ Hermetic (no GPU): `pytest tests/test_isaac_g1_kitchen_parity_runner.py -q` — 
 
 **Acceptance criteria:**
 
-- [ ] With no flag (default mode='aabb'), `_collision_proxy_geoms_from_mesh(mesh)` returns proxies with NO `quat` key and `summary['generation_method']` equals the exact pre-change string 'component_aabb_obstacle_proxies_excluding_floor_overhead_and_scene_shell' — i.e. existing AABB output is byte-for-byte unchanged and requires no trimesh import.
-- [ ] With mode='obb' and a fake trimesh providing bounds.oriented_bounds, every emitted proxy carries a length-4 `quat` [w,x,y,z], `summary['collision_proxy_mode']=='obb'`, and `summary['generation_method']` contains 'obb'.
-- [ ] For a deliberately LARGE, strongly-rotated non-axis-aligned component (e.g. a ~2.0 x 0.5 x 1.0 box rotated ~35deg in the XY plane, sized so the +0.035 margin and 0.025 floor cannot dominate), the OBB proxy's `size` (half-extents) has a strictly smaller product (total volume) than the AABB proxy's `size` for the same component (proves the OBB tightens the footprint rather than reproducing the AABB).
-- [ ] When oriented_bounds raises for a component in mode='obb', that component still yields an AABB box proxy and its index is listed in `summary['obb_fallback_component_indexes']` (graceful degradation, never a dropped collider).
-- [ ] With mode='convex' and no coacd/VHACD importable, the function falls back to AABB-equivalent box proxies and `summary['convex_decomposition_status']=='unavailable_fell_back_to_aabb'` (no crash on machines without the decomposition libs).
-- [ ] `_write_mjcf_wrapper` emits `quat="..."` on a box geom when the proxy dict has a valid `quat`, and emits no quat attribute when it does not; both proxies are present in the XML in either case.
-- [ ] `main(['--collision-proxy-mode','obb', ...])` parses without error and forwards mode through to _convert_glb_to_obj (argparse choices reject any value other than aabb/obb/convex).
-- [ ] All proof/labeling stays MuJoCo-scoped: the new summary fields live under the existing MuJoCo collision_proxy_summary and the run's simulator_backend remains 'mujoco' (set at line 4943) — no field claims or implies Isaac/convexHull cross-lane equivalence (MuJoCo evidence != Isaac evidence).
+- [x] With no flag (default mode='aabb'), `_collision_proxy_geoms_from_mesh(mesh)` returns proxies with NO `quat` key and `summary['generation_method']` equals the exact pre-change string 'component_aabb_obstacle_proxies_excluding_floor_overhead_and_scene_shell' — i.e. existing AABB output is byte-for-byte unchanged and requires no trimesh import.
+- [x] With mode='obb' and a fake trimesh providing bounds.oriented_bounds, every emitted proxy carries a length-4 `quat` [w,x,y,z], `summary['collision_proxy_mode']=='obb'`, and `summary['generation_method']` contains 'obb'.
+- [x] For a deliberately LARGE, strongly-rotated non-axis-aligned component (e.g. a ~2.0 x 0.5 x 1.0 box rotated ~35deg in the XY plane, sized so the +0.035 margin and 0.025 floor cannot dominate), the OBB proxy's `size` (half-extents) has a strictly smaller product (total volume) than the AABB proxy's `size` for the same component (proves the OBB tightens the footprint rather than reproducing the AABB).
+- [x] When oriented_bounds raises for a component in mode='obb', that component still yields an AABB box proxy and its index is listed in `summary['obb_fallback_component_indexes']` (graceful degradation, never a dropped collider).
+- [x] With mode='convex' and no coacd/VHACD importable, the function falls back to AABB-equivalent box proxies and `summary['convex_decomposition_status']=='unavailable_fell_back_to_aabb'` (no crash on machines without the decomposition libs).
+- [x] `_write_mjcf_wrapper` emits `quat="..."` on a box geom when the proxy dict has a valid `quat`, and emits no quat attribute when it does not; both proxies are present in the XML in either case.
+- [x] `main(['--collision-proxy-mode','obb', ...])` parses without error and forwards mode through to _convert_glb_to_obj (argparse choices reject any value other than aabb/obb/convex).
+- [x] All proof/labeling stays MuJoCo-scoped: the new summary fields live under the existing MuJoCo collision_proxy_summary and the run's simulator_backend remains 'mujoco' (set at line 4943) — no field claims or implies Isaac/convexHull cross-lane equivalence (MuJoCo evidence != Isaac evidence).
 
 **Verification:**
 
