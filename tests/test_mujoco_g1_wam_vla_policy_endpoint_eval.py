@@ -755,6 +755,189 @@ def test_policy_action_model_input_preserves_capture_derived_pov_boundary(
     assert sample["claim_boundary"]["visual_frame_is_raw_capture_truth"] is False
 
 
+def test_policy_action_model_input_routes_external_photoreal_frame_into_visual_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_dir = tmp_path / "scene-policy-action-ext"
+    job_dir.mkdir()
+    frame = tmp_path / "isaac_render" / "kitchen_head_pov.png"
+    frame.parent.mkdir(parents=True)
+    frame.write_bytes(b"fake-isaac-rtx-png")
+    monkeypatch.setenv(lane.EXTERNAL_PHOTOREAL_OBSERVATION_FRAME_ENV, str(frame))
+    monkeypatch.setenv(
+        lane.EXTERNAL_PHOTOREAL_OBSERVATION_SOURCE_ENV,
+        "isaac_splat_nurec_render",
+    )
+
+    sample = lane._sample_policy_action_model_input(generated_at="now", job_dir=job_dir)
+    observation = sample["observation"]
+    visual = observation["visual_observation"]
+    assert observation["camera_frame_path"] == str(frame.resolve())
+    assert visual["camera_frame_path"] == str(frame.resolve())
+    assert visual["external_photoreal_observation_used"] is True
+    assert visual["photoreal_observation_source"] == "isaac_splat_nurec_render"
+    assert visual["simulated_camera_view"] is False
+    assert visual["physical_robot_sensor_proof"] is False
+    assert visual["synthesized_or_splatted_outputs_are_not_raw_capture_truth"] is True
+    assert sample["claim_boundary"]["visual_frame_is_external_photoreal_handoff"] is True
+    assert sample["claim_boundary"]["visual_frame_is_simulated_mujoco_policy_observation"] is False
+    assert sample["claim_boundary"]["visual_frame_is_raw_capture_truth"] is False
+    assert sample["claim_boundary"]["mujoco_owns_physics_external_lane_owns_pixels"] is True
+
+    monkeypatch.delenv(lane.EXTERNAL_PHOTOREAL_OBSERVATION_FRAME_ENV)
+    monkeypatch.delenv(lane.EXTERNAL_PHOTOREAL_OBSERVATION_SOURCE_ENV)
+    base = lane._sample_policy_action_model_input(generated_at="now", job_dir=job_dir)
+    assert not base["observation"]["visual_observation"].get(
+        "external_photoreal_observation_used"
+    )
+    assert base["observation"]["state"] == observation["state"]
+    assert base["observation"]["unitree_g1_sonic_state"] == observation["unitree_g1_sonic_state"]
+
+
+def test_scene_packet_policy_action_model_input_routes_external_photoreal_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_dir = tmp_path / "scene-policy-action-scene-ext"
+    job_dir.mkdir()
+    frame = job_dir / "rendered_observations" / "kitchen_head_pov.jpg"
+    frame.parent.mkdir()
+    frame.write_bytes(b"fake-jpeg")
+    observation = {
+        "schema_version": "scene_wam_policy_initial_observation.v1",
+        "task_id": "turn_on_sink_handle",
+        "target_object_id": "Sink054_handle",
+        "camera_frame_path": str(frame),
+        "visual_observation": {
+            "available": True,
+            "camera_frame_path": str(frame),
+            "camera_id": "head_pov",
+        },
+        "state": {"target_object_id": "Sink054_handle"},
+    }
+    observation_path = job_dir / "initial_policy_observation.json"
+    observation_path.write_text(json.dumps(observation), encoding="utf-8")
+    packet_path = job_dir / "scene_wam_policy_episode_packet.json"
+    packet_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "scene_wam_policy_episode_packet.v1",
+                "task_id": "turn_on_sink_handle",
+                "target_object_id": "Sink054_handle",
+                "initial_policy_observation_path": str(observation_path),
+                "initial_policy_observation_frame_path": str(frame),
+            }
+        ),
+        encoding="utf-8",
+    )
+    base = lane._sample_policy_action_model_input(generated_at="now", job_dir=job_dir)
+
+    external = tmp_path / "isaac_render" / "head_pov.png"
+    external.parent.mkdir(parents=True)
+    external.write_bytes(b"fake-isaac-rtx-png")
+    monkeypatch.setenv(lane.EXTERNAL_PHOTOREAL_OBSERVATION_FRAME_ENV, str(external))
+    monkeypatch.setenv(
+        lane.EXTERNAL_PHOTOREAL_OBSERVATION_SOURCE_ENV,
+        "isaac_splat_nurec_render",
+    )
+    sample = lane._sample_policy_action_model_input(generated_at="now", job_dir=job_dir)
+    observation = sample["observation"]
+    visual = observation["visual_observation"]
+    assert sample["scene_wam_policy_episode_packet_path"] == str(packet_path)
+    assert observation["task_id"] == "turn_on_sink_handle"
+    assert observation["target_object_id"] == "Sink054_handle"
+    assert observation["state"] == base["observation"]["state"]
+    assert observation["unitree_g1_sonic_state"] == base["observation"]["unitree_g1_sonic_state"]
+    assert observation["camera_frame_path"] == str(external.resolve())
+    assert visual["external_photoreal_observation_used"] is True
+    assert visual["photoreal_observation_source"] == "isaac_splat_nurec_render"
+    assert visual["simulated_camera_view"] is False
+    assert sample["claim_boundary"]["visual_frame_is_external_photoreal_handoff"] is True
+    assert sample["claim_boundary"]["visual_frame_is_simulated_mujoco_policy_observation"] is False
+    assert sample["claim_boundary"]["visual_frame_is_raw_capture_truth"] is False
+
+    monkeypatch.delenv(lane.EXTERNAL_PHOTOREAL_OBSERVATION_FRAME_ENV)
+    monkeypatch.delenv(lane.EXTERNAL_PHOTOREAL_OBSERVATION_SOURCE_ENV)
+    fallback = lane._sample_policy_action_model_input(generated_at="now", job_dir=job_dir)
+    assert fallback["observation"]["camera_frame_path"] == str(frame)
+    assert not fallback["observation"]["visual_observation"].get(
+        "external_photoreal_observation_used"
+    )
+
+
+def test_external_photoreal_initial_observation_relabels_wam_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_env(monkeypatch, _UNITREE_POLICY_ENV_VARS)
+    _clear_env(monkeypatch, _WAM_RUNTIME_ENV_VARS)
+    job_dir = tmp_path / "external-photoreal-loop"
+    frame_dir = job_dir / "policy_observation_frames" / "episode_0001" / "head_pov"
+    frame_dir.mkdir(parents=True)
+    (frame_dir / "step_000000.jpg").write_bytes(b"mujoco-jpeg")
+    external = tmp_path / "wam_generator" / "head_pov.png"
+    external.parent.mkdir(parents=True)
+    external.write_bytes(b"external-photoreal")
+    monkeypatch.setenv(lane.EXTERNAL_PHOTOREAL_OBSERVATION_FRAME_ENV, str(external))
+    monkeypatch.setenv(lane.EXTERNAL_PHOTOREAL_OBSERVATION_SOURCE_ENV, "wam_generator")
+
+    command = tmp_path / "unitree_lerobot_policy_command.py"
+    command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+request = json.loads(Path(os.environ["BLUEPRINT_POLICY_ACTION_INPUT"]).read_text(encoding="utf-8"))
+frame = request["observation"].get("camera_frame_path")
+assert Path(frame).read_bytes() == b"external-photoreal"
+payload = {
+    "schema_version": "unitree_lerobot_policy_command_adapter.v1",
+    "status": "completed",
+    "policy_id": "unitree_lerobot_g1_policy",
+    "unitree_lerobot_policy_action_command_ran": True,
+    "action_chunk": [0.1, 0.2, 0.3],
+}
+Path(os.environ["BLUEPRINT_POLICY_ACTION_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    checkpoint = tmp_path / "unitree-lerobot-hand-policy.pt"
+    checkpoint.write_text("weights", encoding="utf-8")
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_COMMAND",
+        f"{sys.executable} {command}",
+    )
+    monkeypatch.setenv("BLUEPRINT_UNITREE_LEROBOT_MANIPULATION_CHECKPOINT", str(checkpoint))
+    monkeypatch.setenv(lane.POLICY_ACTION_MODEL_COMMAND_GATE_ENV, "true")
+
+    execution = lane.run_policy_action_model_command_contract(
+        job_dir=job_dir,
+        generated_at="now",
+        allow_policy_action_model_command_run=True,
+        timeout_seconds=15,
+    )
+    assert execution["status"] == "completed"
+    _configure_fake_live_wam(tmp_path, monkeypatch, name="fake_external_photoreal_wam")
+    loop = lane.run_robot_policy_wam_closed_loop_attempt(
+        job_dir=job_dir,
+        generated_at="now",
+        policy_action_model_command_execution=execution,
+        loop_step_count=2,
+        timeout_seconds=15,
+    )
+
+    trace_path = job_dir / "robot_policy_wam_closed_loop" / "robot_policy_wam_loop_trace.jsonl"
+    trace = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert loop["status"] == "completed"
+    assert trace[0]["observation_source"] == "initial_external_photoreal_observation"
+    assert trace[0]["photoreal_observation_source"] == "wam_generator"
+    assert trace[0]["policy_observation_frame_path"] == str(external.resolve())
+    assert any(row["observation_source"] == "wam_generated_next_observation" for row in trace[1:])
+
+
 def test_unitree_lerobot_policy_action_model_can_drive_wam_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

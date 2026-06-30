@@ -31,7 +31,7 @@ Legend — Status values: `todo` · `in-progress` · `done` · `blocked`. Effort
 | 4 | T4 | Isaac | L | — | `done` | Isaac closed loop: requery a pluggable LEARNED policy on the WAM-generated observation (replace the hardcoded deterministic stub) |
 | 5 | T5 | Isaac | S | T4 | `done` | Isaac honest completion gating + in-loop drift reanchoring |
 | 6 | T6 | Isaac | M | T4 | `done` | Isaac in-process manipulation success evaluator |
-| 7 | T7 | Shared | M | — | `todo` | Photoreal observation handoff: Isaac/WAM frame -> MuJoCo policy visual channel |
+| 7 | T7 | Shared | M | — | `done` | Photoreal observation handoff: Isaac/WAM frame -> MuJoCo policy visual channel |
 | 8 | T11 | MuJoCo | S | — | `todo` | MuJoCo texture/material preservation (GLB->OBJ keeps PBR map_Kd and binds a MuJoCo texture to the visual geom) |
 | 9 | T12 | MuJoCo | S | — | `todo` | MuJoCo scene-derived lighting + shadows in the MJCF wrapper |
 | 10 | T8 | MuJoCo | M | — | `todo` | MuJoCo segmentation render pass |
@@ -427,7 +427,7 @@ Add a GPU-free hermetic test to tests/test_oscar_isaac_closed_loop_eval.py and r
 ### 7. T7 — Photoreal observation handoff: Isaac/WAM frame -> MuJoCo policy visual channel
 
 - **Lane:** Shared  |  **Effort:** M (medium)  |  **Depends on:** none
-- **Status:** todo
+- **Status:** done
 
 **Summary.** Add an env-gated "external photoreal frame" override at the MuJoCo policy's frame-resolution chokepoint (_sample_policy_action_model_input) AND its scene-packet sibling (_scene_packet_policy_action_model_input) so a frame produced by the Isaac splat renderer (run_isaac_splat_nurec_render.py) or the WAM generator can be routed into the MuJoCo policy's visual channel while MuJoCo continues to own physics/contacts. This is a frame-source swap, not a physics change. The override must label the source distinctly and preserve non-interchangeable proof markers (Isaac/WAM pixels != MuJoCo render evidence; the photoreal frame is not raw capture truth).
 
@@ -459,13 +459,13 @@ Add a GPU-free hermetic test to tests/test_oscar_isaac_closed_loop_eval.py and r
 
 **Acceptance criteria:**
 
-- [ ] With BLUEPRINT_EXTERNAL_PHOTOREAL_OBSERVATION_FRAME pointing at an existing image file (no scene packet present), lane._sample_policy_action_model_input(...) returns observation['camera_frame_path'] == str(frame.resolve()) and observation['visual_observation']['external_photoreal_observation_used'] is True and ['photoreal_observation_source'] equals the source-env value, and ['simulated_camera_view'] is False.
-- [ ] The returned claim_boundary (non-scene-packet path) contains visual_frame_is_external_photoreal_handoff == True, visual_frame_is_simulated_mujoco_policy_observation == False, visual_frame_is_raw_capture_truth == False, and mujoco_owns_physics_external_lane_owns_pixels == True.
-- [ ] SCENE-PACKET PATH: with a scene_wam_policy_episode_packet.json + initial_policy_observation.json present (turn_on_sink_handle fixture) AND the env var set to an existing frame, lane._sample_policy_action_model_input(...) returns observation['camera_frame_path'] == the external frame, observation['visual_observation']['external_photoreal_observation_used'] is True and ['simulated_camera_view'] is False, claim_boundary['visual_frame_is_external_photoreal_handoff'] is True and claim_boundary['visual_frame_is_simulated_mujoco_policy_observation'] is False, while observation['task_id']=='turn_on_sink_handle' and observation['target_object_id'] remain unchanged (external frame did not clobber task/state).
-- [ ] When the env var is unset or points at a non-existent path, behavior is byte-for-byte unchanged: existing tests test_policy_action_model_input_uses_scene_wam_episode_packet and test_policy_action_model_input_preserves_capture_derived_pov_boundary still pass, and visual_observation has no external_photoreal_observation_used key (or it is falsy) on both builders.
-- [ ] The override sets only visual/observation-source fields: observation['state'], observation['unitree_g1_sonic_state'], task_id, and target_object_id are byte-for-byte identical with and without the env var set (asserted by comparing those subtrees).
-- [ ] In the closed loop, when the initial observation carries external_photoreal_observation_used, policy_calls[0]['observation_source'] == 'initial_external_photoreal_observation' and policy_calls[0]['photoreal_observation_source'] == the source label, while the WAM-generated step label at line 4625 ('wam_generated_next_observation') and the mj_step physics path are unmodified.
-- [ ] The handoff is backend-agnostic: the same code path accepts a frame whether the source label is 'isaac_splat_nurec_render' or 'wam_generator', and no import of isaacsim or a WAM backend is added to mujoco_g1_wam_vla_policy_endpoint_eval.py (assert via grep that the module imports no isaacsim/omni/wam backend symbol).
+- [x] With BLUEPRINT_EXTERNAL_PHOTOREAL_OBSERVATION_FRAME pointing at an existing image file (no scene packet present), lane._sample_policy_action_model_input(...) returns observation['camera_frame_path'] == str(frame.resolve()) and observation['visual_observation']['external_photoreal_observation_used'] is True and ['photoreal_observation_source'] equals the source-env value, and ['simulated_camera_view'] is False.
+- [x] The returned claim_boundary (non-scene-packet path) contains visual_frame_is_external_photoreal_handoff == True, visual_frame_is_simulated_mujoco_policy_observation == False, visual_frame_is_raw_capture_truth == False, and mujoco_owns_physics_external_lane_owns_pixels == True.
+- [x] SCENE-PACKET PATH: with a scene_wam_policy_episode_packet.json + initial_policy_observation.json present (turn_on_sink_handle fixture) AND the env var set to an existing frame, lane._sample_policy_action_model_input(...) returns observation['camera_frame_path'] == the external frame, observation['visual_observation']['external_photoreal_observation_used'] is True and ['simulated_camera_view'] is False, claim_boundary['visual_frame_is_external_photoreal_handoff'] is True and claim_boundary['visual_frame_is_simulated_mujoco_policy_observation'] is False, while observation['task_id']=='turn_on_sink_handle' and observation['target_object_id'] remain unchanged (external frame did not clobber task/state).
+- [x] When the env var is unset or points at a non-existent path, behavior is byte-for-byte unchanged: existing tests test_policy_action_model_input_uses_scene_wam_episode_packet and test_policy_action_model_input_preserves_capture_derived_pov_boundary still pass, and visual_observation has no external_photoreal_observation_used key (or it is falsy) on both builders.
+- [x] The override sets only visual/observation-source fields: observation['state'], observation['unitree_g1_sonic_state'], task_id, and target_object_id are byte-for-byte identical with and without the env var set (asserted by comparing those subtrees).
+- [x] In the closed loop, when the initial observation carries external_photoreal_observation_used, policy_calls[0]['observation_source'] == 'initial_external_photoreal_observation' and policy_calls[0]['photoreal_observation_source'] == the source label, while the WAM-generated step label at line 4625 ('wam_generated_next_observation') and the mj_step physics path are unmodified.
+- [x] The handoff is backend-agnostic: the same code path accepts a frame whether the source label is 'isaac_splat_nurec_render' or 'wam_generator', and no import of isaacsim or a WAM backend is added to mujoco_g1_wam_vla_policy_endpoint_eval.py (assert via grep that the module imports no isaacsim/omni/wam backend symbol).
 
 **Verification:**
 

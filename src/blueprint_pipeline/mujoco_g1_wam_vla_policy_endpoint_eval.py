@@ -182,6 +182,8 @@ CONTROLLER_BACKENDS = ("auto", "freejoint_proxy", "unitree_rl_gym")
 DEFAULT_CONTROLLER_BACKEND = "auto"
 POLICY_ACTION_MODEL_COMMAND_GATE_ENV = "BLUEPRINT_ALLOW_POLICY_ACTION_MODEL_COMMAND"
 SCENE_WAM_POLICY_EPISODE_PACKET_ENV = "BLUEPRINT_SCENE_WAM_POLICY_EPISODE_PACKET"
+EXTERNAL_PHOTOREAL_OBSERVATION_FRAME_ENV = "BLUEPRINT_EXTERNAL_PHOTOREAL_OBSERVATION_FRAME"
+EXTERNAL_PHOTOREAL_OBSERVATION_SOURCE_ENV = "BLUEPRINT_EXTERNAL_PHOTOREAL_OBSERVATION_SOURCE"
 UNITREE_RL_GYM_SAME_SCENE_BACKEND_ID = "unitree_rl_gym_same_scene_lower_body_policy"
 UNITREE_RL_GYM_CONTROLLER_COMMAND_LIMITS = {
     "max_forward_velocity_mps": 0.18,
@@ -1847,6 +1849,17 @@ def _policy_action_model_frame_candidates(job_dir: Path) -> list[Path]:
     return sorted(candidates, key=rank)
 
 
+def _external_photoreal_observation_frame() -> tuple[Path | None, str | None]:
+    frame_text = os.getenv(EXTERNAL_PHOTOREAL_OBSERVATION_FRAME_ENV, "").strip()
+    if not frame_text:
+        return None, None
+    frame = Path(frame_text).expanduser()
+    if not frame.is_file():
+        return None, None
+    source = os.getenv(EXTERNAL_PHOTOREAL_OBSERVATION_SOURCE_ENV, "").strip()
+    return frame.resolve(), source or "external_photoreal_frame"
+
+
 def _policy_action_model_frame_camera_id(path: Path | str | None) -> str | None:
     if path is None:
         return None
@@ -1995,6 +2008,10 @@ def _scene_packet_policy_action_model_input(
             or packet.get("initial_policy_observation_frame_path"),
             base_dir=observation_path.parent,
         )
+        external_frame, external_source = _external_photoreal_observation_frame()
+        external_photoreal = external_frame is not None
+        if external_photoreal:
+            frame_path = external_frame
         visual_observation = _mapping(observation.get("visual_observation"))
         frame_available = bool(frame_path and frame_path.is_file())
         if frame_path is not None:
@@ -2012,13 +2029,16 @@ def _scene_packet_policy_action_model_input(
         )
         visual_observation["first_person_policy_observation_candidate"] = frame_available
         visual_observation["simulated_camera_view"] = (
-            frame_available and not capture_derived_synthetic
+            frame_available and not capture_derived_synthetic and not external_photoreal
         )
         visual_observation["capture_derived_robot_pov_synthesis_used"] = (
-            frame_available and capture_derived_synthetic
+            frame_available and capture_derived_synthetic and not external_photoreal
         )
         visual_observation["synthesized_or_splatted_outputs_are_not_raw_capture_truth"] = True
         visual_observation["physical_robot_sensor_proof"] = False
+        if external_photoreal:
+            visual_observation["external_photoreal_observation_used"] = True
+            visual_observation["photoreal_observation_source"] = external_source
         visual_observation["blockers"] = (
             [] if frame_available else ["scene_packet_policy_observation_frame_missing"]
         )
@@ -2041,6 +2061,27 @@ def _scene_packet_policy_action_model_input(
         )
         observation["scene_wam_policy_episode_packet_path"] = str(packet_path)
         observation["initial_policy_observation_path"] = str(observation_path)
+        claim_boundary = {
+            "sample_input_is_scene_packet_not_task_success_evidence": True,
+            "visual_frame_is_simulated_mujoco_policy_observation": (
+                frame_available and not capture_derived_synthetic and not external_photoreal
+            ),
+            "visual_frame_is_capture_derived_synthetic_robot_pov": (
+                frame_available and capture_derived_synthetic and not external_photoreal
+            ),
+            "visual_frame_is_raw_capture_truth": False,
+            "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
+            "unitree_g1_sonic_state_is_simulated_observation": True,
+            "unitree_g1_sonic_state_is_contract_probe": (
+                observation.get("unitree_g1_sonic_state_source")
+                == "scene_packet_contract_probe_zero_state"
+            ),
+            "task_specific_finetuning_required_for_admission": False,
+            "policy_action_command_does_not_prove_generated_world_rank_fidelity": True,
+        }
+        if external_photoreal:
+            claim_boundary["visual_frame_is_external_photoreal_handoff"] = True
+            claim_boundary["mujoco_owns_physics_external_lane_owns_pixels"] = True
         return {
             "schema_version": "policy_action_model_command_input.v1",
             "generated_at": generated_at,
@@ -2059,24 +2100,7 @@ def _scene_packet_policy_action_model_input(
                 "action_chunk",
             ],
             "scene_wam_policy_episode_packet_path": str(packet_path),
-            "claim_boundary": {
-                "sample_input_is_scene_packet_not_task_success_evidence": True,
-                "visual_frame_is_simulated_mujoco_policy_observation": (
-                    frame_available and not capture_derived_synthetic
-                ),
-                "visual_frame_is_capture_derived_synthetic_robot_pov": (
-                    frame_available and capture_derived_synthetic
-                ),
-                "visual_frame_is_raw_capture_truth": False,
-                "synthesized_or_splatted_outputs_are_not_raw_capture_truth": True,
-                "unitree_g1_sonic_state_is_simulated_observation": True,
-                "unitree_g1_sonic_state_is_contract_probe": (
-                    observation.get("unitree_g1_sonic_state_source")
-                    == "scene_packet_contract_probe_zero_state"
-                ),
-                "task_specific_finetuning_required_for_admission": False,
-                "policy_action_command_does_not_prove_generated_world_rank_fidelity": True,
-            },
+            "claim_boundary": claim_boundary,
         }
     return None
 
@@ -2129,20 +2153,29 @@ def _sample_policy_action_model_input(
         frame_candidates = _policy_action_model_frame_candidates(job_dir)
         if frame_candidates:
             frame_path = str(frame_candidates[0].resolve())
+    external_frame, external_source = _external_photoreal_observation_frame()
+    external_photoreal = external_frame is not None
+    if external_photoreal:
+        frame_path = str(external_frame)
+    visual_claim_boundary = {
+        "simulated_camera_view": bool(frame_path) and not external_photoreal,
+        "physical_robot_sensor_proof": False,
+        "visual_observation_path_can_feed_vla_policy_endpoint": bool(frame_path),
+    }
     visual_observation = {
         "available": bool(frame_path),
         "camera_frame_path": frame_path,
         "camera_id": _policy_action_model_frame_camera_id(frame_path),
         "first_person_policy_observation_candidate": bool(frame_path),
-        "simulated_camera_view": bool(frame_path),
+        "simulated_camera_view": bool(frame_path) and not external_photoreal,
         "physical_robot_sensor_proof": False,
         "blockers": [] if frame_path else ["policy_observation_frame_not_captured"],
-        "claim_boundary": {
-            "simulated_camera_view": bool(frame_path),
-            "physical_robot_sensor_proof": False,
-            "visual_observation_path_can_feed_vla_policy_endpoint": bool(frame_path),
-        },
+        "claim_boundary": visual_claim_boundary,
     }
+    if external_photoreal:
+        visual_observation["external_photoreal_observation_used"] = True
+        visual_observation["photoreal_observation_source"] = external_source
+        visual_observation["synthesized_or_splatted_outputs_are_not_raw_capture_truth"] = True
     (
         captured_sonic_state,
         captured_sonic_state_source,
@@ -2153,6 +2186,19 @@ def _sample_policy_action_model_input(
         captured_sonic_state_source or "simulated_mujoco_contract_probe_zero_state"
     )
     unitree_g1_sonic_state_is_contract_probe = captured_sonic_state is None
+    claim_boundary = {
+        "sample_input_is_contract_probe_not_task_success_evidence": True,
+        "visual_frame_is_simulated_mujoco_policy_observation": bool(frame_path)
+        and not external_photoreal,
+        "unitree_g1_sonic_state_is_simulated_observation": True,
+        "unitree_g1_sonic_state_is_contract_probe": unitree_g1_sonic_state_is_contract_probe,
+        "unitree_g1_sonic_state_derived_from_mujoco_qpos": not unitree_g1_sonic_state_is_contract_probe,
+        "policy_action_command_does_not_prove_generated_world_rank_fidelity": True,
+    }
+    if external_photoreal:
+        claim_boundary["visual_frame_is_external_photoreal_handoff"] = True
+        claim_boundary["visual_frame_is_raw_capture_truth"] = False
+        claim_boundary["mujoco_owns_physics_external_lane_owns_pixels"] = True
     return {
         "schema_version": "policy_action_model_command_input.v1",
         "generated_at": generated_at,
@@ -2180,14 +2226,7 @@ def _sample_policy_action_model_input(
             "inspect_look",
             "manipulation_contact",
         ],
-        "claim_boundary": {
-            "sample_input_is_contract_probe_not_task_success_evidence": True,
-            "visual_frame_is_simulated_mujoco_policy_observation": bool(frame_path),
-            "unitree_g1_sonic_state_is_simulated_observation": True,
-            "unitree_g1_sonic_state_is_contract_probe": unitree_g1_sonic_state_is_contract_probe,
-            "unitree_g1_sonic_state_derived_from_mujoco_qpos": not unitree_g1_sonic_state_is_contract_probe,
-            "policy_action_command_does_not_prove_generated_world_rank_fidelity": True,
-        },
+        "claim_boundary": claim_boundary,
     }
 
 
@@ -4468,6 +4507,11 @@ def run_robot_policy_wam_closed_loop_attempt(
     if initial_visual.get("capture_derived_robot_pov_synthesis_used"):
         policy_calls[0]["observation_source"] = "initial_capture_derived_robot_pov_observation"
         policy_calls[0]["capture_derived_robot_pov_synthesis_used"] = True
+    if initial_visual.get("external_photoreal_observation_used"):
+        policy_calls[0]["observation_source"] = "initial_external_photoreal_observation"
+        policy_calls[0]["photoreal_observation_source"] = initial_visual.get(
+            "photoreal_observation_source"
+        )
     source_frame_text = _mapping(current_observation.get("visual_observation")).get(
         "camera_frame_path"
     ) or current_observation.get("camera_frame_path")
