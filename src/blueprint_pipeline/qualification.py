@@ -14,6 +14,7 @@ from .capture_enrichment_llm import build_capture_enrichment_runner
 from .alpha_readiness import write_alpha_readiness_summary, write_pipeline_sync_result
 from .canonical_site_package import write_blueprint_canonical_site_package
 from .common import (
+    MAXIMUM_HIDDEN_ZONE_BOUND,
     PipelineError,
     StageError,
     ensure_dir,
@@ -3496,7 +3497,7 @@ _GENERIC_CAPABILITY_ENVELOPE = {
     "maximum_threshold_height_m": 0.04,
     "maximum_target_reach_distance_m": 1.1,
     "maximum_workcell_span_m": 2.5,
-    "maximum_hidden_zone_bound": 0.35,
+    "maximum_hidden_zone_bound": MAXIMUM_HIDDEN_ZONE_BOUND,
     "maximum_uncertainty_score": 0.3,
 }
 

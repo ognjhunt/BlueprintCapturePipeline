@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from blueprint_pipeline import qualification as qual
 from blueprint_pipeline.agent_runtime import orchestrator as orch
 
 
@@ -376,3 +377,94 @@ def test_agent_orchestrator_provider_selection_and_run_review(
     override_bundle = orch.run_agent_review(capture_root=capture_root, provider_name="fake")
     assert (pipeline / "agent_readiness_memo.md").read_text(encoding="utf-8") == "# Provider memo\n"
     assert any(step["source"] == "provider_override" for step in override_bundle["steps"])
+
+
+def test_hidden_zone_threshold_matches_qualification_envelope() -> None:
+    # The reviewer path and the qualification capability envelope must agree on
+    # the maximum hidden-zone bound, sourced from a single shared constant.
+    assert orch.MAXIMUM_HIDDEN_ZONE_BOUND == qual._GENERIC_CAPABILITY_ENVELOPE["maximum_hidden_zone_bound"]
+    assert orch.MAXIMUM_HIDDEN_ZONE_BOUND == 0.35
+
+
+class _OfflineNullProvider:
+    """Offline fake provider whose skill invocations always decline (return None)."""
+
+    name = "offline-null"
+
+    def invoke_skill(self, _skill_name: str, _payload):
+        return None
+
+    def skill_metadata(self, skill_name: str) -> dict[str, object]:
+        return {"skill": skill_name, "offline": True}
+
+    def runtime_metadata(self) -> dict[str, object]:
+        return {"provider": self.name, "offline": True}
+
+
+def test_evidence_audit_low_confidence_route_edges_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    # Replace the route graph with edges straddling the confidence threshold.
+    _write_json(
+        capture_root / "pipeline" / "route_graph.json",
+        {
+            "edges": [
+                {"id": "below", "confidence": orch.MINIMUM_ROUTE_EDGE_CONFIDENCE - 0.01},
+                {"id": "at", "confidence": orch.MINIMUM_ROUTE_EDGE_CONFIDENCE},
+                {"id": "above", "confidence": orch.MINIMUM_ROUTE_EDGE_CONFIDENCE + 0.01},
+            ]
+        },
+    )
+    monkeypatch.setattr(orch, "sync_skill_pack", lambda _repo_root: None)
+    monkeypatch.setattr(orch, "_load_curated_standards", lambda: [])
+    monkeypatch.setattr(orch, "_provider_from_name", lambda *_args, **_kwargs: _OfflineNullProvider())
+
+    orch.run_agent_review(capture_root=capture_root, provider_name="offline-null")
+
+    evidence_audit = json.loads(
+        (capture_root / "pipeline" / "evidence_audit.json").read_text(encoding="utf-8")
+    )
+    edge_ids = {edge["edge_id"] for edge in evidence_audit["low_confidence_route_edges"]}
+    # Only the strictly-below edge is flagged; the at-threshold edge is not.
+    assert edge_ids == {"below"}
+
+
+def test_run_agent_review_propagates_hidden_zone_gap_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    # Fixture geometry_evidence carries hidden_zone_bound = 0.5 (> 0.35), so the
+    # hidden-zone gap must be raised by the deterministic evidence audit.
+    geometry = json.loads(
+        (capture_root / "pipeline" / "geometry_evidence.json").read_text(encoding="utf-8")
+    )
+    assert float(geometry["hidden_zone_bound"]) > orch.MAXIMUM_HIDDEN_ZONE_BOUND
+
+    monkeypatch.setattr(orch, "sync_skill_pack", lambda _repo_root: None)
+    monkeypatch.setattr(orch, "_load_curated_standards", lambda: [])
+    monkeypatch.setattr(orch, "_provider_from_name", lambda *_args, **_kwargs: _OfflineNullProvider())
+
+    orch.run_agent_review(capture_root=capture_root, provider_name="offline-null")
+    pipeline = capture_root / "pipeline"
+
+    expected_detail = (
+        f"Hidden-zone bound {round(float(geometry['hidden_zone_bound']), 4)} "
+        "exceeds the readiness envelope."
+    )
+
+    evidence_audit = json.loads((pipeline / "evidence_audit.json").read_text(encoding="utf-8"))
+    audit_details = {str(gap.get("detail")) for gap in evidence_audit["evidence_gaps"]}
+    assert expected_detail in audit_details
+
+    blocker_register = json.loads(
+        (pipeline / "agent_blocker_register.json").read_text(encoding="utf-8")
+    )
+    blocker_details = {str(entry.get("detail")) for entry in blocker_register["entries"]}
+    assert expected_detail in blocker_details
+
+    recapture_plan = json.loads((pipeline / "recapture_plan.json").read_text(encoding="utf-8"))
+    step_details = {str(step.get("detail")) for step in recapture_plan.get("steps", [])}
+    assert expected_detail in step_details

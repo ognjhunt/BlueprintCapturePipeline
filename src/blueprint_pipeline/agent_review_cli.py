@@ -32,7 +32,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
     parser.add_argument("--provider", required=True, choices=("claude", "openai"))
     parser.add_argument("--mode", default="qualification", choices=("qualification",))
-    parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli"))
+    parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli", "sdk", "auto"))
     parser.add_argument("--openai-phase2-model")
     parser.add_argument("--openai-phase2-codex-bin")
     parser.add_argument("--openai-phase2-timeout-seconds", type=int)

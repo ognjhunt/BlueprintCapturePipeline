@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any, Mapping, Tuple
 
 
+# Shared readiness thresholds. Kept here so the numpy-free reviewer path
+# (agent_runtime.orchestrator) and the qualification capability envelope
+# stay in lock-step on a single source of truth.
+MAXIMUM_HIDDEN_ZONE_BOUND = 0.35
+
+
 @dataclass(frozen=True)
 class GCSUri:
     """Parsed ``gs://`` URI."""

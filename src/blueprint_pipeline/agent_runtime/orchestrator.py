@@ -6,13 +6,18 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from ..common import ensure_dir, parse_bool, write_json, write_text
+from ..common import MAXIMUM_HIDDEN_ZONE_BOUND, ensure_dir, parse_bool, write_json, write_text
 from .artifacts import PipelineReviewArtifacts, load_pipeline_review_artifacts
 from .contracts import AgentReviewBundle, ReviewOutputFile, ReviewStepResult
 from .openai_phase2 import OpenAIPhase2Config, build_openai_skill_runner
 from .providers import ClaudeAgentProvider, OpenAIAgentProvider
 from .skill_sync import sync_skill_pack
 
+
+# Route edges below this confidence are surfaced as low-confidence in the
+# evidence audit, and the recapture acceptance prose cites the same bar so the
+# two stay in lock-step.
+MINIMUM_ROUTE_EDGE_CONFIDENCE = 0.7
 
 _DEFAULT_HUMAN_ACTIONS = [
     "Confirm workflow boundary and success criteria.",
@@ -213,7 +218,7 @@ def _recapture_acceptance_criteria(category: str, detail: str) -> List[str]:
         criteria.extend(
             [
                 "Metric measurement is recorded at the narrowest point.",
-                "Confidence is at least 0.7 or an equivalent metric-grade source is cited.",
+                f"Confidence is at least {MINIMUM_ROUTE_EDGE_CONFIDENCE} or an equivalent metric-grade source is cited.",
             ]
         )
     elif any(keyword in normalized_detail for keyword in ("hidden zone", "coverage", "occlusion")):
@@ -479,7 +484,7 @@ def _evidence_audit(artifacts: PipelineReviewArtifacts) -> Dict[str, Any]:
         if not isinstance(edge, Mapping):
             continue
         confidence = float(edge.get("confidence") or 0.0)
-        if confidence < 0.7:
+        if confidence < MINIMUM_ROUTE_EDGE_CONFIDENCE:
             low_confidence_edges.append(
                 {
                     "edge_id": edge.get("id") or edge.get("to") or edge.get("target"),
@@ -500,7 +505,7 @@ def _evidence_audit(artifacts: PipelineReviewArtifacts) -> Dict[str, Any]:
                 }
             )
     hidden_zone_bound = float(geometry.get("hidden_zone_bound") or 1.0)
-    if hidden_zone_bound > 0.35:
+    if hidden_zone_bound > MAXIMUM_HIDDEN_ZONE_BOUND:
         evidence_gaps.append(
             {
                 "category": "hidden_zone",
