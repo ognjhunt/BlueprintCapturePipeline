@@ -150,6 +150,7 @@ blueprint-prepare-robot-eval-provider-inputs = "blueprint_pipeline.robot_eval_pr
 blueprint-run-gpu-provider-launcher = "blueprint_pipeline.robot_eval_provider_launcher:main"
 blueprint-run-runpod-provider-adapter = "blueprint_pipeline.runpod_provider_adapter:main"
 blueprint-run-vast-provider-adapter = "blueprint_pipeline.vast_provider_adapter:main"
+blueprint-run-lambda-provider-adapter = "blueprint_pipeline.lambda_provider_adapter:main"
 blueprint-build-oscar-wam-provider-bundle = "blueprint_pipeline.oscar_wam_provider_bundle:main"
 blueprint-build-oscar-wam-gpu-image = "blueprint_pipeline.oscar_wam_gpu_image:main"
 blueprint-build-unitree-unifolm-gpu-image = "blueprint_pipeline.unitree_unifolm_gpu_image:main"
