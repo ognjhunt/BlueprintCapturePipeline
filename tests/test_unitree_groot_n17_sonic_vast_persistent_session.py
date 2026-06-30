@@ -2077,6 +2077,84 @@ def test_review_quality_12_step_rollout_blocks_on_concrete_drift_report(
     assert gate["paid_rollout_launch_allowed"] is False
 
 
+def test_review_quality_paid_rollout_blocks_on_materialization_quality_report(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    frame = _write_reviewable_frame(tmp_path / "frame.jpg")
+    observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    materialization_summary = tmp_path / "wam_materialization_summary.json"
+    materialization_summary.write_text(
+        json.dumps(
+            {
+                "schema_version": "persistent_wam_materialization_summary.v1",
+                "status": "completed",
+                "future_frame_quality_status": "failed",
+                "future_frame_quality_blockers": [
+                    "wam_generated_next_observation_future_frame_degraded_visual_signal"
+                ],
+                "materialized_future_frame_count": 4,
+                "degraded_future_frame_count": 4,
+                "video_first_frame_materialization_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "review_quality")
+    monkeypatch.setenv(
+        session.PERSISTENT_WAM_MATERIALIZATION_BLOCKER_MANIFEST_ENV,
+        str(materialization_summary),
+    )
+
+    validation = session.validate_persistent_wam_materialization_quality_blocker(
+        materialization_summary
+    )
+    assert validation["status"] == "confirmed_materialization_quality_blocker"
+    assert validation["concrete_materialization_quality_blocker_proven"] is True
+
+    blocked = session.build_persistent_session_provider_bundle(
+        job_dir=tmp_path / "blocked-materialization-bundle",
+        policy_observation_path=observation_path,
+        loop_step_count=2,
+        use_live_wam=True,
+        allow_structural_wam_fallback=False,
+        generated_at="now",
+    )
+
+    assert blocked["status"] == "blocked"
+    assert (
+        "future_frame_materialization_quality_blocker_present_before_paid_rollout"
+        in blocked["blockers"]
+    )
+    gate = json.loads(
+        (
+            tmp_path
+            / "blocked-materialization-bundle"
+            / "long_review_rollout_quality_gate.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert gate["status"] == "blocked_materialization_quality_confirmed"
+    assert gate["paid_rollout_launch_allowed"] is False
+    assert gate["concrete_materialization_quality_blocker_proven"] is True
+    assert (
+        gate["claim_boundary"][
+            "materialization_quality_blocker_prevents_same_config_paid_rollout"
+        ]
+        is True
+    )
+    provider_manifest = json.loads(
+        (
+            tmp_path
+            / "blocked-materialization-bundle"
+            / "provider_runtime"
+            / "unitree_groot_n17_sonic_policy_provider_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert provider_manifest["materialization_quality_blocker_validation"]["status"] == (
+        "confirmed_materialization_quality_blocker"
+    )
+
+
 def test_short_visual_sanity_blocks_before_provider_when_source_qa_fails(
     tmp_path: Path,
     monkeypatch,

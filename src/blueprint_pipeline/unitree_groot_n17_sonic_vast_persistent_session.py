@@ -96,6 +96,9 @@ PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_ENV = (
 PERSISTENT_WAM_AUTOREGRESSIVE_DRIFT_BLOCKER_MANIFEST_ENV = (
     "BLUEPRINT_PERSISTENT_WAM_AUTOREGRESSIVE_DRIFT_BLOCKER_MANIFEST"
 )
+PERSISTENT_WAM_MATERIALIZATION_BLOCKER_MANIFEST_ENV = (
+    "BLUEPRINT_PERSISTENT_WAM_MATERIALIZATION_BLOCKER_MANIFEST"
+)
 PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_MIN_STEPS = 12
 PERSISTENT_WAM_LONG_REVIEW_QUALITY_GATE_SCHEMA_VERSION = (
     "persistent_wam_long_review_rollout_quality_gate.v1"
@@ -617,6 +620,92 @@ def validate_persistent_wam_autoregressive_drift_blocker(
     }
 
 
+def validate_persistent_wam_materialization_quality_blocker(
+    path: str | Path | None,
+) -> dict[str, Any]:
+    """Validate prior materialization evidence that makes another paid run redundant."""
+    manifest_path = _resolve_optional_path(path)
+    blockers: list[str] = []
+    payload: dict[str, Any] = {}
+    materialization: dict[str, Any] = {}
+    if manifest_path is None:
+        return {
+            "schema_version": "persistent_wam_materialization_quality_blocker_validation.v1",
+            "status": "not_configured",
+            "manifest_path": None,
+            "concrete_materialization_quality_blocker_proven": False,
+            "blockers": [],
+            "raw_credentials_written_to_artifacts": False,
+            "secret_hashes_written_to_artifacts": False,
+        }
+    if not manifest_path.is_file():
+        blockers.append("materialization_quality_blocker_manifest_missing")
+    else:
+        try:
+            payload = _read_json(manifest_path)
+        except Exception as exc:
+            blockers.append(
+                f"materialization_quality_blocker_manifest_unreadable:{type(exc).__name__}"
+            )
+            payload = {}
+
+    if payload:
+        materialization = _mapping(payload.get("materialization_quality")) or payload
+        future_frame_quality_status = _string(materialization.get("future_frame_quality_status"))
+        future_frame_quality_blockers = set(
+            _string_list(materialization.get("future_frame_quality_blockers"))
+        )
+        try:
+            degraded_future_frame_count = int(materialization.get("degraded_future_frame_count") or 0)
+        except (TypeError, ValueError):
+            degraded_future_frame_count = 0
+        try:
+            video_first_frame_materialization_count = int(
+                materialization.get("video_first_frame_materialization_count") or 0
+            )
+        except (TypeError, ValueError):
+            video_first_frame_materialization_count = 0
+        concrete_materialization_blocker = bool(
+            future_frame_quality_status == "failed"
+            and (
+                degraded_future_frame_count > 0
+                or video_first_frame_materialization_count > 0
+                or "wam_generated_next_observation_future_frame_degraded_visual_signal"
+                in future_frame_quality_blockers
+                or "wam_generated_next_observation_used_video_first_frame_fallback"
+                in future_frame_quality_blockers
+            )
+        )
+        if future_frame_quality_status != "failed":
+            blockers.append("materialization_quality_blocker_status_not_failed")
+        if not concrete_materialization_blocker:
+            blockers.append("materialization_quality_blocker_not_concrete")
+    else:
+        concrete_materialization_blocker = False
+
+    return {
+        "schema_version": "persistent_wam_materialization_quality_blocker_validation.v1",
+        "status": "confirmed_materialization_quality_blocker"
+        if payload and concrete_materialization_blocker and not blockers
+        else "blocked",
+        "manifest_path": str(manifest_path),
+        "concrete_materialization_quality_blocker_proven": bool(
+            payload and concrete_materialization_blocker and not blockers
+        ),
+        "future_frame_quality_status": materialization.get("future_frame_quality_status"),
+        "future_frame_quality_blockers": _string_list(
+            materialization.get("future_frame_quality_blockers")
+        ),
+        "degraded_future_frame_count": materialization.get("degraded_future_frame_count"),
+        "video_first_frame_materialization_count": materialization.get(
+            "video_first_frame_materialization_count"
+        ),
+        "blockers": sorted(set(blockers)),
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+
+
 def _clean_frame_reanchoring_settings(
     *,
     loop_step_count: int,
@@ -672,10 +761,21 @@ def _persistent_wam_long_review_rollout_quality_gate(
     drift_validation = validate_persistent_wam_autoregressive_drift_blocker(
         os.getenv(PERSISTENT_WAM_AUTOREGRESSIVE_DRIFT_BLOCKER_MANIFEST_ENV)
     )
+    materialization_validation = validate_persistent_wam_materialization_quality_blocker(
+        os.getenv(PERSISTENT_WAM_MATERIALIZATION_BLOCKER_MANIFEST_ENV)
+    )
     blockers: list[str] = []
     status = "not_required"
     paid_launch_allowed = True
-    if required:
+    if (
+        settings.get("visual_profile") == "review_quality"
+        and materialization_validation.get("status")
+        == "confirmed_materialization_quality_blocker"
+    ):
+        status = "blocked_materialization_quality_confirmed"
+        paid_launch_allowed = False
+        blockers.append("future_frame_materialization_quality_blocker_present_before_paid_rollout")
+    elif required:
         if reanchoring.get("periodic_clean_frame_reanchoring_proven") is True:
             status = "passed_periodic_clean_frame_reanchoring"
         elif drift_validation.get("status") == "confirmed_autoregressive_drift_blocker":
@@ -703,11 +803,15 @@ def _persistent_wam_long_review_rollout_quality_gate(
         "paid_rollout_launch_allowed": bool(paid_launch_allowed and not blockers),
         "clean_frame_reanchoring": reanchoring,
         "drift_blocker_validation": drift_validation,
+        "materialization_quality_blocker_validation": materialization_validation,
         "periodic_clean_frame_reanchoring_proven": bool(
             reanchoring.get("periodic_clean_frame_reanchoring_proven")
         ),
         "concrete_autoregressive_drift_blocker_proven": bool(
             drift_validation.get("concrete_autoregressive_drift_blocker_proven")
+        ),
+        "concrete_materialization_quality_blocker_proven": bool(
+            materialization_validation.get("concrete_materialization_quality_blocker_proven")
         ),
         "blockers": sorted(set(blockers)),
         "claim_boundary": {
@@ -716,6 +820,9 @@ def _persistent_wam_long_review_rollout_quality_gate(
                 status == "blocked_autoregressive_drift_confirmed"
             ),
             "long_rollout_quality_gate_is_not_generated_world_rank_fidelity": True,
+            "materialization_quality_blocker_prevents_same_config_paid_rollout": bool(
+                status == "blocked_materialization_quality_confirmed"
+            ),
             "generated_world_rank_fidelity_result_proven": False,
             "generated_world_policy_evaluation_scope_proven": False,
             "non_ranking_operational_claim_proven": False,
@@ -3227,7 +3334,13 @@ def build_persistent_session_provider_bundle(
             "concrete_autoregressive_drift_blocker_proven": long_review_quality_gate.get(
                 "concrete_autoregressive_drift_blocker_proven"
             ),
+            "concrete_materialization_quality_blocker_proven": long_review_quality_gate.get(
+                "concrete_materialization_quality_blocker_proven"
+            ),
             "blockers": list(long_review_quality_gate.get("blockers") or []),
+            "materialization_quality_blocker_validation": _mapping(
+                long_review_quality_gate.get("materialization_quality_blocker_validation")
+            ),
         },
         "use_live_wam": bool(use_live_wam),
         "allow_structural_wam_fallback": bool(allow_structural_wam_fallback),
@@ -3309,6 +3422,9 @@ def build_persistent_session_provider_bundle(
             "source_policy_observation_visual_qa_status": source_visual_qa.get("status"),
             "long_review_rollout_quality_gate_path": str(long_review_quality_gate_path),
             "long_review_rollout_quality_gate_status": long_review_quality_gate.get("status"),
+            "materialization_quality_blocker_validation": _mapping(
+                long_review_quality_gate.get("materialization_quality_blocker_validation")
+            ),
             "clean_frame_reanchoring": _mapping(
                 long_review_quality_gate.get("clean_frame_reanchoring")
             ),
@@ -3418,6 +3534,9 @@ def build_persistent_session_provider_bundle(
         "source_policy_observation_visual_qa_status": source_visual_qa.get("status"),
         "long_review_rollout_quality_gate_path": str(long_review_quality_gate_path),
         "long_review_rollout_quality_gate_status": long_review_quality_gate.get("status"),
+        "materialization_quality_blocker_validation": _mapping(
+            long_review_quality_gate.get("materialization_quality_blocker_validation")
+        ),
         "clean_frame_reanchoring": _mapping(
             long_review_quality_gate.get("clean_frame_reanchoring")
         ),
