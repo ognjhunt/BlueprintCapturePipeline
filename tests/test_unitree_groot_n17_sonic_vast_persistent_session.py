@@ -327,6 +327,7 @@ def test_persistent_session_bundle_uses_proven_policy_server_rewrite(
     assert "provider_runtime/run_unitree_groot_n17_sonic_runpod_wrapper.sh" in names
     assert "provider_runtime/run_wam_provider_runtime.sh" in names
     assert "provider_runtime/unitree_groot_n17_sonic_provider_runner.py" in names
+    assert "provider_runtime/blueprint_pipeline/wam_auxiliary_observation.py" in names
     assert "provider_runtime/policy_input.json" in names
     assert "provider_runtime/input_frame.png" in names
     assert (
@@ -640,6 +641,7 @@ def test_run_persistent_session_imports_reused_worker_output(
     assert output["provider_output_replay_used"] is False
     assert captured["provider_bundle_kind"] == "unitree_groot_n17_sonic"
     assert captured["enable_blueprint_bundle"] is True
+    assert captured["min_compute_cap"] == 800
     assert captured["allowed_machine_ids"] == []
     assert captured["policy_command_env"] == session.DEFAULT_INNER_POLICY_COMMAND
     assert captured["persistent_inner_policy_command_env"] == session.DEFAULT_INNER_POLICY_COMMAND

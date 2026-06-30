@@ -28,6 +28,7 @@ from blueprint_pipeline.vast_provider_adapter import (
 def _isolate_vast_launch_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(vpa.VAST_LAUNCH_LOCK_FILE_ENV, str(tmp_path / "vast_paid_launch.lock"))
     monkeypatch.delenv(vpa.VAST_WAM_MIN_GPU_RAM_MB_ENV, raising=False)
+    monkeypatch.delenv(vpa.VAST_MIN_COMPUTE_CAP_ENV, raising=False)
     monkeypatch.delenv(vpa.VAST_IMAGE_LOGIN_MODE_ENV, raising=False)
     for env_name in vpa.HF_TOKEN_FILE_ENV_NAMES:
         monkeypatch.delenv(env_name, raising=False)
@@ -2051,6 +2052,39 @@ def test_vast_adapter_can_require_minimum_gpu_memory() -> None:
     assert selected["gpu_ram_mb"] == 49152
 
 
+def test_vast_adapter_can_require_minimum_compute_capability() -> None:
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "Quadro RTX 8000",
+                "gpu_ram_mb": 49152,
+                "compute_cap": 750,
+                "dph_total": 0.24,
+                "driver_version": "580.95.05",
+            },
+            {
+                "id": 2,
+                "ask_contract_id": 2,
+                "gpu_name": "RTX 4090",
+                "gpu_ram_mb": 49140,
+                "compute_cap": 890,
+                "dph_total": 0.57,
+                "driver_version": "580.142",
+            },
+        ],
+        max_hourly_rate=0.60,
+        min_gpu_ram_mb=48000,
+        min_compute_cap=800,
+        prefer_isaac_rt=False,
+    )
+
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2
+    assert selected["compute_cap_normalized"] == 890
+
+
 def test_vast_adapter_excludes_avoidlisted_machine_ids() -> None:
     selected = _select_offer(
         [
@@ -2608,6 +2642,107 @@ def test_vast_adapter_records_machine_avoidlist_on_heartbeat_blocker(
     )
     offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
     assert offer["selected_offer"]["machine_id"] == 909
+
+
+def test_vast_adapter_accepts_downstream_markers_when_heartbeat_url_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    bundle = tmp_path / "unitree_groot_n17_sonic_bundle.zip"
+    _write_valid_unitree_groot_n17_sonic_provider_bundle(bundle)
+    output_zip = tmp_path / "provider-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_wam_persistent_session_output.json",
+            json.dumps(
+                {
+                    "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_output.v1",
+                    "status": "completed",
+                    "blockers": [],
+                    "persistent_provider_session_used": True,
+                    "provider_instance_reused_for_policy_and_wam_loop": True,
+                }
+            ),
+        )
+
+    def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["api_key"] == secret
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {"instances": []}
+        if kwargs["method"] == "POST":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 707,
+                        "ask_contract_id": 707,
+                        "gpu_name": "RTX A6000",
+                        "gpu_ram_mb": 49140,
+                        "compute_cap": 860,
+                        "dph_total": 0.42,
+                        "driver_version": "595.71.05",
+                        "machine_id": 7070,
+                    }
+                ]
+            }
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/asks/707/":
+            return 200, {"new_contract": 7071}
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/7071/":
+            return 200, {"instances": {"actual_status": "running", "cur_state": "running"}}
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/7071":
+            return 200, {"success": True, "result_url": "https://logs.example/downstream"}
+        if kwargs["method"] == "DELETE":
+            return 200, {"success": True}
+        raise AssertionError(kwargs)
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(
+        vpa,
+        "_fetch_text",
+        lambda *_args, **_kwargs: (
+            "BLUEPRINT_VAST_ONSTART_STARTED\n"
+            "BLUEPRINT_VAST_HEARTBEAT_BLOCKED:6\n"
+            "NVIDIA RTX A6000, 595.71.05, 49140 MiB\n"
+            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+            "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED\n"
+            "BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED\n"
+            "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED\n"
+            "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:0\n"
+            "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK\n"
+            "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED\n"
+            "BLUEPRINT_VAST_ONSTART_DONE\n"
+        ),
+    )
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path / "downstream-after-heartbeat",
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        provider_bundle_kind="unitree_groot_n17_sonic",
+        provider_bundle=bundle,
+        provider_bundle_url="https://example.invalid/groot.zip",
+        provider_output_put_url="https://example.invalid/out.zip",
+        provider_runtime_output_zip=output_zip,
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "completed"
+    assert "vast_heartbeat_output_missing_success_marker" not in result["blockers"]
+    startup = _read_json(
+        tmp_path / "downstream-after-heartbeat" / "vast_startup_probe_manifest.json"
+    )
+    assert startup["status"] == "completed"
+    assert startup["heartbeat_completed"] is False
+    assert startup["startup_probe_proof_source"] == "downstream_provider_marker"
+    assert startup["warnings"] == [
+        "vast_heartbeat_url_failed_but_downstream_provider_marker_seen"
+    ]
 
 
 def test_vast_adapter_records_machine_avoidlist_on_probe_interrupt(
@@ -4313,6 +4448,20 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
     )
     assert no_offer["status"] == "blocked"
     assert no_offer["blockers"] == ["no_vast_offer_at_or_below_max_hourly_rate"]
+
+    no_compute_cap_offer = run_vast_provider_adapter(
+        job_dir=tmp_path / "no-compute-cap-offer",
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        session_max_live_minutes=None,
+        min_compute_cap=800,
+    )
+    assert no_compute_cap_offer["status"] == "blocked"
+    assert no_compute_cap_offer["blockers"] == [
+        "no_vast_offer_meeting_min_compute_cap",
+        "no_vast_offer_at_or_below_max_hourly_rate",
+    ]
 
     def no_allowed_offer_api(**kwargs):  # type: ignore[no-untyped-def]
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":

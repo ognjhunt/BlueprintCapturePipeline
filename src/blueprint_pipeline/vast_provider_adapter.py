@@ -61,6 +61,7 @@ VAST_API_GATE_ENV = "BLUEPRINT_ALLOW_VAST_API_CALLS"
 VAST_INSTANCE_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"
 VAST_FORWARD_SECRET_ENV_VARS_ENV = "BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS"
 VAST_WAM_MIN_GPU_RAM_MB_ENV = "BLUEPRINT_VAST_WAM_MIN_GPU_RAM_MB"
+VAST_MIN_COMPUTE_CAP_ENV = "BLUEPRINT_VAST_MIN_COMPUTE_CAP"
 VAST_MIN_RELIABILITY_ENV = "BLUEPRINT_VAST_MIN_RELIABILITY"
 VAST_REQUIRE_DIRECT_PORT_ENV = "BLUEPRINT_VAST_REQUIRE_DIRECT_PORT"
 VAST_PREFERRED_GPU_KEYWORDS_ENV = "BLUEPRINT_VAST_PREFERRED_GPU_KEYWORDS"
@@ -1206,10 +1207,31 @@ def _is_isaac_rt_candidate(gpu_name: str) -> bool:
     )
 
 
+def _normalized_compute_cap(value: Any) -> int | None:
+    number = _number(value)
+    if number is None:
+        return None
+    if 0 < number < 100:
+        return int(round(float(number) * 100))
+    return int(number)
+
+
+def _meets_min_compute_cap(offer: Mapping[str, Any], min_compute_cap: int) -> bool:
+    if not min_compute_cap:
+        return True
+    compute_cap = _normalized_compute_cap(
+        offer.get("compute_cap_normalized")
+        if offer.get("compute_cap_normalized") is not None
+        else offer.get("compute_cap")
+    )
+    return compute_cap is not None and compute_cap >= int(min_compute_cap)
+
+
 def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
     gpu = _gpu_name(offer)
     driver = _driver_version(offer)
     driver_status = _isaac_driver_support_status(driver)
+    compute_cap = offer.get("compute_cap")
     return {
         "ask_contract_id": _offer_id(offer),
         "gpu_name": gpu,
@@ -1219,7 +1241,8 @@ def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
         "isaac_driver_preferred_for_rtx": driver_status
         == "outside_known_unsupported_omniverse_rtx_driver_range",
         "cuda_max_good": offer.get("cuda_max_good"),
-        "compute_cap": offer.get("compute_cap"),
+        "compute_cap": compute_cap,
+        "compute_cap_normalized": _normalized_compute_cap(compute_cap),
         "gpu_ram_mb": offer.get("gpu_ram")
         or offer.get("gpu_totalram")
         or offer.get("gpu_ram_mb"),
@@ -1261,6 +1284,7 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         or None,
         "cuda_max_good": offer.get("cuda_max_good"),
         "compute_cap": offer.get("compute_cap"),
+        "compute_cap_normalized": offer.get("compute_cap_normalized"),
         "gpu_ram_mb": offer.get("gpu_ram_mb"),
         "num_gpus": offer.get("num_gpus"),
         "reliability": offer.get("reliability"),
@@ -1442,6 +1466,7 @@ def _select_offer(
     *,
     max_hourly_rate: float,
     min_gpu_ram_mb: int = 0,
+    min_compute_cap: int = 0,
     excluded_machine_ids: Iterable[Any] = (),
     allowed_machine_ids: Iterable[Any] = (),
     require_known_supported_isaac_driver: bool = False,
@@ -1461,6 +1486,7 @@ def _select_offer(
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
+        and _meets_min_compute_cap(item, min_compute_cap)
         and (
             not min_reliability
             or (
@@ -1528,6 +1554,7 @@ def _offer_selection_manifest(
     selected_offer: Mapping[str, Any] | None,
     max_hourly_rate: float,
     min_gpu_ram_mb: int,
+    min_compute_cap: int = 0,
     require_known_supported_isaac_driver: bool,
     excluded_machine_ids: Iterable[Any],
     allowed_machine_ids: Iterable[Any],
@@ -1569,6 +1596,7 @@ def _offer_selection_manifest(
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
+        and _meets_min_compute_cap(item, min_compute_cap)
         and (
             not min_reliability
             or (
@@ -1596,6 +1624,7 @@ def _offer_selection_manifest(
         "offer_count": len(offers),
         "max_hourly_rate_usd": max_hourly_rate,
         "min_gpu_ram_mb": min_gpu_ram_mb,
+        "min_compute_cap": min_compute_cap,
         "require_known_supported_isaac_driver": require_known_supported_isaac_driver,
         "min_reliability": min_reliability,
         "require_direct_port": require_direct_port,
@@ -4177,6 +4206,7 @@ def run_vast_provider_adapter(
     min_cold_isaac_pull_live_minutes: int = DEFAULT_MIN_COLD_ISAAC_PULL_LIVE_MINUTES,
     disk_gb: int | None = None,
     min_gpu_ram_mb: int | None = None,
+    min_compute_cap: int | None = None,
     poll_interval_seconds: int = 10,
     startup_timeout_seconds: int = 420,
     machine_avoidlist_path: str | Path | None = None,
@@ -4226,6 +4256,14 @@ def run_vast_provider_adapter(
             _number(min_gpu_ram_mb)
             if min_gpu_ram_mb is not None
             else (_number(os.getenv(VAST_WAM_MIN_GPU_RAM_MB_ENV)) or 0)
+        ),
+    )
+    resolved_min_compute_cap = max(
+        0,
+        int(
+            _number(min_compute_cap)
+            if min_compute_cap is not None
+            else (_number(os.getenv(VAST_MIN_COMPUTE_CAP_ENV)) or 0)
         ),
     )
     resolved_min_reliability = max(
@@ -4438,6 +4476,7 @@ def run_vast_provider_adapter(
         "allowed_machine_ids": sorted(resolved_allowed_machine_ids),
         "machine_allowlist_active": bool(resolved_allowed_machine_ids),
         "min_gpu_ram_mb": resolved_min_gpu_ram_mb,
+        "min_compute_cap": resolved_min_compute_cap,
         "session_budget_ledger_path": str(resolved_session_budget_ledger_path),
         "vast_launch_lock_path": str(resolved_vast_launch_lock_path),
         "vast_launch_lock_manifest_path": str(
@@ -5226,6 +5265,7 @@ def run_vast_provider_adapter(
                 offers,
                 max_hourly_rate=max_hourly_rate,
                 min_gpu_ram_mb=resolved_min_gpu_ram_mb,
+                min_compute_cap=resolved_min_compute_cap,
                 excluded_machine_ids=excluded_machine_ids,
                 allowed_machine_ids=resolved_allowed_machine_ids,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
@@ -5239,6 +5279,8 @@ def run_vast_provider_adapter(
             if not selected_offer:
                 if resolved_allowed_machine_ids:
                     offer_blockers.append("no_vast_offer_matching_allowed_machine_ids")
+                if resolved_min_compute_cap:
+                    offer_blockers.append("no_vast_offer_meeting_min_compute_cap")
                 offer_blockers.append(
                     "no_vast_offer_with_known_supported_isaac_driver_at_or_below_max_hourly_rate"
                     if require_known_supported_isaac_driver
@@ -5251,6 +5293,7 @@ def run_vast_provider_adapter(
                 selected_offer=selected_offer,
                 max_hourly_rate=max_hourly_rate,
                 min_gpu_ram_mb=resolved_min_gpu_ram_mb,
+                min_compute_cap=resolved_min_compute_cap,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
                 excluded_machine_ids=excluded_machine_ids,
                 allowed_machine_ids=resolved_allowed_machine_ids,
@@ -5532,13 +5575,32 @@ def run_vast_provider_adapter(
                 }
                 onstart_logs["effective_log_source"] = "request_logs"
         heartbeat_ok = "BLUEPRINT_VAST_HEARTBEAT_OK" in heartbeat_text
+        downstream_marker_seen = any(
+            marker in heartbeat_text
+            for marker in (
+                "BLUEPRINT_VAST_GPU_SANITY_OK",
+                "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED",
+                "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED",
+                "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK",
+            )
+        )
+        startup_probe_ok = heartbeat_ok or downstream_marker_seen
+        heartbeat_warnings = (
+            ["vast_heartbeat_url_failed_but_downstream_provider_marker_seen"]
+            if downstream_marker_seen and not heartbeat_ok
+            else []
+        )
         heartbeat_manifest = {
             "schema_version": VAST_STARTUP_PROBE_SCHEMA_VERSION,
             "generated_at": generated_at,
-            "status": "completed" if heartbeat_ok else "blocked",
+            "status": "completed" if startup_probe_ok else "blocked",
             "instance_id": instance_id,
             "heartbeat_completed": heartbeat_ok,
-            "startup_probe_proven": heartbeat_ok,
+            "startup_probe_proven": startup_probe_ok,
+            "startup_probe_proof_source": "heartbeat_url"
+            if heartbeat_ok
+            else ("downstream_provider_marker" if downstream_marker_seen else "none"),
+            "downstream_provider_marker_seen": downstream_marker_seen,
             "heartbeat_url_kind": "public_echo_endpoint",
             "launch_mode_used": launch_mode,
             "disk_gb": resolved_disk_gb,
@@ -5552,7 +5614,10 @@ def run_vast_provider_adapter(
             "instance_observations": observations,
             "last_instance_payload": _redact_runtime_value(instance_payload, secret_values),
             "container_log_result": onstart_logs,
-            "blockers": [] if heartbeat_ok else ["vast_heartbeat_output_missing_success_marker"],
+            "blockers": []
+            if startup_probe_ok
+            else ["vast_heartbeat_output_missing_success_marker"],
+            "warnings": heartbeat_warnings,
             "proof_boundary": "Heartbeat proves Vast instance startup plus command/log retrieval only.",
             **_truth_boundaries(),
         }
@@ -5560,19 +5625,19 @@ def run_vast_provider_adapter(
         _append_phase(
             resolved_job_dir,
             "vast_heartbeat_completed_or_blocked",
-            "completed" if heartbeat_ok else "blocked",
-            blockers=[] if heartbeat_ok else ["vast_heartbeat_output_missing_success_marker"],
-            proof_effect="vast_container_command_heartbeat_completed" if heartbeat_ok else "none",
+            "completed" if startup_probe_ok else "blocked",
+            blockers=[]
+            if startup_probe_ok
+            else ["vast_heartbeat_output_missing_success_marker"],
+            proof_effect="vast_container_command_heartbeat_completed"
+            if heartbeat_ok
+            else (
+                "vast_downstream_provider_marker_seen_after_heartbeat_url_failed"
+                if downstream_marker_seen
+                else "none"
+            ),
             instance_id=instance_id,
-        )
-        downstream_marker_seen = any(
-            marker in heartbeat_text
-            for marker in (
-                "BLUEPRINT_VAST_GPU_SANITY_OK",
-                "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED",
-                "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED",
-                "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK",
-            )
+            warnings=heartbeat_warnings,
         )
         if not heartbeat_ok and not downstream_marker_seen:
             raise RuntimeError("vast_heartbeat_blocked")
@@ -6023,10 +6088,15 @@ def run_vast_provider_adapter(
         if exc_text.startswith("no_vast_offer"):
             exception_status = "blocked"
             exception_reason = "vast_offer_selection_blocked"
-            exception_blockers = (
-                ["no_vast_offer_matching_allowed_machine_ids", "no_vast_offer_at_or_below_max_hourly_rate"]
-                if resolved_allowed_machine_ids
-                else ["no_vast_offer_at_or_below_max_hourly_rate"]
+            exception_blockers = []
+            if resolved_allowed_machine_ids:
+                exception_blockers.append("no_vast_offer_matching_allowed_machine_ids")
+            if resolved_min_compute_cap:
+                exception_blockers.append("no_vast_offer_meeting_min_compute_cap")
+            exception_blockers.append(
+                "no_vast_offer_with_known_supported_isaac_driver_at_or_below_max_hourly_rate"
+                if require_known_supported_isaac_driver
+                else "no_vast_offer_at_or_below_max_hourly_rate"
             )
         else:
             exception_status = "failed"

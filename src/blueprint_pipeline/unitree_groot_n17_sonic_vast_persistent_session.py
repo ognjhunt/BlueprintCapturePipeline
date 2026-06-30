@@ -2820,6 +2820,7 @@ def _copy_blueprint_runtime(runtime_dir: Path) -> list[str]:
         "unitree_groot_n17_sonic_provider_smoke.py",
         "oscar_wam_provider_bundle.py",
         "oscar_wam_command_adapter.py",
+        "wam_auxiliary_observation.py",
         "wam_generated_video_review.py",
     ):
         shutil.copy2(source_dir / filename, package_dir / filename)
@@ -4450,6 +4451,9 @@ def run_persistent_session(
                 disk_gb=_int_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_DISK_GB", 120),
                 min_gpu_ram_mb=_int_env(
                     "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MIN_GPU_RAM_MB", 48000
+                ),
+                min_compute_cap=_int_env(
+                    "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MIN_COMPUTE_CAP", 800
                 ),
                 poll_interval_seconds=_int_env(
                     "BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_POLL_SECONDS", 15

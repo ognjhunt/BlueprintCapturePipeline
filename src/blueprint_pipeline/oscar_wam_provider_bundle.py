@@ -2782,6 +2782,14 @@ def _framework_probe(python: str, source_root: Path | None = None) -> dict[str, 
         " payload['transformer_engine_module_api_importable']=False\n"
         " payload['transformer_engine_ops_api_importable']=False\n"
         " payload['transformer_engine_tensor_api_error_type']=type(exc).__name__\n"
+        "try:\n"
+        " import cv2\n"
+        " payload['cv2_importable']=True\n"
+        " payload['cv2_version']=getattr(cv2, '__version__', None)\n"
+        "except Exception as exc:\n"
+        " payload['cv2_importable']=False\n"
+        " payload['cv2_error_type']=type(exc).__name__\n"
+        " payload['cv2_error_text']=str(exc)[:240]\n"
         "pynvml_spec = importlib.util.find_spec('pynvml')\n"
         "payload['pynvml_importable'] = pynvml_spec is not None\n"
         "payload['pynvml_origin'] = getattr(pynvml_spec, 'origin', None) if pynvml_spec is not None else None\n"
@@ -2826,6 +2834,36 @@ def _pip_install_argv(python: str, *args: str) -> list[str]:
     return argv
 
 
+def _pip_uninstall_argv(python: str, *args: str) -> list[str]:
+    argv = [python, "-m", "pip", "uninstall"]
+    allow_break_system = os.environ.get(
+        "BLUEPRINT_WAM_PROVIDER_ALLOW_BREAK_SYSTEM_PACKAGES",
+        "true",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if allow_break_system:
+        argv.append("--break-system-packages")
+    argv.extend(args)
+    return argv
+
+
+GUI_OPENCV_REQUIREMENT_NAMES = {"opencv-python", "opencv-contrib-python"}
+
+
+def _requirement_name(line: str) -> str:
+    stripped = line.strip()
+    for separator in ("==", ">=", "<=", "~=", "!=", ">", "<", "[", ";"):
+        if separator in stripped:
+            stripped = stripped.split(separator, maxsplit=1)[0]
+    return stripped.lower().replace("_", "-")
+
+
+def _is_gui_opencv_requirement(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+        return False
+    return _requirement_name(stripped) in GUI_OPENCV_REQUIREMENT_NAMES
+
+
 def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
     commands: list[dict[str, Any]] = []
     transformer_engine_strategy = os.environ.get(
@@ -2865,6 +2903,8 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
             blockers.append("image_runtime_pynvml_unavailable")
         if framework_before_payload.get("loguru_importable") is not True:
             blockers.append("image_runtime_loguru_unavailable")
+        if framework_before_payload.get("cv2_importable") is not True:
+            blockers.append("image_runtime_cv2_unavailable")
         worldsim_runtime_imports = _mapping(
             framework_before_payload.get("worldsim_runtime_imports")
         )
@@ -2926,6 +2966,7 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
     req = source_root / "requirements.txt"
     if not req.is_file():
         req = source_root / "requirements_minimal.txt"
+    gui_opencv_lines: list[str] = []
     if req.is_file():
         torch_req = source_root / "requirements_torch_cuda128.txt"
         filtered_req = source_root / "requirements_blueprint_without_torch.txt"
@@ -2933,9 +2974,11 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
         filtered_lines: list[str] = []
         for line in req.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
-            package_name = stripped.split("==", maxsplit=1)[0].split(">=", maxsplit=1)[0]
+            package_name = _requirement_name(stripped)
             if package_name in {"torch", "torchvision"}:
                 torch_lines.append(stripped)
+            elif _is_gui_opencv_requirement(stripped):
+                gui_opencv_lines.append(stripped)
             else:
                 filtered_lines.append(line)
         torch_req.write_text(
@@ -2972,6 +3015,24 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
         filtered_req.write_text("\n".join(filtered_lines) + "\n", encoding="utf-8")
         commands.append(
             _run(_pip_install_argv(python, "-r", str(filtered_req)), cwd=source_root, timeout=2400)
+        )
+        commands.append(
+            _run(
+                _pip_uninstall_argv(python, "-y", "opencv-python", "opencv-contrib-python"),
+                cwd=source_root,
+                timeout=600,
+            )
+        )
+        commands.append(
+            _run(
+                _pip_install_argv(
+                    python,
+                    "--force-reinstall",
+                    "opencv-python-headless",
+                ),
+                cwd=source_root,
+                timeout=900,
+            )
         )
     framework_after_requirements = _framework_probe(python, source_root)
     framework_after_requirements_payload = _mapping(framework_after_requirements.get("payload"))
@@ -3015,6 +3076,8 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
         and framework_after_transformer_engine_payload.get("transformer_engine_importable") is not True
     ):
         blockers.append("transformer_engine_or_compat_shim_not_importable_after_dependencies")
+    if framework_after_transformer_engine_payload.get("cv2_importable") is not True:
+        blockers.append("opencv_headless_import_failed_after_dependencies")
     return {
         "status": "completed" if not blockers else "blocked",
         "source_requirements_file": str(req) if req.is_file() else None,
@@ -3028,6 +3091,7 @@ def _ensure_dependencies(python: str, source_root: Path) -> dict[str, Any]:
         "transformer_engine_optional": transformer_engine_optional,
         "attempted_real_transformer_engine_install": should_attempt_real_te_install,
         "allow_break_system_packages": allow_break_system_packages,
+        "filtered_gui_opencv_requirements": gui_opencv_lines if req.is_file() else [],
         "commands": commands,
         "blockers": blockers,
     }
