@@ -4288,6 +4288,131 @@ def _load_json_rows(paths: Sequence[Path]) -> list[dict[str, Any]]:
     return rows
 
 
+def _is_numeric_scalar(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _numeric_values(value: Any) -> list[float]:
+    if _is_numeric_scalar(value):
+        return [float(value)]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        values: list[float] = []
+        for item in value:
+            values.extend(_numeric_values(item))
+        return values
+    return []
+
+
+def _numeric_shape(value: Any) -> list[int] | None:
+    if _is_numeric_scalar(value):
+        return []
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return None
+    children = [_numeric_shape(item) for item in value]
+    if not children:
+        return [0]
+    if any(child is None for child in children):
+        return [len(value)]
+    first = children[0]
+    if all(child == first for child in children):
+        return [len(value), *list(first or [])]
+    return [len(value)]
+
+
+def _numeric_tensor_summary(name: str, value: Any) -> dict[str, Any]:
+    values = _numeric_values(value)
+    nonzero_count = sum(1 for item in values if abs(item) > 1e-9)
+    return {
+        "name": name,
+        "present": value is not None,
+        "shape": _numeric_shape(value),
+        "numeric_count": len(values),
+        "nonzero_count": nonzero_count,
+        "all_zero": bool(values and nonzero_count == 0),
+        "min": min(values) if values else None,
+        "max": max(values) if values else None,
+        "mean_abs": sum(abs(item) for item in values) / len(values) if values else None,
+    }
+
+
+def _policy_action_decoding_contract(
+    action: Mapping[str, Any],
+    *,
+    generated_at: str,
+) -> dict[str, Any]:
+    hand_targets = _mapping(action.get("hand_targets"))
+    summaries = {
+        "action_chunk": _numeric_tensor_summary("action_chunk", action.get("action_chunk")),
+        "sonic_latent_action": _numeric_tensor_summary(
+            "sonic_latent_action",
+            action.get("sonic_latent_action"),
+        ),
+        "motion_token": _numeric_tensor_summary("motion_token", action.get("motion_token")),
+        "joint_targets": _numeric_tensor_summary("joint_targets", action.get("joint_targets")),
+        "arm_targets": _numeric_tensor_summary("arm_targets", action.get("arm_targets")),
+        "left_hand_joints": _numeric_tensor_summary(
+            "left_hand_joints",
+            action.get("left_hand_joints") or hand_targets.get("left_hand_joints"),
+        ),
+        "right_hand_joints": _numeric_tensor_summary(
+            "right_hand_joints",
+            action.get("right_hand_joints") or hand_targets.get("right_hand_joints"),
+        ),
+    }
+    latent_present = any(
+        summaries[key]["numeric_count"] > 0
+        for key in ("action_chunk", "sonic_latent_action", "motion_token")
+    )
+    decoded_target_keys = ("joint_targets", "arm_targets", "left_hand_joints", "right_hand_joints")
+    decoded_target_present = any(summaries[key]["numeric_count"] > 0 for key in decoded_target_keys)
+    decoded_target_nonzero = any(
+        summaries[key]["nonzero_count"] > 0 for key in decoded_target_keys
+    )
+    hand_targets_all_zero = bool(
+        (summaries["left_hand_joints"]["numeric_count"] or 0) > 0
+        and (summaries["right_hand_joints"]["numeric_count"] or 0) > 0
+        and summaries["left_hand_joints"]["all_zero"]
+        and summaries["right_hand_joints"]["all_zero"]
+    )
+    if decoded_target_nonzero:
+        status = "decoded_control_targets_available"
+        blockers: list[str] = []
+    elif latent_present:
+        status = "blocked_latent_action_without_pose_decoder"
+        blockers = ["policy_action_latent_without_decoded_pose_targets"]
+    elif decoded_target_present:
+        status = "blocked_decoded_control_targets_all_zero"
+        blockers = ["policy_action_decoded_control_targets_all_zero"]
+    else:
+        status = "blocked_no_policy_action_tensor"
+        blockers = ["policy_action_tensor_missing"]
+    warnings = ["policy_hand_targets_all_zero"] if hand_targets_all_zero else []
+    return {
+        "schema_version": "persistent_policy_action_decoding_contract.v1",
+        "generated_at": generated_at,
+        "status": status,
+        "action_type": action.get("action_type"),
+        "control_fields": action.get("unitree_g1_sonic_control_fields"),
+        "latent_action_present": latent_present,
+        "decoded_control_target_present": decoded_target_present,
+        "decoded_control_target_nonzero": decoded_target_nonzero,
+        "policy_derived_projected_skeleton_trace_present": False,
+        "policy_ranking_claim_safe": False,
+        "tensor_summaries": summaries,
+        "warnings": warnings,
+        "blockers": blockers,
+        "claim_boundary": {
+            "policy_action_decoding_contract_is_payload_introspection_only": True,
+            "latent_action_is_not_a_decoded_robot_pose_or_skeleton": latent_present,
+            "decoded_control_targets_are_not_task_success_proof": True,
+            "policy_ranking_claim_safe_requires_policy_derived_projected_skeleton": True,
+            "scene_or_task_specific_pixels_used": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+
+
 def _action_summary(action: Mapping[str, Any]) -> dict[str, Any]:
     chunk = action.get("action_chunk")
     return {
@@ -4300,6 +4425,103 @@ def _action_summary(action: Mapping[str, Any]) -> dict[str, Any]:
         "source_action_key": action.get("source_action_key"),
         "control_fields": action.get("unitree_g1_sonic_control_fields"),
     }
+
+
+def _write_policy_action_decoding_contract(
+    *,
+    job: Path,
+    action: Mapping[str, Any],
+    generated_at: str,
+) -> dict[str, Any]:
+    contract = _policy_action_decoding_contract(action, generated_at=generated_at)
+    write_json(job / "policy_action_decoding_contract.json", contract)
+    return contract
+
+
+def _mujoco_scene_manifest_candidates(job: Path, extraction_dir: Path) -> list[Path]:
+    return [
+        job / "mujoco_scene_manifest.json",
+        job / "provider_bundle" / "provider_runtime" / "mujoco_scene_manifest.json",
+        extraction_dir / "mujoco_scene_manifest.json",
+    ]
+
+
+def _mujoco_scene_manifest_path(job: Path, extraction_dir: Path) -> Path | None:
+    for path in _mujoco_scene_manifest_candidates(job, extraction_dir):
+        if path.is_file():
+            return path
+    return None
+
+
+def _write_policy_action_bridge_readiness(
+    *,
+    job: Path,
+    extraction_dir: Path,
+    action_contract: Mapping[str, Any],
+    generated_at: str,
+) -> dict[str, Any]:
+    scene_manifest = _mujoco_scene_manifest_path(job, extraction_dir)
+    latent_action_present = bool(action_contract.get("latent_action_present"))
+    decoded_targets_nonzero = bool(action_contract.get("decoded_control_target_nonzero"))
+    sim2sim_execution = job / "unitree_groot_n17_sonic_sim2sim_execution.json"
+    if decoded_targets_nonzero:
+        status = "decoded_control_targets_available"
+        blockers: list[str] = []
+    elif latent_action_present and scene_manifest is not None:
+        status = "ready_for_sim2sim_action_trace_bridge"
+        blockers = []
+    elif latent_action_present:
+        status = "blocked_missing_scene_bridge_for_latent_action"
+        blockers = ["blocked_missing_mujoco_scene_manifest_for_unitree_sonic_sim2sim_bridge"]
+    else:
+        status = "blocked_no_policy_action_for_bridge"
+        blockers = ["policy_action_tensor_missing"]
+    payload = {
+        "schema_version": "persistent_policy_action_bridge_readiness.v1",
+        "generated_at": generated_at,
+        "status": status,
+        "latent_action_present": latent_action_present,
+        "decoded_control_target_nonzero": decoded_targets_nonzero,
+        "mujoco_scene_manifest_path": str(scene_manifest) if scene_manifest else None,
+        "mujoco_scene_manifest_candidates": [
+            str(path) for path in _mujoco_scene_manifest_candidates(job, extraction_dir)
+        ],
+        "sim2sim_execution_path": str(sim2sim_execution)
+        if sim2sim_execution.is_file()
+        else None,
+        "bridge_candidates": [
+            {
+                "id": "unitree_groot_n17_sonic_sim2sim_command",
+                "kind": "simulator_only_mujoco_action_trace_bridge",
+                "requires": [
+                    "policy_action_latent_tensor",
+                    "mujoco_scene_manifest_with_unitree_upper_body_actuators",
+                ],
+                "available": bool(latent_action_present and scene_manifest is not None),
+            },
+            {
+                "id": "official_groot_wholebodycontrol_sim2sim",
+                "kind": "official_wbc_sim2sim_launcher",
+                "requires": [
+                    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT",
+                    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SIM2SIM_COMMAND",
+                ],
+                "available": False,
+            },
+        ],
+        "blockers": blockers,
+        "claim_boundary": {
+            "bridge_readiness_is_not_bridge_execution": True,
+            "simulator_only_bridge_is_not_official_wbc_mapping": True,
+            "decoded_or_bridged_joint_trace_is_not_task_success_proof": True,
+            "policy_ranking_claim_safe_requires_policy_derived_wam_conditioning": True,
+            "scene_or_task_specific_pixels_used": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+    write_json(job / "policy_action_bridge_readiness.json", payload)
+    return payload
 
 
 def _concat_file_line(path: Path) -> str:
@@ -4523,6 +4745,222 @@ def _write_review_video(
     status["blockers"] = []
     write_json(job / "video_review_status.json", status)
     return status
+
+
+def _first_existing_file(*paths: Path) -> Path | None:
+    for path in paths:
+        if path.is_file():
+            return path
+    return None
+
+
+def _read_optional_json(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _step_index_from_wam_step_dir(step_dir: Path) -> int | None:
+    try:
+        return int(step_dir.name.rsplit("_", 1)[-1])
+    except ValueError:
+        return None
+
+
+def _contact_sheet_tile(path: Path, *, label: str, tile_size: tuple[int, int]) -> Any:
+    from PIL import Image, ImageDraw
+
+    tile_width, tile_height = tile_size
+    label_height = 24
+    canvas = Image.new("RGB", tile_size, (245, 245, 245))
+    try:
+        image = Image.open(path).convert("RGB")
+    except OSError:
+        image = Image.new("RGB", (tile_width, tile_height - label_height), (30, 30, 30))
+    image.thumbnail((tile_width, tile_height - label_height))
+    x = (tile_width - image.width) // 2
+    y = label_height + (tile_height - label_height - image.height) // 2
+    canvas.paste(image, (x, y))
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle((0, 0, tile_width, label_height), fill=(20, 20, 20))
+    draw.text((8, 6), label[:44], fill=(255, 255, 255))
+    return canvas
+
+
+def _write_wam_input_review_contact_sheet(
+    *,
+    output_path: Path,
+    rows: Sequence[Mapping[str, Any]],
+    max_tiles: int = 12,
+) -> dict[str, Any]:
+    image_items: list[tuple[Path, str]] = []
+    for row in rows:
+        step_label = f"step {row.get('step_index') or '?'}"
+        first_frame_path = Path(_string(row.get("first_frame_path"))).expanduser()
+        if first_frame_path.is_file():
+            image_items.append((first_frame_path, f"{step_label} WAM first frame"))
+        preview_paths = [
+            Path(path).expanduser()
+            for path in _string_list(row.get("action_conditioning_preview_frame_paths"))
+        ]
+        for index, preview_path in enumerate(preview_paths[:2]):
+            if preview_path.is_file():
+                image_items.append(
+                    (preview_path, f"{step_label} action conditioning {index + 1}")
+                )
+    image_items = image_items[:max_tiles]
+    if not image_items:
+        return {
+            "status": "blocked",
+            "blockers": ["wam_input_review_no_readable_image_inputs"],
+            "contact_sheet_path": None,
+            "tile_count": 0,
+        }
+    try:
+        from PIL import Image
+    except ImportError:
+        return {
+            "status": "blocked",
+            "blockers": ["pil_not_available_for_wam_input_review_contact_sheet"],
+            "contact_sheet_path": None,
+            "tile_count": 0,
+        }
+    tile_size = (360, 292)
+    columns = 2
+    rows_count = (len(image_items) + columns - 1) // columns
+    sheet = Image.new(
+        "RGB",
+        (columns * tile_size[0], rows_count * tile_size[1]),
+        (230, 230, 230),
+    )
+    for index, (path, label) in enumerate(image_items):
+        tile = _contact_sheet_tile(path, label=label, tile_size=tile_size)
+        sheet.paste(tile, ((index % columns) * tile_size[0], (index // columns) * tile_size[1]))
+    ensure_dir(output_path.parent)
+    sheet.save(output_path, format="JPEG", quality=92)
+    return {
+        "status": "completed",
+        "blockers": [],
+        "contact_sheet_path": str(output_path),
+        "tile_count": len(image_items),
+        "tile_labels": [label for _, label in image_items],
+    }
+
+
+def _wam_input_review_row(step_dir: Path) -> dict[str, Any]:
+    bundle_dir = step_dir / "oscar_wam_worker_bundle"
+    local_materialization_dir = bundle_dir / "local_input_materialization"
+    runtime_dir = bundle_dir / "oscar_wam_provider_bundle" / "provider_runtime"
+    local_input_dir = local_materialization_dir / "oscar_input"
+    runtime_input_dir = runtime_dir / "oscar_input"
+    first_frame = _first_existing_file(
+        runtime_input_dir / "first_frame.png",
+        local_input_dir / "first_frame.png",
+    )
+    rgb_context = _first_existing_file(
+        runtime_input_dir / "rgb_context.mp4",
+        local_input_dir / "rgb_context.mp4",
+    )
+    action_conditioning = _first_existing_file(
+        runtime_input_dir / "blueprint_proxy_skeleton_conditioning.mp4",
+        local_input_dir / "blueprint_proxy_skeleton_conditioning.mp4",
+    )
+    input_package_manifest = _first_existing_file(
+        local_materialization_dir / "oscar_wam_input_package_manifest.json",
+    )
+    runtime_input_manifest = _first_existing_file(runtime_dir / "wam_rollout_input_manifest.json")
+    auxiliary_manifest = _first_existing_file(
+        runtime_input_dir / "wam_auxiliary_observation_manifest.json",
+        local_input_dir / "wam_auxiliary_observation_manifest.json",
+    )
+    input_package = _read_optional_json(input_package_manifest)
+    runtime_manifest = _read_optional_json(runtime_input_manifest)
+    contract = _mapping(
+        input_package.get("policy_action_to_skeleton_contract")
+        or runtime_manifest.get("policy_action_to_skeleton_contract")
+    )
+    preview_dir = (
+        local_materialization_dir
+        / "oscar_input_conditioning_visual_review"
+        / "generated_rollout_frame_review"
+        / "frames"
+    )
+    preview_frames = sorted(path for path in preview_dir.glob("*.jpg") if path.is_file())
+    return {
+        "step_dir": str(step_dir),
+        "step_index": _step_index_from_wam_step_dir(step_dir),
+        "status": "completed" if first_frame or rgb_context or action_conditioning else "blocked",
+        "first_frame_path": str(first_frame) if first_frame else None,
+        "rgb_context_video_path": str(rgb_context) if rgb_context else None,
+        "action_conditioning_video_path": str(action_conditioning)
+        if action_conditioning
+        else None,
+        "action_conditioning_preview_frame_paths": [str(path) for path in preview_frames[:6]],
+        "input_package_manifest_path": str(input_package_manifest)
+        if input_package_manifest
+        else None,
+        "runtime_input_manifest_path": str(runtime_input_manifest)
+        if runtime_input_manifest
+        else None,
+        "auxiliary_observation_manifest_path": str(auxiliary_manifest)
+        if auxiliary_manifest
+        else None,
+        "policy_action_to_skeleton_contract_status": contract.get("status"),
+        "policy_ranking_claim_safe": contract.get("policy_ranking_claim_safe"),
+        "policy_action_to_skeleton_contract_blockers": _string_list(contract.get("blockers")),
+        "claim_boundary": {
+            "wam_input_review_is_input_provenance_only": True,
+            "review_media_is_not_wam_output_quality_or_task_success": True,
+            "scene_or_task_specific_pixels_used": False,
+        },
+    }
+
+
+def _write_wam_input_review_artifacts(
+    *,
+    job: Path,
+    extraction_dir: Path,
+    generated_at: str,
+) -> dict[str, Any]:
+    step_root = extraction_dir / "wam_worker_steps"
+    rows = [
+        _wam_input_review_row(step_dir)
+        for step_dir in sorted(step_root.glob("step_*"))
+        if step_dir.is_dir()
+    ] if step_root.is_dir() else []
+    contact_sheet = _write_wam_input_review_contact_sheet(
+        output_path=job / "wam_input_review_contact_sheet.jpg",
+        rows=rows,
+    )
+    blockers: list[str] = []
+    if not rows:
+        blockers.append("wam_input_review_no_wam_worker_steps")
+    blockers.extend(_string_list(contact_sheet.get("blockers")))
+    manifest = {
+        "schema_version": "persistent_wam_input_review_manifest.v1",
+        "generated_at": generated_at,
+        "status": "completed" if rows else "blocked",
+        "wam_step_count": len(rows),
+        "input_media_row_count": sum(1 for row in rows if row.get("status") == "completed"),
+        "rows": rows,
+        "contact_sheet": contact_sheet,
+        "contact_sheet_path": contact_sheet.get("contact_sheet_path"),
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": {
+            "wam_input_review_is_input_provenance_only": True,
+            "review_media_is_not_wam_output_quality_or_task_success": True,
+            "policy_ranking_claim_safe_not_inferred_from_review_media": True,
+            "scene_or_task_specific_pixels_used": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+    write_json(job / "wam_input_review_manifest.json", manifest)
+    return manifest
 
 
 def _persistent_episode_consistency_visual_status(
@@ -4999,6 +5437,22 @@ def _postprocess_imported_persistent_session_artifacts(
         "raw_credentials_written_to_artifacts": False,
     }
     write_json(job / "wam_input_contract_summary.json", input_contract_summary)
+    wam_input_review = _write_wam_input_review_artifacts(
+        job=job,
+        extraction_dir=extraction_dir,
+        generated_at=generated_at,
+    )
+    policy_action_decoding_contract = _write_policy_action_decoding_contract(
+        job=job,
+        action=first_action,
+        generated_at=generated_at,
+    )
+    policy_action_bridge_readiness = _write_policy_action_bridge_readiness(
+        job=job,
+        extraction_dir=extraction_dir,
+        action_contract=policy_action_decoding_contract,
+        generated_at=generated_at,
+    )
     write_json(
         job / "policy_action_model_command_discovery.json",
         {
@@ -5044,6 +5498,10 @@ def _postprocess_imported_persistent_session_artifacts(
             "selected_candidate_id": POLICY_ID,
             "policy_calls_dir": str(extraction_dir / "policy_calls"),
             "first_action_summary": _action_summary(first_action),
+            "policy_action_decoding_contract": str(job / "policy_action_decoding_contract.json"),
+            "policy_action_decoding_status": policy_action_decoding_contract.get("status"),
+            "policy_action_bridge_readiness": str(job / "policy_action_bridge_readiness.json"),
+            "policy_action_bridge_readiness_status": policy_action_bridge_readiness.get("status"),
             "full_action_payloads_are_in_policy_call_artifacts": True,
             "provider_output_replay_used": False,
             "raw_credentials_written_to_artifacts": False,
@@ -5392,11 +5850,16 @@ def _postprocess_imported_persistent_session_artifacts(
             job / "policy_action_model_command_execution.json"
         ),
         "policy_action_model_command_output": str(job / "policy_action_model_command_output.json"),
+        "policy_action_decoding_contract": str(job / "policy_action_decoding_contract.json"),
+        "policy_action_bridge_readiness": str(job / "policy_action_bridge_readiness.json"),
         "wam_generation_command_discovery": str(job / "wam_generation_command_discovery.json"),
         "wam_generation_command_execution": str(job / "wam_generation_command_execution.json"),
         "wam_generation_command_output": str(job / "wam_generation_command_output.json"),
         "wam_materialization_summary": str(job / "wam_materialization_summary.json"),
         "wam_input_contract_summary": str(job / "wam_input_contract_summary.json"),
+        "wam_input_review_manifest": str(job / "wam_input_review_manifest.json"),
+        "wam_input_review_contact_sheet": _string(wam_input_review.get("contact_sheet_path"))
+        or None,
         "robot_policy_wam_loop_manifest": str(job / "robot_policy_wam_loop_manifest.json"),
         "manipulation_success_evaluator_results": str(
             job / "manipulation_success_evaluator_results.json"
@@ -5566,6 +6029,16 @@ def _finalize_runpod_persistent_session_output(
             "wam_rollout_visual_quality_report"
         ),
         "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
+        "policy_action_decoding_contract_path": postprocess.get(
+            "policy_action_decoding_contract"
+        ),
+        "policy_action_bridge_readiness_path": postprocess.get(
+            "policy_action_bridge_readiness"
+        ),
+        "wam_input_review_manifest_path": postprocess.get("wam_input_review_manifest"),
+        "wam_input_review_contact_sheet_path": postprocess.get(
+            "wam_input_review_contact_sheet"
+        ),
         "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
         "wam_episode_consistency_request_path": postprocess.get("wam_episode_consistency_request"),
         "wam_consistency_checks_path": postprocess.get("wam_consistency_checks"),
@@ -5940,6 +6413,16 @@ def run_persistent_session(
                 "wam_rollout_visual_quality_report"
             ),
             "wam_rollout_contact_sheet_path": postprocess.get("wam_rollout_contact_sheet"),
+            "policy_action_decoding_contract_path": postprocess.get(
+                "policy_action_decoding_contract"
+            ),
+            "policy_action_bridge_readiness_path": postprocess.get(
+                "policy_action_bridge_readiness"
+            ),
+            "wam_input_review_manifest_path": postprocess.get("wam_input_review_manifest"),
+            "wam_input_review_contact_sheet_path": postprocess.get(
+                "wam_input_review_contact_sheet"
+            ),
             "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
             "wam_materialization_summary_path": postprocess.get("wam_materialization_summary"),
             "wam_episode_consistency_request_path": postprocess.get(

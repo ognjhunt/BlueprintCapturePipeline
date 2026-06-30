@@ -156,6 +156,35 @@ def test_persistent_runner_keeps_policy_derived_skeleton_trace(
     assert contract["selected_projected_skeleton_trace_path"] == str(policy_trace)
 
 
+def test_policy_action_decoding_contract_blocks_latent_without_pose_decoder() -> None:
+    contract = session._policy_action_decoding_contract(
+        {
+            "action_type": "unitree_g1_sonic_latent_action_chunk",
+            "action_chunk": [0.1, -0.2, 0.3, 0.0],
+            "sonic_latent_action": [[[0.1, -0.2], [0.0, 0.3]]],
+            "hand_targets": {
+                "left_hand_joints": [[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+                "right_hand_joints": [[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+            },
+            "unitree_g1_sonic_control_fields": [
+                "left_hand_joints",
+                "motion_token",
+                "right_hand_joints",
+            ],
+        },
+        generated_at="now",
+    )
+
+    assert contract["status"] == "blocked_latent_action_without_pose_decoder"
+    assert contract["latent_action_present"] is True
+    assert contract["decoded_control_target_present"] is True
+    assert contract["decoded_control_target_nonzero"] is False
+    assert contract["policy_ranking_claim_safe"] is False
+    assert "policy_hand_targets_all_zero" in contract["warnings"]
+    assert "policy_action_latent_without_decoded_pose_targets" in contract["blockers"]
+    assert contract["tensor_summaries"]["sonic_latent_action"]["shape"] == [1, 2, 2]
+
+
 def _policy_observation(path: Path, frame: Path) -> Path:
     observation = {
         "schema_version": "initial_policy_observation.v1",
@@ -296,16 +325,77 @@ def _write_persistent_postprocess_extraction(root: Path) -> Path:
     policy_calls_dir = extraction_dir / "policy_calls"
     wam_calls_dir = extraction_dir / "wam_calls"
     generated_dir = extraction_dir / "generated_next_observations"
+    step_dir = extraction_dir / "wam_worker_steps" / "step_0001"
+    local_materialization = step_dir / "oscar_wam_worker_bundle" / "local_input_materialization"
+    local_input = local_materialization / "oscar_input"
+    runtime_dir = (
+        step_dir
+        / "oscar_wam_worker_bundle"
+        / "oscar_wam_provider_bundle"
+        / "provider_runtime"
+    )
+    runtime_input = runtime_dir / "oscar_input"
+    preview_dir = (
+        local_materialization
+        / "oscar_input_conditioning_visual_review"
+        / "generated_rollout_frame_review"
+        / "frames"
+    )
     policy_calls_dir.mkdir(parents=True)
     wam_calls_dir.mkdir()
     generated_dir.mkdir()
+    local_input.mkdir(parents=True)
+    runtime_input.mkdir(parents=True)
+    preview_dir.mkdir(parents=True)
     _write_reviewable_frame(generated_dir / "wam_generated_next_observation_step_0001.jpg")
+    _write_reviewable_frame(runtime_input / "first_frame.png")
+    _write_reviewable_frame(preview_dir / "oscar_step_policy_action_conditioning_0001_frame_000.jpg")
+    _write_reviewable_frame(preview_dir / "oscar_step_policy_action_conditioning_0001_frame_001.jpg")
+    (runtime_input / "rgb_context.mp4").write_bytes(b"mp4")
+    (runtime_input / "blueprint_proxy_skeleton_conditioning.mp4").write_bytes(b"mp4")
+    (runtime_input / "wam_auxiliary_observation_manifest.json").write_text(
+        json.dumps({"status": "completed"}),
+        encoding="utf-8",
+    )
+    (local_materialization / "oscar_wam_input_package_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_oscar_wam_input_package.v1",
+                "policy_action_to_skeleton_contract": {
+                    "status": "stripped_seed_or_target_projected_skeleton_for_policy_action_conditioning",
+                    "policy_ranking_claim_safe": False,
+                    "blockers": [
+                        "policy_action_to_projected_skeleton_decoder_missing_for_ranking_safe_wam"
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "wam_rollout_input_manifest.json").write_text(
+        json.dumps({"schema_version": "wam_generation_step_input.v1"}),
+        encoding="utf-8",
+    )
+    policy_action = {
+        "action_type": "unitree_g1_sonic_latent_action_chunk",
+        "action_chunk": [0.1, -0.2, 0.3, 0.0],
+        "sonic_latent_action": [[[0.1, -0.2], [0.0, 0.3]]],
+        "hand_targets": {
+            "left_hand_joints": [[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+            "right_hand_joints": [[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+        },
+        "unitree_g1_sonic_control_fields": [
+            "left_hand_joints",
+            "motion_token",
+            "right_hand_joints",
+        ],
+    }
     (policy_calls_dir / "policy_call_0000.json").write_text(
         json.dumps(
             {
                 "status": "completed",
                 "step_index": 0,
-                "action": {"action": "open_refrigerator"},
+                "action": policy_action,
             }
         ),
         encoding="utf-8",
@@ -1297,16 +1387,81 @@ def test_postprocess_degraded_future_frames_fail_materialization_quality(
     policy_calls_dir = extraction_dir / "policy_calls"
     wam_calls_dir = extraction_dir / "wam_calls"
     generated_dir = extraction_dir / "generated_next_observations"
+    step_dir = extraction_dir / "wam_worker_steps" / "step_0001"
+    local_materialization = step_dir / "oscar_wam_worker_bundle" / "local_input_materialization"
+    runtime_dir = (
+        step_dir
+        / "oscar_wam_worker_bundle"
+        / "oscar_wam_provider_bundle"
+        / "provider_runtime"
+    )
+    runtime_input = runtime_dir / "oscar_input"
+    preview_dir = (
+        local_materialization
+        / "oscar_input_conditioning_visual_review"
+        / "generated_rollout_frame_review"
+        / "frames"
+    )
     policy_calls_dir.mkdir(parents=True)
     wam_calls_dir.mkdir()
     generated_dir.mkdir()
+    runtime_input.mkdir(parents=True)
+    preview_dir.mkdir(parents=True)
     _write_reviewable_frame(generated_dir / "wam_generated_next_observation_step_0001.jpg")
+    _write_reviewable_frame(runtime_input / "first_frame.png")
+    _write_reviewable_frame(
+        preview_dir / "oscar_step_policy_action_conditioning_0001_frame_000.jpg"
+    )
+    _write_reviewable_frame(
+        preview_dir / "oscar_step_policy_action_conditioning_0001_frame_001.jpg"
+    )
+    (runtime_input / "rgb_context.mp4").write_bytes(b"mp4")
+    (runtime_input / "blueprint_proxy_skeleton_conditioning.mp4").write_bytes(b"mp4")
+    (runtime_input / "wam_auxiliary_observation_manifest.json").write_text(
+        json.dumps({"status": "completed"}),
+        encoding="utf-8",
+    )
+    (local_materialization / "oscar_wam_input_package_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_oscar_wam_input_package.v1",
+                "policy_action_to_skeleton_contract": {
+                    "status": (
+                        "stripped_seed_or_target_projected_skeleton_for_policy_action_conditioning"
+                    ),
+                    "policy_ranking_claim_safe": False,
+                    "blockers": [
+                        "policy_action_to_projected_skeleton_decoder_missing_for_ranking_safe_wam"
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "wam_rollout_input_manifest.json").write_text(
+        json.dumps({"schema_version": "wam_generation_step_input.v1"}),
+        encoding="utf-8",
+    )
+    policy_action = {
+        "action_type": "unitree_g1_sonic_latent_action_chunk",
+        "action_chunk": [0.1, -0.2, 0.3, 0.0],
+        "sonic_latent_action": [[[0.1, -0.2], [0.0, 0.3]]],
+        "hand_targets": {
+            "left_hand_joints": [[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+            "right_hand_joints": [[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+        },
+        "unitree_g1_sonic_control_fields": [
+            "left_hand_joints",
+            "motion_token",
+            "right_hand_joints",
+        ],
+    }
     (policy_calls_dir / "policy_call_0000.json").write_text(
         json.dumps(
             {
                 "status": "completed",
                 "step_index": 0,
-                "action": {"action": "open_refrigerator"},
+                "action": policy_action,
             }
         ),
         encoding="utf-8",
@@ -1428,16 +1583,81 @@ def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
     policy_calls_dir = extraction_dir / "policy_calls"
     wam_calls_dir = extraction_dir / "wam_calls"
     generated_dir = extraction_dir / "generated_next_observations"
+    step_dir = extraction_dir / "wam_worker_steps" / "step_0001"
+    local_materialization = step_dir / "oscar_wam_worker_bundle" / "local_input_materialization"
+    runtime_dir = (
+        step_dir
+        / "oscar_wam_worker_bundle"
+        / "oscar_wam_provider_bundle"
+        / "provider_runtime"
+    )
+    runtime_input = runtime_dir / "oscar_input"
+    preview_dir = (
+        local_materialization
+        / "oscar_input_conditioning_visual_review"
+        / "generated_rollout_frame_review"
+        / "frames"
+    )
     policy_calls_dir.mkdir(parents=True)
     wam_calls_dir.mkdir()
     generated_dir.mkdir()
+    runtime_input.mkdir(parents=True)
+    preview_dir.mkdir(parents=True)
     _write_reviewable_frame(generated_dir / "wam_generated_next_observation_step_0001.jpg")
+    _write_reviewable_frame(runtime_input / "first_frame.png")
+    _write_reviewable_frame(
+        preview_dir / "oscar_step_policy_action_conditioning_0001_frame_000.jpg"
+    )
+    _write_reviewable_frame(
+        preview_dir / "oscar_step_policy_action_conditioning_0001_frame_001.jpg"
+    )
+    (runtime_input / "rgb_context.mp4").write_bytes(b"mp4")
+    (runtime_input / "blueprint_proxy_skeleton_conditioning.mp4").write_bytes(b"mp4")
+    (runtime_input / "wam_auxiliary_observation_manifest.json").write_text(
+        json.dumps({"status": "completed"}),
+        encoding="utf-8",
+    )
+    (local_materialization / "oscar_wam_input_package_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_oscar_wam_input_package.v1",
+                "policy_action_to_skeleton_contract": {
+                    "status": (
+                        "stripped_seed_or_target_projected_skeleton_for_policy_action_conditioning"
+                    ),
+                    "policy_ranking_claim_safe": False,
+                    "blockers": [
+                        "policy_action_to_projected_skeleton_decoder_missing_for_ranking_safe_wam"
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "wam_rollout_input_manifest.json").write_text(
+        json.dumps({"schema_version": "wam_generation_step_input.v1"}),
+        encoding="utf-8",
+    )
+    policy_action = {
+        "action_type": "unitree_g1_sonic_latent_action_chunk",
+        "action_chunk": [0.1, -0.2, 0.3, 0.0],
+        "sonic_latent_action": [[[0.1, -0.2], [0.0, 0.3]]],
+        "hand_targets": {
+            "left_hand_joints": [[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+            "right_hand_joints": [[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
+        },
+        "unitree_g1_sonic_control_fields": [
+            "left_hand_joints",
+            "motion_token",
+            "right_hand_joints",
+        ],
+    }
     (policy_calls_dir / "policy_call_0000.json").write_text(
         json.dumps(
             {
                 "status": "completed",
                 "step_index": 0,
-                "action": {"action": "open_refrigerator"},
+                "action": policy_action,
             }
         ),
         encoding="utf-8",
@@ -1536,8 +1756,29 @@ def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
     input_contract = json.loads(
         (job / "wam_input_contract_summary.json").read_text(encoding="utf-8")
     )
+    action_contract = json.loads(
+        (job / "policy_action_decoding_contract.json").read_text(encoding="utf-8")
+    )
+    bridge_readiness = json.loads(
+        (job / "policy_action_bridge_readiness.json").read_text(encoding="utf-8")
+    )
     assert postprocess["wam_input_contract_summary"].endswith(
         "wam_input_contract_summary.json"
+    )
+    assert postprocess["policy_action_decoding_contract"].endswith(
+        "policy_action_decoding_contract.json"
+    )
+    assert postprocess["policy_action_bridge_readiness"].endswith(
+        "policy_action_bridge_readiness.json"
+    )
+    assert action_contract["status"] == "blocked_latent_action_without_pose_decoder"
+    assert action_contract["latent_action_present"] is True
+    assert action_contract["decoded_control_target_nonzero"] is False
+    assert action_contract["tensor_summaries"]["sonic_latent_action"]["shape"] == [1, 2, 2]
+    assert bridge_readiness["status"] == "blocked_missing_scene_bridge_for_latent_action"
+    assert (
+        "blocked_missing_mujoco_scene_manifest_for_unitree_sonic_sim2sim_bridge"
+        in bridge_readiness["blockers"]
     )
     assert input_contract["status"] == "warning_high_risk"
     assert input_contract["high_risk_input_contract_count"] == 1
@@ -1554,6 +1795,25 @@ def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
         "wam_input_contract_high_risk_policy_action_proxy_without_projected_skeleton"
         in input_contract["blockers"]
     )
+
+    input_review = json.loads(
+        (job / "wam_input_review_manifest.json").read_text(encoding="utf-8")
+    )
+    assert postprocess["wam_input_review_manifest"].endswith("wam_input_review_manifest.json")
+    assert postprocess["wam_input_review_contact_sheet"].endswith(
+        "wam_input_review_contact_sheet.jpg"
+    )
+    assert Path(postprocess["wam_input_review_contact_sheet"]).is_file()
+    assert input_review["status"] == "completed"
+    assert input_review["wam_step_count"] == 1
+    assert input_review["input_media_row_count"] == 1
+    assert input_review["rows"][0]["first_frame_path"].endswith("first_frame.png")
+    assert input_review["rows"][0]["rgb_context_video_path"].endswith("rgb_context.mp4")
+    assert input_review["rows"][0]["action_conditioning_video_path"].endswith(
+        "blueprint_proxy_skeleton_conditioning.mp4"
+    )
+    assert input_review["rows"][0]["policy_ranking_claim_safe"] is False
+    assert input_review["contact_sheet"]["status"] == "completed"
 
     visual_report = json.loads(
         (job / "wam_rollout_visual_quality_report.json").read_text(encoding="utf-8")
