@@ -16,6 +16,22 @@
   GPU launch requests now record git evidence and block from a dirty or
   unverifiable tree unless an explicit override preserves that provenance risk
   in the manifest.
+- Added WAM backend strategy and runtime-quality gates so OSCAR/Cosmos-style
+  WAM candidates stay behind a replaceable adapter boundary and generated-video
+  labels, backend readiness, and episode-consistency requests remain separate
+  from deployment or physical-robot proof.
+- Completed the tracked MuJoCo/Isaac parity backlog for the no-GPU portion of
+  the lane: Isaac now has per-frame camera-contract, depth, segmentation,
+  learned-policy requery, completion-gating, success-evaluator, gravity-step,
+  and effort/contact-material wiring; MuJoCo gained depth, segmentation,
+  photoreal observation handoff, texture/material, lighting, and collision-proxy
+  improvements. Isaac items marked `gpu-pending` still require real GPU/RTX
+  confirmation before stronger provider-runtime claims.
+- Defaulted short and closed-loop WAM planning toward Vast and added budget,
+  heartbeat, allowlist, runtime-env, snapshot-retry, future-frame, and evidence
+  hardening for the Unitree GR00T N1.7 SONIC / OSCAR WAM lanes. These changes
+  improve paid-run launch discipline; they do not themselves prove useful WAM
+  visual quality or live provider completion.
 
 ### Employee-Facing
 
@@ -49,6 +65,27 @@
   (including `usd-core`/`mujoco`/`trimesh`) and silently re-breaking the
   dry-render / placement / POV / video gates. `docs/DEV_SETUP.md` and the
   Makefile document `uv sync` as the canonical command.
+- Added the durable parity roadmap and closeout notes in
+  `docs/MUJOCO_VS_ISAAC_LANE_GAP_ANALYSIS.md` and
+  `docs/MUJOCO_ISAAC_PARITY_BACKLOG.md`; those docs explicitly keep MuJoCo
+  physics evidence, Isaac render evidence, WAM generated observations, and
+  provider-runtime evidence non-interchangeable.
+- Added shared paid-launch provenance and provider-runtime convergence helpers
+  in `src/blueprint_pipeline/launch_provenance.py` and
+  `src/blueprint_pipeline/isaac_worker_runtime_preflight.py`, and extended
+  `src/blueprint_pipeline/provider_race.py`,
+  `src/blueprint_pipeline/gpu_render_providers.py`, and
+  `src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py`
+  around heartbeat stalls, teardown semantics, render budget caps, and runtime
+  preflight markers.
+- Extended MuJoCo/Isaac runtime surfaces in
+  `scripts/run_isaac_g1_kitchen_parity_eval.py`,
+  `src/blueprint_pipeline/mujoco_g1_simulator_command.py`,
+  `src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py`,
+  `src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py`,
+  `src/blueprint_pipeline/oscar_wam_provider_bundle.py`,
+  `src/blueprint_pipeline/wam_backend_strategy.py`, and related provider/WAM
+  adapters, with focused coverage added across the corresponding test files.
 
 ### Future-Agent-Facing
 
@@ -77,6 +114,19 @@
   (`2567 passed, 32 skipped`); those 32 skips were all `cv2`-gated and now run
   after installing `opencv-python-headless`. The render-visibility/G1 work
   remains CPU/hermetic-only — still no live GPU frame produced in this session.
+- Later same-day focused proofs recorded in commit subjects include green
+  no-GPU test runs for the WAM backend gates, Vast WAM selection/env forwarding,
+  OSCAR input-contract diagnostics, MuJoCo RGBD/segmentation/material/lighting
+  and collision-proxy paths, Isaac depth/segmentation/gravity/effort-drive
+  paths, and provider-runtime convergence. Treat those as focused unit or
+  hermetic proofs unless a future run supplies real provider artifacts.
+- Launch/readiness caveat: the June 29 parity backlog marks several Isaac
+  tasks `done (gpu-pending)`. Do not cite them as accepted live RTX frames,
+  provider closure, physical manipulation success, safety validation, or
+  deployment approval until the matching GPU run artifacts, upload/finalizer
+  evidence, cost/teardown proof, and review-quality outputs exist.
+- Uncommitted local state at changelog finalization: none found by
+  `git status --short`.
 
 ## 2026-06-28
 
