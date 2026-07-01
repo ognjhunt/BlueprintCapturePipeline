@@ -109,18 +109,20 @@ After generation, the runner also writes:
 
 ## Docker Image Check
 
-The reusable OSCAR GPU image checked on June 26, 2026 is:
+The reusable OSCAR GPU image checked on July 1, 2026 is:
 
 ```text
-docker.io/nijelhunt/blueprint-oscar-wam@sha256:fe07f8f22214d2c2a87c9f06856ed1e9ff4dc3bfe612ec3d336bd5cee536a9fe
+docker.io/nijelhunt/blueprint-oscar-wam@sha256:b0f3f675023d4333767d798b565fc049ac5ba788cd7041db5cac7f9784fd49b3
 ```
 
-Registry metadata shows a linux/amd64 image with
+Registry metadata shows a linux/amd64 image at
+`sha256:dc23334693d2983122f628ffaec9ea481bfdb8f0bfcec9d22efd83baba827b60`
+with
 `BLUEPRINT_OSCAR_WAM_SOURCE_ROOT=/opt/oscar-public`; the image contract pins
 `https://github.com/wuzy2115/oscar-public.git` to
 `4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb` and the checked tag is
-`20260622-cu128-shim`. The older `20260621-cu128-shim` tag referenced by some
-tests was not present in the registry during that check.
+`20260701-cu128-ropefix`. The image uses the Blueprint Torch-SDPA
+TransformerEngine compatibility shim for the pinned official OSCAR source.
 
 `BLUEPRINT_OSCAR_WAM_COMMAND` and `BLUEPRINT_OSCAR_WAM_PROVIDER_COMMAND` are
 older WAM-rollout command contracts. They should be wrapped before use as a

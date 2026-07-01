@@ -2036,11 +2036,12 @@ The real backend command contract is
 `BLUEPRINT_OSCAR_WAM_COMMAND`/`BLUEPRINT_OSCAR_WAM_PROVIDER_COMMAND` values use
 the older WAM-rollout contract and should be wrapped before being used here.
 The checked OSCAR Docker image is
-`docker.io/nijelhunt/blueprint-oscar-wam@sha256:fe07f8f22214d2c2a87c9f06856ed1e9ff4dc3bfe612ec3d336bd5cee536a9fe`
-for the checked tag `20260622-cu128-shim`; it contains `/opt/oscar-public`
-pinned to `4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb` according to the image
-contract. The older `20260621-cu128-shim` tag was not present during the
-registry check.
+`docker.io/nijelhunt/blueprint-oscar-wam@sha256:b0f3f675023d4333767d798b565fc049ac5ba788cd7041db5cac7f9784fd49b3`
+for the checked tag `20260701-cu128-ropefix`; it contains `/opt/oscar-public`
+pinned to `4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb` with the Blueprint
+Torch-SDPA TransformerEngine compatibility shim. The checked linux/amd64
+manifest digest is
+`sha256:dc23334693d2983122f628ffaec9ea481bfdb8f0bfcec9d22efd83baba827b60`.
 
 This prepares OSCAR/Cosmos/future-backend visual variant requests from fixed
 camera/skeleton provenance and can attach reviewed backend outputs. Generated

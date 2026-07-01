@@ -71,6 +71,7 @@ from .oscar_cosmos_wam_evaluator import (
     _unscored_wam_episode_consistency,
     _wam_consistency_blockers,
 )
+from .oscar_official_release import OFFICIAL_OSCAR_WAM_IMAGE_REF
 
 
 SCHEMA_VERSION = "unitree_groot_n17_sonic_vast_persistent_session.v1"
@@ -79,7 +80,7 @@ OUTPUT_SCHEMA_VERSION = "unitree_groot_n17_sonic_wam_persistent_session_output.v
 DEFAULT_BUNDLE_FILENAME = "unitree_groot_n17_sonic_wam_persistent_session_bundle.zip"
 DEFAULT_OBJECT_STORE_KEY_PREFIX = "blueprint/unitree-groot-sonic-persistent-session"
 DEFAULT_RUNPOD_UNITREE_GROOT_SONIC_WAM_PUBLIC_IMAGE = (
-    "docker.io/nijelhunt/blueprint-oscar-wam:20260622-cu128-shim"
+    OFFICIAL_OSCAR_WAM_IMAGE_REF
 )
 RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH = (
     "provider_runtime/seed_conditioning/g1_projected_skeleton_trace.jsonl"

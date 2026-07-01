@@ -18,13 +18,13 @@ OFFICIAL_OSCAR_POLICY_ROLLOUT_DATASET_URL = (
 OFFICIAL_OSCAR_MODEL_NAME = "OSCAR-2B"
 
 OFFICIAL_OSCAR_WAM_IMAGE_TAG_REF = (
-    "docker.io/nijelhunt/blueprint-oscar-wam:20260622-cu128-shim"
+    "docker.io/nijelhunt/blueprint-oscar-wam:20260701-cu128-ropefix"
 )
 OFFICIAL_OSCAR_WAM_IMAGE_DIGEST = (
-    "sha256:fe07f8f22214d2c2a87c9f06856ed1e9ff4dc3bfe612ec3d336bd5cee536a9fe"
+    "sha256:b0f3f675023d4333767d798b565fc049ac5ba788cd7041db5cac7f9784fd49b3"
 )
 OFFICIAL_OSCAR_WAM_IMAGE_AMD64_DIGEST = (
-    "sha256:97e1568f27bf943e4441b02eea64a667fbf5eb44268c37c2b1be67a6720fe042"
+    "sha256:dc23334693d2983122f628ffaec9ea481bfdb8f0bfcec9d22efd83baba827b60"
 )
 OFFICIAL_OSCAR_WAM_IMAGE_REF = (
     "docker.io/nijelhunt/blueprint-oscar-wam@"
