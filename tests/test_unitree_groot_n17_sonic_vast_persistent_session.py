@@ -302,8 +302,8 @@ def test_persistent_runner_materializes_nominal_policy_action_trace_without_rank
         observation={
             "visual_observation": {
                 "camera_id": "head_pov",
-                "width": 80,
-                "height": 60,
+                "width": 1672,
+                "height": 941,
             }
         },
         auxiliary_observation={},
@@ -318,6 +318,14 @@ def test_persistent_runner_materializes_nominal_policy_action_trace_without_rank
     rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 2
     assert rows[0]["projected_landmark_count"] == 8
+    assert rows[0]["image_width_px"] == 1672
+    assert rows[0]["image_height_px"] == 941
+    assert rows[0]["source_image_width_px"] == 1672
+    assert rows[0]["source_image_height_px"] == 941
+    assert rows[0]["coordinate_space"] == "source_policy_observation_pixels"
+    assert rows[0]["landmarks"][0]["image_projection"]["image_width_px"] == 1672
+    assert rows[0]["landmarks"][0]["image_projection"]["image_height_px"] == 941
+    assert rows[0]["landmarks"][0]["image_projection"]["inside_image"] is True
     assert rows[0]["claim_boundary"]["policy_derived_action_conditioning"] is True
     assert (
         rows[0]["claim_boundary"]["nominal_kinematic_projection_without_scene_or_wbc_bridge"]

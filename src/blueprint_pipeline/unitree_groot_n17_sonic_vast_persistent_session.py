@@ -2325,6 +2325,10 @@ def _nominal_policy_action_projected_landmarks(
                 "available": True,
                 "u_px": round(_clip(x_frac, 0.02, 0.98) * width, 2),
                 "v_px": round(_clip(y_frac, 0.02, 0.98) * height, 2),
+                "image_width_px": width,
+                "image_height_px": height,
+                "inside_image": True,
+                "coordinate_space": "source_policy_observation_pixels",
             },
         }
 
@@ -2391,6 +2395,11 @@ def _materialize_nominal_policy_action_projected_skeleton_trace(
                         "step": index,
                         "camera": _string(_mapping(observation.get("visual_observation")).get("camera_id"))
                         or "head_pov",
+                        "image_width_px": width,
+                        "image_height_px": height,
+                        "source_image_width_px": width,
+                        "source_image_height_px": height,
+                        "coordinate_space": "source_policy_observation_pixels",
                         "landmarks": landmarks,
                         "segments": segments,
                         "projected_landmark_count": len(landmarks),
