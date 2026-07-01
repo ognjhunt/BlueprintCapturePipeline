@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import stat
@@ -147,6 +148,11 @@ PERSISTENT_WAM_RANK_FIDELITY_SMALL_CALIBRATION_SET_SCHEMA_VERSION = (
 PERSISTENT_WAM_RANK_FIDELITY_CALIBRATION_REPORT_SCHEMA_VERSION = (
     "persistent_wam_rank_fidelity_calibration_report.v1"
 )
+PERSISTENT_WAM_RANK_FIDELITY_ACCEPTED_ANCHORS_ENV = (
+    "BLUEPRINT_PERSISTENT_WAM_RANK_FIDELITY_ACCEPTED_ANCHORS"
+)
+PERSISTENT_WAM_MIN_ACCEPTED_ANCHOR_COUNT = 4
+PERSISTENT_WAM_MIN_POLICY_GROUP_COUNT = 2
 SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT_ENV = (
     "BLUEPRINT_ALLOW_SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT"
 )
@@ -6784,6 +6790,314 @@ def _write_persistent_episode_consistency_artifacts(
     }
 
 
+def _rank_fidelity_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    text = _string(value).lower()
+    if text in {"1", "true", "yes", "y", "success", "passed", "pass"}:
+        return True
+    if text in {"0", "false", "no", "n", "failure", "failed", "fail"}:
+        return False
+    return None
+
+
+def _rank_fidelity_anchor_key(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        _string(row.get("scenario_eval_run_id")),
+        _string(row.get("policy_id")),
+        _string(row.get("task_id")),
+        _string(row.get("scenario_variation_instance_id")),
+    )
+
+
+def _rank_fidelity_load_anchor_rows(path_text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    path = Path(path_text).expanduser()
+    if not path.is_file():
+        return [], ["accepted_anchor_input_path_not_found"]
+    try:
+        if path.suffix.lower() == ".jsonl":
+            rows = [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        else:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, list):
+                rows = payload
+            elif isinstance(payload, Mapping):
+                for key in (
+                    "accepted_anchors",
+                    "anchors",
+                    "anchor_rows",
+                    "rows",
+                    "actual_rows",
+                ):
+                    value = payload.get(key)
+                    if isinstance(value, list):
+                        rows = value
+                        break
+                else:
+                    rows = [payload]
+            else:
+                rows = []
+    except (OSError, TypeError, ValueError):
+        return [], ["accepted_anchor_input_parse_failed"]
+    return [dict(row) for row in rows if isinstance(row, Mapping)], []
+
+
+def _rank_fidelity_attestation_signed(row: Mapping[str, Any]) -> bool:
+    attestation = row.get("operator_attestation")
+    if isinstance(attestation, Mapping):
+        return _string(attestation.get("status")).lower() == "signed"
+    return _string(row.get("operator_attestation_status")).lower() == "signed"
+
+
+def _rank_fidelity_evidence_refs_present(row: Mapping[str, Any]) -> bool:
+    for key in (
+        "owner_or_reviewer_evidence_refs",
+        "owner_evidence_refs",
+        "reviewer_evidence_refs",
+        "evidence_refs",
+    ):
+        value = row.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            if any(_string(item) for item in value):
+                return True
+        elif _string(value):
+            return True
+    return False
+
+
+def _rank_fidelity_physical_refs_present_when_required(row: Mapping[str, Any]) -> bool:
+    if _rank_fidelity_bool(row.get("physical_evidence_required")) is not True:
+        return True
+    refs = row.get("physical_run_evidence_refs")
+    if isinstance(refs, Sequence) and not isinstance(refs, (str, bytes)):
+        return any(_string(item) for item in refs)
+    return bool(_string(refs))
+
+
+def _rank_fidelity_average_ranks(
+    values: Sequence[float],
+    *,
+    descending: bool = False,
+) -> list[float]:
+    indexed = list(enumerate(values))
+    indexed.sort(key=lambda item: item[1], reverse=descending)
+    ranks = [0.0 for _ in values]
+    position = 1
+    cursor = 0
+    while cursor < len(indexed):
+        end = cursor + 1
+        while end < len(indexed) and indexed[end][1] == indexed[cursor][1]:
+            end += 1
+        average_rank = (position + position + (end - cursor) - 1) / 2.0
+        for original_index, _ in indexed[cursor:end]:
+            ranks[original_index] = average_rank
+        position += end - cursor
+        cursor = end
+    return ranks
+
+
+def _rank_fidelity_pearson(
+    values_a: Sequence[float],
+    values_b: Sequence[float],
+) -> float | None:
+    if len(values_a) != len(values_b) or len(values_a) < 2:
+        return None
+    mean_a = sum(values_a) / len(values_a)
+    mean_b = sum(values_b) / len(values_b)
+    centered_a = [value - mean_a for value in values_a]
+    centered_b = [value - mean_b for value in values_b]
+    denominator = math.sqrt(sum(value * value for value in centered_a)) * math.sqrt(
+        sum(value * value for value in centered_b)
+    )
+    if denominator == 0.0:
+        return None
+    return sum(a * b for a, b in zip(centered_a, centered_b)) / denominator
+
+
+def _rank_fidelity_policy_summaries(
+    accepted_anchors: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in accepted_anchors:
+        grouped.setdefault(_string(row.get("policy_id")), []).append(row)
+    summaries: list[dict[str, Any]] = []
+    for policy_id, rows in sorted(grouped.items()):
+        predicted = [_rank_fidelity_bool(row.get("predicted_success")) for row in rows]
+        actual = [_rank_fidelity_bool(row.get("actual_success")) for row in rows]
+        if any(value is None for value in predicted) or any(value is None for value in actual):
+            continue
+        predicted_successes = [bool(value) for value in predicted]
+        actual_successes = [bool(value) for value in actual]
+        predicted_success_rate = sum(predicted_successes) / len(predicted_successes)
+        actual_success_rate = sum(actual_successes) / len(actual_successes)
+        summaries.append(
+            {
+                "policy_id": policy_id,
+                "accepted_anchor_count": len(rows),
+                "predicted_success_rate": round(predicted_success_rate, 6),
+                "actual_success_rate": round(actual_success_rate, 6),
+                "success_rate_error": round(predicted_success_rate - actual_success_rate, 6),
+                "absolute_success_rate_error": round(
+                    abs(predicted_success_rate - actual_success_rate),
+                    6,
+                ),
+            }
+        )
+    predicted_ranks = _rank_fidelity_average_ranks(
+        [float(row["predicted_success_rate"]) for row in summaries],
+        descending=True,
+    )
+    actual_ranks = _rank_fidelity_average_ranks(
+        [float(row["actual_success_rate"]) for row in summaries],
+        descending=True,
+    )
+    for row, predicted_rank, actual_rank in zip(summaries, predicted_ranks, actual_ranks):
+        row["predicted_rank"] = predicted_rank
+        row["actual_rank"] = actual_rank
+        row["rank_violation"] = abs(predicted_rank - actual_rank)
+        row["normalized_rank_violation"] = (
+            row["rank_violation"] / max(1, len(summaries) - 1)
+        )
+    return summaries
+
+
+def _rank_fidelity_metrics(
+    summaries: Sequence[Mapping[str, Any]],
+) -> dict[str, float | None]:
+    null_metrics: dict[str, float | None] = {
+        "spearman_rank_correlation": None,
+        "pearson_success_rate_correlation": None,
+        "mean_maximum_rank_violation": None,
+        "mean_absolute_success_rate_error": None,
+        "sim_vs_real_calibration_score": None,
+    }
+    if len(summaries) < PERSISTENT_WAM_MIN_POLICY_GROUP_COUNT:
+        return null_metrics
+    predicted_rates = [float(row.get("predicted_success_rate") or 0.0) for row in summaries]
+    actual_rates = [float(row.get("actual_success_rate") or 0.0) for row in summaries]
+    predicted_ranks = [float(row.get("predicted_rank") or 0.0) for row in summaries]
+    actual_ranks = [float(row.get("actual_rank") or 0.0) for row in summaries]
+    rank_violations = [float(row.get("normalized_rank_violation") or 0.0) for row in summaries]
+    absolute_errors = [
+        float(row.get("absolute_success_rate_error") or 0.0) for row in summaries
+    ]
+    mean_error = sum(absolute_errors) / len(absolute_errors)
+    mmrv = sum(rank_violations) / len(rank_violations)
+    pearson = _rank_fidelity_pearson(predicted_rates, actual_rates)
+    spearman = _rank_fidelity_pearson(predicted_ranks, actual_ranks)
+    return {
+        "spearman_rank_correlation": round(spearman, 6) if spearman is not None else None,
+        "pearson_success_rate_correlation": round(pearson, 6) if pearson is not None else None,
+        "mean_maximum_rank_violation": round(mmrv, 6),
+        "mean_absolute_success_rate_error": round(mean_error, 6),
+        "sim_vs_real_calibration_score": round(max(0.0, 1.0 - mean_error), 6),
+    }
+
+
+def _rank_fidelity_accepted_anchor_evidence(
+    *,
+    expected_task_id: str,
+) -> dict[str, Any]:
+    input_path = _string(os.getenv(PERSISTENT_WAM_RANK_FIDELITY_ACCEPTED_ANCHORS_ENV))
+    rows: list[dict[str, Any]] = []
+    load_blockers: list[str] = []
+    if input_path:
+        rows, load_blockers = _rank_fidelity_load_anchor_rows(input_path)
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str, str, str]] = set()
+    for index, row in enumerate(rows):
+        row_id = _string(row.get("anchor_id")) or _string(row.get("row_id")) or f"anchor_{index:04d}"
+        reasons: list[str] = []
+        key = _rank_fidelity_anchor_key(row)
+        if any(not item for item in key):
+            reasons.append("missing_exact_join_key")
+        if key in seen_keys:
+            reasons.append("duplicate_exact_join_key")
+        if key[2] != expected_task_id:
+            reasons.append("task_id_mismatch")
+        predicted_success = _rank_fidelity_bool(row.get("predicted_success"))
+        actual_success = _rank_fidelity_bool(row.get("actual_success"))
+        if predicted_success is None:
+            reasons.append("missing_or_invalid_predicted_success")
+        if actual_success is None:
+            reasons.append("missing_or_invalid_actual_success")
+        if _string(row.get("review_status")).lower() != "accepted":
+            reasons.append("review_status_not_accepted")
+        if not _rank_fidelity_attestation_signed(row):
+            reasons.append("operator_attestation_not_signed")
+        if not _rank_fidelity_evidence_refs_present(row):
+            reasons.append("missing_owner_or_reviewer_evidence_refs")
+        if not _rank_fidelity_physical_refs_present_when_required(row):
+            reasons.append("missing_required_physical_run_evidence_refs")
+        if reasons:
+            rejected.append({"row_id": row_id, "join_key": list(key), "reasons": reasons})
+            continue
+        seen_keys.add(key)
+        accepted.append(
+            {
+                "anchor_id": row_id,
+                "schema_version": _string(row.get("schema_version"))
+                or "accepted_real_world_anchor.v1",
+                "scenario_eval_run_id": key[0],
+                "policy_id": key[1],
+                "task_id": key[2],
+                "scenario_variation_instance_id": key[3],
+                "predicted_success": predicted_success,
+                "actual_success": actual_success,
+                "review_status": "accepted",
+                "operator_attestation": {"status": "signed"},
+                "owner_or_reviewer_evidence_refs": row.get("owner_or_reviewer_evidence_refs")
+                or row.get("owner_evidence_refs")
+                or row.get("reviewer_evidence_refs")
+                or row.get("evidence_refs"),
+                "physical_run_evidence_refs": row.get("physical_run_evidence_refs") or [],
+                "accepted_for_calibration": True,
+            }
+        )
+    policy_summaries = _rank_fidelity_policy_summaries(accepted)
+    blockers = list(load_blockers)
+    if not input_path:
+        blockers.append("missing_accepted_calibration_anchor_input")
+    if len(accepted) < PERSISTENT_WAM_MIN_ACCEPTED_ANCHOR_COUNT:
+        blockers.append("insufficient_anchor_count")
+    if len(policy_summaries) < PERSISTENT_WAM_MIN_POLICY_GROUP_COUNT:
+        blockers.append("insufficient_policy_group_count")
+    if not accepted:
+        blockers.append("missing_accepted_calibration_anchor_outcomes")
+    if blockers:
+        blockers.append("real_world_rank_correlation_not_measured")
+    metrics = (
+        _rank_fidelity_metrics(policy_summaries)
+        if not blockers
+        else _rank_fidelity_metrics([])
+    )
+    status = "completed" if not blockers else "blocked_missing_accepted_calibration_anchors"
+    if input_path and accepted and "insufficient_anchor_count" in blockers:
+        status = "blocked_insufficient_anchor_count"
+    if input_path and rejected and not accepted:
+        status = "blocked_anchor_quality"
+    return {
+        "accepted_anchor_input_path": input_path or None,
+        "accepted_anchor_input_configured": bool(input_path),
+        "accepted_anchors": accepted,
+        "rejected_anchor_count": len(rejected),
+        "rejected_anchors": rejected,
+        "accepted_anchor_count": len(accepted),
+        "policy_group_count": len(policy_summaries),
+        "policy_success_rate_rows": policy_summaries,
+        "status": status,
+        "blockers": sorted(set(blockers)),
+        **metrics,
+    }
+
+
 def _write_rank_fidelity_calibration_requirement(
     *,
     job: Path,
@@ -6894,12 +7208,29 @@ def _write_rank_fidelity_calibration_requirement(
             "accepted_for_calibration": False,
         },
     ]
-    blockers = [
-        "missing_accepted_calibration_anchor_outcomes",
-        "insufficient_anchor_count",
-        "insufficient_policy_group_count",
-        "real_world_rank_correlation_not_measured",
-    ]
+    anchor_evidence = _rank_fidelity_accepted_anchor_evidence(expected_task_id=task_id)
+    blockers = _string_list(anchor_evidence.get("blockers"))
+    accepted_anchor_count = int(anchor_evidence.get("accepted_anchor_count") or 0)
+    policy_group_count = int(anchor_evidence.get("policy_group_count") or 0)
+    rank_fidelity_result_proven = bool(
+        not blockers and anchor_evidence.get("sim_vs_real_calibration_score") is not None
+    )
+    calibration_report_status = (
+        "completed" if rank_fidelity_result_proven else anchor_evidence.get("status")
+    )
+    small_calibration_set_status = (
+        "completed_with_accepted_anchor_outcomes"
+        if rank_fidelity_result_proven
+        else "draft_pending_prediction_and_accepted_outcome_rows"
+    )
+    anchor_request_status = (
+        "completed_with_accepted_anchor_outcomes"
+        if rank_fidelity_result_proven
+        else "blocked_awaiting_accepted_anchor_outcomes"
+    )
+    requirement_status = (
+        "completed" if rank_fidelity_result_proven else "blocked_missing_calibration_anchors"
+    )
     small_calibration_set_path = job / "rank_fidelity_small_calibration_set.json"
     small_calibration_set_rows = [
         {
@@ -6925,7 +7256,7 @@ def _write_rank_fidelity_calibration_requirement(
     small_calibration_set_payload = {
         "schema_version": PERSISTENT_WAM_RANK_FIDELITY_SMALL_CALIBRATION_SET_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "draft_pending_prediction_and_accepted_outcome_rows",
+        "status": small_calibration_set_status,
         "policy_id": POLICY_ID,
         "task_id": task_id,
         "target_object_id": target_object_id,
@@ -6934,19 +7265,21 @@ def _write_rank_fidelity_calibration_requirement(
         "minimum_policy_groups": 2,
         "minimum_variations_per_policy": 2,
         "current_prediction_row_count": 1,
-        "missing_prediction_row_count": 3,
-        "accepted_anchor_count": 0,
+        "missing_prediction_row_count": 0 if rank_fidelity_result_proven else 3,
+        "accepted_anchor_count": accepted_anchor_count,
         "exact_join_keys": anchor_join_keys,
         "set_rows": small_calibration_set_rows,
+        "accepted_anchors": anchor_evidence.get("accepted_anchors") or [],
+        "policy_success_rate_rows": anchor_evidence.get("policy_success_rate_rows") or [],
         "required_anchor_evidence": required_anchor_evidence,
         "blockers": blockers,
         "claim_boundary": {
             "small_calibration_set_is_collection_plan_until_actuals_are_accepted": True,
-            "small_calibration_set_rows_are_not_accepted_anchors": True,
+            "small_calibration_set_rows_are_not_accepted_anchors": not rank_fidelity_result_proven,
             "exact_prediction_vs_actual_join_required": True,
             "loose_or_inferred_matches_allowed_for_calibration": False,
-            "rank_fidelity_result_proven": False,
-            "generated_world_rank_fidelity_result_proven": False,
+            "rank_fidelity_result_proven": rank_fidelity_result_proven,
+            "generated_world_rank_fidelity_result_proven": rank_fidelity_result_proven,
             "raw_credentials_written_to_artifacts": False,
         },
         "raw_credentials_written_to_artifacts": False,
@@ -6957,7 +7290,7 @@ def _write_rank_fidelity_calibration_requirement(
     anchor_request_payload = {
         "schema_version": PERSISTENT_WAM_RANK_FIDELITY_CALIBRATION_ANCHOR_REQUEST_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "blocked_awaiting_accepted_anchor_outcomes",
+        "status": anchor_request_status,
         "policy_id": POLICY_ID,
         "task_id": task_id,
         "target_object_id": target_object_id,
@@ -6966,20 +7299,24 @@ def _write_rank_fidelity_calibration_requirement(
         "minimum_policy_group_count": 2,
         "current_prediction_anchor_request_count": 1,
         "missing_prediction_anchor_request_count": 3,
-        "accepted_anchor_count": 0,
+        "accepted_anchor_count": accepted_anchor_count,
         "exact_join_keys": anchor_join_keys,
         "small_calibration_set": str(small_calibration_set_path),
         "small_calibration_set_status": small_calibration_set_payload["status"],
+        "accepted_anchor_input_path": anchor_evidence.get("accepted_anchor_input_path"),
+        "accepted_anchor_input_configured": bool(
+            anchor_evidence.get("accepted_anchor_input_configured")
+        ),
         "anchor_request_rows": anchor_request_rows,
         "blockers": blockers,
         "claim_boundary": {
-            "anchor_request_rows_are_not_accepted_anchors": True,
-            "small_calibration_set_rows_are_not_accepted_anchors": True,
-            "request_artifact_does_not_prove_rank_fidelity": True,
+            "anchor_request_rows_are_not_accepted_anchors": not rank_fidelity_result_proven,
+            "small_calibration_set_rows_are_not_accepted_anchors": not rank_fidelity_result_proven,
+            "request_artifact_does_not_prove_rank_fidelity": not rank_fidelity_result_proven,
             "exact_prediction_vs_actual_join_required": True,
             "loose_or_inferred_matches_allowed_for_calibration": False,
-            "rank_fidelity_result_proven": False,
-            "generated_world_rank_fidelity_result_proven": False,
+            "rank_fidelity_result_proven": rank_fidelity_result_proven,
+            "generated_world_rank_fidelity_result_proven": rank_fidelity_result_proven,
             "raw_credentials_written_to_artifacts": False,
         },
         "raw_credentials_written_to_artifacts": False,
@@ -6990,7 +7327,7 @@ def _write_rank_fidelity_calibration_requirement(
     calibration_report_payload = {
         "schema_version": PERSISTENT_WAM_RANK_FIDELITY_CALIBRATION_REPORT_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "blocked_missing_accepted_calibration_anchors",
+        "status": calibration_report_status,
         "policy_id": POLICY_ID,
         "task_id": task_id,
         "target_object_id": target_object_id,
@@ -6998,27 +7335,39 @@ def _write_rank_fidelity_calibration_requirement(
         "calibration_anchor_request": str(anchor_request_path),
         "candidate_prediction_record_count": len(candidate_records),
         "set_row_count": small_calibration_set_payload["set_row_count"],
-        "accepted_anchor_count": 0,
+        "accepted_anchor_count": accepted_anchor_count,
         "minimum_accepted_anchor_count": 4,
-        "policy_group_count": 1,
+        "policy_group_count": policy_group_count,
         "minimum_policy_group_count": 2,
-        "sim_vs_real_calibration_score": None,
-        "spearman_rank_correlation": None,
-        "pearson_success_rate_correlation": None,
-        "mean_maximum_rank_violation": None,
-        "mean_absolute_success_rate_error": None,
+        "accepted_anchor_input_path": anchor_evidence.get("accepted_anchor_input_path"),
+        "accepted_anchor_input_configured": bool(
+            anchor_evidence.get("accepted_anchor_input_configured")
+        ),
+        "accepted_anchors": anchor_evidence.get("accepted_anchors") or [],
+        "rejected_anchor_count": anchor_evidence.get("rejected_anchor_count") or 0,
+        "rejected_anchors": anchor_evidence.get("rejected_anchors") or [],
+        "policy_success_rate_rows": anchor_evidence.get("policy_success_rate_rows") or [],
+        "sim_vs_real_calibration_score": anchor_evidence.get("sim_vs_real_calibration_score"),
+        "spearman_rank_correlation": anchor_evidence.get("spearman_rank_correlation"),
+        "pearson_success_rate_correlation": anchor_evidence.get(
+            "pearson_success_rate_correlation"
+        ),
+        "mean_maximum_rank_violation": anchor_evidence.get("mean_maximum_rank_violation"),
+        "mean_absolute_success_rate_error": anchor_evidence.get(
+            "mean_absolute_success_rate_error"
+        ),
         "confidence_intervals": None,
-        "deployment_accuracy_claim_allowed": False,
-        "rank_fidelity_result_proven": False,
-        "generated_world_rank_fidelity_result_proven": False,
+        "deployment_accuracy_claim_allowed": rank_fidelity_result_proven,
+        "rank_fidelity_result_proven": rank_fidelity_result_proven,
+        "generated_world_rank_fidelity_result_proven": rank_fidelity_result_proven,
         "blockers": blockers,
         "claim_boundary": {
-            "calibration_report_requires_accepted_anchor_outcomes": True,
-            "small_calibration_set_rows_are_not_accepted_anchors": True,
+            "calibration_report_requires_accepted_anchor_outcomes": not rank_fidelity_result_proven,
+            "small_calibration_set_rows_are_not_accepted_anchors": not rank_fidelity_result_proven,
             "episode_consistency_label_is_not_rank_fidelity": True,
             "visual_quality_pass_is_not_rank_fidelity": True,
-            "rank_fidelity_result_proven": False,
-            "generated_world_rank_fidelity_result_proven": False,
+            "rank_fidelity_result_proven": rank_fidelity_result_proven,
+            "generated_world_rank_fidelity_result_proven": rank_fidelity_result_proven,
             "raw_credentials_written_to_artifacts": False,
         },
         "raw_credentials_written_to_artifacts": False,
@@ -7028,7 +7377,7 @@ def _write_rank_fidelity_calibration_requirement(
     payload = {
         "schema_version": PERSISTENT_WAM_RANK_FIDELITY_CALIBRATION_REQUIREMENT_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "blocked_missing_calibration_anchors",
+        "status": requirement_status,
         "policy_id": POLICY_ID,
         "task_id": task_id,
         "target_object_id": target_object_id,
@@ -7041,9 +7390,13 @@ def _write_rank_fidelity_calibration_requirement(
         "small_calibration_set_row_count": small_calibration_set_payload["set_row_count"],
         "rank_fidelity_calibration_report": str(calibration_report_path),
         "rank_fidelity_calibration_report_status": calibration_report_payload["status"],
+        "accepted_anchor_input_path": anchor_evidence.get("accepted_anchor_input_path"),
+        "accepted_anchor_input_configured": bool(
+            anchor_evidence.get("accepted_anchor_input_configured")
+        ),
         "requested_anchor_count": anchor_request_payload["requested_anchor_count"],
-        "accepted_anchor_count": 0,
-        "policy_group_count": 1,
+        "accepted_anchor_count": accepted_anchor_count,
+        "policy_group_count": policy_group_count,
         "minimum_accepted_anchor_count": 4,
         "minimum_policy_group_count": 2,
         "accepted_anchor_schema": {
@@ -7063,21 +7416,23 @@ def _write_rank_fidelity_calibration_requirement(
             "requires_exact_join_key_match": True,
             "requires_accepted_reviewer_or_operator_anchor": True,
         },
-        "sim_vs_real_calibration_score": None,
-        "spearman_rank_correlation": None,
-        "pearson_success_rate_correlation": None,
-        "deployment_accuracy_claim_allowed": False,
-        "rank_fidelity_result_proven": False,
-        "generated_world_rank_fidelity_result_proven": False,
+        "sim_vs_real_calibration_score": anchor_evidence.get("sim_vs_real_calibration_score"),
+        "spearman_rank_correlation": anchor_evidence.get("spearman_rank_correlation"),
+        "pearson_success_rate_correlation": anchor_evidence.get(
+            "pearson_success_rate_correlation"
+        ),
+        "deployment_accuracy_claim_allowed": rank_fidelity_result_proven,
+        "rank_fidelity_result_proven": rank_fidelity_result_proven,
+        "generated_world_rank_fidelity_result_proven": rank_fidelity_result_proven,
         "blockers": blockers,
         "claim_boundary": {
             "visual_quality_pass_is_not_rank_fidelity": True,
             "episode_consistency_label_is_not_rank_fidelity": True,
-            "candidate_prediction_records_are_not_accepted_anchors": True,
-            "small_calibration_set_rows_are_not_accepted_anchors": True,
+            "candidate_prediction_records_are_not_accepted_anchors": not rank_fidelity_result_proven,
+            "small_calibration_set_rows_are_not_accepted_anchors": not rank_fidelity_result_proven,
             "rank_fidelity_requires_accepted_prediction_vs_actual_anchor_set": True,
-            "rank_fidelity_result_proven": False,
-            "generated_world_rank_fidelity_result_proven": False,
+            "rank_fidelity_result_proven": rank_fidelity_result_proven,
+            "generated_world_rank_fidelity_result_proven": rank_fidelity_result_proven,
             "raw_credentials_written_to_artifacts": False,
         },
         "raw_credentials_written_to_artifacts": False,
@@ -7691,6 +8046,9 @@ def _postprocess_imported_persistent_session_artifacts(
         consistency_summary=consistency_summary,
         success_proven=success_proven,
     )
+    rank_fidelity_result_proven = bool(
+        rank_fidelity_calibration_requirement.get("rank_fidelity_result_proven")
+    )
     claim_boundary = {
         "schema_version": "persistent_policy_wam_claim_boundary.v1",
         "generated_at": generated_at,
@@ -7761,10 +8119,10 @@ def _postprocess_imported_persistent_session_artifacts(
         "frame_copy_placeholder_until_live_wam_model_configured": structural_wam_count > 0,
         "wam_evaluator_is_not_robot_policy": True,
         "provider_output_replay_used": False,
-        "generated_world_rank_fidelity_result_proven": False,
+        "generated_world_rank_fidelity_result_proven": rank_fidelity_result_proven,
         "generated_world_policy_evaluation_scope_proven": False,
         "non_ranking_operational_claim_proven": False,
-        "accepted_anchor_manipulation_success_proven": False,
+        "accepted_anchor_manipulation_success_proven": rank_fidelity_result_proven,
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
     }
@@ -7861,8 +8219,8 @@ def _postprocess_imported_persistent_session_artifacts(
         "rank_fidelity_calibration_blockers": _string_list(
             rank_fidelity_calibration_requirement.get("blockers")
         ),
-        "rank_fidelity_result_proven": False,
-        "generated_world_rank_fidelity_result_proven": False,
+        "rank_fidelity_result_proven": rank_fidelity_result_proven,
+        "generated_world_rank_fidelity_result_proven": rank_fidelity_result_proven,
         "robot_policy_wam_loop_manifest": str(job / "robot_policy_wam_loop_manifest.json"),
         "manipulation_success_evaluator_results": str(
             job / "manipulation_success_evaluator_results.json"
@@ -8173,8 +8531,10 @@ def _finalize_runpod_persistent_session_output(
         "rank_fidelity_calibration_blockers": _string_list(
             postprocess.get("rank_fidelity_calibration_blockers")
         ),
-        "rank_fidelity_result_proven": False,
-        "generated_world_rank_fidelity_result_proven": False,
+        "rank_fidelity_result_proven": bool(postprocess.get("rank_fidelity_result_proven")),
+        "generated_world_rank_fidelity_result_proven": bool(
+            postprocess.get("generated_world_rank_fidelity_result_proven")
+        ),
         "wam_rollout_visual_success": visual_success,
         "visual_quality_report_status": visual_report.get("status"),
         "visual_quality_blockers": visual_quality_blockers,
@@ -8596,8 +8956,10 @@ def run_persistent_session(
             "rank_fidelity_calibration_blockers": _string_list(
                 postprocess.get("rank_fidelity_calibration_blockers")
             ),
-            "rank_fidelity_result_proven": False,
-            "generated_world_rank_fidelity_result_proven": False,
+            "rank_fidelity_result_proven": bool(postprocess.get("rank_fidelity_result_proven")),
+            "generated_world_rank_fidelity_result_proven": bool(
+                postprocess.get("generated_world_rank_fidelity_result_proven")
+            ),
             "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
             "wam_materialization_summary_path": postprocess.get("wam_materialization_summary"),
             "wam_episode_consistency_request_path": postprocess.get(

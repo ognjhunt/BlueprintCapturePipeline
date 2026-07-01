@@ -2646,6 +2646,92 @@ def test_postprocess_preserves_scene_faithful_isaac_bridge_input_contract(
     assert claim_boundary["visual_review_ranking_is_not_real_world_rank_fidelity"] is True
 
 
+def test_postprocess_computes_rank_fidelity_report_from_accepted_anchors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = tmp_path / "job"
+    source_frame = _write_reviewable_frame(
+        job / "provider_bundle" / "provider_runtime" / "initial_policy_frame.png"
+    )
+    observation_path = _policy_observation(tmp_path / "observation.json", source_frame)
+    extraction_dir = _write_persistent_postprocess_extraction(tmp_path)
+    anchors_path = tmp_path / "accepted_anchors.json"
+    anchors = []
+    for anchor_id, policy_id, variation, predicted_success, actual_success in (
+        ("a1", session.POLICY_ID, "v1", True, True),
+        ("a2", session.POLICY_ID, "v2", True, True),
+        ("b1", "comparison_policy", "v1", False, False),
+        ("b2", "comparison_policy", "v2", False, True),
+    ):
+        anchors.append(
+            {
+                "schema_version": "accepted_real_world_anchor.v1",
+                "anchor_id": anchor_id,
+                "scenario_eval_run_id": f"scenario_{anchor_id}",
+                "policy_id": policy_id,
+                "task_id": "turn_on_sink_handle",
+                "scenario_variation_instance_id": variation,
+                "predicted_success": predicted_success,
+                "actual_success": actual_success,
+                "review_status": "accepted",
+                "operator_attestation": {"status": "signed"},
+                "owner_or_reviewer_evidence_refs": [f"review://{anchor_id}"],
+            }
+        )
+    anchors_path.write_text(json.dumps({"accepted_anchors": anchors}), encoding="utf-8")
+    monkeypatch.setenv(
+        session.PERSISTENT_WAM_RANK_FIDELITY_ACCEPTED_ANCHORS_ENV,
+        str(anchors_path),
+    )
+    vast_run_dir = tmp_path / "vast-run"
+    vast_run_dir.mkdir()
+
+    postprocess = session._postprocess_imported_persistent_session_artifacts(
+        job=job,
+        extraction_dir=extraction_dir,
+        imported={
+            "status": "completed",
+            "persistent_provider_session_used": True,
+            "provider_instance_reused_for_policy_and_wam_loop": True,
+            "repeated_policy_calls_count": 2,
+            "generated_next_observation_count": 1,
+            "live_wam_generation_success_count": 1,
+            "learned_wam_model_success_count": 1,
+            "policy_observes_wam_generated_next_observation": True,
+            "blockers": [],
+        },
+        generated_at="now",
+        policy_observation_path=observation_path,
+        vast_result={"estimated_cost_usd": 0.01},
+        vast_run_dir=vast_run_dir,
+    )
+
+    calibration = json.loads(
+        (job / "rank_fidelity_calibration_requirement.json").read_text(encoding="utf-8")
+    )
+    report = json.loads(
+        (job / "rank_fidelity_calibration_report.json").read_text(encoding="utf-8")
+    )
+    claim_boundary = json.loads((job / "claim_boundary.json").read_text(encoding="utf-8"))
+    assert postprocess["rank_fidelity_result_proven"] is True
+    assert postprocess["generated_world_rank_fidelity_result_proven"] is True
+    assert calibration["status"] == "completed"
+    assert calibration["blockers"] == []
+    assert calibration["accepted_anchor_count"] == 4
+    assert calibration["policy_group_count"] == 2
+    assert calibration["sim_vs_real_calibration_score"] == 0.75
+    assert report["status"] == "completed"
+    assert report["accepted_anchor_input_path"] == str(anchors_path)
+    assert report["accepted_anchor_count"] == 4
+    assert report["policy_group_count"] == 2
+    assert report["sim_vs_real_calibration_score"] == 0.75
+    assert report["mean_absolute_success_rate_error"] == 0.25
+    assert report["rank_fidelity_result_proven"] is True
+    assert report["claim_boundary"]["calibration_report_requires_accepted_anchor_outcomes"] is False
+    assert claim_boundary["generated_world_rank_fidelity_result_proven"] is True
+
+
 def test_postprocess_episode_consistency_failure_is_reliability_label_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
