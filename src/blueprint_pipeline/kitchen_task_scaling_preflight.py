@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import utc_now_iso
+from .g1_render_noise_audit import normalize_legacy_robot_material_mode
 from .wam_auxiliary_observation import build_wam_auxiliary_observation_manifest
 
 
@@ -729,6 +730,14 @@ def run_preflight(
         "seed_media_preferences": {
             "robot_review_material_override": bool(robot_review_material_override),
             "robot_material_mode": (
+                "neutral_matte_untextured_g1"
+                if robot_review_material_override
+                else "preserve_authored_g1_materials_when_available"
+            ),
+            # Spec-normalized label: the matte override is an explicit white proxy; preserved
+            # authored materials stay textured_unverified until a render-noise-audit material
+            # resolution manifest proves texture refs resolved (never silently verified_textured).
+            "robot_material_mode_normalized": normalize_legacy_robot_material_mode(
                 "neutral_matte_untextured_g1"
                 if robot_review_material_override
                 else "preserve_authored_g1_materials_when_available"

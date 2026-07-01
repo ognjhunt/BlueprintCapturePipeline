@@ -320,6 +320,140 @@ def parse_scenarios(request: Mapping[str, Any]) -> list[dict]:
     return out
 
 
+# ---------------- render-noise audit (testable, no isaacsim) ----------------
+# Spec: G1 Textured Robot Render Noise Audit. Same dynamic path as the normal seed render
+# (task string -> target resolution -> task stance -> robot pose -> camera contract), then one
+# raw PNG per material/render variant with everything recorded in manifests. The canonical
+# variant plan lives in blueprint_pipeline.g1_render_noise_audit and is shipped in
+# request["render_noise_audit"]; this fallback keeps the worker self-contained.
+
+RENDER_NOISE_AUDIT_DIR_NAME = "render_noise_audit"
+RENDER_NOISE_AUDIT_RESULT_NAME = "render_noise_audit_result.json"
+RENDER_NOISE_AUDIT_RESULT_SCHEMA_VERSION = "g1_render_noise_audit_worker_result.v1"
+RENDER_NOISE_AUDIT_RUN_SCHEMA_VERSION = "g1_render_noise_audit_worker_run.v1"
+RENDER_NOISE_AUDIT_CAM_PATH = "/World/Cameras/render_noise_audit_pov"
+RENDER_NOISE_AUDIT_BOOST_LIGHT_PATH = "/World/RenderNoiseAuditBoostLight"
+DEFAULT_AUDIT_HIGH_SAMPLES_PER_PIXEL = 384
+DEFAULT_AUDIT_WARMUP_FRAMES = 8
+DEFAULT_AUDIT_PER_VARIANT_SETTLE_FRAMES = 3
+DEFAULT_AUDIT_BOOST_LIGHT_INTENSITY = 4500.0
+_AUDIT_MATERIAL_MONOTONIC_RANK = {
+    "textured_original": 0,
+    "simplified_diffuse": 1,
+    "white_proxy": 2,
+}
+_AUDIT_END_EFFECTOR_ROLES = {"hand", "palm", "finger", "gripper", "wrist"}
+
+
+def default_render_noise_audit_variants() -> list[dict]:
+    """Fallback copy of the spec's minimum variant matrix (A-G)."""
+    return [
+        {"variant_id": "A", "label": "white_proxy_denoised_default_budget",
+         "robot_material": "white_proxy", "denoiser_enabled": True,
+         "render_budget": "current_default", "lighting_boost": False,
+         "purpose": "known clean proxy baseline", "exploratory": False},
+        {"variant_id": "B", "label": "textured_raw_default_budget",
+         "robot_material": "textured_original", "denoiser_enabled": False,
+         "render_budget": "current_default", "lighting_boost": False,
+         "purpose": "raw textured-noise baseline", "exploratory": False},
+        {"variant_id": "C", "label": "textured_denoised_default_budget",
+         "robot_material": "textured_original", "denoiser_enabled": True,
+         "render_budget": "current_default", "lighting_boost": False,
+         "purpose": "denoiser regression check", "exploratory": False},
+        {"variant_id": "D", "label": "textured_raw_high_budget",
+         "robot_material": "textured_original", "denoiser_enabled": False,
+         "render_budget": "high", "lighting_boost": False,
+         "purpose": "test sample starvation", "exploratory": False},
+        {"variant_id": "E", "label": "textured_denoised_high_budget",
+         "robot_material": "textured_original", "denoiser_enabled": True,
+         "render_budget": "high", "lighting_boost": False,
+         "purpose": "test denoiser with enough samples", "exploratory": False},
+        {"variant_id": "F", "label": "simplified_diffuse_denoised_default_budget",
+         "robot_material": "simplified_diffuse", "denoiser_enabled": True,
+         "render_budget": "current_default", "lighting_boost": False,
+         "purpose": "test whether PBR/specular maps are unstable", "exploratory": False},
+        {"variant_id": "G", "label": "textured_denoised_default_budget_bright_lighting",
+         "robot_material": "textured_original", "denoiser_enabled": True,
+         "render_budget": "current_default", "lighting_boost": True,
+         "purpose": "test shadow/underexposure", "exploratory": False},
+    ]
+
+
+def audit_variant_execution_order(variants: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Material application is monotonic (authored -> simplified -> white proxy) so authored
+    materials never need to be un-authored mid-run; textured variants render first."""
+    ordered = sorted(
+        variants,
+        key=lambda v: (
+            _AUDIT_MATERIAL_MONOTONIC_RANK.get(str(v.get("robot_material")), 3),
+            str(v.get("variant_id")),
+        ),
+    )
+    return [str(v.get("variant_id")) for v in ordered]
+
+
+def render_noise_audit_plan_from_request(request: Mapping[str, Any]) -> dict:
+    """Variant plan for the audit: request-shipped plan when present, fallback matrix otherwise."""
+    shipped = request.get("render_noise_audit")
+    if isinstance(shipped, Mapping) and shipped.get("variants"):
+        variants = [dict(v) for v in shipped.get("variants") if isinstance(v, Mapping)]
+        order = [str(v) for v in (shipped.get("execution_order") or [])]
+        known = {str(v.get("variant_id")) for v in variants}
+        if not order or set(order) != known:
+            order = audit_variant_execution_order(variants)
+        return {
+            "schema_version": str(shipped.get("schema_version") or "g1_render_noise_audit_variant_plan.v1"),
+            "variants": variants,
+            "execution_order": order,
+            "source": "request",
+        }
+    variants = default_render_noise_audit_variants()
+    return {
+        "schema_version": "g1_render_noise_audit_variant_plan.v1",
+        "variants": variants,
+        "execution_order": audit_variant_execution_order(variants),
+        "source": "runner_default_matrix",
+    }
+
+
+def audit_samples_per_pixel(render_budget: str, *, default_spp: int, high_spp: int) -> int:
+    budget = str(render_budget or "current_default").strip().lower()
+    spp = high_spp if budget == "high" else default_spp
+    return max(1, min(512, int(spp)))
+
+
+def audit_arm_visibility_from_pov_geometry(pov_geometry: Mapping[str, Any]) -> dict:
+    """Spec visibility fields from the pose-constant manipulation POV geometry record.
+
+    Projection-based evidence only: it proves the posed USD arm links land inside the frame,
+    not that the rendered pixels are readable; the per-variant robot pixel mask (when the
+    instance annotator resolves) is the pixel-level complement.
+    """
+    by_arm = pov_geometry.get("arm_roles_in_frame_by_arm") or {}
+
+    def _roles(side: str) -> set[str]:
+        return {str(role) for role in (by_arm.get(side) or [])}
+
+    left_roles = _roles("left")
+    right_roles = _roles("right")
+    return {
+        "left_arm_visible": bool(left_roles),
+        "right_arm_visible": bool(right_roles),
+        "left_end_effector_visible": bool(left_roles & _AUDIT_END_EFFECTOR_ROLES),
+        "right_end_effector_visible": bool(right_roles & _AUDIT_END_EFFECTOR_ROLES),
+        "both_end_effectors_visible": bool(
+            left_roles & _AUDIT_END_EFFECTOR_ROLES and right_roles & _AUDIT_END_EFFECTOR_ROLES
+        ),
+        "target_in_frame": bool(pov_geometry.get("target_in_frame")),
+        "arm_roles_in_frame_by_arm": {side: sorted(_roles(side)) for side in ("left", "right")},
+        "evidence_source": "projected_usd_arm_link_geometry",
+        "claim_boundary": (
+            "Projected-geometry visibility evidence for the shared audit pose. It is not "
+            "pixel-level visual proof unless the per-variant robot pixel mask agrees."
+        ),
+    }
+
+
 def _optional_xyz(value) -> tuple[float, float, float] | None:
     if value is None:
         return None
@@ -7540,6 +7674,429 @@ def _create_robot_review_visual_proxies(
     }
 
 
+# ---------------- render-noise audit GPU/USD helpers ----------------
+
+def _remove_prim_quiet(stage, path: str) -> None:
+    try:
+        prim = stage.GetPrimAtPath(path)
+        if prim and prim.IsValid():
+            stage.RemovePrim(path)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_AUDIT_BASE_COLOR_INPUT_NAMES = (
+    "diffuseColor",
+    "diffuse_color_constant",
+    "baseColor",
+    "base_color",
+    "diffuse_tint",
+    "albedo",
+    "albedo_desaturation",
+)
+
+
+def _collect_robot_material_resolution(
+    stage,
+    robot_prim_path: str,
+    *,
+    robot_asset_uri: str | None = None,
+    resolved_visual_asset: str | None = None,
+) -> dict[str, Any]:
+    """Raw robot-subtree material/texture resolution evidence for the render-noise audit.
+
+    Walks every Gprim under the robot, resolves its bound material, and records each shader's
+    asset-valued inputs with their authored + resolved paths and on-disk existence. This is the
+    evidence that separates 'textures are noisy' from 'textures never resolved on this worker'.
+    Robot-scoped and site/task agnostic.
+    """
+    from pxr import Sdf, Usd, UsdGeom, UsdShade  # type: ignore
+
+    raw: dict[str, Any] = {
+        "robot_prim_path": robot_prim_path,
+        "robot_asset_uri": robot_asset_uri,
+        "resolved_visual_asset": resolved_visual_asset,
+        "gprim_count": 0,
+        "mesh_count": 0,
+        "gprims_without_material": 0,
+        "materials": [],
+    }
+    robot = stage.GetPrimAtPath(robot_prim_path)
+    if not (robot and robot.IsValid()):
+        raw["error"] = "robot_prim_missing"
+        return raw
+    materials_by_path: dict[str, dict[str, Any]] = {}
+    try:
+        prim_iter = Usd.PrimRange(robot, Usd.TraverseInstanceProxies())
+    except Exception:  # noqa: BLE001
+        prim_iter = Usd.PrimRange(robot)
+    for prim in prim_iter:
+        try:
+            if not prim.IsA(UsdGeom.Gprim):
+                continue
+            raw["gprim_count"] += 1
+            if prim.IsA(UsdGeom.Mesh):
+                raw["mesh_count"] += 1
+            material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
+            material_prim = material.GetPrim() if material else None
+            if not (material_prim and material_prim.IsValid()):
+                raw["gprims_without_material"] += 1
+                continue
+            mat_path = str(material_prim.GetPath())
+            if mat_path in materials_by_path:
+                materials_by_path[mat_path]["bound_gprim_count"] += 1
+                continue
+            entry: dict[str, Any] = {
+                "path": mat_path,
+                "bound_gprim_count": 1,
+                "shader_ids": [],
+                "texture_refs": [],
+            }
+            for child in Usd.PrimRange(material_prim):
+                shader = UsdShade.Shader(child)
+                if not shader:
+                    continue
+                try:
+                    impl_id = shader.GetIdAttr().Get()
+                except Exception:  # noqa: BLE001
+                    impl_id = None
+                source_asset = None
+                try:
+                    source_asset = shader.GetSourceAsset("mdl")
+                except Exception:  # noqa: BLE001
+                    pass
+                shader_id = str(impl_id or (source_asset.path if source_asset else "") or "")
+                if shader_id and shader_id not in entry["shader_ids"]:
+                    entry["shader_ids"].append(shader_id)
+                for shader_input in shader.GetInputs():
+                    try:
+                        if shader_input.GetTypeName() != Sdf.ValueTypeNames.Asset:
+                            continue
+                        value = shader_input.Get()
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if value is None:
+                        continue
+                    authored = str(getattr(value, "path", "") or "")
+                    resolved = str(getattr(value, "resolvedPath", "") or "")
+                    if not authored and not resolved:
+                        continue
+                    if resolved:
+                        exists = True if "://" in resolved else Path(resolved).is_file()
+                    else:
+                        exists = False
+                    entry["texture_refs"].append({
+                        "input": shader_input.GetBaseName(),
+                        "shader_path": str(child.GetPath()),
+                        "authored_path": authored,
+                        "resolved_path": resolved or None,
+                        "exists": bool(exists),
+                    })
+            materials_by_path[mat_path] = entry
+        except Exception:  # noqa: BLE001
+            continue
+    raw["materials"] = list(materials_by_path.values())
+    return raw
+
+
+def _apply_robot_simplified_diffuse_material(stage, robot_prim_path: str) -> dict[str, Any]:
+    """Bind flat UsdPreviewSurface materials sampled from each gprim's authored base color.
+
+    Keeps the robot's per-part color identity while removing image textures and
+    metallic/specular response, so a clean simplified-diffuse render vs a noisy full-PBR
+    render points at the PBR/texture response rather than geometry or lighting.
+    """
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade  # type: ignore
+
+    robot = stage.GetPrimAtPath(robot_prim_path)
+    result: dict[str, Any] = {
+        "gprims_bound": 0,
+        "distinct_colors": 0,
+        "color_sources": {"shader_input": 0, "display_color": 0, "default": 0},
+        "sampled_colors": [],
+    }
+    if not (robot and robot.IsValid()):
+        result["error"] = "robot_prim_missing"
+        return result
+
+    def _sampled_base_color(prim) -> tuple[tuple[float, float, float], str]:
+        try:
+            material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
+            material_prim = material.GetPrim() if material else None
+            if material_prim and material_prim.IsValid():
+                for child in Usd.PrimRange(material_prim):
+                    shader = UsdShade.Shader(child)
+                    if not shader:
+                        continue
+                    for name in _AUDIT_BASE_COLOR_INPUT_NAMES:
+                        shader_input = shader.GetInput(name)
+                        if not shader_input:
+                            continue
+                        try:
+                            value = shader_input.Get()
+                        except Exception:  # noqa: BLE001
+                            continue
+                        if value is None:
+                            continue
+                        try:
+                            rgb = (float(value[0]), float(value[1]), float(value[2]))
+                        except Exception:  # noqa: BLE001
+                            continue
+                        return rgb, "shader_input"
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            display = UsdGeom.Gprim(prim).GetDisplayColorAttr().Get()
+            if display:
+                rgb = (float(display[0][0]), float(display[0][1]), float(display[0][2]))
+                return rgb, "display_color"
+        except Exception:  # noqa: BLE001
+            pass
+        return (0.62, 0.63, 0.65), "default"
+
+    materials_by_color: dict[tuple[float, float, float], Any] = {}
+    try:
+        prim_iter = Usd.PrimRange(robot, Usd.TraverseInstanceProxies())
+    except Exception:  # noqa: BLE001
+        prim_iter = Usd.PrimRange(robot)
+    for prim in prim_iter:
+        try:
+            if not prim.IsA(UsdGeom.Gprim):
+                continue
+            rgb, source = _sampled_base_color(prim)
+            key = tuple(round(max(0.0, min(1.0, c)), 3) for c in rgb)
+            material = materials_by_color.get(key)
+            if material is None:
+                index = len(materials_by_color)
+                mat_path = f"/World/Materials/RenderNoiseAuditSimplified_{index}"
+                material = UsdShade.Material.Define(stage, mat_path)
+                shader = UsdShade.Shader.Define(stage, f"{mat_path}/PreviewSurface")
+                shader.CreateIdAttr("UsdPreviewSurface")
+                shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*key))
+                shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.70)
+                shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+                material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+                materials_by_color[key] = material
+                result["sampled_colors"].append({"rgb": list(key), "source": source})
+            UsdShade.MaterialBindingAPI(prim).Bind(
+                material,
+                bindingStrength=UsdShade.Tokens.strongerThanDescendants,
+            )
+            UsdGeom.Gprim(prim).CreateDisplayColorAttr([Gf.Vec3f(*key)])
+            result["gprims_bound"] += 1
+            result["color_sources"][source] += 1
+        except Exception:  # noqa: BLE001
+            continue
+    result["distinct_colors"] = len(materials_by_color)
+    return result
+
+
+def _apply_audit_render_settings(
+    rep,
+    *,
+    samples_per_pixel: int,
+    denoiser_enabled: bool,
+) -> dict[str, Any]:
+    """Path-traced render settings for one audit variant; only spp + denoiser vary per variant.
+
+    The firefly filter and texture-streaming settings are held constant across the whole audit
+    so the denoiser and sample budget are the only changed render variables.
+    """
+    diagnostics: dict[str, Any] = {
+        "renderer_mode_requested": "PathTracing",
+        "samples_per_pixel": int(samples_per_pixel),
+        "denoiser_enabled": bool(denoiser_enabled),
+        "firefly_filter_enabled": True,
+        "settings_applied": [],
+        "setting_errors": [],
+    }
+    try:
+        rep.settings.set_render_pathtraced(samples_per_pixel=int(samples_per_pixel))
+        diagnostics["settings_applied"].append("rep.settings.set_render_pathtraced")
+    except Exception as exc:  # noqa: BLE001
+        diagnostics["setting_errors"].append({
+            "setting": "rep.settings.set_render_pathtraced",
+            "error": repr(exc),
+        })
+    try:
+        import carb  # type: ignore
+
+        settings = carb.settings.get_settings()
+        for path, value in (
+            ("/rtx/pathtracing/spp", int(samples_per_pixel)),
+            ("/rtx/pathtracing/totalSpp", int(samples_per_pixel)),
+            ("/rtx/pathtracing/optixDenoiser/enabled", bool(denoiser_enabled)),
+            ("/rtx/pathtracing/optixDenoiser/blendFactor", 0.0),
+            ("/rtx/pathtracing/fireflyFilter/enabled", True),
+            ("/rtx/pathtracing/fireflyFilter/maxIntensityPerSample", 350.0),
+            ("/rtx/pathtracing/fireflyFilter/maxIntensityPerSampleDiffuse", 350.0),
+            ("/rtx-transient/resourcemanager/enableTextureStreaming", False),
+        ):
+            try:
+                settings.set(path, value)
+                diagnostics["settings_applied"].append(path)
+            except Exception as exc:  # noqa: BLE001
+                diagnostics["setting_errors"].append({"setting": path, "error": repr(exc)})
+        effective: dict[str, Any] = {}
+        for path in (
+            "/rtx/rendermode",
+            "/rtx/pathtracing/spp",
+            "/rtx/pathtracing/totalSpp",
+            "/rtx/pathtracing/optixDenoiser/enabled",
+            "/rtx/pathtracing/optixDenoiser/blendFactor",
+            "/rtx/pathtracing/fireflyFilter/enabled",
+            "/rtx/post/tonemap/op",
+            "/rtx/post/tonemap/filmIso",
+            "/rtx/post/tonemap/cameraShutter",
+            "/rtx/post/aa/op",
+        ):
+            try:
+                effective[path] = settings.get(path)
+            except Exception:  # noqa: BLE001
+                effective[path] = None
+        diagnostics["effective_settings"] = effective
+    except Exception as exc:  # noqa: BLE001
+        diagnostics["setting_errors"].append({"setting": "carb.settings", "error": repr(exc)})
+    diagnostics["status"] = "PASS" if not diagnostics["setting_errors"] else "WARN"
+    return diagnostics
+
+
+def _scene_lighting_summary(stage, *, max_lights: int = 64) -> dict[str, Any]:
+    """Dome/key/fill light inventory (type, intensity, color, temperature, HDRI texture)."""
+    lights: list[dict[str, Any]] = []
+    type_counts: dict[str, int] = {}
+    for prim in stage.Traverse():
+        type_name = str(prim.GetTypeName() or "")
+        if not type_name.endswith("Light"):
+            continue
+        type_counts[type_name] = type_counts.get(type_name, 0) + 1
+        if len(lights) >= max_lights:
+            continue
+        entry: dict[str, Any] = {"path": str(prim.GetPath()), "type": type_name}
+        for label, names in (
+            ("intensity", ("inputs:intensity", "intensity")),
+            ("exposure", ("inputs:exposure", "exposure")),
+            ("color", ("inputs:color", "color")),
+            ("color_temperature", ("inputs:colorTemperature", "colorTemperature")),
+            ("enable_color_temperature", ("inputs:enableColorTemperature", "enableColorTemperature")),
+            ("texture_file", ("inputs:texture:file", "texture:file")),
+        ):
+            for name in names:
+                try:
+                    attr = prim.GetAttribute(name)
+                    if attr and attr.IsValid() and attr.HasAuthoredValue():
+                        value = attr.Get()
+                        if label == "color" and value is not None:
+                            entry[label] = [round(float(v), 4) for v in value]
+                        elif label == "texture_file":
+                            entry[label] = str(getattr(value, "path", value) or "") or None
+                        elif value is not None:
+                            entry[label] = round(float(value), 4) if isinstance(value, (int, float)) else value
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+        lights.append(entry)
+    return {
+        "schema_version": "isaac_scene_lighting_summary.v1",
+        "light_count": sum(type_counts.values()),
+        "type_counts": dict(sorted(type_counts.items())),
+        "lights": lights,
+    }
+
+
+def _audit_runtime_metadata() -> dict[str, Any]:
+    """Best-effort GPU/driver/Isaac/image identity so noisy output can be tied to a
+    specific worker image + GPU + driver combination."""
+    meta: dict[str, Any] = {}
+    try:
+        query = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=20,
+        )
+        line = (query.stdout or "").strip().splitlines()
+        if query.returncode == 0 and line:
+            parts = [p.strip() for p in line[0].split(",")]
+            meta["gpu_name"] = parts[0] if parts else None
+            meta["driver_version"] = parts[1] if len(parts) > 1 else None
+            meta["gpu_memory_total"] = parts[2] if len(parts) > 2 else None
+    except Exception as exc:  # noqa: BLE001
+        meta["nvidia_smi_error"] = repr(exc)
+    for candidate in ("/isaac-sim/VERSION", "/isaac-sim/version.txt"):
+        try:
+            version_path = Path(candidate)
+            if version_path.is_file():
+                meta["isaac_version"] = version_path.read_text(encoding="utf-8").strip()[:120]
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    for env_key in (
+        "ISAACSIM_VERSION", "ISAAC_SIM_VERSION",
+        "BLUEPRINT_WORKER_IMAGE_REF", "BLUEPRINT_WORKER_IMAGE_DIGEST",
+        "RUNPOD_POD_ID", "CUDA_VERSION", "NVIDIA_DRIVER_CAPABILITIES",
+    ):
+        value = os.getenv(env_key, "").strip()
+        if value:
+            meta[env_key.lower()] = value
+    meta["python_version"] = sys.version.split()[0]
+    return meta
+
+
+def _robot_pixel_ratio_from_instance(instance_annot, robot_prim_path: str) -> dict[str, Any]:
+    """Fraction of frame pixels belonging to the robot subtree via the instance annotator.
+
+    Colorized instance output maps '(r, g, b, a)' color keys to prim paths in
+    info['idToLabels']; plain output maps integer ids. Both are handled best-effort.
+    """
+    import numpy as np  # type: ignore
+
+    try:
+        data = instance_annot.get_data()
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": repr(exc)}
+    payload = _segmentation_payload(data)
+    info = data.get("info") if isinstance(data, Mapping) else {}
+    id_to_labels = (info or {}).get("idToLabels") or {}
+    if payload is None or getattr(payload, "size", 0) == 0 or not id_to_labels:
+        return {"available": False, "error": "instance_annotator_payload_or_labels_missing"}
+    arr = np.asarray(payload)
+    total = float(arr.shape[0] * arr.shape[1]) if arr.ndim >= 2 else float(arr.size)
+    if total <= 0:
+        return {"available": False, "error": "instance_annotator_empty_frame"}
+    robot_root = str(robot_prim_path).rstrip("/")
+
+    def _is_robot(label: Any) -> bool:
+        text = str(label if not isinstance(label, Mapping) else (label.get("class") or label))
+        return text.startswith(robot_root)
+
+    robot_pixels = 0
+    matched_ids = 0
+    try:
+        for key, label in id_to_labels.items():
+            if not _is_robot(label):
+                continue
+            matched_ids += 1
+            key_text = str(key).strip()
+            if key_text.startswith("("):
+                rgba = [int(v) for v in key_text.strip("()").split(",")[:4]]
+                if arr.ndim == 3 and arr.shape[2] >= len(rgba):
+                    mask = np.all(arr[:, :, : len(rgba)] == np.asarray(rgba, dtype=arr.dtype), axis=2)
+                    robot_pixels += int(mask.sum())
+            else:
+                robot_pixels += int((arr == int(key_text)).sum())
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": repr(exc)}
+    return {
+        "available": True,
+        "robot_pixel_ratio": round(robot_pixels / total, 6),
+        "matched_instance_ids": matched_ids,
+        "claim_boundary": (
+            "Instance-mask pixel coverage of the robot subtree in this frame. It is render "
+            "visibility evidence only, not manipulation or task evidence."
+        ),
+    }
+
+
 def _add_workspace_fill_light(stage, target, *, intensity: float, height: float = 2.0,
                               path: str = "/World/WorkspaceFill") -> None:
     """Add a local sphere fill light above the manipulation workspace so the task surface and seeded
@@ -9794,6 +10351,476 @@ def render_local_preview(
     return summary
 
 
+def _import_render_noise_audit_module():
+    """The pure audit module (variant plan + stats + manifests): bundle flat copy on the
+    worker, package import in the repo/tests, None when neither resolves."""
+    try:
+        import g1_render_noise_audit as audit_mod  # type: ignore  # bundle (worker)
+        return audit_mod
+    except Exception:  # noqa: BLE001
+        try:
+            from blueprint_pipeline import g1_render_noise_audit as audit_mod  # repo (tests)
+            return audit_mod
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def run_render_noise_audit(*, kitchen_usd: str, g1_usd: str, scenario: Mapping[str, Any],
+                           out_dir: Path, width: int, height: int,
+                           camera_vfov_deg: float = 50.0, reach_arm: str = "both",
+                           warmup_frames: int = DEFAULT_AUDIT_WARMUP_FRAMES,
+                           render_subframes: int = 16,
+                           variant_plan: Mapping[str, Any] | None = None,
+                           high_samples_per_pixel: int | None = None,
+                           boost_light_intensity: float | None = None,
+                           fill_light_intensity: float = 0.0,
+                           neutral_environment: bool = False,
+                           no_collision_probe: bool = True,
+                           per_variant_seconds: float = 420.0) -> dict[str, Any]:
+    """GPU orchestration for the textured-robot render-noise audit (spec matrix A-G).
+
+    One dynamic scene/stance/arm-pose/camera setup (the SAME task-resolution and placement
+    code as the normal Isaac seed render — no hardcoded scene coordinates), then one raw PNG
+    per variant while changing only the declared material/render levers. Everything needed to
+    interpret the frames is recorded: material/texture resolution, applied + effective render
+    settings, camera contract, lighting inventory, GPU/driver/Isaac identity, and timings.
+    Honesty boundary: render-quality evidence only — not task success, policy, or readiness.
+    """
+    out_dir = Path(out_dir)
+    audit_dir = out_dir / RENDER_NOISE_AUDIT_DIR_NAME
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    result_path = out_dir / RENDER_NOISE_AUDIT_RESULT_NAME
+    sid = str(scenario.get("scenario_id") or "render_noise_audit")
+    task = str(
+        scenario.get("task")
+        or scenario.get("instruction")
+        or scenario.get("description")
+        or ""
+    )
+    plan = dict(variant_plan) if variant_plan else render_noise_audit_plan_from_request({})
+    variants_by_id = {str(v.get("variant_id")): dict(v) for v in plan.get("variants") or []}
+    execution_order = [vid for vid in (plan.get("execution_order") or []) if vid in variants_by_id]
+    result: dict[str, Any] = {
+        "schema_version": RENDER_NOISE_AUDIT_RESULT_SCHEMA_VERSION,
+        "status": "blocked",
+        "scenario_id": sid,
+        "task": task or None,
+        "blockers": [],
+        "variants_planned": sorted(variants_by_id),
+        "variants_rendered": [],
+        "audit_dir": str(audit_dir),
+        "claim_boundary": (
+            "Render-noise audit evidence only: frames + manifests describe renderer/material/"
+            "lighting behavior. Not task success, policy quality, physical readiness, or WAM "
+            "rank fidelity."
+        ),
+    }
+
+    def _write_result() -> None:
+        result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+    def _write_audit_json(name: str, payload: Mapping[str, Any]) -> None:
+        (audit_dir / name).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    if not execution_order:
+        result["blockers"].append("render_noise_audit_variant_plan_empty")
+        _write_result()
+        return result
+
+    _log("render-noise audit: booting Isaac (headless RTX) ...")
+    sim = _boot_sim(headless=True)
+    try:
+        rep = _enable_and_import_replicator()
+        _log(f"render-noise audit: opening kitchen USD: {kitchen_usd}")
+        stage = _open_stage(_resolve_asset_uri(kitchen_usd))
+        binding = _bind_g1_with_visual_fallback(stage, g1_usd)
+        (audit_dir / "g1_binding.json").write_text(json.dumps(binding, indent=2))
+        robot_prim_path = binding["prim_path"]
+        robot_asset = {
+            "requested_g1_usd": g1_usd,
+            "resolved_visual_asset": binding.get("candidate_g1_usd") or binding.get("resolved_g1_usd"),
+            "visual_binding_status": binding.get("visual_binding_status"),
+            "visual_candidate_attempts": binding.get("visual_candidate_attempts", []),
+        }
+
+        if no_collision_probe:
+            def probe(pose, yaw):  # noqa: ANN001
+                return 0
+            probe_source = "no_probe_geometry_validation_only"
+        else:
+            probe = _overlap_probe(robot_prim_path)
+            probe_source = "physx_overlap_probe"
+
+        stance_plan = _plan_task_stance_for_stage(
+            stage=stage,
+            scenario=scenario,
+            manipulation_look_at=None,
+            probe=probe,
+            no_collision_probe=no_collision_probe,
+            robot_prim_path=robot_prim_path,
+        )
+        stance_plan["collision_probe_source"] = probe_source
+        _write_audit_json("task_stance_plan.json", stance_plan)
+        placement_validation = stance_plan.get("placement_validation")
+        if not isinstance(placement_validation, Mapping):
+            placement_validation = {
+                "schema_version": "placement_validation.v1",
+                "status": "blocked",
+                "blockers": ["placement_validation_unavailable_in_task_stance_plan"],
+            }
+        _write_audit_json("placement_validation.json", dict(placement_validation))
+        if stance_plan.get("status") != "accepted":
+            result["blockers"].append("task_stance_plan_not_accepted")
+            result["stance_blockers"] = stance_plan.get("blockers")
+            _write_result()
+            return result
+
+        root = tuple(float(v) for v in stance_plan["accepted_pose"])
+        yaw = float(stance_plan["accepted_yaw"])
+        look_at = _surface_affordance_point_for_stance(stance_plan, root) or stance_plan.get("task_target_xyz")
+        look_at = tuple(float(v) for v in look_at) if look_at is not None else None
+        if look_at is None:
+            result["blockers"].append("task_affordance_or_target_unresolved")
+            _write_result()
+            return result
+
+        robot_neutral_xforms = _capture_robot_neutral_descendant_xforms(stage, robot_prim_path)
+        if robot_neutral_xforms:
+            _restore_robot_neutral_descendant_xforms(stage, robot_neutral_xforms)
+        root_diagnostics = _place_root(stage, robot_prim_path, root, yaw)
+        _write_audit_json("place_root_diagnostics.json", root_diagnostics)
+        reach_selection = _normalize_reach_arm_selection(reach_arm)
+        posed_count = 0
+        try:
+            posed_count = _pose_arm_kinematic_usd(
+                stage, robot_prim_path, look_at,
+                arm=reach_selection, reach_frac=1.0, forward_yaw=yaw,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["blockers"].append("kinematic_arm_pose_failed")
+            result["kinematic_arm_pose_error"] = repr(exc)
+        _log(f"render-noise audit: stance accepted, arm pose links={posed_count}")
+
+        robot_render_diag = _robot_render_visibility_diagnostics(stage, robot_prim_path)
+        _write_audit_json("robot_render_diagnostics.json", robot_render_diag)
+
+        material_raw = _collect_robot_material_resolution(
+            stage, robot_prim_path,
+            robot_asset_uri=g1_usd,
+            resolved_visual_asset=robot_asset.get("resolved_visual_asset"),
+        )
+        audit_mod = _import_render_noise_audit_module()
+        if audit_mod is not None:
+            material_resolution = audit_mod.summarize_material_resolution(material_raw)
+        else:
+            material_resolution = {
+                "schema_version": "robot_material_resolution_manifest.v1",
+                "status": "raw_only_normalizer_unavailable",
+                **material_raw,
+            }
+        _write_audit_json("robot_material_resolution_manifest.json", material_resolution)
+
+        from pxr import UsdGeom  # type: ignore
+
+        UsdGeom.Camera.Define(stage, RENDER_NOISE_AUDIT_CAM_PATH)
+        pov_vfov_deg = max(float(camera_vfov_deg), float(MANIPULATION_POV_MIN_VFOV_DEG))
+        _set_camera_fov(stage, RENDER_NOISE_AUDIT_CAM_PATH, pov_vfov_deg, width, height)
+        eye, tgt, cam_meta = _robot_mounted_manipulation_cam_pose(
+            stage, robot_prim_path, root, yaw,
+            look_at=look_at, reach_arm=reach_selection,
+            vfov_deg=pov_vfov_deg, width=width, height=height,
+        )
+        capped_tgt = _target_raised_to_max_pitch_down(
+            eye, tgt, MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG,
+        )
+        if capped_tgt != tgt:
+            cam_meta = {**cam_meta, "pitch_cap_applied": True}
+            tgt = capped_tgt
+        _place_camera(stage, RENDER_NOISE_AUDIT_CAM_PATH, eye, tgt)
+
+        # Constant scene lighting matches the normal manipulation seed path: camera-side
+        # headlamp + optional workspace fill + optional neutral dome. Variant G adds ONE
+        # extra recorded boost light on top; nothing else changes per variant.
+        _add_pov_headlamp(
+            stage, eye, look_at,
+            intensity=(fill_light_intensity if fill_light_intensity > 0 else 30000.0),
+        )
+        if fill_light_intensity > 0:
+            _add_workspace_fill_light(stage, look_at, intensity=fill_light_intensity)
+        if neutral_environment:
+            try:
+                _neutralize_environment(stage)
+            except Exception as exc:  # noqa: BLE001
+                _log(f"render-noise audit: environment neutralize skipped ({exc!r})")
+
+        camera_contract = _isaac_camera_contract(stage, RENDER_NOISE_AUDIT_CAM_PATH, width, height)
+        try:
+            clip = UsdGeom.Camera(stage.GetPrimAtPath(RENDER_NOISE_AUDIT_CAM_PATH)).GetClippingRangeAttr().Get()
+            camera_contract["clipping_range_m"] = [float(clip[0]), float(clip[1])] if clip else None
+        except Exception:  # noqa: BLE001
+            camera_contract["clipping_range_m"] = None
+        camera_contract["camera_source"] = cam_meta.get("source")
+        camera_contract["camera_mount_metadata"] = cam_meta
+        camera_contract["pitch_down_deg"] = round(float(_camera_pitch_down_deg(eye, tgt)), 3)
+        camera_contract["vfov_deg"] = round(float(pov_vfov_deg), 3)
+        camera_contract["eye_xyz"] = [round(float(v), 6) for v in eye]
+        camera_contract["target_xyz"] = [round(float(v), 6) for v in tgt]
+        camera_contract["look_at_xyz"] = [round(float(v), 6) for v in look_at]
+        _write_audit_json("camera_contract.json", camera_contract)
+
+        arm_points_by_arm = _robot_arm_link_points_by_arm(stage, robot_prim_path, arm=reach_selection)
+        if reach_selection == "both":
+            arm_points = _average_arm_link_points(arm_points_by_arm)
+        else:
+            arm_points = dict(arm_points_by_arm.get(reach_selection) or {})
+        pov_geometry = _manipulation_pov_geometry(
+            arm_points=arm_points, arm_points_by_arm=arm_points_by_arm,
+            affordance=look_at, eye=eye, target=tgt,
+            vfov_deg=pov_vfov_deg, width=width, height=height, arm=reach_selection,
+        )
+        _write_audit_json("manipulation_pov_geometry.json", pov_geometry)
+        arm_visibility = audit_arm_visibility_from_pov_geometry(pov_geometry)
+
+        try:
+            _author_scene_semantic_labels(
+                stage, robot_prim_path=robot_prim_path,
+                keep_substrings=("room", "floor", "wall", "ground", "ceiling", "light"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log(f"render-noise audit: semantic label authoring skipped ({exc!r})")
+        annots = _make_render_product(
+            RENDER_NOISE_AUDIT_CAM_PATH, width, height,
+            with_depth=False, with_segmentation=True,
+        )
+        rgb_annot = annots["rgb"] if isinstance(annots, Mapping) else annots
+        instance_annot = annots.get("instance") if isinstance(annots, Mapping) else None
+
+        default_spp = int(_render_quality_config(
+            render_subframes=int(render_subframes),
+            manipulation_cam=True, verify_cam=False, mode="pathtraced",
+        )["samples_per_pixel"])
+        env_high = os.getenv("PARITY_AUDIT_HIGH_SAMPLES_PER_PIXEL", "").strip()
+        try:
+            high_spp = int(high_samples_per_pixel or (int(env_high) if env_high else DEFAULT_AUDIT_HIGH_SAMPLES_PER_PIXEL))
+        except ValueError:
+            high_spp = DEFAULT_AUDIT_HIGH_SAMPLES_PER_PIXEL
+        high_spp = max(default_spp, min(512, high_spp))
+        boost_intensity = float(boost_light_intensity or DEFAULT_AUDIT_BOOST_LIGHT_INTENSITY)
+
+        lighting_summary = _scene_lighting_summary(stage)
+        runtime_metadata = _audit_runtime_metadata()
+        render_settings_manifest = {
+            "schema_version": "render_settings_manifest.v1",
+            "renderer": "rtx_pathtracing",
+            "resolution": [int(width), int(height)],
+            "render_subframes_requested": int(render_subframes),
+            "replicator_rt_subframes_per_capture": 1,
+            "default_budget_samples_per_pixel": default_spp,
+            "high_budget_samples_per_pixel": high_spp,
+            "firefly_filter_constant_enabled": True,
+            "software_denoise_applied": False,
+            "boost_light_intensity_variant_g": boost_intensity,
+            "shader_warmup_frames": int(warmup_frames),
+            "per_variant_settle_frames": DEFAULT_AUDIT_PER_VARIANT_SETTLE_FRAMES,
+            "lighting_summary": lighting_summary,
+            "runtime_metadata": runtime_metadata,
+        }
+        _write_audit_json("render_settings_manifest.json", render_settings_manifest)
+
+        # Shader/RTX-cache warmup BEFORE the first variant so cold-start compile/denoiser
+        # variance (hypothesis 6) is spent here and measured, not inside variant A/B.
+        warmup_settings = _apply_audit_render_settings(
+            rep, samples_per_pixel=default_spp, denoiser_enabled=True,
+        )
+        warmup_seconds: list[float] = []
+        for wi in range(max(0, int(warmup_frames))):
+            t_warm = time.time()
+            _replicator_step_with_watchdog(
+                rep, label=f"{sid}:audit:warmup:{wi}",
+                result_path=result_path, scenario_id=sid, rt_subframes=1,
+            )
+            warmup_seconds.append(round(time.time() - t_warm, 3))
+        _log(f"render-noise audit: warmup done ({[f'{s:.1f}' for s in warmup_seconds]})")
+
+        variant_results: list[dict[str, Any]] = []
+        current_material = "textured_original"
+        material_apply_records: dict[str, Any] = {}
+        last_rank = -1
+        for vid in execution_order:
+            variant = variants_by_id[vid]
+            material = str(variant.get("robot_material") or "textured_original")
+            rank = _AUDIT_MATERIAL_MONOTONIC_RANK.get(material, 3)
+            record: dict[str, Any] = {
+                "variant_id": vid,
+                "variant": variant,
+                "execution_index": len(variant_results),
+            }
+            if rank < last_rank:
+                # A custom plan asked to go back to a less-overridden material; the
+                # monotonic override strategy cannot un-author that, so skip honestly.
+                record["status"] = "skipped"
+                record["blockers"] = ["variant_execution_order_material_not_monotonic"]
+                variant_results.append(record)
+                result["blockers"].append(f"variant_skipped_non_monotonic_material:{vid}")
+                continue
+            t_variant = time.time()
+            if material != current_material:
+                if material == "simplified_diffuse":
+                    material_apply_records["simplified_diffuse"] = (
+                        _apply_robot_simplified_diffuse_material(stage, robot_prim_path)
+                    )
+                elif material == "white_proxy":
+                    material_apply_records["white_proxy"] = {
+                        "gprims_bound": _apply_robot_review_material(
+                            stage, robot_prim_path, override_authored_materials=True,
+                        ),
+                    }
+                current_material = material
+                last_rank = rank
+            record["material_apply"] = material_apply_records.get(material)
+            spp = audit_samples_per_pixel(
+                str(variant.get("render_budget") or "current_default"),
+                default_spp=default_spp, high_spp=high_spp,
+            )
+            record["render_settings"] = _apply_audit_render_settings(
+                rep, samples_per_pixel=spp,
+                denoiser_enabled=bool(variant.get("denoiser_enabled")),
+            )
+            if variant.get("lighting_boost"):
+                _add_workspace_fill_light(
+                    stage, look_at, intensity=boost_intensity,
+                    path=RENDER_NOISE_AUDIT_BOOST_LIGHT_PATH,
+                )
+                record["boost_light"] = {
+                    "path": RENDER_NOISE_AUDIT_BOOST_LIGHT_PATH,
+                    "intensity": boost_intensity,
+                }
+            try:
+                for si in range(DEFAULT_AUDIT_PER_VARIANT_SETTLE_FRAMES):
+                    if time.time() - t_variant > per_variant_seconds:
+                        record.setdefault("blockers", []).append("variant_time_cap_hit_in_settle")
+                        break
+                    _replicator_step_with_watchdog(
+                        rep, label=f"{sid}:audit:{vid}:settle:{si}",
+                        result_path=result_path, scenario_id=sid, rt_subframes=1,
+                    )
+                t_capture = time.time()
+                _replicator_step_with_watchdog(
+                    rep, label=f"{sid}:audit:{vid}:capture",
+                    result_path=result_path, scenario_id=sid, rt_subframes=1,
+                )
+                record["capture_seconds"] = round(time.time() - t_capture, 3)
+                variant_dir = audit_dir / "variants" / vid
+                variant_dir.mkdir(parents=True, exist_ok=True)
+                png_path = variant_dir / "frame_raw.png"
+                saved = _save_rgb(rgb_annot, png_path, software_denoise=False)
+                record["frame_png"] = f"variants/{vid}/frame_raw.png" if saved else None
+                if not saved:
+                    record.setdefault("blockers", []).append("variant_frame_capture_empty")
+                else:
+                    try:
+                        record["seed_frame_quality"] = _pov_seed_frame_quality(png_path)
+                    except Exception:  # noqa: BLE001
+                        pass
+                if instance_annot is not None and saved:
+                    record["robot_pixel_mask"] = _robot_pixel_ratio_from_instance(
+                        instance_annot, robot_prim_path,
+                    )
+                    try:
+                        record["segmentation_save"] = _save_segmentation(
+                            annots,
+                            instance_png=variant_dir / "robot_instance_mask.png",
+                            semantic_png=variant_dir / "semantic_mask.png",
+                            id_label_json=variant_dir / "instance_id_labels.json",
+                        )
+                        record["segmentation_save"].pop("id_to_labels", None)
+                    except Exception as exc:  # noqa: BLE001
+                        record["segmentation_error"] = repr(exc)
+            finally:
+                if variant.get("lighting_boost"):
+                    _remove_prim_quiet(stage, RENDER_NOISE_AUDIT_BOOST_LIGHT_PATH)
+            record["variant_seconds"] = round(time.time() - t_variant, 3)
+            record["status"] = "completed" if record.get("frame_png") else "blocked"
+            (audit_dir / "variants" / vid / "variant_manifest.json").write_text(
+                json.dumps(record, indent=2), encoding="utf-8",
+            )
+            variant_results.append(record)
+            if record["status"] == "completed":
+                result["variants_rendered"].append(vid)
+            _log(
+                f"render-noise audit: variant {vid} {record['status']} "
+                f"material={material} spp={spp} denoiser={bool(variant.get('denoiser_enabled'))} "
+                f"({record['variant_seconds']}s)"
+            )
+
+        target_resolution = stance_plan.get("target_resolution")
+        run_manifest = {
+            "schema_version": RENDER_NOISE_AUDIT_RUN_SCHEMA_VERSION,
+            "scenario_id": sid,
+            "task": task or scenario.get("instruction"),
+            "scenario": {k: v for k, v in scenario.items() if k != "route_points"},
+            "target_resolution": target_resolution,
+            "stance_plan_summary": {
+                "status": stance_plan.get("status"),
+                "accepted_pose": stance_plan.get("accepted_pose"),
+                "accepted_yaw": stance_plan.get("accepted_yaw"),
+                "task_target_xyz": stance_plan.get("task_target_xyz"),
+                "task_target_bounds": stance_plan.get("task_target_bounds"),
+                "affordance_focus_source": stance_plan.get("affordance_focus_source"),
+                "collision_probe_source": probe_source,
+            },
+            "placement_validation": dict(placement_validation),
+            "robot_asset": robot_asset,
+            "robot_render_diagnostics_status": robot_render_diag.get("status"),
+            "posed_arm_link_count": int(posed_count),
+            "reach_arm": reach_selection,
+            "camera_contract": camera_contract,
+            "arm_visibility": arm_visibility,
+            "variant_plan": plan,
+            "variant_results": variant_results,
+            "warmup": {
+                "frames": int(warmup_frames),
+                "frame_seconds": warmup_seconds,
+                "settings": warmup_settings,
+            },
+            "lighting_summary": lighting_summary,
+            "runtime_metadata": runtime_metadata,
+            "render_settings": render_settings_manifest,
+            "claim_boundary": result["claim_boundary"],
+        }
+        _write_audit_json("audit_run_manifest.json", run_manifest)
+
+        if audit_mod is not None:
+            try:
+                analysis = audit_mod.analyze_render_noise_audit_run(out_dir)
+                result["worker_analysis_status"] = analysis.get("status")
+                result["worker_primary_diagnosis"] = (
+                    (analysis.get("interpretation") or {}).get("primary_diagnosis")
+                )
+            except Exception as exc:  # noqa: BLE001
+                result["worker_analysis_status"] = "failed"
+                result["worker_analysis_error"] = repr(exc)
+        else:
+            result["worker_analysis_status"] = "analyzer_module_unavailable"
+
+        if not result["variants_rendered"]:
+            result["blockers"].append("no_audit_variants_rendered")
+        result["status"] = "completed" if not result["blockers"] else "blocked"
+        _write_result()
+        return result
+    except Exception as exc:  # noqa: BLE001
+        result["blockers"].append("render_noise_audit_exception")
+        result["error"] = repr(exc)
+        result["traceback"] = traceback.format_exc()[-4000:]
+        _write_result()
+        return result
+    finally:
+        try:
+            sim.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Isaac G1 kitchen parity eval (GPU)")
     ap.add_argument("--request", help="execution request JSON (scenarios + asset hints)")
@@ -9882,6 +10909,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--manipulation-stand", action="store_true",
                     help="place the robot AT the scenario target facing --manipulation-look-at every "
                          "step (task start pose; no navigation/redirect) — for manipulation, not locomotion")
+    ap.add_argument("--render-noise-audit", action="store_true",
+                    help="RENDER-QUALITY AUDIT: one dynamic scene/stance/camera setup from the request's "
+                         "first scenario, then one RAW PNG per material/render variant (white proxy, "
+                         "textured raw/denoised, high-sample, simplified diffuse, bright lighting) with "
+                         "material-resolution + render-settings + camera-contract manifests. Runs instead "
+                         "of the scenario eval; render-quality evidence only.")
+    ap.add_argument("--audit-high-spp", type=int, default=0,
+                    help="samples per pixel for the audit's high-budget variants "
+                         f"(default {DEFAULT_AUDIT_HIGH_SAMPLES_PER_PIXEL}, env PARITY_AUDIT_HIGH_SAMPLES_PER_PIXEL)")
+    ap.add_argument("--audit-warmup-frames", type=int, default=DEFAULT_AUDIT_WARMUP_FRAMES,
+                    help="shader/RTX-cache warmup render steps before the first audit variant so "
+                         "cold-start variance is measured, not baked into a variant frame")
+    ap.add_argument("--audit-boost-light-intensity", type=float, default=0.0,
+                    help="workspace boost light intensity for the audit's bright-lighting variant "
+                         f"(default {DEFAULT_AUDIT_BOOST_LIGHT_INTENSITY})")
     ap.add_argument("--dry-render", action="store_true",
                     help="NO-GPU local preview: reproduce stance + camera + arms-forward framing from the "
                          "kitchen USD + task string and write a preview PNG, so placement/POV bugs are caught "
@@ -9951,6 +10993,36 @@ def main(argv=None) -> int:
         return 0
 
     put_url = os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "")
+
+    if args.render_noise_audit:
+        if not kitchen_usd or not g1_usd or not scenarios:
+            res = {"schema_version": RENDER_NOISE_AUDIT_RESULT_SCHEMA_VERSION, "status": "blocked",
+                   "blockers": ["missing_scenarios_or_kitchen_usd_or_g1_usd"],
+                   "have_scenarios": bool(scenarios), "have_kitchen_usd": bool(kitchen_usd),
+                   "have_g1_usd": bool(g1_usd)}
+            (out_dir / RENDER_NOISE_AUDIT_RESULT_NAME).write_text(json.dumps(res, indent=2))
+            upload_zip(out_dir, put_url)
+            print(json.dumps(res))
+            return 1
+        audit_result = run_render_noise_audit(
+            kitchen_usd=kitchen_usd, g1_usd=g1_usd, scenario=scenarios[0], out_dir=out_dir,
+            width=args.width, height=args.height, camera_vfov_deg=args.camera_vfov,
+            reach_arm=args.manipulation_reach_arm,
+            warmup_frames=args.audit_warmup_frames,
+            render_subframes=max(1, int(args.render_subframes or 16)),
+            variant_plan=render_noise_audit_plan_from_request(request),
+            high_samples_per_pixel=(args.audit_high_spp or None),
+            boost_light_intensity=(args.audit_boost_light_intensity or None),
+            fill_light_intensity=args.fill_light_intensity,
+            neutral_environment=args.neutral_environment,
+            no_collision_probe=args.no_collision_probe,
+            per_variant_seconds=float(args.per_scenario_seconds),
+        )
+        upload_zip(out_dir, put_url)
+        print(json.dumps({"status": audit_result["status"],
+                          "variants_rendered": audit_result.get("variants_rendered"),
+                          "blockers": audit_result.get("blockers")}))
+        return 0 if audit_result["status"] == "completed" else 1
 
     # Warm serve mode boots Isaac with NO initial scenarios — jobs arrive at runtime via --serve-dir —
     # so it requires the assets but not a pre-supplied scenario list.

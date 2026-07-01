@@ -51,6 +51,7 @@ PARITY_BUNDLE_REQUIRED_FILES = (
     "isaac_g1_policy.py",
     "render_visual_qc.py",
     "warm_render_server.py",
+    "g1_render_noise_audit.py",
     "request.json",
     "scene_placement/__init__.py",
     "scene_placement/types.py",
@@ -190,6 +191,11 @@ if os.environ.get("PARITY_COLLISION_APPROXIMATION",""): cmd += ["--collision-app
 if os.environ.get("PARITY_VERIFY_CAM","")=="1": cmd.append("--verify-cam")
 if os.environ.get("PARITY_MANIPULATION_STAND","")=="1": cmd.append("--manipulation-stand")
 if os.environ.get("PARITY_KINEMATIC_ARM_POSE","")=="1": cmd.append("--kinematic-arm-pose")
+if os.environ.get("PARITY_RENDER_NOISE_AUDIT","")=="1":
+    cmd.append("--render-noise-audit")  # variant-matrix render-quality audit instead of the scenario eval
+    if os.environ.get("PARITY_AUDIT_HIGH_SPP",""): cmd += ["--audit-high-spp", os.environ["PARITY_AUDIT_HIGH_SPP"]]
+    if os.environ.get("PARITY_AUDIT_WARMUP_FRAMES",""): cmd += ["--audit-warmup-frames", os.environ["PARITY_AUDIT_WARMUP_FRAMES"]]
+    if os.environ.get("PARITY_AUDIT_BOOST_LIGHT_INTENSITY",""): cmd += ["--audit-boost-light-intensity", os.environ["PARITY_AUDIT_BOOST_LIGHT_INTENSITY"]]
 if os.environ.get("PARITY_SERVE","")=="1":
     cmd.append("--serve")  # warm mode: boot Isaac + load scene ONCE, then serve jobs from the inbox env
     if os.environ.get("PARITY_SERVE_IDLE_TIMEOUT",""): cmd += ["--serve-idle-timeout", os.environ["PARITY_SERVE_IDLE_TIMEOUT"]]
@@ -231,10 +237,11 @@ def docker_start_cmd() -> list[str]:
 # ----------------------------- request + bundle -----------------------------
 
 def build_request(*, scenarios: Sequence[dict], kitchen_main_usd_relative: str = DEFAULT_KITCHEN_MAIN_USD,
-                  g1_usd: str = DEFAULT_G1_USD_RELATIVE, policy_id: str, steps: int) -> dict:
+                  g1_usd: str = DEFAULT_G1_USD_RELATIVE, policy_id: str, steps: int,
+                  render_noise_audit_plan: dict | None = None) -> dict:
     """The runner's request.json. kitchen_usd is the worker-absolute path inside the extracted
     bundle; g1_usd is a relative Isaac asset path resolved against the assets root on the worker."""
-    return {
+    request = {
         "schema_version": "isaac_g1_kitchen_parity_request.v1",
         "kitchen_usd": f"{WORKER_BUNDLE_DIR}/kitchen/{kitchen_main_usd_relative}",
         "g1_usd": g1_usd,
@@ -242,6 +249,9 @@ def build_request(*, scenarios: Sequence[dict], kitchen_main_usd_relative: str =
         "steps": steps,
         "scenarios": list(scenarios),
     }
+    if render_noise_audit_plan is not None:
+        request["render_noise_audit"] = dict(render_noise_audit_plan)
+    return request
 
 
 def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
@@ -249,7 +259,8 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
                         kitchen_main_usd_relative: str = DEFAULT_KITCHEN_MAIN_USD,
                         g1_usd: str = DEFAULT_G1_USD_RELATIVE,
                         policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
-                        steps: int = 64) -> Path:
+                        steps: int = 64,
+                        render_noise_audit_plan: dict | None = None) -> Path:
     """Assemble the GPU bundle: the runner + the policy module + request.json + (optional) the
     kitchen asset tree under kitchen/. The runner imports the shipped policy module on the worker."""
     bundle = out_dir / "bundle"
@@ -260,10 +271,14 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     # warm_render_server is stdlib-only (no intra-package imports), so a flat copy is importable as
     # `import warm_render_server` on the worker — the runner's --serve path imports it with a fallback.
     warm_server = _repo_root() / "src" / "blueprint_pipeline" / "warm_render_server.py"
+    # g1_render_noise_audit degrades its package-relative common import to local fallbacks, so a
+    # flat copy is importable as `import g1_render_noise_audit` for the --render-noise-audit mode.
+    noise_audit = _repo_root() / "src" / "blueprint_pipeline" / "g1_render_noise_audit.py"
     (bundle / "run_isaac_g1_kitchen_parity_eval.py").write_bytes(runner.read_bytes())
     (bundle / "isaac_g1_policy.py").write_bytes(policy.read_bytes())
     (bundle / "render_visual_qc.py").write_bytes(visual_qc.read_bytes())
     (bundle / "warm_render_server.py").write_bytes(warm_server.read_bytes())
+    (bundle / "g1_render_noise_audit.py").write_bytes(noise_audit.read_bytes())
     # Ship the scene_placement package alongside the runner so its dynamic task->object resolution
     # works on the worker (the runner imports `scene_placement` from the bundle dir; it falls back to
     # the repo's `blueprint_pipeline.scene_placement` in tests). Without this the worker has no
@@ -276,7 +291,8 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
         shutil.rmtree(sp_dst)
     shutil.copytree(sp_src, sp_dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     request = build_request(scenarios=scenarios, kitchen_main_usd_relative=kitchen_main_usd_relative,
-                            g1_usd=g1_usd, policy_id=policy_id, steps=steps)
+                            g1_usd=g1_usd, policy_id=policy_id, steps=steps,
+                            render_noise_audit_plan=render_noise_audit_plan)
     (bundle / "request.json").write_text(json.dumps(request, indent=2), encoding="utf-8")
     if kitchen_asset_dir is not None:
         src = Path(kitchen_asset_dir)
@@ -330,6 +346,10 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       collision_approximation: str = "",
                       verify_cam: bool = False,
                       manipulation_stand: bool = False,
+                      render_noise_audit: bool = False,
+                      audit_high_spp: int = 0,
+                      audit_warmup_frames: int = 0,
+                      audit_boost_light_intensity: float = 0.0,
                       gemini_api_key: str | None = None,
                       serve: bool = False, inbox_get_url: str = "",
                       serve_idle_timeout_s: float = 1800.0,
@@ -394,6 +414,14 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_VERIFY_CAM"] = "1"
     if manipulation_stand:
         env["PARITY_MANIPULATION_STAND"] = "1"
+    if render_noise_audit:
+        env["PARITY_RENDER_NOISE_AUDIT"] = "1"
+        if audit_high_spp and audit_high_spp > 0:
+            env["PARITY_AUDIT_HIGH_SPP"] = str(int(audit_high_spp))
+        if audit_warmup_frames and audit_warmup_frames > 0:
+            env["PARITY_AUDIT_WARMUP_FRAMES"] = str(int(audit_warmup_frames))
+        if audit_boost_light_intensity and audit_boost_light_intensity > 0:
+            env["PARITY_AUDIT_BOOST_LIGHT_INTENSITY"] = str(float(audit_boost_light_intensity))
     if kitchen_url:
         env["KITCHEN_BUNDLE_URL"] = kitchen_url
     if gemini_api_key:
@@ -632,6 +660,10 @@ def run_isaac_g1_kitchen_parity_job(
     collision_approximation: str = "",
     verify_cam: bool = False,
     manipulation_stand: bool = False,
+    render_noise_audit: bool = False,
+    audit_high_spp: int = 0,
+    audit_warmup_frames: int = 0,
+    audit_boost_light_intensity: float = 0.0,
     vast_max_hourly_rate_usd: float | None = None,
     warm_candidates: Sequence[str] | None = None,
     warm_only: bool = False,
@@ -708,9 +740,18 @@ def run_isaac_g1_kitchen_parity_job(
             return manifest
         kitchen_url = (kjob / "provider_bundle_url.txt").read_text().strip()
     manifest["kitchen_assets_shipped"] = kitchen_url is not None
+    render_noise_audit_plan = None
+    if render_noise_audit:
+        from .g1_render_noise_audit import build_variant_plan
+        render_noise_audit_plan = build_variant_plan()
+        manifest["render_noise_audit_requested"] = True
+        manifest["render_noise_audit_variants"] = [
+            v["variant_id"] for v in render_noise_audit_plan["variants"]
+        ]
     bundle_zip = build_parity_bundle(scenarios=scenarios, out_dir=out_dir,
                                      kitchen_asset_dir=None, g1_usd=g1_usd,
-                                     policy_id=policy_id, steps=steps)
+                                     policy_id=policy_id, steps=steps,
+                                     render_noise_audit_plan=render_noise_audit_plan)
     manifest["bundle_zip"] = str(bundle_zip)
     job_dir = out_dir / "object_store_real_run"
     staged = stage_bundle(bundle_zip, job_dir, key_prefix=key_prefix)
@@ -749,6 +790,10 @@ def run_isaac_g1_kitchen_parity_job(
                              kinematic_arm_pose=kinematic_arm_pose,
                              collision_approximation=collision_approximation, verify_cam=verify_cam,
                              manipulation_stand=manipulation_stand,
+                             render_noise_audit=render_noise_audit,
+                             audit_high_spp=audit_high_spp,
+                             audit_warmup_frames=audit_warmup_frames,
+                             audit_boost_light_intensity=audit_boost_light_intensity,
                              vast_max_hourly_rate_usd=vast_max_hourly_rate_usd,
                              gemini_api_key=_gemini_api_key_from_env())
     request_body = prov.build_request(spec, job_dir)
@@ -898,6 +943,42 @@ def run_isaac_g1_kitchen_parity_job(
         "last_bootstrap": result.get("last_bootstrap"),
         "runner_console_tail": result.get("runner_console_tail"),
     }
+    if render_noise_audit:
+        audit_worker_result: dict = {}
+        try:
+            audit_worker_result = json.loads(
+                (render_out / "render_noise_audit_result.json").read_text()
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        manifest["render_noise_audit_worker_result"] = audit_worker_result
+        analysis = None
+        try:
+            from .g1_render_noise_audit import AUDIT_MANIFEST_NAME, analyze_render_noise_audit_run
+            analysis = analyze_render_noise_audit_run(render_out)
+        except Exception as exc:  # noqa: BLE001
+            manifest["blockers"].append("render_noise_audit_local_analysis_failed")
+            manifest["render_noise_audit_analysis_error"] = repr(exc)
+        if analysis is not None:
+            manifest["render_noise_audit"] = {
+                "status": analysis.get("status"),
+                "primary_diagnosis": (analysis.get("interpretation") or {}).get("primary_diagnosis"),
+                "variants_executed": analysis.get("variants_executed"),
+                "audit_manifest": str(Path(str(analysis.get("audit_dir") or render_out)) / AUDIT_MANIFEST_NAME),
+                "contact_sheet": (analysis.get("contact_sheet") or {}).get("path"),
+                "analysis_blockers": analysis.get("blockers"),
+            }
+        worker_completed = str(audit_worker_result.get("status") or "").lower() == "completed"
+        analysis_completed = bool(analysis) and analysis.get("status") == "completed"
+        if worker_completed and analysis_completed:
+            manifest["status"] = "completed"
+        else:
+            for blocker in audit_worker_result.get("blockers") or []:
+                if blocker not in manifest["blockers"]:
+                    manifest["blockers"].append(blocker)
+            if "render_noise_audit_blocked" not in manifest["blockers"]:
+                manifest["blockers"].append("render_noise_audit_blocked")
+        return manifest
     parity_result = result.get("runner_result") or {}
     try:
         parity_result = json.loads((render_out / "isaac_g1_kitchen_parity_result.json").read_text())
@@ -1015,6 +1096,16 @@ def main(argv=None) -> int:
                     help="render a 3rd-person verify_*.png that frames the whole robot at the workspace")
     ap.add_argument("--manipulation-stand", action="store_true",
                     help="place the robot AT the target facing the look-at (task start pose, no navigation)")
+    ap.add_argument("--render-noise-audit", action="store_true",
+                    help="run the textured-robot render-noise audit variant matrix (A-G) instead of "
+                         "the scenario eval: one raw PNG per material/render variant + material/"
+                         "render/camera manifests + local gates/interpretation on collect")
+    ap.add_argument("--audit-high-spp", type=int, default=0,
+                    help="samples per pixel for the audit's high-budget variants (default 384)")
+    ap.add_argument("--audit-warmup-frames", type=int, default=0,
+                    help="shader warmup render steps before the first audit variant (default 8)")
+    ap.add_argument("--audit-boost-light-intensity", type=float, default=0.0,
+                    help="workspace boost light intensity for the audit's bright-lighting variant")
     args = ap.parse_args(argv)
     scenarios = json.loads(Path(args.scenarios).read_text())
     if isinstance(scenarios, dict):
@@ -1043,7 +1134,11 @@ def main(argv=None) -> int:
         robot_review_material_override=args.robot_review_material_override,
         kinematic_arm_pose=args.kinematic_arm_pose,
         collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
-        manipulation_stand=args.manipulation_stand)
+        manipulation_stand=args.manipulation_stand,
+        render_noise_audit=args.render_noise_audit,
+        audit_high_spp=args.audit_high_spp,
+        audit_warmup_frames=args.audit_warmup_frames,
+        audit_boost_light_intensity=args.audit_boost_light_intensity)
     print(json.dumps(m, indent=2, default=str))
     return 0 if m.get("status") in ("completed", "prepared") else 1
 
