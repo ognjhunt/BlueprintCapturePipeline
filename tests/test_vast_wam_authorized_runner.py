@@ -8,6 +8,11 @@ from typing import Any
 import pytest
 
 from blueprint_pipeline import vast_wam_authorized_runner as runner
+from blueprint_pipeline.oscar_official_release import OFFICIAL_OSCAR_WAM_IMAGE_REF
+
+
+def test_vast_wam_authorized_runner_defaults_to_official_oscar_image() -> None:
+    assert runner.DEFAULT_WAM_PUBLIC_IMAGE == OFFICIAL_OSCAR_WAM_IMAGE_REF
 
 
 def _write_minimal_bundle(path: Path) -> None:

@@ -33,10 +33,11 @@ from .vast_authorized_probe_runner import (
     _staging_verification_guard,
     _target_spend_guard,
 )
+from .oscar_official_release import OFFICIAL_OSCAR_WAM_IMAGE_REF
 
 
 VAST_WAM_AUTHORIZED_RUNNER_SCHEMA_VERSION = "vast_wam_authorized_runner.v1"
-DEFAULT_WAM_PUBLIC_IMAGE = "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"
+DEFAULT_WAM_PUBLIC_IMAGE = OFFICIAL_OSCAR_WAM_IMAGE_REF
 DEFAULT_WAM_VAST_LAUNCH_MODE = "auto"
 
 

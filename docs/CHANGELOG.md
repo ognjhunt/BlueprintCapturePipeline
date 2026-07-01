@@ -1,5 +1,120 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-01
+
+### User-Facing
+
+- Rebuilt and pinned the reusable OSCAR WAM image to the official
+  `oscar-public` source plus the Blueprint TransformerEngine RoPE/Torch-SDPA
+  compatibility shim. WAM provider defaults now point at the pinned official
+  OSCAR image contract instead of falling back to a generic PyTorch carrier
+  image.
+- Fixed the immediate visual-collapse path for the G1/fridge OSCAR run. A fresh
+  two-step GR00T/SONIC -> OSCAR WAM -> generated-observation -> GR00T/SONIC
+  loop completed with visual-quality gate pass, preserved edge structure, and an
+  external episode-consistency scorer result.
+- Upgraded the G1/fridge action-conditioning bridge from hand-drawn/projected
+  screen axes to sidecar kinematic-chain FK over Isaac seed arm-link landmarks
+  where those sidecars exist. This is still not full G1 URDF FK, official
+  WholeBodyControl execution, physical robot proof, contact validation, or task
+  success proof.
+
+### Employee-Facing
+
+- Added explicit Isaac scene sidecar routing, WAM edge-structure collapse
+  detection, OpenAI episode-consistency scoring, SC3-style distinct-view guards,
+  rank-fidelity calibration requirements, and sidecar FK metadata propagation
+  across the persistent Unitree GR00T N1.7 SONIC / OSCAR WAM path.
+- Added contract tests for official-image defaults, OSCAR provider bundle
+  diagnostics, sidecar FK skeleton traces, external episode consistency, visual
+  quality blockers, multiview unavailability, and calibration guardrails.
+
+### Future-Agent-Facing
+
+- Treat the July 1 G1/fridge WAM proof as evaluator-bounded visual-review
+  evidence only. It does not prove generated-world rank fidelity or real-world
+  rank correlation until an accepted prediction-vs-actual calibration anchor set
+  exists.
+- If reusing RunPod pods, verify image compatibility first. Older hot pods may
+  have been launched from the PyTorch carrier image; current WAM defaults expect
+  the pinned official OSCAR image.
+
+## 2026-06-30
+
+### User-Facing
+
+- Hardened the learned-WAM/OSCAR review lane around real future-frame
+  materialization, visual-success labeling, and materialization blockers. WAM
+  rollouts now fail more explicitly when they fall back to frame zero, degraded
+  future frames, or incomplete OSCAR input materialization instead of presenting
+  those artifacts as useful generated-video success.
+- Added clearer WAM input-review, projected-skeleton, SONIC action-bridge, and
+  episode-consistency contracts for Unitree GR00T N1.7 SONIC / OSCAR loops.
+  These contracts can support evaluator-bounded policy comparison and external
+  consistency scoring, but they do not prove task success, physical-robot
+  readiness, safety validation, deployment approval, or raw capture truth.
+- Improved paid RunPod WAM lifecycle handling with stronger polling, completed
+  persistent-session finalization, dynamic stopped-pod reuse, an explicit stop
+  command, and hot-pod retention after successful runs. This improves spend and
+  reuse discipline; it is still provider-runtime scaffolding unless the matching
+  output, upload, cost, teardown, and visual-quality artifacts exist.
+- Added a Lambda provider adapter stub as a second managed-provider lane behind
+  the same provider boundary. It is a launch/readiness integration surface, not
+  proof that Lambda-hosted runtime execution has occurred.
+
+### Employee-Facing
+
+- Added official OSCAR release and runtime compatibility hardening across
+  `src/blueprint_pipeline/oscar_official_release.py`,
+  `src/blueprint_pipeline/oscar_wam_provider_bundle.py`,
+  `src/blueprint_pipeline/oscar_wam_command_adapter.py`,
+  `src/blueprint_pipeline/oscar_wam_gpu_image.py`, and
+  `src/blueprint_pipeline/wam_compute_providers.py`, including the official
+  source/checkpoint pin contract, TransformerEngine RoPE compatibility, visual
+  metrics/review contracts, and DeepInfra/Cosmos API-first WAM adapter work.
+- Extended WAM/policy loop contracts in
+  `src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py`,
+  `src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py`, and
+  `src/blueprint_pipeline/oscar_cosmos_wam_evaluator.py` so skeleton traces,
+  bridgeable SONIC action chunks, action-conditioning risk summaries, and
+  forward/inverse consistency requests stay separate from WAM execution itself.
+- Hardened CPU-only and capture-core surfaces: `live_pipeline_control_plane`
+  dropped dead next-input flags and gained import-isolation/static guards;
+  `materialization.py` and `scene_semantics.py` were refactored without public
+  shape changes; privacy runner HTTP/fail-closed edges, object-index detection,
+  task-target grounding, agent-review threshold constants, and scene-placement
+  lint/clearance regressions gained focused coverage.
+- Updated docs and command surfaces in `README.md`,
+  `docs/WAM_POLICY_EVALUATION_SERVICE.md`,
+  `docs/OSCAR_VISUAL_AUGMENTATION_PACKET.md`,
+  `docs/PRIVACY_RUNNER_SERVICES.md`,
+  `docs/architecture/command-safety-matrix.md`, and `pyproject.toml`.
+
+### Future-Agent-Facing
+
+- Contract changes: learned OSCAR WAM claims now depend on the official
+  `oscar-public` source/checkpoint/image contract and visual-smoke/import
+  evidence. The repo-local OSCAR-style generator remains support/test plumbing
+  and must not be cited as a learned OSCAR checkpoint run.
+- Runtime behavior changes: RunPod WAM runners can poll/finalize more carefully,
+  reuse stopped pods, keep successful pods hot, and stop pods explicitly. Treat
+  those as lifecycle controls, not provider-output proof without the run
+  artifacts and spend/teardown evidence.
+- Launch/readiness caveat: WAM materialization, skeleton conditioning, visual
+  labels, and official OSCAR compatibility checks are downstream support
+  artifacts. They do not override raw capture/provenance evidence and do not
+  prove live robot execution, physical contact, manipulation success, safety,
+  deployment, or generated-world rank fidelity.
+- Evidence boundary: this entry covers committed history dated 2026-06-30 from
+  `208c2a7bdd1f16d832d790733027c407d80ac67d` through
+  `d7bf8c5ee344046fe49fda2a2ab7691d832ad45c`. Current working tree inspection
+  found no uncommitted local changes to attribute to June 30.
+- Recorded commit-body verification for the final June 30 OSCAR/WAM checkpoint:
+  `python -m ruff check changed source/test files` and `python -m pytest` over
+  the RunPod WAM, OSCAR bundle/image/command, Unitree SONIC sim2sim/persistent
+  session, closed-loop eval/GPU launch, WAM compute, generated-video review, and
+  runtime-bootstrap focused tests.
+
 ## 2026-06-29
 
 ### User-Facing
