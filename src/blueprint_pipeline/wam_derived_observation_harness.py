@@ -359,6 +359,12 @@ def _multiview_summary(
         if _mapping(row.get("frame_quality")).get("available")
         and _mapping(row.get("frame_quality")).get("readable")
     ]
+    distinct_frame_paths = {
+        str(Path(_string(row.get("frame_path"))).expanduser().resolve())
+        for row in view_stats
+        if _string(row.get("frame_path"))
+    }
+    real_multiview_available = len(distinct_frame_paths) >= 2
     blockers = [
         f"{row.get('view_id')}:{blocker}"
         for row in view_stats
@@ -367,6 +373,10 @@ def _multiview_summary(
     if len(view_stats) < 2:
         status = "not_evaluated"
         blockers.append("multiview_generated_observation_not_available")
+        passed = None
+    elif not real_multiview_available:
+        status = "not_evaluated"
+        blockers.append("fewer_than_two_distinct_generated_views")
         passed = None
     elif len(readable) == len(view_stats) and not blockers:
         status = "passed"
@@ -383,6 +393,8 @@ def _multiview_summary(
         "status": status,
         "passed": passed,
         "view_count": len(view_stats),
+        "distinct_frame_path_count": len(distinct_frame_paths),
+        "real_multiview_available": real_multiview_available,
         "readable_view_count": len(readable),
         "views": view_stats,
         "confidence": confidence,
@@ -391,6 +403,7 @@ def _multiview_summary(
         "claim_boundary": {
             "multiview_check_is_generated_media_consistency_support": True,
             "multiview_check_is_not_physical_scene_truth": True,
+            "cross_view_consistency_requires_two_distinct_generated_camera_views": True,
         },
     }
 

@@ -436,6 +436,40 @@ def test_multiview_calibration_validation_and_review_report_surfaces(
     assert "Claim Boundary" in report_path.read_text(encoding="utf-8")
 
 
+def test_multiview_duplicate_frame_paths_are_not_cross_view_proof(
+    tmp_path: Path,
+) -> None:
+    frame = _write_frame(tmp_path / "generated.jpg")
+    target = _target(width_m=0.2)
+
+    result = run_wam_derived_observation_harness_step(
+        output_dir=tmp_path / "harness",
+        generated_at="now",
+        step_index=1,
+        source_generated_frame_path=frame,
+        source_generated_multiview_frame_paths={
+            "head_pov": str(frame),
+            "wrist_alias": str(frame),
+        },
+        source_policy_action={"action_type": "manipulation_contact"},
+        current_policy_observation=_observation(frame),
+        object_index={"objects": [target]},
+        eval_ready_task_grounding=_grounding(target),
+        policy_id="rgb_only_policy",
+        declared_policy_observation_schema={"rgb_only": True},
+    )
+
+    multiview = result["step_record"]["consistency_checks"]["multiview_consistent"]
+    assert multiview["status"] == "not_evaluated"
+    assert multiview["passed"] is None
+    assert multiview["real_multiview_available"] is False
+    assert multiview["distinct_frame_path_count"] == 1
+    assert "fewer_than_two_distinct_generated_views" in multiview["blockers"]
+    assert multiview["claim_boundary"][
+        "cross_view_consistency_requires_two_distinct_generated_camera_views"
+    ] is True
+
+
 def test_review_acceptance_can_unblock_success_scoring_for_low_confidence_step(
     tmp_path: Path,
 ) -> None:
