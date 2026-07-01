@@ -32,6 +32,11 @@
   hardening for the Unitree GR00T N1.7 SONIC / OSCAR WAM lanes. These changes
   improve paid-run launch discipline; they do not themselves prove useful WAM
   visual quality or live provider completion.
+- Pinned learned OSCAR WAM execution to the official `oscar-public` source
+  commit, `zywu2115/OSCAR-2B` HF revision, and checked provider image digest.
+  The repo-local OSCAR-style generator remains deterministic fallback/test
+  support and still cannot claim a learned OSCAR checkpoint, deployment proof,
+  safety validation, physical readiness, or generated-world rank fidelity.
 
 ### Employee-Facing
 
@@ -244,6 +249,11 @@
   `scripts/run_isaac_g1_kitchen_parity_eval.py`,
   `scripts/run_isaac_splat_nurec_render.py`, and
   `scripts/object_index_splat_analyzer_runner.py`.
+- Added an API-first DeepInfra Cosmos3-Nano WAM compute adapter behind
+  `WamComputeProvider`. It emits redacted request/execution/cost/checksum
+  artifacts, downloads generated MP4 output, packages
+  `deepinfra_provider_runtime_output.zip`, and preserves the same generated
+  support-media proof ceiling as RunPod/Vast.
 - Added OSCAR closed-loop and provider startup surfaces through
   `src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py` and
   `src/blueprint_pipeline/oscar_isaac_closed_loop_gpu_launch.py`, with focused

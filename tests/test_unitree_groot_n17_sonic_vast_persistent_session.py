@@ -45,6 +45,20 @@ def _persistent_runner_namespace() -> dict[str, object]:
     return namespace
 
 
+def test_embedded_persistent_session_runner_compiles() -> None:
+    compile(
+        session.PERSISTENT_SESSION_RUNNER,
+        "<unitree_groot_n17_sonic_persistent_session_runner>",
+        "exec",
+    )
+
+
+def test_embedded_persistent_session_runner_carries_review_quality_horizon() -> None:
+    namespace = _persistent_runner_namespace()
+
+    assert namespace["REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES"] == 81
+
+
 def test_persistent_runner_future_frame_selector_uses_copied_runtime_module() -> None:
     assert "from blueprint_pipeline.wam_generated_video_review import" in (
         session.PERSISTENT_SESSION_RUNNER
@@ -52,6 +66,85 @@ def test_persistent_runner_future_frame_selector_uses_copied_runtime_module() ->
     assert "from blueprint_pipeline.oscar_isaac_closed_loop_eval import" not in (
         session.PERSISTENT_SESSION_RUNNER
     )
+
+
+def test_persistent_runner_generated_frame_visual_gate_blocks_collapsed_feedback(
+    tmp_path: Path,
+) -> None:
+    namespace = _persistent_runner_namespace()
+    visual_gate = namespace["_generated_next_observation_visual_gate"]
+    rng = np.random.default_rng(17)
+    source_frame = tmp_path / "source.jpg"
+    generated_frame = tmp_path / "generated.jpg"
+    Image.fromarray(
+        rng.integers(0, 256, size=(96, 128, 3), dtype=np.uint8),
+        mode="RGB",
+    ).save(source_frame)
+    Image.new("RGB", (128, 96), (112, 112, 112)).save(generated_frame)
+
+    result = visual_gate(
+        source_frame=source_frame,
+        generated_frame=generated_frame,
+        materialization={
+            "source_kind": "video_future_frame",
+            "selection_quality_status": "passed_signal_gate",
+        },
+    )
+
+    assert result["status"] == "failed_visual_quality_gate"
+    assert "wam_generated_frame_edge_structure_drift" in result["blockers"]
+    assert "wam_generated_frame_entropy_drift" in result["blockers"]
+    assert result["claim_boundary"]["visual_gate_blocks_autoregressive_policy_feedback"] is True
+
+
+def test_persistent_runner_generated_frame_visual_gate_blocks_first_frame_fallback(
+    tmp_path: Path,
+) -> None:
+    namespace = _persistent_runner_namespace()
+    visual_gate = namespace["_generated_next_observation_visual_gate"]
+    source_frame = _write_reviewable_frame(tmp_path / "source.jpg")
+    generated_frame = _write_reviewable_frame(tmp_path / "generated.jpg")
+
+    result = visual_gate(
+        source_frame=source_frame,
+        generated_frame=generated_frame,
+        materialization={
+            "source_kind": "video_first_frame",
+            "selection_quality_status": "passed_signal_gate",
+        },
+    )
+
+    assert result["status"] == "failed_visual_quality_gate"
+    assert "wam_generated_next_observation_used_video_first_frame_fallback" in result[
+        "blockers"
+    ]
+
+
+def test_persistent_runner_rgb_history_tracks_only_unique_existing_frames(
+    tmp_path: Path,
+) -> None:
+    namespace = _persistent_runner_namespace()
+    append_unique = namespace["_frame_history_append_unique"]
+    history_window = namespace["_frame_history_window"]
+    frame_a = _write_reviewable_frame(tmp_path / "frame_a.jpg")
+    frame_b = _write_reviewable_frame(tmp_path / "frame_b.jpg")
+    missing = tmp_path / "missing.jpg"
+    history: list[str] = []
+
+    append_unique(history, frame_a)
+    append_unique(history, frame_a)
+    append_unique(history, missing)
+    append_unique(history, frame_b)
+
+    assert history == [str(frame_a.resolve()), str(frame_b.resolve())]
+    assert history_window(history, max_frames=1) == [
+        str(frame_a.resolve()),
+        str(frame_b.resolve()),
+    ]
+    assert history_window(history, max_frames=2) == [
+        str(frame_a.resolve()),
+        str(frame_b.resolve()),
+    ]
 
 
 def test_persistent_runner_strips_seed_skeleton_until_policy_derived(
@@ -240,6 +333,105 @@ def test_persistent_runner_materializes_nominal_policy_action_trace_without_rank
     )
 
 
+def test_persistent_runner_prefers_isaac_geometry_policy_action_trace_for_sim_ranking(
+    tmp_path: Path,
+) -> None:
+    namespace = _persistent_runner_namespace()
+    prepare = namespace["_prepare_action_conditioned_wam_inputs"]
+    geometry = tmp_path / "manipulation_pov_geometry.json"
+    geometry.write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "frames": [
+                    {
+                        "status": "PASS",
+                        "camera": "robot_pov",
+                        "camera_meta": {
+                            "camera_eye_xyz": [0.0, 0.0, 0.0],
+                            "camera_target_xyz": [1.0, 0.0, 0.0],
+                            "camera_vfov_deg": 90.0,
+                            "viewport_size_px": [80, 60],
+                            "arm_link_points_by_arm_xyz": {
+                                "left": {
+                                    "shoulder": [1.0, -0.16, -0.22],
+                                    "elbow": [1.08, -0.18, -0.30],
+                                    "wrist": [1.16, -0.20, -0.36],
+                                    "hand": [1.24, -0.22, -0.40],
+                                },
+                                "right": {
+                                    "shoulder": [1.0, 0.16, -0.22],
+                                    "elbow": [1.08, 0.18, -0.30],
+                                    "wrist": [1.16, 0.20, -0.36],
+                                    "hand": [1.24, 0.22, -0.40],
+                                },
+                            },
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    sonic_frame = ([0.2] * 28) + ([0.0] * 36) + ([0.1] * 14)
+    source_action = {
+        "action_type": "unitree_g1_sonic_latent_action_chunk",
+        "action_chunk": [*sonic_frame, *sonic_frame],
+    }
+
+    _sanitized_observation, _sanitized_auxiliary, manifest_path, contract = prepare(
+        observation={
+            "manipulation_pov_geometry_path": str(geometry),
+            "visual_observation": {
+                "camera_id": "robot_pov",
+                "manipulation_pov_geometry_path": str(geometry),
+            },
+        },
+        auxiliary_observation={},
+        auxiliary_manifest_path=str(tmp_path / "auxiliary.json"),
+        source_policy_action=source_action,
+        work_dir=tmp_path / "worker_step",
+    )
+
+    trace_path = Path(source_action["policy_action_projected_skeleton_trace_path"])
+    assert manifest_path == str(tmp_path / "auxiliary.json")
+    assert trace_path.name == "policy_action_isaac_geometry_projected_skeleton_trace.jsonl"
+    assert trace_path.is_file()
+    assert contract["status"] == "policy_derived_projected_skeleton_trace_available"
+    assert contract["geometry_anchored_policy_action_projected_skeleton_trace_path"] == str(
+        trace_path
+    )
+    assert contract["nominal_policy_action_projected_skeleton_trace_path"] is None
+    assert contract["policy_derived_projected_skeleton_trace_present"] is True
+    assert contract["ranking_safe_projected_skeleton_trace_present"] is True
+    assert contract["policy_ranking_claim_safe"] is True
+    assert contract["blockers"] == []
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 2
+    assert rows[0]["source_geometry_path"] == str(geometry.resolve())
+    assert rows[0]["projected_landmark_count"] == 8
+    assert rows[0]["claim_boundary"]["policy_action_delta_applied_to_seed_geometry"] is True
+    assert (
+        rows[0]["claim_boundary"]["projected_skeleton_trace_derived_from_seed_render_geometry"]
+        is True
+    )
+    assert (
+        rows[0]["claim_boundary"]["dynamic_scene_coordinates_from_artifact_not_source_code"]
+        is True
+    )
+    assert rows[0]["claim_boundary"]["official_wbc_or_sim_bridge_used"] is True
+    assert (
+        rows[0]["claim_boundary"]["scene_faithful_isaac_policy_action_projection_bridge_used"]
+        is True
+    )
+    assert (
+        contract["claim_boundary"][
+            "geometry_anchored_policy_action_projection_is_wam_conditioning_not_ranking_proof"
+        ]
+        is False
+    )
+
+
 def test_policy_action_decoding_contract_blocks_latent_without_pose_decoder() -> None:
     contract = session._policy_action_decoding_contract(
         {
@@ -321,15 +513,111 @@ def test_bridge_readiness_reports_missing_scene_for_bridgeable_sonic_action_chun
 
     assert readiness["status"] == "blocked_missing_scene_bridge_for_sonic_action_chunk"
     assert readiness["bridgeable_sonic_action_chunk"] is True
+    sim2sim_candidate = next(
+        item
+        for item in readiness["bridge_candidates"]
+        if item["id"] == "unitree_groot_n17_sonic_sim2sim_command"
+    )
     assert (
-        readiness["bridge_candidates"][0]["requires"][0]
+        sim2sim_candidate["requires"][0]
         == "policy_action_40x78_sonic_action_chunk"
     )
-    assert readiness["bridge_candidates"][0]["available"] is False
+    assert sim2sim_candidate["available"] is False
     assert (
-        "blocked_missing_mujoco_scene_manifest_for_unitree_sonic_sim2sim_bridge"
+        "blocked_missing_scene_faithful_policy_action_projection_bridge"
         in readiness["blockers"]
     )
+    assert "blocked_missing_scene_manifest_for_policy_action_bridge" in readiness["blockers"]
+    assert readiness["scene_bridge_manifest_path"] is None
+    assert readiness["bridge_candidates"][0]["id"] == "isaac_g1_policy_action_projection_bridge"
+    assert readiness["bridge_candidates"][0]["available"] is False
+    assert (
+        readiness["claim_boundary"][
+            "mujoco_bridge_is_legacy_action_trace_support_not_isaac_scene_truth"
+        ]
+        is True
+    )
+
+
+def test_bridge_readiness_does_not_treat_isaac_manifest_as_mujoco_bridge_ready(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "placement_validation.json").write_text(
+        json.dumps({"status": "PASS"}),
+        encoding="utf-8",
+    )
+
+    readiness = session._write_policy_action_bridge_readiness(
+        job=tmp_path,
+        extraction_dir=tmp_path / "imported",
+        action_contract={
+            "latent_action_present": True,
+            "decoded_control_target_nonzero": False,
+            "bridgeable_sonic_action_chunk": True,
+        },
+        generated_at="now",
+    )
+
+    assert readiness["status"] == "blocked_missing_scene_bridge_for_sonic_action_chunk"
+    assert readiness["scene_bridge_manifest_kind"] == "isaac"
+    assert readiness["isaac_scene_manifest_path"] == str(tmp_path / "placement_validation.json")
+    assert (
+        "blocked_missing_isaac_manipulation_pov_geometry_for_action_bridge"
+        in readiness["blockers"]
+    )
+    assert "blocked_no_available_mujoco_sim2sim_manifest_for_legacy_bridge" in readiness[
+        "blockers"
+    ]
+    assert (
+        "blocked_missing_scene_manifest_for_policy_action_bridge" not in readiness["blockers"]
+    )
+    assert readiness["bridge_candidates"][0]["id"] == "isaac_g1_policy_action_projection_bridge"
+    assert readiness["bridge_candidates"][0]["implementation_status"] == "implemented"
+    assert readiness["bridge_candidates"][0]["available"] is False
+
+
+def test_bridge_readiness_finds_nested_isaac_scene_context_sidecars(
+    tmp_path: Path,
+) -> None:
+    context_dir = (
+        tmp_path
+        / "provider_bundle"
+        / "provider_runtime"
+        / "isaac_scene_context"
+    )
+    context_dir.mkdir(parents=True)
+    placement = context_dir / "placement_validation.json"
+    placement.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+    geometry = context_dir / "manipulation_pov_geometry.json"
+    geometry.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+    stance = context_dir / "task_stance_plan.json"
+    stance.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+
+    readiness = session._write_policy_action_bridge_readiness(
+        job=tmp_path,
+        extraction_dir=tmp_path / "imported",
+        action_contract={
+            "latent_action_present": True,
+            "decoded_control_target_nonzero": False,
+            "bridgeable_sonic_action_chunk": True,
+        },
+        generated_at="now",
+    )
+
+    assert readiness["status"] == "ready_for_isaac_sonic_action_projection_bridge"
+    assert readiness["scene_bridge_manifest_kind"] == "isaac"
+    assert readiness["isaac_scene_manifest_path"] == str(placement)
+    assert readiness["isaac_manipulation_pov_geometry_path"] == str(geometry)
+    assert readiness["task_stance_plan_path"] == str(stance)
+    assert readiness["blockers"] == []
+    assert "blocked_missing_isaac_manipulation_pov_geometry_for_action_bridge" not in readiness["blockers"]
+    isaac_candidate = next(
+        item
+        for item in readiness["bridge_candidates"]
+        if item["id"] == "isaac_g1_policy_action_projection_bridge"
+    )
+    assert "isaac_manipulation_pov_geometry_with_projectable_g1_arm_links" in isaac_candidate["requires"]
+    assert isaac_candidate["available"] is True
 
 
 def _policy_observation(path: Path, frame: Path) -> Path:
@@ -905,6 +1193,7 @@ def test_persistent_session_bundle_uses_proven_policy_server_rewrite(
     assert "provider_runtime/run_wam_provider_runtime.sh" in names
     assert "provider_runtime/unitree_groot_n17_sonic_provider_runner.py" in names
     assert "provider_runtime/blueprint_pipeline/wam_auxiliary_observation.py" in names
+    assert "provider_runtime/blueprint_pipeline/oscar_official_release.py" in names
     assert "provider_runtime/policy_input.json" in names
     assert "provider_runtime/input_frame.png" in names
     assert (
@@ -946,6 +1235,9 @@ def test_persistent_session_bundle_uses_proven_policy_server_rewrite(
     assert "gr00t_policy_server_process_started" in provider_smoke
     assert "BLUEPRINT_GROOT_MODEL_SNAPSHOT_ATTEMPT_FAILED" in provider_smoke
     assert "BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_MAX_WORKERS" in provider_smoke
+    assert "BLUEPRINT_UNITREE_GROOT_N17_SONIC_RUN_LOG_HEARTBEAT_SECONDS" in provider_smoke
+    assert 'f"{log_path.stem}_running"' in provider_smoke
+    assert "log_tail=_tail(log_path)" in provider_smoke
     module_source = Path(str(session.__file__)).read_text(encoding="utf-8")
     assert 'or "wam"' in module_source
     assert (
@@ -971,6 +1263,10 @@ def test_persistent_session_bundle_uses_proven_policy_server_rewrite(
     assert "runpod_entrypoint_subprocess_running" in runpod_wrapper
     assert "entrypoint_log_tail" in runpod_wrapper
     assert "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_HEARTBEAT_SECONDS" in runpod_wrapper
+    assert "if ! python - <<'PY'" in runpod_wrapper
+    assert "BLUEPRINT_RUNPOD_KEEPALIVE_AFTER_SUCCESS" in runpod_wrapper
+    assert "BLUEPRINT_RUNPOD_KEEPALIVE_AFTER_SUCCESS_STARTED" in runpod_wrapper
+    assert "runpod_keepalive_after_success_status.json" in runpod_wrapper
     assert "blueprint_phase_heartbeat" in run_script
     assert "runpod_entrypoint_dependency_probe_started" in run_script
     assert "runpod_entrypoint_runner_starting" in run_script
@@ -1924,7 +2220,7 @@ def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
     assert action_contract["tensor_summaries"]["sonic_latent_action"]["shape"] == [1, 2, 2]
     assert bridge_readiness["status"] == "blocked_missing_scene_bridge_for_latent_action"
     assert (
-        "blocked_missing_mujoco_scene_manifest_for_unitree_sonic_sim2sim_bridge"
+        "blocked_missing_scene_faithful_policy_action_projection_bridge"
         in bridge_readiness["blockers"]
     )
     assert input_contract["status"] == "warning_high_risk"
@@ -1967,6 +2263,10 @@ def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
     )
     assert visual_report["status"] == "failed_visual_quality_gate"
     assert visual_report["visual_success"] is False
+    assert visual_report["frame_visual_success_before_contract_gate"] is True
+    assert visual_report["input_contract_gate_failed"] is True
+    assert visual_report["materialization_gate_failed"] is False
+    assert visual_report["overall_gate_success"] is False
     assert (
         "wam_input_contract_high_risk_policy_action_proxy_without_projected_skeleton"
         in visual_report["blockers"]
@@ -2079,6 +2379,119 @@ def test_postprocess_labels_nominal_projected_skeleton_risk_without_proxy(
         not in input_contract["blockers"]
     )
     assert "wam_input_contract_policy_ranking_claim_not_safe" in input_contract["blockers"]
+
+
+def test_postprocess_preserves_scene_faithful_isaac_bridge_input_contract(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    source_frame = _write_reviewable_frame(
+        job / "provider_bundle" / "provider_runtime" / "initial_policy_frame.png"
+    )
+    observation_path = _policy_observation(tmp_path / "observation.json", source_frame)
+    extraction_dir = _write_persistent_postprocess_extraction(tmp_path)
+    (extraction_dir / "wam_calls" / "wam_call_0001.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "step_index": 1,
+                "materialization": {
+                    "status": "completed",
+                    "source_kind": "video_future_frame",
+                    "selected_frame_index": 1,
+                    "future_frame_selected": True,
+                    "selection_quality_status": "passed_signal_gate",
+                    "selected_frame_signal_blockers": [],
+                },
+                "live_wam_payload_redacted": {
+                    "input_package": {
+                        "skeleton_video": {"conditioning_mode": "projected_g1_skeleton"},
+                        "rgb_video": {
+                            "rgb_context_mode": (
+                                "omitted_first_frame_plus_skeleton_public_contract"
+                            )
+                        },
+                        "projected_skeleton_trace": {"used_for_conditioning": True},
+                        "oscar_input_contract_diagnostic": {
+                            "schema_version": "oscar_wam_runtime_input_contract_diagnostic.v1",
+                            "status": "ready",
+                            "skeleton_video": {
+                                "conditioning_mode": "projected_g1_skeleton",
+                                "policy_action_proxy_used": False,
+                            },
+                            "projected_skeleton_trace": {
+                                "used_for_conditioning": True,
+                                "policy_derived_action_conditioning": True,
+                                "official_wbc_or_sim_bridge_used": True,
+                                "scene_faithful_isaac_policy_action_projection_bridge_used": True,
+                                "policy_action_bridge_safe_for_sim_ranking": True,
+                            },
+                            "rgb_context": {
+                                "rgb_context_mode": (
+                                    "omitted_first_frame_plus_skeleton_public_contract"
+                                )
+                            },
+                            "warnings": [],
+                            "autoregressive_risk_flags": [],
+                            "high_risk_flags": [],
+                            "ranking_risk_flags": [],
+                            "autoregressive_risk_level": "low",
+                            "policy_ranking_risk_level": "low",
+                            "policy_ranking_claim_safe": True,
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    vast_run_dir = tmp_path / "vast-run"
+    vast_run_dir.mkdir()
+
+    session._postprocess_imported_persistent_session_artifacts(
+        job=job,
+        extraction_dir=extraction_dir,
+        imported={
+            "status": "completed",
+            "persistent_provider_session_used": True,
+            "provider_instance_reused_for_policy_and_wam_loop": True,
+            "repeated_policy_calls_count": 2,
+            "generated_next_observation_count": 1,
+            "live_wam_generation_success_count": 1,
+            "learned_wam_model_success_count": 1,
+            "policy_observes_wam_generated_next_observation": True,
+            "blockers": [],
+        },
+        generated_at="now",
+        policy_observation_path=observation_path,
+        vast_result={"estimated_cost_usd": 0.01},
+        vast_run_dir=vast_run_dir,
+    )
+
+    input_contract = json.loads(
+        (job / "wam_input_contract_summary.json").read_text(encoding="utf-8")
+    )
+    assert input_contract["status"] == "completed"
+    assert input_contract["blockers"] == []
+    assert input_contract["high_risk_input_contract_count"] == 0
+    assert input_contract["policy_ranking_risk_input_contract_count"] == 0
+    assert input_contract["policy_ranking_claim_safe"] is True
+    assert (
+        input_contract["scene_faithful_isaac_policy_action_projection_bridge_count"]
+        == 1
+    )
+    assert input_contract["policy_action_bridge_safe_for_sim_ranking_count"] == 1
+    assert input_contract["claim_boundary"]["scene_or_task_specific_pixels_used"] is True
+
+    materialization = json.loads(
+        (job / "wam_materialization_summary.json").read_text(encoding="utf-8")
+    )
+    assert materialization["claim_boundary"]["scene_or_task_specific_pixels_used"] is True
+
+    visual_report = json.loads(
+        (job / "wam_rollout_visual_quality_report.json").read_text(encoding="utf-8")
+    )
+    assert "wam_input_contract_policy_ranking_claim_not_safe" not in visual_report["blockers"]
 
 
 def test_postprocess_episode_consistency_failure_is_reliability_label_only(
@@ -2454,6 +2867,179 @@ def test_runpod_persistent_session_resumes_completed_output_without_paid_relaunc
     assert "sink" not in json.dumps(judge).lower()
 
 
+def test_runpod_finalizer_surfaces_visual_quality_and_keepalive_status(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job = tmp_path / "jobs"
+    runpod_dir = job / "runpod_persistent_session_run"
+    runpod_dir.mkdir(parents=True)
+    output_zip = runpod_dir / "runpod_provider_runtime_output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_wam_persistent_session_output.json",
+            json.dumps(
+                {
+                    "status": "completed",
+                    "persistent_provider_session_used": True,
+                    "provider_instance_reused_for_policy_and_wam_loop": True,
+                    "repeated_policy_calls_count": 2,
+                    "generated_next_observation_count": 1,
+                    "live_wam_generation_success_count": 1,
+                    "learned_wam_model_success_count": 1,
+                    "unitree_groot_n17_sonic_model_executed": True,
+                    "unitree_groot_n17_sonic_policy_action_command_ran": True,
+                    "unitree_policy_action_command_ran": True,
+                    "policy_action_model_command_ran": True,
+                    "blockers": [],
+                }
+            ),
+        )
+    visual_report = job / "wam_rollout_visual_quality_report.json"
+    visual_report.parent.mkdir(parents=True, exist_ok=True)
+    visual_report.write_text(
+        json.dumps(
+            {
+                "status": "failed_visual_quality_gate",
+                "visual_success": False,
+                "blockers": ["wam_generated_frame_edge_structure_drift"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_postprocess(**_kwargs):
+        return {
+            "wam_rollout_visual_success": False,
+            "wam_rollout_visual_quality_report": str(visual_report),
+        }
+
+    monkeypatch.setattr(
+        session,
+        "_postprocess_imported_persistent_session_artifacts",
+        fake_postprocess,
+    )
+
+    output, exit_code = session._finalize_runpod_persistent_session_output(
+        job=job,
+        generated_at="now",
+        policy_observation_path=tmp_path / "observation.json",
+        git_evidence=_clean_launch_git_evidence(),
+        poll_manifest={
+            "status": "completed",
+            "provider_command_status": "completed",
+            "output_zip_present": True,
+            "teardown_requested": True,
+            "teardown_action": "keep_on_success",
+            "teardown_performed": False,
+            "requested_keep_running_on_success": True,
+            "keep_running_on_success": True,
+            "keepalive_performed": True,
+            "keepalive_manifest_path": str(runpod_dir / "runpod_wam_async_keepalive_manifest.json"),
+            "warm_candidate": {"path": str(tmp_path / "warm_candidate.json")},
+            "continuing_spend_from_this_run": True,
+            "keepalive_runtime_health": {
+                "status": "healthy_for_hot_reuse",
+                "runtime_healthy_for_hot_reuse": True,
+            },
+        },
+        runpod_dir=runpod_dir,
+        output_zip=output_zip,
+    )
+
+    assert exit_code == 0
+    assert output["status"] == "completed"
+    assert output["wam_rollout_visual_success"] is False
+    assert output["provider_completed_but_visual_quality_failed"] is True
+    assert output["policy_evaluation_ranking_ready"] is False
+    assert output["policy_evaluation_ranking_status"] == "blocked_wam_visual_quality"
+    assert "completed_provider_output_failed_wam_visual_quality_gate" in output[
+        "policy_evaluation_ranking_blockers"
+    ]
+    assert "wam_generated_frame_edge_structure_drift" in output[
+        "policy_evaluation_ranking_blockers"
+    ]
+    assert output["runpod_keepalive"]["keep_running_on_success"] is True
+    assert output["runpod_keepalive"]["continuing_spend_from_this_run"] is True
+    assert output["claim_boundary"]["provider_completed_but_visual_quality_failed"] is True
+
+
+def test_runpod_finalizer_classifies_blocked_visual_gate_after_wam_inference(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job = tmp_path / "jobs"
+    runpod_dir = job / "runpod_persistent_session_run"
+    runpod_dir.mkdir(parents=True)
+    output_zip = runpod_dir / "runpod_provider_runtime_output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_wam_persistent_session_output.json",
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "generated_next_observation_count": 0,
+                    "live_wam_generation_success_count": 1,
+                    "learned_wam_model_success_count": 1,
+                    "blockers": [
+                        "persistent_wam_generated_next_observation_visual_quality_failed",
+                        "wam_generated_frame_edge_structure_drift",
+                    ],
+                }
+            ),
+        )
+    visual_report = job / "wam_rollout_visual_quality_report.json"
+    visual_report.write_text(
+        json.dumps(
+            {
+                "status": "failed_visual_quality_gate",
+                "visual_success": False,
+                "blockers": ["wam_generated_frame_edge_structure_drift"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_postprocess(**_kwargs):
+        return {
+            "wam_rollout_visual_success": False,
+            "wam_rollout_visual_quality_report": str(visual_report),
+        }
+
+    monkeypatch.setattr(
+        session,
+        "_postprocess_imported_persistent_session_artifacts",
+        fake_postprocess,
+    )
+
+    output, exit_code = session._finalize_runpod_persistent_session_output(
+        job=job,
+        generated_at="now",
+        policy_observation_path=tmp_path / "observation.json",
+        git_evidence=_clean_launch_git_evidence(),
+        poll_manifest={
+            "status": "completed",
+            "provider_command_status": "completed",
+            "output_zip_present": True,
+            "continuing_spend_from_this_run": False,
+        },
+        runpod_dir=runpod_dir,
+        output_zip=output_zip,
+    )
+
+    assert exit_code == 2
+    assert output["status"] == "blocked"
+    assert output["provider_completed_but_visual_quality_failed"] is True
+    assert output["policy_evaluation_ranking_status"] == "blocked_wam_visual_quality"
+    assert "provider_inference_output_failed_wam_visual_quality_gate" in output[
+        "policy_evaluation_ranking_blockers"
+    ]
+    assert "wam_generated_frame_edge_structure_drift" in output[
+        "policy_evaluation_ranking_blockers"
+    ]
+    assert output["claim_boundary"]["provider_completed_but_visual_quality_failed"] is True
+
+
 def test_runpod_persistent_session_defaults_to_wam_carrier_and_wait_floor(
     tmp_path: Path,
     monkeypatch,
@@ -2570,6 +3156,11 @@ def test_runpod_persistent_session_defaults_to_wam_carrier_and_wait_floor(
 
     assert exit_code == 2
     assert output["status"] == "blocked"
+    assert "runpod_wrapper_or_upload_watchdog_no_valid_provider_artifact" in output["blockers"]
+    assert "runpod_provider_runtime_output_zip_not_received_locally" in output["blockers"]
+    assert output["details"]["provider_command_blockers"] == [
+        "runpod_provider_runtime_output_zip_not_received_locally"
+    ]
     assert captured["provider_bundle_kind"] == "wam"
     assert captured["image_name"] == "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"
     assert captured["wam_carrier_enabled"] == "true"
@@ -2606,9 +3197,14 @@ def test_runpod_persistent_session_review_quality_profile_uses_higher_fidelity_d
         return {"status": "completed", "blockers": []}
 
     def fake_create(**kwargs):
+        captured["image_name"] = kwargs["image_name"]
+        captured["runpod_teardown_action"] = session.os.environ.get(
+            session.RUNPOD_WAM_TEARDOWN_ACTION_ENV
+        )
         captured["wam_visual_profile"] = session.os.environ.get(
             "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE"
         )
+        captured["wam_num_steps"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_STEPS")
         captured["wam_guidance"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_GUIDANCE")
         captured["wam_num_frames"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_FRAMES")
         captured["wam_height"] = session.os.environ.get("BLUEPRINT_OSCAR_WAM_HEIGHT")
@@ -2654,9 +3250,16 @@ def test_runpod_persistent_session_review_quality_profile_uses_higher_fidelity_d
 
     assert exit_code == 2
     assert output["status"] == "blocked"
+    assert (
+        captured["image_name"]
+        == session.DEFAULT_RUNPOD_UNITREE_GROOT_SONIC_WAM_PUBLIC_IMAGE
+    )
+    assert captured["runpod_teardown_action"] == "keep_on_success"
+    assert session.os.environ.get(session.RUNPOD_WAM_TEARDOWN_ACTION_ENV) is None
     assert captured["wam_visual_profile"] == "review_quality"
-    assert captured["wam_guidance"] == "3.5"
-    assert captured["wam_num_frames"] == "24"
+    assert captured["wam_num_steps"] == "35"
+    assert captured["wam_guidance"] == "6.0"
+    assert captured["wam_num_frames"] == "81"
     assert captured["wam_height"] == "480"
     assert captured["wam_width"] == "640"
     assert captured["wam_fps"] == "15"
@@ -2688,12 +3291,39 @@ def test_review_quality_profile_rejects_128px_bundle_before_staging(
     assert "review_quality_profile_height_below_minimum" in manifest["blockers"]
     assert "review_quality_profile_fps_below_minimum" in manifest["blockers"]
     assert "review_quality_profile_num_frames_below_minimum" in manifest["blockers"]
+    assert "review_quality_profile_num_frames_below_oscar_default" in manifest["blockers"]
     source_qa = json.loads(
         (tmp_path / "bundle" / "source_policy_observation_visual_qa.json").read_text(
             encoding="utf-8"
         )
     )
     assert source_qa["status"] == "passed_visual_quality_gate"
+
+
+def test_review_quality_profile_rejects_low_oscar_sampling_budget_before_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    frame = _write_reviewable_frame(tmp_path / "frame.jpg")
+    observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "review_quality")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_NUM_STEPS", "12")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_GUIDANCE", "3.5")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_NUM_FRAMES", "24")
+
+    manifest = session.build_persistent_session_provider_bundle(
+        job_dir=tmp_path / "low-sampling-budget",
+        policy_observation_path=observation_path,
+        loop_step_count=2,
+        use_live_wam=True,
+        allow_structural_wam_fallback=False,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert "review_quality_profile_num_frames_below_oscar_default" in manifest["blockers"]
+    assert "review_quality_profile_num_steps_below_oscar_default" in manifest["blockers"]
+    assert "review_quality_profile_guidance_below_oscar_default" in manifest["blockers"]
 
 
 def test_review_quality_profile_rejects_bad_source_frame_before_staging(
@@ -2783,6 +3413,131 @@ def test_review_quality_profile_records_projected_skeleton_robot_material_adviso
     assert "source_policy_observation_projected_robot_material_low_detail" in material[
         "blockers"
     ]
+
+
+def test_persistent_session_bundle_preserves_isaac_seed_geometry_context(
+    tmp_path: Path,
+) -> None:
+    frame = _write_reviewable_frame(tmp_path / "render" / "frames" / "robot_pov_0000.png")
+    geometry = tmp_path / "render" / "manipulation_pov_geometry.json"
+    geometry.write_text(
+        json.dumps(
+            {
+                "schema_version": "manipulation_pov_geometry_index.v1",
+                "status": "PASS",
+                "frames": [
+                    {
+                        "schema_version": "manipulation_pov_geometry.v1",
+                        "status": "PASS",
+                        "camera": "robot_pov",
+                        "projected_landmarks": [
+                            {
+                                "landmark_id": "left_hand_link",
+                                "link_role": "hand",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 220.0,
+                                    "v_px": 330.0,
+                                    "depth_m": 0.3,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    placement = tmp_path / "render" / "placement_validation.json"
+    placement.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+    stance = tmp_path / "render" / "task_stance_plan.json"
+    stance.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+    observation = {
+        "schema_version": "initial_policy_observation.v1",
+        "task_id": "open_refrigerator",
+        "target_object_id": "refrigerator",
+        "camera_frame_path": str(frame),
+        "manipulation_pov_geometry_path": str(geometry),
+        "placement_validation_path": str(placement),
+        "task_stance_plan_path": str(stance),
+        "visual_observation": {
+            "camera_frame_path": str(frame),
+            "manipulation_pov_geometry_path": str(geometry),
+            "placement_validation_path": str(placement),
+        },
+        "unitree_g1_sonic_state": {
+            "left_leg": [0.0] * 6,
+            "right_leg": [0.0] * 6,
+            "waist": [0.0] * 3,
+            "left_arm": [0.0] * 7,
+            "right_arm": [0.0] * 7,
+            "left_hand": [0.0] * 7,
+            "right_hand": [0.0] * 7,
+            "projected_gravity": [0.0, 0.0, -1.0],
+        },
+    }
+    observation_path = tmp_path / "observation.json"
+    observation_path.write_text(json.dumps({"observation": observation}), encoding="utf-8")
+
+    manifest = session.build_persistent_session_provider_bundle(
+        job_dir=tmp_path / "bundle",
+        policy_observation_path=observation_path,
+        loop_step_count=2,
+        use_live_wam=True,
+        allow_structural_wam_fallback=False,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "bundle_ready"
+    assert manifest["semantic_visual_qa_source_paths"]["manipulation_pov_geometry"] == str(
+        geometry.resolve()
+    )
+    assert manifest["semantic_visual_qa_source_paths"]["placement_validation"] == str(
+        placement.resolve()
+    )
+    assert manifest["semantic_visual_qa_source_paths"]["task_stance_plan"] == str(
+        stance.resolve()
+    )
+    assert manifest["runtime_isaac_scene_context_paths"] == {
+        "manipulation_pov_geometry": "provider_runtime/isaac_scene_context/manipulation_pov_geometry.json",
+        "placement_validation": "provider_runtime/isaac_scene_context/placement_validation.json",
+        "task_stance_plan": "provider_runtime/isaac_scene_context/task_stance_plan.json",
+    }
+    with zipfile.ZipFile(manifest["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        runner = archive.read(
+            "provider_runtime/unitree_groot_n17_sonic_wam_persistent_session_runner.py"
+        ).decode()
+    assert "provider_runtime/isaac_scene_context/manipulation_pov_geometry.json" in names
+    assert "provider_runtime/isaac_scene_context/placement_validation.json" in names
+    assert "provider_runtime/isaac_scene_context/task_stance_plan.json" in names
+    assert "isaac_scene_context_output_paths" in runner
+    assert 'output_dir / "isaac_scene_context"' in runner
+    session_input = json.loads(
+        (tmp_path / "bundle" / "provider_runtime" / "persistent_session_input.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert session_input["isaac_scene_context"]["status"] == "available"
+    initial_observation = session_input["initial_observation"]
+    assert (
+        initial_observation["visual_observation"]["manipulation_pov_geometry_path"]
+        == "provider_runtime/isaac_scene_context/manipulation_pov_geometry.json"
+    )
+    assert (
+        initial_observation["visual_observation"]["placement_validation_path"]
+        == "provider_runtime/isaac_scene_context/placement_validation.json"
+    )
+    assert (
+        initial_observation["visual_observation"]["task_stance_plan_path"]
+        == "provider_runtime/isaac_scene_context/task_stance_plan.json"
+    )
+    assert (
+        session_input["isaac_scene_context"]["claim_boundary"][
+            "isaac_scene_context_is_geometry_metadata_not_policy_action_projection"
+        ]
+        is True
+    )
 
 
 def test_persistent_session_bundle_blocks_offscreen_semantic_initial_observation(
@@ -3401,7 +4156,7 @@ def test_short_visual_sanity_pass_manifest_records_review_artifacts_and_teardown
     assert manifest["short_visual_sanity_passed"] is True
     assert captured["loop_step_count"] == 3
     assert captured["visual_profile"] == "review_quality"
-    assert captured["num_frames"] == "24"
+    assert captured["num_frames"] == "81"
     assert captured["height"] == "480"
     assert captured["width"] == "640"
     assert captured["fps"] == "15"
@@ -3907,6 +4662,33 @@ def test_runpod_live_wam_blocker_classifies_terminal_upload_after_heartbeat(
         == "runpod_terminal_output_upload_failed_after_remote_heartbeat"
     )
     assert classification["evidence"]["last_nonterminal_runtime_result_status"] == "running"
+
+
+def test_runpod_live_wam_blocker_classifies_pod_gone_before_first_heartbeat(
+    tmp_path: Path,
+) -> None:
+    classification = session._write_runpod_live_wam_blocker_classification(
+        job=tmp_path,
+        generated_at="now",
+        poll_manifest={
+            "status": "blocked",
+            "output_zip_present": False,
+            "provider_command_status": "blocked",
+            "provider_command_blockers": [
+                "runpod_provider_runtime_output_zip_not_received_locally"
+            ],
+            "pod_status": "not_found",
+            "teardown_performed": False,
+            "continuing_spend_from_this_run": False,
+        },
+    )
+
+    assert classification["status"] == "blocked"
+    assert (
+        classification["classified_blocker"]
+        == "runpod_pod_disappeared_before_first_heartbeat"
+    )
+    assert classification["evidence"]["last_nonterminal_runtime_phase"] is None
 
 
 def test_runpod_live_wam_blocker_classifies_pod_disappeared_during_bootstrap(

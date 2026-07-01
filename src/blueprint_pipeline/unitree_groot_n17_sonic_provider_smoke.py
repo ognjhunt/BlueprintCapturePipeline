@@ -229,19 +229,58 @@ def _run_logged(
     started = time.time()
     with log_path.open("ab") as handle:
         handle.write(("BLUEPRINT_COMMAND_STARTED:" + json.dumps(command) + "\n").encode())
+        handle.flush()
         try:
-            completed = subprocess.run(
+            proc = subprocess.Popen(
                 command,
                 cwd=str(cwd) if cwd else None,
                 env=env,
                 stdout=handle,
                 stderr=subprocess.STDOUT,
-                timeout=timeout_seconds,
-                check=False,
             )
+            progress_interval = max(
+                0.0,
+                float(
+                    os.environ.get(
+                        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_RUN_LOG_HEARTBEAT_SECONDS",
+                        "60",
+                    )
+                    or "0"
+                ),
+            )
+            next_progress = time.time() + progress_interval if progress_interval else None
+            deadline = started + float(timeout_seconds) if timeout_seconds else None
+            while True:
+                returncode = proc.poll()
+                if returncode is not None:
+                    break
+                now = time.time()
+                if deadline is not None and now >= deadline:
+                    proc.kill()
+                    proc.wait(timeout=20)
+                    handle.write(b"\nBLUEPRINT_COMMAND_TIMED_OUT\n")
+                    handle.flush()
+                    return {
+                        "status": "timed_out",
+                        "returncode": None,
+                        "duration_seconds": round(time.time() - started, 3),
+                        "log_path": str(log_path),
+                        "log_tail": _tail(log_path),
+                    }
+                if next_progress is not None and now >= next_progress:
+                    handle.flush()
+                    _phase(
+                        f"{log_path.stem}_running",
+                        log_path=str(log_path),
+                        log_tail=_tail(log_path),
+                        duration_seconds=round(now - started, 3),
+                    )
+                    next_progress = now + progress_interval
+                time.sleep(1.0)
+            handle.flush()
             return {
-                "status": "completed" if completed.returncode == 0 else "failed",
-                "returncode": completed.returncode,
+                "status": "completed" if returncode == 0 else "failed",
+                "returncode": returncode,
                 "duration_seconds": round(time.time() - started, 3),
                 "log_path": str(log_path),
                 "log_tail": _tail(log_path),

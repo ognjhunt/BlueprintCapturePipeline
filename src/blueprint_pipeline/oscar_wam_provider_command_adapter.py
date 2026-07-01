@@ -34,12 +34,19 @@ from .wam_generated_video_review import (
     visual_smoke_generated_rollouts_for_review,
 )
 from .wam_compute_providers import (
+    DEEPINFRA_API_GATE_ENV,
     PROVIDER_ORDER_ENV as WAM_COMPUTE_PROVIDER_ORDER_ENV,
     VAST_WAM_PAID_LAUNCH_GATE_ENV,
     WamComputeLaunchSpec,
     run_wam_compute_job,
 )
 from .wam_provider_object_store import stage_wam_provider_bundle_object_store
+from .oscar_official_release import (
+    OFFICIAL_OSCAR_WAM_IMAGE_REF,
+    official_release_blockers,
+    official_release_contract,
+    image_ref_digest,
+)
 
 
 SCHEMA_VERSION = "oscar_wam_provider_command_adapter.v1"
@@ -66,11 +73,16 @@ RUNPOD_WAM_CONTAINER_DISK_GB_ENV = "BLUEPRINT_RUNPOD_WAM_CONTAINER_DISK_GB"
 RUNPOD_WAM_VOLUME_GB_ENV = "BLUEPRINT_RUNPOD_WAM_VOLUME_GB"
 RUNPOD_WAM_MIN_VCPU_PER_GPU_ENV = "BLUEPRINT_RUNPOD_WAM_MIN_VCPU_PER_GPU"
 RUNPOD_WAM_MIN_RAM_PER_GPU_ENV = "BLUEPRINT_RUNPOD_WAM_MIN_RAM_PER_GPU"
+ALLOW_UNPINNED_OSCAR_WAM_IMAGE_ENV = "BLUEPRINT_ALLOW_UNPINNED_OSCAR_WAM_IMAGE"
 REDACTED_PROVIDER_TRANSPORT_URL = "REDACTED_COMPLETED_PROVIDER_TRANSPORT_URL"
 
 
 def _string(value: Any) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _artifact_name(value: str | Path | None) -> str | None:
@@ -94,7 +106,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _provider_runtime_result_proves_model_output(
     runtime_result_payload: Mapping[str, Any],
 ) -> bool:
-    return bool(
+    proves_model_output = bool(
         runtime_result_payload
         and runtime_result_payload.get("status") == "completed"
         and runtime_result_payload.get("learned_wam_model_ran") is True
@@ -105,6 +117,18 @@ def _provider_runtime_result_proves_model_output(
         )
         is True
     )
+    if not proves_model_output:
+        return False
+    model_candidate = _string(runtime_result_payload.get("model_candidate"))
+    runtime = _string(runtime_result_payload.get("runtime"))
+    if model_candidate == "oscar_wam" or runtime == "oscar_wam_provider_runtime":
+        official_release = _mapping(runtime_result_payload.get("official_oscar_release"))
+        truth_boundary = _mapping(runtime_result_payload.get("truth_boundary"))
+        return bool(
+            official_release.get("official_release_match") is True
+            and truth_boundary.get("official_oscar_source_and_checkpoint_pinned") is True
+        )
+    return True
 
 
 def _write_output(output_path: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -145,6 +169,7 @@ def _blocked_payload(
 
 def _find_provider_output_zip(provider_job_dir: Path) -> Path | None:
     candidates = [
+        provider_job_dir / "deepinfra_provider_runtime_output.zip",
         provider_job_dir / "vast_provider_runtime_output.zip",
         provider_job_dir / "runpod_provider_runtime_output.zip",
         provider_job_dir / "provider_runtime_output.zip",
@@ -408,7 +433,12 @@ def _extract_provider_payload(
                 )
             )
         is_replay = mode == "replay_existing_provider_output"
-        is_current_provider = mode in {"vast_provider", "runpod_provider", "wam_compute_provider"}
+        is_current_provider = mode in {
+            "deepinfra_provider",
+            "vast_provider",
+            "runpod_provider",
+            "wam_compute_provider",
+        }
         if imported_truth_claims:
             payload["imported_provider_payload_truth_claims"] = imported_truth_claims
         payload["provider_output_replayed"] = bool(is_replay)
@@ -518,6 +548,7 @@ def _vast_public_image_from_env() -> str:
     return (
         _string(os.getenv(VAST_WAM_PUBLIC_IMAGE_ENV))
         or _string(os.getenv(OSCAR_WAM_GPU_IMAGE_REF_ENV))
+        or OFFICIAL_OSCAR_WAM_IMAGE_REF
         or DEFAULT_WAM_PUBLIC_IMAGE
     )
 
@@ -528,9 +559,44 @@ def _public_image_for_provider(provider: str) -> str:
             _string(os.getenv(RUNPOD_WAM_PUBLIC_IMAGE_ENV))
             or _string(os.getenv(OSCAR_WAM_GPU_IMAGE_REF_ENV))
             or _string(os.getenv(VAST_WAM_PUBLIC_IMAGE_ENV))
+            or OFFICIAL_OSCAR_WAM_IMAGE_REF
             or DEFAULT_WAM_PUBLIC_IMAGE
         )
+    if provider == "deepinfra":
+        return "deepinfra/nvidia/Cosmos3-Nano"
     return _vast_public_image_from_env()
+
+
+def _provider_image_provenance(image_ref: str, *, provider: str) -> dict[str, Any]:
+    digest = image_ref_digest(image_ref)
+    return {
+        "schema_version": "oscar_wam_provider_image_provenance.v1",
+        "provider": provider,
+        "image_ref": image_ref,
+        "image_digest": digest,
+        "image_ref_digest_pinned": bool(digest),
+        "unversioned_image_allowed": _env_truthy(ALLOW_UNPINNED_OSCAR_WAM_IMAGE_ENV),
+        "official_oscar_release": official_release_contract(image_ref=image_ref),
+        "claim_boundary": {
+            "image_digest_is_runtime_provenance_not_model_quality": True,
+            "image_digest_does_not_prove_task_success": True,
+            "image_digest_does_not_prove_deployment_readiness": True,
+        },
+    }
+
+
+def _provider_image_blockers(image_provenance: Mapping[str, Any]) -> list[str]:
+    if image_provenance.get("provider") == "deepinfra":
+        return []
+    official_release = _mapping(image_provenance.get("official_oscar_release"))
+    blockers = official_release_blockers(official_release, require_image_digest=True)
+    if _env_truthy(ALLOW_UNPINNED_OSCAR_WAM_IMAGE_ENV):
+        return [
+            item
+            for item in blockers
+            if item != "official_oscar_provider_image_digest_missing"
+        ]
+    return blockers
 
 
 def _machine_ids_from_env(name: str) -> list[int]:
@@ -568,7 +634,7 @@ def _poll_max_wait_seconds(timeout_seconds: float) -> int:
 
 
 def _provider_order_from_cli(provider: str) -> list[str]:
-    key = _string(provider).lower() or "vast"
+    key = _string(provider).lower() or "deepinfra"
     if key == "auto":
         configured = _string(os.getenv(WAM_COMPUTE_PROVIDER_ORDER_ENV))
         values = [
@@ -576,7 +642,7 @@ def _provider_order_from_cli(provider: str) -> list[str]:
             for item in configured.replace(";", ",").split(",")
             if item.strip()
         ]
-        return values or ["runpod", "vast"]
+        return values or ["deepinfra", "runpod", "vast"]
     return [key]
 
 
@@ -615,6 +681,22 @@ def run_compute_provider(
             details={"bundle_manifest": bundle},
         )
     bundle_path = Path(str(bundle.get("bundle_path"))).expanduser().resolve()
+    provider_image = _public_image_for_provider(primary_provider)
+    image_provenance = _provider_image_provenance(
+        provider_image,
+        provider=primary_provider,
+    )
+    image_blockers = _provider_image_blockers(image_provenance)
+    if image_blockers:
+        return _blocked_payload(
+            blockers=image_blockers,
+            mode=f"{primary_provider}_provider",
+            output_path=output_path,
+            details={
+                "bundle_manifest": bundle,
+                "provider_image_provenance": image_provenance,
+            },
+        )
     provider_bundle_url_file = _provider_url_file_from_env("BLUEPRINT_WAM_PROVIDER_BUNDLE_URL_FILE")
     provider_output_put_url_file = _provider_url_file_from_env("BLUEPRINT_WAM_PROVIDER_OUTPUT_PUT_URL_FILE")
     provider_output_get_url_file = _provider_url_file_from_env("BLUEPRINT_WAM_PROVIDER_OUTPUT_GET_URL_FILE")
@@ -651,7 +733,7 @@ def run_compute_provider(
         name="blueprint-oscar-wam-provider",
         bundle_path=bundle_path,
         provider_bundle_kind="wam",
-        image=_public_image_for_provider(primary_provider),
+        image=provider_image,
         public_base_url=public_base_url,
         provider_bundle_url_file=provider_bundle_url_file,
         provider_output_put_url_file=provider_output_put_url_file,
@@ -704,6 +786,7 @@ def run_compute_provider(
             output_path=output_path,
             details={
                 "bundle_manifest": bundle,
+                "provider_image_provenance": image_provenance,
                 "object_store_staging_manifest": object_store_manifest,
                 "wam_compute_result": compute_result.to_dict(),
                 "provider_url_file_scrub": provider_url_file_scrub,
@@ -727,6 +810,7 @@ def run_compute_provider(
     payload["details"] = {
         "bundle_manifest_path": str(bundle_job_dir / "oscar_wam_provider_bundle_manifest.json"),
         "wam_compute_provider": compute_result.provider,
+        "provider_image_provenance": image_provenance,
         "wam_compute_result_path": str(work_dir / "wam_compute_run_result.json"),
         "provider_job_dir": str(provider_job_dir),
         "vast_provider_job_dir": str(provider_job_dir)
@@ -734,6 +818,24 @@ def run_compute_provider(
         else None,
         "runpod_provider_job_dir": str(provider_job_dir)
         if compute_result.provider == "runpod"
+        else None,
+        "deepinfra_provider_job_dir": str(provider_job_dir)
+        if compute_result.provider == "deepinfra"
+        else None,
+        "deepinfra_request_manifest_path": str(
+            provider_job_dir / "deepinfra_cosmos3_request_manifest.json"
+        )
+        if compute_result.provider == "deepinfra"
+        else None,
+        "deepinfra_execution_manifest_path": str(
+            provider_job_dir / "deepinfra_cosmos3_execution_manifest.json"
+        )
+        if compute_result.provider == "deepinfra"
+        else None,
+        "deepinfra_cost_ledger_path": str(
+            provider_job_dir / "deepinfra_cosmos3_cost_control_ledger.json"
+        )
+        if compute_result.provider == "deepinfra"
         else None,
         "vast_create_manifest_path": str(provider_job_dir / "vast_wam_async_create_manifest.json")
         if compute_result.provider == "vast"
@@ -783,8 +885,8 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
     parser.add_argument("--mode", choices=("auto", "replay-existing-provider-output", "vast-provider"), default=os.getenv("BLUEPRINT_OSCAR_WAM_PROVIDER_MODE", "auto"))
     parser.add_argument(
         "--provider",
-        choices=("auto", "vast", "runpod"),
-        default=os.getenv(OSCAR_WAM_COMPUTE_PROVIDER_ENV, "vast"),
+        choices=("auto", "deepinfra", "vast", "runpod"),
+        default=os.getenv(OSCAR_WAM_COMPUTE_PROVIDER_ENV, "deepinfra"),
         help="Fresh provider-launch backend. --mode vast-provider forces Vast for compatibility.",
     )
     parser.add_argument("--completed-provider-job-dir")
@@ -816,6 +918,8 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
         paid_gate_blockers.append("missing_cli_paid_wam_compute_provider_launch_flag")
     if "vast" in provider_order and not _env_truthy(ALLOW_VAST_PROVIDER_LAUNCH_ENV):
         paid_gate_blockers.append(f"missing_env_{ALLOW_VAST_PROVIDER_LAUNCH_ENV}")
+    if "deepinfra" in provider_order and not _env_truthy(DEEPINFRA_API_GATE_ENV):
+        paid_gate_blockers.append(f"missing_env_{DEEPINFRA_API_GATE_ENV}")
     provider_remote_checkpoint_allowed = bool(
         not paid_gate_blockers and args.mode in {"auto", "vast-provider"}
     )
@@ -875,9 +979,10 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                     "required_for_paid_launch": [
                         "one of --allow-paid-provider-launch, --allow-paid-vast-launch, --allow-paid-runpod-launch",
                         f"{ALLOW_VAST_PROVIDER_LAUNCH_ENV} when Vast is in provider order",
+                        f"{DEEPINFRA_API_GATE_ENV} when DeepInfra is selected",
                         f"{RUNPOD_API_GATE_ENV} when RunPod is selected",
                         f"{RUNPOD_POD_LAUNCH_GATE_ENV} when RunPod is selected",
-                        "VAST_API_KEY_FILE for Vast or RUNPOD_API_KEY/RUNPOD_API_KEY_FILE for RunPod",
+                        "DEEPINFRA_API_KEY/DEEPINFRA_API_KEY_FILE for DeepInfra, VAST_API_KEY_FILE for Vast, or RUNPOD_API_KEY/RUNPOD_API_KEY_FILE for RunPod",
                         "BLUEPRINT_WAM_PROVIDER_*_URL_FILE or object-store staging envs",
                     ]
                 },

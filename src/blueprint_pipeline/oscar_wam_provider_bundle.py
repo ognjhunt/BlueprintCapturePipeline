@@ -33,12 +33,23 @@ from .wam_generated_video_review import (
     validate_generated_mp4_for_review,
     visual_smoke_generated_rollouts_for_review,
 )
+from .oscar_official_release import (
+    OFFICIAL_OSCAR_HF_REPO,
+    OFFICIAL_OSCAR_HF_REVISION,
+    OFFICIAL_OSCAR_SOURCE_COMMIT,
+    OFFICIAL_OSCAR_SOURCE_URL,
+    official_release_blockers,
+    official_release_contract,
+)
 
 
 OSCAR_WAM_PROVIDER_BUNDLE_SCHEMA_VERSION = "oscar_wam_provider_bundle_manifest.v1"
-DEFAULT_OSCAR_SOURCE_URL = "https://github.com/wuzy2115/oscar-public.git"
-DEFAULT_OSCAR_HF_REPO = "zywu2115/OSCAR-2B"
+DEFAULT_OSCAR_SOURCE_URL = OFFICIAL_OSCAR_SOURCE_URL
+DEFAULT_OSCAR_SOURCE_REF = OFFICIAL_OSCAR_SOURCE_COMMIT
+DEFAULT_OSCAR_HF_REPO = OFFICIAL_OSCAR_HF_REPO
+DEFAULT_OSCAR_HF_REVISION = OFFICIAL_OSCAR_HF_REVISION
 DEFAULT_BUNDLE_FILENAME = "oscar_wam_provider_runtime_bundle.zip"
+ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV = "BLUEPRINT_ALLOW_EXPERIMENTAL_OSCAR_WAM_VERSION"
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -47,6 +58,15 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 def _string(value: Any) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _int_count(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -167,6 +187,75 @@ def _projected_landmark_pixel(landmark: Mapping[str, Any]) -> tuple[int, int] | 
         return None
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _projected_trace_source_size(
+    *,
+    row: Mapping[str, Any],
+    landmarks: Sequence[Mapping[str, Any]],
+    fallback_width: int,
+    fallback_height: int,
+) -> tuple[int, int]:
+    candidates: list[Mapping[str, Any]] = [row]
+    camera = row.get("camera")
+    if isinstance(camera, Mapping):
+        candidates.append(camera)
+    for landmark in landmarks:
+        projection = _mapping(landmark.get("image_projection"))
+        if projection:
+            candidates.append(projection)
+
+    width_keys = ("image_width_px", "source_image_width_px", "viewport_width_px", "width")
+    height_keys = ("image_height_px", "source_image_height_px", "viewport_height_px", "height")
+    for candidate in candidates:
+        width = next((_positive_int(candidate.get(key)) for key in width_keys if candidate.get(key) is not None), None)
+        height = next(
+            (_positive_int(candidate.get(key)) for key in height_keys if candidate.get(key) is not None),
+            None,
+        )
+        if width is not None and height is not None:
+            return width, height
+
+    inside_points = [
+        _projected_landmark_pixel(landmark)
+        for landmark in landmarks
+        if _mapping(landmark.get("image_projection")).get("inside_image") is True
+    ]
+    positive_inside = [
+        point for point in inside_points if point is not None and point[0] >= 0 and point[1] >= 0
+    ]
+    if positive_inside:
+        return (
+            max(fallback_width, max(point[0] for point in positive_inside) + 1),
+            max(fallback_height, max(point[1] for point in positive_inside) + 1),
+        )
+    return max(1, int(fallback_width)), max(1, int(fallback_height))
+
+
+def _scale_projected_pixel_to_canvas(
+    point: tuple[int, int] | None,
+    *,
+    source_width: int,
+    source_height: int,
+    target_width: int,
+    target_height: int,
+) -> tuple[int, int] | None:
+    if point is None:
+        return None
+    source_width = max(1, int(source_width))
+    source_height = max(1, int(source_height))
+    return (
+        int(round(float(point[0]) * float(target_width) / float(source_width))),
+        int(round(float(point[1]) * float(target_height) / float(source_height))),
+    )
+
+
 def _projected_skeleton_trace_motion_px_max(rows: Sequence[Mapping[str, Any]]) -> float:
     previous: dict[str, tuple[int, int]] | None = None
     max_motion = 0.0
@@ -205,6 +294,9 @@ def _projected_skeleton_trace_claim_boundary(
         "policy_derived_action_conditioning": False,
         "nominal_kinematic_projection_without_scene_or_wbc_bridge": False,
         "official_wbc_or_sim_bridge_used": False,
+        "isaac_policy_action_projection_bridge_used": False,
+        "scene_faithful_isaac_policy_action_projection_bridge_used": False,
+        "blueprint_simulator_only_isaac_action_projection_bridge_used": False,
         "simulated_state_not_physical_robot_sensor_evidence": False,
     }
     for row in rows:
@@ -215,6 +307,252 @@ def _projected_skeleton_trace_claim_boundary(
 
 
 def _render_projected_skeleton_conditioning_video(
+    *,
+    trace_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: float,
+    num_frames: int,
+    conditioning_mode: str = "projected_g1_skeleton",
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    import cv2
+    import numpy as np
+
+    def _inside_canvas(point: tuple[int, int] | None) -> bool:
+        if point is None:
+            return False
+        x, y = point
+        return 0 <= x < width and 0 <= y < height
+
+    def _draw_end_effector_axis(
+        canvas: Any,
+        *,
+        wrist: tuple[int, int] | None,
+        hand: tuple[int, int] | None,
+        color: tuple[int, int, int],
+    ) -> bool:
+        if not (_inside_canvas(wrist) and _inside_canvas(hand)):
+            return False
+        assert wrist is not None
+        assert hand is not None
+        vector = np.array([hand[0] - wrist[0], hand[1] - wrist[1]], dtype=np.float32)
+        norm = float(np.linalg.norm(vector))
+        if norm < 1.0:
+            vector = np.array([0.0, -1.0], dtype=np.float32)
+            norm = 1.0
+        direction = vector / norm
+        normal = np.array([-direction[1], direction[0]], dtype=np.float32)
+        axis_len = max(14, int(min(width, height) * 0.075))
+        cross_len = max(8, int(min(width, height) * 0.035))
+        center = np.array(hand, dtype=np.float32)
+        forward = center + direction * axis_len
+        back = center - direction * max(6, axis_len // 3)
+        left = center - normal * cross_len
+        right = center + normal * cross_len
+        cv2.arrowedLine(
+            canvas,
+            tuple(np.rint(back).astype(int)),
+            tuple(np.rint(forward).astype(int)),
+            color,
+            max(2, width // 180),
+            cv2.LINE_AA,
+            tipLength=0.25,
+        )
+        cv2.line(
+            canvas,
+            tuple(np.rint(left).astype(int)),
+            tuple(np.rint(right).astype(int)),
+            (245, 245, 245),
+            max(2, width // 240),
+            cv2.LINE_AA,
+        )
+        for offset in (-0.55, 0.55):
+            finger_root = center + normal * cross_len * offset
+            finger_tip = finger_root + direction * max(8, axis_len // 2)
+            cv2.line(
+                canvas,
+                tuple(np.rint(finger_root).astype(int)),
+                tuple(np.rint(finger_tip).astype(int)),
+                (245, 245, 245),
+                max(1, width // 320),
+                cv2.LINE_AA,
+            )
+        return True
+
+    rows = _load_projected_skeleton_trace_rows(trace_path)
+    ensure_dir(output_path.parent)
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError("cv2_video_writer_failed_for_projected_skeleton_conditioning")
+    landmark_draw_counts: list[int] = []
+    visible_landmark_counts: list[int] = []
+    visible_segment_counts: list[int] = []
+    clipped_landmark_counts: list[int] = []
+    end_effector_axis_counts: list[int] = []
+    for frame_index in range(max(1, int(num_frames))):
+        row = rows[min(frame_index, max(len(rows) - 1, 0))] if rows else {}
+        landmarks = [
+            dict(item)
+            for item in (row.get("landmarks") or row.get("projected_landmarks") or [])
+            if isinstance(item, Mapping)
+        ]
+        source_width, source_height = _projected_trace_source_size(
+            row=row,
+            landmarks=landmarks,
+            fallback_width=width,
+            fallback_height=height,
+        )
+        by_id = {
+            _string(landmark.get("landmark_id")): _scale_projected_pixel_to_canvas(
+                _projected_landmark_pixel(landmark),
+                source_width=source_width,
+                source_height=source_height,
+                target_width=width,
+                target_height=height,
+            )
+            for landmark in landmarks
+        }
+        canvas = np.zeros((height, width, 3), dtype=np.uint8)
+        segments = row.get("segments") if isinstance(row.get("segments"), Sequence) else []
+        visible_segments = 0
+        for segment in segments:
+            if not isinstance(segment, Mapping):
+                continue
+            start = by_id.get(_string(segment.get("from")))
+            end = by_id.get(_string(segment.get("to")))
+            if start and end:
+                cv2.line(canvas, start, end, (255, 255, 255), 6, cv2.LINE_AA)
+                if _inside_canvas(start) or _inside_canvas(end):
+                    visible_segments += 1
+        draw_count = 0
+        visible_count = 0
+        clipped_count = 0
+        for landmark_id, point in by_id.items():
+            if not landmark_id or point is None:
+                continue
+            x, y = point
+            if x < -width or x > width * 2 or y < -height or y > height * 2:
+                clipped_count += 1
+                continue
+            color = (255, 255, 255)
+            if "left" in landmark_id:
+                color = (255, 220, 90)
+            elif "right" in landmark_id:
+                color = (90, 220, 255)
+            cv2.circle(canvas, (x, y), max(5, width // 80), color, -1, cv2.LINE_AA)
+            draw_count += 1
+            if _inside_canvas(point):
+                visible_count += 1
+            else:
+                clipped_count += 1
+        axis_count = 0
+        for side, color in (("left", (255, 220, 90)), ("right", (90, 220, 255))):
+            if _draw_end_effector_axis(
+                canvas,
+                wrist=by_id.get(f"{side}_wrist"),
+                hand=by_id.get(f"{side}_hand"),
+                color=color,
+            ):
+                axis_count += 1
+        landmark_draw_counts.append(draw_count)
+        visible_landmark_counts.append(visible_count)
+        visible_segment_counts.append(visible_segments)
+        clipped_landmark_counts.append(clipped_count)
+        end_effector_axis_counts.append(axis_count)
+        writer.write(canvas)
+    writer.release()
+    projectable_rows = sum(
+        1
+        for row in rows
+        if int(row.get("projected_landmark_count") or len(row.get("landmarks") or [])) > 0
+    )
+    max_motion_px = _projected_skeleton_trace_motion_px_max(rows)
+    max_landmark_count = max(landmark_draw_counts or [0])
+    max_visible_landmark_count = max(visible_landmark_counts or [0])
+    max_visible_segment_count = max(visible_segment_counts or [0])
+    max_clipped_landmark_count = max(clipped_landmark_counts or [0])
+    max_end_effector_axis_count = max(end_effector_axis_counts or [0])
+    visual_blockers: list[str] = []
+    if max_landmark_count <= 0:
+        visual_blockers.append("projected_skeleton_no_landmarks_drawn")
+    if max_visible_landmark_count < 4:
+        visual_blockers.append("projected_skeleton_visible_landmark_count_too_low")
+    if max_visible_segment_count < 2:
+        visual_blockers.append("projected_skeleton_visible_segment_count_too_low")
+    if max_end_effector_axis_count < 2:
+        visual_blockers.append("projected_skeleton_end_effector_axes_missing")
+    return (
+        {
+            "path": str(output_path),
+            "frame_count": max(1, int(num_frames)),
+            "fps": fps,
+            "width": width,
+            "height": height,
+            "conditioning_mode": conditioning_mode,
+            "conditioning_source": "projected_g1_skeleton_trace",
+            "projected_g1_skeleton_rendered": True,
+            "projected_g1_skeleton_landmark_draw_count": max_landmark_count,
+            "projected_g1_skeleton_visible_landmark_draw_count": max_visible_landmark_count,
+            "projected_g1_skeleton_visible_segment_count": max_visible_segment_count,
+            "projected_g1_skeleton_clipped_landmark_count": max_clipped_landmark_count,
+            "projected_g1_skeleton_end_effector_axis_draw_count": max_end_effector_axis_count,
+            "projected_g1_skeleton_trace_row_count": len(rows),
+            "projected_g1_skeleton_projectable_row_count": projectable_rows,
+            "projected_g1_skeleton_max_interframe_motion_px": max_motion_px,
+            "skeleton_stream_separate_from_rgb": True,
+            "skeleton_stream_texture_free": True,
+            "skeleton_stream_image_aligned_to_rgb": True,
+            "first_rgb_frame_anchors_scene_and_robot_appearance": True,
+            "visual_signal": {
+                "status": "completed"
+                if not visual_blockers
+                else "warning_low_signal_projected_skeleton",
+                "blockers": visual_blockers,
+                "trace_row_count": len(rows),
+                "projectable_row_count": projectable_rows,
+                "max_interframe_landmark_motion_px": max_motion_px,
+                "max_visible_landmark_draw_count": max_visible_landmark_count,
+                "max_visible_segment_count": max_visible_segment_count,
+                "max_clipped_landmark_count": max_clipped_landmark_count,
+                "max_end_effector_axis_draw_count": max_end_effector_axis_count,
+            },
+        },
+        rows,
+    )
+
+
+def _unit_vector(vector: tuple[float, float]) -> tuple[float, float]:
+    length = (vector[0] * vector[0] + vector[1] * vector[1]) ** 0.5
+    if length <= 1e-6:
+        return (1.0, 0.0)
+    return (vector[0] / length, vector[1] / length)
+
+
+def _draw_axis_arrow(
+    canvas: Any,
+    origin: tuple[int, int],
+    direction: tuple[float, float],
+    *,
+    length: int,
+    color: tuple[int, int, int],
+    thickness: int,
+) -> None:
+    import cv2
+
+    end = (
+        int(round(origin[0] + direction[0] * length)),
+        int(round(origin[1] + direction[1] * length)),
+    )
+    cv2.arrowedLine(canvas, origin, end, color, thickness, cv2.LINE_AA, tipLength=0.28)
+
+
+def _render_projected_gripper_axes_conditioning_video(
     *,
     trace_path: Path,
     output_path: Path,
@@ -235,8 +573,10 @@ def _render_projected_skeleton_conditioning_video(
         (width, height),
     )
     if not writer.isOpened():
-        raise RuntimeError("cv2_video_writer_failed_for_projected_skeleton_conditioning")
-    landmark_draw_counts: list[int] = []
+        raise RuntimeError("cv2_video_writer_failed_for_projected_gripper_axes_conditioning")
+    axes_draw_counts: list[int] = []
+    non_dark_fractions: list[float] = []
+    edge_densities: list[float] = []
     for frame_index in range(max(1, int(num_frames))):
         row = rows[min(frame_index, max(len(rows) - 1, 0))] if rows else {}
         landmarks = [
@@ -244,34 +584,84 @@ def _render_projected_skeleton_conditioning_video(
             for item in (row.get("landmarks") or row.get("projected_landmarks") or [])
             if isinstance(item, Mapping)
         ]
+        source_width, source_height = _projected_trace_source_size(
+            row=row,
+            landmarks=landmarks,
+            fallback_width=width,
+            fallback_height=height,
+        )
         by_id = {
-            _string(landmark.get("landmark_id")): _projected_landmark_pixel(landmark)
+            _string(landmark.get("landmark_id")): _scale_projected_pixel_to_canvas(
+                _projected_landmark_pixel(landmark),
+                source_width=source_width,
+                source_height=source_height,
+                target_width=width,
+                target_height=height,
+            )
             for landmark in landmarks
         }
         canvas = np.zeros((height, width, 3), dtype=np.uint8)
-        segments = row.get("segments") if isinstance(row.get("segments"), Sequence) else []
-        for segment in segments:
-            if not isinstance(segment, Mapping):
+        axes_drawn = 0
+        for side, red_color in (("left", (0, 0, 255)), ("right", (24, 24, 255))):
+            hand = by_id.get(f"{side}_hand")
+            wrist = by_id.get(f"{side}_wrist")
+            elbow = by_id.get(f"{side}_elbow")
+            origin = hand or wrist
+            if origin is None:
                 continue
-            start = by_id.get(_string(segment.get("from")))
-            end = by_id.get(_string(segment.get("to")))
-            if start and end:
-                cv2.line(canvas, start, end, (255, 255, 255), 6, cv2.LINE_AA)
-        draw_count = 0
-        for landmark_id, point in by_id.items():
-            if not landmark_id or point is None:
-                continue
-            x, y = point
-            if x < -width or x > width * 2 or y < -height or y > height * 2:
-                continue
-            color = (255, 255, 255)
-            if "left" in landmark_id:
-                color = (255, 220, 90)
-            elif "right" in landmark_id:
-                color = (90, 220, 255)
-            cv2.circle(canvas, (x, y), max(5, width // 80), color, -1, cv2.LINE_AA)
-            draw_count += 1
-        landmark_draw_counts.append(draw_count)
+            if wrist and hand:
+                forward = _unit_vector((float(hand[0] - wrist[0]), float(hand[1] - wrist[1])))
+            elif elbow and wrist:
+                forward = _unit_vector((float(wrist[0] - elbow[0]), float(wrist[1] - elbow[1])))
+            else:
+                forward = (1.0 if side == "left" else -1.0, -0.2)
+            up_hint = (
+                _unit_vector((float(wrist[0] - elbow[0]), float(wrist[1] - elbow[1])))
+                if elbow and wrist
+                else (0.0, -1.0)
+            )
+            side_axis = _unit_vector((-forward[1], forward[0]))
+            scale = max(1, min(width, height))
+            axis_len = max(8, scale // 8)
+            short_len = max(6, scale // 10)
+            thickness = max(1, scale // 240)
+            origin_radius = max(2, scale // 180)
+            cv2.circle(canvas, origin, origin_radius, (235, 235, 235), -1, cv2.LINE_AA)
+            offset_px = max(1, scale // 240)
+            for offset in (-offset_px, 0, offset_px):
+                shifted = (
+                    int(round(origin[0] + side_axis[0] * offset)),
+                    int(round(origin[1] + side_axis[1] * offset)),
+                )
+                _draw_axis_arrow(
+                    canvas,
+                    shifted,
+                    forward,
+                    length=axis_len,
+                    color=red_color,
+                    thickness=thickness,
+                )
+            _draw_axis_arrow(
+                canvas,
+                origin,
+                side_axis,
+                length=short_len,
+                color=(0, 240, 0),
+                thickness=thickness,
+            )
+            _draw_axis_arrow(
+                canvas,
+                origin,
+                up_hint,
+                length=axis_len,
+                color=(255, 72, 0),
+                thickness=thickness,
+            )
+            axes_drawn += 1
+        gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+        non_dark_fractions.append(float(np.count_nonzero(gray > 12)) / float(width * height))
+        edge_densities.append(float((cv2.Canny(gray, 50, 150) > 0).mean()))
+        axes_draw_counts.append(axes_drawn)
         writer.write(canvas)
     writer.release()
     projectable_rows = sum(
@@ -280,6 +670,8 @@ def _render_projected_skeleton_conditioning_video(
         if int(row.get("projected_landmark_count") or len(row.get("landmarks") or [])) > 0
     )
     max_motion_px = _projected_skeleton_trace_motion_px_max(rows)
+    max_axes = max(axes_draw_counts or [0])
+    blockers = [] if max_axes >= 2 else ["projected_gripper_axes_draw_count_too_low"]
     return (
         {
             "path": str(output_path),
@@ -287,10 +679,15 @@ def _render_projected_skeleton_conditioning_video(
             "fps": fps,
             "width": width,
             "height": height,
-            "conditioning_mode": "projected_g1_skeleton",
-            "conditioning_source": "projected_g1_skeleton_trace",
+            "conditioning_mode": "oscar_projected_gripper_axes",
+            "conditioning_source": "projected_g1_skeleton_trace_as_oscar_style_gripper_axes",
             "projected_g1_skeleton_rendered": True,
-            "projected_g1_skeleton_landmark_draw_count": max(landmark_draw_counts or [0]),
+            "oscar_projected_gripper_axes_rendered": True,
+            "oscar_projected_gripper_axes_draw_count": max_axes,
+            "projected_g1_skeleton_landmark_draw_count": max_axes,
+            "projected_g1_skeleton_visible_landmark_draw_count": 0,
+            "projected_g1_skeleton_visible_segment_count": 0,
+            "projected_g1_skeleton_end_effector_axis_draw_count": max_axes,
             "projected_g1_skeleton_trace_row_count": len(rows),
             "projected_g1_skeleton_projectable_row_count": projectable_rows,
             "projected_g1_skeleton_max_interframe_motion_px": max_motion_px,
@@ -299,13 +696,23 @@ def _render_projected_skeleton_conditioning_video(
             "skeleton_stream_image_aligned_to_rgb": True,
             "first_rgb_frame_anchors_scene_and_robot_appearance": True,
             "visual_signal": {
-                "status": "completed" if max(landmark_draw_counts or [0]) > 0 else "warning_low_signal_projected_skeleton",
-                "blockers": []
-                if max(landmark_draw_counts or [0]) > 0
-                else ["projected_skeleton_no_landmarks_drawn"],
+                "status": "completed" if not blockers else "warning_low_signal_projected_gripper_axes",
+                "blockers": blockers,
                 "trace_row_count": len(rows),
                 "projectable_row_count": projectable_rows,
                 "max_interframe_landmark_motion_px": max_motion_px,
+                "max_axes_draw_count": max_axes,
+                "mean_non_dark_fraction": round(float(np.mean(non_dark_fractions)), 6)
+                if non_dark_fractions
+                else 0.0,
+                "mean_edge_density": round(float(np.mean(edge_densities)), 6)
+                if edge_densities
+                else 0.0,
+            },
+            "claim_boundary": {
+                "oscar_style_gripper_axes_proxy_from_projected_g1_trace": True,
+                "not_official_oscar_gripper_scenario_asset": True,
+                "not_physical_robot_sensor_evidence": True,
             },
         },
         rows,
@@ -382,6 +789,22 @@ def _path_from_auxiliary_observation(auxiliary_observation: Mapping[str, Any]) -
     return Path(text).expanduser()
 
 
+def _is_oscar_projected_gripper_axes_stream(skeleton_video: Mapping[str, Any]) -> bool:
+    return bool(
+        skeleton_video.get("oscar_projected_gripper_axes_rendered")
+        or skeleton_video.get("conditioning_mode") == "oscar_projected_gripper_axes"
+    )
+
+
+def _oscar_projected_gripper_axes_draw_count(skeleton_video: Mapping[str, Any]) -> int:
+    visual_signal = _mapping(skeleton_video.get("visual_signal"))
+    return max(
+        _int_count(skeleton_video.get("oscar_projected_gripper_axes_draw_count")),
+        _int_count(skeleton_video.get("projected_g1_skeleton_end_effector_axis_draw_count")),
+        _int_count(visual_signal.get("max_axes_draw_count")),
+    )
+
+
 def _conditioning_video_model_input_useful(
     *,
     skeleton_video: Mapping[str, Any],
@@ -390,9 +813,20 @@ def _conditioning_video_model_input_useful(
     visual_signal = _mapping(skeleton_video.get("visual_signal"))
     visual_signal_blockers = list(visual_signal.get("blockers") or [])
     if (
+        _is_oscar_projected_gripper_axes_stream(skeleton_video)
+        and skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and skeleton_video.get("skeleton_stream_texture_free")
+        and _oscar_projected_gripper_axes_draw_count(skeleton_video) >= 2
+        and visual_signal.get("status") in {"ok", "completed"}
+        and not visual_signal_blockers
+    ):
+        return True
+    if (
         skeleton_video.get("projected_g1_skeleton_rendered")
         and skeleton_video.get("skeleton_stream_separate_from_rgb")
-        and int(skeleton_video.get("projected_g1_skeleton_landmark_draw_count") or 0) > 0
+        and int(skeleton_video.get("projected_g1_skeleton_visible_landmark_draw_count") or 0) >= 4
+        and int(skeleton_video.get("projected_g1_skeleton_visible_segment_count") or 0) >= 2
+        and int(skeleton_video.get("projected_g1_skeleton_end_effector_axis_draw_count") or 0) >= 2
         and visual_signal.get("status") == "completed"
     ):
         return True
@@ -588,7 +1022,7 @@ def _auxiliary_target_bbox_pixels(
     return _bbox_to_pixels(segmentation.get("target_bbox"), width=width, height=height)
 
 
-def _task_prompt_from_wam_generation_step(step_input: Mapping[str, Any]) -> str:
+def _source_task_prompt_from_wam_generation_step(step_input: Mapping[str, Any]) -> str:
     observation = _mapping(step_input.get("current_policy_observation"))
     for key in (
         "language_instruction",
@@ -600,6 +1034,42 @@ def _task_prompt_from_wam_generation_step(step_input: Mapping[str, Any]) -> str:
         value = _string(observation.get(key))
         if value:
             return value
+    return ""
+
+
+def _normalize_oscar_robot_action_prompt(source_prompt: str) -> tuple[str, bool]:
+    cleaned = " ".join(_string(source_prompt).split())
+    if not cleaned:
+        return "", False
+    lowered = cleaned.lower()
+    robot_context_markers = (
+        "robot",
+        "gripper",
+        "end effector",
+        "end-effector",
+        "manipulation video",
+        "first-person",
+        "first person",
+        "pov",
+        "policy action",
+        "next robot-scene frames",
+    )
+    if any(marker in lowered for marker in robot_context_markers):
+        return cleaned, False
+    task_text = cleaned.rstrip(".")
+    return (
+        f"A robot performs the task: {task_text}. "
+        "Continue the first-person robot manipulation video.",
+        True,
+    )
+
+
+def _task_prompt_from_wam_generation_step(step_input: Mapping[str, Any]) -> str:
+    observation = _mapping(step_input.get("current_policy_observation"))
+    source_prompt = _source_task_prompt_from_wam_generation_step(step_input)
+    prompt, _normalized = _normalize_oscar_robot_action_prompt(source_prompt)
+    if prompt:
+        return prompt
     task_id = _string(observation.get("task_id"))
     target_id = _string(observation.get("target_object_id"))
     if task_id or target_id:
@@ -691,6 +1161,127 @@ def _render_static_rgb_context_video(
     }
 
 
+def _rgb_context_frame_paths_from_wam_generation_step(
+    step_input: Mapping[str, Any],
+    *,
+    source_frame: Path,
+) -> list[Path]:
+    raw_values: list[Any] = []
+    for key in (
+        "rgb_context_frame_paths",
+        "temporal_rgb_context_frame_paths",
+        "source_review_frame_paths",
+    ):
+        value = step_input.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            raw_values.extend(value)
+    observation = _mapping(step_input.get("current_policy_observation"))
+    visual = _mapping(observation.get("visual_observation"))
+    for container in (observation, visual):
+        for key in (
+            "rgb_context_frame_paths",
+            "temporal_rgb_context_frame_paths",
+            "source_review_frame_paths",
+        ):
+            value = container.get(key)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+                raw_values.extend(value)
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        text = _string(raw)
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if not path.is_file():
+            continue
+        resolved = str(path.resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        paths.append(Path(resolved))
+    source_resolved = source_frame.resolve()
+    if not paths or str(source_resolved) not in seen:
+        paths.insert(0, source_resolved)
+    return paths
+
+
+def _render_temporal_rgb_context_video(
+    *,
+    frame_paths: Sequence[Path],
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: float,
+    num_frames: int,
+) -> dict[str, Any]:
+    import cv2
+    import numpy as np
+
+    decoded = []
+    source_paths: list[str] = []
+    for path in frame_paths:
+        frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if frame is None:
+            continue
+        decoded.append(cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR))
+        source_paths.append(str(path))
+    if len(decoded) < 2:
+        raise ValueError("temporal_rgb_context_requires_at_least_two_decodable_frames")
+    ensure_dir(output_path.parent)
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        float(fps),
+        (width, height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError("cv2_video_writer_failed_for_temporal_oscar_rgb_context")
+    total_frames = max(1, int(num_frames))
+    for index in range(total_frames):
+        source_index = min(len(decoded) - 1, round(index * (len(decoded) - 1) / max(total_frames - 1, 1)))
+        writer.write(decoded[source_index])
+    writer.release()
+    gray_frames = [cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) for frame in decoded]
+    edge_densities = [
+        float((cv2.Canny(gray, 50, 150) > 0).mean())
+        for gray in gray_frames
+    ]
+    frame_deltas = [
+        float(np.mean(np.abs(gray_frames[index].astype("float32") - gray_frames[index - 1].astype("float32"))))
+        for index in range(1, len(gray_frames))
+    ]
+    return {
+        "path": str(output_path),
+        "source_policy_observation_frame_path": source_paths[0],
+        "source_frame_paths": source_paths,
+        "source": "temporal_policy_observation_rgb_context",
+        "frame_count": total_frames,
+        "source_frame_count": len(decoded),
+        "fps": fps,
+        "width": width,
+        "height": height,
+        "used_for_oscar_rgb_latent_context": True,
+        "rgb_context_mode": "temporal_frame_sequence",
+        "single_frame_policy_observation_repeated_for_oscar_rgb_context": False,
+        "normalized_for_oscar_inference": True,
+        "visual_signal": {
+            "status": "completed",
+            "luma_mean": round(float(np.mean([gray.mean() for gray in gray_frames])), 6),
+            "luma_range": int(max(gray.max() for gray in gray_frames) - min(gray.min() for gray in gray_frames)),
+            "non_dark_fraction": round(
+                float(np.mean([np.count_nonzero(gray > 12) / float(width * height) for gray in gray_frames])),
+                6,
+            ),
+            "minimum_edge_density": round(min(edge_densities), 6),
+            "maximum_edge_density": round(max(edge_densities), 6),
+            "mean_interframe_luma_delta": round(float(np.mean(frame_deltas)), 6)
+            if frame_deltas
+            else 0.0,
+        },
+    }
+
+
 def _render_step_action_conditioning_video(
     *,
     source_frame: Path,
@@ -701,6 +1292,7 @@ def _render_step_action_conditioning_video(
     height: int,
     fps: float,
     num_frames: int,
+    conditioning_mode: str = "unitree_sonic_policy_action_proxy_over_scene_frame",
 ) -> dict[str, Any]:
     import cv2
     import numpy as np
@@ -853,7 +1445,7 @@ def _render_step_action_conditioning_video(
         "fps": fps,
         "width": width,
         "height": height,
-        "conditioning_mode": "unitree_sonic_policy_action_proxy_over_scene_frame",
+        "conditioning_mode": conditioning_mode,
         "conditioning_source": "unitree_g1_sonic_policy_action_chunk_over_source_policy_observation",
         "source_policy_observation_frame_path": str(source_frame),
         "source_action_chunk_value_count": len(action_values),
@@ -879,6 +1471,34 @@ def _render_step_action_conditioning_video(
             "auxiliary_robot_mask_available": robot_mask_available,
         },
     }
+
+
+def _step_conditioning_mode(projected_trace_path: Path | None) -> str:
+    raw = _string(os.environ.get("BLUEPRINT_OSCAR_WAM_CONDITIONING_MODE")).lower()
+    default_mode = (
+        "projected_g1_skeleton"
+        if projected_trace_path is not None
+        else "unitree_sonic_policy_action_proxy_over_scene_frame"
+    )
+    if raw in {"", "auto"}:
+        return default_mode
+    if raw == "projected_g1_skeleton":
+        return raw if projected_trace_path is not None else default_mode
+    if raw == "oscar_projected_gripper_axes":
+        return raw if projected_trace_path is not None else default_mode
+    if raw in {
+        "oscar_gripper_scenario_proxy",
+        "unitree_sonic_policy_action_proxy_over_scene_frame",
+    }:
+        return raw
+    return default_mode
+
+
+def _step_rgb_context_mode() -> str:
+    raw = _string(os.environ.get("BLUEPRINT_OSCAR_WAM_RGB_CONTEXT_MODE")).lower()
+    if raw in {"always", "never"}:
+        return raw
+    return "auto"
 
 
 def _materialize_oscar_input_package_from_wam_generation_step(
@@ -910,18 +1530,51 @@ def _materialize_oscar_input_package_from_wam_generation_step(
         width=width,
         height=height,
     )
-    rgb_context_video = _render_static_rgb_context_video(
-        source_frame=source_frame,
-        output_path=package_dir / "rgb_context.mp4",
-        width=width,
-        height=height,
-        fps=fps,
-        num_frames=num_frames,
-    )
     action_values = _source_action_values(step_input)
     projected_trace_path = _projected_skeleton_trace_path_from_wam_generation_step(step_input)
+    conditioning_mode = _step_conditioning_mode(projected_trace_path)
+    use_projected_trace_conditioning = bool(
+        projected_trace_path is not None
+        and conditioning_mode in {"projected_g1_skeleton", "oscar_projected_gripper_axes"}
+    )
+    rgb_context_frame_paths = _rgb_context_frame_paths_from_wam_generation_step(
+        step_input,
+        source_frame=source_frame,
+    )
+    rgb_context_mode = _step_rgb_context_mode()
+    rgb_context_video: dict[str, Any] | None = None
+    rgb_context_omitted_source = "omitted_first_frame_plus_skeleton_public_contract"
+    if rgb_context_mode == "never":
+        rgb_context_omitted_source = "omitted_by_rgb_context_mode"
+    elif len(rgb_context_frame_paths) >= 2:
+        rgb_context_video = _render_temporal_rgb_context_video(
+            frame_paths=rgb_context_frame_paths,
+            output_path=package_dir / "rgb_context.mp4",
+            width=width,
+            height=height,
+            fps=fps,
+            num_frames=num_frames,
+        )
+    elif rgb_context_mode == "always" or not use_projected_trace_conditioning:
+        rgb_context_video = _render_static_rgb_context_video(
+            source_frame=source_frame,
+            output_path=package_dir / "rgb_context.mp4",
+            width=width,
+            height=height,
+            fps=fps,
+            num_frames=num_frames,
+        )
     projected_trace_rows: list[dict[str, Any]] = []
-    if projected_trace_path is not None:
+    if use_projected_trace_conditioning and conditioning_mode == "oscar_projected_gripper_axes":
+        skeleton_video, projected_trace_rows = _render_projected_gripper_axes_conditioning_video(
+            trace_path=projected_trace_path,
+            output_path=package_dir / "blueprint_proxy_skeleton_conditioning.mp4",
+            width=width,
+            height=height,
+            fps=fps,
+            num_frames=num_frames,
+        )
+    elif use_projected_trace_conditioning:
         skeleton_video, projected_trace_rows = _render_projected_skeleton_conditioning_video(
             trace_path=projected_trace_path,
             output_path=package_dir / "blueprint_proxy_skeleton_conditioning.mp4",
@@ -930,6 +1583,8 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             fps=fps,
             num_frames=num_frames,
         )
+        if projected_trace_path is not None:
+            projected_trace_rows = _load_projected_skeleton_trace_rows(projected_trace_path)
     else:
         skeleton_video = _render_step_action_conditioning_video(
             source_frame=source_frame,
@@ -940,6 +1595,7 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             height=height,
             fps=fps,
             num_frames=num_frames,
+            conditioning_mode=conditioning_mode,
         )
     conditioning_validation = validate_generated_mp4_for_review(Path(skeleton_video["path"]))
     conditioning_visual_smoke = visual_smoke_generated_rollouts_for_review(
@@ -957,6 +1613,11 @@ def _materialize_oscar_input_package_from_wam_generation_step(
     requested_output = _mapping(step_input.get("requested_output"))
     policy_action_to_skeleton_contract = _mapping(
         step_input.get("policy_action_to_skeleton_contract")
+    )
+    source_task_prompt = _source_task_prompt_from_wam_generation_step(step_input)
+    normalized_prompt = _task_prompt_from_wam_generation_step(step_input)
+    _, oscar_prompt_normalized_from_task_prompt = _normalize_oscar_robot_action_prompt(
+        source_task_prompt
     )
     projected_trace_claim_boundary = _projected_skeleton_trace_claim_boundary(
         projected_trace_rows
@@ -976,7 +1637,11 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             skeleton_video=skeleton_video,
             visual_smoke=conditioning_visual_smoke,
         ),
-        "prompt": _task_prompt_from_wam_generation_step(step_input),
+        "prompt": normalized_prompt,
+        "source_task_prompt": source_task_prompt or None,
+        "oscar_prompt_normalized_from_task_prompt": bool(
+            oscar_prompt_normalized_from_task_prompt
+        ),
         "num_frames": num_frames,
         "fps": fps,
         "height": height,
@@ -997,16 +1662,34 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             ),
         },
         "rgb_video": {
-            "path": rgb_context_video["path"],
-            "source": "source_policy_observation_frame_repeated_rgb_context",
-            "used_for_oscar_rgb_latent_context": True,
-            "rgb_context_mode": "single_frame_repeat",
-            "single_frame_policy_observation_repeated_for_oscar_rgb_context": True,
-            "frame_count": rgb_context_video.get("frame_count"),
-            "fps": rgb_context_video.get("fps"),
-            "height": rgb_context_video.get("height"),
-            "width": rgb_context_video.get("width"),
-            "visual_signal": rgb_context_video.get("visual_signal"),
+            "path": rgb_context_video.get("path") if rgb_context_video else None,
+            "source": rgb_context_video.get("source")
+            if rgb_context_video
+            else rgb_context_omitted_source,
+            "used_for_oscar_rgb_latent_context": bool(rgb_context_video),
+            "configured_rgb_context_mode": rgb_context_mode,
+            "rgb_context_mode": rgb_context_video.get("rgb_context_mode")
+            if rgb_context_video
+            else ("never" if rgb_context_mode == "never" else rgb_context_omitted_source),
+            "single_frame_policy_observation_repeated_for_oscar_rgb_context": bool(
+                rgb_context_video
+                and rgb_context_video.get(
+                    "single_frame_policy_observation_repeated_for_oscar_rgb_context"
+                )
+            ),
+            "frame_count": rgb_context_video.get("frame_count") if rgb_context_video else 0,
+            "source_frame_count": rgb_context_video.get("source_frame_count")
+            if rgb_context_video
+            else len(rgb_context_frame_paths),
+            "fps": rgb_context_video.get("fps") if rgb_context_video else fps,
+            "height": rgb_context_video.get("height") if rgb_context_video else height,
+            "width": rgb_context_video.get("width") if rgb_context_video else width,
+            "visual_signal": rgb_context_video.get("visual_signal")
+            if rgb_context_video
+            else {
+                "status": "not_applicable",
+                "reason": "projected_skeleton_input_uses_first_frame_plus_skeleton_video",
+            },
         },
         "source_review_video": {
             "camera": _string(_mapping(observation.get("visual_observation")).get("camera_id"))
@@ -1018,7 +1701,7 @@ def _materialize_oscar_input_package_from_wam_generation_step(
         "projected_skeleton_trace": {
             "path": str(projected_trace_path) if projected_trace_path else None,
             "available": projected_trace_path is not None,
-            "used_for_conditioning": projected_trace_path is not None,
+            "used_for_conditioning": use_projected_trace_conditioning,
             "row_count": len(projected_trace_rows),
             "projectable_row_count": sum(
                 1
@@ -1026,12 +1709,12 @@ def _materialize_oscar_input_package_from_wam_generation_step(
                 if int(row.get("projected_landmark_count") or len(row.get("landmarks") or [])) > 0
             ),
             "conditioning_source": "projected_g1_skeleton_trace"
-            if projected_trace_path
+            if use_projected_trace_conditioning
             else "policy_action_proxy_video_from_unitree_sonic_action_chunk",
             "max_interframe_landmark_motion_px": skeleton_video.get(
                 "projected_g1_skeleton_max_interframe_motion_px"
             )
-            if projected_trace_path
+            if use_projected_trace_conditioning
             else None,
             "claim_boundary": projected_trace_claim_boundary,
             "policy_derived_action_conditioning": bool(
@@ -1057,11 +1740,11 @@ def _materialize_oscar_input_package_from_wam_generation_step(
             "wam_generation_step_input_materialized_for_oscar_provider": True,
             "source_frame_is_simulated_policy_observation": True,
             "single_frame_policy_observation_used_instead_of_review_video": True,
-            "policy_action_conditioning_proxy_video_used": projected_trace_path is None,
+            "policy_action_conditioning_proxy_video_used": not use_projected_trace_conditioning,
             "policy_action_conditioning_proxy_is_not_wam_output": True,
             "policy_action_conditioning_proxy_is_not_physical_robot_sensor_evidence": True,
-            "skeleton_conditioning_is_proxy_from_policy_action_chunk": projected_trace_path is None,
-            "projected_g1_skeleton_conditioning_used": projected_trace_path is not None,
+            "skeleton_conditioning_is_proxy_from_policy_action_chunk": not use_projected_trace_conditioning,
+            "projected_g1_skeleton_conditioning_used": use_projected_trace_conditioning,
             "projected_g1_skeleton_conditioning_is_policy_derived_action": bool(
                 projected_trace_claim_boundary.get("policy_derived_action_conditioning")
             ),
@@ -1074,14 +1757,31 @@ def _materialize_oscar_input_package_from_wam_generation_step(
                 )
             ),
             "projected_g1_skeleton_conditioning_is_not_physical_robot_sensor_evidence": True,
-            "projected_g1_skeleton_conditioning_is_simulated_state": projected_trace_path is not None,
-            "first_rgb_frame_anchors_scene_and_robot_appearance": projected_trace_path is not None,
-            "separate_2d_skeleton_stream_aligned_to_rgb": projected_trace_path is not None,
-            "skeleton_stream_is_texture_free": projected_trace_path is not None,
+            "projected_g1_skeleton_conditioning_is_simulated_state": use_projected_trace_conditioning,
+            "first_rgb_frame_anchors_scene_and_robot_appearance": bool(
+                use_projected_trace_conditioning
+                or skeleton_video.get("selected_review_video_background_used")
+            ),
+            "separate_2d_skeleton_stream_aligned_to_rgb": use_projected_trace_conditioning,
+            "skeleton_stream_is_texture_free": use_projected_trace_conditioning,
             "rgb_video_uses_selected_review_video": False,
-            "rgb_video_used_for_oscar_rgb_latent_context": True,
-            "rgb_context_mode": "single_frame_repeat",
-            "rgb_context_repeats_source_policy_observation_frame": True,
+            "rgb_video_used_for_oscar_rgb_latent_context": bool(rgb_context_video),
+            "rgb_context_mode": rgb_context_video.get("rgb_context_mode")
+            if rgb_context_video
+            else "omitted_first_frame_plus_skeleton_public_contract",
+            "rgb_context_repeats_source_policy_observation_frame": bool(
+                rgb_context_video
+                and rgb_context_video.get(
+                    "single_frame_policy_observation_repeated_for_oscar_rgb_context"
+                )
+            ),
+            "rgb_context_uses_temporal_frame_sequence": bool(
+                rgb_context_video
+                and rgb_context_video.get("rgb_context_mode") == "temporal_frame_sequence"
+            ),
+            "rgb_context_omitted_to_match_public_first_frame_skeleton_contract": bool(
+                not rgb_context_video and use_projected_trace_conditioning
+            ),
             "true_robot_proprioceptive_skeleton_available": False,
             "policy_action_to_skeleton_contract_packaged": bool(
                 policy_action_to_skeleton_contract
@@ -1138,8 +1838,16 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
         or claim_boundary.get("projected_g1_skeleton_conditioning_used")
         or skeleton_video.get("projected_g1_skeleton_rendered")
     )
+    projected_gripper_axes_stream = _is_oscar_projected_gripper_axes_stream(skeleton_video)
     pure_projected_skeleton_stream = bool(
         projected_conditioning_used
+        and not projected_gripper_axes_stream
+        and skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and skeleton_video.get("skeleton_stream_texture_free")
+    )
+    pure_projected_gripper_axes_stream = bool(
+        projected_conditioning_used
+        and projected_gripper_axes_stream
         and skeleton_video.get("skeleton_stream_separate_from_rgb")
         and skeleton_video.get("skeleton_stream_texture_free")
     )
@@ -1150,6 +1858,7 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
     if (
         visual_smoke.get("status") != "passed_visual_quality_smoke"
         and not pure_projected_skeleton_stream
+        and not pure_projected_gripper_axes_stream
     ):
         blockers.append("oscar_input_skeleton_conditioning_video_visual_smoke_failed")
     if input_package.get("conditioning_video_visually_useful_for_model_input") is not True:
@@ -1159,6 +1868,11 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
         for blocker in visual_signal.get("blockers", []) or []:
             if isinstance(blocker, str) and blocker:
                 blockers.append(f"oscar_input_skeleton_conditioning_{blocker}")
+    if visual_signal.get("status") == "warning_low_signal_projected_skeleton":
+        blockers.append("oscar_input_projected_g1_skeleton_low_signal")
+        for blocker in visual_signal.get("blockers", []) or []:
+            if isinstance(blocker, str) and blocker:
+                blockers.append(f"oscar_input_{blocker}")
     if projected_conditioning_used:
         projected_path = Path(_string(projected_trace.get("path"))).expanduser()
         if not projected_path.is_file():
@@ -1182,9 +1896,24 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
                 blockers.append("oscar_input_projected_g1_skeleton_trace_static_action")
         if (
             pure_projected_skeleton_stream
-            and int(skeleton_video.get("projected_g1_skeleton_landmark_draw_count") or 0) <= 0
+            and int(skeleton_video.get("projected_g1_skeleton_visible_landmark_draw_count") or 0) < 4
         ):
-            blockers.append("oscar_input_projected_g1_skeleton_video_empty")
+            blockers.append("oscar_input_projected_g1_skeleton_video_visible_landmarks_too_sparse")
+        if (
+            pure_projected_skeleton_stream
+            and int(skeleton_video.get("projected_g1_skeleton_visible_segment_count") or 0) < 2
+        ):
+            blockers.append("oscar_input_projected_g1_skeleton_video_visible_segments_too_sparse")
+        if (
+            pure_projected_skeleton_stream
+            and int(skeleton_video.get("projected_g1_skeleton_end_effector_axis_draw_count") or 0) < 2
+        ):
+            blockers.append("oscar_input_projected_g1_skeleton_video_missing_end_effector_axes")
+        if (
+            pure_projected_gripper_axes_stream
+            and _oscar_projected_gripper_axes_draw_count(skeleton_video) < 2
+        ):
+            blockers.append("oscar_input_projected_gripper_axes_video_draw_count_too_low")
     return sorted(set(blockers))
 
 
@@ -1271,11 +2000,46 @@ def _oscar_input_contract_diagnostic(
         blockers.append("oscar_contract_first_frame_too_dark")
     projected_used = bool(projected_trace.get("used_for_conditioning"))
     projected_trace_claim_boundary = _mapping(projected_trace.get("claim_boundary"))
+    projected_trace_policy_action_bridge_safe = bool(
+        projected_used
+        and projected_trace_claim_boundary.get("policy_derived_action_conditioning")
+        and projected_trace_claim_boundary.get("official_wbc_or_sim_bridge_used") is True
+        and not projected_trace_claim_boundary.get("not_a_learned_robot_policy_action")
+        and not projected_trace_claim_boundary.get(
+            "temporal_rows_are_target_conditioning_from_resolved_affordance_projection"
+        )
+        and not projected_trace_claim_boundary.get(
+            "nominal_kinematic_projection_without_scene_or_wbc_bridge"
+        )
+    )
+    projected_gripper_axes_stream = _is_oscar_projected_gripper_axes_stream(skeleton_video)
     if projected_used:
         if _int_value(projected_trace.get("projectable_row_count")) <= 0:
             blockers.append("oscar_contract_projected_skeleton_has_no_projectable_rows")
         if _int_value(skeleton_video.get("projected_g1_skeleton_landmark_draw_count")) <= 0:
             blockers.append("oscar_contract_projected_skeleton_draws_no_landmarks")
+        if (
+            not projected_gripper_axes_stream
+            and _int_value(skeleton_video.get("projected_g1_skeleton_visible_landmark_draw_count"))
+            < 4
+        ):
+            blockers.append("oscar_contract_projected_skeleton_visible_landmarks_too_sparse")
+        if (
+            not projected_gripper_axes_stream
+            and _int_value(skeleton_video.get("projected_g1_skeleton_visible_segment_count")) < 2
+        ):
+            blockers.append("oscar_contract_projected_skeleton_visible_segments_too_sparse")
+        if (
+            projected_gripper_axes_stream
+            and _oscar_projected_gripper_axes_draw_count(skeleton_video) < 2
+        ):
+            blockers.append("oscar_contract_projected_gripper_axes_draw_count_too_low")
+        if (
+            not projected_gripper_axes_stream
+            and _int_value(skeleton_video.get("projected_g1_skeleton_end_effector_axis_draw_count"))
+            < 2
+        ):
+            blockers.append("oscar_contract_projected_skeleton_missing_end_effector_axes")
         if _float_value(
             skeleton_video.get("projected_g1_skeleton_max_interframe_motion_px")
         ) <= 0.5:
@@ -1285,6 +2049,9 @@ def _oscar_input_contract_diagnostic(
             )
         if projected_trace_claim_boundary.get("not_a_learned_robot_policy_action"):
             warnings.append("oscar_contract_projected_skeleton_not_policy_derived_action")
+            high_risk_flags.append(
+                "projected_skeleton_not_scene_faithful_policy_action_high_risk"
+            )
             ranking_risk_flags.append(
                 "projected_skeleton_not_policy_derived_action_ranking_risk"
             )
@@ -1292,6 +2059,9 @@ def _oscar_input_contract_diagnostic(
             "temporal_rows_are_target_conditioning_from_resolved_affordance_projection"
         ):
             warnings.append("oscar_contract_projected_skeleton_target_conditioned")
+            high_risk_flags.append(
+                "projected_skeleton_not_scene_faithful_policy_action_high_risk"
+            )
             ranking_risk_flags.append("projected_skeleton_target_conditioning_ranking_risk")
         if projected_trace_claim_boundary.get(
             "nominal_kinematic_projection_without_scene_or_wbc_bridge"
@@ -1300,6 +2070,14 @@ def _oscar_input_contract_diagnostic(
             high_risk_flags.append("projected_skeleton_nominal_action_projection_high_risk")
             ranking_risk_flags.append(
                 "projected_skeleton_nominal_action_projection_without_scene_or_wbc_bridge"
+            )
+        if not projected_trace_policy_action_bridge_safe:
+            warnings.append("oscar_contract_projected_skeleton_not_scene_faithful_policy_action_bridge")
+            high_risk_flags.append(
+                "projected_skeleton_not_scene_faithful_policy_action_high_risk"
+            )
+            ranking_risk_flags.append(
+                "projected_skeleton_missing_scene_faithful_policy_action_bridge"
             )
     conditioning_mode = _string(skeleton_video.get("conditioning_mode"))
     policy_action_proxy_used = bool(
@@ -1349,7 +2127,7 @@ def _oscar_input_contract_diagnostic(
                 )
     elif projected_used:
         warnings.append("oscar_contract_rgb_context_omitted_with_projected_skeleton")
-    if float(guidance) >= 6.0:
+    if float(guidance) > 6.0:
         warnings.append("oscar_contract_guidance_high_for_contract_debug")
         autoregressive_risk_flags.append("guidance_high_autoregressive_debug_risk")
     status = "blocked" if blockers else "warning_high_risk" if high_risk_flags else "ready"
@@ -1378,6 +2156,18 @@ def _oscar_input_contract_diagnostic(
             "frame_count": _int_value(skeleton_video.get("frame_count")),
             "conditioning_mode": skeleton_video.get("conditioning_mode"),
             "policy_action_proxy_used": policy_action_proxy_used,
+            "projected_g1_skeleton_visible_landmark_draw_count": _int_value(
+                skeleton_video.get("projected_g1_skeleton_visible_landmark_draw_count")
+            ),
+            "projected_g1_skeleton_visible_segment_count": _int_value(
+                skeleton_video.get("projected_g1_skeleton_visible_segment_count")
+            ),
+            "projected_g1_skeleton_end_effector_axis_draw_count": _int_value(
+                skeleton_video.get("projected_g1_skeleton_end_effector_axis_draw_count")
+            ),
+            "projected_g1_skeleton_clipped_landmark_count": _int_value(
+                skeleton_video.get("projected_g1_skeleton_clipped_landmark_count")
+            ),
             "visual_signal_status": skeleton_signal.get("status"),
             "visual_signal_blockers": skeleton_signal.get("blockers") or [],
         },
@@ -1420,6 +2210,15 @@ def _oscar_input_contract_diagnostic(
             "target_conditioning_from_resolved_affordance_projection": bool(
                 projected_trace.get("target_conditioning_from_resolved_affordance_projection")
             ),
+            "official_wbc_or_sim_bridge_used": bool(
+                projected_trace_claim_boundary.get("official_wbc_or_sim_bridge_used")
+            ),
+            "scene_faithful_isaac_policy_action_projection_bridge_used": bool(
+                projected_trace_claim_boundary.get(
+                    "scene_faithful_isaac_policy_action_projection_bridge_used"
+                )
+            ),
+            "policy_action_bridge_safe_for_sim_ranking": projected_trace_policy_action_bridge_safe,
         },
         "rgb_context": {
             "used_for_oscar_rgb_latent_context": rgb_used,
@@ -1443,7 +2242,9 @@ def _oscar_input_contract_diagnostic(
         else "monitor"
         if autoregressive_risk_flags
         else "none",
-        "short_rollout_sanity_recommended_before_scale_up": bool(autoregressive_risk_flags),
+        "short_rollout_sanity_recommended_before_scale_up": bool(
+            autoregressive_risk_flags or high_risk_flags or ranking_risk_flags
+        ),
         "policy_ranking_risk_level": "high" if ranking_risk_flags else "none",
         "policy_ranking_claim_safe": not ranking_risk_flags,
         "likely_debug_focus": [
@@ -1826,7 +2627,9 @@ from typing import Any, Mapping
 
 SCHEMA_VERSION = "wam_runtime_result.v1"
 OSCAR_SOURCE_URL = os.environ.get("BLUEPRINT_OSCAR_WAM_SOURCE_URL", "https://github.com/wuzy2115/oscar-public.git")
+OSCAR_SOURCE_REF = os.environ.get("BLUEPRINT_OSCAR_WAM_SOURCE_REF", "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb")
 OSCAR_HF_REPO = os.environ.get("BLUEPRINT_OSCAR_WAM_HF_REPO", "zywu2115/OSCAR-2B")
+OSCAR_HF_REVISION = os.environ.get("BLUEPRINT_OSCAR_WAM_HF_REVISION", "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6")
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -1985,6 +2788,67 @@ def _run(
         "stderr_tail_redacted": _redacted_tail(completed.stderr or ""),
         "raw_secret_values_recorded": False,
     }
+
+
+def _prepare_official_script_runtime(
+    *,
+    source_root: Path,
+    checkpoint_path: Path,
+    python: str,
+) -> dict[str, Any]:
+    detail: dict[str, Any] = {
+        "schema_version": "official_oscar_script_runtime_layout.v1",
+        "status": "not_run",
+        "source_root": str(source_root),
+        "checkpoint_path": str(checkpoint_path),
+        "raw_secret_values_recorded": False,
+        "blockers": [],
+    }
+    blockers: list[str] = []
+    script_path = source_root / "scripts" / "run_inference.sh"
+    if not script_path.is_file():
+        blockers.append("official_oscar_run_inference_script_missing")
+    checkpoints_path = source_root / "checkpoints"
+    try:
+        if checkpoints_path.exists() or checkpoints_path.is_symlink():
+            if checkpoints_path.resolve() != checkpoint_path.resolve():
+                blockers.append("official_oscar_script_checkpoints_path_conflict")
+            else:
+                detail["checkpoints_link_status"] = "already_points_to_checkpoint"
+        else:
+            checkpoints_path.symlink_to(checkpoint_path, target_is_directory=True)
+            detail["checkpoints_link_status"] = "created"
+    except OSError as exc:
+        detail["checkpoints_link_error_type"] = type(exc).__name__
+        blockers.append("official_oscar_script_checkpoints_link_failed")
+    venv_bin = source_root / ".venv" / "bin"
+    try:
+        venv_bin.mkdir(parents=True, exist_ok=True)
+        python_link = venv_bin / "python"
+        if not python_link.exists():
+            python_link.symlink_to(Path(python))
+        torchrun_path = shutil.which("torchrun") or str(Path(python).parent / "torchrun")
+        torchrun_link = venv_bin / "torchrun"
+        if not torchrun_link.exists() and Path(torchrun_path).exists():
+            torchrun_link.symlink_to(Path(torchrun_path))
+        if not python_link.exists():
+            blockers.append("official_oscar_script_python_shim_missing")
+        if not torchrun_link.exists():
+            blockers.append("official_oscar_script_torchrun_shim_missing")
+        detail["venv_bin_status"] = "prepared"
+        detail["torchrun_path"] = torchrun_path
+    except OSError as exc:
+        detail["venv_bin_error_type"] = type(exc).__name__
+        blockers.append("official_oscar_script_venv_bin_prepare_failed")
+    outputs_dir = source_root / "outputs"
+    try:
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        detail["outputs_dir_error_type"] = type(exc).__name__
+        blockers.append("official_oscar_script_outputs_dir_prepare_failed")
+    detail["blockers"] = blockers
+    detail["status"] = "completed" if not blockers else "blocked"
+    return detail
 
 
 def _dedupe_existing_dirs(paths: list[str]) -> list[str]:
@@ -2233,29 +3097,74 @@ def _bootstrap_python(work_dir: Path) -> tuple[str, dict[str, Any]]:
 def _clone_source(work_dir: Path) -> tuple[Path | None, dict[str, Any]]:
     configured = os.environ.get("BLUEPRINT_OSCAR_WAM_SOURCE_ROOT", "").strip()
     if configured and (Path(configured) / "inference" / "inference_oscar.py").is_file():
+        commit_detail = _run(["git", "-C", configured, "rev-parse", "HEAD"], timeout=30)
+        resolved_commit = (commit_detail.get("stdout_tail_redacted") or "").splitlines()[-1].strip()
         return Path(configured).resolve(), {
             "status": "completed",
             "source": "configured_path",
             "path": str(Path(configured).resolve()),
+            "requested_source_ref": OSCAR_SOURCE_REF,
+            "resolved_source_commit": resolved_commit or None,
+            "source_ref_matches_requested": bool(resolved_commit and resolved_commit == OSCAR_SOURCE_REF),
         }
     target = work_dir / "external" / "oscar-public"
     if (target / "inference" / "inference_oscar.py").is_file():
-        return target, {"status": "completed", "source": "existing_cache", "path": str(target)}
+        commit_detail = _run(["git", "-C", str(target), "rev-parse", "HEAD"], timeout=30)
+        resolved_commit = (commit_detail.get("stdout_tail_redacted") or "").splitlines()[-1].strip()
+        if resolved_commit == OSCAR_SOURCE_REF:
+            return target, {
+                "status": "completed",
+                "source": "existing_cache",
+                "path": str(target),
+                "requested_source_ref": OSCAR_SOURCE_REF,
+                "resolved_source_commit": resolved_commit,
+                "source_ref_matches_requested": True,
+            }
+        shutil.rmtree(target)
     if not shutil.which("git"):
         return None, {"status": "blocked", "blockers": ["git_missing_for_oscar_source_clone"]}
     target.parent.mkdir(parents=True, exist_ok=True)
     detail = _run(["git", "clone", "--depth", "1", OSCAR_SOURCE_URL, str(target)], timeout=900)
+    checkout_detail: dict[str, Any] = {"status": "not_run"}
+    fetch_detail: dict[str, Any] = {"status": "not_run"}
+    resolved_commit = ""
+    if detail["returncode"] == 0 and OSCAR_SOURCE_REF:
+        checkout_detail = _run(
+            ["git", "-C", str(target), "checkout", "--detach", OSCAR_SOURCE_REF],
+            timeout=300,
+        )
+        if checkout_detail.get("returncode") != 0:
+            fetch_detail = _run(
+                ["git", "-C", str(target), "fetch", "--depth", "1", "origin", OSCAR_SOURCE_REF],
+                timeout=300,
+            )
+            checkout_detail = _run(
+                ["git", "-C", str(target), "checkout", "--detach", OSCAR_SOURCE_REF],
+                timeout=300,
+            )
+        commit_detail = _run(["git", "-C", str(target), "rev-parse", "HEAD"], timeout=30)
+        resolved_commit = (commit_detail.get("stdout_tail_redacted") or "").splitlines()[-1].strip()
     blockers = []
     if detail["returncode"] != 0:
         blockers.append("oscar_source_clone_failed")
+    if OSCAR_SOURCE_REF and checkout_detail.get("returncode") not in (0, None):
+        blockers.append("oscar_source_ref_checkout_failed")
+    if OSCAR_SOURCE_REF and resolved_commit != OSCAR_SOURCE_REF:
+        blockers.append("oscar_source_commit_mismatch_after_checkout")
     if not (target / "inference" / "inference_oscar.py").is_file():
         blockers.append("oscar_inference_entrypoint_missing_after_clone")
     return (target if not blockers else None), {
         "status": "completed" if not blockers else "blocked",
         "source": "git_clone",
         "path": str(target),
+        "source_url": OSCAR_SOURCE_URL,
+        "requested_source_ref": OSCAR_SOURCE_REF,
+        "resolved_source_commit": resolved_commit or None,
+        "source_ref_matches_requested": bool(resolved_commit and resolved_commit == OSCAR_SOURCE_REF),
         "blockers": blockers,
         "subprocess": detail,
+        "checkout_subprocess": checkout_detail,
+        "fetch_subprocess": fetch_detail,
     }
 
 
@@ -2826,41 +3735,101 @@ class DotProductAttention(nn.Module):
         return _flatten_bshd(out.permute(0, 2, 1, 3).contiguous())
 
 
+def _rotate_half(tensor: torch.Tensor, interleaved: bool) -> torch.Tensor:
+    if not interleaved:
+        first, second = torch.chunk(tensor, 2, dim=-1)
+        return torch.cat((-second, first), dim=-1)
+    first = tensor[..., ::2]
+    second = tensor[..., 1::2]
+    return torch.stack((-second, first), dim=-1).flatten(-2)
+
+
+def _get_freqs_on_this_cp_rank(
+    freqs: torch.Tensor,
+    seqlen: int,
+    cp_size: int,
+    cp_rank: int,
+) -> torch.Tensor:
+    if cp_size > 1:
+        cp_seg = seqlen // 2
+        full_seqlen = cp_size * seqlen
+        return torch.cat(
+            [
+                freqs[cp_rank * cp_seg : (cp_rank + 1) * cp_seg],
+                freqs[
+                    full_seqlen - (cp_rank + 1) * cp_seg : full_seqlen - cp_rank * cp_seg
+                ],
+            ],
+            dim=0,
+        )
+    return freqs[:seqlen]
+
+
+def _apply_rotary_pos_emb_base(
+    tensor: torch.Tensor,
+    freqs: torch.Tensor,
+    tensor_format: str = "sbhd",
+    interleaved: bool = False,
+) -> torch.Tensor:
+    if tensor_format == "bshd":
+        freqs = freqs.transpose(0, 1)
+    cos = torch.cos(freqs).to(tensor.dtype)
+    sin = torch.sin(freqs).to(tensor.dtype)
+    rot_dim = freqs.shape[-1]
+    tensor_rot, tensor_pass = tensor[..., :rot_dim], tensor[..., rot_dim:]
+    tensor_rot = tensor_rot * cos + _rotate_half(tensor_rot, interleaved) * sin
+    return torch.cat((tensor_rot, tensor_pass), dim=-1)
+
+
 def apply_rotary_pos_emb(
     tensor: torch.Tensor,
     freqs: torch.Tensor,
     *,
     tensor_format: str = "bshd",
+    start_positions: torch.Tensor | None = None,
+    interleaved: bool = False,
     fused: bool = True,
+    cu_seqlens: torch.Tensor | None = None,
+    cp_size: int = 1,
+    cp_rank: int = 0,
 ) -> torch.Tensor:
     del fused
-    if tensor.dim() != 4:
-        raise ValueError("apply_rotary_pos_emb shim expects a rank-4 tensor")
-    half = tensor.shape[-1] // 2
-    freqs = freqs.to(device=tensor.device, dtype=torch.float32)
-    if freqs.shape[-1] >= tensor.shape[-1]:
-        freqs = freqs[..., :half]
-    if freqs.shape[-1] != half:
-        raise ValueError(f"rotary freqs last dim {freqs.shape[-1]} does not match half head dim {half}")
-    while freqs.dim() > 2 and freqs.shape[1] == 1:
-        freqs = freqs.squeeze(1)
-    while freqs.dim() > 2 and freqs.shape[-2] == 1:
-        freqs = freqs.squeeze(-2)
-    if freqs.dim() != 2:
-        freqs = freqs.reshape(freqs.shape[0], half)
-    cos = torch.cos(freqs)
-    sin = torch.sin(freqs)
+    if freqs.dtype != torch.float32:
+        freqs = freqs.float()
+    freqs = freqs.to(device=tensor.device)
+    if tensor_format == "thd":
+        if cu_seqlens is None:
+            raise ValueError("cu_seqlens must not be None when tensor_format is 'thd'")
+        cu_seqlens = cu_seqlens // cp_size
+        seqlens = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+        chunks = []
+        for idx, chunk in enumerate(torch.split(tensor, seqlens)):
+            offset_freqs = freqs[start_positions[idx] :] if start_positions is not None else freqs
+            chunks.append(
+                _apply_rotary_pos_emb_base(
+                    chunk.unsqueeze(1),
+                    _get_freqs_on_this_cp_rank(offset_freqs, chunk.size(0), cp_size, cp_rank),
+                    interleaved=interleaved,
+                ).squeeze(1)
+            )
+        return torch.cat(chunks, dim=0)
     if tensor_format == "sbhd":
-        cos = cos[:, None, None, :]
-        sin = sin[:, None, None, :]
+        seqlen = tensor.size(0)
+    elif tensor_format == "bshd":
+        seqlen = tensor.size(1)
     else:
-        cos = cos[None, :, None, :]
-        sin = sin[None, :, None, :]
-    even = tensor[..., 0::2].to(torch.float32)
-    odd = tensor[..., 1::2].to(torch.float32)
-    rotated_even = even * cos - odd * sin
-    rotated_odd = even * sin + odd * cos
-    return torch.stack((rotated_even, rotated_odd), dim=-1).flatten(-2).to(tensor.dtype)
+        raise ValueError(f"Unsupported tensor_format: {tensor_format}")
+    if start_positions is not None:
+        max_offset = torch.max(start_positions)
+        if max_offset + seqlen * cp_size > freqs.shape[0]:
+            raise ValueError("Rotary embeddings exceeded supplied frequency length")
+        freqs = torch.cat([freqs[i : i + seqlen * cp_size] for i in start_positions], dim=1)
+    return _apply_rotary_pos_emb_base(
+        tensor,
+        _get_freqs_on_this_cp_rank(freqs, seqlen, cp_size, cp_rank),
+        tensor_format,
+        interleaved=interleaved,
+    )
 """,
         shim_root / "pytorch" / "attention" / "rope.py": """
 from . import apply_rotary_pos_emb
@@ -3422,13 +4391,17 @@ def _checkpoint(work_dir: Path, python: str, *, timeout_seconds: float) -> tuple
             "status": "completed",
             "source": "configured_path",
             "path": str(Path(configured).resolve()),
+            "revision": OSCAR_HF_REVISION,
+            "configured_path_revision_attested_by_env": True,
             "resolution_timeout_seconds": timeout_seconds,
         }
-    target = work_dir / "checkpoints" / "oscar_2b"
+    target = work_dir / "checkpoints" / "oscar_2b" / OSCAR_HF_REVISION[:12]
     if target.exists() and any(target.rglob("*")):
         return target, {
             "status": "completed",
             "source": "existing_cache",
+            "repo_id": OSCAR_HF_REPO,
+            "revision": OSCAR_HF_REVISION,
             "path": str(target),
             "resolution_timeout_seconds": timeout_seconds,
         }
@@ -3437,10 +4410,12 @@ def _checkpoint(work_dir: Path, python: str, *, timeout_seconds: float) -> tuple
         "import os, sys\n"
         "repo=os.environ['BLUEPRINT_OSCAR_WAM_HF_REPO']\n"
         "target=os.environ['BLUEPRINT_OSCAR_WAM_CHECKPOINT_TARGET']\n"
-        "snapshot_download(repo_id=repo, local_dir=target, local_dir_use_symlinks=False, token=os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN'))\n"
+        "revision=os.environ['BLUEPRINT_OSCAR_WAM_HF_REVISION']\n"
+        "snapshot_download(repo_id=repo, revision=revision, local_dir=target, local_dir_use_symlinks=False, token=os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN'))\n"
     )
     env = os.environ.copy()
     env["BLUEPRINT_OSCAR_WAM_HF_REPO"] = OSCAR_HF_REPO
+    env["BLUEPRINT_OSCAR_WAM_HF_REVISION"] = OSCAR_HF_REVISION
     env["BLUEPRINT_OSCAR_WAM_CHECKPOINT_TARGET"] = str(target)
     env.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     hf_transfer_enabled = os.environ.get("BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER", "true").strip().lower() in {
@@ -3474,6 +4449,7 @@ def _checkpoint(work_dir: Path, python: str, *, timeout_seconds: float) -> tuple
             "status": "blocked",
             "source": "huggingface_snapshot_download",
             "repo_id": OSCAR_HF_REPO,
+            "revision": OSCAR_HF_REVISION,
             "path": str(target),
             "resolution_timeout_seconds": timeout_seconds,
             "hf_token_present": bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")),
@@ -3482,6 +4458,7 @@ def _checkpoint(work_dir: Path, python: str, *, timeout_seconds: float) -> tuple
             "retry_command_redacted": [python, "-c", "<huggingface_snapshot_download>"],
             "retry_env": {
                 "BLUEPRINT_OSCAR_WAM_HF_REPO": OSCAR_HF_REPO,
+                "BLUEPRINT_OSCAR_WAM_HF_REVISION": OSCAR_HF_REVISION,
                 "BLUEPRINT_OSCAR_WAM_CHECKPOINT_TARGET": str(target),
                 "BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER": (
                     "configured"
@@ -3502,6 +4479,7 @@ def _checkpoint(work_dir: Path, python: str, *, timeout_seconds: float) -> tuple
         "status": "completed" if not blockers else "blocked",
         "source": "huggingface_snapshot_download",
         "repo_id": OSCAR_HF_REPO,
+        "revision": OSCAR_HF_REVISION,
         "path": str(target),
         "resolution_timeout_seconds": timeout_seconds,
         "hf_token_present": bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")),
@@ -3510,6 +4488,7 @@ def _checkpoint(work_dir: Path, python: str, *, timeout_seconds: float) -> tuple
         "retry_command_redacted": [python, "-c", "<huggingface_snapshot_download>"],
             "retry_env": {
                 "BLUEPRINT_OSCAR_WAM_HF_REPO": OSCAR_HF_REPO,
+                "BLUEPRINT_OSCAR_WAM_HF_REVISION": OSCAR_HF_REVISION,
                 "BLUEPRINT_OSCAR_WAM_CHECKPOINT_TARGET": str(target),
                 "BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER": (
                     "configured"
@@ -3546,6 +4525,7 @@ def _cuda_probe(python: str) -> dict[str, Any]:
 
 
 def main() -> int:
+    global OSCAR_SOURCE_URL, OSCAR_SOURCE_REF, OSCAR_HF_REPO, OSCAR_HF_REVISION
     started = time.monotonic()
     _phase("runtime_started")
     bundle_dir = Path(os.environ.get("BLUEPRINT_WAM_PROVIDER_BUNDLE_DIR", Path.cwd())).resolve()
@@ -3568,10 +4548,16 @@ def main() -> int:
         blockers.extend(python_bootstrap.get("blockers") or ["wam_provider_python_bootstrap_failed"])
     runtime_manifest = _mapping(json.loads(runtime_manifest_path.read_text(encoding="utf-8"))) if runtime_manifest_path.is_file() else {}
     rollout_input = _mapping(json.loads(rollout_input_path.read_text(encoding="utf-8"))) if rollout_input_path.is_file() else {}
+    OSCAR_SOURCE_URL = _string(runtime_manifest.get("oscar_source_url")) or OSCAR_SOURCE_URL
+    OSCAR_SOURCE_REF = _string(runtime_manifest.get("oscar_source_ref")) or OSCAR_SOURCE_REF
+    OSCAR_HF_REPO = _string(runtime_manifest.get("oscar_hf_repo")) or OSCAR_HF_REPO
+    OSCAR_HF_REVISION = _string(runtime_manifest.get("oscar_hf_revision")) or OSCAR_HF_REVISION
     _phase(
         "inputs_loaded",
         runtime_manifest_present=bool(runtime_manifest),
         rollout_input_present=bool(rollout_input),
+        oscar_source_ref=OSCAR_SOURCE_REF,
+        oscar_hf_revision=OSCAR_HF_REVISION,
     )
     _phase("source_clone_started")
     source_root, source_detail = _clone_source(work_dir)
@@ -3596,6 +4582,17 @@ def main() -> int:
     checkpoint_path: Path | None = None
     checkpoint_detail: dict[str, Any] = {"status": "not_run"}
     official_case_smoke = str(runtime_manifest.get("official_case_smoke") or "").strip()
+    official_case_rgb_video = str(
+        runtime_manifest.get("official_case_rgb_video")
+        or os.environ.get("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_RGB_VIDEO")
+        or os.environ.get("OSCAR_QA_RGB_VIDEO")
+        or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    official_case_use_script = str(
+        runtime_manifest.get("official_case_use_script")
+        or os.environ.get("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT")
+        or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
     if source_root is not None and not blockers:
         _phase("dependency_setup_started")
         dependency_detail = _ensure_dependencies(python, source_root)
@@ -3703,6 +4700,9 @@ def main() -> int:
                     skeleton_video = asset_dir / "gripper_scenario.mp4"
                     rgb_video = asset_dir / "rgb.mp4"
                     checkpoint_detail["official_case_smoke"] = official_case_smoke
+                    checkpoint_detail["official_case_rgb_video_arg_enabled"] = bool(
+                        official_case_rgb_video
+                    )
                     checkpoint_detail["official_case_asset_dir"] = str(asset_dir)
                     checkpoint_detail["official_case_start_frame"] = int(start_frame)
                 except Exception as exc:
@@ -3746,7 +4746,7 @@ def main() -> int:
         argv.extend(["--output", str(generated_video)])
         runtime_argv_contract = _mapping(runtime_manifest.get("oscar_runtime_argv_contract"))
         runtime_rgb_expected = bool(runtime_argv_contract.get("rgb_video_arg_expected"))
-        if rgb_video.is_file() and (official_case_smoke or runtime_rgb_expected):
+        if rgb_video.is_file() and (official_case_rgb_video or runtime_rgb_expected):
             argv.extend(["--rgb-video", str(rgb_video)])
         inference_env = os.environ.copy()
         existing_pythonpath = inference_env.get("PYTHONPATH", "")
@@ -3764,6 +4764,8 @@ def main() -> int:
             num_steps=runtime_manifest.get("num_steps") or 35,
             guidance=runtime_manifest.get("guidance") or 6.0,
             official_case_smoke=official_case_smoke or None,
+            official_case_rgb_video=official_case_rgb_video,
+            official_case_use_script=official_case_use_script,
         )
         if blockers:
             inference_detail = {
@@ -3780,6 +4782,49 @@ def main() -> int:
                 "stderr_omitted_to_avoid_secret_leakage": False,
                 "blockers": blockers,
             }
+        elif official_case_smoke and official_case_use_script:
+            official_script_layout = _prepare_official_script_runtime(
+                source_root=source_root,
+                checkpoint_path=checkpoint_path,
+                python=python,
+            )
+            checkpoint_detail["official_case_use_script"] = True
+            checkpoint_detail["official_script_layout"] = official_script_layout
+            if official_script_layout.get("status") != "completed":
+                blockers.extend(
+                    official_script_layout.get("blockers")
+                    or ["official_oscar_script_runtime_layout_blocked"]
+                )
+                inference_detail = {
+                    "status": "blocked",
+                    "returncode": None,
+                    "duration_seconds": 0.0,
+                    "argv_redacted": ["<official_oscar_run_inference_script_blocked>"],
+                    "stdout_size_bytes": 0,
+                    "stderr_size_bytes": 0,
+                    "stderr_omitted_to_avoid_secret_leakage": False,
+                    "blockers": blockers,
+                    "official_script_layout": official_script_layout,
+                }
+            else:
+                script_env = dict(inference_env)
+                if official_case_rgb_video:
+                    script_env["OSCAR_QA_RGB_VIDEO"] = "1"
+                else:
+                    script_env.pop("OSCAR_QA_RGB_VIDEO", None)
+                source_output = source_root / "outputs" / f"{official_case_smoke}.mp4"
+                source_output.unlink(missing_ok=True)
+                inference_detail = _run(
+                    ["bash", "scripts/run_inference.sh", official_case_smoke],
+                    cwd=source_root,
+                    timeout=int(runtime_manifest.get("timeout_seconds") or 3600),
+                    env=script_env,
+                )
+                inference_detail["official_script_layout"] = official_script_layout
+                inference_detail["official_script_entrypoint"] = "scripts/run_inference.sh"
+                inference_detail["official_script_output_path"] = str(source_output)
+                if source_output.is_file():
+                    shutil.copy2(source_output, generated_video)
         else:
             inference_detail = _run(
                 argv,
@@ -3828,6 +4873,8 @@ def main() -> int:
         "guidance": runtime_manifest.get("guidance") or 6.0,
         "seed": runtime_manifest.get("seed") or 42,
         "official_case_smoke": official_case_smoke or None,
+        "official_case_rgb_video_arg_enabled": bool(official_case_rgb_video),
+        "official_case_use_script": bool(official_case_use_script),
     }
     input_signal_summary = {
         "first_frame_luma_mean": _mapping(input_package.get("first_frame")).get("luma_mean"),
@@ -3876,6 +4923,23 @@ def main() -> int:
             }
         )
     status = "completed" if rollouts and not blockers else "blocked"
+    official_release = dict(_mapping(runtime_manifest.get("official_oscar_release")))
+    official_release["resolved_source_commit"] = source_detail.get("resolved_source_commit")
+    official_release["source_ref_matches_requested"] = bool(
+        source_detail.get("source_ref_matches_requested")
+    )
+    official_release["checkpoint_repo"] = OSCAR_HF_REPO
+    official_release["checkpoint_revision"] = OSCAR_HF_REVISION
+    official_release["checkpoint_revision_matches_requested"] = bool(
+        OSCAR_HF_REVISION
+        and _string(checkpoint_detail.get("revision") or OSCAR_HF_REVISION)
+        == OSCAR_HF_REVISION
+    )
+    official_release["official_release_match"] = bool(
+        official_release.get("official_release_match")
+        and official_release.get("source_ref_matches_requested")
+        and official_release.get("checkpoint_revision_matches_requested")
+    )
     provider_payload = {
         "schema_version": "oscar_wam_command_adapter.v1",
         "status": status,
@@ -3885,9 +4949,13 @@ def main() -> int:
         "model_provenance": {
             "candidate": "oscar_wam",
             "source_url": OSCAR_SOURCE_URL,
+            "source_ref": OSCAR_SOURCE_REF,
+            "resolved_source_commit": source_detail.get("resolved_source_commit"),
             "checkpoint_repo": OSCAR_HF_REPO,
+            "checkpoint_revision": OSCAR_HF_REVISION,
             "checkpoint_path": str(checkpoint_path) if checkpoint_path else None,
             "checkpoint_exists": bool(checkpoint_path and checkpoint_path.exists()),
+            "official_oscar_release": official_release,
         },
         "input_package": runtime_manifest.get("input_package"),
         "runtime_settings": runtime_settings,
@@ -3895,6 +4963,7 @@ def main() -> int:
         "oscar_input_contract_diagnostic": input_contract_diagnostic,
         "input_signal_summary": input_signal_summary,
         "generated_video_review_validation": generated_video_validation,
+        "official_oscar_release": official_release,
         "blockers": blockers,
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
@@ -3912,6 +4981,7 @@ def main() -> int:
         "learned_wam_model_ran": bool(rollouts),
         "generated_video_path": str(generated_video) if generated_video.is_file() else None,
         "runtime_settings": runtime_settings,
+        "official_oscar_release": official_release,
         "oscar_runtime_argv_contract": runtime_manifest.get("oscar_runtime_argv_contract"),
         "oscar_input_contract_diagnostic": input_contract_diagnostic,
         "input_signal_summary": input_signal_summary,
@@ -3929,6 +4999,9 @@ def main() -> int:
         "blockers": blockers,
         "truth_boundary": {
             "generated_video_is_model_output": bool(rollouts),
+            "official_oscar_source_and_checkpoint_pinned": bool(
+                official_release.get("official_release_match")
+            ),
             "wam_success_label_from_generated_video": False,
             "forward_inverse_consistency_proven": None,
             "forward_inverse_consistency_scored_by_provider_runtime": False,
@@ -4008,7 +5081,9 @@ def _write_runtime_files(
     rollout_manifest: Mapping[str, Any],
     input_package: Mapping[str, Any],
     oscar_source_url: str,
+    oscar_source_ref: str,
     oscar_hf_repo: str,
+    oscar_hf_revision: str,
     timeout_seconds: int,
     num_steps: int,
     guidance: float,
@@ -4095,7 +5170,15 @@ def _write_runtime_files(
         "model_candidate": "oscar_wam",
         "model_name": "OSCAR-2B",
         "oscar_source_url": oscar_source_url,
+        "oscar_source_ref": oscar_source_ref,
         "oscar_hf_repo": oscar_hf_repo,
+        "oscar_hf_revision": oscar_hf_revision,
+        "official_oscar_release": official_release_contract(
+            source_url=oscar_source_url,
+            source_ref=oscar_source_ref,
+            hf_repo=oscar_hf_repo,
+            hf_revision=oscar_hf_revision,
+        ),
         "prompt": input_package.get("prompt"),
         "input_package": runtime_input_package,
         "num_frames": input_package.get("num_frames") or DEFAULT_NUM_FRAMES,
@@ -4107,6 +5190,14 @@ def _write_runtime_files(
         "seed": seed,
         "official_case_smoke": os.environ.get(
             "BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_SMOKE", ""
+        ).strip(),
+        "official_case_rgb_video": (
+            os.environ.get("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_RGB_VIDEO")
+            or os.environ.get("OSCAR_QA_RGB_VIDEO")
+            or ""
+        ).strip(),
+        "official_case_use_script": os.environ.get(
+            "BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT", ""
         ).strip(),
         "timeout_seconds": timeout_seconds,
         "remote_secret_contract": {
@@ -4146,6 +5237,7 @@ def _write_runtime_files(
         ),
         "truth_boundary": {
             "model_backend_replaceable": True,
+            "official_oscar_source_and_checkpoint_pinned": True,
             "generated_rollout_not_physical_robot_proof": True,
             "generated_success_label_requires_external_vlm_or_human_judge": True,
             "rgb_context_packaging_is_not_visual_usefulness_proof": True,
@@ -4169,7 +5261,10 @@ def build_oscar_wam_provider_bundle(
     oscar_input_dir: str | Path | None = None,
     oscar_input_package_manifest: str | Path | None = None,
     oscar_source_url: str = DEFAULT_OSCAR_SOURCE_URL,
+    oscar_source_ref: str = DEFAULT_OSCAR_SOURCE_REF,
     oscar_hf_repo: str = DEFAULT_OSCAR_HF_REPO,
+    oscar_hf_revision: str = DEFAULT_OSCAR_HF_REVISION,
+    allow_experimental_oscar_version: bool | None = None,
     timeout_seconds: int = 3600,
     num_steps: int = 35,
     guidance: float = 6.0,
@@ -4191,6 +5286,20 @@ def build_oscar_wam_provider_bundle(
         shutil.rmtree(bundle_root)
     ensure_dir(runtime_dir)
     blockers: list[str] = []
+    experimental_version_allowed = (
+        bool(allow_experimental_oscar_version)
+        if allow_experimental_oscar_version is not None
+        else os.getenv(ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV, "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    official_release = official_release_contract(
+        source_url=oscar_source_url,
+        source_ref=oscar_source_ref,
+        hf_repo=oscar_hf_repo,
+        hf_revision=oscar_hf_revision,
+    )
+    if not experimental_version_allowed:
+        blockers.extend(official_release_blockers(official_release))
     rollout_manifest: dict[str, Any] = {}
     input_package: dict[str, Any] = {}
     if not resolved_rollout_input.is_file():
@@ -4268,7 +5377,9 @@ def build_oscar_wam_provider_bundle(
             rollout_manifest=rollout_manifest,
             input_package=input_package,
             oscar_source_url=oscar_source_url,
+            oscar_source_ref=oscar_source_ref,
             oscar_hf_repo=oscar_hf_repo,
+            oscar_hf_revision=oscar_hf_revision,
             timeout_seconds=timeout_seconds,
             num_steps=num_steps,
             guidance=guidance,
@@ -4300,7 +5411,11 @@ def build_oscar_wam_provider_bundle(
         "zip_entry_count": len(zip_entries),
         "zip_entries": zip_entries,
         "oscar_source_url": oscar_source_url,
+        "oscar_source_ref": oscar_source_ref,
         "oscar_hf_repo": oscar_hf_repo,
+        "oscar_hf_revision": oscar_hf_revision,
+        "official_oscar_release": official_release,
+        "experimental_oscar_version_allowed": experimental_version_allowed,
         "input_package_conditioning_video_blockers": conditioning_video_blockers,
         "input_package_contract_diagnostic": input_contract_diagnostic,
         "input_package_materialization_error": materialization_error,
@@ -4317,6 +5432,10 @@ def build_oscar_wam_provider_bundle(
         "truth_boundary": {
             "bundle_build_is_not_model_execution": True,
             "provider_runtime_must_generate_mp4_before_wam_model_ran_true": True,
+            "official_oscar_source_and_checkpoint_pinned": bool(
+                official_release.get("official_release_match")
+            ),
+            "generated_outputs_support_artifacts_not_deployment_proof": True,
         },
     }
     write_json(resolved_job_dir / "oscar_wam_provider_bundle_manifest.json", manifest)
@@ -4330,7 +5449,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--oscar-input-dir")
     parser.add_argument("--oscar-input-package-manifest")
     parser.add_argument("--oscar-source-url", default=DEFAULT_OSCAR_SOURCE_URL)
+    parser.add_argument("--oscar-source-ref", default=DEFAULT_OSCAR_SOURCE_REF)
     parser.add_argument("--oscar-hf-repo", default=DEFAULT_OSCAR_HF_REPO)
+    parser.add_argument("--oscar-hf-revision", default=DEFAULT_OSCAR_HF_REVISION)
+    parser.add_argument("--allow-experimental-oscar-version", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument("--num-steps", type=int, default=35)
     parser.add_argument("--guidance", type=float, default=6.0)
@@ -4347,7 +5469,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         oscar_input_dir=args.oscar_input_dir,
         oscar_input_package_manifest=args.oscar_input_package_manifest,
         oscar_source_url=args.oscar_source_url,
+        oscar_source_ref=args.oscar_source_ref,
         oscar_hf_repo=args.oscar_hf_repo,
+        oscar_hf_revision=args.oscar_hf_revision,
+        allow_experimental_oscar_version=args.allow_experimental_oscar_version,
         timeout_seconds=args.timeout_seconds,
         num_steps=args.num_steps,
         guidance=args.guidance,

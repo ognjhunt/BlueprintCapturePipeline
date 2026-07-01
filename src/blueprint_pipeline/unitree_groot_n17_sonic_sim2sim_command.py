@@ -25,10 +25,45 @@ from .unitree_groot_n17_sonic_policy_runtime import POLICY_ID
 
 SCHEMA_VERSION = "unitree_groot_n17_sonic_sim2sim_execution.v1"
 TRACE_SCHEMA_VERSION = "unitree_groot_n17_sonic_sim2sim_trace_row.v1"
+PROJECTED_SKELETON_SCHEMA_VERSION = "blueprint.mujoco_g1.projected_upper_body_skeleton.v1"
+PROJECTED_SKELETON_MANIFEST_SCHEMA_VERSION = "policy_action_projected_skeleton_trace_manifest.v1"
 DEFAULT_STEPS = 40
 DEFAULT_ACTION_HOLD_STEPS = 1
 OBJECT_DISPLACEMENT_SUCCESS_M = 0.015
 SONIC_ACTION_DIM = 78
+FIXED_G1_CAMERA_NAMES = {
+    "head_pov": "blueprint_g1_head_pov",
+    "torso_pov": "blueprint_g1_torso_pov",
+    "robot_pov": "blueprint_g1_head_pov",
+}
+G1_UPPER_BODY_LANDMARK_SPECS = (
+    {"landmark_id": "left_shoulder", "body_name": "left_shoulder_pitch_link"},
+    {"landmark_id": "left_elbow", "body_name": "left_elbow_link"},
+    {"landmark_id": "left_wrist", "body_name": "left_wrist_yaw_link"},
+    {
+        "landmark_id": "left_hand",
+        "body_name": "left_hand_palm_link",
+        "fallback_body_name": "left_wrist_yaw_link",
+        "fallback_local_offset_m": [0.082, 0.003, 0.0],
+    },
+    {"landmark_id": "right_shoulder", "body_name": "right_shoulder_pitch_link"},
+    {"landmark_id": "right_elbow", "body_name": "right_elbow_link"},
+    {"landmark_id": "right_wrist", "body_name": "right_wrist_yaw_link"},
+    {
+        "landmark_id": "right_hand",
+        "body_name": "right_hand_palm_link",
+        "fallback_body_name": "right_wrist_yaw_link",
+        "fallback_local_offset_m": [0.082, -0.003, 0.0],
+    },
+)
+G1_UPPER_BODY_SKELETON_SEGMENTS = (
+    ("left_shoulder", "left_elbow"),
+    ("left_elbow", "left_wrist"),
+    ("left_wrist", "left_hand"),
+    ("right_shoulder", "right_elbow"),
+    ("right_elbow", "right_wrist"),
+    ("right_wrist", "right_hand"),
+)
 UPPER_BODY_JOINT_NAMES = (
     "left_shoulder_pitch_joint",
     "left_shoulder_roll_joint",
@@ -327,6 +362,343 @@ def _nearest_hand_body_distance_to_object(
     }
 
 
+def _mujoco_object_id(mujoco_module: Any, model: Any, object_type: Any, name: str) -> int:
+    return int(mujoco_module.mj_name2id(model, object_type, name))
+
+
+def _matrix3_rows(flat: Sequence[float]) -> list[list[float]]:
+    values = [float(value) for value in flat[:9]]
+    if len(values) < 9:
+        values.extend([0.0] * (9 - len(values)))
+    return [values[index : index + 3] for index in range(0, 9, 3)]
+
+
+def _mat3_mul_vec(matrix: Sequence[Sequence[float]], vector: Sequence[float]) -> list[float]:
+    return [
+        sum(float(matrix[row][col]) * float(vector[col]) for col in range(3))
+        for row in range(3)
+    ]
+
+
+def _g1_body_landmark_position(
+    *,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    body_name: str,
+    local_offset_m: Sequence[float] | None = None,
+) -> dict[str, Any]:
+    body_id = _mujoco_object_id(
+        mujoco_module,
+        model,
+        mujoco_module.mjtObj.mjOBJ_BODY,
+        body_name,
+    )
+    if body_id < 0:
+        return {
+            "available": False,
+            "body_name": body_name,
+            "blockers": [f"missing_g1_body:{body_name}"],
+        }
+    origin = [float(value) for value in data.xpos[body_id][:3]]
+    offset = [float(value) for value in (local_offset_m or [0.0, 0.0, 0.0])[:3]]
+    if len(offset) < 3:
+        offset.extend([0.0] * (3 - len(offset)))
+    world = origin
+    if any(abs(value) > 1e-12 for value in offset):
+        body_xmat = _matrix3_rows(data.xmat[body_id])
+        world_offset = _mat3_mul_vec(body_xmat, offset)
+        world = [origin[index] + world_offset[index] for index in range(3)]
+    return {
+        "available": True,
+        "body_name": body_name,
+        "body_id": body_id,
+        "local_offset_m": [round(value, 6) for value in offset],
+        "world_xyz_m": [round(value, 6) for value in world],
+    }
+
+
+def _g1_body_landmark_position_from_spec(
+    *,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    spec: Mapping[str, Any],
+) -> dict[str, Any]:
+    primary = _g1_body_landmark_position(
+        mujoco_module=mujoco_module,
+        model=model,
+        data=data,
+        body_name=str(spec["body_name"]),
+        local_offset_m=spec.get("local_offset_m"),
+    )
+    if primary.get("available"):
+        primary["landmark_source"] = "primary_g1_body"
+        return primary
+    fallback_body = str(spec.get("fallback_body_name") or "")
+    if not fallback_body:
+        primary["landmark_source"] = "primary_g1_body_missing"
+        return primary
+    fallback = _g1_body_landmark_position(
+        mujoco_module=mujoco_module,
+        model=model,
+        data=data,
+        body_name=fallback_body,
+        local_offset_m=spec.get("fallback_local_offset_m"),
+    )
+    if fallback.get("available"):
+        fallback["landmark_source"] = "fallback_g1_body_with_local_offset"
+        fallback["preferred_body_name"] = str(spec["body_name"])
+        fallback["fallback_for_missing_preferred_body"] = True
+        return fallback
+    fallback["blockers"] = sorted(
+        set(list(primary.get("blockers") or []) + list(fallback.get("blockers") or []))
+    )
+    fallback["landmark_source"] = "preferred_and_fallback_g1_bodies_missing"
+    fallback["preferred_body_name"] = str(spec["body_name"])
+    return fallback
+
+
+def _fixed_camera_projection_context(
+    *,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    camera_id: str,
+    image_width: int,
+    image_height: int,
+) -> dict[str, Any]:
+    fixed_camera_name = FIXED_G1_CAMERA_NAMES.get(camera_id)
+    if not fixed_camera_name:
+        return {
+            "available": False,
+            "camera_id": camera_id,
+            "blockers": [f"camera_not_fixed_g1_camera:{camera_id}"],
+        }
+    camera_obj_id = _mujoco_object_id(
+        mujoco_module,
+        model,
+        mujoco_module.mjtObj.mjOBJ_CAMERA,
+        fixed_camera_name,
+    )
+    if camera_obj_id < 0:
+        return {
+            "available": False,
+            "camera_id": camera_id,
+            "fixed_mujoco_camera_name": fixed_camera_name,
+            "blockers": [f"missing_fixed_g1_camera:{fixed_camera_name}"],
+        }
+    try:
+        fovy_deg = float(model.cam_fovy[camera_obj_id])
+        cam_xpos = [float(value) for value in data.cam_xpos[camera_obj_id][:3]]
+        cam_xmat = _matrix3_rows(data.cam_xmat[camera_obj_id])
+    except Exception as exc:
+        return {
+            "available": False,
+            "camera_id": camera_id,
+            "fixed_mujoco_camera_name": fixed_camera_name,
+            "camera_obj_id": camera_obj_id,
+            "blockers": ["fixed_g1_camera_projection_metadata_unavailable"],
+            "error": str(exc),
+        }
+    focal_px = 0.5 * float(image_height) / math.tan(math.radians(fovy_deg) / 2.0)
+    return {
+        "available": True,
+        "camera_id": camera_id,
+        "fixed_mujoco_camera_name": fixed_camera_name,
+        "camera_obj_id": camera_obj_id,
+        "image_width": int(image_width),
+        "image_height": int(image_height),
+        "fovy_deg": round(fovy_deg, 6),
+        "focal_length_px": round(focal_px, 6),
+        "camera_world_xyz_m": [round(value, 6) for value in cam_xpos],
+        "camera_xmat_row_major": [[round(value, 8) for value in row] for row in cam_xmat],
+        "projection_method": "mujoco_fixed_camera_pinhole_from_data_cam_xpos_xmat",
+    }
+
+
+def _project_world_xyz_to_camera_pixel(
+    *,
+    world_xyz_m: Sequence[float],
+    projection_context: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not projection_context.get("available"):
+        return {
+            "available": False,
+            "blockers": list(
+                projection_context.get("blockers") or ["projection_context_unavailable"]
+            ),
+        }
+    cam_pos = [float(value) for value in projection_context.get("camera_world_xyz_m", [])[:3]]
+    if len(cam_pos) < 3:
+        return {"available": False, "blockers": ["camera_world_position_unavailable"]}
+    cam_xmat = projection_context.get("camera_xmat_row_major")
+    if not (
+        isinstance(cam_xmat, Sequence)
+        and len(cam_xmat) >= 3
+        and all(isinstance(row, Sequence) and len(row) >= 3 for row in cam_xmat[:3])
+    ):
+        return {"available": False, "blockers": ["camera_orientation_unavailable"]}
+    world = [float(value) for value in world_xyz_m[:3]]
+    if len(world) < 3:
+        return {"available": False, "blockers": ["world_point_unavailable"]}
+    delta = [world[index] - cam_pos[index] for index in range(3)]
+    rows = [[float(value) for value in row[:3]] for row in cam_xmat[:3]]
+    columns = [[rows[0][index], rows[1][index], rows[2][index]] for index in range(3)]
+    camera_local = [
+        sum(delta[index] * columns[axis][index] for index in range(3)) for axis in range(3)
+    ]
+    depth = abs(float(camera_local[2]))
+    if depth <= 1e-9:
+        return {
+            "available": False,
+            "camera_local_xyz": [round(value, 6) for value in camera_local],
+            "blockers": ["camera_projection_depth_near_zero"],
+        }
+    width = int(projection_context.get("image_width") or 0)
+    height = int(projection_context.get("image_height") or 0)
+    focal_px = float(projection_context.get("focal_length_px") or 0.0)
+    if width <= 0 or height <= 0 or focal_px <= 0.0:
+        return {
+            "available": False,
+            "camera_local_xyz": [round(value, 6) for value in camera_local],
+            "blockers": ["camera_projection_intrinsics_unavailable"],
+        }
+    u = width * 0.5 + focal_px * float(camera_local[0]) / depth
+    v = height * 0.5 - focal_px * float(camera_local[1]) / depth
+    return {
+        "available": True,
+        "u_px": round(u, 3),
+        "v_px": round(v, 3),
+        "depth_m_abs": round(depth, 6),
+        "camera_local_xyz": [round(value, 6) for value in camera_local],
+        "inside_image": bool(0.0 <= u < width and 0.0 <= v < height),
+        "projection_depth_sign_abs_used": True,
+    }
+
+
+def _build_policy_action_projected_skeleton_trace_row(
+    *,
+    mujoco_module: Any,
+    model: Any,
+    data: Any,
+    generated_at: str,
+    step: int,
+    action_frame_index: int,
+    source_action_key: str | None,
+    camera_id: str = "head_pov",
+    image_width: int = 640,
+    image_height: int = 480,
+) -> dict[str, Any]:
+    projection_context = _fixed_camera_projection_context(
+        mujoco_module=mujoco_module,
+        model=model,
+        data=data,
+        camera_id=camera_id,
+        image_width=image_width,
+        image_height=image_height,
+    )
+    landmarks: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    for spec in G1_UPPER_BODY_LANDMARK_SPECS:
+        landmark = {
+            "landmark_id": spec["landmark_id"],
+            **_g1_body_landmark_position_from_spec(
+                mujoco_module=mujoco_module,
+                model=model,
+                data=data,
+                spec=spec,
+            ),
+        }
+        if landmark.get("available"):
+            landmark["image_projection"] = _project_world_xyz_to_camera_pixel(
+                world_xyz_m=landmark.get("world_xyz_m", []),
+                projection_context=projection_context,
+            )
+        else:
+            blockers.extend(str(item) for item in landmark.get("blockers") or [])
+        landmarks.append(landmark)
+    projected_count = sum(
+        1 for landmark in landmarks if _mapping(landmark.get("image_projection")).get("available")
+    )
+    if not projection_context.get("available"):
+        blockers.extend(str(item) for item in projection_context.get("blockers") or [])
+    if projected_count <= 0:
+        blockers.append("no_g1_upper_body_landmarks_projected_into_camera")
+    return {
+        "schema_version": PROJECTED_SKELETON_SCHEMA_VERSION,
+        "status": "completed" if not blockers else "warning_partial_projection",
+        "generated_at": generated_at,
+        "step": int(step),
+        "sim_time_s": round(float(data.time), 9),
+        "action_frame_index": int(action_frame_index),
+        "source_action_key": source_action_key,
+        "camera_id": camera_id,
+        "projection_context": projection_context,
+        "landmarks": landmarks,
+        "segments": [{"from": start, "to": end} for start, end in G1_UPPER_BODY_SKELETON_SEGMENTS],
+        "available_landmark_count": sum(1 for landmark in landmarks if landmark.get("available")),
+        "projected_landmark_count": projected_count,
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": {
+            "policy_derived_action_conditioning": True,
+            "not_a_learned_robot_policy_action": False,
+            "projected_skeleton_trace_derived_from_seed_render_geometry": False,
+            "temporal_rows_are_target_conditioning_from_resolved_affordance_projection": False,
+            "nominal_kinematic_projection_without_scene_or_wbc_bridge": False,
+            "official_wbc_or_sim_bridge_used": True,
+            "official_groot_wholebodycontrol_sim2sim_used": False,
+            "simulator_only_mujoco_action_trace_bridge_used": True,
+            "uses_unitree_g1_mujoco_body_transforms": True,
+            "uses_simulated_fixed_head_or_torso_camera_projection": bool(
+                projection_context.get("available")
+            ),
+            "simulated_state_not_physical_robot_sensor_evidence": True,
+            "not_task_success_proof": True,
+            "not_physical_robot_sensor_proof": True,
+        },
+    }
+
+
+def _projected_skeleton_manifest(
+    *,
+    generated_at: str,
+    rows: Sequence[Mapping[str, Any]],
+    output_path: Path,
+) -> dict[str, Any]:
+    projectable_rows = [
+        row
+        for row in rows
+        if row.get("status") == "completed" or int(row.get("projected_landmark_count") or 0) > 0
+    ]
+    blockers: list[str] = []
+    if not rows:
+        blockers.append("blocked_no_policy_action_sim2sim_rows")
+    if rows and not projectable_rows:
+        blockers.append("blocked_no_policy_action_projected_skeleton_rows")
+    return {
+        "schema_version": PROJECTED_SKELETON_MANIFEST_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "completed" if projectable_rows else "blocked",
+        "trace_jsonl": str(output_path),
+        "row_count": len(rows),
+        "projectable_row_count": len(projectable_rows),
+        "landmark_ids": [str(spec["landmark_id"]) for spec in G1_UPPER_BODY_LANDMARK_SPECS],
+        "segments": [{"from": start, "to": end} for start, end in G1_UPPER_BODY_SKELETON_SEGMENTS],
+        "blockers": blockers,
+        "claim_boundary": {
+            "derived_from_policy_action_sim2sim_bridge": True,
+            "derived_from_unitree_g1_mujoco_body_transforms": True,
+            "derived_from_head_or_torso_sim_camera_metadata": True,
+            "official_groot_wholebodycontrol_sim2sim_used": False,
+            "simulated_g1_arm_hand_state_available_for_wam_conditioning": bool(projectable_rows),
+            "not_physical_robot_sensor_proof": True,
+            "not_wam_generated_output": True,
+            "not_success_review_label": True,
+        },
+    }
+
+
 def _jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     ensure_dir(path.parent)
     with path.open("w", encoding="utf-8") as handle:
@@ -533,6 +905,7 @@ def run_unitree_groot_n17_sonic_sim2sim(
                 scene_xml=scene_path,
             )
         trace_rows: list[dict[str, Any]] = []
+        projected_skeleton_rows: list[dict[str, Any]] = []
         frames_dir = job / "unitree_groot_n17_sonic_sim2sim_frames"
         if frames_dir.exists():
             shutil.rmtree(frames_dir)
@@ -639,6 +1012,17 @@ def run_unitree_groot_n17_sonic_sim2sim(
                     "joint_positions": joint_positions,
                 }
             )
+            projected_skeleton_rows.append(
+                _build_policy_action_projected_skeleton_trace_row(
+                    mujoco_module=mujoco,
+                    model=model,
+                    data=data,
+                    generated_at=generated_at,
+                    step=step,
+                    action_frame_index=action_frame_index,
+                    source_action_key=source_key,
+                )
+            )
             if renderer is not None and image_module is not None:
                 renderer.update_scene(data)
                 frame = renderer.render()
@@ -647,6 +1031,14 @@ def run_unitree_groot_n17_sonic_sim2sim(
             renderer.close()
         trace_path = job / "unitree_groot_n17_sonic_sim2sim_action_trace.jsonl"
         _jsonl(trace_path, trace_rows)
+        projected_skeleton_trace_path = job / "policy_action_projected_skeleton_trace.jsonl"
+        _jsonl(projected_skeleton_trace_path, projected_skeleton_rows)
+        projected_skeleton_manifest = _projected_skeleton_manifest(
+            generated_at=generated_at,
+            rows=projected_skeleton_rows,
+            output_path=projected_skeleton_trace_path,
+        )
+        write_json(job / "policy_action_projected_skeleton_manifest.json", projected_skeleton_manifest)
         qpos_delta = np.abs(data.qpos - initial_qpos)
         moved_upper_body_joint_count = sum(
             1 for binding in bindings if qpos_delta[int(binding["qpos_addr"])] > 1e-5
@@ -772,6 +1164,18 @@ def run_unitree_groot_n17_sonic_sim2sim(
                 policy_chunk_integrated_contact_rollout_success
             ),
             "action_trace_jsonl": str(trace_path),
+            "policy_action_projected_skeleton_trace_jsonl": str(projected_skeleton_trace_path),
+            "policy_action_projected_skeleton_trace_path": str(projected_skeleton_trace_path),
+            "policy_action_projected_skeleton_manifest": str(
+                job / "policy_action_projected_skeleton_manifest.json"
+            ),
+            "policy_action_projected_skeleton_status": projected_skeleton_manifest["status"],
+            "policy_action_projected_skeleton_projectable_row_count": (
+                projected_skeleton_manifest["projectable_row_count"]
+            ),
+            "policy_derived_projected_skeleton_trace_present": bool(
+                projected_skeleton_manifest["status"] == "completed"
+            ),
             "video": video,
             "ffprobe": ffprobe,
             "blockers": sorted(set(execution_blockers)),
@@ -811,6 +1215,21 @@ def run_unitree_groot_n17_sonic_sim2sim(
                 ),
                 "policy_action_chunk_integrated_into_contact_rollout": (
                     policy_chunk_integrated_contact_rollout_success
+                ),
+                "policy_action_projected_skeleton_trace_jsonl": str(
+                    projected_skeleton_trace_path
+                ),
+                "policy_action_projected_skeleton_trace_path": str(
+                    projected_skeleton_trace_path
+                ),
+                "policy_action_projected_skeleton_manifest": str(
+                    job / "policy_action_projected_skeleton_manifest.json"
+                ),
+                "policy_action_projected_skeleton_status": projected_skeleton_manifest[
+                    "status"
+                ],
+                "policy_action_projected_skeleton_projectable_row_count": (
+                    projected_skeleton_manifest["projectable_row_count"]
                 ),
                 "official_groot_wholebodycontrol_sim2sim_used": False,
                 "generated_world_rank_fidelity_result_proven": False,

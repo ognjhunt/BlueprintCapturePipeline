@@ -22,6 +22,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import utc_now_iso
+from .oscar_official_release import (
+    OFFICIAL_OSCAR_HF_REPO,
+    official_release_blockers,
+    official_release_contract,
+)
 from .wam_generated_video_review import (
     validate_generated_mp4_for_review,
     visual_smoke_generated_rollouts_for_review,
@@ -34,6 +39,7 @@ DEFAULT_NUM_FRAMES = 81
 DEFAULT_HEIGHT = 480
 DEFAULT_WIDTH = 640
 DEFAULT_FPS = 15.0
+ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV = "BLUEPRINT_ALLOW_EXPERIMENTAL_OSCAR_WAM_VERSION"
 DEFAULT_CONDITIONING_BACKGROUND_ALPHA = 0.88
 DEFAULT_CONDITIONING_NEAR_BLACK_THRESHOLD = 10
 DEFAULT_CONDITIONING_VOID_FILL_BGR = (52, 56, 58)
@@ -179,6 +185,55 @@ def _checkpoint_from_env() -> Path | None:
             os.getenv("BLUEPRINT_WAM_MODEL_CHECKPOINT", ""),
         ]
     )
+
+
+def _source_root_commit(source_root: Path | None) -> str | None:
+    if source_root is None:
+        return None
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    commit = (completed.stdout or "").strip().splitlines()
+    return commit[-1] if commit else None
+
+
+def _source_root_origin_url(source_root: Path | None) -> str | None:
+    if source_root is None:
+        return None
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(source_root), "config", "--get", "remote.origin.url"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    urls = [(line or "").strip() for line in (completed.stdout or "").splitlines()]
+    return next((url for url in urls if url), None)
+
+
+def _checkpoint_revision_from_path(checkpoint: Path | None) -> str | None:
+    if checkpoint is None:
+        return None
+    hex_chars = set("0123456789abcdef")
+    for item in (checkpoint, *checkpoint.parents):
+        name = item.name.strip().lower()
+        if len(name) == 40 and all(char in hex_chars for char in name):
+            return name
+    return None
 
 
 def _preference_list(env_name: str, default: Sequence[str]) -> list[str]:
@@ -1597,10 +1652,26 @@ def _rollout_payload(
     source_root: Path,
     subprocess_detail: Mapping[str, Any],
     output_video: Path,
+    official_release: Mapping[str, Any] | None = None,
+    source_url: str = "",
+    source_ref: str = "",
+    checkpoint_repo: str = OFFICIAL_OSCAR_HF_REPO,
+    checkpoint_revision: str = "",
 ) -> dict[str, Any]:
     video_validation = validate_generated_mp4_for_review(output_video)
     video_reviewable = video_validation.get("status") == "completed"
     subprocess_completed = subprocess_detail.get("status") == "completed"
+    official_release_payload = dict(
+        official_release
+        or official_release_contract(
+            source_url=source_url or (_source_root_origin_url(source_root) or ""),
+            source_ref=source_ref or (_source_root_commit(source_root) or ""),
+            hf_repo=checkpoint_repo,
+            hf_revision=checkpoint_revision
+            or (_checkpoint_revision_from_path(checkpoint) or ""),
+        )
+    )
+    official_release_match = official_release_payload.get("official_release_match") is True
     rollouts = (
         [
             {
@@ -1647,10 +1718,17 @@ def _rollout_payload(
         "model_provenance": {
             "candidate": "oscar_wam",
             "source_root": str(source_root),
+            "source_url": source_url or (_source_root_origin_url(source_root) or None),
+            "source_ref": source_ref or (_source_root_commit(source_root) or None),
+            "checkpoint_repo": checkpoint_repo,
+            "checkpoint_revision": checkpoint_revision
+            or (_checkpoint_revision_from_path(checkpoint) or None),
             "checkpoint_path": str(checkpoint),
             "checkpoint_exists": checkpoint.exists(),
             "oscar_public_inference_entrypoint": str(source_root / "inference" / "inference_oscar.py"),
+            "official_oscar_release": official_release_payload,
         },
+        "official_oscar_release": official_release_payload,
         "input_package": dict(package_manifest),
         "oscar_subprocess": dict(subprocess_detail),
         "blockers": blockers,
@@ -1658,15 +1736,22 @@ def _rollout_payload(
             rollouts and subprocess_detail.get("status") == "completed"
         ),
         "fresh_model_run_claimed": bool(
-            rollouts and subprocess_detail.get("status") == "completed"
+            rollouts
+            and subprocess_detail.get("status") == "completed"
+            and official_release_match
         ),
         "learned_wam_model_ran": bool(
-            rollouts and subprocess_detail.get("status") == "completed"
+            rollouts
+            and subprocess_detail.get("status") == "completed"
+            and official_release_match
         ),
         "truth_boundary": {
             "generated_video_is_model_output": bool(
                 rollouts and subprocess_detail.get("status") == "completed"
             ),
+            "official_oscar_source_and_checkpoint_pinned": official_release_match,
+            "official_oscar_release_match_required_for_learned_wam_claim": True,
+            "generated_outputs_support_artifacts_not_deployment_proof": True,
             "generated_rollout_not_physical_robot_proof": True,
             "generated_success_label_requires_external_vlm_or_human_judge": True,
             "generated_world_rank_fidelity_result_proven": False,
@@ -1680,7 +1765,33 @@ def _rollout_payload(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path)
+    parser.add_argument(
+        "--source-url",
+        default=os.getenv("BLUEPRINT_OSCAR_WAM_SOURCE_URL", ""),
+        help="Origin URL for the OSCAR source tree when git metadata is unavailable.",
+    )
     parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument(
+        "--checkpoint-repo",
+        default=os.getenv("BLUEPRINT_OSCAR_WAM_HF_REPO", OFFICIAL_OSCAR_HF_REPO),
+    )
+    parser.add_argument(
+        "--checkpoint-revision",
+        default=(
+            os.getenv("BLUEPRINT_OSCAR_WAM_HF_REVISION")
+            or os.getenv("BLUEPRINT_WAM_MODEL_CHECKPOINT_REVISION")
+            or ""
+        ),
+    )
+    parser.add_argument(
+        "--allow-experimental-oscar-version",
+        action="store_true",
+        default=_env_flag(ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV, default=False),
+        help=(
+            "Permit a non-official OSCAR source/checkpoint for diagnostics. "
+            "Outputs remain experimental and do not set the learned OSCAR claim booleans."
+        ),
+    )
     parser.add_argument("--python", default=os.getenv("BLUEPRINT_OSCAR_WAM_PYTHON") or sys.executable)
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--num-frames", type=int, default=int(os.getenv("BLUEPRINT_OSCAR_WAM_NUM_FRAMES", str(DEFAULT_NUM_FRAMES))))
@@ -1723,6 +1834,32 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
     if not shutil.which(args.python) and not Path(args.python).expanduser().is_file():
         blockers.append("blocked_configured_python_missing")
 
+    source_ref = _source_root_commit(source_root) or ""
+    source_url = _string(args.source_url) or (_source_root_origin_url(source_root) or "")
+    checkpoint_revision = (
+        _string(args.checkpoint_revision)
+        or (_checkpoint_revision_from_path(checkpoint) if checkpoint else "")
+        or ""
+    )
+    checkpoint_repo = _string(args.checkpoint_repo) or OFFICIAL_OSCAR_HF_REPO
+    official_release = official_release_contract(
+        source_url=source_url,
+        source_ref=source_ref,
+        hf_repo=checkpoint_repo,
+        hf_revision=checkpoint_revision,
+    )
+    experimental_oscar_version_allowed = bool(args.allow_experimental_oscar_version)
+    official_version_blockers = (
+        []
+        if experimental_oscar_version_allowed
+        or args.probe_only
+        or source_root is None
+        or checkpoint is None
+        or not checkpoint.exists()
+        else official_release_blockers(official_release)
+    )
+    blockers.extend(official_version_blockers)
+
     package_manifest: dict[str, Any] = {}
     if not blockers:
         try:
@@ -1747,7 +1884,27 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             "blockers": blockers,
             "source_root": str(source_root) if source_root else None,
             "checkpoint_path": str(checkpoint) if checkpoint else None,
+            "model_provenance": {
+                "candidate": "oscar_wam",
+                "source_root": str(source_root) if source_root else None,
+                "source_url": source_url or None,
+                "source_ref": source_ref or None,
+                "checkpoint_path": str(checkpoint) if checkpoint else None,
+                "checkpoint_repo": checkpoint_repo,
+                "checkpoint_revision": checkpoint_revision or None,
+                "official_oscar_release": official_release,
+            },
+            "official_oscar_release": official_release,
+            "experimental_oscar_version_allowed": experimental_oscar_version_allowed,
             "input_package": package_manifest or None,
+            "truth_boundary": {
+                "official_oscar_source_and_checkpoint_pinned": bool(
+                    official_release.get("official_release_match") is True
+                ),
+                "official_oscar_release_match_required_for_learned_wam_claim": True,
+                "blocked_output_is_not_model_proof": True,
+                "generated_outputs_support_artifacts_not_deployment_proof": True,
+            },
             "raw_credentials_written_to_artifacts": False,
             "secret_hashes_written_to_artifacts": False,
         }
@@ -1770,9 +1927,29 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             "probe_only": bool(args.probe_only),
             "source_root": str(source_root),
             "checkpoint_path": str(checkpoint),
+            "model_provenance": {
+                "candidate": "oscar_wam",
+                "source_root": str(source_root),
+                "source_url": source_url or None,
+                "source_ref": source_ref or None,
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_repo": checkpoint_repo,
+                "checkpoint_revision": checkpoint_revision or None,
+                "official_oscar_release": official_release,
+            },
+            "official_oscar_release": official_release,
+            "experimental_oscar_version_allowed": experimental_oscar_version_allowed,
             "input_package": package_manifest,
             "import_probe": probe,
             "blockers": probe.get("blockers", []),
+            "truth_boundary": {
+                "official_oscar_source_and_checkpoint_pinned": bool(
+                    official_release.get("official_release_match") is True
+                ),
+                "official_oscar_release_match_required_for_learned_wam_claim": True,
+                "probe_only_is_not_model_execution_proof": bool(args.probe_only),
+                "generated_outputs_support_artifacts_not_deployment_proof": True,
+            },
             "raw_credentials_written_to_artifacts": False,
             "secret_hashes_written_to_artifacts": False,
         }
@@ -1797,7 +1974,13 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
         source_root=source_root,
         subprocess_detail=subprocess_detail,
         output_video=output_video,
+        official_release=official_release,
+        source_url=source_url,
+        source_ref=source_ref,
+        checkpoint_repo=checkpoint_repo,
+        checkpoint_revision=checkpoint_revision,
     )
+    payload["experimental_oscar_version_allowed"] = experimental_oscar_version_allowed
     if subprocess_detail["status"] != "completed" and not payload["rollouts"]:
         payload["status"] = "blocked"
         payload["blockers"] = list(subprocess_detail.get("blockers") or payload["blockers"])

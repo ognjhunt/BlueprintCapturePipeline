@@ -16,9 +16,18 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from .oscar_official_release import (
+    OFFICIAL_OSCAR_HF_REPO,
+    OFFICIAL_OSCAR_HF_REVISION,
+    OFFICIAL_OSCAR_SOURCE_COMMIT,
+    OFFICIAL_OSCAR_SOURCE_URL,
+)
+
 DEFAULT_BLUEPRINT_REPO_URL = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"
-DEFAULT_OSCAR_SOURCE_URL = "https://github.com/wuzy2115/oscar-public.git"
-DEFAULT_OSCAR_HF_REPO = "zywu2115/OSCAR-2B"
+DEFAULT_OSCAR_SOURCE_URL = OFFICIAL_OSCAR_SOURCE_URL
+DEFAULT_OSCAR_SOURCE_REF = OFFICIAL_OSCAR_SOURCE_COMMIT
+DEFAULT_OSCAR_HF_REPO = OFFICIAL_OSCAR_HF_REPO
+DEFAULT_OSCAR_HF_REVISION = OFFICIAL_OSCAR_HF_REVISION
 # The import deps OSCAR inference needs on top of the pytorch base image — the required set from
 # the OSCAR provider's _ensure_dependencies (hf_transfer is required: HF_HUB_ENABLE_HF_TRANSFER=1).
 OSCAR_RUNTIME_PIP_PACKAGES = (
@@ -48,7 +57,9 @@ def build_closed_loop_pod_startup(
     output_put_url: str = "",
     blueprint_repo_url: str = DEFAULT_BLUEPRINT_REPO_URL,
     oscar_source_url: str = DEFAULT_OSCAR_SOURCE_URL,
+    oscar_source_ref: str = DEFAULT_OSCAR_SOURCE_REF,
     oscar_hf_repo: str = DEFAULT_OSCAR_HF_REPO,
+    oscar_hf_revision: str = DEFAULT_OSCAR_HF_REVISION,
     workdir: str = "/workspace/closed_loop",
 ) -> str:
     """Return the bash startup script the pod runs. The start frame + route are baked in (base64 /
@@ -75,12 +86,23 @@ git clone --depth 1 {blueprint_repo_url} /opt/blueprint || echo "BLUEPRINT_CLOSE
 python -m pip install -q -e /opt/blueprint || echo "BLUEPRINT_CLOSED_LOOP_WARN blueprint_install_partial"
 
 echo "BLUEPRINT_CLOSED_LOOP_PHASE oscar_clone"
-git clone --depth 1 {oscar_source_url} /opt/oscar || echo "BLUEPRINT_CLOSED_LOOP_BLOCK oscar_clone_failed"
+rm -rf /opt/oscar
+git init /opt/oscar >/dev/null 2>&1 \
+  && git -C /opt/oscar remote add origin {oscar_source_url} \
+  && git -C /opt/oscar fetch --depth 1 origin {oscar_source_ref} >/dev/null 2>&1 \
+  && git -C /opt/oscar checkout --detach FETCH_HEAD >/dev/null 2>&1 \
+  || echo "BLUEPRINT_CLOSED_LOOP_BLOCK oscar_clone_failed"
+OSCAR_SOURCE_COMMIT="$(git -C /opt/oscar rev-parse HEAD 2>/dev/null || true)"
+[ "$OSCAR_SOURCE_COMMIT" = "{oscar_source_ref}" ] || echo "BLUEPRINT_CLOSED_LOOP_BLOCK oscar_source_commit_mismatch"
+export BLUEPRINT_OSCAR_WAM_SOURCE_URL="{oscar_source_url}"
+export BLUEPRINT_OSCAR_WAM_SOURCE_REF="{oscar_source_ref}"
+export BLUEPRINT_OSCAR_WAM_HF_REPO="{oscar_hf_repo}"
+export BLUEPRINT_OSCAR_WAM_HF_REVISION="{oscar_hf_revision}"
 [ -f /opt/oscar/requirements.txt ] && python -m pip install -q -r /opt/oscar/requirements.txt || true
 
 echo "BLUEPRINT_CLOSED_LOOP_PHASE checkpoint_download"
-python -m huggingface_hub.commands.huggingface_cli download {oscar_hf_repo} --local-dir /models/oscar-2b >/dev/null 2>&1 \
-  || huggingface-cli download {oscar_hf_repo} --local-dir /models/oscar-2b >/dev/null 2>&1 \
+python -m huggingface_hub.commands.huggingface_cli download {oscar_hf_repo} --revision {oscar_hf_revision} --local-dir /models/oscar-2b >/dev/null 2>&1 \
+  || huggingface-cli download {oscar_hf_repo} --revision {oscar_hf_revision} --local-dir /models/oscar-2b >/dev/null 2>&1 \
   || echo "BLUEPRINT_CLOSED_LOOP_BLOCK checkpoint_download_failed"
 
 echo "BLUEPRINT_CLOSED_LOOP_PHASE inputs"

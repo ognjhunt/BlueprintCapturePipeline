@@ -11,7 +11,15 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
-from .oscar_wam_provider_bundle import DEFAULT_OSCAR_SOURCE_URL
+from .oscar_official_release import (
+    OFFICIAL_OSCAR_SOURCE_COMMIT,
+    OFFICIAL_OSCAR_SOURCE_URL,
+    OFFICIAL_OSCAR_WAM_IMAGE_AMD64_DIGEST,
+    OFFICIAL_OSCAR_WAM_IMAGE_DIGEST,
+    OFFICIAL_OSCAR_WAM_IMAGE_REF,
+    OFFICIAL_OSCAR_WAM_IMAGE_TAG_REF,
+    official_release_contract,
+)
 
 
 OSCAR_WAM_GPU_IMAGE_SCHEMA_VERSION = "oscar_wam_gpu_image_context.v1"
@@ -20,7 +28,8 @@ DEFAULT_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 DEFAULT_TORCH_VERSION = "2.10.0"
 DEFAULT_TORCHVISION_VERSION = "0.25.0"
 DEFAULT_CUDNN_PACKAGE = "nvidia-cudnn-cu12>=9.10"
-DEFAULT_OSCAR_SOURCE_REF = "main"
+DEFAULT_OSCAR_SOURCE_URL = OFFICIAL_OSCAR_SOURCE_URL
+DEFAULT_OSCAR_SOURCE_REF = OFFICIAL_OSCAR_SOURCE_COMMIT
 DEFAULT_TRANSFORMER_ENGINE_MODE = "shim"
 DEFAULT_PLATFORM = "linux/amd64"
 TRANSFORMER_ENGINE_MODES = ("shim", "real")
@@ -660,41 +669,101 @@ class DotProductAttention(nn.Module):
         return _flatten_bshd(out.permute(0, 2, 1, 3).contiguous())
 
 
+def _rotate_half(tensor: torch.Tensor, interleaved: bool) -> torch.Tensor:
+    if not interleaved:
+        first, second = torch.chunk(tensor, 2, dim=-1)
+        return torch.cat((-second, first), dim=-1)
+    first = tensor[..., ::2]
+    second = tensor[..., 1::2]
+    return torch.stack((-second, first), dim=-1).flatten(-2)
+
+
+def _get_freqs_on_this_cp_rank(
+    freqs: torch.Tensor,
+    seqlen: int,
+    cp_size: int,
+    cp_rank: int,
+) -> torch.Tensor:
+    if cp_size > 1:
+        cp_seg = seqlen // 2
+        full_seqlen = cp_size * seqlen
+        return torch.cat(
+            [
+                freqs[cp_rank * cp_seg : (cp_rank + 1) * cp_seg],
+                freqs[
+                    full_seqlen - (cp_rank + 1) * cp_seg : full_seqlen - cp_rank * cp_seg
+                ],
+            ],
+            dim=0,
+        )
+    return freqs[:seqlen]
+
+
+def _apply_rotary_pos_emb_base(
+    tensor: torch.Tensor,
+    freqs: torch.Tensor,
+    tensor_format: str = "sbhd",
+    interleaved: bool = False,
+) -> torch.Tensor:
+    if tensor_format == "bshd":
+        freqs = freqs.transpose(0, 1)
+    cos = torch.cos(freqs).to(tensor.dtype)
+    sin = torch.sin(freqs).to(tensor.dtype)
+    rot_dim = freqs.shape[-1]
+    tensor_rot, tensor_pass = tensor[..., :rot_dim], tensor[..., rot_dim:]
+    tensor_rot = tensor_rot * cos + _rotate_half(tensor_rot, interleaved) * sin
+    return torch.cat((tensor_rot, tensor_pass), dim=-1)
+
+
 def apply_rotary_pos_emb(
     tensor: torch.Tensor,
     freqs: torch.Tensor,
     *,
     tensor_format: str = "bshd",
+    start_positions: torch.Tensor | None = None,
+    interleaved: bool = False,
     fused: bool = True,
+    cu_seqlens: torch.Tensor | None = None,
+    cp_size: int = 1,
+    cp_rank: int = 0,
 ) -> torch.Tensor:
     del fused
-    if tensor.dim() != 4:
-        raise ValueError("apply_rotary_pos_emb shim expects a rank-4 tensor")
-    half = tensor.shape[-1] // 2
-    freqs = freqs.to(device=tensor.device, dtype=torch.float32)
-    if freqs.shape[-1] >= tensor.shape[-1]:
-        freqs = freqs[..., :half]
-    if freqs.shape[-1] != half:
-        raise ValueError(f"rotary freqs last dim {freqs.shape[-1]} does not match half head dim {half}")
-    while freqs.dim() > 2 and freqs.shape[1] == 1:
-        freqs = freqs.squeeze(1)
-    while freqs.dim() > 2 and freqs.shape[-2] == 1:
-        freqs = freqs.squeeze(-2)
-    if freqs.dim() != 2:
-        freqs = freqs.reshape(freqs.shape[0], half)
-    cos = torch.cos(freqs)
-    sin = torch.sin(freqs)
+    if freqs.dtype != torch.float32:
+        freqs = freqs.float()
+    freqs = freqs.to(device=tensor.device)
+    if tensor_format == "thd":
+        if cu_seqlens is None:
+            raise ValueError("cu_seqlens must not be None when tensor_format is 'thd'")
+        cu_seqlens = cu_seqlens // cp_size
+        seqlens = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+        chunks = []
+        for idx, chunk in enumerate(torch.split(tensor, seqlens)):
+            offset_freqs = freqs[start_positions[idx] :] if start_positions is not None else freqs
+            chunks.append(
+                _apply_rotary_pos_emb_base(
+                    chunk.unsqueeze(1),
+                    _get_freqs_on_this_cp_rank(offset_freqs, chunk.size(0), cp_size, cp_rank),
+                    interleaved=interleaved,
+                ).squeeze(1)
+            )
+        return torch.cat(chunks, dim=0)
     if tensor_format == "sbhd":
-        cos = cos[:, None, None, :]
-        sin = sin[:, None, None, :]
+        seqlen = tensor.size(0)
+    elif tensor_format == "bshd":
+        seqlen = tensor.size(1)
     else:
-        cos = cos[None, :, None, :]
-        sin = sin[None, :, None, :]
-    even = tensor[..., 0::2].to(torch.float32)
-    odd = tensor[..., 1::2].to(torch.float32)
-    rotated_even = even * cos - odd * sin
-    rotated_odd = even * sin + odd * cos
-    return torch.stack((rotated_even, rotated_odd), dim=-1).flatten(-2).to(tensor.dtype)
+        raise ValueError(f"Unsupported tensor_format: {tensor_format}")
+    if start_positions is not None:
+        max_offset = torch.max(start_positions)
+        if max_offset + seqlen * cp_size > freqs.shape[0]:
+            raise ValueError("Rotary embeddings exceeded supplied frequency length")
+        freqs = torch.cat([freqs[i : i + seqlen * cp_size] for i in start_positions], dim=1)
+    return _apply_rotary_pos_emb_base(
+        tensor,
+        _get_freqs_on_this_cp_rank(freqs, seqlen, cp_size, cp_rank),
+        tensor_format,
+        interleaved=interleaved,
+    )
 """,
     shim_root / "pytorch" / "attention" / "rope.py": """
 from . import apply_rotary_pos_emb
@@ -1118,6 +1187,17 @@ def build_oscar_wam_gpu_image_context(
         "cudnn_header_visibility_required": True,
         "oscar_source_url": oscar_source_url,
         "oscar_source_ref": oscar_source_ref,
+        "official_oscar_release": official_release_contract(
+            source_url=oscar_source_url,
+            source_ref=oscar_source_ref,
+            image_ref=configured_image_ref or OFFICIAL_OSCAR_WAM_IMAGE_REF,
+        ),
+        "official_checked_image": {
+            "tag_ref": OFFICIAL_OSCAR_WAM_IMAGE_TAG_REF,
+            "digest_ref": OFFICIAL_OSCAR_WAM_IMAGE_REF,
+            "index_digest": OFFICIAL_OSCAR_WAM_IMAGE_DIGEST,
+            "linux_amd64_manifest_digest": OFFICIAL_OSCAR_WAM_IMAGE_AMD64_DIGEST,
+        },
         "transformer_engine_mode": transformer_engine_mode,
         "transformer_engine_strategy": (
             "real_transformer_engine_pip_no_build_isolation"

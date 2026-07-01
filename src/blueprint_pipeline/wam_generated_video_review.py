@@ -2029,6 +2029,7 @@ def visual_smoke_generated_rollouts_for_review(
             safe_rollout_id = _safe_component(rollout_id)
             first_hist = None
             first_edge_density = 0.0
+            first_entropy_bits = 0.0
             for sample_order, frame_index in enumerate(sample_indices):
                 capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
                 ok, frame = capture.read()
@@ -2040,6 +2041,16 @@ def visual_smoke_generated_rollouts_for_review(
                 std_luma = float(gray.std())
                 edges = cv2.Canny(gray, 50, 150)
                 edge_density = float((edges > 0).mean())
+                gray_hist = cv2.calcHist([gray], [0], None, [128], [0, 256])
+                gray_total = float(gray_hist.sum())
+                gray_probabilities = [
+                    float(value) / max(gray_total, 1.0)
+                    for value in gray_hist.flatten()
+                    if float(value) > 0.0
+                ]
+                entropy_bits = float(
+                    -sum(probability * math.log2(probability) for probability in gray_probabilities)
+                )
                 hist = cv2.calcHist(
                     [frame],
                     [0, 1, 2],
@@ -2051,6 +2062,7 @@ def visual_smoke_generated_rollouts_for_review(
                 if first_hist is None:
                     first_hist = hist
                     first_edge_density = edge_density
+                    first_entropy_bits = entropy_bits
                 hist_correlation_to_first = float(
                     cv2.compareHist(first_hist, hist, cv2.HISTCMP_CORREL)
                 )
@@ -2071,6 +2083,11 @@ def visual_smoke_generated_rollouts_for_review(
                         "luma_min": luma_min,
                         "luma_max": luma_max,
                         "luma_range": luma_max - luma_min,
+                        "entropy_bits": round(entropy_bits, 6),
+                        "entropy_delta_to_first": round(
+                            entropy_bits - first_entropy_bits,
+                            6,
+                        ),
                         "edge_density": round(edge_density, 6),
                         "edge_density_ratio_to_first": round(
                             edge_density_ratio_to_first,
@@ -2104,6 +2121,21 @@ def visual_smoke_generated_rollouts_for_review(
                     for sample in later_samples
                 )
             )
+            later_edge_structure_drift = bool(
+                later_samples
+                and any(
+                    sample.get("edge_density_ratio_to_first", 0.0) < 0.25
+                    and sample.get("edge_density", 0.0) < 0.01
+                    for sample in later_samples
+                )
+            )
+            later_entropy_drift = bool(
+                later_samples
+                and any(
+                    float(sample.get("entropy_delta_to_first") or 0.0) < -1.5
+                    for sample in later_samples
+                )
+            )
             later_static_or_noise_artifact = bool(
                 later_samples
                 and any(
@@ -2124,6 +2156,11 @@ def visual_smoke_generated_rollouts_for_review(
                             sample.get("edge_density_ratio_to_first", 0.0) < 0.10
                             and sample.get("histogram_correlation_to_first", 0.0) < 0.25
                         )
+                        or (
+                            sample.get("edge_density_ratio_to_first", 0.0) < 0.25
+                            and sample.get("edge_density", 0.0) < 0.01
+                        )
+                        or float(sample.get("entropy_delta_to_first") or 0.0) < -1.5
                         or (
                             sample.get("edge_density_ratio_to_first", 0.0) > 3.0
                             and sample.get("edge_density", 0.0) > 0.12
@@ -2199,6 +2236,12 @@ def visual_smoke_generated_rollouts_for_review(
                 quality_blockers.append(
                     "generated_rollout_later_frames_lost_scene_structure"
                 )
+            if later_edge_structure_drift:
+                quality_blockers.append(
+                    "generated_rollout_later_frames_edge_structure_drift"
+                )
+            if later_entropy_drift:
+                quality_blockers.append("generated_rollout_later_frames_entropy_drift")
             if later_static_or_noise_artifact:
                 quality_blockers.append(
                     "generated_rollout_later_frames_static_noise_artifact"
@@ -2219,6 +2262,8 @@ def visual_smoke_generated_rollouts_for_review(
                         "first_future_frame_collapsed": immediate_future_collapse,
                         "later_frames_flat_or_dark": later_flat_or_dark,
                         "later_frames_lost_scene_structure": later_lost_scene_structure,
+                        "later_frames_edge_structure_drift": later_edge_structure_drift,
+                        "later_frames_entropy_drift": later_entropy_drift,
                         "later_frames_static_noise_artifact": later_static_or_noise_artifact,
                         "media_profile_reviewable_for_task_success": (
                             media_profile_reviewable
@@ -2268,6 +2313,8 @@ def visual_smoke_generated_rollouts_for_review(
             "generated_rollout_first_future_frame_collapsed",
             "generated_rollout_later_frames_flat_or_dark",
             "generated_rollout_later_frames_lost_scene_structure",
+            "generated_rollout_later_frames_edge_structure_drift",
+            "generated_rollout_later_frames_entropy_drift",
             "generated_rollout_later_frames_static_noise_artifact",
             "generated_rollout_video_resolution_too_low_for_task_success_review",
             "generated_rollout_video_fps_too_low_for_task_success_review",

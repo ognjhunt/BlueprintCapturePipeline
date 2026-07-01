@@ -33,6 +33,11 @@ from .isaac_g1_policy import (
     interpolate_route,
 )
 from .oscar_wam_provider_command_adapter import run as run_oscar_wam_provider_adapter
+from .oscar_official_release import (
+    OFFICIAL_OSCAR_HF_REPO,
+    official_release_blockers,
+    official_release_contract,
+)
 from .oscar_cosmos_wam_evaluator import (
     WAM_CONSISTENCY_COMMAND_ENV,
     WAM_CONSISTENCY_COMMAND_OUTPUT,
@@ -63,6 +68,7 @@ PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV = (
 PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_ENV = (
     "BLUEPRINT_PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_STEPS"
 )
+ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV = "BLUEPRINT_ALLOW_EXPERIMENTAL_OSCAR_WAM_VERSION"
 UNITREE_G1_SONIC_STATE_DIMS = {
     "left_leg": 6,
     "right_leg": 6,
@@ -232,6 +238,7 @@ def build_wam_generation_step_input(
     next_observation_frame_path: str | Path | None = None,
     target_object_id: str = "task_target",
     projected_skeleton_trace_path: str | Path | None = None,
+    rgb_context_frame_paths: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
     """Build the provider-bundle input for one per-step OSCAR WAM call."""
     frame = Path(current_frame_path).expanduser().resolve()
@@ -250,7 +257,7 @@ def build_wam_generation_step_input(
         if next_observation_frame_path
         else out / "generated_next_observation.png"
     )
-    return {
+    payload = {
         "schema_version": "wam_generation_step_input.v1",
         "step_index": int(step_index),
         "source_policy_observation_frame_path": str(frame),
@@ -296,6 +303,24 @@ def build_wam_generation_step_input(
             "physical_robot_sensor_proof": False,
         },
     }
+    context_paths: list[str] = []
+    seen_context_paths: set[str] = set()
+    for value in rgb_context_frame_paths or []:
+        text = _string(value)
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if not path.is_file():
+            continue
+        resolved = str(path.resolve())
+        if resolved in seen_context_paths:
+            continue
+        seen_context_paths.add(resolved)
+        context_paths.append(resolved)
+    if context_paths:
+        payload["rgb_context_frame_paths"] = context_paths
+        payload["claim_boundary"]["rgb_context_frame_paths_are_real_observation_history"] = True
+    return payload
 
 
 @contextmanager
@@ -336,8 +361,76 @@ def _provider_payload_proves_fresh_model(payload: Mapping[str, Any]) -> bool:
     )
 
 
+def _provider_payload_visual_acceptance_blockers(payload: Mapping[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    status = _string(payload.get("status"))
+    if status and status != "completed":
+        blockers.append(f"oscar_provider_status_{status}")
+        blockers.extend(_string_list(payload.get("blockers")))
+    visual_status = _string(payload.get("generated_rollout_visual_smoke_status"))
+    if visual_status and visual_status != "passed_visual_quality_smoke":
+        blockers.append("provider_generated_rollout_visual_smoke_not_passed")
+        blockers.append(f"provider_generated_rollout_visual_smoke_status:{visual_status}")
+        blockers.extend(_string_list(payload.get("generated_rollout_visual_quality_blockers")))
+        visual_smoke = _mapping(payload.get("generated_rollout_visual_smoke"))
+        blockers.extend(_string_list(visual_smoke.get("blockers")))
+    return sorted(set(item for item in blockers if item))
+
+
 def _env_truthy(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _git_config_value(path: str | Path | None, key: str) -> str:
+    if not _string(path):
+        return ""
+    try:
+        import subprocess
+
+        completed = subprocess.run(
+            ["git", "-C", str(Path(_string(path)).expanduser()), "config", "--get", key],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return (completed.stdout or "").strip().splitlines()[-1] if completed.stdout.strip() else ""
+
+
+def _git_head_commit(path: str | Path | None) -> str:
+    if not _string(path):
+        return ""
+    try:
+        import subprocess
+
+        completed = subprocess.run(
+            ["git", "-C", str(Path(_string(path)).expanduser()), "rev-parse", "HEAD"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return (completed.stdout or "").strip().splitlines()[-1] if completed.stdout.strip() else ""
+
+
+def _checkpoint_revision_from_path(path: str | Path | None) -> str:
+    if not _string(path):
+        return ""
+    hex_chars = set("0123456789abcdef")
+    checkpoint = Path(_string(path)).expanduser()
+    for item in (checkpoint, *checkpoint.parents):
+        name = item.name.strip().lower()
+        if len(name) == 40 and all(char in hex_chars for char in name):
+            return name
+    return ""
 
 
 def _float_env(name: str, default: float) -> float:
@@ -519,6 +612,29 @@ def build_closed_loop_wam_backend_readiness(
     built_in_oscar_provider_configured = bool(
         backend == "oscar_wam" and use_provider_command
     )
+    local_official_release = (
+        official_release_contract(
+            source_url=(
+                _string(os.environ.get("BLUEPRINT_OSCAR_WAM_SOURCE_URL"))
+                or _git_config_value(oscar_repo, "remote.origin.url")
+            ),
+            source_ref=(
+                _string(os.environ.get("BLUEPRINT_OSCAR_WAM_SOURCE_REF"))
+                or _git_head_commit(oscar_repo)
+            ),
+            hf_repo=_string(os.environ.get("BLUEPRINT_OSCAR_WAM_HF_REPO"))
+            or OFFICIAL_OSCAR_HF_REPO,
+            hf_revision=(
+                _string(os.environ.get("BLUEPRINT_OSCAR_WAM_HF_REVISION"))
+                or _checkpoint_revision_from_path(checkpoint)
+            ),
+        )
+        if local_oscar_configured
+        else None
+    )
+    experimental_oscar_version_allowed = _env_truthy(
+        ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV
+    )
     paid_provider_preflight = (
         _closed_loop_paid_provider_preflight(
             provider=oscar_provider,
@@ -541,6 +657,13 @@ def build_closed_loop_wam_backend_readiness(
     if backend == "oscar_wam":
         if not (built_in_oscar_provider_configured or local_oscar_configured):
             blockers.append("blocked_missing_oscar_provider_or_local_checkpoint")
+        if (
+            local_oscar_configured
+            and not built_in_oscar_provider_configured
+            and not experimental_oscar_version_allowed
+            and local_official_release is not None
+        ):
+            blockers.extend(official_release_blockers(local_official_release))
         blockers.extend(str(item) for item in paid_provider_preflight.get("blockers") or [])
     elif backend == "cosmos3_wam":
         blockers.append("blocked_cosmos3_wam_not_wired_into_isaac_closed_loop_runner")
@@ -568,6 +691,8 @@ def build_closed_loop_wam_backend_readiness(
         "allow_paid_provider_launch": bool(allow_paid_provider_launch),
         "local_oscar_repo_configured": bool(_string(oscar_repo)),
         "local_oscar_checkpoint_configured": bool(_string(checkpoint)),
+        "official_oscar_release": local_official_release,
+        "experimental_oscar_version_allowed": experimental_oscar_version_allowed,
         "explicit_provider_command_configured": explicit_provider_command_configured,
         "provider_command_env_var": command_env_var,
         "generic_provider_command_env_var": "BLUEPRINT_WAM_PROVIDER_COMMAND",
@@ -579,6 +704,12 @@ def build_closed_loop_wam_backend_readiness(
             "readiness_manifest_is_not_model_execution_proof": True,
             "cosmos3_strategy_preference_does_not_imply_runtime_wired": True,
             "oscar_provider_path_is_not_cosmos3_runtime": backend == "oscar_wam",
+            "official_oscar_source_and_checkpoint_pinned": bool(
+                local_official_release
+                and local_official_release.get("official_release_match") is True
+            )
+            if local_oscar_configured
+            else False,
         },
     }
 
@@ -733,7 +864,11 @@ def build_closed_loop_provider_input_contract_preflight(
         "contract_warnings": contract.get("warnings") or [],
         "contract_blockers": contract.get("blockers") or [],
         "autoregressive_risk_flags": contract.get("autoregressive_risk_flags") or [],
+        "high_risk_flags": contract.get("high_risk_flags") or [],
+        "ranking_risk_flags": contract.get("ranking_risk_flags") or [],
         "autoregressive_risk_level": contract.get("autoregressive_risk_level"),
+        "policy_ranking_risk_level": contract.get("policy_ranking_risk_level"),
+        "policy_ranking_claim_safe": contract.get("policy_ranking_claim_safe"),
         "short_rollout_sanity_recommended_before_scale_up": bool(
             contract.get("short_rollout_sanity_recommended_before_scale_up")
         ),
@@ -997,6 +1132,7 @@ def make_oscar_provider_command_wam_backend(
     """
     resolved_work = Path(work_dir).expanduser().resolve()
     ensure_dir(resolved_work)
+    rgb_context_history: list[str] = []
 
     def _generate_next(
         current_frame: str,
@@ -1006,6 +1142,11 @@ def make_oscar_provider_command_wam_backend(
     ) -> dict[str, Any]:
         step_dir = resolved_work / f"step_{step_index:04d}"
         ensure_dir(step_dir)
+        current_frame_path = Path(current_frame).expanduser()
+        if current_frame_path.is_file():
+            current_resolved = str(current_frame_path.resolve())
+            if current_resolved not in rgb_context_history:
+                rgb_context_history.append(current_resolved)
         step_input = build_wam_generation_step_input(
             current_frame_path=current_frame,
             action=action,
@@ -1013,6 +1154,7 @@ def make_oscar_provider_command_wam_backend(
             output_dir=step_dir,
             task_prompt=task_prompt,
             projected_skeleton_trace_path=projected_skeleton_trace_path,
+            rgb_context_frame_paths=rgb_context_history[-max(2, int(num_frames)) :],
         )
         step_input_path = step_dir / "wam_generation_step_input.json"
         write_json(step_input_path, step_input)
@@ -1057,6 +1199,18 @@ def make_oscar_provider_command_wam_backend(
                 "fresh_provider_model_run_claimed": False,
                 "blockers": payload.get("blockers") or ["oscar_provider_video_missing"],
             }
+        visual_acceptance_blockers = _provider_payload_visual_acceptance_blockers(payload)
+        if visual_acceptance_blockers:
+            return {
+                "status": "blocked",
+                "wam_backend": "oscar_2b_per_step_provider",
+                "generated_frame_path": "",
+                "generated_video_path": video,
+                "provider_payload": payload,
+                "provider_output_path": str(output_path),
+                "fresh_provider_model_run_claimed": _provider_payload_proves_fresh_model(payload),
+                "blockers": visual_acceptance_blockers,
+            }
         extractor = extract_next_frame or extract_next_observation_frame_from_video
         next_frame = extractor(video, step_dir / "next_observation")
         if next_frame is None or not Path(next_frame).is_file():
@@ -1070,6 +1224,9 @@ def make_oscar_provider_command_wam_backend(
                 "fresh_provider_model_run_claimed": _provider_payload_proves_fresh_model(payload),
                 "blockers": ["oscar_provider_next_observation_frame_extraction_failed"],
             }
+        next_frame_resolved = str(Path(next_frame).expanduser().resolve())
+        if next_frame_resolved not in rgb_context_history:
+            rgb_context_history.append(next_frame_resolved)
         return {
             "status": "completed" if payload.get("status") == "completed" else "blocked",
             "wam_backend": "oscar_2b_per_step_provider",
@@ -2134,6 +2291,16 @@ def run_oscar_isaac_closed_loop(
         wam_output = dict(
             wam_generate_next(current_frame, action, step_index, list(action_history)) or {}
         )
+        wam_status = _string(wam_output.get("status"))
+        if wam_status and wam_status != "completed":
+            step_blockers = _string_list(wam_output.get("blockers")) or [
+                f"wam_generation_status_{wam_status}"
+            ]
+            blockers.extend(
+                f"blocked_wam_generation_at_step_{step_index}:{blocker}"
+                for blocker in step_blockers
+            )
+            break
         generated_frame = _string(wam_output.get("generated_frame_path"))
         if not generated_frame or not Path(generated_frame).is_file():
             blockers.append(f"blocked_wam_generation_missing_frame_at_step_{step_index}")

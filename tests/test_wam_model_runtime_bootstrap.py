@@ -7,6 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 from blueprint_pipeline import wam_model_runtime_bootstrap as bootstrap
+from blueprint_pipeline.oscar_official_release import (
+    OFFICIAL_OSCAR_HF_REVISION,
+    OFFICIAL_OSCAR_SOURCE_COMMIT,
+    OFFICIAL_OSCAR_SOURCE_URL,
+)
 
 
 def test_wam_model_runtime_bootstrap_writes_blocked_package(
@@ -36,7 +41,11 @@ def test_wam_model_runtime_bootstrap_writes_blocked_package(
         )
     )
     assert manifest["candidate"]["model_repo_id"] == "zywu2115/OSCAR-2B"
+    assert manifest["candidate"]["model_revision"] == OFFICIAL_OSCAR_HF_REVISION
     assert manifest["candidate"]["source_repo_url"] == "https://github.com/wuzy2115/oscar-public"
+    assert manifest["candidate"]["source_repo_git_url"] == OFFICIAL_OSCAR_SOURCE_URL
+    assert manifest["candidate"]["source_repo_commit"] == OFFICIAL_OSCAR_SOURCE_COMMIT
+    assert manifest["official_oscar_release"]["official_release_match"] is True
     assert manifest["claim_boundary"]["bootstrap_package_is_not_model_execution"] is True
     assert manifest["claim_boundary"]["raw_credentials_written_to_artifacts"] is False
 
@@ -46,15 +55,20 @@ def test_wam_model_runtime_bootstrap_writes_blocked_package(
         )
     )
     assert download_plan["download_not_started_by_this_artifact"] is True
+    assert download_plan["model_revision"] == OFFICIAL_OSCAR_HF_REVISION
     assert "snapshot_download" in download_plan["download_command"]
+    assert f"revision='{OFFICIAL_OSCAR_HF_REVISION}'" in download_plan["download_command"]
 
     env_template = (tmp_path / "bootstrap" / "wam_model_runtime_env_template.sh").read_text(
         encoding="utf-8"
     )
     assert "BLUEPRINT_OSCAR_WAM_COMMAND" in env_template
     assert "BLUEPRINT_OSCAR_WAM_CHECKPOINT" in env_template
+    assert f'BLUEPRINT_OSCAR_WAM_SOURCE_REF="{OFFICIAL_OSCAR_SOURCE_COMMIT}"' in env_template
+    assert f'BLUEPRINT_OSCAR_WAM_HF_REVISION="{OFFICIAL_OSCAR_HF_REVISION}"' in env_template
     assert "blueprint_pipeline.oscar_wam_command_adapter" in env_template
-    assert "hf_" not in env_template.lower()
+    assert "hf_token" not in env_template.lower()
+    assert "hugging_face_hub_token" not in env_template.lower()
     dockerfile = (tmp_path / "bootstrap" / "Dockerfile.wam-provider").read_text(
         encoding="utf-8"
     )

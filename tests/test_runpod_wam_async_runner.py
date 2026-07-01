@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import zipfile
 from pathlib import Path
@@ -71,6 +72,25 @@ def test_runpod_unitree_groot_sonic_persistent_payload_uses_provider_kind() -> N
     assert len(script) < 4500
 
 
+def test_runpod_payload_forwards_success_keepalive_when_keep_requested(monkeypatch) -> None:
+    monkeypatch.setenv(runner.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "keep_on_success")
+
+    payload = runner._pod_payload(
+        job_name="blueprint-wam-keepalive-test",
+        image_name="pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime",
+        gpu_type_ids=("NVIDIA A40",),
+        provider_bundle_url="https://store.example/bundle.zip?secret",
+        provider_output_put_url="https://store.example/out.zip?secret",
+        provider_bundle_kind="wam",
+        model_secret_env={},
+        provider_runtime_config_env={},
+        container_disk_gb=160,
+        volume_gb=40,
+    )
+
+    assert payload["env"]["BLUEPRINT_RUNPOD_KEEPALIVE_AFTER_SUCCESS"] == "1"
+
+
 def test_runpod_wam_payload_wraps_entrypoint_with_timeout_and_log() -> None:
     payload = runner._pod_payload(
         job_name="blueprint-wam-test",
@@ -99,6 +119,10 @@ def test_runpod_wam_payload_wraps_entrypoint_with_timeout_and_log() -> None:
     assert "unitree_groot_n17_sonic_wam_persistent_session_output.v1" in script
     assert "upload_wam_running_heartbeat runpod_wam_outer_wrapper_started" in script
     assert "upload_wam_running_heartbeat runpod_wam_entrypoint_starting" in script
+    assert "BLUEPRINT_RUNPOD_WAM_ENTRYPOINT_LOG_PATH" in script
+    assert "entrypoint_log_tail" in script
+    assert "upload_wam_running_heartbeat runpod_wam_entrypoint_running" in script
+    assert "entrypoint_heartbeat_pid" in script
     heredocs = _python_heredoc_chunks(script)
     assert len(heredocs) == 5
     for index, chunk in enumerate(heredocs):
@@ -110,6 +134,13 @@ def test_runpod_wam_carrier_flag_is_forwarded_for_unitree_runtime(monkeypatch) -
     monkeypatch.setenv("BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS", "240")
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS", "1200")
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER", "true")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CONDITIONING_MODE", "oscar_gripper_scenario_proxy")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_RGB_CONTEXT_MODE", "always")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_SMOKE", "agibot_465")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_RGB_VIDEO", "1")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT", "true")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CONDITIONING_BACKGROUND_ALPHA", "0.72")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CONDITIONING_VOID_THRESHOLD", "14")
     monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE", "system_python_minimal")
     monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT", "true")
     monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON", "/opt/conda/bin/python")
@@ -125,6 +156,13 @@ def test_runpod_wam_carrier_flag_is_forwarded_for_unitree_runtime(monkeypatch) -
     assert env["BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS"] == "240"
     assert env["BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS"] == "1200"
     assert env["BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER"] == "true"
+    assert env["BLUEPRINT_OSCAR_WAM_CONDITIONING_MODE"] == "oscar_gripper_scenario_proxy"
+    assert env["BLUEPRINT_OSCAR_WAM_RGB_CONTEXT_MODE"] == "always"
+    assert env["BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_SMOKE"] == "agibot_465"
+    assert env["BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_RGB_VIDEO"] == "1"
+    assert env["BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT"] == "true"
+    assert env["BLUEPRINT_OSCAR_WAM_CONDITIONING_BACKGROUND_ALPHA"] == "0.72"
+    assert env["BLUEPRINT_OSCAR_WAM_CONDITIONING_VOID_THRESHOLD"] == "14"
     assert env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE"] == "system_python_minimal"
     assert env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT"] == "true"
     assert env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON"] == "/opt/conda/bin/python"
@@ -417,7 +455,333 @@ def test_runpod_create_reuses_recorded_warm_candidate(
     assert manifest["pod_launch_mode"] == "existing_pod_start"
     assert manifest["warm_existing_pod"]["selection_source"] == "dynamic_warm_candidate"
     assert manifest["warm_existing_pod"]["dynamic_warm_candidate"]["status"] == "selected"
+    assert (
+        manifest["warm_existing_pod"]["dynamic_warm_candidate"]["reuse_kind"]
+        == "stopped_warm_candidate"
+    )
     assert manifest["warm_existing_pod"]["existing_pod_id"] == "warm-file-pod-123"
+
+
+def test_runpod_create_falls_back_when_stopped_warm_candidate_cannot_start(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "wam_bundle.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_runtime/run_wam_provider_runtime.sh", "echo hi\n")
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    warm_candidate_file.write_text(
+        json.dumps(
+            {
+                "schema_version": runner.RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION,
+                "generated_at": "prior",
+                "pod_id": "warm-file-pod-123",
+                "provider_bundle_kind": "wam",
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+                "stopped_pod_preserved_for_warm_reuse": True,
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs["path"] == "/pods/warm-file-pod-123/update":
+            return 200, {"id": "warm-file-pod-123", "desiredStatus": "EXITED"}
+        if kwargs["path"] == "/pods/warm-file-pod-123/start":
+            raise runner.urllib.error.HTTPError(
+                url="https://rest.runpod.io/v1/pods/warm-file-pod-123/start",
+                code=500,
+                msg="capacity",
+                hdrs=None,
+                fp=io.BytesIO(
+                    b'{"error":"start pod: There are not enough free GPUs on the host machine to start this pod."}'
+                ),
+            )
+        if kwargs["path"] == "/pods":
+            return 200, {"id": "fresh-pod-456", "desiredStatus": "RUNNING"}
+        raise AssertionError(kwargs["path"])
+
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url="https://spaces.example/bundle.zip",
+        provider_output_put_url="https://spaces.example/output.zip",
+        allow_paid_runpod_launch=True,
+        skip_public_staging_verification=True,
+        image_name="docker.io/example/wam:20260629",
+        generated_at="now",
+    )
+
+    assert [call["path"] for call in calls] == [
+        "/pods/warm-file-pod-123/update",
+        "/pods/warm-file-pod-123/start",
+        "/pods",
+    ]
+    assert manifest["status"] == "pod_created"
+    assert manifest["pod_id"] == "fresh-pod-456"
+    assert manifest["pod_launch_mode"] == "fresh_pod_create_after_stopped_warm_start_failed"
+    warm = manifest["warm_existing_pod"]
+    assert warm["stopped_warm_candidate_start_failed"] is True
+    assert warm["warm_candidate_retirement"]["status"] == "not_retired"
+    assert warm["warm_candidate_retirement"]["reason"] == (
+        "stopped_warm_candidate_start_error_may_be_transient"
+    )
+    assert warm["fallback_fresh_create_attempted"] is True
+    assert warm["claim_boundary"]["stopped_warm_candidate_does_not_reserve_gpu_capacity"] is True
+    assert json.loads(warm_candidate_file.read_text())["pod_id"] == "warm-file-pod-123"
+
+
+def test_runpod_create_retires_missing_stopped_warm_candidate_before_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "wam_bundle.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_runtime/run_wam_provider_runtime.sh", "echo hi\n")
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    warm_candidate_file.write_text(
+        json.dumps(
+            {
+                "schema_version": runner.RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION,
+                "generated_at": "prior",
+                "pod_id": "missing-warm-pod-123",
+                "provider_bundle_kind": "wam",
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+                "stopped_pod_preserved_for_warm_reuse": True,
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_runpod_request(**kwargs):
+        if kwargs["path"] == "/pods/missing-warm-pod-123/update":
+            raise runner.urllib.error.HTTPError(
+                url="https://rest.runpod.io/v1/pods/missing-warm-pod-123/update",
+                code=404,
+                msg="missing",
+                hdrs=None,
+                fp=io.BytesIO(b'{"error":"podUpdate: get pod: pod not found","status":404}'),
+            )
+        if kwargs["path"] == "/pods":
+            return 201, {"id": "fresh-after-missing-456", "desiredStatus": "RUNNING"}
+        raise AssertionError(kwargs["path"])
+
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url="https://spaces.example/bundle.zip",
+        provider_output_put_url="https://spaces.example/output.zip",
+        allow_paid_runpod_launch=True,
+        skip_public_staging_verification=True,
+        image_name="docker.io/example/wam:20260629",
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "pod_created"
+    assert manifest["pod_id"] == "fresh-after-missing-456"
+    warm = manifest["warm_existing_pod"]
+    assert warm["stopped_warm_candidate_start_failed"] is True
+    assert warm["warm_candidate_retirement"]["status"] == "retired"
+    retired = json.loads(warm_candidate_file.read_text())
+    assert retired["status"] == "retired"
+    assert retired["retired_pod_id"] == "missing-warm-pod-123"
+
+
+def test_runpod_create_labels_running_hot_candidate_reuse_boundary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "wam_bundle.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_runtime/run_wam_provider_runtime.sh", "echo hi\n")
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    warm_candidate_file.write_text(
+        json.dumps(
+            {
+                "schema_version": runner.RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION,
+                "generated_at": "prior",
+                "pod_id": "hot-file-pod-123",
+                "provider_bundle_kind": "wam",
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+                "source_keepalive_poll_manifest_path": str(tmp_path / "poll.json"),
+                "running_pod_preserved_for_hot_reuse": True,
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs["path"] == "/pods/hot-file-pod-123":
+            return 200, {
+                "id": "hot-file-pod-123",
+                "desiredStatus": "RUNNING",
+                "runtime": {"uptimeInSeconds": 120},
+                "publicIp": "198.51.100.10",
+            }
+        if kwargs["path"] == "/pods/hot-file-pod-123/update":
+            return 200, {"id": "hot-file-pod-123", "desiredStatus": "RUNNING"}
+        if kwargs["path"] == "/pods/hot-file-pod-123/start":
+            return 200, {"id": "hot-file-pod-123", "desiredStatus": "RUNNING"}
+        raise AssertionError(kwargs["path"])
+
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url="https://spaces.example/bundle.zip",
+        provider_output_put_url="https://spaces.example/output.zip",
+        allow_paid_runpod_launch=True,
+        skip_public_staging_verification=True,
+        image_name="docker.io/example/wam:20260629",
+        generated_at="now",
+    )
+
+    assert [call["path"] for call in calls] == [
+        "/pods/hot-file-pod-123",
+        "/pods/hot-file-pod-123/update",
+        "/pods/hot-file-pod-123/start",
+    ]
+    assert manifest["pod_launch_mode"] == "existing_pod_start"
+    warm = manifest["warm_existing_pod"]
+    assert warm["candidate_reuse_kind"] == "running_hot_candidate"
+    assert warm["dynamic_warm_candidate"]["running_pod_preserved_for_hot_reuse"] is True
+    assert (
+        warm["dynamic_warm_candidate"]["source_keepalive_poll_manifest_path"]
+        == str(tmp_path / "poll.json")
+    )
+    assert warm["claim_boundary"]["existing_pod_id_reused"] is True
+    assert warm["claim_boundary"]["existing_pod_update_start_path_used"] is True
+    assert (
+        warm["claim_boundary"]["running_hot_candidate_still_uses_update_start_path"]
+        is True
+    )
+    assert warm["claim_boundary"]["resident_in_pod_job_queue_not_proven"] is True
+
+
+def test_runpod_create_rejects_stale_running_hot_candidate_without_runtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "wam_bundle.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_runtime/run_wam_provider_runtime.sh", "echo hi\n")
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    warm_candidate_file.write_text(
+        json.dumps(
+            {
+                "schema_version": runner.RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION,
+                "generated_at": "2026-06-30T20:00:00+00:00",
+                "pod_id": "stale-hot-pod-123",
+                "provider_bundle_kind": "wam",
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+                "source_keepalive_poll_manifest_path": str(tmp_path / "poll.json"),
+                "running_pod_preserved_for_hot_reuse": True,
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs["path"] == "/pods/stale-hot-pod-123":
+            return 200, {
+                "id": "stale-hot-pod-123",
+                "desiredStatus": "RUNNING",
+                "runtime": None,
+                "publicIp": "",
+            }
+        if kwargs["path"] == "/pods":
+            return 200, {"id": "fresh-pod-456", "desiredStatus": "RUNNING"}
+        raise AssertionError(kwargs["path"])
+
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url="https://spaces.example/bundle.zip",
+        provider_output_put_url="https://spaces.example/output.zip",
+        allow_paid_runpod_launch=True,
+        skip_public_staging_verification=True,
+        image_name="docker.io/example/wam:20260629",
+        generated_at="2026-06-30T21:00:00+00:00",
+    )
+
+    assert [call["path"] for call in calls] == [
+        "/pods/stale-hot-pod-123",
+        "/pods",
+    ]
+    assert manifest["status"] == "pod_created"
+    assert manifest["pod_id"] == "fresh-pod-456"
+    assert manifest["pod_launch_mode"] == "fresh_pod_create"
+    warm = manifest["warm_existing_pod"]["dynamic_warm_candidate"]
+    assert warm["status"] == "rejected"
+    assert warm["reason"] == "running_warm_candidate_runtime_absent_too_long"
+    assert warm["reuse_probe"]["runtime_present"] is False
+    assert warm["reuse_probe"]["public_ip_present"] is False
+    assert warm["reuse_probe"]["candidate_age_seconds"] == 3600.0
 
 
 def test_runpod_create_ignores_incompatible_warm_candidate(
@@ -747,6 +1111,88 @@ def test_runpod_poll_can_stop_pod_for_warm_reuse_instead_of_delete(
     assert warm_candidate["image_name"] == "docker.io/example/wam:20260629"
 
 
+def test_runpod_stop_http_error_rechecks_missing_pod_as_spend_released(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("wam_runtime_result.json", json.dumps({"status": "completed"}))
+        archive.writestr("oscar_generated_rollout.mp4", b"fake-mp4")
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-500-then-gone",
+                "created_at_epoch": runner.time.time(),
+                "output_path": str(output_zip),
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+                "gpu_type_ids": ["NVIDIA L40S"],
+                "container_disk_gb": 240,
+                "volume_gb": 120,
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["path"] == "/pods/pod-500-then-gone":
+            if kwargs["method"] == "GET" and len(requests) == 1:
+                return 200, {"desiredStatus": "RUNNING"}
+            raise runner.urllib.error.HTTPError(
+                url="https://api.runpod.io/v2/pods/pod-500-then-gone",
+                code=404,
+                msg="Not Found",
+                hdrs=None,
+                fp=None,
+            )
+        if kwargs["path"] == "/pods/pod-500-then-gone/stop":
+            raise runner.urllib.error.HTTPError(
+                url="https://api.runpod.io/v2/pods/pod-500-then-gone/stop",
+                code=500,
+                msg="Internal Server Error",
+                hdrs=None,
+                fp=None,
+            )
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setenv(runner.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "stop")
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        teardown=True,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["teardown_action"] == "stop"
+    assert manifest["teardown_performed"] is True
+    assert manifest["continuing_spend_from_this_run"] is False
+    stop_manifest = json.loads((job_dir / "runpod_wam_async_stop_manifest.json").read_text())
+    assert stop_manifest["status"] == "completed"
+    assert stop_manifest["http_status_code"] == 500
+    assert stop_manifest["stop_error_verification"]["pod_status"] == "not_found"
+    assert stop_manifest["gpu_spend_released_if_provider_honors_stop"] is True
+    assert stop_manifest["stopped_volume_storage_may_continue_billing"] is False
+    assert stop_manifest["warm_candidate"]["status"] == "not_recorded"
+    assert not warm_candidate_file.exists()
+
+
 def test_runpod_poll_can_keep_successful_pod_running_for_hot_reuse(
     tmp_path: Path,
     monkeypatch,
@@ -783,7 +1229,18 @@ def test_runpod_poll_can_keep_successful_pod_running_for_hot_reuse(
         "_read_runpod_api_key",
         lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
     )
-    monkeypatch.setattr(runner, "_runpod_request", lambda **kwargs: requests.append(dict(kwargs)))
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["path"] == "/pods/pod-hot-123":
+            return 200, {
+                "id": "pod-hot-123",
+                "desiredStatus": "RUNNING",
+                "runtime": {"container": "running"},
+                "publicIp": "203.0.113.10",
+            }
+        raise AssertionError(kwargs["path"])
+
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
 
     manifest = runner.poll_runpod_wam_async_run(
         job_dir=job_dir,
@@ -797,9 +1254,10 @@ def test_runpod_poll_can_keep_successful_pod_running_for_hot_reuse(
     assert manifest["teardown_action"] == "keep_on_success"
     assert manifest["teardown_performed"] is False
     assert manifest["keep_running_on_success"] is True
+    assert manifest["keepalive_runtime_health"]["runtime_healthy_for_hot_reuse"] is True
     assert manifest["keepalive_performed"] is True
     assert manifest["continuing_spend_from_this_run"] is True
-    assert requests == []
+    assert [request["path"] for request in requests] == ["/pods/pod-hot-123"]
     assert (job_dir / "runpod_wam_async_keepalive_manifest.json").is_file()
     assert not (job_dir / "runpod_wam_async_stop_manifest.json").exists()
     assert not (job_dir / "runpod_wam_async_delete_manifest.json").exists()
@@ -807,6 +1265,209 @@ def test_runpod_poll_can_keep_successful_pod_running_for_hot_reuse(
     assert warm_candidate["pod_id"] == "pod-hot-123"
     assert warm_candidate["running_pod_preserved_for_hot_reuse"] is True
     assert warm_candidate["gpu_type_ids"] == ["NVIDIA A40", "NVIDIA L40S"]
+
+
+def test_runpod_poll_keeps_successful_running_pod_when_runtime_metadata_sparse(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("wam_runtime_result.json", json.dumps({"status": "completed"}))
+        archive.writestr("oscar_generated_rollout.mp4", b"fake-mp4")
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-fake-hot-123",
+                "created_at_epoch": runner.time.time(),
+                "output_path": str(output_zip),
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+                "gpu_type_ids": ["NVIDIA A40"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    requests: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["path"] == "/pods/pod-fake-hot-123":
+            return 200, {
+                "id": "pod-fake-hot-123",
+                "desiredStatus": "RUNNING",
+                "costPerHr": 0.44,
+            }
+        raise AssertionError(kwargs["path"])
+
+    monkeypatch.setenv(runner.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "keep_on_success")
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        teardown=True,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["requested_keep_running_on_success"] is True
+    assert manifest["keep_running_on_success"] is True
+    assert manifest["keepalive_runtime_unhealthy_on_success"] is False
+    assert manifest["keepalive_runtime_health"]["runtime_present"] is False
+    assert (
+        manifest["keepalive_runtime_health"]["active_status_without_runtime_metadata"]
+        is True
+    )
+    assert (
+        manifest["keepalive_runtime_health"]["health_basis"]
+        == "active_pod_status_without_runtime_metadata"
+    )
+    assert manifest["keepalive_runtime_health"]["runtime_healthy_for_hot_reuse"] is True
+    assert manifest["teardown_performed"] is False
+    assert manifest["keepalive_performed"] is True
+    assert manifest["continuing_spend_from_this_run"] is True
+    assert [request["path"] for request in requests] == ["/pods/pod-fake-hot-123"]
+    assert (job_dir / "runpod_wam_async_keepalive_manifest.json").is_file()
+    assert not (job_dir / "runpod_wam_async_stop_manifest.json").exists()
+    assert not (job_dir / "runpod_wam_async_delete_manifest.json").exists()
+    warm_candidate = json.loads(warm_candidate_file.read_text())
+    assert warm_candidate["pod_id"] == "pod-fake-hot-123"
+    assert warm_candidate["running_pod_preserved_for_hot_reuse"] is True
+
+
+def test_runpod_poll_does_not_keep_blocked_output_zip_running(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "wam_runtime_result.json",
+            json.dumps({"status": "blocked", "blockers": ["missing_module"]}),
+        )
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-blocked-123",
+                "created_at_epoch": runner.time.time(),
+                "output_path": str(output_zip),
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["path"] == "/pods/pod-blocked-123":
+            return 204, {}
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setenv(runner.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "keep_on_success")
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        teardown=True,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["runtime_output_success"] is False
+    assert manifest["keep_running_on_success"] is False
+    assert manifest["teardown_performed"] is True
+    assert manifest["continuing_spend_from_this_run"] is False
+    assert (job_dir / "runpod_wam_async_delete_manifest.json").is_file()
+    assert [request["method"] for request in requests] == ["DELETE"]
+
+
+def test_runpod_poll_stop_teardown_does_not_record_failed_pod_as_warm_candidate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "wam_runtime_result.json",
+            json.dumps({"status": "blocked", "blockers": ["policy_server_exited"]}),
+        )
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-failed-stop-123",
+                "created_at_epoch": runner.time.time(),
+                "output_path": str(output_zip),
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+            }
+        ),
+        encoding="utf-8",
+    )
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    requests: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["path"] == "/pods/pod-failed-stop-123/stop":
+            return 200, {"id": "pod-failed-stop-123", "desiredStatus": "EXITED"}
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setenv(runner.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "stop")
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        teardown=True,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["runtime_output_success"] is False
+    assert manifest["teardown_action"] == "stop"
+    assert manifest["teardown_performed"] is True
+    assert [request["path"] for request in requests] == ["/pods/pod-failed-stop-123/stop"]
+    assert not warm_candidate_file.exists()
+    stop_manifest = json.loads((job_dir / "runpod_wam_async_stop_manifest.json").read_text())
+    assert stop_manifest["stopped_pod_preserved_for_warm_reuse"] is False
+    assert stop_manifest["warm_candidate"]["status"] == "not_recorded"
+    assert stop_manifest["warm_candidate"]["reason"] == (
+        "runtime_output_not_successful_for_warm_reuse"
+    )
 
 
 def test_runpod_stop_command_stops_running_pod_without_output(
@@ -1688,6 +2349,14 @@ def test_runpod_poll_preserves_running_nonterminal_output(
     assert manifest["continuing_spend_from_this_run"] is True
     assert manifest["teardown_performed"] is False
     assert delete_called["value"] is False
+    download_manifest = json.loads(
+        (tmp_path / "job" / "runpod_wam_output_download_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert download_manifest["status"] == "nonterminal"
+    assert download_manifest["terminal_output_present"] is False
+    assert download_manifest["nonterminal_runtime_result_status"] == "running"
 
 
 def test_runpod_poll_preserves_active_pod_before_first_heartbeat(

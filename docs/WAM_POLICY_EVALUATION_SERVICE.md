@@ -94,7 +94,13 @@ The repo keeps the older lanes for baseline and compatibility:
   0.750, Pearson 0.852, and SISR delta 1.73pp. Its GPT-5 generated-video
   success scorer matched 78/100 human labels, had specificity 0.90, and missed
   about one third of real successes, so Blueprint keeps generated-video success
-  labels separate from consistency and rank-fidelity calibration.
+  labels separate from consistency and rank-fidelity calibration. Learned
+  `oscar_wam` runs use `https://github.com/wuzy2115/oscar-public.git` pinned to
+  commit `4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb` and
+  `zywu2115/OSCAR-2B` pinned to HF revision
+  `c9781ffa7dd8556d862d7d9f338a2ea008a58ca6`; the
+  `zywu2115/OSCAR_policy_rollout` dataset is reference data, not the runtime
+  implementation.
 - `cosmos_wam`: Cosmos-Predict2.5 remains a legacy/advisory baseline. NVIDIA's
   Cosmos-Predict2.5 repository says the line is no longer under active
   development and future releases, features, docs, and community support are
@@ -106,6 +112,18 @@ The repo keeps the older lanes for baseline and compatibility:
   On the out-of-distribution online split, SC3-Eval's Pearson is 0.870 versus
   Cosmos-Predict2.5 at 0.871, while MMRV is better at 0.171 versus 0.195. That
   supports a rank-fidelity preference, not universal grading.
+  The API-first hosted path is `deepinfra` through
+  `DeepInfraCosmos3NanoProvider`, using `nvidia/Cosmos3-Nano` behind the same
+  `WamComputeProvider` interface as RunPod and Vast. It writes
+  `deepinfra_cosmos3_request_manifest.json`,
+  `deepinfra_cosmos3_execution_manifest.json`,
+  `deepinfra_cosmos3_cost_control_ledger.json`,
+  `deepinfra_cosmos3_artifact_checksums.json`,
+  `deepinfra_provider_runtime_output.zip`, and
+  `wam_rollout_visual_quality_report.json` plus
+  `deepinfra_cosmos3_visual_quality_report.json`. DeepInfra output is
+  model-derived support media until visual sanity/review gates and a separate
+  external scorer or human review support a stronger label.
 - `cosmos3_super`: high-cost adjudication candidate for contested rankings after
   cheaper screens pass; not the default local path.
 - `cosmos3_edge`: the Cosmos 3 technical report describes Edge as a later
@@ -192,8 +210,10 @@ command. It writes action-conditioned JPEG support frames, short MP4 segments,
 and action, simulated-proprioception, and projected-skeleton conditioning
 metadata, then allows a fresh Unitree policy command to be re-queried on those
 generated observations. Its artifacts must remain labeled as default local
-support output; they do not prove a live learned OSCAR/Cosmos checkpoint,
-external sensor feedback, success scoring, or generated-world rank fidelity.
+support output; they are Blueprint deterministic fallback/test artifacts, not
+the official OSCAR release. They do not prove a live learned OSCAR/Cosmos
+checkpoint, external sensor feedback, success scoring, or generated-world rank
+fidelity.
 
 ## WAM-Derived Perception And Observation Harness
 
@@ -435,7 +455,8 @@ currently supports:
 - `cosmos3_wam`: live or owner-provided Cosmos-style WAM adapter, blocked until
   configured.
 - `oscar_wam`: live or owner-provided OSCAR-style WAM adapter, blocked until
-  configured.
+  configured with the official pinned `oscar-public` source commit, pinned
+  `OSCAR-2B` HF revision, and visual-smoke/import proof.
 - `classical_sim_mujoco`: MuJoCo or owner-command simulator path.
 - `classical_sim_isaac`: Isaac Sim / Isaac Lab / owner GPU simulator path.
 - `recorded_trace`: customer or owner recorded trace replay path.
@@ -517,6 +538,17 @@ When WAM evaluation is requested, the job writes:
 - `wam_provider_execution_manifest.json`
 - `wam_provider_cost_control_ledger.json`
 - `wam_provider_artifact_upload_proof.json`
+- `deepinfra_cosmos3_request_manifest.json` when the DeepInfra Cosmos3-Nano API
+  adapter is selected
+- `deepinfra_cosmos3_execution_manifest.json` when the DeepInfra Cosmos3-Nano API
+  adapter is selected
+- `deepinfra_cosmos3_cost_control_ledger.json` and
+  `deepinfra_cosmos3_artifact_checksums.json` when the DeepInfra Cosmos3-Nano API
+  adapter is selected
+- `deepinfra_provider_runtime_output.zip` when the DeepInfra Cosmos3-Nano API
+  adapter returns a generated video
+- `deepinfra_cosmos3_visual_quality_report.json` when the DeepInfra Cosmos3-Nano
+  API adapter writes visual QA metadata
 - `wam_policy_interface_binding.json`
 - `wam_rollout_manifest.json`
 - `wam_rollout_results.json`

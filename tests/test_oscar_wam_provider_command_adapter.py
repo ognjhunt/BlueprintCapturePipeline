@@ -9,6 +9,10 @@ import pytest
 
 from blueprint_pipeline import oscar_wam_provider_command_adapter as adapter
 from blueprint_pipeline import wam_compute_providers as compute_providers
+from blueprint_pipeline.oscar_official_release import (
+    OFFICIAL_OSCAR_WAM_IMAGE_REF,
+    official_release_contract,
+)
 
 
 _PROVIDER_ENV_VARS = (
@@ -22,8 +26,12 @@ _PROVIDER_ENV_VARS = (
     adapter.VAST_WAM_EXCLUDED_MACHINE_ID_ENV,
     adapter.VAST_WAM_ALLOWED_MACHINE_ID_ENV,
     adapter.ALLOW_VAST_PROVIDER_LAUNCH_ENV,
+    adapter.ALLOW_UNPINNED_OSCAR_WAM_IMAGE_ENV,
     adapter.OSCAR_WAM_COMPUTE_PROVIDER_ENV,
     compute_providers.PROVIDER_ORDER_ENV,
+    compute_providers.DEEPINFRA_API_GATE_ENV,
+    compute_providers.DEEPINFRA_API_KEY_ENV,
+    compute_providers.DEEPINFRA_API_KEY_FILE_ENV,
 )
 
 
@@ -107,6 +115,7 @@ def _write_provider_zip(
         runtime_result = {
             "status": "completed",
             "runtime": "oscar_wam_provider_runtime",
+            "model_candidate": "oscar_wam",
             "runtime_settings": {
                 "num_frames": 8,
                 "height": 480,
@@ -144,8 +153,10 @@ def _write_provider_zip(
             runtime_result.update(
                 {
                     "learned_wam_model_ran": True,
+                    "official_oscar_release": official_release_contract(),
                     "truth_boundary": {
                         "generated_video_is_model_output": True,
+                        "official_oscar_source_and_checkpoint_pinned": True,
                         "generated_world_rank_fidelity_result_proven": False,
                         "generated_world_policy_evaluation_scope_proven": False,
                     },
@@ -413,11 +424,11 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
     monkeypatch.setenv(adapter.ALLOW_VAST_PROVIDER_LAUNCH_ENV, "true")
     monkeypatch.setenv(
         adapter.OSCAR_WAM_GPU_IMAGE_REF_ENV,
-        "docker.io/nijelhunt/blueprint-oscar-wam:20260621-cu128-shim",
+        OFFICIAL_OSCAR_WAM_IMAGE_REF,
     )
     monkeypatch.setenv(
         adapter.VAST_WAM_PUBLIC_IMAGE_ENV,
-        "docker.io/nijelhunt/blueprint-oscar-wam:20260621-cu128-shim",
+        OFFICIAL_OSCAR_WAM_IMAGE_REF,
     )
     monkeypatch.setenv(adapter.VAST_WAM_MIN_GPU_RAM_MB_ENV, "48000")
     monkeypatch.setenv(adapter.VAST_WAM_EXCLUDED_MACHINE_ID_ENV, "134862, 42, bad, 134862")
@@ -503,7 +514,7 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
     assert Path(payload["rollouts"][0]["generated_video_path"]).is_file()
     assert (
         captured_create["public_image"]
-        == "docker.io/nijelhunt/blueprint-oscar-wam:20260621-cu128-shim"
+        == OFFICIAL_OSCAR_WAM_IMAGE_REF
     )
     assert captured_create["min_gpu_ram_mb"] == 48000
     assert captured_create["excluded_machine_ids"] == [134862, 42]
@@ -539,7 +550,7 @@ def test_provider_command_adapter_launches_and_imports_runpod_provider_result(
     monkeypatch.delenv("BLUEPRINT_WAM_MODEL_CHECKPOINT", raising=False)
     monkeypatch.setenv(
         adapter.RUNPOD_WAM_PUBLIC_IMAGE_ENV,
-        "docker.io/nijelhunt/blueprint-oscar-wam:runpod-test",
+        OFFICIAL_OSCAR_WAM_IMAGE_REF,
     )
     captured_create: dict[str, Any] = {}
     captured_bundle: dict[str, Any] = {}
@@ -608,13 +619,93 @@ def test_provider_command_adapter_launches_and_imports_runpod_provider_result(
     assert payload["details"]["runpod_provider_job_dir"] == str(work_dir / "runpod_provider_run")
     assert payload["details"]["wam_compute_provider"] == "runpod"
     assert captured_create["allow_paid_runpod_launch"] is True
-    assert captured_create["image_name"] == "docker.io/nijelhunt/blueprint-oscar-wam:runpod-test"
+    assert captured_create["image_name"] == OFFICIAL_OSCAR_WAM_IMAGE_REF
     assert captured_create["container_disk_gb"] == 100
     assert captured_create["volume_gb"] == 30
     assert captured_create["min_vcpu_per_gpu"] == 8
     assert captured_create["min_ram_per_gpu"] == 40
     assert captured_bundle["wam_rollout_input_manifest"] == rollout_input.resolve()
     assert captured_poll["teardown"] is True
+
+
+def test_provider_command_adapter_launches_and_imports_deepinfra_provider_result(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _clear_provider_env(monkeypatch)
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    _write_json(rollout_input, {"schema_version": "wam_rollout_input_manifest.v1"})
+    output = tmp_path / "wam_provider_output.json"
+    work_dir = tmp_path / "work"
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_INPUT", str(rollout_input))
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(output))
+    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT", raising=False)
+    monkeypatch.delenv("BLUEPRINT_WAM_MODEL_CHECKPOINT", raising=False)
+    monkeypatch.setenv(compute_providers.DEEPINFRA_API_GATE_ENV, "1")
+    captured_bundle: dict[str, Any] = {}
+    captured_compute: dict[str, Any] = {}
+
+    def fake_build_bundle(**kwargs: Any) -> dict[str, Any]:
+        captured_bundle.update(kwargs)
+        bundle = Path(kwargs["job_dir"]) / "provider_bundle.zip"
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        bundle.write_bytes(b"bundle")
+        return {"status": "completed", "bundle_path": str(bundle), "blockers": []}
+
+    def fake_run_wam_compute_job(**kwargs: Any) -> compute_providers.WamComputeRunResult:
+        captured_compute.update(kwargs)
+        provider_job = Path(kwargs["job_dir"]) / "deepinfra_provider_run"
+        _write_provider_zip(provider_job / "deepinfra_provider_runtime_output.zip")
+        return compute_providers.WamComputeRunResult(
+            provider="deepinfra",
+            status="completed",
+            provider_command_status="completed",
+            output_zip_path=str(provider_job / "deepinfra_provider_runtime_output.zip"),
+            output_zip_present=True,
+            mp4_count=1,
+            runtime_result_status="completed",
+            runtime_result_blockers=[],
+            budget_ledger_path=str(
+                provider_job / "deepinfra_cosmos3_cost_control_ledger.json"
+            ),
+            teardown_status="not_required",
+            teardown_performed=False,
+            continuing_spend_from_this_run=False,
+            output_availability="available",
+        )
+
+    monkeypatch.setattr(adapter, "build_oscar_wam_provider_bundle", fake_build_bundle)
+    monkeypatch.setattr(adapter, "run_wam_compute_job", fake_run_wam_compute_job)
+
+    payload = adapter.run(
+        [
+            "--mode",
+            "auto",
+            "--provider",
+            "deepinfra",
+            "--allow-paid-provider-launch",
+            "--work-dir",
+            str(work_dir),
+        ]
+    )
+
+    assert payload["status"] == "completed"
+    assert payload["mode"] == "deepinfra_provider"
+    assert payload["provider_output_zip_imported"] is True
+    assert payload["provider_output_imported_from_current_provider_run"] is True
+    assert payload["fresh_provider_launch_attempted"] is True
+    assert payload["fresh_model_run_claimed"] is True
+    assert payload["details"]["wam_compute_provider"] == "deepinfra"
+    assert payload["details"]["deepinfra_provider_job_dir"] == str(
+        work_dir / "deepinfra_provider_run"
+    )
+    assert payload["details"]["deepinfra_request_manifest_path"].endswith(
+        "deepinfra_cosmos3_request_manifest.json"
+    )
+    assert captured_compute["provider_order"] == ["deepinfra"]
+    assert captured_compute["allow_paid_launch"] is True
+    assert captured_compute["spec"].image == "deepinfra/nvidia/Cosmos3-Nano"
+    assert captured_bundle["wam_rollout_input_manifest"] == rollout_input.resolve()
 
 
 def test_provider_command_adapter_blocks_failed_rollout_visual_smoke(

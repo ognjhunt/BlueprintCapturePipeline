@@ -1102,6 +1102,17 @@ RoboArena policy-eval MMRV 0.571, Spearman 0.750, Pearson 0.852, and SISR delta
 legacy/advisory Cosmos-Predict2.5 baseline; NVIDIA's Cosmos-Predict2.5 repo says
 future releases, docs, and community support are focused on Cosmos 3.
 
+For learned `oscar_wam` execution, Blueprint uses the official public release
+path: `https://github.com/wuzy2115/oscar-public.git` pinned to
+`4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb`, with
+`zywu2115/OSCAR-2B` pinned to HF revision
+`c9781ffa7dd8556d862d7d9f338a2ea008a58ca6`. The
+`zywu2115/OSCAR_policy_rollout` dataset is reference data, not runtime code.
+Provider bundles, the reusable OSCAR GPU image, and local learned OSCAR
+adapters record an `official_oscar_release` contract; unpinned local source,
+checkpoint, or provider images block learned OSCAR claims unless explicitly
+marked experimental.
+
 SC3-Eval is treated as a recipe: forward/inverse dynamics consistency,
 cross-view consistency, and uncertainty-driven early termination are
 reliability/abstention signals, not task-success labels or rank-fidelity proof.
@@ -1134,7 +1145,9 @@ skeleton support in `wam_generated_next_observations.jsonl`, then re-queries
 the selected Unitree policy on those generated frames. Those artifacts are labeled
 `default_local_wam_generator_used=true` and
 `learned_oscar_or_cosmos_model_ran=false`; they are useful loop evidence, not a
-claim that a learned OSCAR/Cosmos checkpoint ran.
+claim that a learned OSCAR/Cosmos checkpoint ran. This fallback is Blueprint's
+deterministic support implementation for tests and local no-provider runs; it
+is not the official OSCAR release and must not upgrade provider/runtime proof.
 The loop also writes the WAM-derived perception/observation harness artifact
 family under `robot_policy_wam_closed_loop/wam_derived_observation_harness/`.
 The harness derives support masks/boxes, tracks, relative depth, pose, contact
@@ -2023,9 +2036,11 @@ The real backend command contract is
 `BLUEPRINT_OSCAR_WAM_COMMAND`/`BLUEPRINT_OSCAR_WAM_PROVIDER_COMMAND` values use
 the older WAM-rollout contract and should be wrapped before being used here.
 The checked OSCAR Docker image is
-`docker.io/nijelhunt/blueprint-oscar-wam:20260622-cu128-shim`; it contains
-`/opt/oscar-public` according to registry metadata. The older
-`20260621-cu128-shim` tag was not present during the registry check.
+`docker.io/nijelhunt/blueprint-oscar-wam@sha256:fe07f8f22214d2c2a87c9f06856ed1e9ff4dc3bfe612ec3d336bd5cee536a9fe`
+for the checked tag `20260622-cu128-shim`; it contains `/opt/oscar-public`
+pinned to `4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb` according to the image
+contract. The older `20260621-cu128-shim` tag was not present during the
+registry check.
 
 This prepares OSCAR/Cosmos/future-backend visual variant requests from fixed
 camera/skeleton provenance and can attach reviewed backend outputs. Generated

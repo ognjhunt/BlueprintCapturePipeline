@@ -112,14 +112,15 @@ After generation, the runner also writes:
 The reusable OSCAR GPU image checked on June 26, 2026 is:
 
 ```text
-docker.io/nijelhunt/blueprint-oscar-wam:20260622-cu128-shim
+docker.io/nijelhunt/blueprint-oscar-wam@sha256:fe07f8f22214d2c2a87c9f06856ed1e9ff4dc3bfe612ec3d336bd5cee536a9fe
 ```
 
 Registry metadata shows a linux/amd64 image with
-`BLUEPRINT_OSCAR_WAM_SOURCE_ROOT=/opt/oscar-public`; its build history includes
-cloning `https://github.com/wuzy2115/oscar-public.git` and running the OSCAR
-image healthcheck. The older `20260621-cu128-shim` tag referenced by some tests
-was not present in the registry during that check.
+`BLUEPRINT_OSCAR_WAM_SOURCE_ROOT=/opt/oscar-public`; the image contract pins
+`https://github.com/wuzy2115/oscar-public.git` to
+`4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb` and the checked tag is
+`20260622-cu128-shim`. The older `20260621-cu128-shim` tag referenced by some
+tests was not present in the registry during that check.
 
 `BLUEPRINT_OSCAR_WAM_COMMAND` and `BLUEPRINT_OSCAR_WAM_PROVIDER_COMMAND` are
 older WAM-rollout command contracts. They should be wrapped before use as a

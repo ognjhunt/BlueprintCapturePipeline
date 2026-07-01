@@ -16,6 +16,7 @@ from .unitree_groot_n17_sonic_vast_persistent_session import (
     PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_NUM_FRAMES,
     PERSISTENT_WAM_SHORT_VISUAL_SANITY_MIN_REVIEW_MEDIA_WIDTH,
     PERSISTENT_WAM_SHORT_VISUAL_SANITY_SCHEMA_VERSION,
+    REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES,
     _camera_frame_path,
     _current_wam_visual_profile_settings,
     _ffprobe_review_media_profile,
@@ -33,7 +34,7 @@ from .unitree_groot_n17_sonic_vast_persistent_session import (
 SHORT_SANITY_FILENAME = "persistent_wam_short_visual_sanity_manifest.json"
 REVIEW_QUALITY_ENV = {
     "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE": "review_quality",
-    "BLUEPRINT_OSCAR_WAM_NUM_FRAMES": "24",
+    "BLUEPRINT_OSCAR_WAM_NUM_FRAMES": str(REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES),
     "BLUEPRINT_OSCAR_WAM_HEIGHT": "480",
     "BLUEPRINT_OSCAR_WAM_WIDTH": "640",
     "BLUEPRINT_OSCAR_WAM_FPS": "15",

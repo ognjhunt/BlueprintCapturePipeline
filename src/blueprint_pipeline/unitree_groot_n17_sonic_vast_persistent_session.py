@@ -39,7 +39,11 @@ from .vast_provider_adapter import (
 )
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
 from .wam_provider_object_store import stage_wam_provider_bundle_object_store
-from .runpod_wam_async_runner import create_runpod_wam_async_run, poll_runpod_wam_async_run
+from .runpod_wam_async_runner import (
+    RUNPOD_WAM_TEARDOWN_ACTION_ENV,
+    create_runpod_wam_async_run,
+    poll_runpod_wam_async_run,
+)
 from .image_model_render_remediation import (
     ENABLE_ENV as IMAGE_MODEL_RENDER_REMEDIATION_ENABLE_ENV,
     image_model_render_remediation_enabled,
@@ -74,9 +78,13 @@ BUNDLE_SCHEMA_VERSION = "unitree_groot_n17_sonic_wam_persistent_session_bundle.v
 OUTPUT_SCHEMA_VERSION = "unitree_groot_n17_sonic_wam_persistent_session_output.v1"
 DEFAULT_BUNDLE_FILENAME = "unitree_groot_n17_sonic_wam_persistent_session_bundle.zip"
 DEFAULT_OBJECT_STORE_KEY_PREFIX = "blueprint/unitree-groot-sonic-persistent-session"
+DEFAULT_RUNPOD_UNITREE_GROOT_SONIC_WAM_PUBLIC_IMAGE = (
+    "docker.io/nijelhunt/blueprint-oscar-wam:20260622-cu128-shim"
+)
 RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH = (
     "provider_runtime/seed_conditioning/g1_projected_skeleton_trace.jsonl"
 )
+RUNTIME_ISAAC_SCENE_CONTEXT_BUNDLE_DIR = "provider_runtime/isaac_scene_context"
 PERSISTENT_SESSION_JOB_ROOT_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PERSISTENT_SESSION_JOB_ROOT"
 PERSISTENT_SESSION_PUBLIC_IMAGE_ENV = "BLUEPRINT_VAST_UNITREE_WAM_PERSISTENT_SESSION_PUBLIC_IMAGE"
 PERSISTENT_SESSION_ALLOW_STRUCTURAL_WAM_FALLBACK_ENV = (
@@ -113,6 +121,9 @@ PERSISTENT_WAM_MATERIALIZATION_BLOCKER_MANIFEST_ENV = (
     "BLUEPRINT_PERSISTENT_WAM_MATERIALIZATION_BLOCKER_MANIFEST"
 )
 PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_MIN_STEPS = 12
+REVIEW_QUALITY_MIN_OSCAR_NUM_STEPS = 35
+REVIEW_QUALITY_MIN_OSCAR_GUIDANCE = 6.0
+REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES = 81
 PERSISTENT_WAM_LONG_REVIEW_QUALITY_GATE_SCHEMA_VERSION = (
     "persistent_wam_long_review_rollout_quality_gate.v1"
 )
@@ -141,9 +152,9 @@ RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV = {
 }
 RUNPOD_WAM_CARRIER_REVIEW_QUALITY_DEFAULT_ENV = {
     OSCAR_WAM_VISUAL_PROFILE_ENV: "review_quality",
-    "BLUEPRINT_OSCAR_WAM_NUM_STEPS": "2",
-    "BLUEPRINT_OSCAR_WAM_GUIDANCE": "3.5",
-    "BLUEPRINT_OSCAR_WAM_NUM_FRAMES": "24",
+    "BLUEPRINT_OSCAR_WAM_NUM_STEPS": str(REVIEW_QUALITY_MIN_OSCAR_NUM_STEPS),
+    "BLUEPRINT_OSCAR_WAM_GUIDANCE": str(REVIEW_QUALITY_MIN_OSCAR_GUIDANCE),
+    "BLUEPRINT_OSCAR_WAM_NUM_FRAMES": str(REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES),
     "BLUEPRINT_OSCAR_WAM_HEIGHT": "480",
     "BLUEPRINT_OSCAR_WAM_WIDTH": "640",
     "BLUEPRINT_OSCAR_WAM_FPS": "15",
@@ -242,6 +253,9 @@ def _current_wam_visual_profile_settings() -> dict[str, Any]:
             "height": REVIEW_QUALITY_MIN_HEIGHT,
             "fps": REVIEW_QUALITY_MIN_FPS,
             "num_frames": REVIEW_QUALITY_MIN_NUM_FRAMES,
+            "oscar_num_frames": REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES,
+            "num_steps": REVIEW_QUALITY_MIN_OSCAR_NUM_STEPS,
+            "guidance": REVIEW_QUALITY_MIN_OSCAR_GUIDANCE,
         },
         "smoke_only": profile != "review_quality",
     }
@@ -874,6 +888,12 @@ def _persistent_wam_visual_profile_blockers(
         blockers.append("review_quality_profile_fps_below_minimum")
     if int(settings.get("num_frames") or 0) < REVIEW_QUALITY_MIN_NUM_FRAMES:
         blockers.append("review_quality_profile_num_frames_below_minimum")
+    if int(settings.get("num_frames") or 0) < REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES:
+        blockers.append("review_quality_profile_num_frames_below_oscar_default")
+    if int(settings.get("num_steps") or 0) < REVIEW_QUALITY_MIN_OSCAR_NUM_STEPS:
+        blockers.append("review_quality_profile_num_steps_below_oscar_default")
+    if float(settings.get("guidance") or 0.0) < REVIEW_QUALITY_MIN_OSCAR_GUIDANCE:
+        blockers.append("review_quality_profile_guidance_below_oscar_default")
     max_ungated_steps = _int_env(PERSISTENT_WAM_REVIEW_QUALITY_MAX_UNGATED_LOOP_STEPS_ENV, 3)
     if loop_step_count > max_ungated_steps:
         validation = validate_persistent_wam_short_visual_sanity_manifest(
@@ -1108,6 +1128,54 @@ def _load_local_json_ref(value: Any, *, base_dir: Path) -> tuple[Any | None, Pat
         return None, path
 
 
+def _source_geometry_path_from_projected_skeleton_trace(
+    trace_path: Path | None,
+    *,
+    base_dir: Path,
+) -> Path | None:
+    if trace_path is None or not trace_path.is_file():
+        return None
+    try:
+        for line in trace_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row, Mapping):
+                continue
+            for key in (
+                "source_geometry_path",
+                "manipulation_pov_geometry_path",
+                "seed_geometry_path",
+                "geometry_path",
+            ):
+                path = _resolve_local_json_path(
+                    row.get(key),
+                    base_dir=trace_path.parent if trace_path.parent else base_dir,
+                )
+                if path and path.is_file():
+                    return path.resolve()
+            break
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def _first_existing_local_json_path(
+    values: Sequence[Any],
+    *,
+    base_dir: Path,
+) -> tuple[Path | None, Path | None]:
+    unresolved: Path | None = None
+    for value in values:
+        path = _resolve_local_json_path(value, base_dir=base_dir)
+        if path is None:
+            continue
+        unresolved = path
+        if path.is_file():
+            return path.resolve(), unresolved
+    return None, unresolved
+
+
 def _policy_observation_semantic_visual_evidence(
     observation: Mapping[str, Any],
     *,
@@ -1173,19 +1241,71 @@ def _policy_observation_semantic_visual_evidence(
                 break
     projected_skeleton_trace_path: Path | None = None
     unresolved_projected_skeleton_trace_path: Path | None = None
-    for value in (
-        observation.get("projected_skeleton_trace_path"),
-        observation.get("g1_projected_skeleton_trace_jsonl"),
-        visual.get("projected_skeleton_trace_path"),
-        visual.get("g1_projected_skeleton_trace_jsonl"),
-    ):
-        path = _resolve_local_json_path(value, base_dir=base_dir)
-        if path is None:
-            continue
-        unresolved_projected_skeleton_trace_path = path
-        if path.is_file():
-            projected_skeleton_trace_path = path.resolve()
-            break
+    projected_skeleton_trace_path, unresolved_projected_skeleton_trace_path = (
+        _first_existing_local_json_path(
+            (
+                observation.get("projected_skeleton_trace_path"),
+                observation.get("g1_projected_skeleton_trace_jsonl"),
+                visual.get("projected_skeleton_trace_path"),
+                visual.get("g1_projected_skeleton_trace_jsonl"),
+            ),
+            base_dir=base_dir,
+        )
+    )
+    trace_source_geometry_path = _source_geometry_path_from_projected_skeleton_trace(
+        projected_skeleton_trace_path,
+        base_dir=base_dir,
+    )
+    manipulation_pov_geometry_path, unresolved_manipulation_pov_geometry_path = (
+        _first_existing_local_json_path(
+            (
+                observation.get("manipulation_pov_geometry_path"),
+                observation.get("isaac_manipulation_pov_geometry_path"),
+                observation.get("seed_geometry_path"),
+                observation.get("geometry_path"),
+                visual.get("manipulation_pov_geometry_path"),
+                visual.get("isaac_manipulation_pov_geometry_path"),
+                visual.get("seed_geometry_path"),
+                visual.get("geometry_path"),
+                trace_source_geometry_path,
+                base_dir / "manipulation_pov_geometry.json",
+                base_dir.parent / "manipulation_pov_geometry.json",
+            ),
+            base_dir=base_dir,
+        )
+    )
+    isaac_scene_manifest_path, unresolved_isaac_scene_manifest_path = (
+        _first_existing_local_json_path(
+            (
+                observation.get("isaac_scene_manifest_path"),
+                observation.get("placement_validation_path"),
+                observation.get("placement_validation_json_path"),
+                visual.get("isaac_scene_manifest_path"),
+                visual.get("placement_validation_path"),
+                visual.get("placement_validation_json_path"),
+                (
+                    manipulation_pov_geometry_path.parent / "placement_validation.json"
+                    if manipulation_pov_geometry_path
+                    else None
+                ),
+                base_dir / "placement_validation.json",
+                base_dir.parent / "placement_validation.json",
+            ),
+            base_dir=base_dir,
+        )
+    )
+    task_stance_plan_path, unresolved_task_stance_plan_path = _first_existing_local_json_path(
+        (
+            observation.get("task_stance_plan_path"),
+            visual.get("task_stance_plan_path"),
+            manipulation_pov_geometry_path.parent / "task_stance_plan.json"
+            if manipulation_pov_geometry_path
+            else None,
+            base_dir / "task_stance_plan.json",
+            base_dir.parent / "task_stance_plan.json",
+        ),
+        base_dir=base_dir,
+    )
     artifact_base_dir = object_index_path.parent if object_index_path else base_dir
     return {
         "object_index": object_index if isinstance(object_index, (Mapping, list)) else None,
@@ -1196,6 +1316,19 @@ def _policy_observation_semantic_visual_evidence(
             projected_skeleton_trace_path or unresolved_projected_skeleton_trace_path
         )
         if (projected_skeleton_trace_path or unresolved_projected_skeleton_trace_path)
+        else None,
+        "manipulation_pov_geometry_path": str(
+            manipulation_pov_geometry_path or unresolved_manipulation_pov_geometry_path
+        )
+        if (manipulation_pov_geometry_path or unresolved_manipulation_pov_geometry_path)
+        else None,
+        "isaac_scene_manifest_path": str(
+            isaac_scene_manifest_path or unresolved_isaac_scene_manifest_path
+        )
+        if (isaac_scene_manifest_path or unresolved_isaac_scene_manifest_path)
+        else None,
+        "task_stance_plan_path": str(task_stance_plan_path or unresolved_task_stance_plan_path)
+        if (task_stance_plan_path or unresolved_task_stance_plan_path)
         else None,
         "semantic_artifact_base_dir": str(artifact_base_dir),
     }
@@ -1218,6 +1351,31 @@ def _copy_projected_skeleton_trace_for_runtime(
     return destination
 
 
+def _copy_isaac_scene_context_for_runtime(
+    semantic_visual_evidence: Mapping[str, Any],
+    *,
+    runtime_dir: Path,
+) -> dict[str, str]:
+    copied: dict[str, str] = {}
+    context_dir = runtime_dir / "isaac_scene_context"
+    for key, filename in (
+        ("manipulation_pov_geometry_path", "manipulation_pov_geometry.json"),
+        ("isaac_scene_manifest_path", "placement_validation.json"),
+        ("task_stance_plan_path", "task_stance_plan.json"),
+    ):
+        source_text = _string(semantic_visual_evidence.get(key))
+        if not source_text:
+            continue
+        source = Path(source_text).expanduser()
+        if not source.is_file():
+            continue
+        destination = context_dir / filename
+        ensure_dir(destination.parent)
+        shutil.copy2(source, destination)
+        copied[key] = str(destination)
+    return copied
+
+
 def _write_executable(path: Path, text: str) -> None:
     ensure_dir(path.parent)
     path.write_text(text, encoding="utf-8")
@@ -1228,6 +1386,7 @@ PERSISTENT_SESSION_RUNNER = r"""#!/usr/bin/env python3
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
 import shlex
@@ -1246,6 +1405,7 @@ from urllib import error as urllib_error
 
 OUTPUT_SCHEMA_VERSION = "unitree_groot_n17_sonic_wam_persistent_session_output.v1"
 POLICY_ID = "unitree_groot_n17_sonic_policy"
+REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES = 81
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -1288,6 +1448,14 @@ def _write_jsonl(path: Path, rows: list[Mapping[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(dict(row), sort_keys=True) + "\n")
+
+
+def _copy_runtime_sidecar(source: Path, destination: Path) -> str | None:
+    if not source.is_file():
+        return None
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return str(destination)
 
 
 def _phase(name: str, **fields: Any) -> None:
@@ -1597,6 +1765,88 @@ def _copy_or_extract_wam_frame(payload: Mapping[str, Any], target_frame: Path) -
     }
 
 
+def _frame_history_append_unique(history: list[str], frame_path: Path) -> list[str]:
+    if not frame_path.is_file():
+        return history
+    resolved = str(frame_path.expanduser().resolve())
+    if resolved not in history:
+        history.append(resolved)
+    return history
+
+
+def _frame_history_window(history: Sequence[str], *, max_frames: int) -> list[str]:
+    limit = max(2, int(max_frames or 2))
+    return [str(item) for item in list(history)[-limit:] if _string(item)]
+
+
+def _generated_next_observation_visual_gate(
+    *,
+    source_frame: Path,
+    generated_frame: Path,
+    materialization: Mapping[str, Any],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "schema_version": "persistent_wam_generated_next_observation_visual_gate.v1",
+        "status": "blocked",
+        "source_frame_path": str(source_frame),
+        "generated_frame_path": str(generated_frame),
+        "materialization_source_kind": materialization.get("source_kind"),
+        "materialization_selection_quality_status": materialization.get("selection_quality_status"),
+        "blockers": [],
+    }
+    try:
+        from blueprint_pipeline.wam_generated_video_review import (
+            _frame_visual_stats,
+            _generated_frame_quality_blockers,
+        )
+    except Exception as exc:
+        result["blockers"] = [f"generated_frame_visual_gate_import_failed:{type(exc).__name__}"]
+        return result
+
+    source_stats = _frame_visual_stats(source_frame, role="source_policy_observation")
+    generated_stats = _frame_visual_stats(
+        generated_frame,
+        role="generated_next_observation",
+        source_frame_stats=source_stats if source_stats.get("status") == "completed" else None,
+    )
+    blockers: list[str] = []
+    if source_stats.get("status") != "completed":
+        blockers.extend(
+            str(item) for item in source_stats.get("blockers") or ["source_frame_visual_stats_blocked"]
+        )
+    if generated_stats.get("status") != "completed":
+        blockers.extend(
+            str(item)
+            for item in generated_stats.get("blockers") or ["generated_frame_visual_stats_blocked"]
+        )
+    else:
+        blockers.extend(_generated_frame_quality_blockers([generated_stats]))
+
+    source_kind = _string(materialization.get("source_kind"))
+    if source_kind == "video_first_frame":
+        blockers.append("wam_generated_next_observation_used_video_first_frame_fallback")
+    if _string(materialization.get("selection_quality_status")) == "degraded_visual_signal":
+        blockers.append("wam_generated_next_observation_future_frame_degraded_visual_signal")
+    for blocker in materialization.get("selected_frame_signal_blockers") or []:
+        if _string(blocker):
+            blockers.append(_string(blocker))
+
+    result.update(
+        {
+            "status": "passed_visual_quality_gate" if not blockers else "failed_visual_quality_gate",
+            "source_frame_stats": source_stats,
+            "generated_frame_stats": generated_stats,
+            "blockers": sorted(set(blockers)),
+            "claim_boundary": {
+                "visual_gate_is_source_relative_sanity_not_task_success": True,
+                "visual_gate_blocks_autoregressive_policy_feedback": True,
+                "scene_or_task_specific_pixels_hardcoded": False,
+            },
+        }
+    )
+    return result
+
+
 def _structural_wam_frame(source_frame: Path, target_frame: Path, step_index: int) -> dict[str, Any]:
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -1677,10 +1927,17 @@ def _projected_skeleton_trace_claim_boundary(path: Path) -> dict[str, Any]:
 
 def _policy_derived_projected_skeleton_trace(path: Path) -> bool:
     claim_boundary = _projected_skeleton_trace_claim_boundary(path)
+    policy_action_delta_applied_to_seed_geometry = bool(
+        claim_boundary.get("policy_action_delta_applied_to_seed_geometry")
+        or claim_boundary.get("isaac_seed_geometry_action_projection")
+    )
     return bool(
         claim_boundary.get("policy_derived_action_conditioning")
         and not claim_boundary.get("not_a_learned_robot_policy_action")
-        and not claim_boundary.get("projected_skeleton_trace_derived_from_seed_render_geometry")
+        and (
+            not claim_boundary.get("projected_skeleton_trace_derived_from_seed_render_geometry")
+            or policy_action_delta_applied_to_seed_geometry
+        )
         and not claim_boundary.get(
             "temporal_rows_are_target_conditioning_from_resolved_affordance_projection"
         )
@@ -1729,6 +1986,55 @@ def _clip(value: float, low: float, high: float) -> float:
     return min(float(high), max(float(low), float(value)))
 
 
+def _vec3(value: Any) -> list[float] | None:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return None
+    result: list[float] = []
+    for item in list(value)[:3]:
+        try:
+            result.append(float(item))
+        except (TypeError, ValueError):
+            return None
+    if len(result) != 3:
+        return None
+    return result
+
+
+def _vsub(a: Sequence[float], b: Sequence[float]) -> list[float]:
+    return [float(a[index]) - float(b[index]) for index in range(3)]
+
+
+def _vadd(a: Sequence[float], b: Sequence[float]) -> list[float]:
+    return [float(a[index]) + float(b[index]) for index in range(3)]
+
+
+def _vscale(a: Sequence[float], scale: float) -> list[float]:
+    return [float(a[index]) * float(scale) for index in range(3)]
+
+
+def _dot(a: Sequence[float], b: Sequence[float]) -> float:
+    return sum(float(a[index]) * float(b[index]) for index in range(3))
+
+
+def _cross(a: Sequence[float], b: Sequence[float]) -> list[float]:
+    return [
+        float(a[1]) * float(b[2]) - float(a[2]) * float(b[1]),
+        float(a[2]) * float(b[0]) - float(a[0]) * float(b[2]),
+        float(a[0]) * float(b[1]) - float(a[1]) * float(b[0]),
+    ]
+
+
+def _norm(a: Sequence[float]) -> float:
+    return math.sqrt(sum(float(item) * float(item) for item in a[:3]))
+
+
+def _normalize(a: Sequence[float], fallback: Sequence[float] | None = None) -> list[float]:
+    length = _norm(a)
+    if length <= 1e-9:
+        return [float(item) for item in (fallback or [1.0, 0.0, 0.0])[:3]]
+    return [float(item) / length for item in a[:3]]
+
+
 def _visual_dimension(observation: Mapping[str, Any], key: str, default: int) -> int:
     visual = _mapping(observation.get("visual_observation"))
     for value in (visual.get(key), observation.get(key), os.environ.get(f"BLUEPRINT_OSCAR_WAM_{key.upper()}")):
@@ -1739,6 +2045,263 @@ def _visual_dimension(observation: Mapping[str, Any], key: str, default: int) ->
         if parsed > 0:
             return parsed
     return int(default)
+
+
+def _geometry_sidecar_path_from_observation(observation: Mapping[str, Any]) -> Path | None:
+    visual = _mapping(observation.get("visual_observation"))
+    for value in (
+        observation.get("manipulation_pov_geometry_path"),
+        observation.get("isaac_manipulation_pov_geometry_path"),
+        observation.get("seed_geometry_path"),
+        observation.get("geometry_path"),
+        visual.get("manipulation_pov_geometry_path"),
+        visual.get("isaac_manipulation_pov_geometry_path"),
+        visual.get("seed_geometry_path"),
+        visual.get("geometry_path"),
+    ):
+        text = _string(value)
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if path.is_file():
+            return path.resolve()
+    return None
+
+
+def _first_isaac_geometry_frame(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    frames = payload.get("frames") if isinstance(payload, Mapping) else None
+    if isinstance(frames, Sequence) and not isinstance(frames, (str, bytes, bytearray)):
+        for frame in frames:
+            if isinstance(frame, Mapping):
+                return dict(frame)
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _camera_projection_from_isaac_geometry(
+    *,
+    geometry_frame: Mapping[str, Any],
+    observation: Mapping[str, Any],
+) -> dict[str, Any]:
+    camera_meta = _mapping(geometry_frame.get("camera_meta"))
+    eye = _vec3(camera_meta.get("camera_eye_xyz"))
+    target = _vec3(camera_meta.get("camera_target_xyz"))
+    if eye is None or target is None:
+        return {"available": False, "blockers": ["isaac_geometry_camera_pose_missing"]}
+    viewport = camera_meta.get("viewport_size_px")
+    width = _visual_dimension(observation, "width", 640)
+    height = _visual_dimension(observation, "height", 480)
+    if isinstance(viewport, Sequence) and not isinstance(viewport, (str, bytes, bytearray)):
+        try:
+            if int(viewport[0]) > 0 and int(viewport[1]) > 0:
+                width = int(viewport[0])
+                height = int(viewport[1])
+        except (TypeError, ValueError, IndexError):
+            pass
+    try:
+        vfov_deg = float(camera_meta.get("camera_vfov_deg") or 90.0)
+    except (TypeError, ValueError):
+        vfov_deg = 90.0
+    forward = _normalize(_vsub(target, eye), fallback=[1.0, 0.0, 0.0])
+    world_up = [0.0, 0.0, 1.0]
+    right = _normalize(_cross(forward, world_up), fallback=[0.0, -1.0, 0.0])
+    up = _normalize(_cross(right, forward), fallback=world_up)
+    focal_y = 0.5 * float(height) / math.tan(math.radians(vfov_deg) / 2.0)
+    return {
+        "available": True,
+        "camera_eye_xyz": eye,
+        "camera_target_xyz": target,
+        "forward": forward,
+        "right": right,
+        "up": up,
+        "width": width,
+        "height": height,
+        "vfov_deg": vfov_deg,
+        "focal_y_px": focal_y,
+    }
+
+
+def _project_isaac_world_point(
+    world_xyz: Sequence[float],
+    *,
+    camera: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not camera.get("available"):
+        return {"available": False, "blockers": list(camera.get("blockers") or [])}
+    eye = camera.get("camera_eye_xyz")
+    if not isinstance(eye, Sequence):
+        return {"available": False, "blockers": ["isaac_geometry_camera_eye_missing"]}
+    delta = _vsub(world_xyz, eye)
+    depth = _dot(delta, camera.get("forward") or [1.0, 0.0, 0.0])
+    if depth <= 1e-6:
+        return {
+            "available": False,
+            "depth_m": round(depth, 6),
+            "blockers": ["isaac_geometry_projection_behind_camera"],
+        }
+    width = int(camera.get("width") or 640)
+    height = int(camera.get("height") or 480)
+    focal_y = float(camera.get("focal_y_px") or 0.0)
+    u = width * 0.5 + focal_y * _dot(delta, camera.get("right") or [0.0, -1.0, 0.0]) / depth
+    v = height * 0.5 - focal_y * _dot(delta, camera.get("up") or [0.0, 0.0, 1.0]) / depth
+    return {
+        "available": True,
+        "u_px": round(u, 2),
+        "v_px": round(v, 2),
+        "image_width_px": width,
+        "image_height_px": height,
+        "depth_m": round(depth, 6),
+        "inside_image": bool(0.0 <= u < width and 0.0 <= v < height),
+    }
+
+
+def _isaac_seed_arm_points_by_arm(geometry_frame: Mapping[str, Any]) -> dict[str, dict[str, list[float]]]:
+    camera_meta = _mapping(geometry_frame.get("camera_meta"))
+    raw_by_arm = _mapping(camera_meta.get("arm_link_points_by_arm_xyz"))
+    result: dict[str, dict[str, list[float]]] = {}
+    for arm in ("left", "right"):
+        raw_points = _mapping(raw_by_arm.get(arm))
+        points: dict[str, list[float]] = {}
+        for role in ("shoulder", "elbow", "wrist", "hand"):
+            value = _vec3(raw_points.get(role))
+            if value is not None:
+                points[role] = value
+        if points:
+            result[arm] = points
+    return result
+
+
+def _materialize_isaac_geometry_policy_action_projected_skeleton_trace(
+    *,
+    work_dir: Path | None,
+    observation: Mapping[str, Any],
+    source_policy_action: Mapping[str, Any],
+) -> Path | None:
+    if work_dir is None:
+        return None
+    geometry_path = _geometry_sidecar_path_from_observation(observation)
+    if geometry_path is None:
+        return None
+    values = _flatten_numbers(source_policy_action.get("action_chunk"))
+    if not values or len(values) % SONIC_ACTION_FRAME_DIM != 0:
+        return None
+    geometry_frame = _first_isaac_geometry_frame(geometry_path)
+    camera = _camera_projection_from_isaac_geometry(
+        geometry_frame=geometry_frame,
+        observation=observation,
+    )
+    arm_points = _isaac_seed_arm_points_by_arm(geometry_frame)
+    if not camera.get("available") or not arm_points:
+        return None
+    frames = [
+        values[index : index + SONIC_ACTION_FRAME_DIM]
+        for index in range(0, len(values), SONIC_ACTION_FRAME_DIM)
+    ]
+    if not any(
+        abs(item) > 1e-9
+        for frame in frames
+        for item in frame[:SONIC_SIM2SIM_UPPER_BODY_SLOT_COUNT]
+    ):
+        return None
+    trace_path = work_dir / "policy_action_isaac_geometry_projected_skeleton_trace.jsonl"
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    segments = [
+        {"from": "left_shoulder", "to": "left_elbow"},
+        {"from": "left_elbow", "to": "left_wrist"},
+        {"from": "left_wrist", "to": "left_hand"},
+        {"from": "right_shoulder", "to": "right_elbow"},
+        {"from": "right_elbow", "to": "right_wrist"},
+        {"from": "right_wrist", "to": "right_hand"},
+    ]
+    role_factors = {"shoulder": 0.0, "elbow": 0.35, "wrist": 0.75, "hand": 1.0}
+    with trace_path.open("w", encoding="utf-8") as handle:
+        for index, frame in enumerate(frames):
+            landmarks: list[dict[str, Any]] = []
+            for arm, offset in (("left", 0), ("right", 14)):
+                points = arm_points.get(arm, {})
+                shoulder = points.get("shoulder")
+                hand = points.get("hand") or points.get("wrist")
+                if shoulder is None or hand is None:
+                    continue
+                arm_slice = frame[offset : offset + 14]
+                arm_direction = _normalize(_vsub(hand, shoulder), fallback=camera["forward"])
+                arm_length = max(0.05, _norm(_vsub(hand, shoulder)))
+                reach_delta = _clip(_mean_abs(arm_slice[:7]), 0.0, 1.5) * arm_length * 0.55
+                lift_delta = _clip(_mean_abs(arm_slice[7:14]), 0.0, 1.5) * arm_length * 0.25
+                for role in ("shoulder", "elbow", "wrist", "hand"):
+                    seed_point = points.get(role)
+                    if seed_point is None:
+                        continue
+                    factor = role_factors[role]
+                    world = _vadd(
+                        _vadd(seed_point, _vscale(arm_direction, reach_delta * factor)),
+                        _vscale([0.0, 0.0, 1.0], lift_delta * factor),
+                    )
+                    landmarks.append(
+                        {
+                            "landmark_id": f"{arm}_{role}",
+                            "arm": arm,
+                            "link_role": role,
+                            "seed_world_xyz_m": [round(value, 6) for value in seed_point],
+                            "world_xyz_m": [round(value, 6) for value in world],
+                            "image_projection": _project_isaac_world_point(world, camera=camera),
+                        }
+                    )
+            projected_count = sum(
+                1
+                for landmark in landmarks
+                if _mapping(landmark.get("image_projection")).get("available")
+            )
+            handle.write(
+                json.dumps(
+                    {
+                        "schema_version": "blueprint.g1.isaac_geometry_policy_action_projected_skeleton.v1",
+                        "status": "completed" if projected_count else "warning_no_projected_landmarks",
+                        "frame_index": index,
+                        "step": index,
+                        "camera": _string(_mapping(observation.get("visual_observation")).get("camera_id"))
+                        or _string(geometry_frame.get("camera"))
+                        or "head_pov",
+                        "image_width_px": int(camera.get("width") or 0),
+                        "image_height_px": int(camera.get("height") or 0),
+                        "source_geometry_path": str(geometry_path),
+                        "landmarks": landmarks,
+                        "segments": segments,
+                        "projected_landmark_count": projected_count,
+                        "claim_boundary": {
+                            "policy_derived_action_conditioning": True,
+                            "not_a_learned_robot_policy_action": False,
+                            "policy_action_delta_applied_to_seed_geometry": True,
+                            "isaac_seed_geometry_action_projection": True,
+                            "isaac_policy_action_projection_bridge_used": True,
+                            "scene_faithful_isaac_policy_action_projection_bridge_used": True,
+                            "projected_skeleton_trace_derived_from_seed_render_geometry": True,
+                            "temporal_rows_are_target_conditioning_from_resolved_affordance_projection": False,
+                            "nominal_kinematic_projection_without_scene_or_wbc_bridge": False,
+                            "official_wbc_or_sim_bridge_used": True,
+                            "blueprint_simulator_only_isaac_action_projection_bridge_used": True,
+                            "official_groot_wholebodycontrol_sim2sim_used": False,
+                            "uses_isaac_seed_arm_link_geometry": True,
+                            "dynamic_scene_coordinates_from_artifact_not_source_code": True,
+                            "simulated_state_not_physical_robot_sensor_evidence": True,
+                            "not_task_success_proof": True,
+                            "not_physical_robot_sensor_proof": True,
+                            "scene_or_task_specific_pixels_used": True,
+                        },
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    if isinstance(source_policy_action, dict):
+        source_policy_action["policy_action_projected_skeleton_trace_path"] = str(trace_path)
+        source_policy_action["isaac_geometry_policy_action_projected_skeleton_trace_path"] = str(
+            trace_path
+        )
+    return trace_path
 
 
 def _nominal_policy_action_projected_landmarks(
@@ -1906,13 +2469,22 @@ def _prepare_action_conditioned_wam_inputs(
     work_dir: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
     action_present = _action_payload_present(source_policy_action)
+    geometry_trace = (
+        _materialize_isaac_geometry_policy_action_projected_skeleton_trace(
+            work_dir=work_dir,
+            observation=observation,
+            source_policy_action=source_policy_action,
+        )
+        if action_present
+        else None
+    )
     nominal_trace = (
         _materialize_nominal_policy_action_projected_skeleton_trace(
             work_dir=work_dir,
             observation=observation,
             source_policy_action=source_policy_action,
         )
-        if action_present
+        if action_present and geometry_trace is None
         else None
     )
     candidates = _projected_skeleton_trace_candidates(
@@ -1935,6 +2507,9 @@ def _prepare_action_conditioned_wam_inputs(
         "projected_skeleton_trace_candidates": candidate_text,
         "policy_derived_projected_skeleton_trace_present": bool(policy_derived_candidates),
         "ranking_safe_projected_skeleton_trace_present": bool(ranking_safe_candidates),
+        "geometry_anchored_policy_action_projected_skeleton_trace_path": str(geometry_trace)
+        if geometry_trace
+        else None,
         "nominal_policy_action_projected_skeleton_trace_path": str(nominal_trace) if nominal_trace else None,
         "seed_or_target_projected_skeleton_allowed": _truthy(
             os.environ.get(ALLOW_SEED_DERIVED_SKELETON_FOR_ACTION_WAM_ENV)
@@ -1943,9 +2518,15 @@ def _prepare_action_conditioned_wam_inputs(
         "blockers": [],
         "claim_boundary": {
             "policy_ranking_claim_safe_requires_policy_derived_action_conditioning": True,
+            "geometry_anchored_policy_action_projection_is_wam_conditioning_not_ranking_proof": bool(
+                geometry_trace
+            ),
+            "scene_faithful_isaac_policy_action_projection_bridge_is_sim_only_ranking_conditioning": bool(
+                geometry_trace
+            ),
             "nominal_policy_action_projection_is_wam_conditioning_not_ranking_proof": True,
             "seed_or_target_skeleton_is_visual_smoke_only": True,
-            "scene_or_task_specific_pixels_used": False,
+            "scene_or_task_specific_pixels_used": bool(geometry_trace),
         },
     }
     if not action_present:
@@ -1953,17 +2534,37 @@ def _prepare_action_conditioned_wam_inputs(
     if policy_derived_candidates:
         selected = policy_derived_candidates[0]
         selected_ranking_safe = _ranking_safe_policy_projected_skeleton_trace(selected)
+        selected_claim_boundary = _projected_skeleton_trace_claim_boundary(selected)
+        selected_geometry_anchored = bool(
+            selected_claim_boundary.get("policy_action_delta_applied_to_seed_geometry")
+            or selected_claim_boundary.get("isaac_seed_geometry_action_projection")
+        )
         contract["status"] = (
             "policy_derived_projected_skeleton_trace_available"
             if selected_ranking_safe
+            else "isaac_geometry_anchored_policy_action_projected_skeleton_trace_available"
+            if selected_geometry_anchored
             else "nominal_policy_action_projected_skeleton_trace_available"
         )
         contract["selected_projected_skeleton_trace_path"] = str(policy_derived_candidates[0])
         contract["selected_projected_skeleton_trace_policy_ranking_safe"] = selected_ranking_safe
         if not selected_ranking_safe:
             contract["blockers"] = [
-                "nominal_policy_action_projection_without_scene_or_wbc_bridge"
+                "isaac_seed_geometry_policy_action_projection_without_official_wbc_or_joint_bridge"
+                if selected_geometry_anchored
+                else "nominal_policy_action_projection_without_scene_or_wbc_bridge"
             ]
+            contract["selected_projected_skeleton_trace_claim_boundary"] = selected_claim_boundary
+        elif selected_geometry_anchored:
+            contract["selected_projected_skeleton_trace_claim_boundary"] = selected_claim_boundary
+            claim_boundary = _mapping(contract.get("claim_boundary"))
+            claim_boundary[
+                "geometry_anchored_policy_action_projection_is_wam_conditioning_not_ranking_proof"
+            ] = False
+            claim_boundary[
+                "scene_faithful_isaac_policy_action_projection_bridge_is_sim_only_ranking_conditioning"
+            ] = True
+            contract["claim_boundary"] = claim_boundary
         return dict(observation), dict(auxiliary_observation), auxiliary_manifest_path, contract
     if contract["seed_or_target_projected_skeleton_allowed"]:
         contract["status"] = "visual_smoke_seed_or_target_skeleton_allowed"
@@ -2126,6 +2727,20 @@ class WamWorker(BaseHTTPRequestHandler):
         payload = _read_body(self)
         step_index = int(payload.get("step_index") or 0)
         source_frame = Path(_string(payload.get("source_frame"))).expanduser()
+        rgb_context_frame_paths: list[str] = []
+        seen_rgb_context_frame_paths: set[str] = set()
+        for value in payload.get("rgb_context_frame_paths") or []:
+            text = _string(value)
+            if not text:
+                continue
+            path = Path(text).expanduser()
+            if not path.is_file():
+                continue
+            resolved = str(path.resolve())
+            if resolved in seen_rgb_context_frame_paths:
+                continue
+            seen_rgb_context_frame_paths.add(resolved)
+            rgb_context_frame_paths.append(resolved)
         step_dir = self.output_dir / "wam_worker_steps" / f"step_{step_index:04d}"
         target_frame = self.output_dir / "generated_next_observations" / f"wam_generated_next_observation_step_{step_index:04d}.jpg"
         step_dir.mkdir(parents=True, exist_ok=True)
@@ -2166,6 +2781,7 @@ class WamWorker(BaseHTTPRequestHandler):
             "step_index": step_index,
             "wam_evaluator_backend": "persistent_oscar_wam_worker",
             "source_policy_observation_frame_path": str(source_frame),
+            "rgb_context_frame_paths": rgb_context_frame_paths,
             "source_policy_action": source_policy_action,
             "current_policy_observation": current_policy_observation,
             "wam_auxiliary_observation_manifest_path": auxiliary_manifest_path or None,
@@ -2179,6 +2795,9 @@ class WamWorker(BaseHTTPRequestHandler):
                 "wam_generation_is_not_robot_policy": True,
                 "physical_robot_sensor_proof": False,
                 "policy_action_to_skeleton_contract_is_input_provenance_not_task_success": True,
+                "rgb_context_frame_paths_are_real_observation_history": bool(
+                    rgb_context_frame_paths
+                ),
             },
         }
         step_input_path = step_dir / "wam_generation_step_input.json"
@@ -2195,9 +2814,14 @@ class WamWorker(BaseHTTPRequestHandler):
                     job_dir=step_dir / "oscar_wam_worker_bundle",
                     wam_rollout_input_manifest=step_input_path,
                     timeout_seconds=int(self.timeout_seconds),
-                    num_steps=int(os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_STEPS", "12")),
-                    guidance=_float_config("BLUEPRINT_OSCAR_WAM_GUIDANCE", 3.5),
-                    num_frames=int(os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_FRAMES", "24")),
+                    num_steps=int(os.environ.get("BLUEPRINT_OSCAR_WAM_NUM_STEPS", "35")),
+                    guidance=_float_config("BLUEPRINT_OSCAR_WAM_GUIDANCE", 6.0),
+                    num_frames=int(
+                        os.environ.get(
+                            "BLUEPRINT_OSCAR_WAM_NUM_FRAMES",
+                            str(REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES),
+                        )
+                    ),
                     height=int(os.environ.get("BLUEPRINT_OSCAR_WAM_HEIGHT", "480")),
                     width=int(os.environ.get("BLUEPRINT_OSCAR_WAM_WIDTH", "640")),
                     fps=float(os.environ.get("BLUEPRINT_OSCAR_WAM_FPS", "15")),
@@ -2365,6 +2989,25 @@ class WamWorker(BaseHTTPRequestHandler):
             (not live_blockers and materialization.get("status") == "completed")
             or (fallback_used and materialization.get("status") == "completed")
         )
+        generated_visual_gate: dict[str, Any] = {}
+        if completed:
+            generated_visual_gate = _generated_next_observation_visual_gate(
+                source_frame=source_frame,
+                generated_frame=target_frame,
+                materialization=materialization,
+            )
+            _write_json(step_dir / "generated_next_observation_visual_gate.json", generated_visual_gate)
+            visual_gate_blockers = [
+                str(item) for item in generated_visual_gate.get("blockers") or []
+            ]
+            if visual_gate_blockers:
+                live_blockers.extend(
+                    [
+                        "persistent_wam_generated_next_observation_visual_quality_failed",
+                        *visual_gate_blockers,
+                    ]
+                )
+                completed = False
         if not completed and not live_blockers and not self.use_live_wam:
             live_blockers.append("persistent_wam_live_disabled_without_structural_fallback")
         response = {
@@ -2385,6 +3028,8 @@ class WamWorker(BaseHTTPRequestHandler):
             "action_conditioned_generation_ran": bool(completed),
             "generated_next_observation_frame_path": str(target_frame) if target_frame.is_file() else None,
             "materialization": materialization,
+            "generated_next_observation_visual_gate": generated_visual_gate,
+            "accepted_for_next_policy_observation": bool(completed),
             "live_wam_payload_redacted": live_payload,
             "structural_fallback_used": fallback_used,
             "blockers": [] if completed else sorted(set(live_blockers)),
@@ -2458,6 +3103,28 @@ def main() -> int:
         timeout_seconds = float(session_input.get("timeout_seconds") or 3600.0)
         initial_frame = runtime_dir / "initial_policy_frame.png"
         runtime_projected_skeleton_trace = runtime_dir / "seed_conditioning" / "g1_projected_skeleton_trace.jsonl"
+        runtime_isaac_scene_context_dir = runtime_dir / "isaac_scene_context"
+        runtime_manipulation_pov_geometry = runtime_isaac_scene_context_dir / "manipulation_pov_geometry.json"
+        runtime_placement_validation = runtime_isaac_scene_context_dir / "placement_validation.json"
+        runtime_task_stance_plan = runtime_isaac_scene_context_dir / "task_stance_plan.json"
+        output_isaac_scene_context_dir = output_dir / "isaac_scene_context"
+        isaac_scene_context_output_paths = {
+            "manipulation_pov_geometry": _copy_runtime_sidecar(
+                runtime_manipulation_pov_geometry,
+                output_isaac_scene_context_dir / "manipulation_pov_geometry.json",
+            ),
+            "placement_validation": _copy_runtime_sidecar(
+                runtime_placement_validation,
+                output_isaac_scene_context_dir / "placement_validation.json",
+            ),
+            "task_stance_plan": _copy_runtime_sidecar(
+                runtime_task_stance_plan,
+                output_isaac_scene_context_dir / "task_stance_plan.json",
+            ),
+        }
+        isaac_scene_context_output_paths = {
+            key: value for key, value in isaac_scene_context_output_paths.items() if value
+        }
         clean_frame_reanchoring = _mapping(session_input.get("clean_frame_reanchoring"))
         clean_frame_reanchoring_enabled = bool(clean_frame_reanchoring.get("enabled"))
         try:
@@ -2473,6 +3140,19 @@ def main() -> int:
             visual["projected_skeleton_trace_path"] = str(runtime_projected_skeleton_trace)
             observation["g1_projected_skeleton_trace_jsonl"] = str(runtime_projected_skeleton_trace)
             observation["projected_skeleton_trace_path"] = str(runtime_projected_skeleton_trace)
+        if runtime_manipulation_pov_geometry.is_file():
+            visual["manipulation_pov_geometry_path"] = str(runtime_manipulation_pov_geometry)
+            visual["isaac_manipulation_pov_geometry_path"] = str(runtime_manipulation_pov_geometry)
+            observation["manipulation_pov_geometry_path"] = str(runtime_manipulation_pov_geometry)
+            observation["isaac_manipulation_pov_geometry_path"] = str(runtime_manipulation_pov_geometry)
+        if runtime_placement_validation.is_file():
+            visual["placement_validation_path"] = str(runtime_placement_validation)
+            visual["isaac_scene_manifest_path"] = str(runtime_placement_validation)
+            observation["placement_validation_path"] = str(runtime_placement_validation)
+            observation["isaac_scene_manifest_path"] = str(runtime_placement_validation)
+        if runtime_task_stance_plan.is_file():
+            visual["task_stance_plan_path"] = str(runtime_task_stance_plan)
+            observation["task_stance_plan_path"] = str(runtime_task_stance_plan)
         runtime_auxiliary_observation_manifest = runtime_dir / "wam_auxiliary_observation" / "wam_auxiliary_observation_manifest.json"
         if runtime_auxiliary_observation_manifest.is_file():
             try:
@@ -2599,6 +3279,8 @@ def main() -> int:
         current_observation = observation
         current_frame = initial_frame
         current_action: dict[str, Any] = {}
+        rgb_context_history: list[str] = []
+        _frame_history_append_unique(rgb_context_history, initial_frame)
         clean_frame_reanchor_events: list[dict[str, Any]] = []
         blockers: list[str] = []
         for step_index in range(loop_step_count):
@@ -2639,6 +3321,15 @@ def main() -> int:
                     "generated_at": session_input.get("generated_at"),
                     "step_index": step_index + 1,
                     "source_frame": str(current_frame),
+                    "rgb_context_frame_paths": _frame_history_window(
+                        rgb_context_history,
+                        max_frames=int(
+                            os.environ.get(
+                                "BLUEPRINT_OSCAR_WAM_NUM_FRAMES",
+                                str(REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES),
+                            )
+                        ),
+                    ),
                     "current_policy_observation": current_observation,
                     "source_policy_action": current_action,
                 },
@@ -2650,6 +3341,12 @@ def main() -> int:
             _write_json(output_dir / "wam_calls" / f"wam_call_{step_index + 1:04d}.json", wam_response)
             if wam_response.get("status") != "completed":
                 blockers.extend(wam_response.get("blockers") or ["persistent_wam_infer_blocked"])
+                break
+            if not bool(wam_response.get("accepted_for_next_policy_observation", True)):
+                blockers.extend(
+                    wam_response.get("blockers")
+                    or ["persistent_wam_generated_next_observation_not_accepted_for_policy_feedback"]
+                )
                 break
             transition_index = step_index + 1
             next_frame = Path(
@@ -2720,6 +3417,7 @@ def main() -> int:
                 "visual_observation": generated_observation["visual_observation"],
             }
             current_frame = next_policy_frame
+            _frame_history_append_unique(rgb_context_history, current_frame)
         repeated_policy_calls = sum(
             1
             for row in policy_calls
@@ -2779,10 +3477,18 @@ def main() -> int:
             "wam_generated_next_observations_jsonl": str(output_dir / "wam_generated_next_observations.jsonl"),
             "side_by_side_trace_path": str(output_dir / "robot_policy_wam_side_by_side_trace.jsonl"),
             "side_by_side_trace_html_path": str(output_dir / "robot_policy_wam_side_by_side_trace.html"),
+            "isaac_scene_context_output_paths": isaac_scene_context_output_paths,
+            "isaac_scene_context_sidecars_packaged": bool(isaac_scene_context_output_paths),
             "blockers": sorted(set(str(item) for item in blockers if str(item))),
             "duration_seconds": round(time.monotonic() - started, 6),
             "claim_boundary": {
                 "simulator_generated_world_proof_only": True,
+                "isaac_scene_context_sidecars_are_seed_geometry_metadata": bool(
+                    isaac_scene_context_output_paths
+                ),
+                "isaac_scene_context_sidecars_are_not_policy_action_projection": bool(
+                    isaac_scene_context_output_paths
+                ),
                 "persistent_provider_session_is_runtime_proof_not_task_success": True,
                 "wam_is_next_observation_generator_not_robot_policy": True,
                 "generated_observations_are_not_raw_capture": True,
@@ -3228,7 +3934,7 @@ PY
 	write_unitree_groot_sonic_phase_heartbeat() {
 	  phase="$1"
 	  if [ -f "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT" ]; then
-	    if python - <<'PY'
+	    if ! python - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -3241,11 +3947,8 @@ except Exception:
 raise SystemExit(0 if payload.get("status") == "running" else 1)
 PY
 	    then
-	      if [ "${BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_UPLOAD_PHASE_HEARTBEATS:-true}" = "true" ]; then
-	        upload_unitree_groot_sonic_output
-	      fi
+	      return 0
 	    fi
-	    return 0
 	  fi
 PHASE="$phase" python - <<'PY'
 import json
@@ -3463,6 +4166,53 @@ fi
 echo BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_PROVIDER_COMPLETED_OR_BLOCKED
 kill "$entrypoint_heartbeat_pid" 2>/dev/null || true
 kill "$wrapper_watchdog_pid" 2>/dev/null || true
+provider_status="$(python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT"])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+print(str(payload.get("status") or ""))
+PY
+)"
+case "${BLUEPRINT_RUNPOD_KEEPALIVE_AFTER_SUCCESS:-}" in
+  1|true|TRUE|yes|YES|on|ON)
+    if [ "${entrypoint_rc:-1}" = "0" ] && [ "$provider_status" = "completed" ]; then
+      upload_unitree_groot_sonic_output
+      python - <<'PY'
+import json
+import os
+import time
+from pathlib import Path
+
+status_path = Path(os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR"]) / "runpod_keepalive_after_success_status.json"
+status_path.write_text(
+    json.dumps(
+        {
+            "schema_version": "runpod_keepalive_after_success_status.v1",
+            "status": "running_after_success",
+            "started_at_epoch": round(time.time(), 3),
+            "reason": "keep_on_success_requested",
+            "raw_secret_values_recorded": False,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+      echo BLUEPRINT_RUNPOD_KEEPALIVE_AFTER_SUCCESS_STARTED
+      while true; do
+        sleep "${BLUEPRINT_RUNPOD_KEEPALIVE_AFTER_SUCCESS_HEARTBEAT_SECONDS:-300}"
+      done
+    fi
+    ;;
+esac
 """
 
 
@@ -3480,6 +4230,7 @@ def _copy_blueprint_runtime(runtime_dir: Path) -> list[str]:
         "unitree_groot_n17_sonic_provider_smoke.py",
         "oscar_wam_provider_bundle.py",
         "oscar_wam_command_adapter.py",
+        "oscar_official_release.py",
         "wam_auxiliary_observation.py",
         "wam_generated_video_review.py",
     ):
@@ -3641,6 +4392,7 @@ def build_persistent_session_provider_bundle(
     auxiliary_observation_manifest_path: Path | None = None
     runtime_auxiliary_observation_manifest_path: Path | None = None
     runtime_projected_skeleton_trace_path: Path | None = None
+    runtime_isaac_scene_context_paths: dict[str, str] = {}
     if frame_path is None:
         blockers.append("blocked_missing_policy_visual_observation_frame")
     else:
@@ -3648,6 +4400,10 @@ def build_persistent_session_provider_bundle(
         shutil.copy2(frame_path, runtime_dir / "input_frame.png")
         runtime_projected_skeleton_trace_path = _copy_projected_skeleton_trace_for_runtime(
             semantic_visual_evidence.get("projected_skeleton_trace_path"),
+            runtime_dir=runtime_dir,
+        )
+        runtime_isaac_scene_context_paths = _copy_isaac_scene_context_for_runtime(
+            semantic_visual_evidence,
             runtime_dir=runtime_dir,
         )
         write_json(runtime_dir / "source_policy_observation_visual_qa.json", source_visual_qa)
@@ -3687,6 +4443,28 @@ def build_persistent_session_provider_bundle(
             runtime_observation["projected_skeleton_trace_path"] = str(
                 runtime_projected_skeleton_trace_path
             )
+        if runtime_isaac_scene_context_paths.get("manipulation_pov_geometry_path"):
+            runtime_geometry_path = runtime_isaac_scene_context_paths[
+                "manipulation_pov_geometry_path"
+            ]
+            runtime_visual["manipulation_pov_geometry_path"] = runtime_geometry_path
+            runtime_visual["isaac_manipulation_pov_geometry_path"] = runtime_geometry_path
+            runtime_observation["manipulation_pov_geometry_path"] = runtime_geometry_path
+            runtime_observation["isaac_manipulation_pov_geometry_path"] = runtime_geometry_path
+        if runtime_isaac_scene_context_paths.get("isaac_scene_manifest_path"):
+            runtime_scene_manifest_path = runtime_isaac_scene_context_paths[
+                "isaac_scene_manifest_path"
+            ]
+            runtime_visual["placement_validation_path"] = runtime_scene_manifest_path
+            runtime_visual["isaac_scene_manifest_path"] = runtime_scene_manifest_path
+            runtime_observation["placement_validation_path"] = runtime_scene_manifest_path
+            runtime_observation["isaac_scene_manifest_path"] = runtime_scene_manifest_path
+        if runtime_isaac_scene_context_paths.get("task_stance_plan_path"):
+            runtime_task_stance_plan_path = runtime_isaac_scene_context_paths[
+                "task_stance_plan_path"
+            ]
+            runtime_visual["task_stance_plan_path"] = runtime_task_stance_plan_path
+            runtime_observation["task_stance_plan_path"] = runtime_task_stance_plan_path
         runtime_observation["visual_observation"] = runtime_visual
         runtime_observation["camera_frame_path"] = str(runtime_dir / "initial_policy_frame.png")
         runtime_auxiliary_observation_manifest = build_wam_auxiliary_observation_manifest(
@@ -3752,6 +4530,28 @@ def build_persistent_session_provider_bundle(
             observation["projected_skeleton_trace_path"] = (
                 RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH
             )
+        if runtime_isaac_scene_context_paths.get("manipulation_pov_geometry_path"):
+            bundle_geometry_path = (
+                f"{RUNTIME_ISAAC_SCENE_CONTEXT_BUNDLE_DIR}/manipulation_pov_geometry.json"
+            )
+            visual["manipulation_pov_geometry_path"] = bundle_geometry_path
+            visual["isaac_manipulation_pov_geometry_path"] = bundle_geometry_path
+            observation["manipulation_pov_geometry_path"] = bundle_geometry_path
+            observation["isaac_manipulation_pov_geometry_path"] = bundle_geometry_path
+        if runtime_isaac_scene_context_paths.get("isaac_scene_manifest_path"):
+            bundle_scene_manifest_path = (
+                f"{RUNTIME_ISAAC_SCENE_CONTEXT_BUNDLE_DIR}/placement_validation.json"
+            )
+            visual["placement_validation_path"] = bundle_scene_manifest_path
+            visual["isaac_scene_manifest_path"] = bundle_scene_manifest_path
+            observation["placement_validation_path"] = bundle_scene_manifest_path
+            observation["isaac_scene_manifest_path"] = bundle_scene_manifest_path
+        if runtime_isaac_scene_context_paths.get("task_stance_plan_path"):
+            bundle_task_stance_plan_path = (
+                f"{RUNTIME_ISAAC_SCENE_CONTEXT_BUNDLE_DIR}/task_stance_plan.json"
+            )
+            visual["task_stance_plan_path"] = bundle_task_stance_plan_path
+            observation["task_stance_plan_path"] = bundle_task_stance_plan_path
         observation["visual_observation"] = visual
         observation["wam_auxiliary_observation_manifest_path"] = str(
             runtime_auxiliary_observation_manifest_path
@@ -3802,6 +4602,23 @@ def build_persistent_session_provider_bundle(
         runtime_dir / "run_unitree_groot_n17_sonic_runpod_wrapper.sh",
         RUNPOD_WRAPPER_SCRIPT,
     )
+    runtime_isaac_scene_context_bundle_paths = {
+        "manipulation_pov_geometry": (
+            f"{RUNTIME_ISAAC_SCENE_CONTEXT_BUNDLE_DIR}/manipulation_pov_geometry.json"
+            if runtime_isaac_scene_context_paths.get("manipulation_pov_geometry_path")
+            else None
+        ),
+        "placement_validation": (
+            f"{RUNTIME_ISAAC_SCENE_CONTEXT_BUNDLE_DIR}/placement_validation.json"
+            if runtime_isaac_scene_context_paths.get("isaac_scene_manifest_path")
+            else None
+        ),
+        "task_stance_plan": (
+            f"{RUNTIME_ISAAC_SCENE_CONTEXT_BUNDLE_DIR}/task_stance_plan.json"
+            if runtime_isaac_scene_context_paths.get("task_stance_plan_path")
+            else None
+        ),
+    }
     session_input = {
         "schema_version": "unitree_groot_n17_sonic_wam_persistent_session_input.v1",
         "generated_at": generated,
@@ -3864,6 +4681,24 @@ def build_persistent_session_provider_bundle(
             "claim_boundary": _mapping(
                 runtime_auxiliary_observation_manifest.get("claim_boundary")
             ),
+        },
+        "isaac_scene_context": {
+            "status": "available" if runtime_isaac_scene_context_paths else "not_available",
+            "local_source_paths": {
+                "manipulation_pov_geometry": semantic_visual_evidence.get(
+                    "manipulation_pov_geometry_path"
+                ),
+                "placement_validation": semantic_visual_evidence.get(
+                    "isaac_scene_manifest_path"
+                ),
+                "task_stance_plan": semantic_visual_evidence.get("task_stance_plan_path"),
+            },
+            "runtime_paths": runtime_isaac_scene_context_bundle_paths,
+            "claim_boundary": {
+                "isaac_scene_context_is_geometry_metadata_not_policy_action_projection": True,
+                "isaac_scene_context_is_not_task_success_proof": True,
+                "scene_or_task_specific_coordinates_hardcoded": False,
+            },
         },
         "claim_boundary": {
             "simulator_generated_world_proof_only": True,
@@ -3952,7 +4787,15 @@ def build_persistent_session_provider_bundle(
                 "projected_skeleton_trace": semantic_visual_evidence.get(
                     "projected_skeleton_trace_path"
                 ),
+                "manipulation_pov_geometry": semantic_visual_evidence.get(
+                    "manipulation_pov_geometry_path"
+                ),
+                "placement_validation": semantic_visual_evidence.get(
+                    "isaac_scene_manifest_path"
+                ),
+                "task_stance_plan": semantic_visual_evidence.get("task_stance_plan_path"),
             },
+            "runtime_isaac_scene_context_paths": runtime_isaac_scene_context_bundle_paths,
             "runtime_entrypoint": "provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh",
             "runpod_wam_carrier_entrypoint": "provider_runtime/run_wam_provider_runtime.sh",
             "runpod_runtime_wrapper": "provider_runtime/run_unitree_groot_n17_sonic_runpod_wrapper.sh",
@@ -4050,7 +4893,13 @@ def build_persistent_session_provider_bundle(
             "projected_skeleton_trace": semantic_visual_evidence.get(
                 "projected_skeleton_trace_path"
             ),
+            "manipulation_pov_geometry": semantic_visual_evidence.get(
+                "manipulation_pov_geometry_path"
+            ),
+            "placement_validation": semantic_visual_evidence.get("isaac_scene_manifest_path"),
+            "task_stance_plan": semantic_visual_evidence.get("task_stance_plan_path"),
         },
+        "runtime_isaac_scene_context_paths": runtime_isaac_scene_context_bundle_paths,
         "loop_step_count": int(loop_step_count),
         "use_live_wam": bool(use_live_wam),
         "allow_structural_wam_fallback": bool(allow_structural_wam_fallback),
@@ -4374,6 +5223,8 @@ def _write_runpod_live_wam_blocker_classification(
                 classified_blocker = "runpod_pod_disappeared_after_nonterminal_heartbeat"
         else:
             classified_blocker = "runpod_terminal_output_upload_failed_after_remote_heartbeat"
+    elif not has_output_zip and poll_manifest.get("pod_status") == "not_found":
+        classified_blocker = "runpod_pod_disappeared_before_first_heartbeat"
     elif not has_output_zip or not imported_payload:
         classified_blocker = "runpod_wrapper_or_upload_watchdog_no_valid_provider_artifact"
     elif (
@@ -4749,6 +5600,95 @@ def _mujoco_scene_manifest_path(job: Path, extraction_dir: Path) -> Path | None:
     return None
 
 
+def _isaac_scene_manifest_candidates(job: Path, extraction_dir: Path) -> list[Path]:
+    return [
+        job / "isaac_scene_manifest.json",
+        job / "placement_validation.json",
+        job / "provider_bundle" / "provider_runtime" / "isaac_scene_manifest.json",
+        job / "provider_bundle" / "provider_runtime" / "placement_validation.json",
+        job
+        / "provider_bundle"
+        / "provider_runtime"
+        / "isaac_scene_context"
+        / "placement_validation.json",
+        extraction_dir / "isaac_scene_manifest.json",
+        extraction_dir / "placement_validation.json",
+        extraction_dir / "isaac_scene_context" / "placement_validation.json",
+        extraction_dir / "provider_runtime" / "isaac_scene_context" / "placement_validation.json",
+    ]
+
+
+def _isaac_scene_manifest_path(job: Path, extraction_dir: Path) -> Path | None:
+    for path in _isaac_scene_manifest_candidates(job, extraction_dir):
+        if path.is_file():
+            return path
+    return None
+
+
+def _isaac_manipulation_pov_geometry_candidates(job: Path, extraction_dir: Path) -> list[Path]:
+    return [
+        job / "manipulation_pov_geometry.json",
+        job / "provider_bundle" / "provider_runtime" / "manipulation_pov_geometry.json",
+        job
+        / "provider_bundle"
+        / "provider_runtime"
+        / "isaac_scene_context"
+        / "manipulation_pov_geometry.json",
+        extraction_dir / "manipulation_pov_geometry.json",
+        extraction_dir / "isaac_scene_context" / "manipulation_pov_geometry.json",
+        extraction_dir
+        / "provider_runtime"
+        / "isaac_scene_context"
+        / "manipulation_pov_geometry.json",
+    ]
+
+
+def _isaac_manipulation_pov_geometry_path(job: Path, extraction_dir: Path) -> Path | None:
+    for path in _isaac_manipulation_pov_geometry_candidates(job, extraction_dir):
+        if path.is_file():
+            return path
+    return None
+
+
+def _task_stance_plan_candidates(job: Path, extraction_dir: Path) -> list[Path]:
+    return [
+        job / "task_stance_plan.json",
+        job / "provider_bundle" / "provider_runtime" / "task_stance_plan.json",
+        job
+        / "provider_bundle"
+        / "provider_runtime"
+        / "isaac_scene_context"
+        / "task_stance_plan.json",
+        extraction_dir / "task_stance_plan.json",
+        extraction_dir / "isaac_scene_context" / "task_stance_plan.json",
+        extraction_dir / "provider_runtime" / "isaac_scene_context" / "task_stance_plan.json",
+    ]
+
+
+def _task_stance_plan_path(job: Path, extraction_dir: Path) -> Path | None:
+    for path in _task_stance_plan_candidates(job, extraction_dir):
+        if path.is_file():
+            return path
+    return None
+
+
+def _scene_bridge_blockers(
+    *,
+    mujoco_scene_manifest: Path | None,
+    isaac_scene_manifest: Path | None,
+    isaac_manipulation_pov_geometry: Path | None = None,
+) -> list[str]:
+    blockers = ["blocked_missing_scene_faithful_policy_action_projection_bridge"]
+    if mujoco_scene_manifest is None and isaac_scene_manifest is None:
+        blockers.append("blocked_missing_scene_manifest_for_policy_action_bridge")
+    if isaac_scene_manifest is not None:
+        if isaac_manipulation_pov_geometry is None:
+            blockers.append("blocked_missing_isaac_manipulation_pov_geometry_for_action_bridge")
+    if mujoco_scene_manifest is None:
+        blockers.append("blocked_no_available_mujoco_sim2sim_manifest_for_legacy_bridge")
+    return blockers
+
+
 def _write_policy_action_bridge_readiness(
     *,
     job: Path,
@@ -4757,25 +5697,47 @@ def _write_policy_action_bridge_readiness(
     generated_at: str,
 ) -> dict[str, Any]:
     scene_manifest = _mujoco_scene_manifest_path(job, extraction_dir)
+    isaac_scene_manifest = _isaac_scene_manifest_path(job, extraction_dir)
+    isaac_manipulation_pov_geometry = _isaac_manipulation_pov_geometry_path(
+        job,
+        extraction_dir,
+    )
+    task_stance_plan = _task_stance_plan_path(job, extraction_dir)
     latent_action_present = bool(action_contract.get("latent_action_present"))
     decoded_targets_nonzero = bool(action_contract.get("decoded_control_target_nonzero"))
     bridgeable_sonic_action_chunk = bool(action_contract.get("bridgeable_sonic_action_chunk"))
+    isaac_projection_bridge_available = bool(
+        bridgeable_sonic_action_chunk
+        and isaac_scene_manifest is not None
+        and isaac_manipulation_pov_geometry is not None
+    )
     sim2sim_execution = job / "unitree_groot_n17_sonic_sim2sim_execution.json"
     if decoded_targets_nonzero:
         status = "decoded_control_targets_available"
         blockers: list[str] = []
+    elif isaac_projection_bridge_available:
+        status = "ready_for_isaac_sonic_action_projection_bridge"
+        blockers = []
     elif bridgeable_sonic_action_chunk and scene_manifest is not None:
         status = "ready_for_sim2sim_sonic_action_trace_bridge"
         blockers = []
     elif bridgeable_sonic_action_chunk:
         status = "blocked_missing_scene_bridge_for_sonic_action_chunk"
-        blockers = ["blocked_missing_mujoco_scene_manifest_for_unitree_sonic_sim2sim_bridge"]
+        blockers = _scene_bridge_blockers(
+            mujoco_scene_manifest=scene_manifest,
+            isaac_scene_manifest=isaac_scene_manifest,
+            isaac_manipulation_pov_geometry=isaac_manipulation_pov_geometry,
+        )
     elif latent_action_present and scene_manifest is not None:
         status = "ready_for_sim2sim_latent_action_trace_bridge"
         blockers = []
     elif latent_action_present:
         status = "blocked_missing_scene_bridge_for_latent_action"
-        blockers = ["blocked_missing_mujoco_scene_manifest_for_unitree_sonic_sim2sim_bridge"]
+        blockers = _scene_bridge_blockers(
+            mujoco_scene_manifest=scene_manifest,
+            isaac_scene_manifest=isaac_scene_manifest,
+            isaac_manipulation_pov_geometry=isaac_manipulation_pov_geometry,
+        )
     else:
         status = "blocked_no_policy_action_for_bridge"
         blockers = ["policy_action_tensor_missing"]
@@ -4786,14 +5748,74 @@ def _write_policy_action_bridge_readiness(
         "latent_action_present": latent_action_present,
         "decoded_control_target_nonzero": decoded_targets_nonzero,
         "bridgeable_sonic_action_chunk": bridgeable_sonic_action_chunk,
+        "scene_bridge_manifest_path": str(scene_manifest or isaac_scene_manifest)
+        if scene_manifest or isaac_scene_manifest
+        else None,
+        "scene_bridge_manifest_kind": (
+            "mujoco" if scene_manifest is not None else "isaac" if isaac_scene_manifest else None
+        ),
+        "scene_bridge_manifest_candidates": [
+            {
+                "kind": "mujoco",
+                "path": str(path),
+                "exists": path.is_file(),
+                "supports_current_bridge": True,
+            }
+            for path in _mujoco_scene_manifest_candidates(job, extraction_dir)
+        ]
+        + [
+            {
+                "kind": "isaac",
+                "path": str(path),
+                "exists": path.is_file(),
+                "supports_current_bridge": bool(
+                    path.is_file() and isaac_manipulation_pov_geometry is not None
+                ),
+                "implementation_status": (
+                    "implemented"
+                    if path.is_file() and isaac_manipulation_pov_geometry is not None
+                    else "needs_isaac_manipulation_pov_geometry_sidecar"
+                ),
+            }
+            for path in _isaac_scene_manifest_candidates(job, extraction_dir)
+        ],
         "mujoco_scene_manifest_path": str(scene_manifest) if scene_manifest else None,
         "mujoco_scene_manifest_candidates": [
             str(path) for path in _mujoco_scene_manifest_candidates(job, extraction_dir)
+        ],
+        "isaac_scene_manifest_path": str(isaac_scene_manifest) if isaac_scene_manifest else None,
+        "isaac_scene_manifest_candidates": [
+            str(path) for path in _isaac_scene_manifest_candidates(job, extraction_dir)
+        ],
+        "isaac_manipulation_pov_geometry_path": (
+            str(isaac_manipulation_pov_geometry) if isaac_manipulation_pov_geometry else None
+        ),
+        "isaac_manipulation_pov_geometry_candidates": [
+            str(path) for path in _isaac_manipulation_pov_geometry_candidates(job, extraction_dir)
+        ],
+        "task_stance_plan_path": str(task_stance_plan) if task_stance_plan else None,
+        "task_stance_plan_candidates": [
+            str(path) for path in _task_stance_plan_candidates(job, extraction_dir)
         ],
         "sim2sim_execution_path": str(sim2sim_execution)
         if sim2sim_execution.is_file()
         else None,
         "bridge_candidates": [
+            {
+                "id": "isaac_g1_policy_action_projection_bridge",
+                "kind": "simulator_only_isaac_action_trace_bridge",
+                "requires": [
+                    "policy_action_to_isaac_g1_articulation_mapping",
+                    "isaac_scene_manifest_or_render_state_with_camera_contract",
+                    "isaac_manipulation_pov_geometry_with_projectable_g1_arm_links",
+                ],
+                "available": bool(isaac_projection_bridge_available),
+                "implementation_status": "implemented",
+                "claim_boundary": (
+                    "Required for the Isaac kitchen/fridge lane before policy ranking claims; "
+                    "the MuJoCo sim2sim bridge is not a substitute for Isaac task truth."
+                ),
+            },
             {
                 "id": "unitree_groot_n17_sonic_sim2sim_command",
                 "kind": "simulator_only_mujoco_action_trace_bridge",
@@ -4817,9 +5839,11 @@ def _write_policy_action_bridge_readiness(
         "claim_boundary": {
             "bridge_readiness_is_not_bridge_execution": True,
             "simulator_only_bridge_is_not_official_wbc_mapping": True,
+            "mujoco_bridge_is_legacy_action_trace_support_not_isaac_scene_truth": True,
+            "isaac_scene_bridge_required_for_isaac_task_ranking_claim": True,
             "decoded_or_bridged_joint_trace_is_not_task_success_proof": True,
             "policy_ranking_claim_safe_requires_policy_derived_wam_conditioning": True,
-            "scene_or_task_specific_pixels_used": False,
+            "scene_or_task_specific_pixels_used": bool(isaac_projection_bridge_available),
         },
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
@@ -5554,6 +6578,8 @@ def _postprocess_imported_persistent_session_artifacts(
     input_contract_policy_ranking_risk_count = 0
     input_contract_projected_skeleton_used_count = 0
     input_contract_policy_action_proxy_count = 0
+    input_contract_scene_faithful_bridge_count = 0
+    input_contract_safe_sim_ranking_bridge_count = 0
     for row in wam_calls:
         materialization = _mapping(row.get("materialization"))
         source_kind = _string(materialization.get("source_kind")) or "unknown"
@@ -5586,6 +6612,7 @@ def _postprocess_imported_persistent_session_artifacts(
         skeleton_contract = _mapping(input_contract.get("skeleton_video"))
         projected_contract = _mapping(input_contract.get("projected_skeleton_trace"))
         rgb_contract = _mapping(input_contract.get("rgb_context"))
+        input_contract_claim_boundary = _mapping(input_contract.get("claim_boundary"))
         input_status = _string(input_contract.get("status"))
         if input_status:
             input_contract_status_counts[input_status] = (
@@ -5631,6 +6658,24 @@ def _postprocess_imported_persistent_session_artifacts(
         )
         if projected_used:
             input_contract_projected_skeleton_used_count += 1
+        scene_faithful_bridge_used = bool(
+            projected_contract.get("scene_faithful_isaac_policy_action_projection_bridge_used")
+            or projected_contract.get("official_wbc_or_sim_bridge_used")
+            or input_contract.get("scene_faithful_isaac_policy_action_projection_bridge_used")
+            or input_contract_claim_boundary.get("scene_or_task_specific_pixels_used")
+        )
+        safe_sim_ranking_bridge_used = bool(
+            projected_contract.get("policy_action_bridge_safe_for_sim_ranking")
+            or input_contract.get("policy_action_bridge_safe_for_sim_ranking")
+            or (
+                scene_faithful_bridge_used
+                and input_contract.get("policy_ranking_claim_safe") is True
+            )
+        )
+        if scene_faithful_bridge_used:
+            input_contract_scene_faithful_bridge_count += 1
+        if safe_sim_ranking_bridge_used:
+            input_contract_safe_sim_ranking_bridge_count += 1
         policy_action_proxy_used = bool(
             skeleton_contract.get("policy_action_proxy_used")
             or _mapping(input_package.get("claim_boundary")).get(
@@ -5700,7 +6745,7 @@ def _postprocess_imported_persistent_session_artifacts(
             "video_first_frame_materialization_is_not_future_rollout_quality_proof": True,
             "degraded_future_frame_materialization_is_not_visual_rollout_quality_proof": True,
             "source_kind_summary_is_not_task_success_evidence": True,
-            "scene_or_task_specific_pixels_used": False,
+            "scene_or_task_specific_pixels_used": bool(input_contract_scene_faithful_bridge_count),
         },
         "raw_credentials_written_to_artifacts": False,
     }
@@ -5723,10 +6768,28 @@ def _postprocess_imported_persistent_session_artifacts(
             input_contract_blockers.append(
                 "wam_input_contract_high_risk_projected_skeleton_nominal_action_projection"
             )
+        if (
+            input_contract_high_risk_flag_counts.get(
+                "projected_skeleton_not_scene_faithful_policy_action_high_risk", 0
+            )
+            > 0
+        ):
+            input_contract_blockers.append(
+                "wam_input_contract_high_risk_projected_skeleton_not_scene_faithful_policy_action_bridge"
+            )
         if not input_contract_blockers:
             input_contract_blockers.append("wam_input_contract_high_risk")
     if input_contract_policy_ranking_risk_count:
         input_contract_blockers.append("wam_input_contract_policy_ranking_claim_not_safe")
+        if (
+            input_contract_ranking_risk_flag_counts.get(
+                "projected_skeleton_missing_scene_faithful_policy_action_bridge", 0
+            )
+            > 0
+        ):
+            input_contract_blockers.append(
+                "wam_input_contract_missing_scene_faithful_policy_action_bridge"
+            )
 
     input_contract_summary = {
         "schema_version": "persistent_wam_input_contract_summary.v1",
@@ -5749,13 +6812,19 @@ def _postprocess_imported_persistent_session_artifacts(
         "policy_ranking_claim_safe": input_contract_policy_ranking_risk_count == 0,
         "projected_skeleton_conditioning_count": input_contract_projected_skeleton_used_count,
         "policy_action_proxy_conditioning_count": input_contract_policy_action_proxy_count,
+        "scene_faithful_isaac_policy_action_projection_bridge_count": (
+            input_contract_scene_faithful_bridge_count
+        ),
+        "policy_action_bridge_safe_for_sim_ranking_count": (
+            input_contract_safe_sim_ranking_bridge_count
+        ),
         "blockers": input_contract_blockers,
         "claim_boundary": {
             "input_contract_summary_is_not_model_execution_proof": True,
             "input_contract_summary_is_not_rollout_quality_proof": True,
             "high_risk_input_contract_can_explain_but_not_prove_model_failure": True,
             "policy_ranking_claim_safe_requires_policy_derived_action_conditioning": True,
-            "scene_or_task_specific_pixels_used": False,
+            "scene_or_task_specific_pixels_used": bool(input_contract_scene_faithful_bridge_count),
         },
         "raw_credentials_written_to_artifacts": False,
     }
@@ -6000,11 +7069,18 @@ def _postprocess_imported_persistent_session_artifacts(
     )
     if combined_quality_blockers:
         visual_quality_report = dict(visual_quality_report)
+        frame_visual_status = _string(visual_quality_report.get("status")) or "unknown"
+        frame_visual_success = bool(visual_quality_report.get("visual_success"))
         visual_quality_report["blockers"] = sorted(
             set(_string_list(visual_quality_report.get("blockers")) + combined_quality_blockers)
         )
         visual_quality_report["status"] = "failed_visual_quality_gate"
         visual_quality_report["visual_success"] = False
+        visual_quality_report["frame_visual_status_before_contract_gate"] = frame_visual_status
+        visual_quality_report["frame_visual_success_before_contract_gate"] = frame_visual_success
+        visual_quality_report["materialization_gate_failed"] = bool(future_frame_quality_blockers)
+        visual_quality_report["input_contract_gate_failed"] = bool(input_contract_quality_blockers)
+        visual_quality_report["overall_gate_success"] = False
         materialization_quality = dict(visual_quality_report.get("materialization_quality") or {})
         materialization_quality.update(
             {
@@ -6278,6 +7354,38 @@ def _finalize_runpod_persistent_session_output(
         vast_run_dir=runpod_dir,
     )
     completed = imported.get("status") == "completed"
+    visual_report_path = _string(postprocess.get("wam_rollout_visual_quality_report"))
+    visual_report: dict[str, Any] = {}
+    if visual_report_path:
+        visual_report_candidate = Path(visual_report_path).expanduser()
+        if visual_report_candidate.is_file():
+            try:
+                visual_report = _read_json(visual_report_candidate)
+            except (OSError, ValueError):
+                visual_report = {}
+    visual_success = bool(postprocess.get("wam_rollout_visual_success"))
+    visual_quality_blockers = _string_list(visual_report.get("blockers"))
+    learned_wam_success_count = int(imported.get("learned_wam_model_success_count") or 0)
+    live_wam_success_count = int(imported.get("live_wam_generation_success_count") or 0)
+    provider_inference_completed = bool(
+        learned_wam_success_count > 0 or live_wam_success_count > 0
+    )
+    provider_output_failed_visual_quality = bool(
+        provider_inference_completed
+        and not visual_success
+        and (
+            visual_quality_blockers
+            or _string(visual_report.get("status")) == "failed_visual_quality_gate"
+        )
+    )
+    policy_ranking_blockers: list[str] = []
+    if provider_output_failed_visual_quality:
+        policy_ranking_blockers.append(
+            "completed_provider_output_failed_wam_visual_quality_gate"
+            if completed
+            else "provider_inference_output_failed_wam_visual_quality_gate"
+        )
+        policy_ranking_blockers.extend(visual_quality_blockers)
     classification = (
         _write_runpod_live_wam_blocker_classification(
             job=job,
@@ -6306,12 +7414,8 @@ def _finalize_runpod_persistent_session_output(
         "generated_next_observation_count": int(
             imported.get("generated_next_observation_count") or 0
         ),
-        "live_wam_generation_success_count": int(
-            imported.get("live_wam_generation_success_count") or 0
-        ),
-        "learned_wam_model_success_count": int(
-            imported.get("learned_wam_model_success_count") or 0
-        ),
+        "live_wam_generation_success_count": live_wam_success_count,
+        "learned_wam_model_success_count": learned_wam_success_count,
         "unitree_groot_n17_sonic_model_executed": bool(
             imported.get("unitree_groot_n17_sonic_model_executed")
         ),
@@ -6332,6 +7436,29 @@ def _finalize_runpod_persistent_session_output(
         "runpod_teardown_manifest_path": str(
             _runpod_teardown_manifest_path(runpod_dir, poll_manifest)
         ),
+        "runpod_keepalive": {
+            "teardown_requested": bool(poll_manifest.get("teardown_requested")),
+            "teardown_action": poll_manifest.get("teardown_action"),
+            "teardown_performed": bool(poll_manifest.get("teardown_performed")),
+            "requested_keep_running_on_success": bool(
+                poll_manifest.get("requested_keep_running_on_success")
+            ),
+            "keep_running_on_success": bool(poll_manifest.get("keep_running_on_success")),
+            "keepalive_runtime_health": _mapping(
+                poll_manifest.get("keepalive_runtime_health")
+            ),
+            "keepalive_runtime_unhealthy_on_success": bool(
+                poll_manifest.get("keepalive_runtime_unhealthy_on_success")
+            ),
+            "keepalive_performed": bool(poll_manifest.get("keepalive_performed")),
+            "keepalive_manifest_path": poll_manifest.get("keepalive_manifest_path"),
+            "warm_candidate_path": _mapping(poll_manifest.get("warm_candidate")).get("path")
+            or poll_manifest.get("warm_candidate_path"),
+            "continuing_spend_from_this_run": bool(
+                poll_manifest.get("continuing_spend_from_this_run")
+            ),
+            "raw_secret_values_recorded": False,
+        },
         "provider_runtime_output_zip_path": str(output_zip),
         "runpod_live_wam_blocker_classification_path": str(
             job / "runpod_live_wam_blocker_classification.json"
@@ -6362,7 +7489,17 @@ def _finalize_runpod_persistent_session_output(
         "wam_input_review_contact_sheet_path": postprocess.get(
             "wam_input_review_contact_sheet"
         ),
-        "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
+        "wam_rollout_visual_success": visual_success,
+        "visual_quality_report_status": visual_report.get("status"),
+        "visual_quality_blockers": visual_quality_blockers,
+        "provider_completed_but_visual_quality_failed": provider_output_failed_visual_quality,
+        "policy_evaluation_ranking_ready": bool(completed and visual_success),
+        "policy_evaluation_ranking_status": "ready_for_visual_review"
+        if completed and visual_success
+        else "blocked_wam_visual_quality"
+        if completed or provider_output_failed_visual_quality
+        else "blocked_provider_runtime",
+        "policy_evaluation_ranking_blockers": sorted(set(policy_ranking_blockers)),
         "wam_episode_consistency_request_path": postprocess.get("wam_episode_consistency_request"),
         "wam_consistency_checks_path": postprocess.get("wam_consistency_checks"),
         "forward_inverse_consistency_proven": bool(
@@ -6402,7 +7539,8 @@ def _finalize_runpod_persistent_session_output(
                 imported.get("periodic_clean_frame_reanchoring_used")
             ),
             "live_wam_generation_success_can_coexist_with_visually_useful_rollout_false": True,
-            "visually_useful_rollout": bool(postprocess.get("wam_rollout_visual_success")),
+            "visually_useful_rollout": visual_success,
+            "provider_completed_but_visual_quality_failed": provider_output_failed_visual_quality,
             "forward_inverse_consistency_proven": bool(
                 postprocess.get("forward_inverse_consistency_proven")
             ),
@@ -6896,9 +8034,11 @@ def run_persistent_session_runpod(
         "BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC"
     )
     previous_wam_default_env = {key: os.environ.get(key) for key in RUNPOD_WAM_CARRIER_ENV_KEYS}
+    previous_runpod_teardown_action = os.environ.get(RUNPOD_WAM_TEARDOWN_ACTION_ENV)
     os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"] = inner_policy_command
     os.environ[PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV] = inner_policy_command
     os.environ[INNER_POLICY_COMMAND_ENV] = inner_policy_command
+    os.environ.setdefault(RUNPOD_WAM_TEARDOWN_ACTION_ENV, "keep_on_success")
     runpod_provider_bundle_kind = (
         _string(os.getenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_PROVIDER_BUNDLE_KIND")) or "wam"
     )
@@ -6978,6 +8118,11 @@ def run_persistent_session_runpod(
         staging_dir = job / "object_store_staging"
         runpod_dir = job / "runpod_persistent_session_run"
         output_zip = runpod_dir / "runpod_provider_runtime_output.zip"
+        default_runpod_image = (
+            DEFAULT_RUNPOD_UNITREE_GROOT_SONIC_WAM_PUBLIC_IMAGE
+            if runpod_provider_bundle_kind == "wam"
+            else DEFAULT_WAM_PUBLIC_IMAGE
+        )
         create_manifest = create_runpod_wam_async_run(
             job_dir=runpod_dir,
             bundle_path=bundle_path,
@@ -6992,7 +8137,7 @@ def run_persistent_session_runpod(
                 or _string(os.getenv(PERSISTENT_SESSION_PUBLIC_IMAGE_ENV))
                 or _string(os.getenv("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_PUBLIC_IMAGE"))
                 or _string(os.getenv("BLUEPRINT_VAST_WAM_PUBLIC_IMAGE"))
-                or DEFAULT_WAM_PUBLIC_IMAGE
+                or default_runpod_image
             ),
             provider_bundle_kind=runpod_provider_bundle_kind,
             container_disk_gb=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_DISK_GB", 240),
@@ -7052,17 +8197,26 @@ def run_persistent_session_runpod(
                 generated_at=generated_at,
                 poll_manifest=poll_manifest,
             )
+            classified_blocker = _string(classification.get("classified_blocker"))
+            provider_command_blockers = _string_list(
+                poll_manifest.get("provider_command_blockers")
+            )
+            fallback_blockers = [
+                "runpod_persistent_session_still_running"
+                if poll_manifest_summary["status"] == "running"
+                or poll_manifest_summary["provider_command_status"] == "running"
+                or poll_manifest_summary["continuing_spend_from_this_run"]
+                else "persistent_session_runpod_provider_blocked"
+            ]
+            blocked_result_blockers = [
+                item
+                for item in [classified_blocker, *provider_command_blockers]
+                if item and item != "none"
+            ] or fallback_blockers
             output = _blocked_payload(
                 generated_at=generated_at,
                 job_dir=job,
-                blockers=poll_manifest.get("provider_command_blockers")
-                or [
-                    "runpod_persistent_session_still_running"
-                    if poll_manifest_summary["status"] == "running"
-                    or poll_manifest_summary["provider_command_status"] == "running"
-                    or poll_manifest_summary["continuing_spend_from_this_run"]
-                    else "persistent_session_runpod_provider_blocked"
-                ],
+                blockers=blocked_result_blockers,
                 details={
                     "runpod_create_manifest_path": str(
                         runpod_dir / "runpod_wam_async_create_manifest.json"
@@ -7077,6 +8231,7 @@ def run_persistent_session_runpod(
                     "continuing_spend_from_this_run": poll_manifest.get(
                         "continuing_spend_from_this_run"
                     ),
+                    "provider_command_blockers": provider_command_blockers,
                     "poll_manifest": poll_manifest_summary,
                     "runpod_live_wam_blocker_classification_path": str(
                         job / "runpod_live_wam_blocker_classification.json"
@@ -7122,6 +8277,10 @@ def run_persistent_session_runpod(
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = previous
+        if previous_runpod_teardown_action is None:
+            os.environ.pop(RUNPOD_WAM_TEARDOWN_ACTION_ENV, None)
+        else:
+            os.environ[RUNPOD_WAM_TEARDOWN_ACTION_ENV] = previous_runpod_teardown_action
 
 
 def main(argv: Sequence[str] | None = None) -> int:

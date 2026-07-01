@@ -13,6 +13,7 @@ from .oscar_cosmos_wam_evaluator import (
     build_policy_model_endpoint_creation_plan,
     build_policy_model_endpoint_readiness_manifest,
 )
+from .oscar_official_release import OFFICIAL_OSCAR_WAM_IMAGE_REF
 from .policy_endpoint_boundary import build_policy_endpoint_boundary_manifest
 from .policy_model_runtime_proofs import discover_openvla_provider_smoke_proof
 from .provider_worker_contract import (
@@ -190,7 +191,7 @@ def build_policy_model_runnable_env_artifact(
             "# Fresh paid-provider path. Use only with an explicit spend cap and live inventory checks.",
             f"# export BLUEPRINT_OSCAR_WAM_COMMAND={json.dumps(OSCAR_FRESH_PROVIDER_COMMAND)}",
             "# export BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH=true",
-            "# export BLUEPRINT_VAST_WAM_PUBLIC_IMAGE=docker.io/nijelhunt/blueprint-oscar-wam:20260622-cu128-shim",
+            f"# export BLUEPRINT_VAST_WAM_PUBLIC_IMAGE={OFFICIAL_OSCAR_WAM_IMAGE_REF}",
             "",
         ]
     )

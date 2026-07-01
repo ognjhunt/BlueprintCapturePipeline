@@ -132,15 +132,93 @@ def _write_seed_geometry_route(tmp_path: Path) -> tuple[Path, Path]:
                         "target_projection": {"available": True, "u_px": 50, "v_px": 24},
                         "projected_landmarks": [
                             {
-                                "landmark_id": "right_hand_link",
+                                "landmark_id": "left_shoulder",
+                                "link_role": "shoulder",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 18,
+                                    "v_px": 34,
+                                    "depth_m": 0.35,
+                                },
+                            },
+                            {
+                                "landmark_id": "left_elbow",
+                                "link_role": "elbow",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 22,
+                                    "v_px": 32,
+                                    "depth_m": 0.34,
+                                },
+                            },
+                            {
+                                "landmark_id": "left_wrist",
+                                "link_role": "wrist",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 26,
+                                    "v_px": 30,
+                                    "depth_m": 0.32,
+                                },
+                            },
+                            {
+                                "landmark_id": "left_hand",
                                 "link_role": "hand",
                                 "image_projection": {
                                     "available": True,
-                                    "u_px": 32,
+                                    "u_px": 30,
+                                    "v_px": 28,
+                                    "depth_m": 0.3,
+                                },
+                            },
+                            {
+                                "landmark_id": "right_shoulder",
+                                "link_role": "shoulder",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 46,
+                                    "v_px": 34,
+                                    "depth_m": 0.35,
+                                },
+                            },
+                            {
+                                "landmark_id": "right_elbow",
+                                "link_role": "elbow",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 42,
+                                    "v_px": 32,
+                                    "depth_m": 0.34,
+                                },
+                            },
+                            {
+                                "landmark_id": "right_wrist",
+                                "link_role": "wrist",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 38,
                                     "v_px": 30,
+                                    "depth_m": 0.32,
+                                },
+                            },
+                            {
+                                "landmark_id": "right_hand",
+                                "link_role": "hand",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 34,
+                                    "v_px": 28,
                                     "depth_m": 0.3,
                                 },
                             }
+                        ],
+                        "segments": [
+                            {"from": "left_shoulder", "to": "left_elbow"},
+                            {"from": "left_elbow", "to": "left_wrist"},
+                            {"from": "left_wrist", "to": "left_hand"},
+                            {"from": "right_shoulder", "to": "right_elbow"},
+                            {"from": "right_elbow", "to": "right_wrist"},
+                            {"from": "right_wrist", "to": "right_hand"},
                         ],
                     }
                 ],
@@ -871,6 +949,62 @@ def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_
     assert step2_visual["projected_skeleton_trace_path"] == str(projected_trace.resolve())
 
 
+def test_provider_command_backend_blocks_failed_visual_smoke_before_extracting_frame(
+    tmp_path: Path,
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=41)
+    extractor_called = False
+
+    def _fake_adapter(_argv):
+        output_path = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"])
+        video = output_path.parent / "oscar_generated_rollout.mp4"
+        video.write_bytes(b"fake mp4")
+        payload = {
+            "status": "completed",
+            "fresh_provider_model_run_claimed": True,
+            "provider_learned_wam_model_ran": True,
+            "provider_generated_video_is_model_output": True,
+            "generated_rollout_visual_smoke_status": "failed_visual_quality_smoke",
+            "generated_rollout_visual_quality_blockers": [
+                "generated_rollout_later_frames_edge_structure_drift",
+                "generated_rollout_later_frames_entropy_drift",
+            ],
+            "rollouts": [{"generated_video_path": str(video)}],
+            "blockers": [],
+        }
+        output_path.write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    def _extract(_video_path, _out_dir):
+        nonlocal extractor_called
+        extractor_called = True
+        return None
+
+    backend = L.make_oscar_provider_command_wam_backend(
+        work_dir=tmp_path / "provider_loop",
+        task_prompt="open the refrigerator",
+        adapter_run=_fake_adapter,
+        extract_next_frame=_extract,
+    )
+    result = backend(
+        str(start),
+        {"policy_action": "accepted_direct_collision_checked_motion"},
+        1,
+        [],
+    )
+
+    assert result["status"] == "blocked"
+    assert result["generated_frame_path"] == ""
+    assert Path(result["generated_video_path"]).is_file()
+    assert extractor_called is False
+    assert "provider_generated_rollout_visual_smoke_not_passed" in result["blockers"]
+    assert (
+        "generated_rollout_later_frames_edge_structure_drift"
+        in result["blockers"]
+    )
+    assert "generated_rollout_later_frames_entropy_drift" in result["blockers"]
+
+
 def test_materialize_projected_skeleton_trace_from_seed_geometry_scales_to_seed(
     tmp_path: Path,
 ) -> None:
@@ -983,6 +1117,56 @@ payload = {{
 open(out, "w", encoding="utf-8").write(json.dumps(payload))
 """
     return [sys.executable, "-c", code]
+
+
+def test_closed_loop_does_not_consume_blocked_wam_output_with_frame(
+    tmp_path: Path,
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=61)
+
+    def _blocked_wam(_current_frame, _action, step_index, _history):
+        frame = _write_frame(
+            tmp_path / "degraded_wam" / f"step_{step_index:04d}.png",
+            seed=step_index * 61,
+        )
+        return {
+            "status": "blocked",
+            "wam_backend": "oscar_2b_per_step_provider",
+            "generated_frame_path": str(frame),
+            "fresh_provider_model_run_claimed": False,
+            "blockers": [
+                "provider_generated_rollout_visual_smoke_not_passed",
+                "generated_rollout_later_frames_edge_structure_drift",
+                "generated_rollout_later_frames_entropy_drift",
+            ],
+        }
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_blocked_wam,
+        steps=2,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["steps_executed"] == 0
+    assert (
+        "blocked_wam_generation_at_step_1:"
+        "provider_generated_rollout_visual_smoke_not_passed"
+        in manifest["blockers"]
+    )
+    assert (
+        "blocked_wam_generation_at_step_1:"
+        "generated_rollout_later_frames_edge_structure_drift"
+        in manifest["blockers"]
+    )
+    assert (
+        "blocked_wam_generation_at_step_1:"
+        "generated_rollout_later_frames_entropy_drift"
+        in manifest["blockers"]
+    )
 
 
 def test_closed_loop_proof_requirements_pass_with_fresh_oscar_sam3_da3(tmp_path: Path) -> None:
@@ -1278,6 +1462,40 @@ def test_closed_loop_wam_backend_readiness_blocks_unwired_cosmos3(
     )
 
 
+def test_closed_loop_wam_backend_readiness_blocks_unpinned_local_oscar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_SOURCE_URL", raising=False)
+    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_SOURCE_REF", raising=False)
+    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_HF_REPO", raising=False)
+    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_HF_REVISION", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_EXPERIMENTAL_OSCAR_WAM_VERSION", raising=False)
+    source = tmp_path / "oscar-source"
+    checkpoint = tmp_path / "checkpoint"
+    source.mkdir()
+    checkpoint.mkdir()
+
+    readiness = L.build_closed_loop_wam_backend_readiness(
+        selected_backend="oscar_wam",
+        use_provider_command=False,
+        oscar_repo=str(source),
+        checkpoint=str(checkpoint),
+        oscar_provider="vast",
+        allow_paid_provider_launch=False,
+    )
+
+    assert readiness["status"] == "blocked"
+    assert "official_oscar_source_url_mismatch" in readiness["blockers"]
+    assert "official_oscar_source_commit_not_pinned" in readiness["blockers"]
+    assert "official_oscar_hf_revision_not_pinned" in readiness["blockers"]
+    assert readiness["official_oscar_release"]["official_release_match"] is False
+    assert (
+        readiness["claim_boundary"]["official_oscar_source_and_checkpoint_pinned"]
+        is False
+    )
+
+
 def test_closed_loop_wam_backend_readiness_surfaces_vast_paid_gate_blockers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1453,15 +1671,93 @@ def test_closed_loop_cli_dry_run_writes_provider_input_contract_preflight(
                         "target_projection": {"available": True, "u_px": 50, "v_px": 24},
                         "projected_landmarks": [
                             {
-                                "landmark_id": "right_hand_link",
+                                "landmark_id": "left_shoulder",
+                                "link_role": "shoulder",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 18,
+                                    "v_px": 34,
+                                    "depth_m": 0.35,
+                                },
+                            },
+                            {
+                                "landmark_id": "left_elbow",
+                                "link_role": "elbow",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 22,
+                                    "v_px": 32,
+                                    "depth_m": 0.34,
+                                },
+                            },
+                            {
+                                "landmark_id": "left_wrist",
+                                "link_role": "wrist",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 26,
+                                    "v_px": 30,
+                                    "depth_m": 0.32,
+                                },
+                            },
+                            {
+                                "landmark_id": "left_hand",
                                 "link_role": "hand",
                                 "image_projection": {
                                     "available": True,
-                                    "u_px": 32,
+                                    "u_px": 30,
+                                    "v_px": 28,
+                                    "depth_m": 0.3,
+                                },
+                            },
+                            {
+                                "landmark_id": "right_shoulder",
+                                "link_role": "shoulder",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 46,
+                                    "v_px": 34,
+                                    "depth_m": 0.35,
+                                },
+                            },
+                            {
+                                "landmark_id": "right_elbow",
+                                "link_role": "elbow",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 42,
+                                    "v_px": 32,
+                                    "depth_m": 0.34,
+                                },
+                            },
+                            {
+                                "landmark_id": "right_wrist",
+                                "link_role": "wrist",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 38,
                                     "v_px": 30,
+                                    "depth_m": 0.32,
+                                },
+                            },
+                            {
+                                "landmark_id": "right_hand",
+                                "link_role": "hand",
+                                "image_projection": {
+                                    "available": True,
+                                    "u_px": 34,
+                                    "v_px": 28,
                                     "depth_m": 0.3,
                                 },
                             }
+                        ],
+                        "segments": [
+                            {"from": "left_shoulder", "to": "left_elbow"},
+                            {"from": "left_elbow", "to": "left_wrist"},
+                            {"from": "left_wrist", "to": "left_hand"},
+                            {"from": "right_shoulder", "to": "right_elbow"},
+                            {"from": "right_elbow", "to": "right_wrist"},
+                            {"from": "right_wrist", "to": "right_hand"},
                         ],
                     }
                 ],
@@ -1512,11 +1808,15 @@ def test_closed_loop_cli_dry_run_writes_provider_input_contract_preflight(
     )
     preflight = plan["provider_input_contract_preflight"]
     assert preflight["status"] == "ready"
-    assert preflight["contract_status"] == "ready"
-    assert preflight["autoregressive_risk_level"] == "monitor"
-    assert "rgb_context_single_frame_repeat_autoregressive_risk" in preflight[
-        "autoregressive_risk_flags"
+    assert preflight["contract_status"] == "warning_high_risk"
+    assert preflight["autoregressive_risk_level"] == "high"
+    assert "projected_skeleton_not_scene_faithful_policy_action_high_risk" in preflight[
+        "high_risk_flags"
     ]
+    assert "projected_skeleton_missing_scene_faithful_policy_action_bridge" in preflight[
+        "ranking_risk_flags"
+    ]
+    assert preflight["policy_ranking_claim_safe"] is False
     assert plan["short_visual_sanity_launch_plan"]["status"] == "not_required"
     assert Path(preflight["bundle_manifest_path"]).is_file()
     assert json.loads(capsys.readouterr().out)["status"] == "prepared"

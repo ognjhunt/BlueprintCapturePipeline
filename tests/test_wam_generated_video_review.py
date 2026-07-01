@@ -677,6 +677,48 @@ def test_visual_smoke_reports_first_future_frame_collapse(
     assert diagnostic["diagnostic_only_not_success_label"] is True
 
 
+def test_visual_smoke_reports_edge_structure_and_entropy_drift(
+    tmp_path: Path,
+) -> None:
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    video = tmp_path / "edge_entropy_drift.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (640, 480))
+    assert writer.isOpened()
+    seed = np.zeros((480, 640, 3), dtype=np.uint8)
+    seed[:, :] = (180, 190, 205)
+    for x in range(0, 640, 32):
+        color = (20, 25, 30) if (x // 32) % 2 else (235, 235, 220)
+        cv2.line(seed, (x, 0), (x, 479), color, 3)
+    for y in range(0, 480, 32):
+        color = (35, 45, 55) if (y // 32) % 2 else (230, 225, 210)
+        cv2.line(seed, (0, y), (639, y), color, 3)
+    cv2.rectangle(seed, (220, 110), (430, 380), (60, 80, 105), 5)
+    writer.write(seed)
+    for index in range(1, 8):
+        smooth = np.full((480, 640, 3), (168 + index, 174 + index, 158 + index), dtype=np.uint8)
+        cv2.GaussianBlur(smooth, (31, 31), 0, dst=smooth)
+        writer.write(smooth)
+    writer.release()
+
+    smoke = visual_smoke_generated_rollouts_for_review(
+        rollouts=[{"rollout_id": "rollout_edge_entropy", "generated_video_path": str(video)}],
+        output_dir=tmp_path,
+        generated_at="now",
+        require_review_quality_profile=False,
+    )
+
+    rollout = smoke["rollouts"][0]
+    assert smoke["status"] == "failed_visual_quality_smoke"
+    assert "generated_rollout_later_frames_edge_structure_drift" in smoke["blockers"]
+    assert "generated_rollout_later_frames_entropy_drift" in smoke["blockers"]
+    assert rollout["visual_quality_flags"]["later_frames_edge_structure_drift"] is True
+    assert rollout["visual_quality_flags"]["later_frames_entropy_drift"] is True
+    assert rollout["future_frame_quality_diagnostic"]["first_failed_future_frame_index"] == 1
+    assert rollout["sampled_frames"][1]["edge_density_ratio_to_first"] < 0.25
+    assert rollout["sampled_frames"][1]["entropy_delta_to_first"] < -1.5
+
+
 def test_provider_completed_but_visual_quality_fails_on_dark_generated_frame(
     tmp_path: Path,
 ) -> None:

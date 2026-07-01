@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
@@ -47,6 +48,9 @@ RUNPOD_WAM_TEARDOWN_ACTION_ENV = "BLUEPRINT_RUNPOD_WAM_TEARDOWN_ACTION"
 RUNPOD_WAM_EXISTING_POD_ID_ENV = "BLUEPRINT_RUNPOD_WAM_EXISTING_POD_ID"
 RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV = "BLUEPRINT_RUNPOD_WAM_WARM_CANDIDATE_FILE"
 RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV = "BLUEPRINT_RUNPOD_WAM_DISABLE_WARM_CANDIDATE"
+RUNPOD_WAM_RUNNING_CANDIDATE_RUNTIME_ABSENT_MAX_SECONDS_ENV = (
+    "BLUEPRINT_RUNPOD_WAM_RUNNING_CANDIDATE_RUNTIME_ABSENT_MAX_SECONDS"
+)
 RUNPOD_POD_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH"
 RUNPOD_UNITREE_GROOT_SONIC_FULL_LOOP_OVERRIDE_ENV = (
     "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
@@ -90,6 +94,13 @@ PROVIDER_RUNTIME_CONFIG_ENV_KEYS = (
     "BLUEPRINT_OSCAR_WAM_HEIGHT",
     "BLUEPRINT_OSCAR_WAM_WIDTH",
     "BLUEPRINT_OSCAR_WAM_FPS",
+    "BLUEPRINT_OSCAR_WAM_CONDITIONING_MODE",
+    "BLUEPRINT_OSCAR_WAM_RGB_CONTEXT_MODE",
+    "BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_SMOKE",
+    "BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_RGB_VIDEO",
+    "BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT",
+    "BLUEPRINT_OSCAR_WAM_CONDITIONING_BACKGROUND_ALPHA",
+    "BLUEPRINT_OSCAR_WAM_CONDITIONING_VOID_THRESHOLD",
     "BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS",
     "BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER",
     "BLUEPRINT_WAM_PROVIDER_ALLOW_BREAK_SYSTEM_PACKAGES",
@@ -468,6 +479,7 @@ def _runpod_request(
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "BlueprintRunPodWamAsyncRunner/1.0",
         },
     )
     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
@@ -724,7 +736,8 @@ if put_url:
         response.read()
 PY
 }
-trap 'rc=$?; if [ "$rc" -ne 0 ]; then upload_wam_outer_blocker "$rc"; fi; exit "$rc"' EXIT
+entrypoint_heartbeat_pid=""
+trap 'rc=$?; if [ -n "${entrypoint_heartbeat_pid:-}" ]; then kill "$entrypoint_heartbeat_pid" 2>/dev/null || true; fi; if [ "$rc" -ne 0 ]; then upload_wam_outer_blocker "$rc"; fi; exit "$rc"' EXIT
 upload_wam_running_heartbeat() {
   set +e
   phase="${1:-runpod_wam_outer_wrapper_running}"
@@ -740,6 +753,12 @@ from pathlib import Path
 output_dir = Path(os.environ["BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR"])
 output_dir.mkdir(parents=True, exist_ok=True)
 phase = os.environ.get("PHASE", "runpod_wam_outer_wrapper_running")
+entrypoint_log_tail = None
+entrypoint_log = os.environ.get("BLUEPRINT_RUNPOD_WAM_ENTRYPOINT_LOG_PATH", "").strip()
+if entrypoint_log:
+    log_path = Path(entrypoint_log)
+    if log_path.is_file():
+        entrypoint_log_tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
 payload = {
     "schema_version": "wam_provider_output.v1",
     "status": "running",
@@ -748,6 +767,7 @@ payload = {
         "phase": phase,
         "observed_at_epoch": round(time.time(), 3),
         "source": "runpod_wam_outer_wrapper",
+        "entrypoint_log_tail": entrypoint_log_tail,
         "raw_secret_values_recorded": False,
     },
     "blockers": [],
@@ -830,7 +850,15 @@ fi
 WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS="${WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS:-7200}"
 export WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS
 runtime_log="$BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR/runpod_wam_provider_entrypoint.log"
+export BLUEPRINT_RUNPOD_WAM_ENTRYPOINT_LOG_PATH="$runtime_log"
 echo "BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS=$WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS" > "$runtime_log"
+(
+  while true; do
+    upload_wam_running_heartbeat runpod_wam_entrypoint_running
+    sleep "${BLUEPRINT_RUNPOD_WAM_ENTRYPOINT_HEARTBEAT_SECONDS:-60}"
+  done
+) &
+entrypoint_heartbeat_pid=$!
 set +e
 if command -v timeout >/dev/null 2>&1; then
   timeout "$WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS" bash "$WORK_DIR/wam_provider_bundle/provider_runtime/run_wam_provider_runtime.sh" >> "$runtime_log" 2>&1
@@ -840,6 +868,8 @@ fi
 wam_runtime_rc=$?
 export wam_runtime_rc
 set -e
+kill "$entrypoint_heartbeat_pid" 2>/dev/null || true
+entrypoint_heartbeat_pid=""
 entrypoint_status="completed"
 entrypoint_timed_out=false
 entrypoint_blockers='[]'
@@ -937,6 +967,8 @@ def _pod_payload(
         env["WORK_DIR"] = "/workspace/blueprint_unitree_unifolm_provider"
     elif provider_bundle_kind == "unitree_groot_n17_sonic":
         env["WORK_DIR"] = "/workspace/blueprint_unitree_groot_sonic_persistent_provider"
+    if _teardown_action() == "keep_on_success":
+        env["BLUEPRINT_RUNPOD_KEEPALIVE_AFTER_SUCCESS"] = "1"
     env.update({key: value for key, value in provider_runtime_config_env.items() if _string(value)})
     env.update({key: value for key, value in model_secret_env.items() if _string(value)})
     return {
@@ -1018,6 +1050,14 @@ def _read_compatible_warm_candidate(
             "error_type": type(exc).__name__,
             "raw_secret_values_recorded": False,
         }
+    if _string(payload.get("status")) == "retired":
+        return {
+            "status": "retired",
+            "path": str(candidate_path),
+            "retired_pod_id": _string(payload.get("retired_pod_id")),
+            "reason": _string(payload.get("reason")) or "warm_candidate_retired",
+            "raw_secret_values_recorded": False,
+        }
     pod_id = _string(payload.get("pod_id"))
     mismatches: dict[str, dict[str, str]] = {}
     expected = {
@@ -1047,6 +1087,13 @@ def _read_compatible_warm_candidate(
             "mismatches": mismatches,
             "raw_secret_values_recorded": False,
         }
+    running_preserved = bool(payload.get("running_pod_preserved_for_hot_reuse"))
+    stopped_preserved = bool(payload.get("stopped_pod_preserved_for_warm_reuse"))
+    reuse_kind = "existing_pod_candidate"
+    if running_preserved:
+        reuse_kind = "running_hot_candidate"
+    elif stopped_preserved:
+        reuse_kind = "stopped_warm_candidate"
     return {
         "status": "selected",
         "path": str(candidate_path),
@@ -1054,9 +1101,75 @@ def _read_compatible_warm_candidate(
         "provider_bundle_kind": provider_bundle_kind,
         "image_name": image_name,
         "cloud_type": cloud_type,
+        "reuse_kind": reuse_kind,
+        "running_pod_preserved_for_hot_reuse": running_preserved,
+        "stopped_pod_preserved_for_warm_reuse": stopped_preserved,
         "recorded_at": payload.get("generated_at"),
         "source_stop_manifest_path": payload.get("source_stop_manifest_path"),
+        "source_keepalive_poll_manifest_path": payload.get(
+            "source_keepalive_poll_manifest_path"
+        ),
         "source_job_dir": payload.get("source_job_dir"),
+        "claim_boundary": {
+            "warm_candidate_reuses_provider_pod_id": True,
+            "running_hot_candidate_still_uses_update_start_path": running_preserved,
+            "resident_in_pod_job_queue_not_proven": running_preserved,
+        },
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _retire_warm_candidate(
+    *,
+    warm_candidate: Mapping[str, Any],
+    reason: str,
+    generated_at: str,
+) -> dict[str, Any]:
+    candidate_path = _warm_candidate_path()
+    candidate_pod_id = _string(warm_candidate.get("pod_id"))
+    try:
+        existing = _read_json(candidate_path)
+    except (OSError, ValueError) as exc:
+        return {
+            "status": "not_retired",
+            "path": str(candidate_path),
+            "reason": "warm_candidate_state_unreadable",
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    if _string(existing.get("pod_id")) != candidate_pod_id:
+        return {
+            "status": "not_retired",
+            "path": str(candidate_path),
+            "reason": "warm_candidate_changed",
+            "candidate_pod_id": candidate_pod_id,
+            "current_pod_id": _string(existing.get("pod_id")),
+            "raw_secret_values_recorded": False,
+        }
+    retired = {
+        "schema_version": RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION,
+        "status": "retired",
+        "generated_at": generated_at,
+        "retired_pod_id": candidate_pod_id,
+        "reason": reason,
+        "previous_source_job_dir": existing.get("source_job_dir"),
+        "raw_secret_values_recorded": False,
+    }
+    try:
+        write_json(candidate_path, retired)
+    except OSError as exc:
+        return {
+            "status": "not_retired",
+            "path": str(candidate_path),
+            "reason": "warm_candidate_retire_write_failed",
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    return {
+        "status": "retired",
+        "path": str(candidate_path),
+        "retired_pod_id": candidate_pod_id,
+        "reason": reason,
         "raw_secret_values_recorded": False,
     }
 
@@ -1196,6 +1309,126 @@ def _pod_status(payload: Mapping[str, Any]) -> str:
         or _string(pod.get("machineStatus"))
         or "unknown"
     )
+
+
+def _pod_runtime_present(payload: Mapping[str, Any]) -> bool:
+    pod = _mapping(payload.get("pod")) or _mapping(payload.get("data")) or dict(payload)
+    return bool(pod.get("runtime"))
+
+
+def _pod_public_ip_present(payload: Mapping[str, Any]) -> bool:
+    pod = _mapping(payload.get("pod")) or _mapping(payload.get("data")) or dict(payload)
+    return bool(_string(pod.get("publicIp")))
+
+
+def _iso_epoch_seconds(value: Any) -> float | None:
+    text = _string(value)
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _candidate_age_seconds(candidate: Mapping[str, Any], generated_at: str) -> float | None:
+    recorded_epoch = _iso_epoch_seconds(candidate.get("recorded_at"))
+    generated_epoch = _iso_epoch_seconds(generated_at)
+    if recorded_epoch is None or generated_epoch is None:
+        return None
+    return max(0.0, generated_epoch - recorded_epoch)
+
+
+def _validate_running_warm_candidate_runtime(
+    candidate: Mapping[str, Any],
+    *,
+    api_key: str,
+    generated_at: str,
+) -> dict[str, Any]:
+    """Reject stale running-hot candidates that no longer have a RunPod runtime."""
+    selected = dict(candidate)
+    if selected.get("status") != "selected" or not selected.get(
+        "running_pod_preserved_for_hot_reuse"
+    ):
+        return selected
+    pod_id = _string(selected.get("pod_id"))
+    if not pod_id:
+        return selected
+    try:
+        status_code, pod_payload = _runpod_request(
+            method="GET",
+            path=f"/pods/{pod_id}",
+            api_key=api_key,
+            timeout_seconds=20,
+        )
+    except urllib.error.HTTPError as exc:
+        selected.update(
+            {
+                "status": "rejected",
+                "reason": "running_warm_candidate_status_http_error",
+                "pod_status_http_status_code": exc.code,
+                "raw_secret_values_recorded": False,
+            }
+        )
+        return selected
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        selected.update(
+            {
+                "status": "rejected",
+                "reason": "running_warm_candidate_status_probe_failed",
+                "probe_error_type": type(exc).__name__,
+                "raw_secret_values_recorded": False,
+            }
+        )
+        return selected
+    pod_status = _pod_status(pod_payload)
+    runtime_present = _pod_runtime_present(pod_payload)
+    public_ip_present = _pod_public_ip_present(pod_payload)
+    age_seconds = _candidate_age_seconds(selected, generated_at)
+    max_runtime_absent_seconds = _env_int(
+        RUNPOD_WAM_RUNNING_CANDIDATE_RUNTIME_ABSENT_MAX_SECONDS_ENV,
+        480,
+    )
+    active_without_runtime = bool(
+        not runtime_present
+        and (
+            pod_status in RUNPOD_ACTIVE_POD_STATUSES
+            or pod_status.upper() in RUNPOD_ACTIVE_POD_STATUSES
+        )
+    )
+    stale_runtime_absent = bool(
+        active_without_runtime
+        and age_seconds is not None
+        and age_seconds >= max_runtime_absent_seconds
+    )
+    selected["reuse_probe"] = {
+        "status": "stale_runtime_absent_rejected"
+        if stale_runtime_absent
+        else "passed",
+        "pod_status_http_status_code": status_code,
+        "pod_status": pod_status,
+        "runtime_present": runtime_present,
+        "public_ip_present": public_ip_present,
+        "candidate_age_seconds": round(age_seconds, 6)
+        if age_seconds is not None
+        else None,
+        "max_runtime_absent_seconds": max_runtime_absent_seconds,
+        "raw_secret_values_recorded": False,
+    }
+    if stale_runtime_absent:
+        selected.update(
+            {
+                "status": "rejected",
+                "reason": "running_warm_candidate_runtime_absent_too_long",
+                "raw_secret_values_recorded": False,
+            }
+        )
+    return selected
 
 
 def _staging_urls(public_base_url: str, token_file: Path) -> tuple[str, str, dict[str, Any]]:
@@ -1486,11 +1719,18 @@ def create_runpod_wam_async_run(
             cloud_type=cloud_type,
         )
     )
+    if not explicit_existing_pod_id:
+        warm_candidate = _validate_running_warm_candidate_runtime(
+            warm_candidate,
+            api_key=api_key,
+            generated_at=generated,
+        )
     selected_existing_pod_id = explicit_existing_pod_id or (
         _string(warm_candidate.get("pod_id"))
         if warm_candidate.get("status") == "selected"
         else ""
     )
+    warm_start_http_error: dict[str, Any] | None = None
     try:
         if selected_existing_pod_id:
             update_payload = _existing_pod_update_payload(payload)
@@ -1516,12 +1756,28 @@ def create_runpod_wam_async_run(
                 "selection_source": "explicit_existing_pod_id"
                 if explicit_existing_pod_id
                 else "dynamic_warm_candidate",
+                "candidate_reuse_kind": _string(warm_candidate.get("reuse_kind"))
+                or (
+                    "explicit_existing_pod_id"
+                    if explicit_existing_pod_id
+                    else "existing_pod_candidate"
+                ),
                 "dynamic_warm_candidate": warm_candidate,
                 "update_http_status_code": update_status_code,
                 "start_http_status_code": status_code,
                 "update_response_keys": sorted(update_response.keys()),
                 "start_response_keys": sorted(response.keys()),
                 "update_payload_keys": sorted(update_payload.keys()),
+                "claim_boundary": {
+                    "existing_pod_id_reused": True,
+                    "existing_pod_update_start_path_used": True,
+                    "running_hot_candidate_still_uses_update_start_path": bool(
+                        warm_candidate.get("running_pod_preserved_for_hot_reuse")
+                    ),
+                    "resident_in_pod_job_queue_not_proven": bool(
+                        warm_candidate.get("running_pod_preserved_for_hot_reuse")
+                    ),
+                },
                 "raw_secret_values_recorded": False,
             }
         else:
@@ -1543,33 +1799,129 @@ def create_runpod_wam_async_run(
             }
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")[:500]
-        manifest = {
-            "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
-            "generated_at": generated,
-            "status": "blocked",
-            "job_dir": str(resolved_job_dir),
-            "provider_bundle_kind": provider_bundle_kind,
-            "blockers": ["runpod_create_pod_http_error"],
-            "http_status_code": exc.code,
-            "runpod_error_preview": "REDACTED_SECRET" if api_key in error_body else error_body,
-            "model_secret_env_status": model_secret_env_status,
-            "provider_runtime_config_env_status": provider_runtime_config_env_status,
-            "pod_launch_mode": "existing_pod_start" if selected_existing_pod_id else "fresh_pod_create",
-            "warm_existing_pod": {
-                "requested": bool(selected_existing_pod_id),
-                "existing_pod_id": selected_existing_pod_id,
-                "selection_source": "explicit_existing_pod_id"
-                if explicit_existing_pod_id
-                else "dynamic_warm_candidate"
-                if selected_existing_pod_id
-                else "none",
-                "dynamic_warm_candidate": warm_candidate,
+        stopped_dynamic_warm_candidate = bool(
+            selected_existing_pod_id
+            and not explicit_existing_pod_id
+            and warm_candidate.get("status") == "selected"
+            and warm_candidate.get("stopped_pod_preserved_for_warm_reuse")
+        )
+        if stopped_dynamic_warm_candidate:
+            if exc.code in {404, 410}:
+                warm_candidate_retirement = _retire_warm_candidate(
+                    warm_candidate=warm_candidate,
+                    reason=f"stopped_warm_candidate_start_http_{exc.code}",
+                    generated_at=generated,
+                )
+            else:
+                warm_candidate_retirement = {
+                    "status": "not_retired",
+                    "path": str(_warm_candidate_path()),
+                    "reason": "stopped_warm_candidate_start_error_may_be_transient",
+                    "http_status_code": exc.code,
+                    "raw_secret_values_recorded": False,
+                }
+            warm_start_http_error = {
+                "http_status_code": exc.code,
+                "runpod_error_preview": "REDACTED_SECRET"
+                if api_key in error_body
+                else error_body,
+                "fallback_reason": "stopped_warm_candidate_start_failed",
+                "warm_candidate_retirement": warm_candidate_retirement,
                 "raw_secret_values_recorded": False,
-            },
-            "raw_secret_values_recorded": False,
-        }
-        write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
-        return manifest
+            }
+            try:
+                status_code, response = _runpod_request(
+                    method="POST",
+                    path="/pods",
+                    api_key=api_key,
+                    payload=payload,
+                    timeout_seconds=45,
+                )
+                pod_id = _extract_pod_id(response)
+                launch_mode = "fresh_pod_create_after_stopped_warm_start_failed"
+                warm_reuse_detail = {
+                    "requested": True,
+                    "existing_pod_id": selected_existing_pod_id,
+                    "selection_source": "dynamic_warm_candidate",
+                    "candidate_reuse_kind": _string(warm_candidate.get("reuse_kind"))
+                    or "stopped_warm_candidate",
+                    "dynamic_warm_candidate": warm_candidate,
+                    "stopped_warm_candidate_start_failed": True,
+                    "stopped_warm_candidate_start_error": warm_start_http_error,
+                    "warm_candidate_retirement": warm_candidate_retirement,
+                    "fallback_fresh_create_attempted": True,
+                    "fresh_create_http_status_code": status_code,
+                    "fresh_create_response_keys": sorted(response.keys()),
+                    "claim_boundary": {
+                        "existing_pod_id_reused": False,
+                        "stopped_warm_candidate_does_not_reserve_gpu_capacity": True,
+                        "fallback_fresh_create_used_after_start_capacity_failure": True,
+                    },
+                    "raw_secret_values_recorded": False,
+                }
+            except urllib.error.HTTPError as fallback_exc:
+                fallback_error_body = fallback_exc.read().decode(
+                    "utf-8",
+                    errors="replace",
+                )[:500]
+                manifest = {
+                    "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
+                    "generated_at": generated,
+                    "status": "blocked",
+                    "job_dir": str(resolved_job_dir),
+                    "provider_bundle_kind": provider_bundle_kind,
+                    "blockers": [
+                        "runpod_stopped_warm_candidate_start_http_error",
+                        "runpod_create_pod_http_error",
+                    ],
+                    "http_status_code": fallback_exc.code,
+                    "runpod_error_preview": "REDACTED_SECRET"
+                    if api_key in fallback_error_body
+                    else fallback_error_body,
+                    "model_secret_env_status": model_secret_env_status,
+                    "provider_runtime_config_env_status": provider_runtime_config_env_status,
+                    "pod_launch_mode": "fresh_pod_create_after_stopped_warm_start_failed",
+                    "warm_existing_pod": {
+                        "requested": True,
+                        "existing_pod_id": selected_existing_pod_id,
+                        "selection_source": "dynamic_warm_candidate",
+                        "dynamic_warm_candidate": warm_candidate,
+                        "stopped_warm_candidate_start_error": warm_start_http_error,
+                        "fallback_fresh_create_attempted": True,
+                        "raw_secret_values_recorded": False,
+                    },
+                    "raw_secret_values_recorded": False,
+                }
+                write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
+                return manifest
+        else:
+            manifest = {
+                "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
+                "generated_at": generated,
+                "status": "blocked",
+                "job_dir": str(resolved_job_dir),
+                "provider_bundle_kind": provider_bundle_kind,
+                "blockers": ["runpod_create_pod_http_error"],
+                "http_status_code": exc.code,
+                "runpod_error_preview": "REDACTED_SECRET" if api_key in error_body else error_body,
+                "model_secret_env_status": model_secret_env_status,
+                "provider_runtime_config_env_status": provider_runtime_config_env_status,
+                "pod_launch_mode": "existing_pod_start" if selected_existing_pod_id else "fresh_pod_create",
+                "warm_existing_pod": {
+                    "requested": bool(selected_existing_pod_id),
+                    "existing_pod_id": selected_existing_pod_id,
+                    "selection_source": "explicit_existing_pod_id"
+                    if explicit_existing_pod_id
+                    else "dynamic_warm_candidate"
+                    if selected_existing_pod_id
+                    else "none",
+                    "dynamic_warm_candidate": warm_candidate,
+                    "raw_secret_values_recorded": False,
+                },
+                "raw_secret_values_recorded": False,
+            }
+            write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
+            return manifest
     if not pod_id:
         manifest = {
             "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
@@ -1690,13 +2042,82 @@ def _delete_pod(
     return manifest
 
 
+def _verify_pod_not_active_after_teardown_error(
+    *,
+    pod_id: str,
+    api_key: str,
+    generated_at: str,
+) -> dict[str, Any]:
+    try:
+        status_code, payload = _runpod_request(
+            method="GET",
+            path=f"/pods/{pod_id}",
+            api_key=api_key,
+            timeout_seconds=20,
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code in {404, 410}:
+            return {
+                "status": "completed",
+                "generated_at": generated_at,
+                "pod_id": pod_id,
+                "http_status_code": exc.code,
+                "pod_status": "not_found",
+                "spend_released": True,
+                "blockers": [],
+                "raw_secret_values_recorded": False,
+            }
+        return {
+            "status": "blocked",
+            "generated_at": generated_at,
+            "pod_id": pod_id,
+            "http_status_code": exc.code,
+            "pod_status": "http_error",
+            "spend_released": False,
+            "blockers": ["runpod_stop_error_status_probe_http_error"],
+            "raw_secret_values_recorded": False,
+        }
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {
+            "status": "blocked",
+            "generated_at": generated_at,
+            "pod_id": pod_id,
+            "pod_status": "status_probe_error",
+            "spend_released": False,
+            "blockers": ["runpod_stop_error_status_probe_failed"],
+            "probe_error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    pod_status = _pod_status(payload)
+    pod_status_upper = pod_status.upper()
+    spend_released = bool(
+        pod_status in RUNPOD_TERMINAL_POD_STATUSES
+        or pod_status_upper in RUNPOD_TERMINAL_POD_STATUSES
+    )
+    return {
+        "status": "completed" if spend_released else "blocked",
+        "generated_at": generated_at,
+        "pod_id": pod_id,
+        "http_status_code": status_code,
+        "pod_status": pod_status,
+        "spend_released": spend_released,
+        "blockers": []
+        if spend_released
+        else ["runpod_stop_error_pod_still_active_after_status_probe"],
+        "raw_secret_values_recorded": False,
+    }
+
+
 def _stop_pod(
     *,
     job_dir: Path,
     pod_id: str,
     api_key: str,
     generated_at: str,
+    record_warm_candidate: bool = True,
 ) -> dict[str, Any]:
+    verification: dict[str, Any] | None = None
+    stop_response_confirmed = False
     try:
         status_code, response = _runpod_request(
             method="POST",
@@ -1705,22 +2126,38 @@ def _stop_pod(
             timeout_seconds=30,
         )
         status = "completed" if status_code in {200, 202, 204} else "blocked"
+        stop_response_confirmed = status == "completed"
         blockers: list[str] = [] if status == "completed" else ["runpod_stop_pod_unexpected_status"]
     except urllib.error.HTTPError as exc:
         status_code = exc.code
         response = {}
         status = "completed" if exc.code in {404, 410} else "blocked"
         blockers = [] if status == "completed" else ["runpod_stop_pod_http_error"]
+        if status != "completed":
+            verification = _verify_pod_not_active_after_teardown_error(
+                pod_id=pod_id,
+                api_key=api_key,
+                generated_at=generated_at,
+            )
+            if verification.get("spend_released"):
+                status = "completed"
+                blockers = []
+            else:
+                blockers.extend(str(item) for item in verification.get("blockers") or [])
     warm_candidate = (
         _write_stopped_warm_candidate(
             job_dir=job_dir,
             pod_id=pod_id,
             generated_at=generated_at,
         )
-        if status == "completed"
+        if status == "completed" and record_warm_candidate and stop_response_confirmed
         else {
             "status": "not_recorded",
-            "reason": "runpod_stop_not_completed",
+            "reason": "runtime_output_not_successful_for_warm_reuse"
+            if status == "completed" and stop_response_confirmed
+            else "runpod_stop_completion_verified_without_reusable_stopped_pod"
+            if status == "completed"
+            else "runpod_stop_not_completed",
             "raw_secret_values_recorded": False,
         }
     )
@@ -1731,13 +2168,20 @@ def _stop_pod(
         "job_dir": str(job_dir),
         "pod_id": pod_id,
         "http_status_code": status_code,
+        "stop_error_verification": verification,
         "response_keys": sorted(response.keys()),
         "blockers": blockers,
-        "stopped_pod_preserved_for_warm_reuse": status == "completed",
+        "stopped_pod_preserved_for_warm_reuse": bool(
+            status == "completed" and record_warm_candidate and stop_response_confirmed
+        ),
+        "warm_candidate_recording_requested": bool(record_warm_candidate),
         "warm_candidate": warm_candidate,
         "warm_candidate_path": warm_candidate.get("path"),
+        "stop_response_confirmed": stop_response_confirmed,
         "gpu_spend_released_if_provider_honors_stop": status == "completed",
-        "stopped_volume_storage_may_continue_billing": status == "completed",
+        "stopped_volume_storage_may_continue_billing": bool(
+            status == "completed" and stop_response_confirmed
+        ),
         "continuing_spend_from_this_run": status != "completed",
         "raw_secret_values_recorded": False,
     }
@@ -1927,6 +2371,20 @@ def poll_runpod_wam_async_run(
                         resolved_job_dir / "runpod_wam_nonterminal_output_manifest.json",
                         last_nonterminal_output,
                     )
+                    download_manifest.update(
+                        {
+                            "status": "nonterminal",
+                            "output_present": False,
+                            "terminal_output_present": False,
+                            "nonterminal_runtime_result_status": heartbeat_status,
+                            "nonterminal_zip_path": str(nonterminal_path),
+                            "nonterminal_zip_size_bytes": nonterminal_path.stat().st_size,
+                        }
+                    )
+                    write_json(
+                        resolved_job_dir / "runpod_wam_output_download_manifest.json",
+                        download_manifest,
+                    )
                     output_present = False
                 else:
                     break
@@ -1994,6 +2452,15 @@ def poll_runpod_wam_async_run(
         expected_video_count=0 if provider_bundle_kind == "unitree_unifolm" else 1,
     )
     output_present = output_inspection.get("zip_present") is True
+    runtime_result_status = _string(output_inspection.get("runtime_result_status"))
+    runtime_output_success = bool(
+        output_present
+        and (
+            not runtime_result_status
+            or runtime_result_status
+            not in {"blocked", "failed", "error", "timeout", "timed_out"}
+        )
+    )
     elapsed_wait_seconds = max(0.0, time.monotonic() - started_monotonic)
     wait_deadline_expired = elapsed_wait_seconds >= max(0, max_wait_seconds)
     pod_status_is_active = (
@@ -2004,6 +2471,76 @@ def poll_runpod_wam_async_run(
         pod_status in RUNPOD_TERMINAL_POD_STATUSES
         or pod_status.upper() in RUNPOD_TERMINAL_POD_STATUSES
     )
+    teardown_action = _teardown_action()
+    requested_keep_running_on_success = bool(
+        teardown
+        and teardown_action == "keep_on_success"
+        and runtime_output_success
+        and pod_id
+        and not pod_status_is_terminal
+    )
+    keepalive_runtime_health: dict[str, Any] | None = None
+    if requested_keep_running_on_success:
+        try:
+            keepalive_status_code, keepalive_pod_payload = _runpod_request(
+                method="GET",
+                path=f"/pods/{pod_id}",
+                api_key=api_key,
+                timeout_seconds=20,
+            )
+            pod_status = _pod_status(keepalive_pod_payload)
+            status_code = keepalive_status_code
+            pod_status_is_active = (
+                pod_status in RUNPOD_ACTIVE_POD_STATUSES
+                or pod_status.upper() in RUNPOD_ACTIVE_POD_STATUSES
+            )
+            pod_status_is_terminal = (
+                pod_status in RUNPOD_TERMINAL_POD_STATUSES
+                or pod_status.upper() in RUNPOD_TERMINAL_POD_STATUSES
+            )
+            runtime_present = _pod_runtime_present(keepalive_pod_payload)
+            public_ip_present = _pod_public_ip_present(keepalive_pod_payload)
+            active_status_without_runtime_metadata = bool(
+                pod_status_is_active and not runtime_present
+            )
+            runtime_healthy_for_hot_reuse = bool(
+                pod_status_is_active
+                and (runtime_present or active_status_without_runtime_metadata)
+            )
+            keepalive_runtime_health = {
+                "status": "healthy_for_hot_reuse"
+                if runtime_healthy_for_hot_reuse
+                else "unhealthy_for_hot_reuse",
+                "pod_status_http_status_code": keepalive_status_code,
+                "pod_status": pod_status,
+                "runtime_present": runtime_present,
+                "public_ip_present": public_ip_present,
+                "active_status_without_runtime_metadata": active_status_without_runtime_metadata,
+                "health_basis": (
+                    "runtime_metadata_present"
+                    if runtime_present
+                    else "active_pod_status_without_runtime_metadata"
+                    if active_status_without_runtime_metadata
+                    else "inactive_or_terminal_pod_status"
+                ),
+                "runtime_healthy_for_hot_reuse": runtime_healthy_for_hot_reuse,
+                "raw_secret_values_recorded": False,
+            }
+        except urllib.error.HTTPError as exc:
+            status_code = exc.code
+            keepalive_runtime_health = {
+                "status": "probe_http_error",
+                "pod_status_http_status_code": exc.code,
+                "runtime_healthy_for_hot_reuse": False,
+                "raw_secret_values_recorded": False,
+            }
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            keepalive_runtime_health = {
+                "status": "probe_failed",
+                "error_type": type(exc).__name__,
+                "runtime_healthy_for_hot_reuse": False,
+                "raw_secret_values_recorded": False,
+            }
     remote_runtime_running_without_terminal_output = bool(
         not output_present
         and pod_status_is_active
@@ -2013,13 +2550,12 @@ def poll_runpod_wam_async_run(
         and not output_present
         and pod_status_is_active
     )
-    teardown_action = _teardown_action()
     keep_running_on_success = bool(
-        teardown
-        and teardown_action == "keep_on_success"
-        and output_present
-        and pod_id
-        and not pod_status_is_terminal
+        requested_keep_running_on_success
+        and _mapping(keepalive_runtime_health).get("runtime_healthy_for_hot_reuse") is True
+    )
+    keepalive_runtime_unhealthy_on_success = bool(
+        requested_keep_running_on_success and not keep_running_on_success
     )
     should_teardown = bool(
         teardown
@@ -2074,6 +2610,7 @@ def poll_runpod_wam_async_run(
         "provider_command_status": provider_status,
         "provider_command_blockers": provider_blockers,
         "output_zip_present": output_present,
+        "runtime_output_success": runtime_output_success,
         "nonterminal_running_output": nonterminal_running_output,
         "remote_runtime_running_without_terminal_output": (
             remote_runtime_running_without_terminal_output
@@ -2091,7 +2628,10 @@ def poll_runpod_wam_async_run(
         "teardown_action": teardown_action if teardown else "not_requested",
         "teardown_pending": teardown_pending,
         "teardown_performed": existing_teardown_completed,
+        "requested_keep_running_on_success": requested_keep_running_on_success,
         "keep_running_on_success": keep_running_on_success,
+        "keepalive_runtime_health": keepalive_runtime_health,
+        "keepalive_runtime_unhealthy_on_success": keepalive_runtime_unhealthy_on_success,
         "continuing_spend_from_this_run": continuing_spend,
         "api_key_status": api_key_meta,
         "raw_secret_values_recorded": False,
@@ -2101,12 +2641,16 @@ def poll_runpod_wam_async_run(
             resolved_job_dir / "runpod_wam_async_pre_teardown_poll_manifest.json",
             manifest,
         )
-        if teardown_action == "stop":
+        stop_instead_of_delete = bool(
+            teardown_action == "stop" or keepalive_runtime_unhealthy_on_success
+        )
+        if stop_instead_of_delete:
             teardown_manifest = _stop_pod(
                 job_dir=resolved_job_dir,
                 pod_id=pod_id,
                 api_key=api_key,
                 generated_at=generated,
+                record_warm_candidate=runtime_output_success,
             )
         else:
             teardown_manifest = _delete_pod(
@@ -2134,7 +2678,7 @@ def poll_runpod_wam_async_run(
             resolved_job_dir
             / (
                 "runpod_wam_async_stop_manifest.json"
-                if teardown_action == "stop"
+                if stop_instead_of_delete
                 else "runpod_wam_async_delete_manifest.json"
             )
         )

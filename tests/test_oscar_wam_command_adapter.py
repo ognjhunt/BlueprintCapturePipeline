@@ -13,7 +13,7 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
-from blueprint_pipeline import oscar_wam_command_adapter as adapter
+from blueprint_pipeline import oscar_wam_command_adapter as adapter  # noqa: E402
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -972,6 +972,7 @@ def test_oscar_wam_run_main_and_module_guard_edges(
             sys.executable,
             "--work-dir",
             str(tmp_path / "materialize-work"),
+            "--allow-experimental-oscar-version",
         ]
     )
     assert materialize_blocked["blockers"] == [
@@ -1033,6 +1034,7 @@ def test_oscar_wam_run_main_and_module_guard_edges(
             sys.executable,
             "--work-dir",
             str(tmp_path / "completed-work"),
+            "--allow-experimental-oscar-version",
             "--num-frames",
             "2",
             "--height",
@@ -1088,6 +1090,7 @@ def test_oscar_wam_run_main_and_module_guard_edges(
             sys.executable,
             "--work-dir",
             str(tmp_path / "blocked-work"),
+            "--allow-experimental-oscar-version",
         ]
     )
     assert blocked["status"] == "blocked"
@@ -1116,3 +1119,37 @@ def test_oscar_wam_run_main_and_module_guard_edges(
         runpy.run_module("blueprint_pipeline.oscar_wam_command_adapter", run_name="__main__")
     assert exc.value.code == 2
     assert json.loads(module_output.read_text(encoding="utf-8"))["status"] == "blocked"
+
+
+def test_oscar_wam_run_blocks_unpinned_local_official_release_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "oscar-source"
+    (source_root / "inference").mkdir(parents=True)
+    (source_root / "inference" / "inference_oscar.py").write_text("# oscar\n", encoding="utf-8")
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    output_path = tmp_path / "blocked_unpinned.json"
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(output_path))
+
+    payload = adapter.run(
+        [
+            "--source-root",
+            str(source_root),
+            "--checkpoint",
+            str(checkpoint),
+            "--python",
+            sys.executable,
+        ]
+    )
+
+    assert payload["status"] == "blocked"
+    assert "official_oscar_source_url_mismatch" in payload["blockers"]
+    assert "official_oscar_source_commit_not_pinned" in payload["blockers"]
+    assert "official_oscar_hf_revision_not_pinned" in payload["blockers"]
+    assert payload["official_oscar_release"]["official_release_match"] is False
+    assert (
+        payload["truth_boundary"]["official_oscar_source_and_checkpoint_pinned"]
+        is False
+    )

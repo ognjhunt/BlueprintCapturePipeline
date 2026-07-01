@@ -9,6 +9,10 @@ pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import oscar_isaac_closed_loop_gpu_launch as G
+from blueprint_pipeline.oscar_official_release import (
+    OFFICIAL_OSCAR_HF_REVISION,
+    OFFICIAL_OSCAR_SOURCE_COMMIT,
+)
 
 
 def test_startup_packages_setup_inputs_and_run(tmp_path: Path) -> None:
@@ -27,7 +31,12 @@ def test_startup_packages_setup_inputs_and_run(tmp_path: Path) -> None:
 
     # the proven OSCAR setup is reused: clone OSCAR + fetch the same checkpoint
     assert "wuzy2115/oscar-public.git" in script
+    assert OFFICIAL_OSCAR_SOURCE_COMMIT in script
+    assert "checkout --detach FETCH_HEAD" in script
+    assert "oscar_source_commit_mismatch" in script
     assert "zywu2115/OSCAR-2B" in script
+    assert f"--revision {OFFICIAL_OSCAR_HF_REVISION}" in script
+    assert f'BLUEPRINT_OSCAR_WAM_HF_REVISION="{OFFICIAL_OSCAR_HF_REVISION}"' in script
     assert "HF_HUB_ENABLE_HF_TRANSFER=1" in script  # this startup installs hf_transfer first
     # Blueprint installed on the pod so the closed-loop CLI is importable
     assert "ognjhunt/BlueprintCapturePipeline.git" in script

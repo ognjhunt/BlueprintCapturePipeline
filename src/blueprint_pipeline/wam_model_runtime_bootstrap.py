@@ -17,17 +17,33 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .oscar_official_release import (
+    OFFICIAL_OSCAR_HF_REPO,
+    OFFICIAL_OSCAR_HF_REVISION,
+    OFFICIAL_OSCAR_MODEL_URL,
+    OFFICIAL_OSCAR_POLICY_ROLLOUT_DATASET_URL,
+    OFFICIAL_OSCAR_PROJECT_PAGE_URL,
+    OFFICIAL_OSCAR_SOURCE_COMMIT,
+    OFFICIAL_OSCAR_SOURCE_URL,
+    OFFICIAL_OSCAR_SOURCE_WEB_URL,
+    official_release_contract,
+)
 
 
 BOOTSTRAP_SCHEMA_VERSION = "wam_model_runtime_bootstrap.v1"
 DEFAULT_CANDIDATE = "oscar_wam"
 BOOTSTRAP_CANDIDATES = {
     "oscar_wam": {
-        "model_repo_id": "zywu2115/OSCAR-2B",
-        "model_url": "https://huggingface.co/zywu2115/OSCAR-2B",
-        "source_repo_url": "https://github.com/wuzy2115/oscar-public",
-        "project_url": "https://wuzy2115.github.io/oscar-project-page/",
+        "model_repo_id": OFFICIAL_OSCAR_HF_REPO,
+        "model_revision": OFFICIAL_OSCAR_HF_REVISION,
+        "model_url": OFFICIAL_OSCAR_MODEL_URL,
+        "source_repo_url": OFFICIAL_OSCAR_SOURCE_WEB_URL,
+        "source_repo_git_url": OFFICIAL_OSCAR_SOURCE_URL,
+        "source_repo_commit": OFFICIAL_OSCAR_SOURCE_COMMIT,
+        "project_url": OFFICIAL_OSCAR_PROJECT_PAGE_URL,
         "paper_url": "https://arxiv.org/abs/2606.04463",
+        "policy_rollout_dataset_url": OFFICIAL_OSCAR_POLICY_ROLLOUT_DATASET_URL,
+        "policy_rollout_dataset_is_reference_data_not_runtime": True,
         "checkpoint_env": "BLUEPRINT_OSCAR_WAM_CHECKPOINT",
         "command_env": "BLUEPRINT_OSCAR_WAM_COMMAND",
         "source_root_env": "BLUEPRINT_OSCAR_WAM_SOURCE_ROOT",
@@ -35,7 +51,11 @@ BOOTSTRAP_CANDIDATES = {
         "minimum_vram_gb": 24,
         "expected_checkpoint_bytes": 4_245_460_687,
         "runtime_kind": "action_conditioned_world_model_rollout_generator",
-        "claim_boundary": "OSCAR requires its actual inference code plus checkpoint shards; a checkpoint download alone is not WAM execution proof.",
+        "claim_boundary": (
+            "OSCAR requires the reviewed oscar-public source commit plus pinned "
+            "OSCAR-2B checkpoint revision; a checkpoint download alone is not "
+            "WAM execution proof."
+        ),
     },
     "cosmos_wam": {
         "model_repo_id": "nvidia/Cosmos-Predict2.5-2B",
@@ -532,19 +552,32 @@ def _env_template(
         f"export {candidate['source_root_env']}=\"{source_root}\"",
         f"export {candidate['checkpoint_env']}=\"{checkpoint_root}\"",
         f"export {candidate['command_env']}=\"{adapter_command}\"",
-        "",
-        "# Verification command:",
-        (
-            "# PYTHONDONTWRITEBYTECODE=1 python -m blueprint_pipeline.oscar_cosmos_wam_evaluator "
-            "--input-job-dir <mujoco_endpoint_eval_job_dir> "
-            f"--job-dir \"{output_dir / 'verify_wam_model_run'}\" "
-            f"--model-candidate {candidate_id} --allow-wam-model-run"
-        ),
-        "",
-        "# Optional reusable GPU-provider image, set only after pushing a versioned image:",
-        f"# export {WAM_PROVIDER_IMAGE_REF_ENV}=registry.example/blueprint/{candidate_id}-provider:YYYYMMDD",
-        "",
     ]
+    if candidate_id == "oscar_wam":
+        lines.extend(
+            [
+                f"export BLUEPRINT_OSCAR_WAM_SOURCE_URL=\"{candidate['source_repo_git_url']}\"",
+                f"export BLUEPRINT_OSCAR_WAM_SOURCE_REF=\"{candidate['source_repo_commit']}\"",
+                f"export BLUEPRINT_OSCAR_WAM_HF_REPO=\"{candidate['model_repo_id']}\"",
+                f"export BLUEPRINT_OSCAR_WAM_HF_REVISION=\"{candidate['model_revision']}\"",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "# Verification command:",
+            (
+                "# PYTHONDONTWRITEBYTECODE=1 python -m blueprint_pipeline.oscar_cosmos_wam_evaluator "
+                "--input-job-dir <mujoco_endpoint_eval_job_dir> "
+                f"--job-dir \"{output_dir / 'verify_wam_model_run'}\" "
+                f"--model-candidate {candidate_id} --allow-wam-model-run"
+            ),
+            "",
+            "# Optional reusable GPU-provider image, set only after pushing a versioned image:",
+            f"# export {WAM_PROVIDER_IMAGE_REF_ENV}=registry.example/blueprint/{candidate_id}-provider:YYYYMMDD",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -608,10 +641,12 @@ def build_bootstrap_package(
         }
     )
     source_probe = (
-        _git_ls_remote_probe(_string(candidate["source_repo_url"]))
+        _git_ls_remote_probe(
+            _string(candidate.get("source_repo_git_url") or candidate["source_repo_url"])
+        )
         if verify_source_repo
         else {
-            "url": candidate["source_repo_url"],
+            "url": candidate.get("source_repo_git_url") or candidate["source_repo_url"],
             "status": "not_checked",
         }
     )
@@ -660,11 +695,14 @@ def build_bootstrap_package(
     if not checkpoint_ready and not disk["has_required_space"]:
         blockers.append("blocked_insufficient_disk_for_checkpoint_download")
     status = "ready_for_wam_evaluator_configuration" if not blockers else "blocked"
+    model_revision = _string(candidate.get("model_revision"))
+    revision_kwarg = f", revision={model_revision!r}" if model_revision else ""
     download_plan = {
         "schema_version": "wam_model_checkpoint_download_plan.v1",
         "generated_at": generated,
         "candidate_id": candidate_id,
         "model_repo_id": candidate["model_repo_id"],
+        "model_revision": model_revision or None,
         "model_url": candidate["model_url"],
         "target_checkpoint_root": str(checkpoint),
         "allow_patterns": list(candidate["checkpoint_allow_patterns"]),
@@ -675,7 +713,7 @@ def build_bootstrap_package(
         "download_command": (
             "python - <<'PY'\n"
             "from huggingface_hub import snapshot_download\n"
-            f"snapshot_download(repo_id={candidate['model_repo_id']!r}, local_dir={str(checkpoint)!r}, "
+            f"snapshot_download(repo_id={candidate['model_repo_id']!r}{revision_kwarg}, local_dir={str(checkpoint)!r}, "
             f"allow_patterns={list(candidate['checkpoint_allow_patterns'])!r})\n"
             "PY"
         ),
@@ -730,6 +768,16 @@ def build_bootstrap_package(
     dockerfile_path.write_text(_provider_dockerfile(candidate_id), encoding="utf-8")
     provider_image_plan = _provider_image_plan(candidate_id=candidate_id, output_dir=output)
     provider_request["provider_image_plan"] = provider_image_plan
+    official_oscar_release = (
+        official_release_contract(
+            source_url=_string(candidate.get("source_repo_git_url")),
+            source_ref=_string(candidate.get("source_repo_commit")),
+            hf_repo=_string(candidate.get("model_repo_id")),
+            hf_revision=_string(candidate.get("model_revision")),
+        )
+        if candidate_id == "oscar_wam"
+        else None
+    )
     manifest = {
         "schema_version": BOOTSTRAP_SCHEMA_VERSION,
         "generated_at": generated,
@@ -739,6 +787,7 @@ def build_bootstrap_package(
         "source_status": source_status,
         "source_selection": source_selection,
         "source_repo_probe": source_probe,
+        "official_oscar_release": official_oscar_release,
         "checkpoint_status": checkpoint_status,
         "checkpoint_selection": checkpoint_selection,
         "adapter_command": {
