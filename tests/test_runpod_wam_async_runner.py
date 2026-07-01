@@ -148,6 +148,9 @@ def test_runpod_wam_carrier_flag_is_forwarded_for_unitree_runtime(monkeypatch) -
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_INSTALL_REQUIREMENTS",
         "huggingface_hub pyzmq",
     )
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_TIMEOUT_SECONDS", "1800")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_ATTEMPTS", "2")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_MAX_WORKERS", "4")
 
     env, meta = runner._read_provider_runtime_config_env("wam")
 
@@ -169,6 +172,9 @@ def test_runpod_wam_carrier_flag_is_forwarded_for_unitree_runtime(monkeypatch) -
     assert env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_SYSTEM_PYTHON_INSTALL_REQUIREMENTS"] == (
         "huggingface_hub pyzmq"
     )
+    assert env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_TIMEOUT_SECONDS"] == "1800"
+    assert env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_ATTEMPTS"] == "2"
+    assert env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_MODEL_SNAPSHOT_MAX_WORKERS"] == "4"
 
 
 def test_runpod_wam_direct_url_files_block_on_launch_gates_without_leaking_urls(
