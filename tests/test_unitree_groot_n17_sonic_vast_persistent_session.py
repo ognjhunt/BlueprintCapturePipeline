@@ -3548,6 +3548,139 @@ def test_persistent_session_bundle_preserves_isaac_seed_geometry_context(
     )
 
 
+def test_persistent_session_bundle_accepts_explicit_isaac_scene_context_sidecars(
+    tmp_path: Path,
+) -> None:
+    frame = _write_reviewable_frame(tmp_path / "frame.png")
+    geometry = tmp_path / "sidecars" / "manipulation_pov_geometry.json"
+    geometry.parent.mkdir(parents=True)
+    geometry.write_text(
+        json.dumps(
+            {
+                "schema_version": "manipulation_pov_geometry_index.v1",
+                "status": "PASS",
+                "frames": [
+                    {
+                        "schema_version": "manipulation_pov_geometry.v1",
+                        "status": "PASS",
+                        "camera": "robot_pov",
+                        "camera_meta": {
+                            "camera_eye_xyz": [0.0, 0.0, 0.0],
+                            "camera_target_xyz": [1.0, 0.0, 0.0],
+                            "camera_vfov_deg": 90.0,
+                            "viewport_size_px": [640, 480],
+                            "arm_link_points_by_arm_xyz": {
+                                "left": {"shoulder": [1.0, -0.2, -0.2], "hand": [1.2, -0.2, -0.4]},
+                                "right": {"shoulder": [1.0, 0.2, -0.2], "hand": [1.2, 0.2, -0.4]},
+                            },
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    placement = tmp_path / "sidecars" / "placement_validation.json"
+    placement.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+    stance = tmp_path / "sidecars" / "task_stance_plan.json"
+    stance.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+    observation_path = tmp_path / "observation.json"
+    observation_path.write_text(
+        json.dumps(
+            {
+                "observation": {
+                    "schema_version": "initial_policy_observation.v1",
+                    "task_id": "open_refrigerator",
+                    "target_object_id": "refrigerator",
+                    "camera_frame_path": str(frame),
+                    "visual_observation": {"camera_frame_path": str(frame)},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = session.build_persistent_session_provider_bundle(
+        job_dir=tmp_path / "bundle",
+        policy_observation_path=observation_path,
+        loop_step_count=2,
+        use_live_wam=True,
+        allow_structural_wam_fallback=False,
+        manipulation_pov_geometry_path=geometry,
+        placement_validation_path=placement,
+        task_stance_plan_path=stance,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "bundle_ready"
+    assert manifest["explicit_isaac_scene_context"]["status"] == "attached"
+    assert manifest["semantic_visual_qa_source_paths"]["manipulation_pov_geometry"] == str(
+        geometry.resolve()
+    )
+    assert manifest["semantic_visual_qa_source_paths"]["placement_validation"] == str(
+        placement.resolve()
+    )
+    assert manifest["semantic_visual_qa_source_paths"]["task_stance_plan"] == str(
+        stance.resolve()
+    )
+    session_input = json.loads(
+        (tmp_path / "bundle" / "provider_runtime" / "persistent_session_input.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert session_input["isaac_scene_context"]["status"] == "available"
+    assert session_input["isaac_scene_context"]["explicit_request"]["status"] == "attached"
+    initial_observation = session_input["initial_observation"]
+    assert (
+        initial_observation["manipulation_pov_geometry_path"]
+        == "provider_runtime/isaac_scene_context/manipulation_pov_geometry.json"
+    )
+    assert (
+        initial_observation["isaac_scene_manifest_path"]
+        == "provider_runtime/isaac_scene_context/placement_validation.json"
+    )
+    with zipfile.ZipFile(manifest["bundle_path"]) as archive:
+        names = set(archive.namelist())
+    assert "provider_runtime/isaac_scene_context/manipulation_pov_geometry.json" in names
+    assert "provider_runtime/isaac_scene_context/placement_validation.json" in names
+    assert "provider_runtime/isaac_scene_context/task_stance_plan.json" in names
+
+
+def test_persistent_session_bundle_blocks_missing_explicit_isaac_sidecar(
+    tmp_path: Path,
+) -> None:
+    frame = _write_reviewable_frame(tmp_path / "frame.png")
+    observation_path = tmp_path / "observation.json"
+    observation_path.write_text(
+        json.dumps(
+            {
+                "observation": {
+                    "schema_version": "initial_policy_observation.v1",
+                    "task_id": "open_refrigerator",
+                    "camera_frame_path": str(frame),
+                    "visual_observation": {"camera_frame_path": str(frame)},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = session.build_persistent_session_provider_bundle(
+        job_dir=tmp_path / "bundle",
+        policy_observation_path=observation_path,
+        loop_step_count=2,
+        use_live_wam=True,
+        manipulation_pov_geometry_path=tmp_path / "missing_geometry.json",
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert "blocked_explicit_isaac_manipulation_pov_geometry_path_missing" in manifest[
+        "blockers"
+    ]
+    assert manifest["explicit_isaac_scene_context"]["status"] == "blocked"
+
+
 def test_persistent_session_bundle_blocks_offscreen_semantic_initial_observation(
     tmp_path: Path,
     monkeypatch,

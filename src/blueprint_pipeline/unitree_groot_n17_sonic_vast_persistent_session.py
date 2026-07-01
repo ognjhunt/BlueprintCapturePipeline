@@ -86,6 +86,13 @@ RUNTIME_PROJECTED_SKELETON_TRACE_BUNDLE_PATH = (
     "provider_runtime/seed_conditioning/g1_projected_skeleton_trace.jsonl"
 )
 RUNTIME_ISAAC_SCENE_CONTEXT_BUNDLE_DIR = "provider_runtime/isaac_scene_context"
+EXPLICIT_ISAAC_MANIPULATION_POV_GEOMETRY_ENV = (
+    "BLUEPRINT_PERSISTENT_SESSION_ISAAC_MANIPULATION_POV_GEOMETRY"
+)
+EXPLICIT_ISAAC_PLACEMENT_VALIDATION_ENV = (
+    "BLUEPRINT_PERSISTENT_SESSION_ISAAC_PLACEMENT_VALIDATION"
+)
+EXPLICIT_ISAAC_TASK_STANCE_PLAN_ENV = "BLUEPRINT_PERSISTENT_SESSION_ISAAC_TASK_STANCE_PLAN"
 PERSISTENT_SESSION_JOB_ROOT_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_PERSISTENT_SESSION_JOB_ROOT"
 PERSISTENT_SESSION_PUBLIC_IMAGE_ENV = "BLUEPRINT_VAST_UNITREE_WAM_PERSISTENT_SESSION_PUBLIC_IMAGE"
 PERSISTENT_SESSION_ALLOW_STRUCTURAL_WAM_FALLBACK_ENV = (
@@ -1127,6 +1134,116 @@ def _load_local_json_ref(value: Any, *, base_dir: Path) -> tuple[Any | None, Pat
         return json.loads(path.read_text(encoding="utf-8")), path
     except (OSError, json.JSONDecodeError):
         return None, path
+
+
+def _attach_explicit_isaac_scene_context(
+    observation: dict[str, Any],
+    *,
+    base_dir: Path,
+    manipulation_pov_geometry_path: str | Path | None = None,
+    placement_validation_path: str | Path | None = None,
+    task_stance_plan_path: str | Path | None = None,
+) -> dict[str, Any]:
+    raw_paths = {
+        "manipulation_pov_geometry": _string(
+            manipulation_pov_geometry_path
+            or os.getenv(EXPLICIT_ISAAC_MANIPULATION_POV_GEOMETRY_ENV)
+        ),
+        "placement_validation": _string(
+            placement_validation_path or os.getenv(EXPLICIT_ISAAC_PLACEMENT_VALIDATION_ENV)
+        ),
+        "task_stance_plan": _string(
+            task_stance_plan_path or os.getenv(EXPLICIT_ISAAC_TASK_STANCE_PLAN_ENV)
+        ),
+    }
+    requested_paths = {key: value for key, value in raw_paths.items() if value}
+    if not requested_paths:
+        return {
+            "schema_version": "persistent_session_explicit_isaac_scene_context.v1",
+            "status": "not_requested",
+            "requested": False,
+            "requested_source_paths": raw_paths,
+            "resolved_source_paths": {},
+            "blockers": [],
+            "claim_boundary": {
+                "explicit_isaac_scene_context_is_optional_runtime_conditioning": True,
+                "explicit_isaac_scene_context_is_not_capture_truth": True,
+                "explicit_isaac_scene_context_is_not_task_success_proof": True,
+            },
+        }
+
+    visual = _mapping(observation.get("visual_observation"))
+    resolved_paths: dict[str, str] = {}
+    blockers: list[str] = []
+
+    def resolve_required(label: str, value: str) -> Path | None:
+        path = _resolve_local_json_path(value, base_dir=base_dir)
+        if path is None:
+            blockers.append(f"blocked_explicit_isaac_{label}_path_unresolvable")
+            return None
+        if not path.is_file():
+            blockers.append(f"blocked_explicit_isaac_{label}_path_missing")
+            resolved_paths[label] = str(path)
+            return None
+        resolved = path.resolve()
+        resolved_paths[label] = str(resolved)
+        return resolved
+
+    geometry_path = resolve_required(
+        "manipulation_pov_geometry",
+        requested_paths["manipulation_pov_geometry"],
+    ) if requested_paths.get("manipulation_pov_geometry") else None
+    placement_path = resolve_required(
+        "placement_validation",
+        requested_paths["placement_validation"],
+    ) if requested_paths.get("placement_validation") else None
+    stance_path = resolve_required(
+        "task_stance_plan",
+        requested_paths["task_stance_plan"],
+    ) if requested_paths.get("task_stance_plan") else None
+
+    if geometry_path is not None:
+        geometry_text = str(geometry_path)
+        observation["manipulation_pov_geometry_path"] = geometry_text
+        observation["isaac_manipulation_pov_geometry_path"] = geometry_text
+        visual["manipulation_pov_geometry_path"] = geometry_text
+        visual["isaac_manipulation_pov_geometry_path"] = geometry_text
+    if placement_path is not None:
+        placement_text = str(placement_path)
+        observation["placement_validation_path"] = placement_text
+        observation["isaac_scene_manifest_path"] = placement_text
+        visual["placement_validation_path"] = placement_text
+        visual["isaac_scene_manifest_path"] = placement_text
+    if stance_path is not None:
+        stance_text = str(stance_path)
+        observation["task_stance_plan_path"] = stance_text
+        visual["task_stance_plan_path"] = stance_text
+    observation["visual_observation"] = visual
+
+    claim_boundary = _mapping(observation.get("claim_boundary"))
+    claim_boundary.update(
+        {
+            "explicit_isaac_scene_context_attached": True,
+            "explicit_isaac_scene_context_is_not_capture_truth": True,
+            "explicit_isaac_scene_context_is_not_task_success_proof": True,
+            "scene_or_task_specific_coordinates_hardcoded": False,
+        }
+    )
+    observation["claim_boundary"] = claim_boundary
+    return {
+        "schema_version": "persistent_session_explicit_isaac_scene_context.v1",
+        "status": "blocked" if blockers else "attached",
+        "requested": True,
+        "requested_source_paths": raw_paths,
+        "resolved_source_paths": resolved_paths,
+        "blockers": blockers,
+        "claim_boundary": {
+            "explicit_isaac_scene_context_is_optional_runtime_conditioning": True,
+            "explicit_isaac_scene_context_is_not_capture_truth": True,
+            "explicit_isaac_scene_context_is_not_task_success_proof": True,
+            "explicit_sidecars_copied_into_provider_bundle_before_wam_conditioning": not blockers,
+        },
+    }
 
 
 def _source_geometry_path_from_projected_skeleton_trace(
@@ -4258,6 +4375,9 @@ def build_persistent_session_provider_bundle(
     timeout_seconds: float = 3600.0,
     use_live_wam: bool = True,
     allow_structural_wam_fallback: bool = False,
+    manipulation_pov_geometry_path: str | Path | None = None,
+    placement_validation_path: str | Path | None = None,
+    task_stance_plan_path: str | Path | None = None,
     bundle_filename: str = DEFAULT_BUNDLE_FILENAME,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -4274,12 +4394,20 @@ def build_persistent_session_provider_bundle(
         observation.get(key) for key in ("task_prompt", "prompt", "task_description")
     ):
         observation["task_prompt"] = task_prompt
+    policy_observation_base_dir = Path(policy_observation_path).expanduser().parent
+    explicit_isaac_scene_context = _attach_explicit_isaac_scene_context(
+        observation,
+        base_dir=policy_observation_base_dir,
+        manipulation_pov_geometry_path=manipulation_pov_geometry_path,
+        placement_validation_path=placement_validation_path,
+        task_stance_plan_path=task_stance_plan_path,
+    )
     frame_path = _camera_frame_path(observation)
     visual_profile_settings = _current_wam_visual_profile_settings()
     visual_profile = str(visual_profile_settings["visual_profile"])
     semantic_visual_evidence = _policy_observation_semantic_visual_evidence(
         observation,
-        base_dir=Path(policy_observation_path).expanduser().parent,
+        base_dir=policy_observation_base_dir,
     )
     source_visual_qa = assess_source_policy_observation_visual_qa(
         frame_path,
@@ -4397,6 +4525,7 @@ def build_persistent_session_provider_bundle(
     write_json(source_visual_qa_path, source_visual_qa)
     blockers: list[str] = []
     blockers.extend(str(item) for item in synthetic_launch_gate.get("blockers") or [])
+    blockers.extend(str(item) for item in explicit_isaac_scene_context.get("blockers") or [])
     auxiliary_observation_manifest: dict[str, Any] = {}
     runtime_auxiliary_observation_manifest: dict[str, Any] = {}
     auxiliary_observation_manifest_path: Path | None = None
@@ -4694,6 +4823,7 @@ def build_persistent_session_provider_bundle(
         },
         "isaac_scene_context": {
             "status": "available" if runtime_isaac_scene_context_paths else "not_available",
+            "explicit_request": explicit_isaac_scene_context,
             "local_source_paths": {
                 "manipulation_pov_geometry": semantic_visual_evidence.get(
                     "manipulation_pov_geometry_path"
@@ -4778,6 +4908,7 @@ def build_persistent_session_provider_bundle(
             if remediation_manifest_path
             else None,
             "synthetic_fallback_wam_launch_gate": synthetic_launch_gate,
+            "explicit_isaac_scene_context": explicit_isaac_scene_context,
             "wam_auxiliary_observation_manifest_path": str(auxiliary_observation_manifest_path)
             if auxiliary_observation_manifest_path
             else None,
@@ -4895,6 +5026,7 @@ def build_persistent_session_provider_bundle(
         if remediation_manifest_path
         else None,
         "synthetic_fallback_wam_launch_gate": synthetic_launch_gate,
+        "explicit_isaac_scene_context": explicit_isaac_scene_context,
         "semantic_visual_qa_source_paths": {
             "object_index": semantic_visual_evidence.get("object_index_path"),
             "eval_ready_task_grounding": semantic_visual_evidence.get(
@@ -7583,6 +7715,9 @@ def run_persistent_session(
     timeout_seconds: float = 3600.0,
     use_live_wam: bool = True,
     allow_structural_wam_fallback: bool | None = None,
+    manipulation_pov_geometry_path: str | Path | None = None,
+    placement_validation_path: str | Path | None = None,
+    task_stance_plan_path: str | Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     generated_at = utc_now_iso()
     job = _job_dir(job_dir)
@@ -7631,6 +7766,9 @@ def run_persistent_session(
             timeout_seconds=timeout_seconds,
             use_live_wam=use_live_wam,
             allow_structural_wam_fallback=allow_fallback,
+            manipulation_pov_geometry_path=manipulation_pov_geometry_path,
+            placement_validation_path=placement_validation_path,
+            task_stance_plan_path=task_stance_plan_path,
             generated_at=generated_at,
         )
         if bundle.get("status") != "bundle_ready":
@@ -7987,6 +8125,9 @@ def run_persistent_session_runpod(
     timeout_seconds: float = 3600.0,
     use_live_wam: bool = True,
     allow_structural_wam_fallback: bool | None = None,
+    manipulation_pov_geometry_path: str | Path | None = None,
+    placement_validation_path: str | Path | None = None,
+    task_stance_plan_path: str | Path | None = None,
     max_wait_seconds: int | None = None,
 ) -> tuple[dict[str, Any], int]:
     generated_at = utc_now_iso()
@@ -8078,6 +8219,9 @@ def run_persistent_session_runpod(
             timeout_seconds=timeout_seconds,
             use_live_wam=use_live_wam,
             allow_structural_wam_fallback=allow_fallback,
+            manipulation_pov_geometry_path=manipulation_pov_geometry_path,
+            placement_validation_path=placement_validation_path,
+            task_stance_plan_path=task_stance_plan_path,
             generated_at=generated_at,
         )
         if bundle.get("status") != "bundle_ready":
@@ -8303,6 +8447,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--timeout-seconds", type=float, default=3600.0)
     parser.add_argument("--disable-live-wam", action="store_true")
     parser.add_argument("--allow-structural-wam-fallback", action="store_true")
+    parser.add_argument("--manipulation-pov-geometry")
+    parser.add_argument("--placement-validation")
+    parser.add_argument("--task-stance-plan")
     args = parser.parse_args(argv)
     runner = run_persistent_session_runpod if args.provider == "runpod" else run_persistent_session
     result, exit_code = runner(
@@ -8313,6 +8460,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout_seconds=args.timeout_seconds,
         use_live_wam=not args.disable_live_wam,
         allow_structural_wam_fallback=args.allow_structural_wam_fallback,
+        manipulation_pov_geometry_path=args.manipulation_pov_geometry,
+        placement_validation_path=args.placement_validation,
+        task_stance_plan_path=args.task_stance_plan,
     )
     print(json.dumps(result, sort_keys=True))
     return exit_code
