@@ -2541,6 +2541,9 @@ def test_postprocess_preserves_scene_faithful_isaac_bridge_input_contract(
     small_calibration_set = json.loads(
         (job / "rank_fidelity_small_calibration_set.json").read_text(encoding="utf-8")
     )
+    calibration_report = json.loads(
+        (job / "rank_fidelity_calibration_report.json").read_text(encoding="utf-8")
+    )
     assert postprocess["rank_fidelity_calibration_requirement"].endswith(
         "rank_fidelity_calibration_requirement.json"
     )
@@ -2549,6 +2552,9 @@ def test_postprocess_preserves_scene_faithful_isaac_bridge_input_contract(
     )
     assert postprocess["rank_fidelity_small_calibration_set"].endswith(
         "rank_fidelity_small_calibration_set.json"
+    )
+    assert postprocess["rank_fidelity_calibration_report"].endswith(
+        "rank_fidelity_calibration_report.json"
     )
     assert postprocess["rank_fidelity_result_proven"] is False
     assert calibration["status"] == "blocked_missing_calibration_anchors"
@@ -2562,6 +2568,12 @@ def test_postprocess_preserves_scene_faithful_isaac_bridge_input_contract(
         "draft_pending_prediction_and_accepted_outcome_rows"
     )
     assert calibration["small_calibration_set_row_count"] == 4
+    assert calibration["rank_fidelity_calibration_report"].endswith(
+        "rank_fidelity_calibration_report.json"
+    )
+    assert calibration["rank_fidelity_calibration_report_status"] == (
+        "blocked_missing_accepted_calibration_anchors"
+    )
     assert calibration["requested_anchor_count"] == 4
     assert calibration["candidate_prediction_record_count"] == 1
     assert calibration["candidate_prediction_records"][0]["actual_status"] == (
@@ -2585,6 +2597,20 @@ def test_postprocess_preserves_scene_faithful_isaac_bridge_input_contract(
     assert (
         small_calibration_set["claim_boundary"][
             "small_calibration_set_rows_are_not_accepted_anchors"
+        ]
+        is True
+    )
+    assert calibration_report["status"] == "blocked_missing_accepted_calibration_anchors"
+    assert calibration_report["small_calibration_set"].endswith(
+        "rank_fidelity_small_calibration_set.json"
+    )
+    assert calibration_report["accepted_anchor_count"] == 0
+    assert calibration_report["sim_vs_real_calibration_score"] is None
+    assert calibration_report["spearman_rank_correlation"] is None
+    assert calibration_report["rank_fidelity_result_proven"] is False
+    assert (
+        calibration_report["claim_boundary"][
+            "calibration_report_requires_accepted_anchor_outcomes"
         ]
         is True
     )
@@ -2613,6 +2639,9 @@ def test_postprocess_preserves_scene_faithful_isaac_bridge_input_contract(
     )
     assert claim_boundary["rank_fidelity_small_calibration_set"].endswith(
         "rank_fidelity_small_calibration_set.json"
+    )
+    assert claim_boundary["rank_fidelity_calibration_report"].endswith(
+        "rank_fidelity_calibration_report.json"
     )
     assert claim_boundary["visual_review_ranking_is_not_real_world_rank_fidelity"] is True
 
