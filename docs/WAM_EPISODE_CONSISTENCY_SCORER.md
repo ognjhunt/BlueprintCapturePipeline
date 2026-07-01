@@ -133,6 +133,23 @@ It reads the API key from `GEMINI_API_KEY`, `GOOGLE_GENAI_API_KEY`,
 `GOOGLE_AI_API_KEY`, or the matching `*_FILE` env vars. It does not write raw
 credentials or secret hashes into artifacts.
 
+## OpenAI Scorer
+
+The repo also includes an OpenAI-backed scorer command for provider fallback:
+
+```bash
+BLUEPRINT_ALLOW_OPENAI_WAM_EPISODE_CONSISTENCY=true \
+blueprint-label-wam-episode-consistency-openai \
+  --input <wam_episode_consistency_request.json> \
+  --output <wam_episode_consistency.command.json>
+```
+
+It samples generated-video frames locally, sends the sampled frames plus trace
+summary to OpenAI, and writes the same `wam_episode_consistency.command.v1`
+shape as the Gemini scorer. It reads the API key from `OPENAI_API_KEY`,
+`OPENAI_API_KEY_FILE`, or `BLUEPRINT_OPENAI_API_KEY_FILE`. It does not write raw
+credentials or secret hashes into artifacts.
+
 ## Boundaries
 
 - The provider runtime does not score forward/inverse consistency.
