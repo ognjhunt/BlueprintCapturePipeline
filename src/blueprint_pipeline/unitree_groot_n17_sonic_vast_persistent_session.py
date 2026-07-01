@@ -141,6 +141,9 @@ PERSISTENT_WAM_RANK_FIDELITY_CALIBRATION_REQUIREMENT_SCHEMA_VERSION = (
 PERSISTENT_WAM_RANK_FIDELITY_CALIBRATION_ANCHOR_REQUEST_SCHEMA_VERSION = (
     "persistent_wam_rank_fidelity_calibration_anchor_request.v1"
 )
+PERSISTENT_WAM_RANK_FIDELITY_SMALL_CALIBRATION_SET_SCHEMA_VERSION = (
+    "persistent_wam_rank_fidelity_small_calibration_set.v1"
+)
 SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT_ENV = (
     "BLUEPRINT_ALLOW_SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT"
 )
@@ -6894,6 +6897,59 @@ def _write_rank_fidelity_calibration_requirement(
         "insufficient_policy_group_count",
         "real_world_rank_correlation_not_measured",
     ]
+    small_calibration_set_path = job / "rank_fidelity_small_calibration_set.json"
+    small_calibration_set_rows = [
+        {
+            "calibration_set_row_id": row["anchor_request_id"].replace(
+                "anchor_request",
+                "set_row",
+            ),
+            "anchor_request_id": row["anchor_request_id"],
+            "row_role": row["row_role"],
+            "scenario_eval_run_id": row["scenario_eval_run_id"],
+            "policy_id": row["policy_id"],
+            "task_id": row["task_id"],
+            "scenario_variation_instance_id": row["scenario_variation_instance_id"],
+            "target_object_id": row["target_object_id"],
+            "candidate_prediction_record_id": row["candidate_prediction_record_id"],
+            "prediction_status": row["prediction_status"],
+            "actual_status": row["actual_status"],
+            "exact_join_keys_status": row["exact_join_keys_status"],
+            "accepted_for_calibration": False,
+        }
+        for row in anchor_request_rows
+    ]
+    small_calibration_set_payload = {
+        "schema_version": PERSISTENT_WAM_RANK_FIDELITY_SMALL_CALIBRATION_SET_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "draft_pending_prediction_and_accepted_outcome_rows",
+        "policy_id": POLICY_ID,
+        "task_id": task_id,
+        "target_object_id": target_object_id,
+        "set_row_count": len(small_calibration_set_rows),
+        "minimum_rows": 4,
+        "minimum_policy_groups": 2,
+        "minimum_variations_per_policy": 2,
+        "current_prediction_row_count": 1,
+        "missing_prediction_row_count": 3,
+        "accepted_anchor_count": 0,
+        "exact_join_keys": anchor_join_keys,
+        "set_rows": small_calibration_set_rows,
+        "required_anchor_evidence": required_anchor_evidence,
+        "blockers": blockers,
+        "claim_boundary": {
+            "small_calibration_set_is_collection_plan_until_actuals_are_accepted": True,
+            "small_calibration_set_rows_are_not_accepted_anchors": True,
+            "exact_prediction_vs_actual_join_required": True,
+            "loose_or_inferred_matches_allowed_for_calibration": False,
+            "rank_fidelity_result_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "raw_credentials_written_to_artifacts": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+    write_json(small_calibration_set_path, small_calibration_set_payload)
     anchor_request_path = job / "rank_fidelity_calibration_anchor_request.json"
     anchor_request_payload = {
         "schema_version": PERSISTENT_WAM_RANK_FIDELITY_CALIBRATION_ANCHOR_REQUEST_SCHEMA_VERSION,
@@ -6909,10 +6965,13 @@ def _write_rank_fidelity_calibration_requirement(
         "missing_prediction_anchor_request_count": 3,
         "accepted_anchor_count": 0,
         "exact_join_keys": anchor_join_keys,
+        "small_calibration_set": str(small_calibration_set_path),
+        "small_calibration_set_status": small_calibration_set_payload["status"],
         "anchor_request_rows": anchor_request_rows,
         "blockers": blockers,
         "claim_boundary": {
             "anchor_request_rows_are_not_accepted_anchors": True,
+            "small_calibration_set_rows_are_not_accepted_anchors": True,
             "request_artifact_does_not_prove_rank_fidelity": True,
             "exact_prediction_vs_actual_join_required": True,
             "loose_or_inferred_matches_allowed_for_calibration": False,
@@ -6935,6 +6994,9 @@ def _write_rank_fidelity_calibration_requirement(
         "candidate_prediction_records": candidate_records,
         "calibration_anchor_request": str(anchor_request_path),
         "calibration_anchor_request_status": anchor_request_payload["status"],
+        "small_calibration_set": str(small_calibration_set_path),
+        "small_calibration_set_status": small_calibration_set_payload["status"],
+        "small_calibration_set_row_count": small_calibration_set_payload["set_row_count"],
         "requested_anchor_count": anchor_request_payload["requested_anchor_count"],
         "accepted_anchor_count": 0,
         "policy_group_count": 1,
@@ -6968,6 +7030,7 @@ def _write_rank_fidelity_calibration_requirement(
             "visual_quality_pass_is_not_rank_fidelity": True,
             "episode_consistency_label_is_not_rank_fidelity": True,
             "candidate_prediction_records_are_not_accepted_anchors": True,
+            "small_calibration_set_rows_are_not_accepted_anchors": True,
             "rank_fidelity_requires_accepted_prediction_vs_actual_anchor_set": True,
             "rank_fidelity_result_proven": False,
             "generated_world_rank_fidelity_result_proven": False,
@@ -7624,6 +7687,9 @@ def _postprocess_imported_persistent_session_artifacts(
         "rank_fidelity_calibration_anchor_request": str(
             job / "rank_fidelity_calibration_anchor_request.json"
         ),
+        "rank_fidelity_small_calibration_set": str(
+            job / "rank_fidelity_small_calibration_set.json"
+        ),
         "rank_fidelity_calibration_status": rank_fidelity_calibration_requirement.get("status"),
         "rank_fidelity_calibration_blockers": _string_list(
             rank_fidelity_calibration_requirement.get("blockers")
@@ -7737,6 +7803,9 @@ def _postprocess_imported_persistent_session_artifacts(
         ),
         "rank_fidelity_calibration_anchor_request": str(
             job / "rank_fidelity_calibration_anchor_request.json"
+        ),
+        "rank_fidelity_small_calibration_set": str(
+            job / "rank_fidelity_small_calibration_set.json"
         ),
         "rank_fidelity_calibration_status": rank_fidelity_calibration_requirement.get("status"),
         "rank_fidelity_calibration_blockers": _string_list(
@@ -8041,6 +8110,9 @@ def _finalize_runpod_persistent_session_output(
         ),
         "rank_fidelity_calibration_anchor_request_path": postprocess.get(
             "rank_fidelity_calibration_anchor_request"
+        ),
+        "rank_fidelity_small_calibration_set_path": postprocess.get(
+            "rank_fidelity_small_calibration_set"
         ),
         "rank_fidelity_calibration_status": postprocess.get(
             "rank_fidelity_calibration_status"
@@ -8458,6 +8530,9 @@ def run_persistent_session(
             ),
             "rank_fidelity_calibration_anchor_request_path": postprocess.get(
                 "rank_fidelity_calibration_anchor_request"
+            ),
+            "rank_fidelity_small_calibration_set_path": postprocess.get(
+                "rank_fidelity_small_calibration_set"
             ),
             "rank_fidelity_calibration_status": postprocess.get(
                 "rank_fidelity_calibration_status"
