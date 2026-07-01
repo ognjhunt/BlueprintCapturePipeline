@@ -465,6 +465,25 @@ def test_analyze_run_blocked_without_worker_manifest(tmp_path: Path) -> None:
     assert "audit_worker_run_manifest_missing" in manifest["blockers"]
 
 
+def test_analyze_run_blocks_when_planned_variant_result_row_is_absent(tmp_path: Path) -> None:
+    run_dir = tmp_path / "render_output"
+    audit_dir = _worker_fixture(run_dir, noisy_ids=set(), material_raw=_raw_materials())
+    worker = json.loads((audit_dir / A.WORKER_RUN_MANIFEST_NAME).read_text())
+    # truncated worker upload: variant G never wrote a variant_results row at all
+    worker["variant_results"] = [
+        row for row in worker["variant_results"] if row["variant_id"] != "G"
+    ]
+    (audit_dir / A.WORKER_RUN_MANIFEST_NAME).write_text(json.dumps(worker))
+
+    manifest = A.analyze_render_noise_audit_run(run_dir)
+
+    assert manifest["status"] == "blocked"
+    assert "planned_variant_result_missing:G" in manifest["blockers"]
+    assert "G" in manifest["interpretation"]["missing_variants"]
+    # the variants that did run are still analyzed for partial evidence
+    assert manifest["gates"]["A"]["passed"] is True
+
+
 def test_cli_plan_and_analyze(tmp_path: Path, capsys) -> None:
     plan_path = tmp_path / "plan.json"
     assert A.main(["plan", "--out", str(plan_path)]) == 0

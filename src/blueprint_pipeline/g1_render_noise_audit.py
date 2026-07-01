@@ -1103,8 +1103,15 @@ def analyze_render_noise_audit_run(
         manifest["blockers"].append("robot_material_resolution_manifest_missing")
     if not executed:
         manifest["blockers"].append("no_variant_frames_analyzed")
+    recorded_ids = {row["variant_id"] for row in variant_records}
+    for planned in variants:
+        if planned.variant_id not in recorded_ids:
+            manifest["blockers"].append(
+                f"planned_variant_result_missing:{planned.variant_id}"
+            )
     # Completion is honest only when every planned variant produced an analyzable frame;
-    # partial runs still get stats/gates/interpretation but stay blocked.
+    # partial runs (missing rows, missing PNGs, truncated uploads) still get stats/gates/
+    # interpretation for what ran but stay blocked.
     manifest["status"] = "completed" if not manifest["blockers"] else "blocked"
     write_json(out_root / AUDIT_MANIFEST_NAME, manifest)
     return manifest
