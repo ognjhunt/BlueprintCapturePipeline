@@ -156,8 +156,10 @@ SCENE_FAITHFUL_ISAAC_POLICY_ACTION_TRACE_CLAIM = {
     "scene_faithful_isaac_policy_action_projection_bridge_used": True,
     "blueprint_simulator_only_isaac_action_projection_bridge_used": True,
     "uses_isaac_sidecar_link_landmarks_not_hand_drawn_screen_axes": True,
+    "sidecar_kinematic_chain_fk_solver_used": True,
     "full_g1_urdf_fk_solver_used": False,
-    "sonic_action_delta_is_heuristic_reach_lift_not_official_wbc": True,
+    "sonic_action_delta_is_heuristic_reach_lift_not_official_wbc": False,
+    "sonic_action_delta_is_heuristic_joint_delta_not_official_wbc": True,
 }
 
 
@@ -1766,6 +1768,7 @@ def test_wam_generation_step_input_accepts_policy_action_projected_skeleton_trac
     assert projected["scene_faithful_isaac_policy_action_projection_bridge_used"] is True
     assert projected["policy_action_bridge_safe_for_sim_ranking"] is True
     assert projected["full_g1_urdf_fk_solver_used"] is False
+    assert projected["sidecar_kinematic_chain_fk_solver_used"] is True
 
 
 def test_wam_generation_step_blocks_sparse_projected_skeleton_conditioning(

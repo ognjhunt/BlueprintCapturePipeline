@@ -443,16 +443,23 @@ def test_persistent_runner_prefers_isaac_geometry_policy_action_trace_for_sim_ra
     assert rows[0]["claim_boundary"]["full_g1_urdf_fk_solver_used"] is False
     assert (
         rows[0]["claim_boundary"]["sonic_action_delta_is_heuristic_reach_lift_not_official_wbc"]
+        is False
+    )
+    assert rows[0]["claim_boundary"]["sidecar_kinematic_chain_fk_solver_used"] is True
+    assert (
+        rows[0]["claim_boundary"]["sonic_action_delta_is_heuristic_joint_delta_not_official_wbc"]
         is True
     )
     assert rows[0]["kinematic_chain"] == {
         "source": "isaac_manipulation_pov_geometry_arm_link_points",
         "projection_method": "isaac_camera_sidecar_pinhole_projection",
-        "action_delta_method": "sonic_action_chunk_mean_abs_reach_lift_delta",
+        "action_delta_method": "sonic_action_chunk_sidecar_upper_body_fk_joint_deltas",
+        "sidecar_kinematic_chain_fk_executed": True,
         "urdf_fk_solver_executed": False,
         "full_g1_urdf_fk_executed": False,
         "official_groot_wholebodycontrol_sim2sim_executed": False,
     }
+    assert rows[0]["landmarks"][1]["world_xyz_m"] != rows[0]["landmarks"][1]["seed_world_xyz_m"]
     assert (
         contract["claim_boundary"][
             "geometry_anchored_policy_action_projection_is_wam_conditioning_not_ranking_proof"

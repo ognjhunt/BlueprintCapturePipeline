@@ -2162,6 +2162,30 @@ def _normalize(a: Sequence[float], fallback: Sequence[float] | None = None) -> l
     return [float(item) / length for item in a[:3]]
 
 
+def _rotate_about_axis(vector: Sequence[float], axis: Sequence[float], radians: float) -> list[float]:
+    unit_axis = _normalize(axis)
+    cos_t = math.cos(float(radians))
+    sin_t = math.sin(float(radians))
+    cross = _cross(unit_axis, vector)
+    dot = _dot(unit_axis, vector)
+    return [
+        float(vector[index]) * cos_t
+        + cross[index] * sin_t
+        + unit_axis[index] * dot * (1.0 - cos_t)
+        for index in range(3)
+    ]
+
+
+def _rotate_many(
+    vector: Sequence[float],
+    rotations: Sequence[tuple[Sequence[float], float]],
+) -> list[float]:
+    result = [float(item) for item in vector[:3]]
+    for axis, radians in rotations:
+        result = _rotate_about_axis(result, axis, radians)
+    return result
+
+
 def _visual_dimension(observation: Mapping[str, Any], key: str, default: int) -> int:
     visual = _mapping(observation.get("visual_observation"))
     for value in (visual.get(key), observation.get(key), os.environ.get(f"BLUEPRINT_OSCAR_WAM_{key.upper()}")):
@@ -2301,6 +2325,69 @@ def _isaac_seed_arm_points_by_arm(geometry_frame: Mapping[str, Any]) -> dict[str
     return result
 
 
+def _sonic_value_to_joint_delta(value: float, scale_rad: float) -> float:
+    return _clip(float(value), -1.0, 1.0) * float(scale_rad)
+
+
+def _sidecar_arm_chain_fk_points(
+    *,
+    arm: str,
+    points: Mapping[str, Sequence[float]],
+    action_values: Sequence[float],
+    camera: Mapping[str, Any],
+) -> dict[str, list[float]]:
+    shoulder = points.get("shoulder")
+    elbow = points.get("elbow")
+    wrist = points.get("wrist")
+    hand = points.get("hand")
+    if shoulder is None or elbow is None or wrist is None or hand is None:
+        return {}
+    side = -1.0 if arm == "left" else 1.0
+    upper_seed = _vsub(elbow, shoulder)
+    forearm_seed = _vsub(wrist, elbow)
+    hand_seed = _vsub(hand, wrist)
+    arm_axis = _normalize(_vsub(hand, shoulder), fallback=camera.get("forward") or [1.0, 0.0, 0.0])
+    camera_right = camera.get("right") or [0.0, -1.0, 0.0]
+    camera_up = camera.get("up") or [0.0, 0.0, 1.0]
+    camera_forward = camera.get("forward") or [1.0, 0.0, 0.0]
+    values = list(action_values) + [0.0] * max(0, 7 - len(action_values))
+    shoulder_rotations = [
+        (camera_right, _sonic_value_to_joint_delta(values[0], 0.38)),
+        (camera_up, _sonic_value_to_joint_delta(values[1] * side, 0.32)),
+        (arm_axis, _sonic_value_to_joint_delta(values[2], 0.22)),
+    ]
+    elbow_axis = _normalize(_cross(upper_seed, camera_forward), fallback=camera_right)
+    elbow_rotations = [
+        (elbow_axis, _sonic_value_to_joint_delta(values[3], 0.55)),
+    ]
+    wrist_rotations = [
+        (camera_right, _sonic_value_to_joint_delta(values[4], 0.24)),
+        (camera_up, _sonic_value_to_joint_delta(values[5] * side, 0.20)),
+        (arm_axis, _sonic_value_to_joint_delta(values[6], 0.18)),
+    ]
+    upper = _rotate_many(upper_seed, shoulder_rotations)
+    elbow_world = _vadd(shoulder, upper)
+    forearm = _rotate_many(
+        _rotate_many(forearm_seed, shoulder_rotations),
+        elbow_rotations,
+    )
+    wrist_world = _vadd(elbow_world, forearm)
+    hand_segment = _rotate_many(
+        _rotate_many(
+            _rotate_many(hand_seed, shoulder_rotations),
+            elbow_rotations,
+        ),
+        wrist_rotations,
+    )
+    hand_world = _vadd(wrist_world, hand_segment)
+    return {
+        "shoulder": [float(item) for item in shoulder[:3]],
+        "elbow": elbow_world,
+        "wrist": wrist_world,
+        "hand": hand_world,
+    }
+
+
 def _materialize_isaac_geometry_policy_action_projected_skeleton_trace(
     *,
     work_dir: Path | None,
@@ -2343,30 +2430,25 @@ def _materialize_isaac_geometry_policy_action_projected_skeleton_trace(
         {"from": "right_elbow", "to": "right_wrist"},
         {"from": "right_wrist", "to": "right_hand"},
     ]
-    role_factors = {"shoulder": 0.0, "elbow": 0.35, "wrist": 0.75, "hand": 1.0}
     with trace_path.open("w", encoding="utf-8") as handle:
         for index, frame in enumerate(frames):
             landmarks: list[dict[str, Any]] = []
             for arm, offset in (("left", 0), ("right", 14)):
                 points = arm_points.get(arm, {})
-                shoulder = points.get("shoulder")
-                hand = points.get("hand") or points.get("wrist")
-                if shoulder is None or hand is None:
+                if not points:
                     continue
                 arm_slice = frame[offset : offset + 14]
-                arm_direction = _normalize(_vsub(hand, shoulder), fallback=camera["forward"])
-                arm_length = max(0.05, _norm(_vsub(hand, shoulder)))
-                reach_delta = _clip(_mean_abs(arm_slice[:7]), 0.0, 1.5) * arm_length * 0.55
-                lift_delta = _clip(_mean_abs(arm_slice[7:14]), 0.0, 1.5) * arm_length * 0.25
+                fk_points = _sidecar_arm_chain_fk_points(
+                    arm=arm,
+                    points=points,
+                    action_values=arm_slice[:7],
+                    camera=camera,
+                )
                 for role in ("shoulder", "elbow", "wrist", "hand"):
                     seed_point = points.get(role)
                     if seed_point is None:
                         continue
-                    factor = role_factors[role]
-                    world = _vadd(
-                        _vadd(seed_point, _vscale(arm_direction, reach_delta * factor)),
-                        _vscale([0.0, 0.0, 1.0], lift_delta * factor),
-                    )
+                    world = fk_points.get(role) or [float(value) for value in seed_point[:3]]
                     landmarks.append(
                         {
                             "landmark_id": f"{arm}_{role}",
@@ -2401,7 +2483,8 @@ def _materialize_isaac_geometry_policy_action_projected_skeleton_trace(
                         "kinematic_chain": {
                             "source": "isaac_manipulation_pov_geometry_arm_link_points",
                             "projection_method": "isaac_camera_sidecar_pinhole_projection",
-                            "action_delta_method": "sonic_action_chunk_mean_abs_reach_lift_delta",
+                            "action_delta_method": "sonic_action_chunk_sidecar_upper_body_fk_joint_deltas",
+                            "sidecar_kinematic_chain_fk_executed": True,
                             "urdf_fk_solver_executed": False,
                             "full_g1_urdf_fk_executed": False,
                             "official_groot_wholebodycontrol_sim2sim_executed": False,
@@ -2421,8 +2504,10 @@ def _materialize_isaac_geometry_policy_action_projected_skeleton_trace(
                             "official_groot_wholebodycontrol_sim2sim_used": False,
                             "uses_isaac_seed_arm_link_geometry": True,
                             "uses_isaac_sidecar_link_landmarks_not_hand_drawn_screen_axes": True,
+                            "sidecar_kinematic_chain_fk_solver_used": True,
                             "full_g1_urdf_fk_solver_used": False,
-                            "sonic_action_delta_is_heuristic_reach_lift_not_official_wbc": True,
+                            "sonic_action_delta_is_heuristic_reach_lift_not_official_wbc": False,
+                            "sonic_action_delta_is_heuristic_joint_delta_not_official_wbc": True,
                             "dynamic_scene_coordinates_from_artifact_not_source_code": True,
                             "simulated_state_not_physical_robot_sensor_evidence": True,
                             "not_task_success_proof": True,

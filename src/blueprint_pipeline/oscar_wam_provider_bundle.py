@@ -299,8 +299,10 @@ def _projected_skeleton_trace_claim_boundary(
         "blueprint_simulator_only_isaac_action_projection_bridge_used": False,
         "simulator_only_mujoco_action_trace_bridge_used": False,
         "uses_isaac_sidecar_link_landmarks_not_hand_drawn_screen_axes": False,
+        "sidecar_kinematic_chain_fk_solver_used": False,
         "full_g1_urdf_fk_solver_used": False,
         "sonic_action_delta_is_heuristic_reach_lift_not_official_wbc": False,
+        "sonic_action_delta_is_heuristic_joint_delta_not_official_wbc": False,
         "simulated_state_not_physical_robot_sensor_evidence": False,
     }
     for row in rows:
@@ -2240,6 +2242,9 @@ def _oscar_input_contract_diagnostic(
             ),
             "full_g1_urdf_fk_solver_used": bool(
                 projected_trace_claim_boundary.get("full_g1_urdf_fk_solver_used")
+            ),
+            "sidecar_kinematic_chain_fk_solver_used": bool(
+                projected_trace_claim_boundary.get("sidecar_kinematic_chain_fk_solver_used")
             ),
             "policy_action_bridge_safe_for_sim_ranking": projected_trace_policy_action_bridge_safe,
         },
