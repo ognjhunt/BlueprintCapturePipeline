@@ -200,6 +200,7 @@ blueprint-run-openvla-policy-provider-smoke = "blueprint_pipeline.openvla_policy
 blueprint-label-wam-generated-video-gemini = "blueprint_pipeline.wam_generated_video_success_label_gemini:main"
 blueprint-label-wam-episode-consistency-gemini = "blueprint_pipeline.wam_episode_consistency_label_gemini:main"
 blueprint-label-wam-episode-consistency-openai = "blueprint_pipeline.wam_episode_consistency_label_openai:main"
+blueprint-label-wam-episode-consistency-local = "blueprint_pipeline.wam_episode_consistency_label_local:main"
 blueprint-bootstrap-wam-model-runtime = "blueprint_pipeline.wam_model_runtime_bootstrap:main"
 blueprint-run-g1-site-3dgs-mujoco-preview = "blueprint_pipeline.g1_site_3dgs_mujoco_preview:main"
 blueprint-run-isaac-g1-site-3dgs-realistic-eval = "blueprint_pipeline.isaac_g1_site_3dgs_realistic_eval:main"

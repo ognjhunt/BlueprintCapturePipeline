@@ -51,8 +51,11 @@ def test_openai_wam_episode_consistency_blocks_without_gate_or_key(
 ) -> None:
     monkeypatch.delenv(consistency_labeler.GATE_ENV, raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
-    monkeypatch.delenv("BLUEPRINT_OPENAI_API_KEY_FILE", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY_FILE", str(tmp_path / "missing-openai-key"))
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENAI_API_KEY_FILE",
+        str(tmp_path / "missing-blueprint-openai-key"),
+    )
 
     result = consistency_labeler.build_openai_wam_episode_consistency_labels(
         input_path=_request(tmp_path),
