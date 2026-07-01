@@ -4,7 +4,7 @@ import json
 import sys
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import pytest
@@ -150,7 +150,22 @@ def _write_dark_conditioning_mp4(path: Path) -> None:
     writer.release()
 
 
-def _write_projected_skeleton_trace(path: Path) -> None:
+SCENE_FAITHFUL_ISAAC_POLICY_ACTION_TRACE_CLAIM = {
+    "policy_derived_action_conditioning": True,
+    "official_wbc_or_sim_bridge_used": False,
+    "scene_faithful_isaac_policy_action_projection_bridge_used": True,
+    "blueprint_simulator_only_isaac_action_projection_bridge_used": True,
+    "uses_isaac_sidecar_link_landmarks_not_hand_drawn_screen_axes": True,
+    "full_g1_urdf_fk_solver_used": False,
+    "sonic_action_delta_is_heuristic_reach_lift_not_official_wbc": True,
+}
+
+
+def _write_projected_skeleton_trace(
+    path: Path,
+    *,
+    claim_boundary: Mapping[str, Any] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
         {
@@ -242,6 +257,9 @@ def _write_projected_skeleton_trace(path: Path) -> None:
             ],
         },
     ]
+    if claim_boundary is not None:
+        for row in rows:
+            row["claim_boundary"] = dict(claim_boundary)
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
 
@@ -1524,7 +1542,10 @@ def test_wam_generation_step_input_can_force_oscar_proxy_with_rgb_context(
     source_frame = tmp_path / "policy_observation.jpg"
     _write_review_png(source_frame)
     projected_trace = tmp_path / "policy_action_projected_skeleton_trace.jsonl"
-    _write_projected_skeleton_trace(projected_trace)
+    _write_projected_skeleton_trace(
+        projected_trace,
+        claim_boundary=SCENE_FAITHFUL_ISAAC_POLICY_ACTION_TRACE_CLAIM,
+    )
     step_input = tmp_path / "wam_generation_step_0001_input.json"
     step_input.write_text(
         json.dumps(
@@ -1597,7 +1618,10 @@ def test_wam_generation_step_input_can_render_oscar_projected_gripper_axes(
     source_frame = tmp_path / "policy_observation.jpg"
     _write_review_png(source_frame)
     projected_trace = tmp_path / "policy_action_projected_skeleton_trace.jsonl"
-    _write_projected_skeleton_trace(projected_trace)
+    _write_projected_skeleton_trace(
+        projected_trace,
+        claim_boundary=SCENE_FAITHFUL_ISAAC_POLICY_ACTION_TRACE_CLAIM,
+    )
     step_input = tmp_path / "wam_generation_step_0001_input.json"
     step_input.write_text(
         json.dumps(
@@ -1679,7 +1703,10 @@ def test_wam_generation_step_input_accepts_policy_action_projected_skeleton_trac
     source_frame = tmp_path / "policy_observation.jpg"
     _write_review_png(source_frame)
     projected_trace = tmp_path / "policy_action_projected_skeleton_trace.jsonl"
-    _write_projected_skeleton_trace(projected_trace)
+    _write_projected_skeleton_trace(
+        projected_trace,
+        claim_boundary=SCENE_FAITHFUL_ISAAC_POLICY_ACTION_TRACE_CLAIM,
+    )
     step_input = tmp_path / "wam_generation_step_0001_input.json"
     step_input.write_text(
         json.dumps(
@@ -1733,6 +1760,12 @@ def test_wam_generation_step_input_accepts_policy_action_projected_skeleton_trac
     )
     assert input_package["source_action"]["action_chunk_value_count"] == 2
     assert input_package["claim_boundary"]["policy_action_conditioning_proxy_video_used"] is False
+    diagnostic = runtime_manifest["oscar_input_contract_diagnostic"]
+    projected = diagnostic["projected_skeleton_trace"]
+    assert projected["official_wbc_or_sim_bridge_used"] is False
+    assert projected["scene_faithful_isaac_policy_action_projection_bridge_used"] is True
+    assert projected["policy_action_bridge_safe_for_sim_ranking"] is True
+    assert projected["full_g1_urdf_fk_solver_used"] is False
 
 
 def test_wam_generation_step_blocks_sparse_projected_skeleton_conditioning(
@@ -1843,7 +1876,10 @@ def test_wam_generation_step_input_packages_real_temporal_rgb_context(
     cv2.circle(frame, (48, 18), 9, (40, 230, 180), -1)
     assert cv2.imwrite(str(next_frame), frame)
     projected_trace = tmp_path / "policy_action_projected_skeleton_trace.jsonl"
-    _write_projected_skeleton_trace(projected_trace)
+    _write_projected_skeleton_trace(
+        projected_trace,
+        claim_boundary=SCENE_FAITHFUL_ISAAC_POLICY_ACTION_TRACE_CLAIM,
+    )
     step_input = tmp_path / "wam_generation_step_0002_input.json"
     step_input.write_text(
         json.dumps(

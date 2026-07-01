@@ -2064,10 +2064,16 @@ def _policy_derived_projected_skeleton_trace(path: Path) -> bool:
 
 def _ranking_safe_policy_projected_skeleton_trace(path: Path) -> bool:
     claim_boundary = _projected_skeleton_trace_claim_boundary(path)
+    scene_faithful_bridge_used = bool(
+        claim_boundary.get("scene_faithful_isaac_policy_action_projection_bridge_used")
+        or claim_boundary.get("blueprint_simulator_only_isaac_action_projection_bridge_used")
+        or claim_boundary.get("simulator_only_mujoco_action_trace_bridge_used")
+        or claim_boundary.get("official_wbc_or_sim_bridge_used")
+    )
     return bool(
         _policy_derived_projected_skeleton_trace(path)
         and not claim_boundary.get("nominal_kinematic_projection_without_scene_or_wbc_bridge")
-        and claim_boundary.get("official_wbc_or_sim_bridge_used") is not False
+        and scene_faithful_bridge_used
     )
 
 
@@ -2389,6 +2395,14 @@ def _materialize_isaac_geometry_policy_action_projected_skeleton_trace(
                         "landmarks": landmarks,
                         "segments": segments,
                         "projected_landmark_count": projected_count,
+                        "kinematic_chain": {
+                            "source": "isaac_manipulation_pov_geometry_arm_link_points",
+                            "projection_method": "isaac_camera_sidecar_pinhole_projection",
+                            "action_delta_method": "sonic_action_chunk_mean_abs_reach_lift_delta",
+                            "urdf_fk_solver_executed": False,
+                            "full_g1_urdf_fk_executed": False,
+                            "official_groot_wholebodycontrol_sim2sim_executed": False,
+                        },
                         "claim_boundary": {
                             "policy_derived_action_conditioning": True,
                             "not_a_learned_robot_policy_action": False,
@@ -2399,10 +2413,13 @@ def _materialize_isaac_geometry_policy_action_projected_skeleton_trace(
                             "projected_skeleton_trace_derived_from_seed_render_geometry": True,
                             "temporal_rows_are_target_conditioning_from_resolved_affordance_projection": False,
                             "nominal_kinematic_projection_without_scene_or_wbc_bridge": False,
-                            "official_wbc_or_sim_bridge_used": True,
+                            "official_wbc_or_sim_bridge_used": False,
                             "blueprint_simulator_only_isaac_action_projection_bridge_used": True,
                             "official_groot_wholebodycontrol_sim2sim_used": False,
                             "uses_isaac_seed_arm_link_geometry": True,
+                            "uses_isaac_sidecar_link_landmarks_not_hand_drawn_screen_axes": True,
+                            "full_g1_urdf_fk_solver_used": False,
+                            "sonic_action_delta_is_heuristic_reach_lift_not_official_wbc": True,
                             "dynamic_scene_coordinates_from_artifact_not_source_code": True,
                             "simulated_state_not_physical_robot_sensor_evidence": True,
                             "not_task_success_proof": True,

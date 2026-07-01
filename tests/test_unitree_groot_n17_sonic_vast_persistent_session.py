@@ -220,6 +220,8 @@ def test_persistent_runner_keeps_policy_derived_skeleton_trace(
             {
                 "claim_boundary": {
                     "policy_derived_action_conditioning": True,
+                    "scene_faithful_isaac_policy_action_projection_bridge_used": True,
+                    "blueprint_simulator_only_isaac_action_projection_bridge_used": True,
                     "simulated_state_not_physical_robot_sensor_evidence": True,
                 }
             }
@@ -260,6 +262,8 @@ def test_persistent_runner_accepts_policy_action_projected_skeleton_trace(
             {
                 "claim_boundary": {
                     "policy_derived_action_conditioning": True,
+                    "scene_faithful_isaac_policy_action_projection_bridge_used": True,
+                    "blueprint_simulator_only_isaac_action_projection_bridge_used": True,
                     "simulated_state_not_physical_robot_sensor_evidence": True,
                 },
                 "projected_landmark_count": 1,
@@ -427,11 +431,28 @@ def test_persistent_runner_prefers_isaac_geometry_policy_action_trace_for_sim_ra
         rows[0]["claim_boundary"]["dynamic_scene_coordinates_from_artifact_not_source_code"]
         is True
     )
-    assert rows[0]["claim_boundary"]["official_wbc_or_sim_bridge_used"] is True
+    assert rows[0]["claim_boundary"]["official_wbc_or_sim_bridge_used"] is False
     assert (
         rows[0]["claim_boundary"]["scene_faithful_isaac_policy_action_projection_bridge_used"]
         is True
     )
+    assert (
+        rows[0]["claim_boundary"]["uses_isaac_sidecar_link_landmarks_not_hand_drawn_screen_axes"]
+        is True
+    )
+    assert rows[0]["claim_boundary"]["full_g1_urdf_fk_solver_used"] is False
+    assert (
+        rows[0]["claim_boundary"]["sonic_action_delta_is_heuristic_reach_lift_not_official_wbc"]
+        is True
+    )
+    assert rows[0]["kinematic_chain"] == {
+        "source": "isaac_manipulation_pov_geometry_arm_link_points",
+        "projection_method": "isaac_camera_sidecar_pinhole_projection",
+        "action_delta_method": "sonic_action_chunk_mean_abs_reach_lift_delta",
+        "urdf_fk_solver_executed": False,
+        "full_g1_urdf_fk_executed": False,
+        "official_groot_wholebodycontrol_sim2sim_executed": False,
+    }
     assert (
         contract["claim_boundary"][
             "geometry_anchored_policy_action_projection_is_wam_conditioning_not_ranking_proof"
@@ -2430,7 +2451,8 @@ def test_postprocess_preserves_scene_faithful_isaac_bridge_input_contract(
                             "projected_skeleton_trace": {
                                 "used_for_conditioning": True,
                                 "policy_derived_action_conditioning": True,
-                                "official_wbc_or_sim_bridge_used": True,
+                                "official_wbc_or_sim_bridge_used": False,
+                                "blueprint_simulator_only_isaac_action_projection_bridge_used": True,
                                 "scene_faithful_isaac_policy_action_projection_bridge_used": True,
                                 "policy_action_bridge_safe_for_sim_ranking": True,
                             },

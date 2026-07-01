@@ -297,6 +297,10 @@ def _projected_skeleton_trace_claim_boundary(
         "isaac_policy_action_projection_bridge_used": False,
         "scene_faithful_isaac_policy_action_projection_bridge_used": False,
         "blueprint_simulator_only_isaac_action_projection_bridge_used": False,
+        "simulator_only_mujoco_action_trace_bridge_used": False,
+        "uses_isaac_sidecar_link_landmarks_not_hand_drawn_screen_axes": False,
+        "full_g1_urdf_fk_solver_used": False,
+        "sonic_action_delta_is_heuristic_reach_lift_not_official_wbc": False,
         "simulated_state_not_physical_robot_sensor_evidence": False,
     }
     for row in rows:
@@ -2000,10 +2004,16 @@ def _oscar_input_contract_diagnostic(
         blockers.append("oscar_contract_first_frame_too_dark")
     projected_used = bool(projected_trace.get("used_for_conditioning"))
     projected_trace_claim_boundary = _mapping(projected_trace.get("claim_boundary"))
+    projected_trace_scene_bridge_used = bool(
+        projected_trace_claim_boundary.get("scene_faithful_isaac_policy_action_projection_bridge_used")
+        or projected_trace_claim_boundary.get("blueprint_simulator_only_isaac_action_projection_bridge_used")
+        or projected_trace_claim_boundary.get("simulator_only_mujoco_action_trace_bridge_used")
+        or projected_trace_claim_boundary.get("official_wbc_or_sim_bridge_used")
+    )
     projected_trace_policy_action_bridge_safe = bool(
         projected_used
         and projected_trace_claim_boundary.get("policy_derived_action_conditioning")
-        and projected_trace_claim_boundary.get("official_wbc_or_sim_bridge_used") is True
+        and projected_trace_scene_bridge_used
         and not projected_trace_claim_boundary.get("not_a_learned_robot_policy_action")
         and not projected_trace_claim_boundary.get(
             "temporal_rows_are_target_conditioning_from_resolved_affordance_projection"
@@ -2217,6 +2227,19 @@ def _oscar_input_contract_diagnostic(
                 projected_trace_claim_boundary.get(
                     "scene_faithful_isaac_policy_action_projection_bridge_used"
                 )
+            ),
+            "blueprint_simulator_only_isaac_action_projection_bridge_used": bool(
+                projected_trace_claim_boundary.get(
+                    "blueprint_simulator_only_isaac_action_projection_bridge_used"
+                )
+            ),
+            "simulator_only_mujoco_action_trace_bridge_used": bool(
+                projected_trace_claim_boundary.get(
+                    "simulator_only_mujoco_action_trace_bridge_used"
+                )
+            ),
+            "full_g1_urdf_fk_solver_used": bool(
+                projected_trace_claim_boundary.get("full_g1_urdf_fk_solver_used")
             ),
             "policy_action_bridge_safe_for_sim_ranking": projected_trace_policy_action_bridge_safe,
         },
