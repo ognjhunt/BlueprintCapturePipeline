@@ -59,6 +59,39 @@ def test_embedded_persistent_session_runner_carries_review_quality_horizon() -> 
     assert namespace["REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES"] == 81
 
 
+def test_wam_visual_profile_defaults_to_robot_team_review_quality(monkeypatch) -> None:
+    for key in session.RUNPOD_WAM_CARRIER_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    settings = session._current_wam_visual_profile_settings()
+
+    assert settings["visual_profile"] == "review_quality"
+    assert settings["num_steps"] == 35
+    assert settings["guidance"] == 6.0
+    assert settings["num_frames"] == 81
+    assert settings["height"] == 480
+    assert settings["width"] == 640
+    assert settings["fps"] == 15.0
+    assert settings["smoke_only"] is False
+
+
+def test_explicit_smoke_wam_visual_profile_keeps_low_cost_smoke_defaults(monkeypatch) -> None:
+    for key in session.RUNPOD_WAM_CARRIER_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "smoke")
+
+    settings = session._current_wam_visual_profile_settings()
+
+    assert settings["visual_profile"] == "smoke"
+    assert settings["num_steps"] == 2
+    assert settings["guidance"] == 3.5
+    assert settings["num_frames"] == 9
+    assert settings["height"] == 128
+    assert settings["width"] == 128
+    assert settings["fps"] == 4.0
+    assert settings["smoke_only"] is True
+
+
 def test_persistent_runner_future_frame_selector_uses_copied_runtime_module() -> None:
     assert "from blueprint_pipeline.wam_generated_video_review import" in (
         session.PERSISTENT_SESSION_RUNNER
@@ -1184,10 +1217,12 @@ def _python_heredoc_chunks(script: str) -> list[str]:
 
 def test_persistent_session_bundle_uses_proven_policy_server_rewrite(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     frame = tmp_path / "frame.jpg"
     frame.write_bytes(b"jpg")
     observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "smoke")
 
     manifest = session.build_persistent_session_provider_bundle(
         job_dir=tmp_path / "bundle",
@@ -1542,6 +1577,7 @@ def test_run_persistent_session_imports_reused_worker_output(
     frame = tmp_path / "frame.jpg"
     frame.write_bytes(b"jpg")
     observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "smoke")
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
     monkeypatch.setenv(
@@ -2052,7 +2088,9 @@ def test_postprocess_degraded_future_frames_fail_materialization_quality(
 
 def test_postprocess_high_risk_wam_input_contract_fails_visual_quality(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "smoke")
     job = tmp_path / "job"
     source_frame = _write_reviewable_frame(
         job / "provider_bundle" / "provider_runtime" / "initial_policy_frame.png"
@@ -3364,12 +3402,11 @@ def test_runpod_finalizer_classifies_blocked_visual_gate_after_wam_inference(
     assert output["claim_boundary"]["provider_completed_but_visual_quality_failed"] is True
 
 
-def test_runpod_persistent_session_defaults_to_wam_carrier_and_wait_floor(
+def test_runpod_persistent_session_defaults_to_review_quality_wam_carrier_and_wait_floor(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    frame = tmp_path / "frame.jpg"
-    frame.write_bytes(b"jpg")
+    frame = _write_reviewable_frame(tmp_path / "frame.jpg")
     observation_path = _policy_observation(tmp_path / "observation.json", frame)
     monkeypatch.delenv(
         "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_PROVIDER_BUNDLE_KIND", raising=False
@@ -3488,13 +3525,13 @@ def test_runpod_persistent_session_defaults_to_wam_carrier_and_wait_floor(
     assert captured["provider_bundle_kind"] == "wam"
     assert captured["image_name"] == "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"
     assert captured["wam_carrier_enabled"] == "true"
-    assert captured["wam_visual_profile"] == "smoke"
-    assert captured["wam_num_steps"] == "2"
-    assert captured["wam_guidance"] == "3.5"
-    assert captured["wam_num_frames"] == "9"
-    assert captured["wam_height"] == "128"
-    assert captured["wam_width"] == "128"
-    assert captured["wam_fps"] == "4"
+    assert captured["wam_visual_profile"] == "review_quality"
+    assert captured["wam_num_steps"] == "35"
+    assert captured["wam_guidance"] == "6.0"
+    assert captured["wam_num_frames"] == "81"
+    assert captured["wam_height"] == "480"
+    assert captured["wam_width"] == "640"
+    assert captured["wam_fps"] == "15"
     assert captured["wam_checkpoint_timeout"] == "1200"
     assert captured["groot_bootstrap_mode"] == "system_python_minimal"
     assert captured["groot_sparse_checkout"] == "true"
@@ -4925,6 +4962,7 @@ def test_runpod_persistent_session_clamps_tiny_oscar_frame_count(
     frame = tmp_path / "frame.jpg"
     frame.write_bytes(b"jpg")
     observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "smoke")
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_NUM_FRAMES", "3")
     captured: dict[str, object] = {}
 
@@ -4999,6 +5037,7 @@ def test_runpod_persistent_session_launches_full_loop_without_override(
     frame = tmp_path / "frame.jpg"
     frame.write_bytes(b"jpg")
     observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "smoke")
     monkeypatch.delenv(session.RUNPOD_FULL_LOOP_OVERRIDE_ENV, raising=False)
     captured: dict[str, object] = {}
 

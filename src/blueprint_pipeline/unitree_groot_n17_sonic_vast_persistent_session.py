@@ -106,6 +106,7 @@ PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV = (
 ALLOW_DIRTY_PAID_LAUNCH_ENV = "BLUEPRINT_ALLOW_DIRTY_PAID_LAUNCH"
 RUNPOD_FULL_LOOP_OVERRIDE_ENV = "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
 OSCAR_WAM_VISUAL_PROFILE_ENV = "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE"
+DEFAULT_WAM_VISUAL_PROFILE = "review_quality"
 PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_ENV = "BLUEPRINT_ALLOW_PERSISTENT_WAM_LONG_REVIEW_ROLLOUT"
 PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST_ENV = (
     "BLUEPRINT_PERSISTENT_WAM_SHORT_VISUAL_SANITY_MANIFEST"
@@ -189,7 +190,7 @@ RUNPOD_WAM_CARRIER_REVIEW_QUALITY_DEFAULT_ENV = {
     "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT": "true",
     "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS": "2400",
 }
-RUNPOD_WAM_CARRIER_DEFAULT_ENV = RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV
+RUNPOD_WAM_CARRIER_DEFAULT_ENV = RUNPOD_WAM_CARRIER_REVIEW_QUALITY_DEFAULT_ENV
 RUNPOD_WAM_CARRIER_ENV_KEYS = tuple(
     sorted(
         set(RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV)
@@ -233,7 +234,7 @@ def _int_env(name: str, default: int) -> int:
 
 def _normalized_wam_visual_profile(value: str | None = None) -> str:
     profile = _string(value if value is not None else os.getenv(OSCAR_WAM_VISUAL_PROFILE_ENV))
-    return profile if profile in {"smoke", "review_quality"} else "smoke"
+    return profile if profile in {"smoke", "review_quality"} else DEFAULT_WAM_VISUAL_PROFILE
 
 
 def _runpod_wam_carrier_defaults_for_profile(profile: str) -> dict[str, str]:
@@ -9125,7 +9126,7 @@ def run_persistent_session_runpod(
     )
     if runpod_provider_bundle_kind == "wam":
         os.environ["BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC"] = "true"
-        os.environ.setdefault(OSCAR_WAM_VISUAL_PROFILE_ENV, "smoke")
+        os.environ.setdefault(OSCAR_WAM_VISUAL_PROFILE_ENV, DEFAULT_WAM_VISUAL_PROFILE)
         visual_profile = _normalized_wam_visual_profile()
         wam_carrier_defaults = _runpod_wam_carrier_defaults_for_profile(visual_profile)
         for key, value in wam_carrier_defaults.items():

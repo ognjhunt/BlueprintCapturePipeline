@@ -651,6 +651,19 @@ inventing a root cause.
 The report's boundary statement is explicit: it is a sim-ranking handoff, and
 IRL validation artifacts are outside its pass/fail state.
 
+### Default WAM Review Media Profile
+
+Robot-team data collection and generated WAM review media use different
+defaults. Full capture/data-collection episodes may run longer, commonly tens
+of seconds, and should follow the robot or policy FPS exposed by that capture
+stack. The OSCAR/WAM generated rollout default is intentionally a shorter
+review-quality chunk: `visual_profile=review_quality`, 81 generated frames,
+15 FPS, 640x480, 35 WAM steps, and guidance 6.0. This keeps the generated
+clip near the short OSCAR robot training-clip regime while giving reviewers
+enough motion to inspect visual stability. The low-cost `smoke` profile remains
+available only by explicitly setting `BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE=smoke`;
+it is not the default for robot-team review or ranking-support runs.
+
 Generated next-observation media cannot unlock a review-grade winner or
 review-grade success/failure label from booleans alone. The scorecard gate must
 carry a passed `persistent_wam_short_visual_sanity_manifest.json` or equivalent
