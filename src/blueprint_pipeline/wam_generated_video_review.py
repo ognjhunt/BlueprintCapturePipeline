@@ -1706,8 +1706,12 @@ def _generated_frame_quality_blockers(frame_stats: Sequence[Mapping[str, Any]]) 
         edge_ratio = drift.get("edge_density_ratio_to_source")
         entropy_delta = drift.get("entropy_delta_from_source")
         mean_delta = drift.get("mean_luma_delta_from_source")
-        if edge_ratio is not None and float(edge_ratio) < 0.25:
-            blockers.append("wam_generated_frame_edge_structure_drift")
+        if edge_ratio is not None:
+            parsed_edge_ratio = float(edge_ratio)
+            if parsed_edge_ratio < 0.25:
+                blockers.append("wam_generated_frame_edge_structure_drift")
+            if parsed_edge_ratio > 2.0:
+                blockers.append("wam_generated_frame_edge_structure_explosion")
         if entropy_delta is not None and float(entropy_delta) < -1.5:
             blockers.append("wam_generated_frame_entropy_drift")
         if mean_delta is not None and float(mean_delta) < -35.0:

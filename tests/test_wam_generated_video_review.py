@@ -775,3 +775,34 @@ def test_generated_frame_drift_marks_visual_success_false(tmp_path: Path) -> Non
         ).splitlines()
     ]
     assert len(rows) == 2
+
+
+def test_generated_frame_edge_explosion_marks_visual_success_false(tmp_path: Path) -> None:
+    source = tmp_path / "source.jpg"
+    source_image = Image.new("RGB", (320, 256), (128, 128, 128))
+    source_draw = ImageDraw.Draw(source_image)
+    source_draw.rectangle((120, 92, 200, 164), outline=(230, 230, 230), width=3)
+    source_image.save(source)
+    generated = tmp_path / "generated-texture-explosion.jpg"
+    rng = np.random.default_rng(7)
+    Image.fromarray(
+        rng.integers(0, 256, size=(256, 320, 3), dtype=np.uint8),
+        mode="RGB",
+    ).save(generated)
+
+    report = write_persistent_wam_visual_quality_artifacts(
+        job_dir=tmp_path / "job",
+        generated_at="now",
+        source_frame_path=source,
+        generated_frame_paths=[generated],
+        review_video_path=tmp_path / "review.mp4",
+        video_status=_video_status(width=640, height=480, fps="15/1", frames=24),
+        visual_profile="review_quality",
+        requested_settings={"width": 640, "height": 480, "fps": 15, "num_frames": 24},
+        provider_status="completed",
+        live_wam_generation_success_count=1,
+        learned_wam_model_success_count=1,
+    )
+
+    assert report["visual_success"] is False
+    assert "wam_generated_frame_edge_structure_explosion" in report["blockers"]
