@@ -332,6 +332,43 @@ expected at `/models/sam3/sam3.pt` through a mounted model directory or a
 provider-side secret-gated fetch. This prevents per-run Python dependency
 reinstalls while keeping model weights and credentials explicit.
 
+SAM3 has two supported real-provider routes. The Ultralytics route requires a
+local or explicitly resolved `sam3.pt`; unlike normal YOLO assets, public
+Ultralytics SAM3 weights are not auto-downloaded from the default asset bucket.
+Use this route when the provider image mounts approved weights:
+
+```bash
+SAM3_WEIGHTS_PATH=/models/sam3/sam3.pt \
+python -m blueprint_pipeline.wam_real_provider_validation_probe run \
+  --generated-frame <wam-generated-frame.jpg> \
+  --target-prompt "closed refrigerator door"
+```
+
+The official Hugging Face/Transformers route uses `facebook/sam3` and should be
+used when approved HF model access and credentials are available:
+
+```bash
+HF_TOKEN_FILE=/path/to/hf_token \
+BLUEPRINT_WAM_SAM3_PROVIDER_KIND=transformers \
+BLUEPRINT_WAM_ALLOW_SAM3_TRANSFORMERS_PROVIDER=true \
+BLUEPRINT_WAM_SAM3_HF_MODEL_ID=facebook/sam3 \
+python -m blueprint_pipeline.wam_real_provider_validation_probe run \
+  --generated-frame <wam-generated-frame.jpg> \
+  --no-require-pose \
+  --target-prompt "closed refrigerator door"
+```
+
+These routes are intentionally disabled by default. If `SAM3_WEIGHTS_PATH` or
+`BLUEPRINT_SAM3_WEIGHTS_PATH` is set, that explicit path remains authoritative
+and must exist. If the Transformers route is selected, the manifest records the
+HF model id, provider kind, HF token env presence, runtime package, and any
+gated-access/provider error. Generated SAM3 masks remain derived support
+artifacts, not capture truth.
+
+Use `--no-require-pose` when the proof target is specifically SAM3 plus depth
+sidecars. Without that flag, the probe preserves the stricter default triplet
+contract and requires SAM3, depth, and pose providers to complete.
+
 For a one-command proof probe of the real-provider lane, use:
 
 ```bash

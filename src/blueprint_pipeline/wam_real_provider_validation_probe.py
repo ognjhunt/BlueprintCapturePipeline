@@ -25,6 +25,13 @@ PROOF_MANIFEST_SCHEMA_VERSION = "wam_real_provider_validation_proof_manifest.v1"
 DEFAULT_JOB_PREFIX = "wam_real_provider_validation_probe"
 SAM3_WEIGHTS_ENV = "SAM3_WEIGHTS_PATH"
 ALT_SAM3_WEIGHTS_ENV = "BLUEPRINT_SAM3_WEIGHTS_PATH"
+SAM3_AUTODOWNLOAD_ENV = "BLUEPRINT_WAM_ALLOW_SAM3_ULTRALYTICS_AUTODOWNLOAD"
+SAM3_MODEL_ENV = "BLUEPRINT_WAM_SAM3_MODEL"
+DEFAULT_SAM3_MODEL_REF = "sam3.pt"
+SAM3_PROVIDER_KIND_ENV = "BLUEPRINT_WAM_SAM3_PROVIDER_KIND"
+SAM3_TRANSFORMERS_ENV = "BLUEPRINT_WAM_ALLOW_SAM3_TRANSFORMERS_PROVIDER"
+SAM3_HF_MODEL_ENV = "BLUEPRINT_WAM_SAM3_HF_MODEL_ID"
+DEFAULT_SAM3_HF_MODEL_ID = "facebook/sam3"
 DEPTH_COMMAND_ENV = "BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND"
 AUTO_DEPTH_ENV = "BLUEPRINT_ALLOW_WAM_AUTO_DEPTH_PROVIDER"
 DEPTH_PROVIDER_KIND_ENV = "BLUEPRINT_WAM_DEPTH_PROVIDER_KIND"
@@ -44,6 +51,7 @@ AUTO_POSE_ENV = "BLUEPRINT_ALLOW_WAM_AUTO_POSE_PROVIDER"
 REQUIRE_POSE_ENV = "BLUEPRINT_WAM_REQUIRE_POSE_PROVIDER"
 DEFAULT_POSE_MODEL_PATH = "yolo11n-pose.pt"
 HF_TOKEN_ENVS = ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN")
+HF_TOKEN_FILE_ENVS = ("HF_TOKEN_FILE", "HUGGINGFACE_HUB_TOKEN_FILE", "HUGGING_FACE_HUB_TOKEN_FILE")
 REAL_VALIDATION_FLAG_KEYS = (
     "capture_backed",
     "capture_truth",
@@ -313,6 +321,33 @@ def _redacted_env_presence(names: Sequence[str]) -> dict[str, bool]:
     return {name: _env_present(name) for name in names}
 
 
+def _redacted_file_env_presence(names: Sequence[str]) -> dict[str, bool]:
+    presence: dict[str, bool] = {}
+    for name in names:
+        raw = _string(os.environ.get(name))
+        presence[name] = bool(raw and Path(raw).expanduser().is_file())
+    return presence
+
+
+def _hf_token_value() -> str | None:
+    for name in HF_TOKEN_ENVS:
+        token = _string(os.environ.get(name))
+        if token:
+            return token
+    for name in HF_TOKEN_FILE_ENVS:
+        raw = _string(os.environ.get(name))
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        try:
+            token = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if token:
+            return token
+    return None
+
+
 def _truthy(value: Any) -> bool:
     return _string(value).lower() in {"1", "true", "yes", "y", "on", "allow", "enabled"}
 
@@ -359,6 +394,16 @@ def _resolve_sam3_weights() -> Path | None:
     return None
 
 
+def _resolve_sam3_model_ref() -> tuple[str | None, Path | None, str]:
+    weights = _resolve_sam3_weights()
+    if weights is not None:
+        return str(weights), weights, "weights_path"
+    if _truthy(os.environ.get(SAM3_AUTODOWNLOAD_ENV)):
+        model_ref = _string(os.environ.get(SAM3_MODEL_ENV)) or DEFAULT_SAM3_MODEL_REF
+        return model_ref, None, "ultralytics_autodownload"
+    return None, None, "missing"
+
+
 def _target_prompts(request: Mapping[str, Any]) -> list[str]:
     grounding = _mapping(request.get("eval_ready_task_grounding"))
     task = _mapping(grounding.get("task"))
@@ -398,10 +443,160 @@ def _bbox_from_result(result: Any) -> tuple[list[float] | None, float | None]:
         return None, None
 
 
-def _run_sam3_provider(request: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    weights = _resolve_sam3_weights()
+def _numeric_rows(value: Any) -> list[Any]:
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().numpy()
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return _sequence(value)
+
+
+def _numeric_scalar(value: Any, default: float) -> float:
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().numpy()
+    if hasattr(value, "item"):
+        try:
+            return float(value.item())
+        except Exception:
+            return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _run_transformers_sam3_provider(
+    request: Mapping[str, Any],
+    job_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    model_id = _string(os.environ.get(SAM3_HF_MODEL_ENV)) or DEFAULT_SAM3_HF_MODEL_ID
     confidence_threshold = max(0.0, min(1.0, _float_env(SAM3_CONFIDENCE_ENV, 0.05)))
     device_name = _select_torch_device(SAM3_DEVICE_ENV)
+    status = {
+        "provider": "sam3",
+        "kind": "transformers_sam3",
+        "ran": False,
+        "device": device_name,
+        "device_env": SAM3_DEVICE_ENV,
+        "confidence_threshold": confidence_threshold,
+        "confidence_env": SAM3_CONFIDENCE_ENV,
+        "provider_kind_env": SAM3_PROVIDER_KIND_ENV,
+        "provider_kind": "transformers",
+        "transformers_env": SAM3_TRANSFORMERS_ENV,
+        "transformers_provider_enabled": _truthy(os.environ.get(SAM3_TRANSFORMERS_ENV)),
+        "model_id_env": SAM3_HF_MODEL_ENV,
+        "model_id": model_id,
+        "hf_token_present": bool(_hf_token_value()),
+        "module_transformers_available": _module_available("transformers"),
+        "runtime_package": None,
+        "runtime_class": None,
+        "model_family": "sam3",
+        "blockers": [],
+    }
+    if not status["transformers_provider_enabled"]:
+        status["blockers"].append("sam3_transformers_provider_not_enabled")
+    if not status["module_transformers_available"]:
+        status["blockers"].append("sam3_transformers_package_missing")
+    source_frame = Path(_string(request.get("source_generated_frame_path"))).expanduser()
+    if not source_frame.is_file():
+        status["blockers"].append("source_generated_frame_missing_for_sam3")
+    if status["blockers"]:
+        return [], status
+
+    try:
+        import torch
+        from transformers import Sam3Model, Sam3Processor
+
+        status["runtime_package"] = "transformers"
+        status["runtime_class"] = "Sam3Model/Sam3Processor"
+        image = Image.open(source_frame).convert("RGB")
+        token = _hf_token_value()
+        load_kwargs = {"token": token} if token else {}
+        model = Sam3Model.from_pretrained(model_id, **load_kwargs).to(device_name)
+        processor = Sam3Processor.from_pretrained(model_id, **load_kwargs)
+        objects: list[dict[str, Any]] = []
+        prompts = _target_prompts(request)[:3]
+        for prompt_index, prompt in enumerate(prompts):
+            inputs = processor(images=image, text=prompt, return_tensors="pt")
+            if hasattr(inputs, "to"):
+                inputs = inputs.to(device_name)
+            with torch.no_grad():
+                outputs = model(**inputs)
+            original_sizes = inputs.get("original_sizes") if isinstance(inputs, Mapping) else None
+            target_sizes = original_sizes.tolist() if hasattr(original_sizes, "tolist") else [[image.height, image.width]]
+            results = processor.post_process_instance_segmentation(
+                outputs,
+                threshold=confidence_threshold,
+                mask_threshold=confidence_threshold,
+                target_sizes=target_sizes,
+            )
+            result = _mapping(results[0] if results else {})
+            boxes = _numeric_rows(result.get("boxes"))
+            scores = _numeric_rows(result.get("scores"))
+            masks = _numeric_rows(result.get("masks"))
+            for box_index, box in enumerate(boxes):
+                if not isinstance(box, Sequence) or len(box) < 4:
+                    continue
+                confidence = _numeric_scalar(
+                    scores[box_index] if box_index < len(scores) else None,
+                    0.5,
+                )
+                mask_path = None
+                if box_index < len(masks):
+                    try:
+                        import numpy as np
+
+                        mask_image = Image.new("L", image.size)
+                        mask_rows = masks[box_index]
+                        if hasattr(mask_rows, "detach"):
+                            mask_rows = mask_rows.detach().cpu().numpy()
+                        mask_rows = np.asarray(mask_rows)
+                        mask_image = Image.fromarray(
+                            (255 * (mask_rows > 0)).astype("uint8")
+                        )
+                        mask_path = job_dir / f"sam3_transformers_mask_{prompt_index:02d}_{box_index:04d}.png"
+                        mask_image.save(mask_path)
+                    except Exception:
+                        mask_path = None
+                object_id = f"sam3_transformers_target_{prompt_index:02d}_{box_index:04d}"
+                objects.append(
+                    {
+                        "object_id": object_id,
+                        "track_id": object_id,
+                        "label": prompt,
+                        "bbox": [round(float(item), 3) for item in list(box)[:4]],
+                        "confidence": round(confidence, 4),
+                        "mask_path": str(mask_path) if mask_path else None,
+                        "source": "sam3_transformers_from_generated_pixels",
+                        "source_prompt": prompt,
+                    }
+                )
+    except Exception as exc:
+        status["blockers"].append(f"sam3_provider_run_failed:{type(exc).__name__}")
+        status["error"] = str(exc)[:500]
+        return [], status
+
+    status["ran"] = True
+    status["object_count"] = len(objects)
+    if not objects:
+        status["blockers"].append("sam3_completed_without_target_objects")
+    return objects, status
+
+
+def _run_sam3_provider(
+    request: Mapping[str, Any],
+    job_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    requested_kind = _string(os.environ.get(SAM3_PROVIDER_KIND_ENV)).lower()
+    if requested_kind in {"transformers", "hf", "huggingface"} or (
+        _truthy(os.environ.get(SAM3_TRANSFORMERS_ENV)) and _resolve_sam3_weights() is None
+    ):
+        return _run_transformers_sam3_provider(request, job_dir)
+
+    model_ref, weights, model_ref_source = _resolve_sam3_model_ref()
+    confidence_threshold = max(0.0, min(1.0, _float_env(SAM3_CONFIDENCE_ENV, 0.05)))
+    device_name = _select_torch_device(SAM3_DEVICE_ENV)
+    auto_download_enabled = _truthy(os.environ.get(SAM3_AUTODOWNLOAD_ENV))
     status = {
         "provider": "sam3",
         "kind": "sam3_semantic_segmentation",
@@ -412,7 +607,15 @@ def _run_sam3_provider(request: Mapping[str, Any]) -> tuple[list[dict[str, Any]]
         "confidence_env": SAM3_CONFIDENCE_ENV,
         "weights_path_present": bool(weights),
         "weights_path": str(weights) if weights else None,
-        "hf_token_present": any(_env_present(name) for name in HF_TOKEN_ENVS),
+        "weights_file_exists": bool(weights and weights.is_file()),
+        "model_ref": model_ref,
+        "model_ref_source": model_ref_source,
+        "model_env": SAM3_MODEL_ENV,
+        "provider_kind_env": SAM3_PROVIDER_KIND_ENV,
+        "provider_kind": "ultralytics",
+        "autodownload_env": SAM3_AUTODOWNLOAD_ENV,
+        "autodownload_enabled": auto_download_enabled,
+        "hf_token_present": bool(_hf_token_value()),
         "module_sam3_available": _module_available("sam3"),
         "module_ultralytics_available": _module_available("ultralytics"),
         "runtime_package": None,
@@ -420,9 +623,9 @@ def _run_sam3_provider(request: Mapping[str, Any]) -> tuple[list[dict[str, Any]]
         "model_family": "sam3",
         "blockers": [],
     }
-    if weights is None:
+    if model_ref is None:
         status["blockers"].append("sam3_weights_path_missing")
-    elif not weights.is_file():
+    elif weights is not None and not weights.is_file():
         status["blockers"].append("sam3_weights_file_missing")
     if not status["module_ultralytics_available"] and not status["module_sam3_available"]:
         status["blockers"].append("sam3_runtime_package_missing")
@@ -441,7 +644,7 @@ def _run_sam3_provider(request: Mapping[str, Any]) -> tuple[list[dict[str, Any]]
             "conf": confidence_threshold,
             "task": "segment",
             "mode": "predict",
-            "model": str(weights),
+            "model": str(model_ref),
             "device": device_name,
             "half": False,
             "verbose": False,
@@ -829,7 +1032,7 @@ def run_external_backend_from_env() -> int:
     request = _load_json(request_path)
     blockers: list[str] = []
 
-    objects, sam3_status = _run_sam3_provider(request)
+    objects, sam3_status = _run_sam3_provider(request, job_dir)
     if _env_present(DEPTH_COMMAND_ENV):
         depth_payload, depth_status = _run_command_provider(
             env_name=DEPTH_COMMAND_ENV,
@@ -1102,15 +1305,29 @@ def _validation_status(
 
 def _provider_readiness_snapshot() -> dict[str, Any]:
     sam3_weights = _resolve_sam3_weights()
+    sam3_model_ref, _, sam3_model_ref_source = _resolve_sam3_model_ref()
     pose_model = Path(_string(os.environ.get(POSE_MODEL_ENV))).expanduser()
     return {
         "sam3": {
             "sam3_module_available": _module_available("sam3"),
             "ultralytics_available": _module_available("ultralytics"),
+            "transformers_available": _module_available("transformers"),
             "weights_env_presence": _redacted_env_presence([SAM3_WEIGHTS_ENV, ALT_SAM3_WEIGHTS_ENV]),
             "weights_path_present": bool(sam3_weights),
             "weights_file_exists": bool(sam3_weights and sam3_weights.is_file()),
+            "model_env": SAM3_MODEL_ENV,
+            "model_ref": sam3_model_ref,
+            "model_ref_source": sam3_model_ref_source,
+            "provider_kind_env": SAM3_PROVIDER_KIND_ENV,
+            "provider_kind": _string(os.environ.get(SAM3_PROVIDER_KIND_ENV)) or None,
+            "autodownload_env": SAM3_AUTODOWNLOAD_ENV,
+            "autodownload_enabled": _truthy(os.environ.get(SAM3_AUTODOWNLOAD_ENV)),
+            "transformers_env": SAM3_TRANSFORMERS_ENV,
+            "transformers_provider_enabled": _truthy(os.environ.get(SAM3_TRANSFORMERS_ENV)),
+            "hf_model_env": SAM3_HF_MODEL_ENV,
+            "hf_model_id": _string(os.environ.get(SAM3_HF_MODEL_ENV)) or DEFAULT_SAM3_HF_MODEL_ID,
             "hf_token_env_presence": _redacted_env_presence(HF_TOKEN_ENVS),
+            "hf_token_file_env_presence": _redacted_file_env_presence(HF_TOKEN_FILE_ENVS),
         },
         "depth": {
             "depth_anything_available": _module_available("depth_anything")
@@ -1146,6 +1363,7 @@ def run_probe(
     policy_id: str,
     policy_observation_schema: Mapping[str, Any],
     target_prompts: Sequence[str] | None = None,
+    require_pose: bool = True,
 ) -> dict[str, Any]:
     ensure_dir(output_dir)
     selected_frame = generated_frame_path if generated_frame_path and generated_frame_path.is_file() else None
@@ -1175,7 +1393,7 @@ def run_probe(
     ]
     harness_dir = output_dir / "wam_derived_observation_harness"
     previous_pose_required = os.environ.get(REQUIRE_POSE_ENV)
-    os.environ[REQUIRE_POSE_ENV] = "true"
+    os.environ[REQUIRE_POSE_ENV] = "true" if require_pose else "false"
     try:
         harness_result = run_wam_derived_observation_harness_step(
             output_dir=harness_dir,
@@ -1251,7 +1469,11 @@ def run_probe(
     sam3_completed = _provider_completed(provider_statuses, "sam3")
     depth_completed = _provider_completed(provider_statuses, "depth")
     pose_completed = _provider_completed(provider_statuses, "pose")
+    provider_pair_completed = sam3_completed and depth_completed
     provider_triplet_completed = sam3_completed and depth_completed and pose_completed
+    provider_requirement_completed = (
+        provider_triplet_completed if require_pose else provider_pair_completed
+    )
     validation_contract_available = validation_snapshot.get("status") == "available"
     validation_requested = validation_snapshot.get("status") != "not_requested"
     backend_completed = backend.get("status") == "completed"
@@ -1260,12 +1482,20 @@ def run_probe(
         "generated_at": utc_now_iso(),
         "status": "completed" if not blockers and backend_completed else "blocked",
         "proof_scope": {
-            "requested": "real_sam3_depth_pose_providers_with_optional_labeled_validation_data",
+            "requested": (
+                "real_sam3_depth_pose_providers_with_optional_labeled_validation_data"
+                if require_pose
+                else "real_sam3_depth_providers_with_optional_pose_and_labeled_validation_data"
+            ),
+            "real_pose_provider_required": require_pose,
             "real_sam3_provider_completed": sam3_completed,
             "real_depth_provider_completed": depth_completed,
             "real_pose_provider_completed": pose_completed,
+            "real_sam3_depth_provider_pair_completed": provider_pair_completed,
             "real_sam3_depth_pose_provider_triplet_completed": provider_triplet_completed,
             "real_sam3_depth_pose_proof_complete": provider_triplet_completed,
+            "real_provider_requirement_completed": provider_requirement_completed,
+            "real_sam3_depth_proof_complete": provider_pair_completed,
             "optional_labeled_validation_requested": validation_requested,
             "optional_labeled_validation_completed": bool(
                 validation_requested
@@ -1343,6 +1573,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Target object/concept prompt to pass to SAM3; can be supplied multiple times.",
     )
+    run.add_argument(
+        "--no-require-pose",
+        action="store_true",
+        help="Require real SAM3 and depth providers but treat pose as optional diagnostics.",
+    )
     sub.add_parser("backend", help=argparse.SUPPRESS)
     return parser
 
@@ -1362,6 +1597,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         policy_id=args.policy_id,
         policy_observation_schema=_schema_from_args(args),
         target_prompts=args.target_prompt,
+        require_pose=not args.no_require_pose,
     )
     print(json.dumps({"status": manifest["status"], "manifest_path": manifest["manifest_path"]}))
     return 0 if manifest["status"] == "completed" else 2

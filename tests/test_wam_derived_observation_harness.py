@@ -989,9 +989,17 @@ def test_real_provider_validation_probe_fails_closed_without_real_provider_input
     for name in (
         "SAM3_WEIGHTS_PATH",
         "BLUEPRINT_SAM3_WEIGHTS_PATH",
+        "BLUEPRINT_WAM_ALLOW_SAM3_ULTRALYTICS_AUTODOWNLOAD",
+        "BLUEPRINT_WAM_SAM3_MODEL",
+        "BLUEPRINT_WAM_SAM3_PROVIDER_KIND",
+        "BLUEPRINT_WAM_ALLOW_SAM3_TRANSFORMERS_PROVIDER",
+        "BLUEPRINT_WAM_SAM3_HF_MODEL_ID",
         "HF_TOKEN",
         "HUGGINGFACE_HUB_TOKEN",
         "HUGGING_FACE_HUB_TOKEN",
+        "HF_TOKEN_FILE",
+        "HUGGINGFACE_HUB_TOKEN_FILE",
+        "HUGGING_FACE_HUB_TOKEN_FILE",
         "BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND",
         "BLUEPRINT_WAM_POSE_PROVIDER_COMMAND",
         "BLUEPRINT_WAM_POSE_MODEL_PATH",
@@ -1043,6 +1051,61 @@ def test_real_provider_validation_probe_fails_closed_without_real_provider_input
     )
 
 
+def test_real_provider_validation_probe_can_make_pose_optional(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    for name in (
+        "SAM3_WEIGHTS_PATH",
+        "BLUEPRINT_SAM3_WEIGHTS_PATH",
+        "BLUEPRINT_WAM_ALLOW_SAM3_ULTRALYTICS_AUTODOWNLOAD",
+        "BLUEPRINT_WAM_SAM3_MODEL",
+        "BLUEPRINT_WAM_SAM3_PROVIDER_KIND",
+        "BLUEPRINT_WAM_ALLOW_SAM3_TRANSFORMERS_PROVIDER",
+        "BLUEPRINT_WAM_SAM3_HF_MODEL_ID",
+        "BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND",
+        "BLUEPRINT_WAM_POSE_PROVIDER_COMMAND",
+        "BLUEPRINT_WAM_POSE_MODEL_PATH",
+        "BLUEPRINT_ALLOW_WAM_AUTO_POSE_PROVIDER",
+        "HF_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HF_TOKEN_FILE",
+        "HUGGINGFACE_HUB_TOKEN_FILE",
+        "HUGGING_FACE_HUB_TOKEN_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    frame = _write_frame(tmp_path / "generated.jpg")
+
+    manifest = run_probe(
+        output_dir=tmp_path / "proof",
+        generated_frame_path=frame,
+        validation_set_path=None,
+        target_prompts=["closed refrigerator door"],
+        policy_id="rgbd_mask_policy",
+        policy_observation_schema={
+            "modalities": ["rgb", "depth", "mask", "state"],
+            "fields": [
+                "camera_frame_path",
+                "visual_observation",
+                "objects",
+                "depth_estimates",
+            ],
+        },
+        require_pose=False,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["proof_scope"]["real_pose_provider_required"] is False
+    assert manifest["proof_scope"]["real_sam3_depth_proof_complete"] is False
+    assert manifest["proof_scope"]["real_provider_requirement_completed"] is False
+    assert "pose_provider_command_not_configured" not in manifest["blockers"]
+    assert all(
+        "pose_model" not in str(blocker)
+        for blocker in manifest["harness_backend"]["blockers"]
+    )
+
+
 def test_real_provider_validation_probe_treats_bad_labels_as_diagnostics(
     tmp_path: Path,
     monkeypatch: Any,
@@ -1050,9 +1113,17 @@ def test_real_provider_validation_probe_treats_bad_labels_as_diagnostics(
     for name in (
         "SAM3_WEIGHTS_PATH",
         "BLUEPRINT_SAM3_WEIGHTS_PATH",
+        "BLUEPRINT_WAM_ALLOW_SAM3_ULTRALYTICS_AUTODOWNLOAD",
+        "BLUEPRINT_WAM_SAM3_MODEL",
+        "BLUEPRINT_WAM_SAM3_PROVIDER_KIND",
+        "BLUEPRINT_WAM_ALLOW_SAM3_TRANSFORMERS_PROVIDER",
+        "BLUEPRINT_WAM_SAM3_HF_MODEL_ID",
         "HF_TOKEN",
         "HUGGINGFACE_HUB_TOKEN",
         "HUGGING_FACE_HUB_TOKEN",
+        "HF_TOKEN_FILE",
+        "HUGGINGFACE_HUB_TOKEN_FILE",
+        "HUGGING_FACE_HUB_TOKEN_FILE",
         "BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND",
         "BLUEPRINT_WAM_POSE_PROVIDER_COMMAND",
         "BLUEPRINT_WAM_POSE_MODEL_PATH",
@@ -1116,6 +1187,11 @@ def test_real_provider_backend_contract_records_missing_provider_blockers(
     for name in (
         "SAM3_WEIGHTS_PATH",
         "BLUEPRINT_SAM3_WEIGHTS_PATH",
+        "BLUEPRINT_WAM_ALLOW_SAM3_ULTRALYTICS_AUTODOWNLOAD",
+        "BLUEPRINT_WAM_SAM3_MODEL",
+        "BLUEPRINT_WAM_SAM3_PROVIDER_KIND",
+        "BLUEPRINT_WAM_ALLOW_SAM3_TRANSFORMERS_PROVIDER",
+        "BLUEPRINT_WAM_SAM3_HF_MODEL_ID",
         "BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND",
         "BLUEPRINT_WAM_POSE_PROVIDER_COMMAND",
         "BLUEPRINT_WAM_POSE_MODEL_PATH",
@@ -1220,3 +1296,206 @@ def test_real_provider_backend_records_ultralytics_sam3_runtime(
     assert sam3_status["runtime_class"] == "SAM3SemanticPredictor"
     assert sam3_status["ran"] is True
     assert sam3_status["blockers"] == []
+
+
+def test_real_provider_backend_uses_ultralytics_sam3_autodownload_model_ref(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    frame = _write_frame(tmp_path / "generated.jpg")
+    request_path = tmp_path / "request.json"
+    output_path = tmp_path / "backend_result.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "source_generated_frame_path": str(frame),
+                "eval_ready_task_grounding": {
+                    "task": {"target_prompts_for_object_index_backends": ["closed refrigerator door"]}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeSAM3SemanticPredictor:
+        def __init__(self, overrides: dict[str, Any]) -> None:
+            assert overrides["model"] == "sam3.pt"
+            self.overrides = overrides
+
+        def set_image(self, path: str) -> None:
+            assert Path(path).is_file()
+
+        def __call__(self, text: list[str]) -> list[Any]:
+            assert text == ["closed refrigerator door"]
+            boxes = types.SimpleNamespace(
+                xyxy=np.array([[4.0, 8.0, 48.0, 64.0]], dtype=np.float32),
+                conf=np.array([0.74], dtype=np.float32),
+            )
+            return [types.SimpleNamespace(boxes=boxes)]
+
+    ultralytics_module = types.ModuleType("ultralytics")
+    models_module = types.ModuleType("ultralytics.models")
+    sam_module = types.ModuleType("ultralytics.models.sam")
+    sam_module.SAM3SemanticPredictor = FakeSAM3SemanticPredictor
+    monkeypatch.setitem(sys.modules, "ultralytics", ultralytics_module)
+    monkeypatch.setitem(sys.modules, "ultralytics.models", models_module)
+    monkeypatch.setitem(sys.modules, "ultralytics.models.sam", sam_module)
+    monkeypatch.setattr(
+        real_probe,
+        "_module_available",
+        lambda name: name == "ultralytics",
+    )
+    depth_code = (
+        "import json, os; "
+        "json.dump({'depth_estimates':[{'object_id':'generated_frame','relative_depth':0.42}]}, "
+        "open(os.environ['BLUEPRINT_WAM_PROVIDER_OUTPUT'], 'w', encoding='utf-8'))"
+    )
+    monkeypatch.delenv("SAM3_WEIGHTS_PATH", raising=False)
+    monkeypatch.delenv("BLUEPRINT_SAM3_WEIGHTS_PATH", raising=False)
+    monkeypatch.setenv("BLUEPRINT_WAM_ALLOW_SAM3_ULTRALYTICS_AUTODOWNLOAD", "true")
+    monkeypatch.setenv("BLUEPRINT_WAM_SAM3_MODEL", "sam3.pt")
+    monkeypatch.setenv("BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND", f"{sys.executable} -c {depth_code!r}")
+    monkeypatch.setenv("BLUEPRINT_WAM_PERCEPTION_BACKEND_INPUT", str(request_path))
+    monkeypatch.setenv("BLUEPRINT_WAM_PERCEPTION_BACKEND_OUTPUT", str(output_path))
+    monkeypatch.setenv("BLUEPRINT_WAM_PERCEPTION_BACKEND_JOB_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUEPRINT_WAM_POSE_PROVIDER_COMMAND", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_WAM_AUTO_POSE_PROVIDER", raising=False)
+
+    assert run_external_backend_from_env() == 0
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    sam3_status = payload["backend"]["provider_statuses"][0]
+    assert payload["status"] == "completed"
+    assert sam3_status["provider"] == "sam3"
+    assert sam3_status["ran"] is True
+    assert sam3_status["blockers"] == []
+    assert sam3_status["weights_path_present"] is False
+    assert sam3_status["weights_file_exists"] is False
+    assert sam3_status["autodownload_enabled"] is True
+    assert sam3_status["model_ref"] == "sam3.pt"
+    assert sam3_status["model_ref_source"] == "ultralytics_autodownload"
+
+
+def test_real_provider_backend_records_transformers_sam3_runtime(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    frame = _write_frame(tmp_path / "generated.jpg")
+    request_path = tmp_path / "request.json"
+    output_path = tmp_path / "backend_result.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "source_generated_frame_path": str(frame),
+                "eval_ready_task_grounding": {
+                    "task": {"target_prompts_for_object_index_backends": ["closed refrigerator door"]}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeOriginalSizes:
+        def tolist(self) -> list[list[int]]:
+            return [[480, 640]]
+
+    class FakeInputs(dict):
+        def to(self, device: str) -> "FakeInputs":
+            self["device"] = device
+            return self
+
+    class FakeSam3Model:
+        @classmethod
+        def from_pretrained(cls, model_id: str, **kwargs: Any) -> "FakeSam3Model":
+            assert model_id == "facebook/sam3"
+            assert kwargs == {}
+            return cls()
+
+        def to(self, device: str) -> "FakeSam3Model":
+            assert device
+            return self
+
+        def __call__(self, **inputs: Any) -> dict[str, Any]:
+            assert inputs["device"]
+            return {"ok": True}
+
+    class FakeSam3Processor:
+        @classmethod
+        def from_pretrained(cls, model_id: str, **kwargs: Any) -> "FakeSam3Processor":
+            assert model_id == "facebook/sam3"
+            assert kwargs == {}
+            return cls()
+
+        def __call__(self, *, images: Any, text: str, return_tensors: str) -> FakeInputs:
+            assert images.size == (640, 480)
+            assert text == "closed refrigerator door"
+            assert return_tensors == "pt"
+            return FakeInputs({"original_sizes": FakeOriginalSizes()})
+
+        def post_process_instance_segmentation(
+            self,
+            outputs: Any,
+            *,
+            threshold: float,
+            mask_threshold: float,
+            target_sizes: list[list[int]],
+        ) -> list[dict[str, Any]]:
+            assert outputs == {"ok": True}
+            assert threshold == 0.05
+            assert mask_threshold == 0.05
+            assert target_sizes == [[480, 640]]
+            return [
+                {
+                    "boxes": np.array([[6.0, 9.0, 72.0, 88.0]], dtype=np.float32),
+                    "scores": np.array([0.91], dtype=np.float32),
+                    "masks": np.ones((1, 480, 640), dtype=np.uint8),
+                }
+            ]
+
+    transformers_module = types.ModuleType("transformers")
+    transformers_module.Sam3Model = FakeSam3Model
+    transformers_module.Sam3Processor = FakeSam3Processor
+    monkeypatch.setitem(sys.modules, "transformers", transformers_module)
+    monkeypatch.setattr(
+        real_probe,
+        "_module_available",
+        lambda name: name == "transformers",
+    )
+    depth_code = (
+        "import json, os; "
+        "json.dump({'depth_estimates':[{'object_id':'generated_frame','relative_depth':0.42}]}, "
+        "open(os.environ['BLUEPRINT_WAM_PROVIDER_OUTPUT'], 'w', encoding='utf-8'))"
+    )
+    monkeypatch.delenv("SAM3_WEIGHTS_PATH", raising=False)
+    monkeypatch.delenv("BLUEPRINT_SAM3_WEIGHTS_PATH", raising=False)
+    monkeypatch.setenv("BLUEPRINT_WAM_SAM3_PROVIDER_KIND", "transformers")
+    monkeypatch.setenv("BLUEPRINT_WAM_ALLOW_SAM3_TRANSFORMERS_PROVIDER", "true")
+    monkeypatch.setenv("BLUEPRINT_WAM_SAM3_HF_MODEL_ID", "facebook/sam3")
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("HF_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN_FILE", raising=False)
+    monkeypatch.setenv("BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND", f"{sys.executable} -c {depth_code!r}")
+    monkeypatch.setenv("BLUEPRINT_WAM_PERCEPTION_BACKEND_INPUT", str(request_path))
+    monkeypatch.setenv("BLUEPRINT_WAM_PERCEPTION_BACKEND_OUTPUT", str(output_path))
+    monkeypatch.setenv("BLUEPRINT_WAM_PERCEPTION_BACKEND_JOB_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUEPRINT_WAM_POSE_PROVIDER_COMMAND", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_WAM_AUTO_POSE_PROVIDER", raising=False)
+
+    assert run_external_backend_from_env() == 0
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    sam3_status = payload["backend"]["provider_statuses"][0]
+    assert payload["status"] == "completed"
+    assert sam3_status["provider"] == "sam3"
+    assert sam3_status["kind"] == "transformers_sam3"
+    assert sam3_status["runtime_package"] == "transformers"
+    assert sam3_status["runtime_class"] == "Sam3Model/Sam3Processor"
+    assert sam3_status["ran"] is True
+    assert sam3_status["blockers"] == []
+    assert sam3_status["model_id"] == "facebook/sam3"
+    assert sam3_status["transformers_provider_enabled"] is True
+    assert payload["objects"][0]["source"] == "sam3_transformers_from_generated_pixels"
+    assert Path(payload["objects"][0]["mask_path"]).is_file()
