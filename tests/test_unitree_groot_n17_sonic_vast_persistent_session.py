@@ -2478,7 +2478,7 @@ def test_postprocess_preserves_scene_faithful_isaac_bridge_input_contract(
     vast_run_dir = tmp_path / "vast-run"
     vast_run_dir.mkdir()
 
-    session._postprocess_imported_persistent_session_artifacts(
+    postprocess = session._postprocess_imported_persistent_session_artifacts(
         job=job,
         extraction_dir=extraction_dir,
         imported={
@@ -2522,6 +2522,26 @@ def test_postprocess_preserves_scene_faithful_isaac_bridge_input_contract(
         (job / "wam_rollout_visual_quality_report.json").read_text(encoding="utf-8")
     )
     assert "wam_input_contract_policy_ranking_claim_not_safe" not in visual_report["blockers"]
+
+    calibration = json.loads(
+        (job / "rank_fidelity_calibration_requirement.json").read_text(encoding="utf-8")
+    )
+    assert postprocess["rank_fidelity_calibration_requirement"].endswith(
+        "rank_fidelity_calibration_requirement.json"
+    )
+    assert postprocess["rank_fidelity_result_proven"] is False
+    assert calibration["status"] == "blocked_missing_calibration_anchors"
+    assert calibration["candidate_prediction_record_count"] == 1
+    assert calibration["candidate_prediction_records"][0]["actual_status"] == (
+        "needs_accepted_anchor_outcome"
+    )
+    assert calibration["minimum_accepted_anchor_count"] == 4
+    assert calibration["minimum_policy_group_count"] == 2
+    assert calibration["rank_fidelity_result_proven"] is False
+    assert "missing_accepted_calibration_anchor_outcomes" in calibration["blockers"]
+    claim_boundary = json.loads((job / "claim_boundary.json").read_text(encoding="utf-8"))
+    assert claim_boundary["rank_fidelity_calibration_required"] is True
+    assert claim_boundary["visual_review_ranking_is_not_real_world_rank_fidelity"] is True
 
 
 def test_postprocess_episode_consistency_failure_is_reliability_label_only(

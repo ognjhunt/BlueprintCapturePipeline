@@ -135,6 +135,9 @@ REVIEW_QUALITY_MIN_OSCAR_NUM_FRAMES = 81
 PERSISTENT_WAM_LONG_REVIEW_QUALITY_GATE_SCHEMA_VERSION = (
     "persistent_wam_long_review_rollout_quality_gate.v1"
 )
+PERSISTENT_WAM_RANK_FIDELITY_CALIBRATION_REQUIREMENT_SCHEMA_VERSION = (
+    "persistent_wam_rank_fidelity_calibration_requirement.v1"
+)
 SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT_ENV = (
     "BLUEPRINT_ALLOW_SYNTHETIC_FALLBACK_WAM_LAUNCH_EXPERIMENT"
 )
@@ -6687,6 +6690,105 @@ def _write_persistent_episode_consistency_artifacts(
     }
 
 
+def _write_rank_fidelity_calibration_requirement(
+    *,
+    job: Path,
+    generated_at: str,
+    imported: Mapping[str, Any],
+    policy_observation: Mapping[str, Any],
+    visual_quality_report: Mapping[str, Any],
+    consistency_summary: Mapping[str, Any],
+    success_proven: bool,
+) -> dict[str, Any]:
+    task_id = _string(policy_observation.get("task_id")) or "unknown_task"
+    target_object_id = _string(policy_observation.get("target_object_id")) or None
+    scenario_eval_run_id = _string(imported.get("scenario_eval_run_id")) or "persistent_g1_wam_episode"
+    scenario_variation_instance_id = (
+        _string(imported.get("scenario_variation_instance_id"))
+        or _string(policy_observation.get("scenario_variation_instance_id"))
+        or "persistent_wam_single_variation"
+    )
+    candidate_records = [
+        {
+            "record_id": "persistent_wam_prediction_0001",
+            "scenario_eval_run_id": scenario_eval_run_id,
+            "policy_id": POLICY_ID,
+            "task_id": task_id,
+            "scenario_variation_instance_id": scenario_variation_instance_id,
+            "target_object_id": target_object_id,
+            "predicted_visual_success": bool(visual_quality_report.get("visual_success")),
+            "predicted_episode_consistency": bool(
+                consistency_summary.get("forward_inverse_consistency_proven")
+            ),
+            "predicted_task_success": bool(success_proven),
+            "actual_status": "needs_accepted_anchor_outcome",
+            "source": "persistent_wam_visual_review_prediction_record",
+        }
+    ]
+    blockers = [
+        "missing_accepted_calibration_anchor_outcomes",
+        "insufficient_anchor_count",
+        "insufficient_policy_group_count",
+        "real_world_rank_correlation_not_measured",
+    ]
+    payload = {
+        "schema_version": PERSISTENT_WAM_RANK_FIDELITY_CALIBRATION_REQUIREMENT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "blocked_missing_calibration_anchors",
+        "policy_id": POLICY_ID,
+        "task_id": task_id,
+        "target_object_id": target_object_id,
+        "candidate_prediction_record_count": len(candidate_records),
+        "candidate_prediction_records": candidate_records,
+        "accepted_anchor_count": 0,
+        "policy_group_count": 1,
+        "minimum_accepted_anchor_count": 4,
+        "minimum_policy_group_count": 2,
+        "accepted_anchor_schema": {
+            "join_keys": [
+                "scenario_eval_run_id",
+                "policy_id",
+                "task_id",
+                "scenario_variation_instance_id",
+            ],
+            "required_fields": [
+                "actual_success",
+                "review_status",
+                "operator_attestation.status",
+            ],
+            "accepted_review_status": "accepted",
+            "accepted_operator_attestation_status": "signed",
+        },
+        "recommended_small_calibration_set": {
+            "minimum_rows": 4,
+            "minimum_policy_groups": 2,
+            "minimum_variations_per_policy": 2,
+            "requires_exact_join_key_match": True,
+            "requires_accepted_reviewer_or_operator_anchor": True,
+        },
+        "sim_vs_real_calibration_score": None,
+        "spearman_rank_correlation": None,
+        "pearson_success_rate_correlation": None,
+        "deployment_accuracy_claim_allowed": False,
+        "rank_fidelity_result_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
+        "blockers": blockers,
+        "claim_boundary": {
+            "visual_quality_pass_is_not_rank_fidelity": True,
+            "episode_consistency_label_is_not_rank_fidelity": True,
+            "candidate_prediction_records_are_not_accepted_anchors": True,
+            "rank_fidelity_requires_accepted_prediction_vs_actual_anchor_set": True,
+            "rank_fidelity_result_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "raw_credentials_written_to_artifacts": False,
+        },
+        "raw_credentials_written_to_artifacts": False,
+        "secret_hashes_written_to_artifacts": False,
+    }
+    write_json(job / "rank_fidelity_calibration_requirement.json", payload)
+    return payload
+
+
 def _postprocess_imported_persistent_session_artifacts(
     *,
     job: Path,
@@ -7282,6 +7384,15 @@ def _postprocess_imported_persistent_session_artifacts(
         side_rows=side_rows,
         timeout_seconds=_float_env("BLUEPRINT_WAM_EPISODE_CONSISTENCY_TIMEOUT_SECONDS", 60.0),
     )
+    rank_fidelity_calibration_requirement = _write_rank_fidelity_calibration_requirement(
+        job=job,
+        generated_at=generated_at,
+        imported=imported,
+        policy_observation=policy_observation,
+        visual_quality_report=visual_quality_report,
+        consistency_summary=consistency_summary,
+        success_proven=success_proven,
+    )
     claim_boundary = {
         "schema_version": "persistent_policy_wam_claim_boundary.v1",
         "generated_at": generated_at,
@@ -7315,6 +7426,15 @@ def _postprocess_imported_persistent_session_artifacts(
         "forward_inverse_consistency_is_reliability_review_signal_only": True,
         "forward_inverse_consistency_does_not_prove_task_success": True,
         "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity": True,
+        "rank_fidelity_calibration_required": True,
+        "rank_fidelity_calibration_requirement": str(
+            job / "rank_fidelity_calibration_requirement.json"
+        ),
+        "rank_fidelity_calibration_status": rank_fidelity_calibration_requirement.get("status"),
+        "rank_fidelity_calibration_blockers": _string_list(
+            rank_fidelity_calibration_requirement.get("blockers")
+        ),
+        "visual_review_ranking_is_not_real_world_rank_fidelity": True,
         "video_first_frame_materialization_is_not_future_rollout_quality_proof": (
             video_first_frame_materialization_count > 0
         ),
@@ -7418,6 +7538,15 @@ def _postprocess_imported_persistent_session_artifacts(
         "wam_input_review_manifest": str(job / "wam_input_review_manifest.json"),
         "wam_input_review_contact_sheet": _string(wam_input_review.get("contact_sheet_path"))
         or None,
+        "rank_fidelity_calibration_requirement": str(
+            job / "rank_fidelity_calibration_requirement.json"
+        ),
+        "rank_fidelity_calibration_status": rank_fidelity_calibration_requirement.get("status"),
+        "rank_fidelity_calibration_blockers": _string_list(
+            rank_fidelity_calibration_requirement.get("blockers")
+        ),
+        "rank_fidelity_result_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
         "robot_policy_wam_loop_manifest": str(job / "robot_policy_wam_loop_manifest.json"),
         "manipulation_success_evaluator_results": str(
             job / "manipulation_success_evaluator_results.json"
@@ -7648,6 +7777,17 @@ def _finalize_runpod_persistent_session_output(
         "wam_input_review_contact_sheet_path": postprocess.get(
             "wam_input_review_contact_sheet"
         ),
+        "rank_fidelity_calibration_requirement_path": postprocess.get(
+            "rank_fidelity_calibration_requirement"
+        ),
+        "rank_fidelity_calibration_status": postprocess.get(
+            "rank_fidelity_calibration_status"
+        ),
+        "rank_fidelity_calibration_blockers": _string_list(
+            postprocess.get("rank_fidelity_calibration_blockers")
+        ),
+        "rank_fidelity_result_proven": False,
+        "generated_world_rank_fidelity_result_proven": False,
         "wam_rollout_visual_success": visual_success,
         "visual_quality_report_status": visual_report.get("status"),
         "visual_quality_blockers": visual_quality_blockers,
@@ -7711,6 +7851,8 @@ def _finalize_runpod_persistent_session_output(
             ),
             "forward_inverse_consistency_is_reliability_review_signal_only": True,
             "forward_inverse_consistency_does_not_prove_task_success": True,
+            "rank_fidelity_calibration_required": True,
+            "visual_review_ranking_is_not_real_world_rank_fidelity": True,
             "generated_world_rank_fidelity_result_proven": False,
             "generated_world_policy_evaluation_scope_proven": False,
             "non_ranking_operational_claim_proven": False,
@@ -8049,6 +8191,17 @@ def run_persistent_session(
             "wam_input_review_contact_sheet_path": postprocess.get(
                 "wam_input_review_contact_sheet"
             ),
+            "rank_fidelity_calibration_requirement_path": postprocess.get(
+                "rank_fidelity_calibration_requirement"
+            ),
+            "rank_fidelity_calibration_status": postprocess.get(
+                "rank_fidelity_calibration_status"
+            ),
+            "rank_fidelity_calibration_blockers": _string_list(
+                postprocess.get("rank_fidelity_calibration_blockers")
+            ),
+            "rank_fidelity_result_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
             "wam_rollout_visual_success": bool(postprocess.get("wam_rollout_visual_success")),
             "wam_materialization_summary_path": postprocess.get("wam_materialization_summary"),
             "wam_episode_consistency_request_path": postprocess.get(
@@ -8106,6 +8259,8 @@ def run_persistent_session(
                 ),
                 "forward_inverse_consistency_is_reliability_review_signal_only": True,
                 "forward_inverse_consistency_does_not_prove_task_success": True,
+                "rank_fidelity_calibration_required": True,
+                "visual_review_ranking_is_not_real_world_rank_fidelity": True,
                 "generated_world_rank_fidelity_result_proven": False,
                 "generated_world_policy_evaluation_scope_proven": False,
                 "non_ranking_operational_claim_proven": False,
