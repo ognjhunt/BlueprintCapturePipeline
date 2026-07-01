@@ -7808,6 +7808,86 @@ def _runpod_teardown_manifest_path(runpod_dir: Path, poll_manifest: Mapping[str,
     return runpod_dir / "runpod_wam_async_delete_manifest.json"
 
 
+def _runpod_teardown_completed(runpod_dir: Path) -> bool:
+    for filename in (
+        "runpod_wam_async_stop_manifest.json",
+        "runpod_wam_async_delete_manifest.json",
+    ):
+        path = runpod_dir / filename
+        if not path.is_file():
+            continue
+        try:
+            payload = _read_json(path)
+        except (OSError, ValueError):
+            continue
+        if _string(payload.get("status")) == "completed":
+            return True
+    return False
+
+
+def _runpod_keepalive_summary(
+    *,
+    runpod_dir: Path,
+    poll_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    summary = {
+        "teardown_requested": bool(poll_manifest.get("teardown_requested")),
+        "teardown_action": poll_manifest.get("teardown_action"),
+        "teardown_performed": bool(poll_manifest.get("teardown_performed")),
+        "requested_keep_running_on_success": bool(
+            poll_manifest.get("requested_keep_running_on_success")
+        ),
+        "keep_running_on_success": bool(poll_manifest.get("keep_running_on_success")),
+        "keepalive_runtime_health": _mapping(poll_manifest.get("keepalive_runtime_health")),
+        "keepalive_runtime_unhealthy_on_success": bool(
+            poll_manifest.get("keepalive_runtime_unhealthy_on_success")
+        ),
+        "keepalive_performed": bool(poll_manifest.get("keepalive_performed")),
+        "keepalive_manifest_path": poll_manifest.get("keepalive_manifest_path"),
+        "warm_candidate_path": _mapping(poll_manifest.get("warm_candidate")).get("path")
+        or poll_manifest.get("warm_candidate_path"),
+        "continuing_spend_from_this_run": bool(
+            poll_manifest.get("continuing_spend_from_this_run")
+        ),
+        "preserved_from_existing_keepalive_manifest": False,
+        "raw_secret_values_recorded": False,
+    }
+    if (
+        summary["keep_running_on_success"]
+        or summary["keepalive_performed"]
+        or summary["continuing_spend_from_this_run"]
+        or _runpod_teardown_completed(runpod_dir)
+    ):
+        return summary
+
+    keepalive_path = runpod_dir / "runpod_wam_async_keepalive_manifest.json"
+    if not keepalive_path.is_file():
+        return summary
+    try:
+        keepalive = _read_json(keepalive_path)
+    except (OSError, ValueError):
+        return summary
+    if (
+        _string(keepalive.get("status")) != "completed"
+        or not bool(keepalive.get("continuing_spend_from_this_run"))
+    ):
+        return summary
+    return {
+        **summary,
+        "teardown_action": keepalive.get("teardown_action") or "keep_on_success",
+        "requested_keep_running_on_success": True,
+        "keep_running_on_success": True,
+        "keepalive_performed": True,
+        "keepalive_manifest_path": str(keepalive_path),
+        "warm_candidate_path": _mapping(keepalive.get("warm_candidate")).get("path")
+        or keepalive.get("warm_candidate_path")
+        or summary.get("warm_candidate_path"),
+        "continuing_spend_from_this_run": True,
+        "continuing_spend_evidence_source": "existing_keepalive_manifest",
+        "preserved_from_existing_keepalive_manifest": True,
+    }
+
+
 def _finalize_runpod_persistent_session_output(
     *,
     job: Path,
@@ -7882,6 +7962,10 @@ def _finalize_runpod_persistent_session_output(
         if not completed
         else {"status": "completed", "classified_blocker": "none"}
     )
+    runpod_keepalive = _runpod_keepalive_summary(
+        runpod_dir=runpod_dir,
+        poll_manifest=poll_manifest,
+    )
     output = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -7921,29 +8005,7 @@ def _finalize_runpod_persistent_session_output(
         "runpod_teardown_manifest_path": str(
             _runpod_teardown_manifest_path(runpod_dir, poll_manifest)
         ),
-        "runpod_keepalive": {
-            "teardown_requested": bool(poll_manifest.get("teardown_requested")),
-            "teardown_action": poll_manifest.get("teardown_action"),
-            "teardown_performed": bool(poll_manifest.get("teardown_performed")),
-            "requested_keep_running_on_success": bool(
-                poll_manifest.get("requested_keep_running_on_success")
-            ),
-            "keep_running_on_success": bool(poll_manifest.get("keep_running_on_success")),
-            "keepalive_runtime_health": _mapping(
-                poll_manifest.get("keepalive_runtime_health")
-            ),
-            "keepalive_runtime_unhealthy_on_success": bool(
-                poll_manifest.get("keepalive_runtime_unhealthy_on_success")
-            ),
-            "keepalive_performed": bool(poll_manifest.get("keepalive_performed")),
-            "keepalive_manifest_path": poll_manifest.get("keepalive_manifest_path"),
-            "warm_candidate_path": _mapping(poll_manifest.get("warm_candidate")).get("path")
-            or poll_manifest.get("warm_candidate_path"),
-            "continuing_spend_from_this_run": bool(
-                poll_manifest.get("continuing_spend_from_this_run")
-            ),
-            "raw_secret_values_recorded": False,
-        },
+        "runpod_keepalive": runpod_keepalive,
         "provider_runtime_output_zip_path": str(output_zip),
         "runpod_live_wam_blocker_classification_path": str(
             job / "runpod_live_wam_blocker_classification.json"
@@ -7952,7 +8014,7 @@ def _finalize_runpod_persistent_session_output(
         else None,
         "classified_blocker": classification.get("classified_blocker"),
         "continuing_spend_from_this_run": bool(
-            poll_manifest.get("continuing_spend_from_this_run")
+            runpod_keepalive.get("continuing_spend_from_this_run")
         ),
         "postprocess_artifacts": postprocess,
         "review_video_path": postprocess.get("review_video_path"),

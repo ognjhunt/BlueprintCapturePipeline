@@ -3051,6 +3051,92 @@ def test_runpod_finalizer_surfaces_visual_quality_and_keepalive_status(
     assert output["claim_boundary"]["provider_completed_but_visual_quality_failed"] is True
 
 
+def test_runpod_finalizer_preserves_existing_keepalive_on_resume(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job = tmp_path / "jobs"
+    runpod_dir = job / "runpod_persistent_session_run"
+    runpod_dir.mkdir(parents=True)
+    output_zip = runpod_dir / "runpod_provider_runtime_output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "unitree_groot_n17_sonic_wam_persistent_session_output.json",
+            json.dumps(
+                {
+                    "status": "completed",
+                    "persistent_provider_session_used": True,
+                    "provider_instance_reused_for_policy_and_wam_loop": True,
+                    "repeated_policy_calls_count": 2,
+                    "generated_next_observation_count": 1,
+                    "live_wam_generation_success_count": 1,
+                    "learned_wam_model_success_count": 1,
+                    "blockers": [],
+                }
+            ),
+        )
+    keepalive_manifest = runpod_dir / "runpod_wam_async_keepalive_manifest.json"
+    keepalive_manifest.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "teardown_action": "keep_on_success",
+                "pod_id": "pod-123",
+                "continuing_spend_from_this_run": True,
+                "warm_candidate_path": str(tmp_path / "warm_candidate.json"),
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_postprocess(**_kwargs):
+        return {
+            "wam_rollout_visual_success": True,
+            "wam_rollout_visual_quality_report": "",
+        }
+
+    monkeypatch.setattr(
+        session,
+        "_postprocess_imported_persistent_session_artifacts",
+        fake_postprocess,
+    )
+
+    output, exit_code = session._finalize_runpod_persistent_session_output(
+        job=job,
+        generated_at="now",
+        policy_observation_path=tmp_path / "observation.json",
+        git_evidence=_clean_launch_git_evidence(),
+        poll_manifest={
+            "status": "completed",
+            "provider_command_status": "completed",
+            "output_zip_present": True,
+            "teardown_requested": False,
+            "teardown_action": "not_requested",
+            "teardown_performed": False,
+            "requested_keep_running_on_success": False,
+            "keep_running_on_success": False,
+            "keepalive_performed": False,
+            "continuing_spend_from_this_run": False,
+        },
+        runpod_dir=runpod_dir,
+        output_zip=output_zip,
+        provider_output_resume_used=True,
+    )
+
+    assert exit_code == 0
+    assert output["status"] == "completed"
+    assert output["continuing_spend_from_this_run"] is True
+    assert output["runpod_keepalive"]["keep_running_on_success"] is True
+    assert output["runpod_keepalive"]["keepalive_performed"] is True
+    assert output["runpod_keepalive"]["keepalive_manifest_path"] == str(keepalive_manifest)
+    assert output["runpod_keepalive"]["preserved_from_existing_keepalive_manifest"] is True
+    assert (
+        output["runpod_keepalive"]["continuing_spend_evidence_source"]
+        == "existing_keepalive_manifest"
+    )
+
+
 def test_runpod_finalizer_classifies_blocked_visual_gate_after_wam_inference(
     tmp_path: Path,
     monkeypatch,
