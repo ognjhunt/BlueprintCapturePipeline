@@ -280,7 +280,8 @@ def build_gemini_wam_success_labels(
     output_dir = resolved_output.parent
     generated_at = utc_now_iso()
     request = _load_json(resolved_input)
-    model_name = _string(model or os.getenv(MODEL_ENV)) or DEFAULT_MODEL
+    requested_model = _string(model or os.getenv(MODEL_ENV))
+    model_name = requested_model if requested_model and "flash" in requested_model.lower() else DEFAULT_MODEL
     max_bytes = max_inline_bytes or int(
         _string(os.getenv("BLUEPRINT_GEMINI_WAM_SUCCESS_MAX_INLINE_BYTES"))
         or DEFAULT_MAX_INLINE_BYTES

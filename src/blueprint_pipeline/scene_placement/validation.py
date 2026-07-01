@@ -48,6 +48,25 @@ DEFAULT_VALIDATION_CLIP_AREA_EPS_M2 = 0.005
 DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M = 0.08
 
 
+def _yaw_rotated_aabb_half_extent(
+    footprint_half_extent: Tuple[float, float, float],
+    yaw: float,
+) -> Tuple[float, float]:
+    """World-axis half extent of a yawed local robot footprint.
+
+    The local x half extent is robot depth/front-back, and local y is lateral width. Validation
+    still uses cheap axis-aligned rectangle checks, but this keeps a narrow front-facing robot from
+    being treated as equally deep and wide at a counter.
+    """
+    hx_local, hy_local, _hz = (abs(float(v)) for v in footprint_half_extent)
+    c = abs(math.cos(float(yaw)))
+    s = abs(math.sin(float(yaw)))
+    return (
+        c * hx_local + s * hy_local,
+        s * hx_local + c * hy_local,
+    )
+
+
 @dataclass
 class PlacementVerdict:
     """Structured result of validating a stance pose. ``ok`` is the AND of every check."""
@@ -235,7 +254,7 @@ def validate_stand_pose(
     """
     px, py, pz = (float(v) for v in position)
     yaw = float(yaw)
-    hx, hy, _hz = (abs(float(v)) for v in footprint_half_extent)
+    hx, hy = _yaw_rotated_aabb_half_extent(footprint_half_extent, yaw)
     f_min = (px - hx, py - hy)
     f_max = (px + hx, py + hy)
     pelvis_z = floor_z + pelvis_height

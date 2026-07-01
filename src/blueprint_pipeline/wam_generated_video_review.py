@@ -1465,6 +1465,13 @@ def _source_policy_observation_blockers(
         blockers.append("source_policy_observation_flat_or_low_contrast")
     if edge_density < 0.012 or sharpness < 20.0:
         blockers.append("source_policy_observation_blurry_or_low_detail")
+    if (
+        review_quality_required
+        and edge_density > 0.45
+        and center_edge_density > 0.35
+        and sharpness > 5000.0
+    ):
+        blockers.append("source_policy_observation_speckled_or_noisy_for_review_quality")
     if center_dark_ratio > 0.65 or center_edge_density < 0.004 or center_entropy < 1.8:
         blockers.append("source_policy_observation_task_region_low_information")
     if dark_ratio > 0.40 and edge_density < 0.015:

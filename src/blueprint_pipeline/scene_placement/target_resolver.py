@@ -36,13 +36,10 @@ from typing import Any, Callable, List, Optional, Sequence
 
 from .types import SceneObject
 
-# Mirror scene_semantics.py / render_visual_qc.py: gemini-3-flash-preview first
-# (fast, correct JSON output per repo notes), then progressively heavier models.
+# Mirror scene_semantics.py / render_visual_qc.py: Flash-only for review/cost predictability.
 DEFAULT_MODEL_CASCADE = (
     "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
     "gemini-2.5-flash",
-    "gemini-2.5-pro",
 )
 
 # ``generate(prompt: str) -> raw_text``. Text-only (no image), injected so callers
@@ -59,7 +56,7 @@ GenerateFn = Callable[[str], str]
 _SYNONYM_GROUPS: tuple[tuple[str, ...], ...] = (
     ("faucet", "tap", "spout", "mixer"),
     ("sink", "basin", "washbasin"),
-    ("stove", "cooktop", "range", "burner", "hob"),
+    ("stove", "stovetop", "cooktop", "range", "burner", "hob"),
     ("oven",),
     ("fridge", "refrigerator", "freezer"),
     ("microwave",),
@@ -259,7 +256,7 @@ def _gemini_resolve_text(prompt: str, *, models: Sequence[str] = DEFAULT_MODEL_C
 
     client = genai.Client(api_key=api_key)
     override = (os.getenv("BLUEPRINT_TARGET_RESOLVER_GEMINI_MODEL") or "").strip()
-    models_to_try = [override] if override else list(models)
+    models_to_try = [override] if override and "flash" in override.lower() else list(models)
     last_exc: Optional[Exception] = None
     for model in models_to_try:
         try:

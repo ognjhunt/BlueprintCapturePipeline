@@ -662,21 +662,26 @@ def test_scene_semantics_retries_transient_and_deletes_uploaded_file(monkeypatch
 
 
 def test_default_model_cascade_is_pinned_exactly() -> None:
-    # The model cascade order is load-bearing (rate-limit + Gemini 3.0 first).
+    # The model cascade order is load-bearing and intentionally Flash-only.
     assert tuple(semantics._DEFAULT_MODEL_CASCADE) == (
         "gemini-3-flash-preview",
-        "gemini-3-pro-preview",
         "gemini-2.5-flash",
-        "gemini-2.5-pro",
     )
     # No override env => the model-call helper walks the full cascade in order.
     assert semantics._gemini_models_from_override(
         "CAPTURE_FIDELITY_GEMINI_MODEL", "SCENE_SEMANTICS_GEMINI_MODEL"
     ) == [
         "gemini-3-flash-preview",
-        "gemini-3-pro-preview",
         "gemini-2.5-flash",
-        "gemini-2.5-pro",
+    ]
+
+
+def test_non_flash_model_override_is_ignored(monkeypatch) -> None:
+    monkeypatch.setenv("SCENE_SEMANTICS_GEMINI_MODEL", "gemini-2.5-pro")
+
+    assert semantics._gemini_models_from_override("SCENE_SEMANTICS_GEMINI_MODEL") == [
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
     ]
 
 

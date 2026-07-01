@@ -25,12 +25,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-# scene_semantics.py model cascade — gemini-3-flash-preview first (fast, correct JSON), per repo notes
+# scene_semantics.py model cascade -- Flash-only for review/cost predictability.
 DEFAULT_MODEL_CASCADE = (
     "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
     "gemini-2.5-flash",
-    "gemini-2.5-pro",
 )
 
 _SEVERITY_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
@@ -424,7 +422,7 @@ def _gemini_review_image(image_bytes: bytes, prompt: str, *,
 
     client = genai.Client(api_key=api_key)
     override = (os.getenv("BLUEPRINT_RENDER_QC_GEMINI_MODEL") or "").strip()
-    models_to_try = [override] if override else list(models)
+    models_to_try = [override] if override and "flash" in override.lower() else list(models)
     image_part = genai.types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
     last_exc: Exception | None = None
     for model in models_to_try:

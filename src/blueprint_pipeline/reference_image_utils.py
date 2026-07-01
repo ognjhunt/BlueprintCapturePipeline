@@ -81,9 +81,9 @@ def cleanup_crop_with_vlm(
       - "skip": Return original path unchanged (default, no API call)
       - "qwen_image_edit": Use Qwen-Image-Edit-2511 (local GPU, free, open-source)
       - "together_qwen_image_edit": Use Together AI hosted Qwen Image Edit API
-      - "nano_banana": Use Google Gemini 3 Pro Image (Nano Banana Pro)
+      - "nano_banana": Use Google image cleanup only when BLUEPRINT_ALLOW_NANO_BANANA=1
       - "gpt_image": Use OpenAI GPT Image 1.5
-      - "auto": Try together_qwen_image_edit, qwen_image_edit, nano_banana, then gpt_image
+      - "auto": Try together_qwen_image_edit, qwen_image_edit, then gpt_image
 
     Returns the cleaned image path, or the original path if cleanup fails.
     """
@@ -100,9 +100,6 @@ def cleanup_crop_with_vlm(
         if result is not None and result != image_path:
             return result
         result = cleanup_crop_with_vlm(image_path, output_path, provider="qwen_image_edit")
-        if result is not None and result != image_path:
-            return result
-        result = cleanup_crop_with_vlm(image_path, output_path, provider="nano_banana")
         if result is not None and result != image_path:
             return result
         return cleanup_crop_with_vlm(image_path, output_path, provider="gpt_image")
@@ -416,7 +413,10 @@ def _decode_image_b64(encoded: str) -> bytes:
 
 
 def _cleanup_with_nano_banana(image_path: Path, output_path: Path) -> Optional[Path]:
-    """Clean up crop using Google Gemini 3 Pro Image (Nano Banana Pro)."""
+    """Clean up crop using Google image editing, gated because it can be expensive."""
+    if (os.getenv("BLUEPRINT_ALLOW_NANO_BANANA") or "").strip() != "1":
+        logger.warning("BLUEPRINT_ALLOW_NANO_BANANA is not set, skipping Nano Banana cleanup")
+        return image_path
     api_key = (os.getenv("GOOGLE_GENAI_API_KEY") or "").strip()
     if not api_key:
         logger.warning("GOOGLE_GENAI_API_KEY not set, skipping Nano Banana cleanup")

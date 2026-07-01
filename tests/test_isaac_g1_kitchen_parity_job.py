@@ -82,11 +82,15 @@ def test_cli_forwards_warm_only(monkeypatch, tmp_path: Path) -> None:
         "--out-dir", str(tmp_path / "out"),
         "--warm-candidate", "pod-a",
         "--warm-only",
+        "--container-disk-gb", "240",
+        "--volume-gb", "120",
     ])
 
     assert rc == 0
     assert captured["warm_candidates"] == ("pod-a",)
     assert captured["warm_only"] is True
+    assert captured["container_disk_gb"] == 240
+    assert captured["volume_gb"] == 120
 
 
 def test_cli_forwards_provider_race_list(monkeypatch, tmp_path: Path) -> None:
@@ -322,6 +326,26 @@ def test_neutral_environment_flag_threads_env_and_bootstrap(tmp_path: Path) -> N
     assert "PARITY_NEUTRAL_ENVIRONMENT" in body and "--neutral-environment" in body
 
 
+def test_robot_review_material_override_threads_env_and_bootstrap(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+    off = J.build_launch_spec(jd, image="img:tag", policy_id="p", steps=8)
+    assert "PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE" not in off.env
+    on = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="p",
+        steps=8,
+        robot_review_material_override=True,
+    )
+    assert on.env["PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE"] == "1"
+    body = J.docker_start_cmd()[1]
+    assert "PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE" in body
+    assert "--robot-review-material-override" in body
+
+
 def test_collision_approximation_and_verify_cam_thread_env_and_bootstrap(tmp_path: Path) -> None:
     jd = tmp_path / "object_store_real_run"
     jd.mkdir()
@@ -397,11 +421,15 @@ def test_job_prepared_plan_without_spend(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(J, "stage_bundle", _fake_stage)
     m = J.run_isaac_g1_kitchen_parity_job(scenarios=_SCENARIOS, out_dir=tmp_path / "job",
-                                          provider="vast", allow_paid=False)
+                                          provider="vast", allow_paid=False,
+                                          robot_review_material_override=True)
     assert m["status"] == "prepared"
     assert m["provider"] == "vast"
     assert m["launch_request_shape"]["provider"] == "vast"
     assert m["launch_request_shape"]["vast_max_hourly_rate_usd"] == 5.0
+    assert m["launch_request_shape"]["container_disk_gb"] == 140
+    assert m["launch_request_shape"]["volume_gb"] == 80
+    assert m["launch_request_shape"]["robot_review_material_override"] is True
     assert m["scenario_ids"] == ["entry_to_sink", "narrow_passage_to_sink"]
     assert "git_evidence" in m
 
@@ -532,6 +560,83 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
     assert captured["collect_provider"] == "vast"
     assert captured["collect_instance_id"] == "vast-iid"
     assert captured["collect_job_dir"].name == "contender-1-vast"
+
+
+def test_paid_job_surfaces_blocked_parity_result_without_runtime_blocker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
+    )
+
+    def _fake_stage(bundle_zip, job_dir, *, key_prefix):
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+        (job_dir / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+        (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+        return {"status": "completed", "manifest": {}}
+
+    class _FakeProvider:
+        name = "runpod"
+
+        def available(self) -> dict:
+            return {"provider": self.name, "available": True}
+
+        def build_request(self, spec, job_dir):
+            return {"env": dict(spec.env), "image": spec.image}
+
+    monkeypatch.setattr(J, "stage_bundle", _fake_stage)
+    monkeypatch.setattr(J, "get_render_provider", lambda name, warm_candidates=(): _FakeProvider())
+    monkeypatch.setattr(
+        J,
+        "launch_with_marker_retry",
+        lambda *_args, **_kwargs: {
+            "status": "launched",
+            "instance_id": "pod1",
+            "mode": "cold_create_marker_verified",
+        },
+    )
+    monkeypatch.setattr(
+        J,
+        "watch_and_collect",
+        lambda *_args, **_kwargs: {
+            "status": "blocked",
+            "elapsed_seconds": 1,
+            "teardown": {"status": "stopped"},
+            "runner_result_source": "isaac_g1_kitchen_parity_result.json",
+            "last_bootstrap": {"phase": "runner_done", "rc": 0},
+            "timed_out_without_runner_done": False,
+            "runner_result": {
+                "status": "blocked",
+                "blockers": [
+                    "manipulation_pov_geometry_failed",
+                    "placement_validation_failed",
+                ],
+                "scenarios": [],
+                "scenarios_executed": 1,
+                "scenarios_passed": 0,
+            },
+        },
+    )
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="runpod",
+        allow_paid=True,
+    )
+
+    assert m["status"] == "blocked"
+    assert m["runner_completed"] is True
+    assert m["parity_result_status"] == "blocked"
+    assert "manipulation_pov_geometry_failed" in m["blockers"]
+    assert "placement_validation_failed" in m["blockers"]
+    assert "isaac_parity_result_blocked" in m["blockers"]
+    assert "isaac_runtime_did_not_complete" not in m["blockers"]
+    assert "harness" not in m
 
 
 def test_paid_launch_blocks_dirty_worktree_before_staging(tmp_path: Path, monkeypatch) -> None:

@@ -286,10 +286,21 @@ def test_robot_mounted_manipulation_camera_metadata_is_replayable() -> None:
     assert '"viewport_size_px": [int(width), int(height)]' in source
 
 
+def test_local_dry_render_uses_same_min_manipulation_fov_as_gpu_runner() -> None:
+    source = _RUNNER.read_text()
+
+    render_local_preview = source[source.index("def render_local_preview("):]
+    render_local_preview = render_local_preview[: render_local_preview.index("def main(")]
+
+    assert "MANIPULATION_POV_MIN_VFOV_DEG" in render_local_preview
+    assert "max(float(camera_vfov_deg), 90.0)" not in render_local_preview
+
+
 def test_real_g1_visual_meshes_preserve_authored_materials_by_default() -> None:
     source = _RUNNER.read_text()
 
-    assert 'force_review_material = os.getenv("PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE", "") == "1"' in source
+    assert "bool(robot_review_material_override)" in source
+    assert 'os.getenv("PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE", "") == "1"' in source
     assert "override_robot_material = bool(robot_visual_missing or force_review_material)" in source
     assert "override_authored_materials=override_robot_material" in source
     assert '"authored_robot_materials_preserved"] = not bool(override_robot_material)' in source
@@ -317,8 +328,16 @@ def test_manipulation_seed_arm_target_is_forward_ready_not_affordance_contact() 
     )
     assert high_seed[0] > shoulder[0]
     assert high_seed[1] == pytest.approx(shoulder[1])
-    assert high_seed[2] < shoulder[2]
+    assert high_seed[2] > shoulder[2]
+    assert high_seed[2] <= shoulder[2] + M.MANIPULATION_HIGH_REACH_MAX_SEED_Z_ABOVE_SHOULDER_M
     assert high_seed != high_handle
+    assert high_seed[2] > seed[2]
+
+    side_handle = (0.0, 0.45, 0.95)
+    fallback_seed = M._manipulation_seed_arm_target_for_shoulder(shoulder, side_handle)
+    assert fallback_seed[0] > shoulder[0]
+    assert fallback_seed[1] == pytest.approx(shoulder[1])
+    assert fallback_seed != side_handle
 
 
 def test_manipulation_arm_link_name_filter_is_side_and_arm_specific() -> None:
@@ -409,8 +428,10 @@ def test_manipulation_camera_target_selection_accepts_hand_wrist_seed_without_el
     assert meta["selected_camera_target"].startswith("head_forward_pitch_limited_")
     assert geom["status"] == "PASS"
     assert geom["seed_arm_visibility"]["status"] == "PASS"
-    assert "manipulation_pov_left_arm_seed_failed" not in geom["blockers"]
     assert "manipulation_pov_arm_chain_not_in_frame" not in geom["blockers"]
+    assert geom["reach_feasibility"]["status"] == "PASS"
+    assert "manipulation_pov_left_arm_seed_failed" not in geom["blockers"]
+    assert "manipulation_pov_affordance_outside_g1_reach_envelope" not in geom["blockers"]
     assert geom["camera_pitch_down_deg"] <= M.MANIPULATION_POV_HEAD_FORWARD_PITCH_DOWN_DEG
     assert geom["arm_roles_in_frame_by_arm"]["left"] == ["hand", "wrist"]
     assert geom["arm_roles_in_frame_by_arm"]["right"] == ["hand", "wrist"]
@@ -485,6 +506,41 @@ def test_render_quality_config_enables_pathtraced_for_review_subframes(monkeypat
     assert forced["samples_per_pixel"] == 96
     assert M._effective_render_rt_subframes(32, cfg) == 1
     assert M._effective_render_rt_subframes(32, realtime) == 32
+
+
+def test_default_software_denoise_removes_firefly_speckle_for_source_qa(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("PIL")
+    from PIL import Image  # type: ignore
+    from blueprint_pipeline.wam_generated_video_review import (
+        assess_source_policy_observation_visual_qa,
+    )
+
+    monkeypatch.delenv("PARITY_SOFTWARE_DENOISE_MODE", raising=False)
+    rng = np.random.default_rng(17)
+    noisy = Image.fromarray(
+        rng.integers(0, 256, size=(480, 640, 3), dtype=np.uint8),
+        mode="RGB",
+    )
+    denoised = M._software_denoise_image(noisy)
+    frame = tmp_path / "denoised.png"
+    denoised.save(frame)
+
+    qa = assess_source_policy_observation_visual_qa(
+        frame,
+        generated_at="now",
+        target_object_id="Sink054_handle",
+        task_id="sink_faucet",
+        visual_profile="review_quality",
+        review_quality_required=True,
+    )
+
+    assert qa["status"] == "passed_visual_quality_gate"
+    assert qa["blockers"] == []
+    assert qa["metrics"]["edge_density"] < 0.45
 
 
 def test_path_traced_rt_subframes_env_override_is_bounded(monkeypatch) -> None:
@@ -600,8 +656,7 @@ def test_arm_reach_skeleton_moves_hand_toward_faucet_and_into_view() -> None:
     # at reach_frac=0 nothing moves
     assert M.compute_arm_reach_skeleton(rest, faucet, 0.0) == rest
     # at full reach the hand is much closer to the faucet than at rest
-    full = dict(M.compute_arm_reach_skeleton(rest, faucet, 1.0))
-    import math
+    full = dict(M.compute_arm_reach_skeleton(rest, faucet, 1.0, forward_yaw=math.pi / 2))
 
     def d(a, b):
         return math.dist(a, b)
@@ -616,7 +671,7 @@ def test_arm_reach_skeleton_moves_hand_toward_faucet_and_into_view() -> None:
     # non-arm links (torso) are untouched
     assert full["torso_link"] == (2.28, 0.73, 1.1)
     # the reach is monotonic: half-reach hand sits between rest and full
-    half = dict(M.compute_arm_reach_skeleton(rest, faucet, 0.5))
+    half = dict(M.compute_arm_reach_skeleton(rest, faucet, 0.5, forward_yaw=math.pi / 2))
     assert rest_hand[1] < half["right_hand_palm_link"][1] < full["right_hand_palm_link"][1]
 
 
@@ -852,6 +907,16 @@ def test_make_render_product_attaches_segmentation_annotators(monkeypatch) -> No
     assert calls == [("rgb", None)]
 
 
+def test_dry_render_uses_nominal_skeleton_for_local_pov_geometry() -> None:
+    source = _RUNNER.read_text()
+
+    assert "nominal_g1_dry_render_skeleton" in source
+    assert "_arm_link_points_by_arm_from_skeleton(" in source
+    assert "manipulation_pov_geometry_unavailable_without_g1_link_geometry" not in source[
+        source.index("def render_local_preview("):
+    ]
+
+
 def test_save_depth_writes_lossless_npy_and_preview(tmp_path: Path) -> None:
     import numpy as np
 
@@ -1034,9 +1099,14 @@ def test_parse_scenarios_normalizes_to_pelvis_height_route() -> None:
     req = {"scenarios": [
         {"scenario_id": "s1", "spawn_position_xyz": [-4.25, -3.35, 0.05],
          "target_position_xyz": [1.75, 1.25, 0.05], "description": "to sink",
-         "target_object_id": "faucet_handle"},
+         "target_object_id": "sink", "affordance_object_ids": ["handle", "lever"]},
         {"id": "s2", "route_points": [[0, 0, 0.1], [1, 1, 0.1], [2, 2, 0.1]]},
-        {"scenario_id": "task_only", "description": "open the service door"},
+        {
+            "scenario_id": "task_only",
+            "description": "open the service door",
+            "target_object_ids": ["door_handle", "door"],
+            "affordance_object_ids": ["door_handle"],
+        },
         {"scenario_id": "bad"},  # no start/target -> skipped
     ]}
     sc = M.parse_scenarios(req)
@@ -1046,10 +1116,13 @@ def test_parse_scenarios_normalizes_to_pelvis_height_route() -> None:
     assert sc[0]["start"][2] == M.ROBOT_PELVIS_HEIGHT_M
     assert len(sc[1]["route_points"]) == 3
     assert sc[0]["raw_target_position_xyz"] == [1.75, 1.25, 0.05]
-    assert sc[0]["target_object_id"] == "faucet_handle"
+    assert sc[0]["target_object_id"] == "sink"
+    assert sc[0]["affordance_object_ids"] == ["handle", "lever"]
     assert sc[2]["task_target_deferred"] is True
     assert sc[2]["route_points"] == []
     assert sc[2]["instruction"] == "open the service door"
+    assert sc[2]["target_object_ids"] == ["door_handle", "door"]
+    assert sc[2]["affordance_object_ids"] == ["door_handle"]
 
 
 def test_deferred_task_route_materializes_from_dynamic_stance() -> None:
@@ -1108,6 +1181,182 @@ def test_task_stance_planner_samples_around_target_until_collision_free() -> Non
     assert math.dist(plan["accepted_pose"][:2], plan["task_target_xyz"][:2]) == pytest.approx(1.0)
 
 
+def test_task_stance_planner_prefers_reachable_affordance_pose() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "task_affordance_xyz": [0.0, -0.1, 1.0],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [0.4],
+        "floor_z_hint": 0.05,
+    }
+
+    plan = M.plan_task_stance(scenario=scenario, probe_collision=lambda pose, yaw: 0)
+
+    assert plan["status"] == "accepted"
+    assert plan["reachability_selection_enabled"] is True
+    chosen = plan["candidates"][plan["selected_candidate_index"]]
+    assert chosen["reachability_estimate"]["status"] == "PASS"
+    assert chosen["reachability_estimate"]["best_reach_arm"] in {"left", "right"}
+    chosen_best_shoulder = chosen["reachability_estimate"]["best_reach_arm_estimate"][
+        "shoulder_to_affordance_m"
+    ]
+    all_best_shoulders = [
+        c["reachability_estimate"]["best_reach_arm_estimate"]["shoulder_to_affordance_m"]
+        for c in plan["candidates"]
+    ]
+    assert chosen_best_shoulder == min(all_best_shoulders)
+    assert plan["accepted_pose"][1] < 0.0
+    assert plan["task_affordance_xyz"] == [0.0, -0.1, 1.0]
+    assert plan["stance_focus_source"] == "task_affordance_xyz"
+    assert plan["stance_focus_xyz"] == [0.0, -0.1, 1.0]
+    assert plan["accepted_pose"][1] == pytest.approx(scenario["task_affordance_xyz"][1])
+
+
+def test_task_stance_planner_samples_offset_handle_not_fixture_centroid() -> None:
+    scenario = {
+        "task_target_position_xyz": [2.277888, 1.333059, 0.848527],
+        "task_affordance_xyz": [2.489866, 1.069795, 0.886474],
+        "robot_start_position_xyz": [1.609779, 0.947326, 0.84],
+        "target_object_bbox_min_xyz": [2.066149, 0.683999, 0.047727],
+        "target_object_bbox_max_xyz": [2.489866, 1.982118, 1.649326],
+        "stance_distance_candidates_m": [0.30, 0.32, 0.38],
+        "floor_z_hint": 0.05,
+    }
+
+    plan = M.plan_task_stance(scenario=scenario, probe_collision=lambda pose, yaw: 0)
+
+    assert plan["status"] == "accepted"
+    assert plan["stance_focus_source"] == "task_affordance_xyz"
+    assert plan["stance_focus_xyz"] == [2.489866, 1.069795, 0.886474]
+    chosen = plan["candidates"][plan["selected_candidate_index"]]
+    assert chosen["stance_focus_source"] == "task_affordance_xyz"
+    assert math.dist(plan["accepted_pose"][:2], scenario["task_affordance_xyz"][:2]) < math.dist(
+        [1.609779, 0.947326],
+        scenario["task_affordance_xyz"][:2],
+    )
+    assert chosen["reachability_estimate"]["nearest_seed_effector_to_affordance_m"] < 0.45
+
+
+def test_task_stance_reach_uses_effector_neighborhood_not_tiny_shoulder_cutoff() -> None:
+    reach = M._task_stance_reachability_estimate(
+        (1.769021, 1.069795, 0.84),
+        0.0,
+        (2.489866, 1.069795, 0.886474),
+    )
+
+    assert reach is not None
+    assert reach["status"] == "PASS"
+    assert reach["required_max_shoulder_to_affordance_m"] == pytest.approx(
+        M.G1_APPROX_ARM_SPAN_M + M.MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M
+    )
+    assert reach["nearest_seed_effector_to_affordance_m"] == pytest.approx(0.3572)
+    assert "manipulation_pov_affordance_outside_g1_reach_envelope" not in reach["blockers"]
+    assert M._seed_reach_blockers(
+        shoulder_to_affordance_m=0.7946,
+        effector_to_affordance_m=0.3834,
+        shoulder_margin_m=M.MANIPULATION_RENDERED_SEED_SHOULDER_MARGIN_M,
+        effector_margin_m=M.MANIPULATION_RENDERED_SEED_EFFECTOR_MARGIN_M,
+    ) == []
+    assert M._seed_reach_blockers(
+        shoulder_to_affordance_m=0.7946,
+        effector_to_affordance_m=0.3834,
+        shoulder_margin_m=M.MANIPULATION_RENDERED_SEED_SHOULDER_MARGIN_M,
+        effector_margin_m=0.0,
+    ) == ["manipulation_pov_effector_too_far_from_affordance"]
+
+
+def test_handleless_top_cabinet_derives_scoped_lower_front_edge_affordance() -> None:
+    target_resolution = {
+        "status": "resolved",
+        "selected": {
+            "target_object_id": "topcabinet",
+            "prim_path": "/root/Kitchen_TopCabinet_01",
+            "path_depth": 2,
+            "center_xyz": [0.63, 2.26, 1.94],
+            "bbox_min_xyz": [-1.29, 2.06, 1.50],
+            "bbox_max_xyz": [2.56, 2.47, 2.38],
+        },
+    }
+    blocked_affordance = {
+        "status": "blocked",
+        "blockers": ["affordance_not_scoped_to_target_fixture"],
+    }
+
+    derived = M._derive_handleless_upper_cabinet_affordance_resolution(
+        target_resolution=target_resolution,
+        affordance_resolution=blocked_affordance,
+        scenario={"task_id": "top_cabinet"},
+    )
+
+    assert derived is not None
+    assert derived["status"] == "resolved"
+    assert derived["source"] == "usd_target_bounds_derived_affordance"
+    selected = derived["selected"]
+    assert selected["derived_affordance"] is True
+    assert selected["target_object_id"] == "derived_upper_cabinet_lower_front_edge"
+    assert selected["center_xyz"][0] == pytest.approx(0.63)
+    assert selected["center_xyz"][1] == pytest.approx(2.06)
+    assert selected["center_xyz"][2] == pytest.approx(1.6056)
+    assert "not a detected handle" in selected["claim_boundary"].lower()
+
+
+def test_robot_proxy_clean_label_is_excluded_from_scene_obstacles() -> None:
+    class Obj:
+        id = "g"
+        label = "g"
+
+    assert M._is_robot_scene_object(Obj()) is True
+
+
+def test_task_stance_planner_uses_calibrated_g1_shoulder_geometry_for_close_appliance() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.558827, 2.161934, 0.809859],
+        "task_affordance_xyz": [0.566285, 1.922063, 0.807764],
+        "robot_start_position_xyz": [0.558827, 1.505526, 0.84],
+        "target_object_bbox_min_xyz": [0.140191, 1.885526, 0.787217],
+        "target_object_bbox_max_xyz": [0.977464, 2.438342, 0.832501],
+        "stance_distance_candidates_m": [0.30, 0.38],
+        "floor_z_hint": 0.05,
+    }
+
+    plan = M.plan_task_stance(scenario=scenario, probe_collision=lambda pose, yaw: 0)
+
+    assert plan["status"] == "accepted"
+    assert plan["reachability_selection_enabled"] is True
+    selected = plan["candidates"][plan["selected_candidate_index"]]
+    farther = next(
+        c for c in plan["candidates"]
+        if c["standoff_from_target_surface_m"] == pytest.approx(0.38)
+        and c["angle_offset_deg"] == 0
+    )
+    assert selected["standoff_from_target_surface_m"] == pytest.approx(0.30)
+    assert selected["reachability_estimate"]["status"] == "PASS"
+    assert farther["reachability_estimate"]["status"] == "PASS"
+
+
+def test_task_stance_planner_blocks_when_affordance_never_reachable() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "task_affordance_xyz": [0.0, -0.1, 2.2],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "target_object_bbox_min_xyz": [-0.1, -0.1, 0.8],
+        "target_object_bbox_max_xyz": [0.1, 0.1, 1.0],
+        "stance_distance_candidates_m": [0.30, 0.38],
+        "floor_z_hint": 0.05,
+    }
+
+    plan = M.plan_task_stance(scenario=scenario, probe_collision=lambda pose, yaw: 0)
+
+    assert plan["status"] == "blocked"
+    assert plan["blockers"] == ["no_reach_seed_task_stance_candidate"]
+    assert plan["reachability_selection_enabled"] is True
+    assert plan["reachability_rejected_candidate_count"] > 0
+    assert all(
+        candidate["reachability_estimate"]["status"] == "FAIL"
+        for candidate in plan["candidates"]
+    )
+
+
 def test_task_stance_planner_offsets_from_target_footprint_surface() -> None:
     scenario = {
         "task_target_position_xyz": [2.0, 2.0, 0.9],
@@ -1146,7 +1395,7 @@ def test_open_articulated_target_uses_close_surface_standoff_from_bounds() -> No
     }
 
     distances = M.task_stance_distance_candidates(scenario)
-    assert distances[0] == pytest.approx(0.4)
+    assert distances[0] == pytest.approx(0.35)
     assert M._validation_standoff_range_for_scenario(scenario) == pytest.approx(
         M.TASK_STANCE_CLOSE_REACH_GAP_RANGE_M
     )
@@ -1157,7 +1406,7 @@ def test_open_articulated_target_uses_close_surface_standoff_from_bounds() -> No
         placement_validator=lambda _pose, _yaw, record: (
             {"status": "accepted", "blockers": []}
             if record["angle_offset_deg"] == 0
-            and record["standoff_from_target_surface_m"] == pytest.approx(0.4)
+            and record["standoff_from_target_surface_m"] == pytest.approx(0.35)
             else {"status": "blocked", "blockers": ["synthetic_reach_profile_reject"]}
         ),
     )
@@ -1165,17 +1414,17 @@ def test_open_articulated_target_uses_close_surface_standoff_from_bounds() -> No
     assert plan["status"] == "accepted"
     chosen = plan["candidates"][plan["selected_candidate_index"]]
     assert chosen["angle_offset_deg"] == 0
-    assert chosen["standoff_from_target_surface_m"] == pytest.approx(0.4)
-    assert plan["accepted_pose"][0] == pytest.approx(-1.037152, abs=0.002)
-    assert plan["accepted_pose"][1] == pytest.approx(0.65847, abs=0.002)
+    assert chosen["standoff_from_target_surface_m"] == pytest.approx(0.35)
+    assert plan["accepted_pose"][0] == pytest.approx(-1.085326, abs=0.002)
+    assert plan["accepted_pose"][1] == pytest.approx(0.658299, abs=0.002)
     assert abs(abs(plan["accepted_yaw"]) - math.pi) < 0.01
 
 
 def test_non_articulated_target_keeps_default_standoff_profile() -> None:
     scenario = {
-        "instruction": "turn on the faucet",
-        "target_object_id": "sink",
-        "target_object_label": "sink",
+        "instruction": "stand near the counter",
+        "target_object_id": "counter",
+        "target_object_label": "counter",
     }
 
     assert M.task_stance_distance_candidates(scenario)[0] == pytest.approx(
@@ -1183,6 +1432,19 @@ def test_non_articulated_target_keeps_default_standoff_profile() -> None:
     )
     assert M._validation_standoff_range_for_scenario(scenario) == pytest.approx(
         M.TASK_STANCE_DEFAULT_VALIDATION_STANDOFF_RANGE_M
+    )
+
+
+def test_faucet_and_sink_targets_use_close_reach_profile() -> None:
+    scenario = {
+        "instruction": "turn on the faucet",
+        "target_object_id": "sink",
+        "target_object_label": "sink",
+    }
+
+    assert M.task_stance_distance_candidates(scenario)[0] < M.TASK_STANCE_DEFAULT_SURFACE_STANDOFF_M
+    assert M._validation_standoff_range_for_scenario(scenario) == pytest.approx(
+        M.TASK_STANCE_CLOSE_REACH_GAP_RANGE_M
     )
 
 
@@ -1488,10 +1750,54 @@ def test_stage_placement_validator_accepts_close_reach_gap_when_task_range_allow
     assert result["status"] == "accepted"
     assert result["blockers"] == []
     assert result["target_bbox_relation"]["gap_m"] == pytest.approx(0.12, abs=0.002)
-    assert result["deterministic_geometry"]["standoff_m"] == pytest.approx(0.12, abs=0.002)
+    assert result["deterministic_geometry"]["standoff_m"] == pytest.approx(0.279, abs=0.002)
     assert result["validation_standoff_range_m"] == pytest.approx(
         list(M.TASK_STANCE_CLOSE_REACH_GAP_RANGE_M)
     )
+
+
+def test_stage_placement_validator_allows_visual_bbox_overlap_when_floor_footprint_clear(
+    monkeypatch,
+) -> None:
+    pose = (0.75, 0.0, 0.79)
+    target = SceneObject(
+        id="sink",
+        label="sink counter",
+        bbox_min=(1.0, -0.2, 0.8),
+        bbox_max=(1.4, 0.2, 1.2),
+        centroid=(1.2, 0.0, 1.0),
+    )
+    monkeypatch.setattr(M, "_place_root", lambda _stage, _prim_path, _pose, _yaw: None)
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [0.45, -0.15, 0.0],
+            "bbox_max_xyz": [1.05, 0.15, 1.5],
+            "center_xyz": [0.75, 0.0, 0.75],
+            "size_xyz": [0.6, 0.3, 1.5],
+        },
+    )
+    validator = M._placement_validator_for_stage(
+        object(),
+        "/World/G1",
+        (target.bbox_min, target.bbox_max),
+        target_object=target,
+        scene_objects=[target],
+        floor_z=0.0,
+        standoff_range=M.TASK_STANCE_CLOSE_REACH_GAP_RANGE_M,
+    )
+
+    result = validator(
+        pose,
+        0.0,
+        {"standoff_from_target_surface_m": 0.13, "scene_collision_contact_count": 0},
+    )
+
+    assert result["status"] == "accepted"
+    assert result["blockers"] == []
+    assert result["target_bbox_relation"]["overlaps_xy"] is True
+    assert result["target_bbox_relation"]["hard_blocker"] is False
 
 
 def test_stage_placement_validator_suppresses_broad_aabb_clip_only_after_zero_physx_contact(
@@ -1696,6 +2002,99 @@ def test_placement_validation_manifest_passes_with_actual_bbox_center_match(monk
     assert manifest["topdown_debug_frame"].endswith("placement_topdown_0000.png")
 
 
+def test_placement_validation_treats_unparsed_visual_qc_as_nonblocking_evidence(monkeypatch) -> None:
+    stance_plan = {
+        "status": "accepted",
+        "accepted_pose": [2.0, 0.8, 0.84],
+        "accepted_yaw": math.pi / 2,
+        "floor_z_hint": 0.05,
+        "task_target_xyz": [2.0, 2.0, 0.95],
+        "task_target_bounds": {
+            "bbox_min_xyz": [1.5, 1.65, 0.75],
+            "bbox_max_xyz": [2.5, 2.35, 1.15],
+        },
+    }
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [1.72, 0.52, 0.0],
+            "bbox_max_xyz": [2.28, 1.08, 1.6],
+            "center_xyz": [2.0, 0.8, 0.8],
+            "size_xyz": [0.56, 0.56, 1.6],
+        },
+    )
+
+    manifest = M._build_placement_validation_manifest(
+        stage=object(),
+        robot_prim_path="/World/G1",
+        stance_plan=stance_plan,
+        accepted_pose=(2.0, 0.8, 0.84),
+        accepted_yaw=math.pi / 2,
+        root_diagnostics={"status": "placed"},
+        scene_objects=[],
+        scenario_id="sink_stance",
+        visual_qc={
+            "status": "blocked",
+            "blockers": ["placement_visual_qc_unparsed"],
+            "per_frame": [
+                {
+                    "parsed": False,
+                    "passed": False,
+                    "error": "ClientError('429 RESOURCE_EXHAUSTED')",
+                }
+            ],
+        },
+    )
+
+    assert manifest["status"] == "PASS"
+    assert manifest["blockers"] == []
+    assert manifest["visual_qc"]["status"] == "blocked"
+
+
+def test_placement_validation_fails_on_parsed_visual_qc_failure(monkeypatch) -> None:
+    stance_plan = {
+        "status": "accepted",
+        "accepted_pose": [2.0, 0.8, 0.84],
+        "accepted_yaw": math.pi / 2,
+        "floor_z_hint": 0.05,
+        "task_target_xyz": [2.0, 2.0, 0.95],
+        "task_target_bounds": {
+            "bbox_min_xyz": [1.5, 1.65, 0.75],
+            "bbox_max_xyz": [2.5, 2.35, 1.15],
+        },
+    }
+    monkeypatch.setattr(
+        M,
+        "_world_bbox_for_prim",
+        lambda _stage, _prim_path: {
+            "bbox_min_xyz": [1.72, 0.52, 0.0],
+            "bbox_max_xyz": [2.28, 1.08, 1.6],
+            "center_xyz": [2.0, 0.8, 0.8],
+            "size_xyz": [0.56, 0.56, 1.6],
+        },
+    )
+
+    manifest = M._build_placement_validation_manifest(
+        stage=object(),
+        robot_prim_path="/World/G1",
+        stance_plan=stance_plan,
+        accepted_pose=(2.0, 0.8, 0.84),
+        accepted_yaw=math.pi / 2,
+        root_diagnostics={"status": "placed"},
+        scene_objects=[],
+        scenario_id="sink_stance",
+        visual_qc={
+            "status": "blocked",
+            "blockers": ["placement_visual_qc_failed"],
+            "per_frame": [{"parsed": True, "passed": False, "reason": "robot is clipping"}],
+        },
+    )
+
+    assert manifest["status"] == "FAIL"
+    assert "placement_visual_qc_failed" in manifest["blockers"]
+
+
 def test_placement_validation_manifest_fails_on_actual_bbox_center_mismatch(monkeypatch) -> None:
     stance_plan = {
         "status": "accepted",
@@ -1775,12 +2174,295 @@ def test_dynamic_scene_target_bounds_thread_into_task_stance(monkeypatch) -> Non
     )
 
     assert plan["status"] == "accepted"
-    assert plan["accepted_pose"][1] == pytest.approx(0.8)
+    assert plan["accepted_pose"][1] == pytest.approx(1.4)
     assert plan["target_resolution"]["selected"]["target_object_id"] == "sink"
     assert plan["task_target_bounds"]["bbox_max_xyz"] == [2.5, 2.35, 1.15]
     assert plan["candidates"][0]["standoff_from_target_surface_m"] == pytest.approx(
-        M.TASK_STANCE_DEFAULT_SURFACE_STANDOFF_M
+        0.25
     )
+
+
+def test_stage_affordance_resolution_threads_into_stance_reach_selection(monkeypatch) -> None:
+    def fake_resolve(_stage, scenario, allow_scene_placement_fallback=True):
+        if scenario.get("target_object_ids") == ["spout"]:
+            return {
+                "status": "resolved",
+                "source": "usd_prim_bounds",
+                "selected": {
+                    "target_object_id": "spout",
+                    "target_object_priority": 0,
+                    "prim_path": "/root/CoffeeMachine006/CoffeeMachine006_Spout",
+                    "center_xyz": [0.0, -0.1, 1.0],
+                    "size_xyz": [0.1, 0.1, 0.1],
+                    "bbox_min_xyz": [-0.05, -0.15, 0.95],
+                    "bbox_max_xyz": [0.05, -0.05, 1.05],
+                },
+                "matches_considered": [
+                    {
+                        "target_object_id": "spout",
+                        "target_object_priority": 0,
+                        "prim_path": "/root/CoffeeMachine006/CoffeeMachine006_Spout",
+                        "center_xyz": [0.0, -0.1, 1.0],
+                        "bbox_min_xyz": [-0.05, -0.15, 0.95],
+                        "bbox_max_xyz": [0.05, -0.05, 1.05],
+                    },
+                    {
+                        "target_object_id": "spout",
+                        "target_object_priority": 0,
+                        "prim_path": "/root/Sink054_01/Sink054_spout",
+                        "center_xyz": [0.0, -0.1, 1.0],
+                        "bbox_min_xyz": [-0.05, -0.15, 0.95],
+                        "bbox_max_xyz": [0.05, -0.05, 1.05],
+                    },
+                ],
+            }
+        return {
+            "status": "resolved",
+            "source": "usd_prim_bounds",
+            "selected": {
+                "target_object_id": "sink",
+                "target_object_priority": 0,
+                "prim_path": "/root/Sink054_01",
+                "center_xyz": [0.0, 0.0, 0.9],
+                "size_xyz": [0.2, 0.2, 0.2],
+                "bbox_min_xyz": [-0.1, -0.1, 0.8],
+                "bbox_max_xyz": [0.1, 0.1, 1.0],
+            },
+        }
+
+    monkeypatch.setattr(M, "_resolve_task_target_from_stage", fake_resolve)
+    scenario = {
+        "instruction": "Stand at the kitchen sink and turn on the faucet.",
+        "raw_spawn_position_xyz": [-3.0, 0.0, 0.05],
+        "floor_z_hint": 0.05,
+        "stance_distance_candidates_m": [0.4],
+        "target_object_ids": ["sink"],
+        "affordance_object_ids": ["spout"],
+    }
+
+    plan = M._plan_task_stance_for_stage(
+        stage=object(),
+        scenario=scenario,
+        manipulation_look_at=None,
+        probe=lambda pose, yaw: 0,
+        no_collision_probe=False,
+    )
+
+    assert plan["status"] == "accepted"
+    assert plan["affordance_resolution"]["selected"]["prim_path"].endswith("Sink054_spout")
+    assert plan["affordance_resolution"]["scope_filter"]["status"] == "scoped_to_target_fixture"
+    assert plan["reachability_selection_enabled"] is True
+    chosen = plan["candidates"][plan["selected_candidate_index"]]
+    assert chosen["reachability_estimate"]["target_affordance_xyz"] == [0.0, -0.1, 1.0]
+
+
+def test_stage_affordance_resolution_with_explicit_coarse_target_still_drives_stance(
+    monkeypatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_resolve(_stage, scenario, allow_scene_placement_fallback=True):
+        target_ids = list(scenario.get("target_object_ids") or [])
+        calls.append(target_ids)
+        if target_ids == ["handle"]:
+            return {
+                "status": "resolved",
+                "source": "usd_prim_bounds",
+                "selected": {
+                    "target_object_id": "handle",
+                    "target_object_priority": 0,
+                    "prim_path": "/root/Sink054_01/Sink054_handle",
+                    "center_xyz": [0.0, -0.1, 1.0],
+                    "bbox_min_xyz": [-0.05, -0.15, 0.95],
+                    "bbox_max_xyz": [0.05, -0.05, 1.05],
+                },
+                "matches_considered": [
+                    {
+                        "target_object_id": "handle",
+                        "target_object_priority": 0,
+                        "prim_path": "/root/Sink054_01/Sink054_handle",
+                        "center_xyz": [0.0, -0.1, 1.0],
+                        "bbox_min_xyz": [-0.05, -0.15, 0.95],
+                        "bbox_max_xyz": [0.05, -0.05, 1.05],
+                    }
+                ],
+            }
+        return {
+            "status": "resolved",
+            "source": "usd_prim_bounds",
+            "selected": {
+                "target_object_id": "sink",
+                "target_object_priority": 0,
+                "prim_path": "/root/Sink054_01",
+                "center_xyz": [0.0, 0.0, 0.9],
+                "bbox_min_xyz": [-0.1, -0.1, 0.8],
+                "bbox_max_xyz": [0.1, 0.1, 1.0],
+            },
+        }
+
+    monkeypatch.setattr(M, "_resolve_task_target_from_stage", fake_resolve)
+    scenario = {
+        "instruction": "Stand at the kitchen sink and turn on the faucet.",
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "target_object_bbox_min_xyz": [-0.1, -0.1, 0.8],
+        "target_object_bbox_max_xyz": [0.1, 0.1, 1.0],
+        "raw_spawn_position_xyz": [-3.0, 0.0, 0.05],
+        "floor_z_hint": 0.05,
+        "stance_distance_candidates_m": [0.4],
+        "target_object_ids": ["sink"],
+        "affordance_object_ids": ["handle"],
+    }
+
+    plan = M._plan_task_stance_for_stage(
+        stage=object(),
+        scenario=scenario,
+        manipulation_look_at=None,
+        probe=lambda pose, yaw: 0,
+        no_collision_probe=False,
+    )
+
+    assert calls == [["sink"], ["handle"]]
+    assert plan["status"] == "accepted"
+    assert plan["task_target_xyz"] == [0.0, 0.0, 0.9]
+    assert plan["task_affordance_xyz"] == [0.0, -0.1, 1.0]
+    assert plan["stance_focus_source"] == "task_affordance_xyz"
+    assert plan["affordance_focus_source"] == "usd_affordance_object_alias"
+    chosen = plan["candidates"][plan["selected_candidate_index"]]
+    assert chosen["stance_focus_xyz"] == [0.0, -0.1, 1.0]
+    assert chosen["reachability_estimate"]["status"] == "PASS"
+
+
+def test_scoped_affordance_resolution_preserves_explicit_control_priority() -> None:
+    target_resolution = {
+        "status": "resolved",
+        "source": "usd_prim_bounds",
+        "selected": {
+            "target_object_id": "sink",
+            "target_object_priority": 0,
+            "prim_path": "/root/Sink054_01",
+            "center_xyz": [2.277888, 1.333059, 0.848527],
+            "bbox_min_xyz": [2.009021, 0.89582, 0.555082],
+            "bbox_max_xyz": [2.546755, 1.770299, 1.141971],
+        },
+    }
+    affordance_resolution = {
+        "status": "resolved",
+        "source": "usd_prim_bounds",
+        "selected": {
+            "target_object_id": "handle",
+            "target_object_priority": 0,
+            "prim_path": "/root/Sink054_01/Sink054_handle",
+            "center_xyz": [2.489866, 1.069795, 0.886474],
+            "bbox_min_xyz": [2.466351, 1.050669, 0.82909],
+            "bbox_max_xyz": [2.513381, 1.088922, 0.943858],
+        },
+        "matches_considered": [
+            {
+                "target_object_id": "spout",
+                "target_object_priority": 5,
+                "prim_path": "/root/Sink054_01/Sink054_spout",
+                "center_xyz": [2.409514, 1.145855, 1.017716],
+                "bbox_min_xyz": [2.31906, 1.136575, 0.893461],
+                "bbox_max_xyz": [2.499968, 1.155135, 1.141971],
+            },
+            {
+                "target_object_id": "handle",
+                "target_object_priority": 0,
+                "prim_path": "/root/Sink054_01/Sink054_handle",
+                "center_xyz": [2.489866, 1.069795, 0.886474],
+                "bbox_min_xyz": [2.466351, 1.050669, 0.82909],
+                "bbox_max_xyz": [2.513381, 1.088922, 0.943858],
+            },
+        ],
+    }
+
+    scoped = M._scope_affordance_resolution_to_target(
+        affordance_resolution,
+        target_resolution,
+    )
+
+    assert scoped["selected"]["target_object_id"] == "handle"
+    assert scoped["selected"]["prim_path"].endswith("Sink054_handle")
+    assert scoped["matches_considered"][0]["target_object_id"] == "handle"
+
+
+def test_stage_affordance_resolution_rejects_unscoped_global_handle(monkeypatch) -> None:
+    def fake_resolve(_stage, scenario, allow_scene_placement_fallback=True):
+        if scenario.get("target_object_ids") == ["handle"]:
+            return {
+                "status": "resolved",
+                "source": "usd_prim_bounds",
+                "selected": {
+                    "target_object_id": "handle",
+                    "target_object_priority": 0,
+                    "prim_path": "/root/CoffeeMachine006/CoffeeMachine006_Handle",
+                    "center_xyz": [0.0, 1.0, 0.9],
+                    "bbox_min_xyz": [-0.05, 0.95, 0.85],
+                    "bbox_max_xyz": [0.05, 1.05, 0.95],
+                },
+                "matches_considered": [
+                    {
+                        "target_object_id": "handle",
+                        "target_object_priority": 0,
+                        "prim_path": "/root/CoffeeMachine006/CoffeeMachine006_Handle",
+                        "center_xyz": [0.0, 1.0, 0.9],
+                        "bbox_min_xyz": [-0.05, 0.95, 0.85],
+                        "bbox_max_xyz": [0.05, 1.05, 0.95],
+                    }
+                ],
+            }
+        return {
+            "status": "resolved",
+            "source": "usd_prim_bounds",
+            "selected": {
+                "target_object_id": "topcabinet",
+                "target_object_priority": 0,
+                "prim_path": "/root/Kitchen_TopCabinet_01",
+                "center_xyz": [0.0, 1.0, 1.9],
+                "size_xyz": [1.0, 0.4, 0.8],
+                "bbox_min_xyz": [-0.5, 0.8, 1.5],
+                "bbox_max_xyz": [0.5, 1.2, 2.3],
+            },
+        }
+
+    monkeypatch.setattr(M, "_resolve_task_target_from_stage", fake_resolve)
+
+    plan = M._plan_task_stance_for_stage(
+        stage=object(),
+        scenario={
+            "instruction": "Stand at the upper kitchen cabinet and reach for the cabinet handle.",
+            "raw_spawn_position_xyz": [0.0, 0.0, 0.05],
+            "floor_z_hint": 0.05,
+            "target_object_ids": ["topcabinet", "cabinet"],
+            "affordance_object_ids": ["handle"],
+            "stance_distance_candidates_m": [0.4],
+        },
+        manipulation_look_at=None,
+        probe=lambda pose, yaw: 0,
+        no_collision_probe=False,
+    )
+
+    assert plan["status"] == "blocked"
+    assert plan["blockers"] == ["task_affordance_resolution_failed"]
+    assert plan["affordance_resolution"]["status"] == "blocked"
+    assert "affordance_not_scoped_to_target_fixture" in plan["affordance_resolution"]["blockers"]
+    assert "task_affordance_xyz" not in plan
+    assert "affordance_focus_source" not in plan
+
+
+def test_surface_affordance_point_prefers_fine_affordance() -> None:
+    plan = {
+        "task_target_xyz": [2.0, 1.0, 0.9],
+        "task_target_bounds": {
+            "bbox_min_xyz": [1.5, 0.5, 0.7],
+            "bbox_max_xyz": [2.5, 1.5, 1.2],
+        },
+        "task_affordance_xyz": [2.4, 0.8, 1.05],
+    }
+
+    point = M._surface_affordance_point_for_stance(plan, [1.0, 1.0, 0.84])
+
+    assert point == (2.4, 0.8, 1.05)
 
 
 def test_task_stance_planner_fails_closed_when_all_candidates_collide() -> None:
@@ -2068,6 +2750,83 @@ def test_usd_task_target_resolver_prefers_object_root_over_descendant(monkeypatc
     assert result["selected"]["prim_path"] == "/World/Sink054"
     assert result["selected"]["center_xyz"] == [2.0, 0.5, 0.9]
     assert result["selected"]["match_kind"] == "exact_prim_name_or_path_segment"
+
+
+def test_usd_task_target_resolver_prefers_ordered_affordance_alias(monkeypatch) -> None:
+    class FakeRangeBox:
+        def __init__(self, bmin, bmax):
+            self._min = bmin
+            self._max = bmax
+
+        def IsEmpty(self):
+            return False
+
+        def GetMin(self):
+            return self._min
+
+        def GetMax(self):
+            return self._max
+
+        def GetSize(self):
+            return [self._max[i] - self._min[i] for i in range(3)]
+
+    class FakeBound:
+        def __init__(self, box):
+            self._box = box
+
+        def ComputeAlignedBox(self):
+            return self._box
+
+    class FakePrim:
+        def __init__(self, path, name, bmin, bmax):
+            self._path = path
+            self._name = name
+            self.box = FakeRangeBox(bmin, bmax)
+
+        def GetPath(self):
+            return self._path
+
+        def GetName(self):
+            return self._name
+
+    sink = FakePrim("/World/Sink054", "Sink054", [1.5, 1.65, 0.75], [2.5, 2.35, 1.15])
+    faucet = FakePrim(
+        "/World/Sink054/FaucetLever",
+        "FaucetLever",
+        [2.08, 1.92, 1.05],
+        [2.22, 2.08, 1.18],
+    )
+
+    class FakeStage:
+        def Traverse(self):
+            return [sink, faucet]
+
+    class FakeBBoxCache:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ComputeWorldBound(self, prim):
+            return FakeBound(prim.box)
+
+    fake_usd = types.SimpleNamespace(TimeCode=types.SimpleNamespace(Default=lambda: "default"))
+    fake_usd_geom = types.SimpleNamespace(
+        Tokens=types.SimpleNamespace(default_="default", render="render", proxy="proxy"),
+        BBoxCache=FakeBBoxCache,
+    )
+    fake_pxr = types.SimpleNamespace(Usd=fake_usd, UsdGeom=fake_usd_geom)
+    monkeypatch.setitem(sys.modules, "pxr", fake_pxr)
+    monkeypatch.setitem(sys.modules, "pxr.Usd", fake_usd)
+    monkeypatch.setitem(sys.modules, "pxr.UsdGeom", fake_usd_geom)
+
+    result = M._resolve_task_target_from_stage(
+        FakeStage(),
+        {"target_object_ids": ["faucet", "lever", "sink"]},
+    )
+
+    assert result["status"] == "resolved"
+    assert result["selected"]["prim_path"] == "/World/Sink054/FaucetLever"
+    assert result["selected"]["target_object_id"] == "faucet"
+    assert result["selected"]["target_object_priority"] == 0
 
 
 def test_assemble_collision_summary_counts() -> None:
@@ -2561,6 +3320,21 @@ def test_build_result_blocks_on_blockers() -> None:
     assert res["status"] == "blocked"
 
 
+def test_build_result_blocks_zero_outcomes_with_explicit_reason() -> None:
+    res = M.build_result(
+        scenarios=[{"scenario_id": "sink_faucet"}],
+        outcomes=[],
+        policy_id="blueprint_default_walk_to_target_smoke_policy",
+        kitchen_usd="k.usd",
+        g1_usd="g1.usd",
+        blockers=[],
+    )
+
+    assert res["status"] == "blocked"
+    assert res["scenarios_executed"] == 0
+    assert "scenario_execution_returned_no_outcomes" in res["blockers"]
+
+
 def _rotate_by_quat(q, v):
     # rotate vector v by quaternion q=(w,x,y,z)
     w, x, y, z = q
@@ -2613,10 +3387,10 @@ def test_manipulation_pov_geometry_requires_seed_arm_chain_and_effector_in_frame
     affordance = (1.0, 0.0, 1.0)
     visible = M._manipulation_pov_geometry(
         arm_points={
-            "shoulder": (0.1, -0.05, 1.02),
-            "elbow": (0.45, -0.05, 1.02),
-            "wrist": (0.7, -0.03, 1.01),
-            "hand": (0.82, -0.02, 1.0),
+            "shoulder": (0.55, -0.05, 1.02),
+            "elbow": (0.66, -0.05, 1.02),
+            "wrist": (0.78, -0.03, 1.01),
+            "hand": (0.86, -0.02, 1.0),
         },
         affordance=affordance,
         eye=eye,
@@ -2628,15 +3402,16 @@ def test_manipulation_pov_geometry_requires_seed_arm_chain_and_effector_in_frame
     )
     assert visible["status"] == "PASS"
     assert {"elbow", "wrist", "hand"}.issubset(set(visible["arm_roles_in_frame"]))
-    assert visible["effector_distance_is_metadata_only"] is True
+    assert visible["effector_distance_is_metadata_only"] is False
+    assert visible["reach_feasibility"]["status"] == "PASS"
     assert visible["effector_distance_to_affordance_m"]["hand"] > 0.1
 
-    off_axis_affordance = M._manipulation_pov_geometry(
+    too_far_affordance = M._manipulation_pov_geometry(
         arm_points={
-            "shoulder": (0.1, -0.05, 1.02),
-            "elbow": (0.45, -0.05, 1.02),
-            "wrist": (0.7, -0.03, 1.01),
-            "hand": (0.82, -0.02, 1.0),
+            "shoulder": (0.55, -0.05, 1.02),
+            "elbow": (0.66, -0.05, 1.02),
+            "wrist": (0.78, -0.03, 1.01),
+            "hand": (0.86, -0.02, 1.0),
         },
         affordance=(1.0, 0.55, 1.0),
         eye=eye,
@@ -2646,28 +3421,35 @@ def test_manipulation_pov_geometry_requires_seed_arm_chain_and_effector_in_frame
         height=480,
         arm="right",
     )
-    assert off_axis_affordance["status"] == "PASS"
-    assert off_axis_affordance["target_in_frame"] is True
-    assert off_axis_affordance["arm_extension"]["status"] == "PASS"
-    assert off_axis_affordance["arm_extension"]["horizontal_extension_ratio"] > 0.35
-    assert off_axis_affordance["effector_distance_is_metadata_only"] is True
-    assert "alignment_to_affordance_direction" not in off_axis_affordance["arm_extension"]
-    assert "manipulation_pov_effector_not_near_affordance" not in off_axis_affordance["blockers"]
+    assert too_far_affordance["status"] == "FAIL"
+    assert too_far_affordance["target_in_frame"] is True
+    assert too_far_affordance["arm_extension"]["status"] == "PASS"
+    assert too_far_affordance["arm_extension"]["horizontal_extension_ratio"] > 0.35
+    assert too_far_affordance["effector_distance_is_metadata_only"] is False
+    assert "alignment_to_affordance_direction" not in too_far_affordance["arm_extension"]
+    assert too_far_affordance["reach_feasibility"]["status"] == "FAIL"
+    assert too_far_affordance["reach_feasibility"]["required_for_seed_geometry"] is True
+    assert "manipulation_pov_effector_too_far_from_affordance" in too_far_affordance[
+        "reach_feasibility"
+    ]["blockers"]
+    assert "manipulation_pov_effector_too_far_from_affordance" in too_far_affordance[
+        "blockers"
+    ]
 
     both_visible = M._manipulation_pov_geometry(
         arm_points={},
         arm_points_by_arm={
             "left": {
-                "shoulder": (0.1, 0.05, 1.02),
-                "elbow": (0.45, 0.05, 1.02),
-                "wrist": (0.7, 0.03, 1.01),
-                "hand": (0.82, 0.02, 1.0),
+                "shoulder": (0.55, 0.05, 1.02),
+                "elbow": (0.66, 0.05, 1.02),
+                "wrist": (0.78, 0.03, 1.01),
+                "hand": (0.86, 0.02, 1.0),
             },
             "right": {
-                "shoulder": (0.1, -0.05, 1.02),
-                "elbow": (0.45, -0.05, 1.02),
-                "wrist": (0.7, -0.03, 1.01),
-                "hand": (0.82, -0.02, 1.0),
+                "shoulder": (0.55, -0.05, 1.02),
+                "elbow": (0.66, -0.05, 1.02),
+                "wrist": (0.78, -0.03, 1.01),
+                "hand": (0.86, -0.02, 1.0),
             },
         },
         affordance=affordance,
@@ -2682,15 +3464,47 @@ def test_manipulation_pov_geometry_requires_seed_arm_chain_and_effector_in_frame
     assert both_visible["required_arms"] == ["left", "right"]
     assert set(both_visible["per_arm_geometry"]) == {"left", "right"}
     assert both_visible["arm_extension"]["status"] == "PASS"
+    assert both_visible["reach_feasibility"]["status"] == "PASS"
+    assert both_visible["reach_feasibility"]["passing_arms"] == ["left", "right"]
+
+    one_arm_reachable = M._manipulation_pov_geometry(
+        arm_points={},
+        arm_points_by_arm={
+            "left": {
+                "shoulder": (0.55, 0.45, 1.02),
+                "elbow": (0.66, 0.45, 1.02),
+                "wrist": (0.78, 0.43, 1.01),
+                "hand": (0.86, 0.42, 1.0),
+            },
+            "right": {
+                "shoulder": (0.55, -0.05, 1.02),
+                "elbow": (0.66, -0.05, 1.02),
+                "wrist": (0.78, -0.03, 1.01),
+                "hand": (0.86, -0.02, 1.0),
+            },
+        },
+        affordance=affordance,
+        eye=eye,
+        target=target,
+        vfov_deg=95.0,
+        width=640,
+        height=480,
+        arm="both",
+    )
+    assert one_arm_reachable["seed_arm_visibility"]["status"] == "PASS"
+    assert one_arm_reachable["arm_extension"]["status"] == "PASS"
+    assert one_arm_reachable["reach_feasibility"]["status"] == "PASS"
+    assert one_arm_reachable["reach_feasibility"]["passing_arms"] == ["right"]
+    assert "manipulation_pov_affordance_outside_g1_reach_envelope" not in one_arm_reachable["blockers"]
 
     right_only_for_both = M._manipulation_pov_geometry(
         arm_points={},
         arm_points_by_arm={
             "right": {
-                "shoulder": (0.1, -0.05, 1.02),
-                "elbow": (0.45, -0.05, 1.02),
-                "wrist": (0.7, -0.03, 1.01),
-                "hand": (0.82, -0.02, 1.0),
+                "shoulder": (0.55, -0.05, 1.02),
+                "elbow": (0.66, -0.05, 1.02),
+                "wrist": (0.78, -0.03, 1.01),
+                "hand": (0.86, -0.02, 1.0),
             },
         },
         affordance=affordance,
@@ -2753,7 +3567,12 @@ def test_manipulation_pov_geometry_requires_seed_arm_chain_and_effector_in_frame
     )
     assert visible_but_hanging["status"] == "FAIL"
     assert "manipulation_pov_arm_not_extended_forward" in visible_but_hanging["blockers"]
-    assert "manipulation_pov_effector_not_near_affordance" not in visible_but_hanging["blockers"]
+    assert "manipulation_pov_effector_too_far_from_affordance" in visible_but_hanging[
+        "reach_feasibility"
+    ]["blockers"]
+    assert "manipulation_pov_effector_too_far_from_affordance" in visible_but_hanging[
+        "blockers"
+    ]
 
 
 def test_pov_seed_frame_quality_rejects_black_edge_occlusion(tmp_path) -> None:

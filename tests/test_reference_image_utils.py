@@ -114,6 +114,7 @@ def test_cleanup_crop_dispatch_and_qwen_vram_guards(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(ref, "_cleanup_with_qwen_image_edit", lambda *_args: image)
     monkeypatch.setattr(ref, "_cleanup_with_nano_banana", lambda *_args: output)
     assert ref.cleanup_crop_with_vlm(image, output, provider="auto") == output
+    assert output == ref.cleanup_crop_with_vlm(image, output, provider="gpt_image")
     monkeypatch.setattr(ref, "_cleanup_with_nano_banana", lambda *_args: image)
     assert ref.cleanup_crop_with_vlm(image, output, provider="together_qwen_image_edit_api") == image
     assert ref.cleanup_crop_with_vlm(image, output, provider="qwen_image_edit") == image
@@ -355,6 +356,7 @@ def test_nano_banana_and_gpt_image_cleanup_paths(tmp_path: Path, monkeypatch) ->
     image = _png(tmp_path / "input.png")
     nano_output = tmp_path / "nano.png"
     gpt_output = tmp_path / "gpt.png"
+    monkeypatch.delenv("BLUEPRINT_ALLOW_NANO_BANANA", raising=False)
     monkeypatch.delenv("GOOGLE_GENAI_API_KEY", raising=False)
     assert ref._cleanup_with_nano_banana(image, nano_output) == image
 
@@ -365,6 +367,7 @@ def test_nano_banana_and_gpt_image_cleanup_paths(tmp_path: Path, monkeypatch) ->
             raise ImportError("missing google")
         return real_import(name, *args, **kwargs)
 
+    monkeypatch.setenv("BLUEPRINT_ALLOW_NANO_BANANA", "1")
     monkeypatch.setenv("GOOGLE_GENAI_API_KEY", "google-key")
     monkeypatch.setattr(builtins, "__import__", missing_google)
     assert ref._cleanup_with_nano_banana(image, nano_output) == image

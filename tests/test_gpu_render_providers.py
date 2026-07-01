@@ -557,6 +557,72 @@ def test_watch_and_collect_ignores_stale_result_before_runner_done(tmp_path: Pat
     assert res["teardown_reason"] == "timeout_without_runner_done_terminated"
 
 
+def test_watch_and_collect_terminates_current_final_result_without_runner_done(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from blueprint_pipeline import isaac_particlefield_render_job as job
+
+    class _FakeProvider:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.terminated: str | None = None
+
+        def stop(self, instance_id: str) -> dict:
+            self.stopped = instance_id
+            return {"status": "stopped"}
+
+        def terminate(self, instance_id: str) -> dict:
+            self.terminated = instance_id
+            return {"status": "terminated"}
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bootstrap.json", json.dumps({
+            "phase": "runner_starting",
+            "launch_session_id": "launch-123",
+        }))
+        zf.writestr("isaac_g1_kitchen_parity_result.json", json.dumps({
+            "status": "blocked",
+            "scenarios_executed": 0,
+            "blockers": ["isaac_runner_exception_before_scenario_outcome"],
+        }))
+    payload_bytes = payload.getvalue()
+
+    class _Response:
+        def read(self) -> bytes:
+            return payload_bytes
+
+    monkeypatch.setattr(job.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(job.urllib.request, "urlopen", lambda _url, timeout=60: _Response())
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+    (job_dir / "launch_session_nonce.txt").write_text("launch-123")
+    fake = _FakeProvider()
+
+    res = job.watch_and_collect(
+        job_dir,
+        tmp_path / "out",
+        "inst-9",
+        provider=fake,
+        max_seconds=1,
+        poll=1,
+        preserve_instance=True,
+    )
+
+    assert res["status"] == "blocked"
+    assert res["runner_result"]["scenarios_executed"] == 0
+    assert res["timed_out_without_runner_done"] is False
+    assert res["runner_done_observed"] is False
+    assert res["final_result_without_runner_done"] is True
+    assert fake.stopped is None
+    assert fake.terminated == "inst-9"
+    assert res["teardown_reason"] == "final_result_without_runner_done_terminated"
+
+
 def test_watch_and_collect_terminates_heartbeat_timeout_despite_preserve(
     tmp_path: Path,
     monkeypatch,

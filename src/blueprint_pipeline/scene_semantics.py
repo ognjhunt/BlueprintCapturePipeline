@@ -261,9 +261,7 @@ class _GeminiResult:
 
 _DEFAULT_MODEL_CASCADE = [
     "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
     "gemini-2.5-flash",
-    "gemini-2.5-pro",
 ]
 _DEFAULT_GEMINI_VIDEO_ANALYSIS_FPS = 5.0
 _MAX_GEMINI_VIDEO_ANALYSIS_FPS = 24.0
@@ -273,7 +271,7 @@ _GEMINI_TRANSIENT_RETRIES = 2
 def _gemini_models_from_override(*env_names: str) -> List[str]:
     for env_name in env_names:
         override = (os.getenv(env_name) or "").strip()
-        if override:
+        if override and "flash" in override.lower():
             return [override]
     return list(_DEFAULT_MODEL_CASCADE)
 

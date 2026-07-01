@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -53,7 +54,9 @@ DRY_RENDER_NOT_RENDERED_NOTE = (
     "NOT a rendered frame: CPU-only dry-render preview of stance/camera/projection math."
 )
 # robot footprint half-extent (m) for the PhysX overlap probe (approx G1 standing bbox)
-ROBOT_FOOTPRINT_HALF_EXTENT = (0.28, 0.28, 0.62)
+# Unitree publishes G1 standing dimensions as 1320 x 450 x 200 mm and arm span as ~0.45 m.
+# The tuple is local robot-frame half extent: +x forward depth, +y lateral width, +z vertical.
+ROBOT_FOOTPRINT_HALF_EXTENT = (0.12, 0.23, 0.62)
 ROBOT_PELVIS_HEIGHT_M = 0.79
 DEFAULT_ISAAC_LEG_KP = 100.0
 DEFAULT_ISAAC_LEG_KD = 2.0
@@ -74,6 +77,22 @@ TASK_STANCE_TARGET_BBOX_KEY_PAIRS = (
 )
 TASK_STANCE_FALLBACK_TARGET_KEYS = ("raw_target_position_xyz", "target")
 TASK_STANCE_TARGET_OBJECT_KEYS = ("target_object_id", "task_target_object_id", "object_id")
+TASK_STANCE_TARGET_OBJECT_LIST_KEYS = (
+    "target_object_ids",
+    "task_target_object_ids",
+    "object_ids",
+    "target_object_aliases",
+)
+TASK_STANCE_AFFORDANCE_OBJECT_LIST_KEYS = (
+    "affordance_object_ids",
+    "manipulation_affordance_object_ids",
+    "task_affordance_object_ids",
+)
+TASK_STANCE_AFFORDANCE_KEYS = (
+    "task_affordance_xyz",
+    "manipulation_affordance_xyz",
+    "affordance_position_xyz",
+)
 TASK_STANCE_APPROACH_KEYS = (
     "approach_position_xyz",
     "robot_start_position_xyz",
@@ -84,6 +103,14 @@ TASK_STANCE_ANGLE_OFFSETS_DEG = (0, -15, 15, -30, 30, -45, 45, -60, 60, -90, 90,
 TASK_STANCE_DEFAULT_SURFACE_STANDOFF_M = 0.85
 TASK_STANCE_DEFAULT_VALIDATION_STANDOFF_RANGE_M = (0.4, 1.2)
 TASK_STANCE_CLOSE_REACH_TARGET_TOKENS = (
+    "faucet",
+    "tap",
+    "sink",
+    "stove",
+    "stovetop",
+    "cooktop",
+    "burner",
+    "knob",
     "door",
     "drawer",
     "handle",
@@ -116,6 +143,21 @@ TASK_STANCE_CLOSE_REACH_ACTION_TOKENS = (
 )
 TASK_STANCE_CLOSE_REACH_GAP_RANGE_M = (0.08, 0.72)
 MANIPULATION_READY_ARM_SELECTIONS = ("right", "left", "both")
+G1_APPROX_ARM_SPAN_M = 0.45
+G1_APPROX_SHOULDER_FORWARD_OFFSET_M = 0.0
+G1_APPROX_SHOULDER_LATERAL_OFFSET_M = 0.16
+G1_APPROX_SHOULDER_ABOVE_ROOT_M = 0.29
+MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M = 0.35
+MANIPULATION_SEED_MAX_SHOULDER_TO_AFFORDANCE_M = (
+    G1_APPROX_ARM_SPAN_M + MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M
+)
+MANIPULATION_RENDERED_SEED_SHOULDER_MARGIN_M = 0.10
+MANIPULATION_RENDERED_SEED_EFFECTOR_MARGIN_M = 0.05
+MANIPULATION_STANCE_APPROX_SHOULDER_MARGIN_M = 0.10
+MANIPULATION_STANCE_APPROX_EFFECTOR_MARGIN_M = 0.10
+MANIPULATION_HIGH_REACH_MIN_AFFORDANCE_ABOVE_SHOULDER_M = 0.22
+MANIPULATION_HIGH_REACH_MAX_SEED_Z_ABOVE_SHOULDER_M = 0.38
+MANIPULATION_HIGH_REACH_SEED_HEIGHT_FRACTION = 0.75
 MANIPULATION_READY_ARM_JOINT_DELTAS = {
     "left": {
         "left_shoulder_pitch_joint": -0.85,
@@ -150,8 +192,14 @@ MANIPULATION_ARM_LINK_NAME_TOKENS = (
 )
 MANIPULATION_ARM_POSE_MIN_LINK_MOVE_M = 0.02
 MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG = 26.0
+MANIPULATION_POV_CAMERA_PITCH_EPSILON_DEG = 0.1
 MANIPULATION_POV_HEAD_FORWARD_PITCH_DOWN_DEG = 24.0
 MANIPULATION_POV_MIN_VFOV_DEG = 110.0
+MANIPULATION_REACH_BLOCKER_SET = {
+    "manipulation_pov_affordance_outside_g1_reach_envelope",
+    "manipulation_pov_effector_too_far_from_affordance",
+    "manipulation_pov_reach_feasibility_unverified",
+}
 DEFAULT_RENDER_STEP_WATCHDOG_SECONDS = 180.0
 ROBOT_VISUAL_MESH_MISSING_BLOCKER = "robot_visual_mesh_missing"
 ROBOT_REVIEW_VISUAL_PROXY_USED_BLOCKER = "robot_review_visual_proxy_used"
@@ -202,6 +250,13 @@ def parse_scenarios(request: Mapping[str, Any]) -> list[dict]:
                 "target_object_id",
                 "task_target_object_id",
                 "object_id",
+                "target_object_ids",
+                "task_target_object_ids",
+                "object_ids",
+                "target_object_aliases",
+                "affordance_object_ids",
+                "manipulation_affordance_object_ids",
+                "task_affordance_object_ids",
                 "target_object_label",
                 "task_target_object_label",
                 "task",
@@ -246,6 +301,19 @@ def parse_scenarios(request: Mapping[str, Any]) -> list[dict]:
             "target_object_id",
             "task_target_object_id",
             "object_id",
+            "target_object_ids",
+            "task_target_object_ids",
+            "object_ids",
+            "target_object_aliases",
+            "affordance_object_ids",
+            "manipulation_affordance_object_ids",
+            "task_affordance_object_ids",
+            "target_object_label",
+            "task_target_object_label",
+            "task",
+            "task_description",
+            "description",
+            "task_instruction",
         ):
             if key in raw:
                 out[-1][key] = raw[key]
@@ -306,6 +374,11 @@ def _surface_affordance_point_for_stance(
     """
     if not stance_plan or root_pose is None:
         return None
+    affordance = stance_plan.get("task_affordance_xyz")
+    if affordance is not None:
+        point = _optional_xyz(affordance)
+        if point is not None:
+            return point
     target = _optional_xyz(stance_plan.get("task_target_xyz"))
     if target is None:
         return None
@@ -337,6 +410,46 @@ def _half_extent_along_bounds(
     hy = max(0.0, 0.5 * (bbox_max[1] - bbox_min[1]))
     ux, uy = direction_xy
     return abs(float(ux)) * hx + abs(float(uy)) * hy
+
+
+def _surface_offset_from_focus_along_bounds(
+    bounds: tuple[tuple[float, float, float], tuple[float, float, float]] | None,
+    focus: Sequence[float],
+    direction_xy: tuple[float, float],
+) -> float:
+    """Distance from a focus point to the target footprint surface along an outward ray.
+
+    Coarse fixture centers are fine for navigation, but manipulation tasks often resolve a fine
+    affordance near one edge of the fixture. Sampling around the fixture centroid can put the robot
+    close to the sink/cabinet while still far from the actual handle/knob. When a fine affordance is
+    available, use it as the stance focus and only add the distance needed to exit the coarse target
+    footprint before applying the requested robot standoff.
+    """
+    if bounds is None:
+        return 0.0
+    bbox_min, bbox_max = bounds
+    px, py = float(focus[0]), float(focus[1])
+    ux, uy = float(direction_xy[0]), float(direction_xy[1])
+    inside_xy = (
+        float(bbox_min[0]) <= px <= float(bbox_max[0])
+        and float(bbox_min[1]) <= py <= float(bbox_max[1])
+    )
+    if not inside_xy:
+        return 0.0
+    exits: list[float] = []
+    if abs(ux) > 1e-9:
+        boundary_x = float(bbox_max[0]) if ux > 0.0 else float(bbox_min[0])
+        t = (boundary_x - px) / ux
+        if t >= 0.0:
+            exits.append(t)
+    if abs(uy) > 1e-9:
+        boundary_y = float(bbox_max[1]) if uy > 0.0 else float(bbox_min[1])
+        t = (boundary_y - py) / uy
+        if t >= 0.0:
+            exits.append(t)
+    if exits:
+        return max(0.0, min(exits))
+    return _half_extent_along_bounds(bounds, direction_xy)
 
 
 def _xy_rect_overlap_and_gap(
@@ -396,13 +509,14 @@ def _task_stance_angle_priority(offset_deg: float) -> int:
     return 3
 
 
-def _task_stance_selection_key(record: Mapping[str, Any]) -> tuple[float, float, float]:
+def _task_stance_selection_key(record: Mapping[str, Any]) -> tuple[float, ...]:
     """Sort key for accepted task-stance candidates.
 
     Candidate generation tries near distances before far distances, but an accepted pose on the
     opposite side of the target can appear before a farther pose on the intended approach ray.
-    This key preserves the useful near-first behavior inside an approach bucket while preventing
-    a backside/through-target pose from beating a farther room-side stance.
+    For manipulation tasks with a resolved fine affordance, rank by approximate G1 reach first,
+    then use approach/standoff as tie-breakers. This keeps unreachable but visually plausible
+    fixture stances from being fed downstream.
     """
     try:
         offset = abs(float(record.get("angle_offset_deg", 180.0)))
@@ -412,6 +526,56 @@ def _task_stance_selection_key(record: Mapping[str, Any]) -> tuple[float, float,
         distance = float(record.get("standoff_from_target_surface_m", float("inf")))
     except Exception:  # noqa: BLE001
         distance = float("inf")
+    reach = record.get("reachability_estimate")
+    if isinstance(reach, Mapping):
+        best = reach.get("best_reach_arm_estimate")
+        best = best if isinstance(best, Mapping) else {}
+        try:
+            best_shoulder = float(best.get("shoulder_to_affordance_m", reach.get("nearest_shoulder_to_affordance_m", float("inf"))))
+        except Exception:  # noqa: BLE001
+            best_shoulder = float("inf")
+        try:
+            best_effector = float(best.get("seed_effector_to_affordance_m", reach.get("nearest_seed_effector_to_affordance_m", float("inf"))))
+        except Exception:  # noqa: BLE001
+            best_effector = float("inf")
+        try:
+            max_shoulder = float(reach.get("max_shoulder_to_affordance_m", float("inf")))
+        except Exception:  # noqa: BLE001
+            max_shoulder = float("inf")
+        try:
+            max_effector = float(reach.get("max_seed_effector_to_affordance_m", float("inf")))
+        except Exception:  # noqa: BLE001
+            max_effector = float("inf")
+        try:
+            nearest_shoulder = float(reach.get("nearest_shoulder_to_affordance_m", float("inf")))
+        except Exception:  # noqa: BLE001
+            nearest_shoulder = float("inf")
+        try:
+            nearest_effector = float(reach.get("nearest_seed_effector_to_affordance_m", float("inf")))
+        except Exception:  # noqa: BLE001
+            nearest_effector = float("inf")
+        shoulder_overage = max(
+            0.0,
+            best_shoulder - float(MANIPULATION_SEED_MAX_SHOULDER_TO_AFFORDANCE_M),
+        )
+        effector_overage = max(
+            0.0,
+            best_effector - float(MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M),
+        )
+        return (
+            0.0 if reach.get("status") == "PASS" else 1.0,
+            shoulder_overage,
+            effector_overage,
+            best_shoulder,
+            best_effector,
+            nearest_shoulder,
+            nearest_effector,
+            max_shoulder,
+            max_effector,
+            float(_task_stance_angle_priority(offset)) if bool(record.get("approach_bias_enabled")) else 0.0,
+            distance,
+            offset,
+        )
     if not bool(record.get("approach_bias_enabled")):
         return (
             0.0,
@@ -423,6 +587,225 @@ def _task_stance_selection_key(record: Mapping[str, Any]) -> tuple[float, float,
         distance,
         offset,
     )
+
+
+def _task_stance_affordance_for_scenario(
+    scenario: Mapping[str, Any] | None,
+) -> tuple[float, float, float] | None:
+    if not scenario:
+        return None
+    for key in TASK_STANCE_AFFORDANCE_KEYS:
+        point = _optional_xyz(scenario.get(key))
+        if point is not None:
+            return point
+    return None
+
+
+def _approx_g1_shoulder_points_for_root(
+    pose: Sequence[float],
+    yaw: float,
+) -> dict[str, tuple[float, float, float]]:
+    """Approximate G1 shoulder centers from pelvis/root pose for pre-selection reach scoring.
+
+    The authoritative reach gate later uses the actual USD link geometry in the rendered seed.
+    This lightweight model is only for ranking collision-free candidate stances before the robot
+    is finally placed and posed.
+    """
+    root = (float(pose[0]), float(pose[1]), float(pose[2]))
+    fx, fy = math.cos(float(yaw)), math.sin(float(yaw))
+    lx, ly = -fy, fx
+    base = (
+        root[0] + fx * G1_APPROX_SHOULDER_FORWARD_OFFSET_M,
+        root[1] + fy * G1_APPROX_SHOULDER_FORWARD_OFFSET_M,
+        root[2] + G1_APPROX_SHOULDER_ABOVE_ROOT_M,
+    )
+    return {
+        "left": (
+            base[0] + lx * G1_APPROX_SHOULDER_LATERAL_OFFSET_M,
+            base[1] + ly * G1_APPROX_SHOULDER_LATERAL_OFFSET_M,
+            base[2],
+        ),
+        "right": (
+            base[0] - lx * G1_APPROX_SHOULDER_LATERAL_OFFSET_M,
+            base[1] - ly * G1_APPROX_SHOULDER_LATERAL_OFFSET_M,
+            base[2],
+        ),
+    }
+
+
+def _seed_reach_blockers(
+    *,
+    shoulder_to_affordance_m: float,
+    effector_to_affordance_m: float,
+    shoulder_margin_m: float = 0.0,
+    effector_margin_m: float = 0.0,
+) -> list[str]:
+    """Return seed-reach blockers using G1-scale dimensions without pretending to solve IK.
+
+    The hand/wrist-to-affordance distance is the hard visual-conditioning signal. The shoulder
+    distance is a gross body-envelope guard derived from G1 arm span plus the allowed seed-effector
+    neighborhood; otherwise a neutral straight-arm seed can be rejected even when the hand is close
+    enough for review-quality conditioning. Margins exist because the dry runner's nominal skeleton
+    and final USD link geometry are seed evidence, not a full kinematic reach solver.
+    """
+    blockers: list[str] = []
+    shoulder_limit = (
+        float(MANIPULATION_SEED_MAX_SHOULDER_TO_AFFORDANCE_M)
+        + max(0.0, float(shoulder_margin_m))
+    )
+    effector_limit = (
+        float(MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M)
+        + max(0.0, float(effector_margin_m))
+    )
+    if float(shoulder_to_affordance_m) > shoulder_limit:
+        blockers.append("manipulation_pov_affordance_outside_g1_reach_envelope")
+    if float(effector_to_affordance_m) > effector_limit:
+        blockers.append("manipulation_pov_effector_too_far_from_affordance")
+    return blockers
+
+
+def _task_stance_reachability_estimate(
+    pose: Sequence[float],
+    yaw: float,
+    affordance: Sequence[float] | None,
+) -> dict[str, Any] | None:
+    if affordance is None:
+        return None
+    aff = (float(affordance[0]), float(affordance[1]), float(affordance[2]))
+    shoulders = _approx_g1_shoulder_points_for_root(pose, yaw)
+    by_arm: dict[str, dict[str, Any]] = {}
+    shoulder_distances: list[float] = []
+    effector_distances: list[float] = []
+    blockers: set[str] = set()
+    passing_arms: list[str] = []
+    for side, shoulder in shoulders.items():
+        seed_effector = _manipulation_seed_arm_target_for_shoulder(
+            shoulder,
+            aff,
+            forward_yaw=float(yaw),
+        )
+        shoulder_m = math.sqrt(sum((shoulder[i] - aff[i]) ** 2 for i in range(3)))
+        effector_m = math.sqrt(sum((seed_effector[i] - aff[i]) ** 2 for i in range(3)))
+        arm_blockers = _seed_reach_blockers(
+            shoulder_to_affordance_m=shoulder_m,
+            effector_to_affordance_m=effector_m,
+            shoulder_margin_m=MANIPULATION_STANCE_APPROX_SHOULDER_MARGIN_M,
+            effector_margin_m=MANIPULATION_STANCE_APPROX_EFFECTOR_MARGIN_M,
+        )
+        blockers.update(arm_blockers)
+        if not arm_blockers:
+            passing_arms.append(side)
+        shoulder_distances.append(shoulder_m)
+        effector_distances.append(effector_m)
+        by_arm[side] = {
+            "status": "PASS" if not arm_blockers else "FAIL",
+            "blockers": arm_blockers,
+            "approx_shoulder_xyz": [round(float(v), 6) for v in shoulder],
+            "approx_seed_effector_xyz": [round(float(v), 6) for v in seed_effector],
+            "shoulder_to_affordance_m": round(float(shoulder_m), 4),
+            "seed_effector_to_affordance_m": round(float(effector_m), 4),
+        }
+    nearest_shoulder = min(shoulder_distances) if shoulder_distances else float("inf")
+    max_shoulder = max(shoulder_distances) if shoulder_distances else float("inf")
+    nearest_effector = min(effector_distances) if effector_distances else float("inf")
+    max_effector = max(effector_distances) if effector_distances else float("inf")
+    best_reach_arm = None
+    if by_arm:
+        best_reach_arm = min(
+            by_arm,
+            key=lambda side: (
+                float(by_arm[side].get("shoulder_to_affordance_m", float("inf"))),
+                float(by_arm[side].get("seed_effector_to_affordance_m", float("inf"))),
+            ),
+        )
+    return {
+        "status": "PASS" if passing_arms else "FAIL",
+        "blockers": [] if passing_arms else sorted(blockers),
+        "required_passing_arm_count": 1,
+        "passing_arms": passing_arms,
+        "best_reach_arm": best_reach_arm,
+        "best_reach_arm_estimate": by_arm.get(best_reach_arm) if best_reach_arm else None,
+        "target_affordance_xyz": [round(float(v), 6) for v in aff],
+        "nearest_shoulder_to_affordance_m": round(float(nearest_shoulder), 4),
+        "max_shoulder_to_affordance_m": round(float(max_shoulder), 4),
+        "nearest_seed_effector_to_affordance_m": round(float(nearest_effector), 4),
+        "max_seed_effector_to_affordance_m": round(float(max_effector), 4),
+        "required_max_shoulder_to_affordance_m": round(
+            float(MANIPULATION_SEED_MAX_SHOULDER_TO_AFFORDANCE_M),
+            4,
+        ),
+        "approx_preselection_shoulder_margin_m": round(
+            float(MANIPULATION_STANCE_APPROX_SHOULDER_MARGIN_M),
+            4,
+        ),
+        "required_max_seed_effector_to_affordance_m": round(
+            float(MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M),
+            4,
+        ),
+        "approx_preselection_effector_margin_m": round(
+            float(MANIPULATION_STANCE_APPROX_EFFECTOR_MARGIN_M),
+            4,
+        ),
+        "by_arm": by_arm,
+        "claim_boundary": (
+            "Candidate reachability is an approximate G1-dimension pre-selection score. "
+            "It is intentionally looser than the rendered seed gate so approximate shoulder "
+            "placement does not reject a pose before USD/rendered arm geometry is checked. "
+            "It requires at least one manipulation arm to be plausibly close; both-hand "
+            "visibility remains a separate seed-framing gate. The rendered manipulation POV "
+            "geometry gate remains the authority."
+        ),
+    }
+
+
+def _synthetic_target_resolution_from_scenario(
+    scenario: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Build target-resolution evidence from explicit scenario target bounds.
+
+    Some callers already provide a coarse target position/bounds, then ask the stage resolver only
+    for a fine handle/knob/pull. The affordance still has to be scoped to the coarse fixture, so this
+    creates the small target-resolution shape that ``_scope_affordance_resolution_to_target`` expects.
+    """
+    bounds = _target_bounds_for_scenario(scenario)
+    if bounds is None:
+        return None
+    target = task_stance_target_for_scenario(
+        scenario,
+        manipulation_look_at=None,
+        allow_navigation_target_fallback=False,
+    )
+    if target is None:
+        bbox_min, bbox_max = bounds
+        target = (
+            0.5 * (float(bbox_min[0]) + float(bbox_max[0])),
+            0.5 * (float(bbox_min[1]) + float(bbox_max[1])),
+            0.5 * (float(bbox_min[2]) + float(bbox_max[2])),
+        )
+    object_ids = task_stance_target_object_ids_for_scenario(scenario)
+    target_id = object_ids[0] if object_ids else str(
+        scenario.get("target_object_id")
+        or scenario.get("task_target_object_id")
+        or scenario.get("object_id")
+        or "scenario_target"
+    )
+    bbox_min, bbox_max = bounds
+    return {
+        "status": "resolved",
+        "source": "scenario_target_bounds",
+        "selected": {
+            "target_object_id": target_id,
+            "target_object_label": str(
+                scenario.get("target_object_label")
+                or scenario.get("task_target_object_label")
+                or target_id
+            ),
+            "prim_path": str(scenario.get("prim_path") or ""),
+            "center_xyz": [round(float(v), 6) for v in target],
+            "bbox_min_xyz": [round(float(v), 6) for v in bbox_min],
+            "bbox_max_xyz": [round(float(v), 6) for v in bbox_max],
+        },
+    }
 
 
 def _rounded_xyz(value: Sequence[float], *, digits: int = 6) -> list[float]:
@@ -549,17 +932,46 @@ def _is_close_reach_task_target(scenario: Mapping[str, Any] | None) -> bool:
     return bool(has_action and has_target)
 
 
-def _close_reach_surface_standoff_candidates() -> list[float]:
+def _uses_tight_control_surface_standoff(scenario: Mapping[str, Any] | None) -> bool:
+    task_text = _task_text_for_semantic_stance(scenario)
+    target_text = _target_text_for_semantic_stance(scenario)
+    text = f"{task_text} {target_text}"
+    control_tokens = (
+        "faucet",
+        "tap",
+        "knob",
+        "dial",
+        "control",
+        "burner",
+        "stove",
+        "stovetop",
+        "cooktop",
+    )
+    excluded_tokens = ("refrigerator", "fridge", "door", "drawer")
+    return any(token in text for token in control_tokens) and not any(
+        token in text for token in excluded_tokens
+    )
+
+
+def _close_reach_surface_standoff_candidates(
+    scenario: Mapping[str, Any] | None = None,
+) -> list[float]:
     half_xy = max(float(ROBOT_FOOTPRINT_HALF_EXTENT[0]), float(ROBOT_FOOTPRINT_HALF_EXTENT[1]))
-    clearances = (
+    clearances = []
+    if _uses_tight_control_surface_standoff(scenario):
+        clearances.extend((
+            max(0.02, half_xy * 0.07),
+            max(0.04, half_xy * 0.14),
+        ))
+    clearances.extend((
         max(0.12, half_xy * 0.40),
         max(0.18, half_xy * 0.65),
         max(0.27, half_xy * 0.95),
         max(0.40, half_xy * 1.40),
         max(0.55, half_xy * 2.00),
-    )
+    ))
     defaults = (TASK_STANCE_DEFAULT_SURFACE_STANDOFF_M, TASK_STANCE_DEFAULT_SURFACE_STANDOFF_M * 1.25)
-    return sorted({round(half_xy + float(gap), 4) for gap in clearances + defaults})
+    return sorted({round(half_xy + float(gap), 4) for gap in tuple(clearances) + defaults})
 
 
 def _validation_standoff_range_for_scenario(
@@ -581,7 +993,7 @@ def task_stance_distance_candidates(scenario: Mapping[str, Any] | None = None) -
     if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
         distances = sorted({round(float(v), 4) for v in raw if float(v) > 0.0})
     elif _is_close_reach_task_target(scenario):
-        distances = _close_reach_surface_standoff_candidates()
+        distances = _close_reach_surface_standoff_candidates(scenario)
     else:
         half_xy = max(float(ROBOT_FOOTPRINT_HALF_EXTENT[0]), float(ROBOT_FOOTPRINT_HALF_EXTENT[1]))
         base = max(TASK_STANCE_DEFAULT_SURFACE_STANDOFF_M, half_xy * 3.0)
@@ -622,6 +1034,51 @@ def task_stance_target_for_scenario(
     return None
 
 
+def task_stance_target_object_ids_for_scenario(scenario: Mapping[str, Any]) -> list[str]:
+    """Ordered target id/name aliases to search in the USD stage."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        out.append(text)
+
+    for key in TASK_STANCE_TARGET_OBJECT_KEYS:
+        if scenario.get(key):
+            add(scenario.get(key))
+    for key in TASK_STANCE_TARGET_OBJECT_LIST_KEYS:
+        values = scenario.get(key)
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+            for value in values:
+                add(value)
+        elif values:
+            add(values)
+    return out
+
+
+def task_stance_affordance_object_ids_for_scenario(scenario: Mapping[str, Any]) -> list[str]:
+    """Ordered fine-grained manipulation affordance aliases to search in the USD stage."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for key in TASK_STANCE_AFFORDANCE_OBJECT_LIST_KEYS:
+        values = scenario.get(key)
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+            iterable = values
+        elif values:
+            iterable = [values]
+        else:
+            iterable = []
+        for value in iterable:
+            text = str(value or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                out.append(text)
+    return out
+
+
 def plan_task_stance(
     *,
     scenario: Mapping[str, Any],
@@ -658,6 +1115,7 @@ def plan_task_stance(
         primary = (-1.0, 0.0)
     primary_angle = math.atan2(primary[1], primary[0])
     target_bounds = _target_bounds_for_scenario(scenario)
+    affordance_target = _task_stance_affordance_for_scenario(scenario)
     floor_z = float(
         floor_z_hint
         if floor_z_hint is not None
@@ -665,6 +1123,8 @@ def plan_task_stance(
     )
     root_z = floor_z + ROBOT_PELVIS_HEIGHT_M
     distances = task_stance_distance_candidates(scenario)
+    stance_focus = affordance_target or target
+    stance_focus_source = "task_affordance_xyz" if affordance_target is not None else "task_target_xyz"
     if not distances:
         return {
             "schema_version": TASK_STANCE_SCHEMA_VERSION,
@@ -677,18 +1137,27 @@ def plan_task_stance(
     candidates: list[dict[str, Any]] = []
     accepted_candidate_indices: list[int] = []
     rejected_by_placement_validation = 0
+    rejected_by_reachability = 0
     for distance_m in distances:
         for offset_deg in TASK_STANCE_ANGLE_OFFSETS_DEG:
             angle = primary_angle + math.radians(float(offset_deg))
             ux, uy = math.cos(angle), math.sin(angle)
-            target_surface_offset = _half_extent_along_bounds(target_bounds, (ux, uy))
+            target_surface_offset = (
+                _surface_offset_from_focus_along_bounds(
+                    target_bounds,
+                    stance_focus,
+                    (ux, uy),
+                )
+                if affordance_target is not None
+                else _half_extent_along_bounds(target_bounds, (ux, uy))
+            )
             center_distance_m = target_surface_offset + float(distance_m)
             pose = (
-                float(target[0]) + ux * center_distance_m,
-                float(target[1]) + uy * center_distance_m,
+                float(stance_focus[0]) + ux * center_distance_m,
+                float(stance_focus[1]) + uy * center_distance_m,
                 root_z,
             )
-            yaw = math.atan2(float(target[1]) - pose[1], float(target[0]) - pose[0])
+            yaw = math.atan2(float(stance_focus[1]) - pose[1], float(stance_focus[0]) - pose[0])
             collision_count = int(probe(pose, yaw))
             record = {
                 "candidate_kind": "task_stance",
@@ -697,10 +1166,19 @@ def plan_task_stance(
                 "distance_to_target_m": round(float(center_distance_m), 6),
                 "standoff_from_target_surface_m": round(float(distance_m), 6),
                 "target_surface_offset_m": round(float(target_surface_offset), 6),
+                "stance_focus_xyz": [round(float(v), 6) for v in stance_focus],
+                "stance_focus_source": stance_focus_source,
                 "angle_offset_deg": int(offset_deg),
                 "approach_bias_enabled": bool(approach is not None),
                 "scene_collision_contact_count": collision_count,
             }
+            reachability_estimate = _task_stance_reachability_estimate(
+                pose,
+                yaw,
+                affordance_target,
+            )
+            if reachability_estimate is not None:
+                record["reachability_estimate"] = reachability_estimate
             candidates.append(record)
             if collision_count == 0:
                 if placement_validator is not None:
@@ -716,6 +1194,12 @@ def plan_task_stance(
                     if not _placement_validation_passed(validation):
                         rejected_by_placement_validation += 1
                         continue
+                if (
+                    reachability_estimate is not None
+                    and reachability_estimate.get("status") != "PASS"
+                ):
+                    rejected_by_reachability += 1
+                    continue
                 accepted_candidate_indices.append(len(candidates) - 1)
     if accepted_candidate_indices:
         selected_candidate_index = min(
@@ -727,6 +1211,8 @@ def plan_task_stance(
             "schema_version": TASK_STANCE_SCHEMA_VERSION,
             "status": "accepted",
             "task_target_xyz": [round(float(v), 6) for v in target],
+            "stance_focus_xyz": [round(float(v), 6) for v in stance_focus],
+            "stance_focus_source": stance_focus_source,
             "approach_point_xyz": (
                 [round(float(v), 6) for v in approach] if approach is not None else None
             ),
@@ -736,13 +1222,16 @@ def plan_task_stance(
             "accepted_yaw": record["yaw"],
             "selected_candidate_index": selected_candidate_index,
             "accepted_candidate_count": len(accepted_candidate_indices),
+            "placement_validation_rejected_candidate_count": rejected_by_placement_validation,
+            "reachability_rejected_candidate_count": rejected_by_reachability,
             "stance_selection_key": [
                 round(float(v), 6) for v in _task_stance_selection_key(record)
             ],
             "stance_selection_strategy": (
-                "validated candidates are sorted by standoff distance when no real approach "
-                "hint exists; otherwise by approach-angle bucket, standoff distance, then "
-                "absolute angle offset"
+                "when a fine affordance is resolved, validated candidates are sorted by approximate "
+                "G1 reachability before approach/standoff tie-breakers; otherwise by standoff "
+                "distance when no real approach hint exists, or approach-angle bucket, standoff "
+                "distance, then absolute angle offset"
             ),
             "candidates": candidates,
             "claim_boundary": (
@@ -750,6 +1239,17 @@ def plan_task_stance(
                 "It is placement evidence, not full dynamic locomotion or manipulation success."
             ),
         }
+        if affordance_target is not None:
+            accepted["task_affordance_xyz"] = [round(float(v), 6) for v in affordance_target]
+            accepted["reachability_selection_enabled"] = True
+            accepted["reach_seed_gate"] = {
+                "status": "PASS",
+                "requirement": (
+                    "At least one approximate G1 manipulation arm seed can plausibly reach "
+                    "the resolved task affordance from the selected base pose."
+                ),
+                "selected_candidate_reachability": record.get("reachability_estimate"),
+            }
         if target_bounds is not None:
             accepted["task_target_bounds"] = {
                 "bbox_min_xyz": [round(float(v), 6) for v in target_bounds[0]],
@@ -762,17 +1262,29 @@ def plan_task_stance(
         "schema_version": TASK_STANCE_SCHEMA_VERSION,
         "status": "blocked",
         "blockers": [
-            "no_validated_task_stance_candidate"
-            if rejected_by_placement_validation
-            else "no_collision_free_task_stance_candidate"
+            (
+                "no_reach_seed_task_stance_candidate"
+                if rejected_by_reachability
+                else (
+                    "no_validated_task_stance_candidate"
+                    if rejected_by_placement_validation
+                    else "no_collision_free_task_stance_candidate"
+                )
+            )
         ],
         "task_target_xyz": [round(float(v), 6) for v in target],
+        "stance_focus_xyz": [round(float(v), 6) for v in stance_focus],
+        "stance_focus_source": stance_focus_source,
         "approach_point_xyz": [round(float(v), 6) for v in approach] if approach is not None else None,
         "robot_footprint_half_extent": [round(float(v), 6) for v in robot_footprint_half_extent],
         "floor_z_hint": round(floor_z, 6),
         "candidates": candidates,
         "placement_validation_rejected_candidate_count": rejected_by_placement_validation,
+        "reachability_rejected_candidate_count": rejected_by_reachability,
     }
+    if affordance_target is not None:
+        blocked["task_affordance_xyz"] = [round(float(v), 6) for v in affordance_target]
+        blocked["reachability_selection_enabled"] = True
     if target_bounds is not None:
         blocked["task_target_bounds"] = {
             "bbox_min_xyz": [round(float(v), 6) for v in target_bounds[0]],
@@ -808,7 +1320,10 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
                  actuator_output_mode: str | None = None,
                  authored_target_contact_material: Any | None = None) -> dict:
     passed = sum(1 for o in outcomes if o.get("task_success"))
-    status = "completed" if outcomes and not blockers else "blocked"
+    result_blockers = list(blockers)
+    if scenarios and not outcomes and not result_blockers:
+        result_blockers.append("scenario_execution_returned_no_outcomes")
+    status = "completed" if outcomes and not result_blockers else "blocked"
     contact_summary = summarize_physics_articulation_contact_reports(
         physics_articulation_contact_reports or []
     )
@@ -877,7 +1392,7 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
         "per_frame_camera_contract_frames": camera_contract_frames,
         "per_frame_camera_contract_available_intrinsics_frames": camera_contract_intrinsics_frames,
         "actuator_output_mode": actuator_output_mode,
-        "blockers": list(blockers),
+        "blockers": result_blockers,
         "scenarios": [
             {"scenario_id": s.get("scenario_id"), **o}
             for s, o in zip(scenarios, outcomes)
@@ -1275,7 +1790,9 @@ def _manipulation_seed_arm_target_for_shoulder(
 
     This is intentionally not a contact/reach target. The resolved affordance remains useful for the
     camera and geometry report, but the initial robot pose should only show both arms held forward
-    from their own shoulders so the policy/WAM evaluator can produce the action.
+    from their own shoulders so the policy/WAM evaluator can produce the action. If the caller does
+    not provide a robot yaw or forward vector, use a fixed +x seed rather than aiming the seed at the
+    affordance.
     """
     shoulder_z = float(shoulder[2])
     direction: tuple[float, float] | None = None
@@ -1291,11 +1808,21 @@ def _manipulation_seed_arm_target_for_shoulder(
     if direction is None:
         direction = _unit_xy_from_yaw(forward_yaw)
     if direction is None:
-        direction = _unit_xy_from_points(shoulder, affordance)
-    if direction is None:
         direction = (1.0, 0.0)
-    forward_seed_z = shoulder_z - max(0.04, min(0.10, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.12))
-    forward_distance_m = max(0.32, min(0.48, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.58))
+    affordance_z = float(affordance[2])
+    if (
+        affordance_z - shoulder_z
+        >= float(MANIPULATION_HIGH_REACH_MIN_AFFORDANCE_ABOVE_SHOULDER_M)
+    ):
+        forward_seed_z = min(
+            shoulder_z + float(MANIPULATION_HIGH_REACH_MAX_SEED_Z_ABOVE_SHOULDER_M),
+            shoulder_z
+            + (affordance_z - shoulder_z)
+            * float(MANIPULATION_HIGH_REACH_SEED_HEIGHT_FRACTION),
+        )
+    else:
+        forward_seed_z = shoulder_z - max(0.04, min(0.10, float(ROBOT_FOOTPRINT_HALF_EXTENT[2]) * 0.12))
+    forward_distance_m = max(0.32, min(0.48, float(G1_APPROX_ARM_SPAN_M)))
     return (
         float(shoulder[0]) + direction[0] * forward_distance_m,
         float(shoulder[1]) + direction[1] * forward_distance_m,
@@ -1444,7 +1971,10 @@ def _manipulation_pov_geometry_single(
         blockers.append("manipulation_pov_target_not_in_frame")
     elif target_margin_px is not None and target_margin_px < min(float(width), float(height)) * 0.06:
         blockers.append("manipulation_pov_target_near_frame_edge")
-    if pitch_down_deg > MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG:
+    if pitch_down_deg > (
+        MANIPULATION_POV_MAX_CAMERA_PITCH_DOWN_DEG
+        + MANIPULATION_POV_CAMERA_PITCH_EPSILON_DEG
+    ):
         blockers.append("manipulation_pov_camera_pitched_down_too_far")
     blockers.extend(str(b) for b in (seed_arm_visibility.get("blockers") or []))
 
@@ -1457,6 +1987,62 @@ def _manipulation_pov_geometry_single(
             math.sqrt(sum((float(pt[i]) - aff[i]) ** 2 for i in range(3))),
             4,
         )
+    reach_feasibility: dict[str, Any] = {
+        "status": "unverified",
+        "blockers": ["manipulation_pov_reach_feasibility_unverified"],
+        "g1_approx_arm_span_m": round(float(G1_APPROX_ARM_SPAN_M), 4),
+        "max_shoulder_to_affordance_m": round(
+            float(MANIPULATION_SEED_MAX_SHOULDER_TO_AFFORDANCE_M),
+            4,
+        ),
+        "max_effector_to_affordance_m": round(
+            float(MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M),
+            4,
+        ),
+    }
+    shoulder_for_reach = (arm_points or {}).get("shoulder")
+    if shoulder_for_reach is not None and effector_distances:
+        shoulder_affordance_m = math.sqrt(
+            sum((float(shoulder_for_reach[i]) - aff[i]) ** 2 for i in range(3))
+        )
+        nearest_effector_to_affordance_m = min(float(v) for v in effector_distances.values())
+        reach_blockers = _seed_reach_blockers(
+            shoulder_to_affordance_m=shoulder_affordance_m,
+            effector_to_affordance_m=nearest_effector_to_affordance_m,
+            shoulder_margin_m=MANIPULATION_RENDERED_SEED_SHOULDER_MARGIN_M,
+            effector_margin_m=MANIPULATION_RENDERED_SEED_EFFECTOR_MARGIN_M,
+        )
+        reach_feasibility = {
+            "status": "PASS" if not reach_blockers else "FAIL",
+            "blockers": reach_blockers,
+            "shoulder_to_affordance_m": round(float(shoulder_affordance_m), 4),
+            "nearest_effector_to_affordance_m": round(float(nearest_effector_to_affordance_m), 4),
+            "g1_approx_arm_span_m": round(float(G1_APPROX_ARM_SPAN_M), 4),
+            "max_shoulder_to_affordance_m": round(
+                float(MANIPULATION_SEED_MAX_SHOULDER_TO_AFFORDANCE_M),
+                4,
+            ),
+            "rendered_seed_shoulder_margin_m": round(
+                float(MANIPULATION_RENDERED_SEED_SHOULDER_MARGIN_M),
+                4,
+            ),
+            "max_effector_to_affordance_m": round(
+                float(MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M),
+                4,
+            ),
+            "rendered_seed_effector_margin_m": round(
+                float(MANIPULATION_RENDERED_SEED_EFFECTOR_MARGIN_M),
+                4,
+            ),
+            "claim_boundary": (
+                "Reach feasibility is a conservative static seed-conditioning gate using the "
+                "Unitree G1 size scale and USD link geometry. The initial arms still point "
+                "straight out from robot yaw rather than pre-contacting or aiming at the "
+                "affordance. This is not contact proof, inverse-kinematics proof, force-control "
+                "proof, or physical robot validation."
+            ),
+            "required_for_seed_geometry": True,
+        }
     arm_extension: dict[str, Any] = {
         "status": "unverified",
         "blockers": ["manipulation_pov_arm_extension_unverified"],
@@ -1503,6 +2089,8 @@ def _manipulation_pov_geometry_single(
             }
     if arm_extension.get("status") != "PASS":
         blockers.extend(str(b) for b in (arm_extension.get("blockers") or []))
+    if reach_feasibility.get("status") != "PASS":
+        blockers.extend(str(b) for b in (reach_feasibility.get("blockers") or []))
 
     return {
         "schema_version": "manipulation_pov_geometry.v1",
@@ -1522,13 +2110,14 @@ def _manipulation_pov_geometry_single(
         "arm_landmarks_usefully_in_frame": len(useful_projected),
         "seed_arm_visibility": seed_arm_visibility,
         "effector_distance_to_affordance_m": effector_distances,
-        "effector_distance_is_metadata_only": True,
+        "effector_distance_is_metadata_only": False,
+        "reach_feasibility": reach_feasibility,
         "arm_extension": arm_extension,
         "projected_landmarks": projected,
         "claim_boundary": (
             "This checks initial camera framing of USD robot links against the resolved task affordance. "
-            "It is not manipulation success, contact proof, physical reach validation, or deployment "
-            "readiness."
+            "It is not manipulation success, contact proof, force-control proof, physical reach "
+            "validation, or deployment readiness."
         ),
     }
 
@@ -1581,11 +2170,21 @@ def _manipulation_pov_geometry(
             arm=side,
         )
     primary = per_arm.get("right") or next(iter(per_arm.values()))
-    side_failures = [side for side, report in per_arm.items() if report.get("status") != "PASS"]
+    non_reach_blockers_by_arm = {
+        side: [
+            str(blocker)
+            for blocker in (report.get("blockers") or [])
+            if str(blocker) not in MANIPULATION_REACH_BLOCKER_SET
+        ]
+        for side, report in per_arm.items()
+    }
+    side_failures = [
+        side for side, arm_blockers in non_reach_blockers_by_arm.items() if arm_blockers
+    ]
     blockers = sorted({
         str(blocker)
-        for report in per_arm.values()
-        for blocker in (report.get("blockers") or [])
+        for arm_blockers in non_reach_blockers_by_arm.values()
+        for blocker in arm_blockers
     } | {
         f"manipulation_pov_{side}_arm_seed_failed"
         for side in side_failures
@@ -1631,6 +2230,22 @@ def _manipulation_pov_geometry(
         if isinstance(extension, Mapping)
         for blocker in (extension.get("blockers") or [])
     })
+    reach_feasibility_by_arm = {
+        side: report.get("reach_feasibility")
+        for side, report in per_arm.items()
+    }
+    reach_passing_arms = sorted(
+        side
+        for side, reach in reach_feasibility_by_arm.items()
+        if isinstance(reach, Mapping) and reach.get("status") == "PASS"
+    )
+    all_reach_feasibility_blockers = sorted({
+        str(blocker)
+        for reach in reach_feasibility_by_arm.values()
+        if isinstance(reach, Mapping)
+        for blocker in (reach.get("blockers") or [])
+    })
+    reach_feasibility_blockers = [] if reach_passing_arms else all_reach_feasibility_blockers
     return {
         "schema_version": "manipulation_pov_geometry.v1",
         "status": "PASS" if not blockers else "FAIL",
@@ -1679,7 +2294,27 @@ def _manipulation_pov_geometry(
             side: report.get("effector_distance_to_affordance_m") or {}
             for side, report in per_arm.items()
         },
-        "effector_distance_is_metadata_only": True,
+        "effector_distance_is_metadata_only": False,
+        "reach_feasibility": {
+            "status": "PASS" if not reach_feasibility_blockers else "FAIL",
+            "blockers": reach_feasibility_blockers,
+            "all_arm_blockers": all_reach_feasibility_blockers,
+            "required_passing_arm_count": 1,
+            "passing_arms": reach_passing_arms,
+            "by_arm": reach_feasibility_by_arm,
+            "g1_approx_arm_span_m": round(float(G1_APPROX_ARM_SPAN_M), 4),
+            "required_for_seed_geometry": True,
+            "claim_boundary": (
+                "Reach feasibility is a conservative static seed-conditioning gate using the "
+                "Unitree G1 size scale and USD link geometry. It requires at least one "
+                "manipulation arm seed to be close enough while the initial arms still point "
+                "straight out from robot yaw rather than pre-contacting or aiming at the "
+                "affordance. Both-hand visibility and forward extension are separate hard "
+                "seed-framing gates. This is not contact proof, inverse-kinematics proof, "
+                "force-control proof, or physical robot validation. SAM3/DA3 can refine "
+                "affordance/mask/depth evidence for this gate when configured."
+            ),
+        },
         "arm_extension": {
             "status": "PASS" if not extension_blockers else "FAIL",
             "blockers": extension_blockers,
@@ -2067,7 +2702,12 @@ def _resolve_task_target_via_scene_placement(stage, scenario: Mapping[str, Any])
     }
 
 
-def _resolve_task_target_from_stage(stage, scenario: Mapping[str, Any]) -> dict[str, Any] | None:
+def _resolve_task_target_from_stage(
+    stage,
+    scenario: Mapping[str, Any],
+    *,
+    allow_scene_placement_fallback: bool = True,
+) -> dict[str, Any] | None:
     """Resolve a task target from USD prim bounds when a scene/task compiler provides an object id.
 
     This is the generic fallback for sites that do not ship a separate object-location JSON. It is
@@ -2076,11 +2716,7 @@ def _resolve_task_target_from_stage(stage, scenario: Mapping[str, Any]) -> dict[
     :func:`_resolve_task_target_via_scene_placement`, which maps the task description onto a scene
     object — so a scenario with only a natural-language task still resolves a target dynamically.
     """
-    target_ids = [
-        str(scenario.get(key)).strip()
-        for key in TASK_STANCE_TARGET_OBJECT_KEYS
-        if scenario.get(key)
-    ]
+    target_ids = task_stance_target_object_ids_for_scenario(scenario)
     if not target_ids:
         # No explicit object id given — derive the target object from the task description via the
         # scene_placement spatial index (enumerate scene objects, map task -> object). Dynamic path.
@@ -2104,10 +2740,12 @@ def _resolve_task_target_from_stage(stage, scenario: Mapping[str, Any]) -> dict[
             ),
             None,
         )
+        matched_priority = target_ids.index(matched_id) if matched_id in target_ids else len(target_ids)
         match_kind = "exact_prim_name_or_path_segment"
         if not matched_id:
             text = f"{prim_path} {prim_name}".lower()
             matched_id = next((tid for tid in target_ids if tid.lower() in text), None)
+            matched_priority = target_ids.index(matched_id) if matched_id in target_ids else len(target_ids)
             match_kind = "ancestor_or_text_match"
         if not matched_id:
             continue
@@ -2124,6 +2762,7 @@ def _resolve_task_target_from_stage(stage, scenario: Mapping[str, Any]) -> dict[
         bbox_max_xyz = [round(float(bbox_max[i]), 6) for i in range(3)]
         matches.append({
             "target_object_id": matched_id,
+            "target_object_priority": matched_priority,
             "prim_path": prim_path,
             "match_kind": match_kind,
             "path_depth": len(path_segments),
@@ -2136,6 +2775,13 @@ def _resolve_task_target_from_stage(stage, scenario: Mapping[str, Any]) -> dict[
             "volume_proxy": round(float(size[0] * size[1] * size[2]), 9),
         })
     if not matches:
+        if not allow_scene_placement_fallback:
+            return {
+                "status": "blocked",
+                "blockers": ["target_object_id_not_found_in_usd_stage"],
+                "target_object_ids": target_ids,
+                "scene_placement_fallback": "disabled",
+            }
         # The supplied object id(s) weren't found as prims — fall back to task->object resolution
         # over the full scene catalog before giving up.
         sp = _resolve_task_target_via_scene_placement(stage, scenario)
@@ -2148,6 +2794,7 @@ def _resolve_task_target_from_stage(stage, scenario: Mapping[str, Any]) -> dict[
             "scene_placement_fallback": sp,
         }
     matches.sort(key=lambda item: (
+        int(item.get("target_object_priority", len(target_ids))),
         0 if item["match_kind"] == "exact_prim_name_or_path_segment" else 1,
         item["path_depth"],
         -float(item["volume_proxy"]),
@@ -2157,7 +2804,275 @@ def _resolve_task_target_from_stage(stage, scenario: Mapping[str, Any]) -> dict[
         "status": "resolved",
         "source": "usd_prim_bounds",
         "selected": matches[0],
-        "matches_considered": matches[:10],
+        "matches_considered": matches[:50],
+    }
+
+
+def _resolution_selected(resolution: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(resolution, Mapping):
+        return {}
+    selected = resolution.get("selected")
+    return selected if isinstance(selected, Mapping) else {}
+
+
+def _point_bbox_xy_gap_m(point: Sequence[float], bbox_min: Sequence[float], bbox_max: Sequence[float]) -> float:
+    dx = max(float(bbox_min[0]) - float(point[0]), 0.0, float(point[0]) - float(bbox_max[0]))
+    dy = max(float(bbox_min[1]) - float(point[1]), 0.0, float(point[1]) - float(bbox_max[1]))
+    return math.hypot(dx, dy)
+
+
+def _point_in_bbox_xy(
+    point: Sequence[float],
+    bbox_min: Sequence[float],
+    bbox_max: Sequence[float],
+    *,
+    margin_m: float = 0.0,
+) -> bool:
+    return (
+        float(bbox_min[0]) - margin_m <= float(point[0]) <= float(bbox_max[0]) + margin_m
+        and float(bbox_min[1]) - margin_m <= float(point[1]) <= float(bbox_max[1]) + margin_m
+    )
+
+
+def _point_in_bbox_xyz(
+    point: Sequence[float],
+    bbox_min: Sequence[float],
+    bbox_max: Sequence[float],
+    *,
+    margin_m: float = 0.0,
+) -> bool:
+    return (
+        float(bbox_min[0]) - margin_m <= float(point[0]) <= float(bbox_max[0]) + margin_m
+        and float(bbox_min[1]) - margin_m <= float(point[1]) <= float(bbox_max[1]) + margin_m
+        and float(bbox_min[2]) - margin_m <= float(point[2]) <= float(bbox_max[2]) + margin_m
+    )
+
+
+def _scope_affordance_resolution_to_target(
+    affordance_resolution: Mapping[str, Any] | None,
+    target_resolution: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Prefer fine affordances that belong to the resolved coarse fixture.
+
+    A room can contain many handles/knobs/spouts. Once the coarse fixture has been resolved
+    (stovetop, sink, top cabinet), a fine affordance must be a descendant of that fixture or
+    spatially overlap its footprint. Otherwise it is probably a semantically-correct but task-wrong
+    affordance, e.g. a coffee-machine knob for a stovetop task.
+    """
+    if affordance_resolution is None:
+        return None
+    if affordance_resolution.get("status") != "resolved":
+        return dict(affordance_resolution)
+    target_selected = _resolution_selected(target_resolution)
+    if not target_selected:
+        return dict(affordance_resolution)
+    target_path = str(target_selected.get("prim_path") or "").rstrip("/")
+    target_center = _optional_xyz(target_selected.get("center_xyz"))
+    target_bbox_min = _optional_xyz(target_selected.get("bbox_min_xyz"))
+    target_bbox_max = _optional_xyz(target_selected.get("bbox_max_xyz"))
+    raw_matches: list[Mapping[str, Any]] = []
+    selected = _resolution_selected(affordance_resolution)
+    if selected:
+        raw_matches.append(selected)
+    matches = affordance_resolution.get("matches_considered")
+    if isinstance(matches, Sequence) and not isinstance(matches, (str, bytes)):
+        raw_matches.extend(m for m in matches if isinstance(m, Mapping))
+    deduped: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    for match in raw_matches:
+        key = str(match.get("prim_path") or json.dumps(dict(match), sort_keys=True))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(match)
+    if not deduped:
+        return dict(affordance_resolution)
+
+    scored: list[tuple[tuple[float, ...], Mapping[str, Any], dict[str, Any]]] = []
+    for match in deduped:
+        prim_path = str(match.get("prim_path") or "").rstrip("/")
+        center = _optional_xyz(match.get("center_xyz"))
+        same_subtree = bool(
+            target_path
+            and prim_path
+            and (prim_path == target_path or prim_path.startswith(target_path + "/"))
+        )
+        in_target_xy = False
+        in_target_xyz = False
+        xy_gap_m = float("inf")
+        distance_m = float("inf")
+        if center is not None and target_bbox_min is not None and target_bbox_max is not None:
+            in_target_xy = _point_in_bbox_xy(center, target_bbox_min, target_bbox_max, margin_m=0.08)
+            in_target_xyz = _point_in_bbox_xyz(center, target_bbox_min, target_bbox_max, margin_m=0.08)
+            xy_gap_m = _point_bbox_xy_gap_m(center, target_bbox_min, target_bbox_max)
+        if center is not None and target_center is not None:
+            distance_m = math.sqrt(sum((float(center[i]) - float(target_center[i])) ** 2 for i in range(3)))
+        if not same_subtree and not in_target_xyz:
+            continue
+        scope_evidence = {
+            "same_target_subtree": same_subtree,
+            "inside_target_xy": in_target_xy,
+            "inside_target_xyz": in_target_xyz,
+            "xy_gap_to_target_bbox_m": (
+                round(float(xy_gap_m), 4) if math.isfinite(xy_gap_m) else None
+            ),
+            "distance_to_target_center_m": (
+                round(float(distance_m), 4) if math.isfinite(distance_m) else None
+            ),
+        }
+        scored.append((
+            (
+                0.0 if same_subtree else 1.0,
+                0.0 if in_target_xyz else 1.0,
+                0.0 if in_target_xy else 1.0,
+                float(match.get("target_object_priority", 999)),
+                xy_gap_m,
+                distance_m,
+                float(match.get("path_depth", 999)),
+            ),
+            match,
+            scope_evidence,
+        ))
+    if not scored:
+        out = dict(affordance_resolution)
+        out["status"] = "blocked"
+        if "selected" in out:
+            out["unscoped_selected"] = out.pop("selected")
+        blockers = list(out.get("blockers") or [])
+        if "affordance_not_scoped_to_target_fixture" not in blockers:
+            blockers.append("affordance_not_scoped_to_target_fixture")
+        out["blockers"] = blockers
+        out["scope_filter"] = {
+            "status": "blocked",
+            "target_prim_path": target_path or None,
+            "target_center_xyz": list(target_center) if target_center is not None else None,
+            "target_bbox_min_xyz": list(target_bbox_min) if target_bbox_min is not None else None,
+            "target_bbox_max_xyz": list(target_bbox_max) if target_bbox_max is not None else None,
+            "unscoped_selected_prim_path": selected.get("prim_path") if selected else None,
+            "matches_checked": len(deduped),
+        }
+        return out
+    scored.sort(key=lambda item: item[0])
+    best = dict(scored[0][1])
+    best["scope_evidence"] = scored[0][2]
+    out = dict(affordance_resolution)
+    out["selected"] = best
+    out["matches_considered"] = [dict(item[1]) for item in scored[:20]]
+    out["scope_filter"] = {
+        "status": "scoped_to_target_fixture",
+        "target_prim_path": target_path or None,
+        "selected_prim_path": best.get("prim_path"),
+        "matches_checked": len(deduped),
+        "matches_kept": len(scored),
+    }
+    return out
+
+
+def _scenario_is_top_cabinet_task(scenario: Mapping[str, Any] | None) -> bool:
+    if not scenario:
+        return False
+    if bool(scenario.get("derive_handleless_upper_cabinet_affordance")):
+        return True
+    text_parts: list[str] = []
+    for key in ("task_id", "scenario_id"):
+        value = scenario.get(key)
+        if value:
+            text_parts.append(str(value))
+    text = " ".join(text_parts).lower()
+    return (
+        "top_cabinet" in text
+        or "topcabinet" in text
+    )
+
+
+def _derive_handleless_upper_cabinet_affordance_resolution(
+    *,
+    target_resolution: Mapping[str, Any] | None,
+    affordance_resolution: Mapping[str, Any] | None,
+    scenario: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Create a scoped affordance for upper cabinets that have modeled doors but no handles.
+
+    Some Lightwheel kitchen USDs model upper-cabinet doors/glass panels without pull handles. For the
+    high-reach preflight, silently using the broad cabinet center is worse than blocking: it points
+    the reach gate at the middle of a tall cabinet volume. This derives a lower-front door-edge
+    contact zone from the resolved cabinet bounds and marks it as derived evidence, not a detected
+    handle/pull.
+    """
+    if not _scenario_is_top_cabinet_task(scenario):
+        return None
+    target_selected = _resolution_selected(target_resolution)
+    if not target_selected:
+        return None
+    target_id_text = " ".join(
+        str(target_selected.get(key) or "")
+        for key in ("target_object_id", "target_object_label", "prim_path")
+    ).lower()
+    if not any(token in target_id_text for token in ("topcabinet", "top_cabinet", "cabinet")):
+        return None
+    bbox_min = _optional_xyz(target_selected.get("bbox_min_xyz"))
+    bbox_max = _optional_xyz(target_selected.get("bbox_max_xyz"))
+    center = _optional_xyz(target_selected.get("center_xyz"))
+    if bbox_min is None or bbox_max is None or center is None:
+        return None
+    size_z = max(0.0, float(bbox_max[2]) - float(bbox_min[2]))
+    lower_edge_lift_m = max(0.08, min(0.16, size_z * 0.12))
+    affordance_xyz = (
+        float(center[0]),
+        float(bbox_min[1]),
+        float(bbox_min[2]) + lower_edge_lift_m,
+    )
+    half_x = 0.06
+    half_y = 0.01
+    half_z = 0.04
+    selected = {
+        "target_object_id": "derived_upper_cabinet_lower_front_edge",
+        "target_object_priority": 0,
+        "prim_path": target_selected.get("prim_path"),
+        "match_kind": "derived_from_scoped_top_cabinet_bounds",
+        "path_depth": target_selected.get("path_depth"),
+        "center_xyz": [round(float(v), 6) for v in affordance_xyz],
+        "size_xyz": [round(half_x * 2.0, 6), round(half_y * 2.0, 6), round(half_z * 2.0, 6)],
+        "bbox_min_xyz": [
+            round(float(affordance_xyz[0]) - half_x, 6),
+            round(float(affordance_xyz[1]) - half_y, 6),
+            round(float(affordance_xyz[2]) - half_z, 6),
+        ],
+        "bbox_max_xyz": [
+            round(float(affordance_xyz[0]) + half_x, 6),
+            round(float(affordance_xyz[1]) + half_y, 6),
+            round(float(affordance_xyz[2]) + half_z, 6),
+        ],
+        "footprint_center_xy": [round(float(affordance_xyz[0]), 6), round(float(affordance_xyz[1]), 6)],
+        "volume_proxy": round((half_x * 2.0) * (half_y * 2.0) * (half_z * 2.0), 9),
+        "scope_evidence": {
+            "same_target_subtree": True,
+            "inside_target_xy": True,
+            "inside_target_xyz": True,
+            "xy_gap_to_target_bbox_m": 0.0,
+            "derived_from_target_prim_path": target_selected.get("prim_path"),
+            "source": "target_bbox_lower_front_edge",
+        },
+        "derived_affordance": True,
+        "claim_boundary": (
+            "This is a USD-bounds-derived lower/front upper-cabinet door-edge affordance used only "
+            "when no scoped handle/pull prim exists. It is not a detected handle, contact proof, "
+            "or manipulation-success evidence."
+        ),
+    }
+    return {
+        "status": "resolved",
+        "source": "usd_target_bounds_derived_affordance",
+        "selected": selected,
+        "matches_considered": [selected],
+        "unresolved_affordance_resolution": dict(affordance_resolution or {}),
+        "scope_filter": {
+            "status": "derived_from_scoped_target_fixture",
+            "target_prim_path": target_selected.get("prim_path"),
+            "selected_prim_path": target_selected.get("prim_path"),
+            "reason": "upper_cabinet_has_no_scoped_handle_or_pull_prim",
+        },
+        "claim_boundary": selected["claim_boundary"],
     }
 
 
@@ -2266,12 +3181,15 @@ def _plan_task_stance_for_stage(
 ) -> dict[str, Any]:
     stance_scenario = dict(scenario)
     target_resolution = None
+    affordance_resolution = None
     explicit_target = task_stance_target_for_scenario(
         stance_scenario,
         manipulation_look_at,
         allow_navigation_target_fallback=False,
     )
-    if explicit_target is None:
+    target_ids = task_stance_target_object_ids_for_scenario(stance_scenario)
+    target_bounds_present = _target_bounds_for_scenario(stance_scenario) is not None
+    if explicit_target is None or target_ids or not target_bounds_present:
         target_resolution = _resolve_task_target_from_stage(stage, stance_scenario)
         if target_resolution and target_resolution.get("status") == "resolved":
             selected = (
@@ -2279,20 +3197,115 @@ def _plan_task_stance_for_stage(
                 if isinstance(target_resolution.get("selected"), Mapping)
                 else {}
             )
-            stance_scenario = _with_xyz(
-                stance_scenario,
-                "target_object_position_xyz",
-                selected["center_xyz"],
-            )
-            if selected.get("bbox_min_xyz") is not None and selected.get("bbox_max_xyz") is not None:
+            if explicit_target is None and selected.get("center_xyz") is not None:
+                stance_scenario = _with_xyz(
+                    stance_scenario,
+                    "target_object_position_xyz",
+                    selected["center_xyz"],
+                )
+            if (
+                not target_bounds_present
+                and selected.get("bbox_min_xyz") is not None
+                and selected.get("bbox_max_xyz") is not None
+            ):
                 stance_scenario["target_object_bbox_min_xyz"] = selected["bbox_min_xyz"]
                 stance_scenario["target_object_bbox_max_xyz"] = selected["bbox_max_xyz"]
             if selected.get("target_object_id") is not None:
                 stance_scenario.setdefault("target_object_id", selected.get("target_object_id"))
             if selected.get("target_object_label") is not None:
                 stance_scenario.setdefault("target_object_label", selected.get("target_object_label"))
+
+    scope_target_resolution = (
+        target_resolution
+        if target_resolution and target_resolution.get("status") == "resolved"
+        else _synthetic_target_resolution_from_scenario(stance_scenario)
+    )
+    affordance_ids = task_stance_affordance_object_ids_for_scenario(stance_scenario)
+    affordance_resolution_failed = False
+    if affordance_ids:
+        affordance_scenario = dict(stance_scenario)
+        for key in TASK_STANCE_TARGET_OBJECT_KEYS:
+            affordance_scenario.pop(key, None)
+        affordance_scenario["target_object_ids"] = affordance_ids
+        affordance_resolution = _resolve_task_target_from_stage(
+            stage,
+            affordance_scenario,
+            allow_scene_placement_fallback=False,
+        )
+        affordance_resolution = _scope_affordance_resolution_to_target(
+            affordance_resolution,
+            scope_target_resolution,
+        )
+        selected_affordance = (
+            affordance_resolution.get("selected")
+            if isinstance(affordance_resolution, Mapping)
+            else None
+        )
+        if not (
+            isinstance(selected_affordance, Mapping)
+            and affordance_resolution.get("status") == "resolved"
+            and selected_affordance.get("center_xyz") is not None
+        ):
+            derived_affordance_resolution = _derive_handleless_upper_cabinet_affordance_resolution(
+                target_resolution=scope_target_resolution,
+                affordance_resolution=affordance_resolution,
+                scenario=stance_scenario,
+            )
+            if derived_affordance_resolution is not None:
+                affordance_resolution = derived_affordance_resolution
+        selected_affordance = (
+            affordance_resolution.get("selected")
+            if isinstance(affordance_resolution, Mapping)
+            else None
+        )
+        if (
+            isinstance(selected_affordance, Mapping)
+            and affordance_resolution.get("status") == "resolved"
+            and selected_affordance.get("center_xyz") is not None
+        ):
+            stance_scenario = _with_xyz(
+                stance_scenario,
+                "task_affordance_xyz",
+                selected_affordance["center_xyz"],
+            )
+        else:
+            affordance_resolution_failed = True
+
+    def _with_affordance_resolution(plan: dict[str, Any]) -> dict[str, Any]:
+        if affordance_resolution is None:
+            return plan
+        plan["affordance_resolution"] = affordance_resolution
+        selected = affordance_resolution.get("selected") if isinstance(affordance_resolution, Mapping) else None
+        if isinstance(selected, Mapping) and affordance_resolution.get("status") == "resolved":
+            if selected.get("center_xyz") is not None:
+                plan["task_affordance_xyz"] = selected.get("center_xyz")
+            if selected.get("bbox_min_xyz") is not None and selected.get("bbox_max_xyz") is not None:
+                plan["task_affordance_bounds"] = {
+                    "bbox_min_xyz": selected.get("bbox_min_xyz"),
+                    "bbox_max_xyz": selected.get("bbox_max_xyz"),
+                }
+            plan["affordance_focus_source"] = (
+                "usd_target_bounds_derived_affordance"
+                if selected.get("derived_affordance")
+                else "usd_affordance_object_alias"
+            )
+        elif plan.get("task_affordance_xyz") is not None:
+            plan["affordance_focus_source"] = "target_fixture_center_after_unscoped_affordance_rejected"
+        return plan
+    if affordance_resolution_failed:
+        return _with_affordance_resolution({
+            "schema_version": TASK_STANCE_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["task_affordance_resolution_failed"],
+            "target_resolution": target_resolution,
+            "claim_boundary": (
+                "This manipulation task declared fine affordance aliases. The stance planner must "
+                "not fall back to a broad fixture center when those affordances are unresolved or "
+                "belong to another fixture."
+            ),
+        })
     if no_collision_probe:
-        return {
+        return _with_affordance_resolution({
             "schema_version": TASK_STANCE_SCHEMA_VERSION,
             "status": "blocked",
             "blockers": ["task_stance_collision_probe_disabled"],
@@ -2301,7 +3314,7 @@ def _plan_task_stance_for_stage(
                 "Task stance placement requires a scene collision/clearance probe; "
                 "without it the runner must not claim the robot is standing clear."
             ),
-        }
+        })
     target_bounds = _target_bounds_for_scenario(stance_scenario)
     validation_floor_z = float(stance_scenario.get("floor_z_hint", 0.05) or 0.05)
     validation_scene_objects = (
@@ -2354,7 +3367,7 @@ def _plan_task_stance_for_stage(
         )
         if sp_plan is not None:
             sp_plan["target_resolution"] = target_resolution
-            return sp_plan
+            return _with_affordance_resolution(sp_plan)
     stance_plan = plan_task_stance(
         scenario=stance_scenario,
         manipulation_look_at=manipulation_look_at,
@@ -2364,7 +3377,7 @@ def _plan_task_stance_for_stage(
     )
     if target_resolution is not None:
         stance_plan["target_resolution"] = target_resolution
-    return stance_plan
+    return _with_affordance_resolution(stance_plan)
 
 
 def _resolve_asset_uri(value: str) -> str:
@@ -3770,6 +4783,7 @@ def _placement_validator_for_stage(
         result["root_to_robot_bbox_center_xy_m"] = round(float(root_to_center_xy), 6)
         result["target_bbox_relation"] = relation
         blockers: list[str] = []
+        deterministic_geometry_ok: bool | None = None
         if target_object is not None and scene_objects is not None:
             try:
                 from blueprint_pipeline.scene_placement import validate_stand_pose  # type: ignore
@@ -3815,12 +4829,32 @@ def _placement_validator_for_stage(
                 }
                 verdict = adjusted_verdict
             result["deterministic_geometry"] = _placement_verdict_to_dict(verdict)
+            deterministic_geometry_ok = bool(verdict.ok)
             if not verdict.ok:
                 blockers.append("placement_geometry_invalid")
         if root_to_center_xy > max_root_to_bbox_center_xy_m:
             blockers.append("placed_robot_bbox_center_far_from_root_pose")
         if relation["overlaps_xy"]:
-            blockers.append("placed_robot_bbox_overlaps_target_bbox")
+            scene_collision_count = None
+            if record is not None:
+                try:
+                    scene_collision_count = int(record.get("scene_collision_contact_count") or 0)
+                except Exception:  # noqa: BLE001
+                    scene_collision_count = None
+            visual_bbox_overlap_allowed = bool(
+                deterministic_geometry_ok is True
+                and scene_collision_count == 0
+            )
+            if visual_bbox_overlap_allowed:
+                result["target_bbox_relation"] = {
+                    **relation,
+                    "hard_blocker": False,
+                    "reason": (
+                        "full_robot_visual_aabb_overlaps_fixture_but_floor_footprint_and_scene_probe_are_clear"
+                    ),
+                }
+            else:
+                blockers.append("placed_robot_bbox_overlaps_target_bbox")
         else:
             required_gap = float(min_target_gap_m)
             if record is not None:
@@ -3858,6 +4892,17 @@ def _placement_validator_for_stage(
     return validate
 
 
+def _is_robot_scene_object(obj) -> bool:
+    obj_id = str(getattr(obj, "id", "") or "").strip().lower()
+    label = str(getattr(obj, "label", "") or "").strip().lower()
+    text = f"{obj_id} {label}".lower()
+    if obj_id in {"g", "g1", "unitree_g1", "proxy_body"}:
+        return True
+    if label in {"g", "g1", "unitree g1", "proxy body"}:
+        return True
+    return any(token in text for token in ("g1", "unitree", "robot", "placementdebug", "proxy_body"))
+
+
 def _scene_objects_for_stage(stage) -> list[Any]:
     """Grouped scene-placement object catalog from the current USD stage.
 
@@ -3878,8 +4923,7 @@ def _scene_objects_for_stage(stage) -> list[Any]:
         return []
     filtered = []
     for obj in objects:
-        text = f"{getattr(obj, 'id', '')} {getattr(obj, 'label', '')}".lower()
-        if any(token in text for token in ("g1", "unitree", "robot", "placementdebug")):
+        if _is_robot_scene_object(obj):
             continue
         filtered.append(obj)
     return filtered
@@ -4011,8 +5055,7 @@ def _placement_obstacles_for_stage(
         objects = []
     filtered = []
     for obj in objects:
-        text = f"{getattr(obj, 'id', '')} {getattr(obj, 'label', '')}".lower()
-        if any(token in text for token in ("g1", "unitree", "robot", "placementdebug")):
+        if _is_robot_scene_object(obj):
             continue
         if not _xy_focus_overlap(obj, focus_bounds, margin_m=focus_margin_m):
             continue
@@ -4538,7 +5581,7 @@ def _build_placement_validation_manifest(
             ground_truth["blockers"] = ["placed_robot_footprint_center_mismatch"]
             ground_truth["xform_diagnostics"] = _root_transform_diagnostics(stage, robot_prim_path)
             blockers.append("placement_ground_truth_center_mismatch")
-    if visual_qc is not None and visual_qc.get("status") != "passed":
+    if visual_qc is not None and _visual_qc_contains_parsed_failure(visual_qc):
         blockers.append("placement_visual_qc_failed")
     manifest = {
         "schema_version": "placement_validation.v1",
@@ -4568,6 +5611,28 @@ def _build_placement_validation_manifest(
 
 def _placement_validation_passed_manifest(manifest: Mapping[str, Any] | None) -> bool:
     return bool(manifest and manifest.get("status") == "PASS" and not manifest.get("blockers"))
+
+
+def _visual_qc_contains_parsed_failure(report: Mapping[str, Any] | None) -> bool:
+    """Return true only when a reviewed frame was parsed and explicitly failed.
+
+    Model/API exhaustion and malformed responses are recorded as visual-QC evidence, but they are
+    not the same as a parsed visual finding that the robot is misplaced or the POV is unusable.
+    """
+    if not isinstance(report, Mapping):
+        return False
+    per_frame = report.get("per_frame")
+    if isinstance(per_frame, Sequence) and not isinstance(per_frame, (str, bytes)):
+        for verdict in per_frame:
+            if not isinstance(verdict, Mapping):
+                continue
+            if bool(verdict.get("parsed")) and not bool(verdict.get("passed")):
+                return True
+    for key in ("placement", "manipulation_pov"):
+        nested = report.get(key)
+        if isinstance(nested, Mapping) and _visual_qc_contains_parsed_failure(nested):
+            return True
+    return False
 
 
 def _placement_visual_qc_target_label(stance_plan: Mapping[str, Any] | None) -> str:
@@ -5881,15 +6946,39 @@ def _replicator_step_with_watchdog(
 
 
 def _software_denoise_image(img):
-    """Best-effort CPU denoise for review PNGs when RTX/NGX denoising is unavailable on a pod."""
+    """Best-effort CPU denoise for review PNGs when RTX/NGX denoising is unavailable on a pod.
+
+    The noisy Isaac failure mode seen on manipulation POVs is mostly salt-and-pepper/path-tracing
+    firefly speckle. OpenCV NLM alone leaves that pattern as high-frequency edges, so the default is
+    a deterministic median firefly cleanup. This is intentionally not image generation or semantic
+    enhancement; it only suppresses isolated renderer noise in saved review frames.
+    """
+    mode = str(os.getenv("PARITY_SOFTWARE_DENOISE_MODE", "median_firefly")).strip().lower()
+    if mode in {"off", "none", "disabled"}:
+        return img
+    if mode in {"median", "median_firefly", "firefly"}:
+        try:
+            from PIL import ImageFilter  # type: ignore
+            return (
+                img
+                .filter(ImageFilter.MedianFilter(size=3))
+                .filter(ImageFilter.MedianFilter(size=3))
+                .filter(ImageFilter.SMOOTH_MORE)
+            )
+        except Exception:  # noqa: BLE001
+            return img
     try:
         import cv2  # type: ignore
         import numpy as np  # type: ignore
         from PIL import Image  # type: ignore
         arr = np.asarray(img)
         bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-        den = cv2.fastNlMeansDenoisingColored(bgr, None, 6, 6, 7, 21)
-        return Image.fromarray(cv2.cvtColor(den, cv2.COLOR_BGR2RGB))
+        den = cv2.fastNlMeansDenoisingColored(bgr, None, 12, 12, 7, 21)
+        out = Image.fromarray(cv2.cvtColor(den, cv2.COLOR_BGR2RGB))
+        if mode in {"nlm_median", "opencv_median"}:
+            from PIL import ImageFilter  # type: ignore
+            out = out.filter(ImageFilter.MedianFilter(size=3)).filter(ImageFilter.SMOOTH_MORE)
+        return out
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -6549,6 +7638,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   physics_articulation_drive: bool = False,
                   dynamic_standing_contact_steps: int = 0,
                   neutral_environment: bool = False,
+                  robot_review_material_override: bool = False,
                   kinematic_arm_pose: bool = False,
                   collision_approximation: str = "boundingCube",
                   verify_cam: bool = False,
@@ -6833,7 +7923,10 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 _log(f"environment neutralize skipped ({exc!r})")
         if manipulation_cam or verify_cam:
             try:
-                force_review_material = os.getenv("PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE", "") == "1"
+                force_review_material = (
+                    bool(robot_review_material_override)
+                    or os.getenv("PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE", "") == "1"
+                )
                 override_robot_material = bool(robot_visual_missing or force_review_material)
                 n_robot_mat = _apply_robot_review_material(
                     stage,
@@ -7724,7 +8817,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         else None
                     )
                     blockers_now = set(placement_validation_manifest.get("blockers") or [])
-                    if visual_qc.get("status") != "passed":
+                    if _visual_qc_contains_parsed_failure(visual_qc):
                         blockers_now.add("placement_visual_qc_failed")
                     placement_validation_manifest["robot_visual_geometry"] = {
                         "status": (
@@ -7936,6 +9029,40 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         else:
             for sc in scenarios:
                 _render_scenario(sc)
+    except Exception as exc:  # noqa: BLE001
+        blocker = (
+            "isaac_runner_exception_before_scenario_outcome"
+            if not outcomes
+            else "isaac_runner_exception_after_partial_scenario_outcomes"
+        )
+        if blocker not in blockers:
+            blockers.append(blocker)
+        exception_payload = {
+            "schema_version": "isaac_g1_kitchen_parity_runner_exception.v1",
+            "status": "blocked",
+            "blocker": blocker,
+            "exception_type": type(exc).__name__,
+            "exception_repr": repr(exc),
+            "scenarios_total": len(scenarios),
+            "scenarios_executed_before_exception": len(outcomes),
+            "traceback_tail": traceback.format_exc()[-4000:],
+            "claim_boundary": (
+                "Runner exception diagnostics explain why the Isaac render did not complete. "
+                "They do not validate task success, manipulation success, physical readiness, "
+                "safety, or deployment approval."
+            ),
+        }
+        try:
+            (out_dir / "isaac_runner_exception.json").write_text(
+                json.dumps(exception_payload, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        _log(
+            "runner exception recorded before final result: "
+            f"{blocker} {type(exc).__name__}: {exc!r}"
+        )
     finally:
         try:
             # SimulationApp.close() can terminate or stall the worker process on some
@@ -8031,6 +9158,84 @@ def nominal_g1_rest_offsets() -> list[tuple[str, tuple[float, float, float]]]:
     preview whether the reaching arm lands in the camera frame, not to claim exact joint geometry.
     """
     return [(name, (float(o[0]), float(o[1]), float(o[2]))) for name, o in _NOMINAL_G1_REST_OFFSETS]
+
+
+def _arm_link_points_by_arm_from_skeleton(
+    skeleton_world: Sequence[tuple[str, Sequence[float]]],
+    *,
+    arm: str = "both",
+) -> dict[str, dict[str, tuple[float, float, float]]]:
+    """Extract shoulder/elbow/wrist/hand role points from a skeleton-world list.
+
+    Used by the local dry-render path with the nominal Isaac-free G1 skeleton. The GPU path keeps
+    using USD link geometry from the actual bound robot.
+    """
+    sides = _required_manipulation_arms(arm)
+    out: dict[str, dict[str, tuple[float, float, float]]] = {side: {} for side in sides}
+    role_tokens = {
+        "shoulder": ("shoulder",),
+        "elbow": ("elbow",),
+        "wrist": ("wrist",),
+        "hand": ("hand", "palm", "gripper"),
+    }
+    for name, point in skeleton_world:
+        low = str(name).lower()
+        for side in sides:
+            if not low.startswith(f"{side}_"):
+                continue
+            for role, tokens in role_tokens.items():
+                if role in out[side]:
+                    continue
+                if any(token in low for token in tokens):
+                    out[side][role] = (
+                        float(point[0]),
+                        float(point[1]),
+                        float(point[2]),
+                    )
+                    break
+    return out
+
+
+def _manipulation_pov_camera_meta_for_sidecar(
+    *,
+    base_meta: Mapping[str, Any] | None,
+    eye: Sequence[float],
+    target: Sequence[float],
+    vfov_deg: float,
+    width: int,
+    height: int,
+    arm: str,
+    arm_points: Mapping[str, Sequence[float]] | None,
+    arm_points_by_arm: Mapping[str, Mapping[str, Sequence[float]]] | None,
+) -> dict[str, Any]:
+    arm_points_json = {
+        key: [round(float(v), 6) for v in value]
+        for key, value in sorted((arm_points or {}).items())
+    }
+    arm_points_by_arm_json = {
+        side: {
+            key: [round(float(v), 6) for v in value]
+            for key, value in sorted(points.items())
+        }
+        for side, points in sorted((arm_points_by_arm or {}).items())
+    }
+    return {
+        **dict(base_meta or {}),
+        "camera_eye_xyz": [round(float(v), 6) for v in eye],
+        "camera_target_xyz": [round(float(v), 6) for v in target],
+        "camera_vfov_deg": round(float(vfov_deg), 6),
+        "viewport_size_px": [int(width), int(height)],
+        "required_arms": list(_required_manipulation_arms(arm)),
+        "arm_link_points_used": sorted(arm_points_json),
+        "arm_link_points_xyz": arm_points_json,
+        "arm_link_points_by_arm_xyz": arm_points_by_arm_json,
+        "claim_boundary": (
+            "Camera metadata is emitted so action-conditioning bridges can project policy "
+            "actions against the same seed geometry used for local manipulation POV screening. "
+            "It is seed-conditioning evidence, not contact, IK, task-success, or physical "
+            "robot proof."
+        ),
+    }
 
 
 def _facing_error_deg(root_pose, yaw: float, target) -> float | None:
@@ -8304,6 +9509,7 @@ def render_local_preview(
         no_collision_probe=False,
         robot_prim_path=robot_prim_path,
     )
+    (out_dir / "task_stance_plan.json").write_text(json.dumps(stance_plan, indent=2))
 
     summary: dict[str, Any] = {
         "scenario_id": sid,
@@ -8331,11 +9537,51 @@ def render_local_preview(
         scene_objects = _scene_objects_for_stage(stage)
     except Exception:  # noqa: BLE001 - the preview must not hard-fail on scene enumeration
         scene_objects = []
+    summary["scene"] = {
+        "object_count": len(scene_objects),
+        "full_scene_check_source": "scene_placement_usd_objects",
+        "claim_boundary": (
+            "Object count is a local USD scene-index sanity check. It proves the dry-render opened "
+            "a non-empty task scene, not that all meshes/textures are complete or physically valid."
+        ),
+    }
+
+    placement_validation = stance_plan.get("placement_validation")
+    if not isinstance(placement_validation, Mapping):
+        placement_validation = {
+            "schema_version": "placement_validation.v1",
+            "status": "blocked",
+            "blockers": ["placement_validation_unavailable_in_task_stance_plan"],
+            "claim_boundary": (
+                "Placement validation must be emitted by the task stance planner before this "
+                "scenario can pass local task-scaling preflight."
+            ),
+        }
+    elif placement_validation.get("status") == "accepted":
+        placement_validation = {
+            **dict(placement_validation),
+            "status": "PASS",
+            "raw_status": "accepted",
+            "normalized_status_source": "dry_render_task_stance_candidate_validation",
+        }
+    (out_dir / "placement_validation.json").write_text(json.dumps(placement_validation, indent=2))
 
     if stance_plan.get("status") != "accepted":
         summary["pov_framing"] = {"target_in_frame": False, "arm_landmarks_in_frame": 0,
                                   "projected_landmark_count": 0}
         summary["checks"] = {"facing_error_deg": None, "standoff_gap_m": None}
+        manipulation_pov_geometry = {
+            "schema_version": "manipulation_pov_geometry.v1",
+            "status": "FAIL",
+            "blockers": ["task_stance_not_accepted"],
+            "target_in_frame": False,
+            "claim_boundary": (
+                "Manipulation POV geometry is not evaluated unless a task stance is accepted."
+            ),
+        }
+        (out_dir / "manipulation_pov_geometry.json").write_text(
+            json.dumps(manipulation_pov_geometry, indent=2)
+        )
         (out_dir / "dry_render_summary.json").write_text(json.dumps(summary, indent=2))
         return summary
 
@@ -8346,7 +9592,10 @@ def render_local_preview(
         look_at = _surface_affordance_point_for_stance(stance_plan, root) or stance_plan.get("task_target_xyz")
     look_at = tuple(float(v) for v in look_at) if look_at is not None else None
 
-    pov_vfov_deg = max(float(camera_vfov_deg), 90.0)  # manipulation widen — mirrors the runner
+    pov_vfov_deg = max(
+        float(camera_vfov_deg),
+        float(MANIPULATION_POV_MIN_VFOV_DEG),
+    )  # manipulation widen — mirrors the GPU runner
     visual_prim_path = robot_visual_prim_path or robot_prim_path
     if visual_prim_path and stage.GetPrimAtPath(visual_prim_path).IsValid():
         _set_root_xform(stage, visual_prim_path, root, yaw)
@@ -8477,6 +9726,62 @@ def render_local_preview(
             height=height,
             arm=reach_selection,
         )
+        summary["manipulation_pov_geometry"]["camera_meta"] = (
+            _manipulation_pov_camera_meta_for_sidecar(
+                base_meta=robot_camera_meta,
+                eye=eye,
+                target=tgt,
+                vfov_deg=pov_vfov_deg,
+                width=width,
+                height=height,
+                arm=reach_selection,
+                arm_points=arm_points,
+                arm_points_by_arm=arm_points_by_arm,
+            )
+        )
+    if not isinstance(summary.get("manipulation_pov_geometry"), Mapping):
+        reach_selection = _normalize_reach_arm_selection(manipulation_reach_arm)
+        nominal_arm_points_by_arm = _arm_link_points_by_arm_from_skeleton(
+            skeleton_world,
+            arm=reach_selection,
+        )
+        if reach_selection == "both":
+            nominal_arm_points = _average_arm_link_points(nominal_arm_points_by_arm)
+        else:
+            nominal_arm_points = dict(nominal_arm_points_by_arm.get(reach_selection) or {})
+        summary["manipulation_pov_geometry"] = _manipulation_pov_geometry(
+            arm_points=nominal_arm_points,
+            arm_points_by_arm=nominal_arm_points_by_arm,
+            affordance=look_at,
+            eye=eye,
+            target=tgt,
+            vfov_deg=pov_vfov_deg,
+            width=width,
+            height=height,
+            arm=reach_selection,
+        )
+        summary["manipulation_pov_geometry"]["camera_meta"] = (
+            _manipulation_pov_camera_meta_for_sidecar(
+                base_meta=robot_camera_meta,
+                eye=eye,
+                target=tgt,
+                vfov_deg=pov_vfov_deg,
+                width=width,
+                height=height,
+                arm=reach_selection,
+                arm_points=nominal_arm_points,
+                arm_points_by_arm=nominal_arm_points_by_arm,
+            )
+        )
+        summary["manipulation_pov_geometry"]["geometry_source"] = "nominal_g1_dry_render_skeleton"
+        summary["manipulation_pov_geometry"]["claim_boundary"] = (
+            "Local preview uses a nominal Isaac-free G1 skeleton for hand/wrist/extension "
+            "screening. It is not real USD link geometry, physical reach proof, contact proof, "
+            "or deployment readiness; paid Isaac/GPU remains the strict geometry authority."
+        )
+    (out_dir / "manipulation_pov_geometry.json").write_text(
+        json.dumps(summary["manipulation_pov_geometry"], indent=2)
+    )
 
     _draw_dry_render_preview(
         out_dir / "dry_render_preview.png",
@@ -8555,6 +9860,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--neutral-environment", action="store_true",
                     help="replace the kitchen asset's outdoor-HDRI dome light with a neutral bright "
                          "environment (no cityscape through the windows + lifts shadowed surfaces)")
+    ap.add_argument("--robot-review-material-override", action="store_true",
+                    help="bind a neutral matte material over authored G1 materials/textures for a "
+                         "clearer untextured manipulation seed image")
     ap.add_argument("--kinematic-arm-pose", action="store_true",
                     help="pose the RENDERED arm(s) into a forward manipulation-ready seed via pure-USD "
                          "shoulder rotation (no physics tensor -> crash-safe); needs --manipulation-reach")
@@ -8673,6 +9981,7 @@ def main(argv=None) -> int:
         author_target_contact_material=args.author_target_contact_material,
         dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
         neutral_environment=args.neutral_environment,
+        robot_review_material_override=args.robot_review_material_override,
         kinematic_arm_pose=args.kinematic_arm_pose,
         collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
         manipulation_stand=args.manipulation_stand,

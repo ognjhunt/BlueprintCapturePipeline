@@ -88,7 +88,7 @@ def test_gemini_wam_success_labeler_uses_sdk_without_writing_secret(
 
     class FakeModels:
         def generate_content(self, *, model, contents, config):
-            assert model == "gemini-test-model"
+            assert model == "gemini-test-flash-model"
             assert "Approach the target" in contents[0]
             assert contents[1]["mime_type"] == "video/mp4"
             return types.SimpleNamespace(
@@ -121,7 +121,7 @@ def test_gemini_wam_success_labeler_uses_sdk_without_writing_secret(
     result = gemini_labeler.build_gemini_wam_success_labels(
         input_path=_request(tmp_path),
         output_path=output,
-        model="gemini-test-model",
+        model="gemini-test-flash-model",
     )
 
     assert result["status"] == "completed"

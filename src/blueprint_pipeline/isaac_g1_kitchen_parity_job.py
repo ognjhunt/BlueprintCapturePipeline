@@ -185,6 +185,7 @@ if os.environ.get("PARITY_MANIPULATION_REACH","")=="1": cmd.append("--manipulati
 if os.environ.get("PARITY_MANIPULATION_REACH_ARM",""): cmd += ["--manipulation-reach-arm", os.environ["PARITY_MANIPULATION_REACH_ARM"]]
 if os.environ.get("PARITY_FILL_LIGHT_INTENSITY",""): cmd += ["--fill-light-intensity", os.environ["PARITY_FILL_LIGHT_INTENSITY"]]
 if os.environ.get("PARITY_NEUTRAL_ENVIRONMENT","")=="1": cmd.append("--neutral-environment")
+if os.environ.get("PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE","")=="1": cmd.append("--robot-review-material-override")
 if os.environ.get("PARITY_COLLISION_APPROXIMATION",""): cmd += ["--collision-approximation", os.environ["PARITY_COLLISION_APPROXIMATION"]]
 if os.environ.get("PARITY_VERIFY_CAM","")=="1": cmd.append("--verify-cam")
 if os.environ.get("PARITY_MANIPULATION_STAND","")=="1": cmd.append("--manipulation-stand")
@@ -324,6 +325,7 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       manipulation_reach_arm: str = "both",
                       fill_light_intensity: float = 0.0,
                       neutral_environment: bool = False,
+                      robot_review_material_override: bool = False,
                       kinematic_arm_pose: bool = False,
                       collision_approximation: str = "",
                       verify_cam: bool = False,
@@ -382,6 +384,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_FILL_LIGHT_INTENSITY"] = str(fill_light_intensity)
     if neutral_environment:
         env["PARITY_NEUTRAL_ENVIRONMENT"] = "1"
+    if robot_review_material_override:
+        env["PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE"] = "1"
     if kinematic_arm_pose:
         env["PARITY_KINEMATIC_ARM_POSE"] = "1"
     if collision_approximation:
@@ -614,6 +618,7 @@ def run_isaac_g1_kitchen_parity_job(
     image: str | None = None, key_prefix: str = "blueprint/isaac-g1-parity", max_seconds: int = 1500,
     marker_timeout: int = 900, max_attempts: int = 3,
     width: int = 1280, height: int = 960, warmup: int = 6, per_scenario_seconds: int = 420,
+    container_disk_gb: int = 140, volume_gb: int = 80,
     no_collision_probe: bool = False, focus_radius: float = 0.0, keep_objects: str = "",
     settle_seconds: int = 0, cheap_collision: bool = False, articulated: bool = False,
     physics_articulation_drive: bool = False,
@@ -622,6 +627,7 @@ def run_isaac_g1_kitchen_parity_job(
     manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
     fill_light_intensity: float = 0.0,
     neutral_environment: bool = False,
+    robot_review_material_override: bool = False,
     kinematic_arm_pose: bool = False,
     collision_approximation: str = "",
     verify_cam: bool = False,
@@ -725,6 +731,7 @@ def run_isaac_g1_kitchen_parity_job(
         inbox_get_url = Path(inbox["warm_inbox_get_url_file"]).read_text().strip()
     spec = build_launch_spec(job_dir, image=image or parity_image(), policy_id=policy_id,
                              steps=steps, kitchen_url=kitchen_url, width=width, height=height,
+                             container_disk_gb=container_disk_gb, volume_gb=volume_gb,
                              serve=serve, inbox_get_url=inbox_get_url,
                              serve_idle_timeout_s=serve_idle_timeout_s, serve_max_jobs=serve_max_jobs,
                              warmup=warmup, per_scenario_seconds=per_scenario_seconds,
@@ -738,6 +745,7 @@ def run_isaac_g1_kitchen_parity_job(
                              manipulation_reach_arm=manipulation_reach_arm,
                              fill_light_intensity=fill_light_intensity,
                              neutral_environment=neutral_environment,
+                             robot_review_material_override=robot_review_material_override,
                              kinematic_arm_pose=kinematic_arm_pose,
                              collision_approximation=collision_approximation, verify_cam=verify_cam,
                              manipulation_stand=manipulation_stand,
@@ -746,6 +754,8 @@ def run_isaac_g1_kitchen_parity_job(
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
                                         "policy_id": policy_id, "steps": steps,
+                                        "container_disk_gb": int(container_disk_gb),
+                                        "volume_gb": int(volume_gb),
                                         "vast_max_hourly_rate_usd": spec.max_hourly_rate_usd,
                                         "physics_articulation_drive": bool(
                                             physics_articulation_drive
@@ -753,6 +763,9 @@ def run_isaac_g1_kitchen_parity_job(
                                         ),
                                         "dynamic_standing_contact_steps": int(
                                             dynamic_standing_contact_steps
+                                        ),
+                                        "robot_review_material_override": bool(
+                                            robot_review_material_override
                                         )}
     if not allow_paid:
         manifest["status"] = "prepared"
@@ -891,10 +904,23 @@ def run_isaac_g1_kitchen_parity_job(
     except Exception:  # noqa: BLE001
         pass
     manifest["parity_result"] = parity_result
-    if parity_result.get("status") == "completed":
+    parity_status = str(parity_result.get("status") or "").strip().lower()
+    runner_completed = not bool(result.get("timed_out_without_runner_done"))
+    manifest["runner_completed"] = runner_completed
+    manifest["parity_result_status"] = parity_status or None
+    if parity_status == "completed":
         manifest["harness"] = build_harness_package(result=parity_result, render_out_dir=render_out,
                                                     out_dir=out_dir)
         manifest["status"] = "completed"
+    elif runner_completed and parity_result:
+        manifest["status"] = "blocked"
+        for blocker in parity_result.get("blockers") or []:
+            if blocker not in manifest["blockers"]:
+                manifest["blockers"].append(blocker)
+        if "isaac_parity_result_blocked" not in manifest["blockers"]:
+            manifest["blockers"].append("isaac_parity_result_blocked")
+    elif runner_completed:
+        manifest["blockers"].append("isaac_runner_completed_without_result")
     else:
         manifest["blockers"].append("isaac_runtime_did_not_complete")
     return manifest
@@ -941,6 +967,10 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--image", default=None)
     ap.add_argument("--max-seconds", type=int, default=1500)
+    ap.add_argument("--container-disk-gb", type=int, default=140,
+                    help="RunPod container disk size. Must be >= existing pod size for warm update.")
+    ap.add_argument("--volume-gb", type=int, default=80,
+                    help="RunPod network volume size. Must be >= existing pod size for warm update.")
     ap.add_argument("--marker-timeout", type=int, default=900,
                     help="seconds to wait for a pod's boot marker before reaping it as a dud "
                          "(must exceed the worker image pull time on a slow node)")
@@ -973,6 +1003,9 @@ def main(argv=None) -> int:
     ap.add_argument("--neutral-environment", action="store_true",
                     help="replace the kitchen's outdoor-HDRI dome with a neutral environment "
                          "(no cityscape through the windows + lifts shadows)")
+    ap.add_argument("--robot-review-material-override", action="store_true",
+                    help="bind neutral matte material over authored G1 materials/textures for a "
+                         "clearer untextured manipulation seed image")
     ap.add_argument("--kinematic-arm-pose", action="store_true",
                     help="pose the rendered arm reaching the workspace (pure-USD, crash-safe)")
     ap.add_argument("--collision-approximation", default="",
@@ -992,6 +1025,7 @@ def main(argv=None) -> int:
         g1_usd=args.g1_usd, policy_id=args.policy, steps=args.steps, provider=args.provider,
         allow_paid=args.allow_paid, allow_dirty_paid_launch=args.allow_dirty_paid_launch,
         cold=args.cold, image=args.image, max_seconds=args.max_seconds,
+        container_disk_gb=args.container_disk_gb, volume_gb=args.volume_gb,
         warm_candidates=tuple(args.warm_candidate or ()),
         warm_only=args.warm_only,
         marker_timeout=args.marker_timeout, max_attempts=args.max_attempts,
@@ -1006,6 +1040,7 @@ def main(argv=None) -> int:
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
         fill_light_intensity=args.fill_light_intensity,
         neutral_environment=args.neutral_environment,
+        robot_review_material_override=args.robot_review_material_override,
         kinematic_arm_pose=args.kinematic_arm_pose,
         collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
         manipulation_stand=args.manipulation_stand)

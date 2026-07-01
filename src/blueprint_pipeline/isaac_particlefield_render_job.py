@@ -311,6 +311,14 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
     last_boot = {}
     last_console_tail = ""
     done = False
+    done_from_final_result_without_runner_done = False
+    expected_launch_session_id = ""
+    nonce_path = job_dir / "launch_session_nonce.txt"
+    if nonce_path.is_file():
+        try:
+            expected_launch_session_id = nonce_path.read_text(encoding="utf-8").strip()
+        except Exception:  # noqa: BLE001
+            expected_launch_session_id = ""
     while time.time() - t0 < max_seconds:
         time.sleep(poll)
         try:
@@ -331,6 +339,16 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         if boot.get("phase") == "runner_done":
             done = True
             break
+        bootstrap_matches_current_launch = bool(
+            expected_launch_session_id
+            and boot.get("launch_session_id") == expected_launch_session_id
+        )
+        if last.get("status") in ("completed", "blocked") and bootstrap_matches_current_launch:
+            # The runner writes its final result before closing Isaac. If closing/uploading the final
+            # runner_done marker stalls, this current-launch result is still enough to stop polling.
+            done = True
+            done_from_final_result_without_runner_done = True
+            break
         if last.get("status") in ("completed", "blocked") and not boot:
             # Legacy/no-bootstrap fallback. Current bootstraps always write bootstrap.json; when it is
             # present, wait for runner_done so warm-restart stale outputs cannot terminate a fresh run.
@@ -348,10 +366,23 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         refreshed, refreshed_source = _runner_result_from_dir(out_dir)
         if refreshed:
             last, last_source = refreshed, refreshed_source
+        refreshed_boot = _read_json_file(out_dir / "bootstrap.json")
+        if refreshed_boot:
+            last_boot = refreshed_boot
+            if refreshed_boot.get("phase") == "runner_done":
+                done_from_final_result_without_runner_done = False
     completed = bool(done and last.get("status") == "completed")
     runner_started = bool(done or last or last_boot or last_console_tail)
+    runner_done_observed = last_boot.get("phase") == "runner_done"
     timed_out_without_runner_done = not done
-    if done and (preserve_instance or (stop_on_success and runner_started)) and hasattr(provider, "stop"):
+    should_preserve_for_warm_reuse = bool(
+        done
+        and runner_done_observed
+        and not done_from_final_result_without_runner_done
+        and (preserve_instance or (stop_on_success and runner_started))
+        and hasattr(provider, "stop")
+    )
+    if should_preserve_for_warm_reuse:
         teardown = provider.stop(instance_id)
         teardown_reason = "runner_done_preserved_for_warm_reuse"
     else:
@@ -359,6 +390,9 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         # providers that bill stopped disks (notably RunPod) release storage as well as compute.
         teardown = provider.terminate(instance_id)
         teardown_reason = (
+            "final_result_without_runner_done_terminated"
+            if done_from_final_result_without_runner_done
+            else
             "timeout_without_runner_done_terminated"
             if timed_out_without_runner_done
             else "launch_dud_terminated"
@@ -368,6 +402,8 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             "last_bootstrap": last_boot, "runner_console_tail": last_console_tail,
             "teardown": teardown, "teardown_reason": teardown_reason,
             "timed_out_without_runner_done": timed_out_without_runner_done,
+            "runner_done_observed": runner_done_observed,
+            "final_result_without_runner_done": done_from_final_result_without_runner_done,
             "elapsed_seconds": round(time.time() - t0, 1)}
 
 

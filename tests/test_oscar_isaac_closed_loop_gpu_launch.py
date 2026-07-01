@@ -64,3 +64,27 @@ def test_startup_omits_upload_when_no_url(tmp_path: Path) -> None:
     # no put URL -> the curl PUT guard is empty, no upload attempted
     assert 'if [ -n "" ]' in script
     assert "real_provider_probe" not in script  # default harness kind is fixture for the safe v1
+
+
+def test_startup_threads_perception_prompts_and_required_sam3_da3(tmp_path: Path) -> None:
+    start = tmp_path / "s.png"
+    Image.new("RGB", (8, 8), (100, 100, 100)).save(start)
+
+    script = G.build_closed_loop_pod_startup(
+        start_frame_path=start,
+        route_points=[[0, 0, 0.79], [1, 0, 0.79]],
+        steps=2,
+        task_prompt="turn the faucet lever",
+        harness_backend_kind="real_provider_probe",
+        perception_target_prompts=["faucet lever", "sink faucet handle"],
+        require_real_perception_backend=True,
+        require_sam3_completed=True,
+        require_da3_completed=True,
+    )
+
+    assert "--harness-backend-kind real_provider_probe" in script
+    assert "--perception-target-prompt 'faucet lever'" in script
+    assert "--perception-target-prompt 'sink faucet handle'" in script
+    assert "--require-real-perception-backend" in script
+    assert "--require-sam3-completed" in script
+    assert "--require-da3-completed" in script

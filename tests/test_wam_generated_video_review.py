@@ -45,6 +45,14 @@ def _write_dark_frame(path: Path, *, size: tuple[int, int] = (320, 240)) -> Path
     return path
 
 
+def _write_speckled_frame(path: Path, *, size: tuple[int, int] = (640, 480)) -> Path:
+    rng = np.random.default_rng(17)
+    noise = rng.integers(0, 256, size=(size[1], size[0], 3), dtype=np.uint8)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(noise, mode="RGB").save(path)
+    return path
+
+
 def _write_mask(path: Path, *, size: tuple[int, int], box: tuple[int, int, int, int]) -> Path:
     image = Image.new("L", size, 0)
     draw = ImageDraw.Draw(image)
@@ -192,6 +200,27 @@ def test_source_policy_observation_visual_qa_good_frame_passes(tmp_path: Path) -
     assert qa["visual_success"] is True
     assert qa["target_visibility_status"] == "passed_visual_proxy"
     assert qa["blockers"] == []
+
+
+def test_source_policy_observation_visual_qa_rejects_speckled_review_source(
+    tmp_path: Path,
+) -> None:
+    frame = _write_speckled_frame(tmp_path / "speckled.png")
+
+    qa = assess_source_policy_observation_visual_qa(
+        frame,
+        generated_at="now",
+        target_object_id="Sink054_handle",
+        task_id="turn_on_sink_handle",
+        visual_profile="review_quality",
+        review_quality_required=True,
+    )
+
+    assert qa["status"] == "failed_visual_quality_gate"
+    assert qa["visual_success"] is False
+    assert "source_policy_observation_speckled_or_noisy_for_review_quality" in qa["blockers"]
+    assert qa["metrics"]["edge_density"] > 0.45
+    assert qa["metrics"]["center_crop"]["edge_density"] > 0.35
 
 
 def test_source_policy_observation_visual_qa_records_low_detail_projected_robot_regions_as_advisory(

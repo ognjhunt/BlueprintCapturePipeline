@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shlex
 from pathlib import Path
 from typing import Sequence
 
@@ -45,6 +46,27 @@ def _route_points_json(route_points: Sequence[Sequence[float]]) -> str:
     return json.dumps({"route_points": [[float(c) for c in p] for p in route_points]})
 
 
+def _closed_loop_optional_args(
+    *,
+    perception_target_prompts: Sequence[str],
+    require_real_perception_backend: bool,
+    require_sam3_completed: bool,
+    require_da3_completed: bool,
+) -> str:
+    args: list[str] = []
+    for prompt in perception_target_prompts:
+        cleaned = str(prompt).strip()
+        if cleaned:
+            args.extend(["--perception-target-prompt", cleaned])
+    if require_real_perception_backend:
+        args.append("--require-real-perception-backend")
+    if require_sam3_completed:
+        args.append("--require-sam3-completed")
+    if require_da3_completed:
+        args.append("--require-da3-completed")
+    return " ".join(shlex.quote(arg) for arg in args)
+
+
 def build_closed_loop_pod_startup(
     *,
     start_frame_path: str | Path,
@@ -53,6 +75,10 @@ def build_closed_loop_pod_startup(
     task_prompt: str = "walk to the sink",
     num_frames: int = 8,
     harness_backend_kind: str = "fixture",
+    perception_target_prompts: Sequence[str] = (),
+    require_real_perception_backend: bool = False,
+    require_sam3_completed: bool = False,
+    require_da3_completed: bool = False,
     output_get_url: str = "",
     output_put_url: str = "",
     blueprint_repo_url: str = DEFAULT_BLUEPRINT_REPO_URL,
@@ -68,6 +94,15 @@ def build_closed_loop_pod_startup(
     start_b64 = base64.b64encode(Path(start_frame_path).expanduser().read_bytes()).decode("ascii")
     route_json = _route_points_json(route_points)
     pip_pkgs = " ".join(OSCAR_RUNTIME_PIP_PACKAGES)
+    task_prompt_arg = shlex.quote(str(task_prompt))
+    harness_backend_kind_arg = shlex.quote(str(harness_backend_kind))
+    optional_loop_args = _closed_loop_optional_args(
+        perception_target_prompts=perception_target_prompts,
+        require_real_perception_backend=require_real_perception_backend,
+        require_sam3_completed=require_sam3_completed,
+        require_da3_completed=require_da3_completed,
+    )
+    optional_loop_line = f"  {optional_loop_args} \\\n" if optional_loop_args else ""
     # marker prints bracket each phase so the heartbeat/poll can see progress, like the OSCAR lane.
     return f"""#!/usr/bin/env bash
 set -uo pipefail
@@ -113,15 +148,16 @@ ROUTE_EOF
 
 echo "BLUEPRINT_CLOSED_LOOP_PHASE run_loop"
 python -m blueprint_pipeline.oscar_isaac_closed_loop_eval \
-  --start-frame {workdir}/start.png \
-  --route-file {workdir}/route.json \
-  --steps {int(steps)} \
-  --task-prompt "{task_prompt}" \
-  --num-frames {int(num_frames)} \
-  --oscar-repo /opt/oscar \
-  --checkpoint /models/oscar-2b \
-  --harness-backend-kind {harness_backend_kind} \
-  --output-dir {workdir}/out 2>&1 | tee {workdir}/run.log
+	  --start-frame {workdir}/start.png \
+	  --route-file {workdir}/route.json \
+	  --steps {int(steps)} \
+	  --task-prompt {task_prompt_arg} \
+	  --num-frames {int(num_frames)} \
+	  --oscar-repo /opt/oscar \
+	  --checkpoint /models/oscar-2b \
+	  --harness-backend-kind {harness_backend_kind_arg} \
+{optional_loop_line}\
+	  --output-dir {workdir}/out 2>&1 | tee {workdir}/run.log
 RUN_RC=${{PIPESTATUS[0]}}
 echo "BLUEPRINT_CLOSED_LOOP_PHASE upload run_rc=$RUN_RC"
 cd {workdir} && tar czf /workspace/closed_loop_output.tgz out run.log 2>/dev/null || true

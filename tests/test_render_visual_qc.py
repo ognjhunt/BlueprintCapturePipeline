@@ -4,6 +4,8 @@ The Gemini call is injected, so every path is exercised with canned model replie
 from __future__ import annotations
 
 import json
+import sys
+import types
 
 import pytest
 
@@ -223,6 +225,41 @@ def test_review_frame_with_injected_generate_flags_city(tmp_path) -> None:
     assert _FAUCET_TASK in seen["prompt"]
     assert v["frame"] == "robot_pov_0000.png"
     assert v["flagged"] is True and v["error"] is None
+
+
+def test_gemini_review_image_ignores_non_flash_override(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    class FakePart:
+        @staticmethod
+        def from_bytes(*, data, mime_type):
+            assert data == b"image"
+            assert mime_type == "image/png"
+            return {"data": data, "mime_type": mime_type}
+
+    class FakeModels:
+        def generate_content(self, *, model, contents, config):
+            captured["model"] = model
+            assert contents[0]["data"] == b"image"
+            assert config["response_mime_type"] == "application/json"
+            return types.SimpleNamespace(text=_CLEAN_REPLY)
+
+    class FakeClient:
+        def __init__(self, *, api_key):
+            assert api_key == "google-key"
+            self.models = FakeModels()
+
+    google_module = types.ModuleType("google")
+    google_module.genai = types.SimpleNamespace(
+        Client=FakeClient,
+        types=types.SimpleNamespace(Part=FakePart),
+    )
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setenv("GOOGLE_GENAI_API_KEY", "google-key")
+    monkeypatch.setenv("BLUEPRINT_RENDER_QC_GEMINI_MODEL", "gemini-2.5-pro")
+
+    assert qc._gemini_review_image(b"image", "prompt") == _CLEAN_REPLY
+    assert captured["model"] == "gemini-3-flash-preview"
 
 
 def test_review_frame_accepts_raw_bytes_and_handles_generate_errors() -> None:

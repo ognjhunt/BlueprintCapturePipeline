@@ -8,7 +8,10 @@ label behavior when the VLM returns junk, an unknown id, or raises.
 """
 from __future__ import annotations
 
+import json
 import math
+import sys
+import types
 
 import pytest
 
@@ -196,6 +199,13 @@ def test_label_fallback_synonym_tap_to_faucet():
     assert target.id == "f"
 
 
+def test_label_fallback_synonym_stovetop_to_stove():
+    objs = [_obj("s", "stove"), _obj("c", "cabinet")]
+    target = tr.resolve_target_by_label("stand at the stovetop and turn a burner knob", objs)
+    assert target is not None
+    assert target.id == "s"
+
+
 def test_label_fallback_synonym_fridge_to_refrigerator():
     objs = [_obj("r", "refrigerator"), _obj("c", "cabinet")]
     target = tr.resolve_target_by_label("open the fridge", objs)
@@ -302,6 +312,31 @@ def test_default_gemini_requires_api_key(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="missing_GOOGLE_GENAI_API_KEY"):
         tr._gemini_resolve_text("any prompt")
+
+
+def test_default_gemini_ignores_non_flash_override(monkeypatch):
+    captured: dict[str, str] = {}
+
+    class FakeModels:
+        def generate_content(self, *, model, contents, config):
+            captured["model"] = model
+            assert contents == ["prompt"]
+            assert config["response_mime_type"] == "application/json"
+            return types.SimpleNamespace(text=json.dumps({"target_id": "sink_1"}))
+
+    class FakeClient:
+        def __init__(self, *, api_key):
+            assert api_key == "google-key"
+            self.models = FakeModels()
+
+    google_module = types.ModuleType("google")
+    google_module.genai = types.SimpleNamespace(Client=FakeClient)
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setenv("GOOGLE_GENAI_API_KEY", "google-key")
+    monkeypatch.setenv("BLUEPRINT_TARGET_RESOLVER_GEMINI_MODEL", "gemini-2.5-pro")
+
+    assert tr._gemini_resolve_text("prompt") == '{"target_id": "sink_1"}'
+    assert captured["model"] == "gemini-3-flash-preview"
 
 
 def test_resolve_target_default_generate_degrades_when_no_key(monkeypatch, kitchen_objects):
@@ -1108,6 +1143,23 @@ def test_canonicalized_inverted_bounds_match_ordered_placement_and_validation():
     assert inverted_pose.position == ordered_pose.position
     assert inverted_pose.standoff_m == pytest.approx(ordered_pose.standoff_m)
     assert inverted_validation.ok == ordered_validation.ok
+
+
+def test_validate_stand_pose_rotates_rectangular_robot_footprint():
+    target = _target(cx=1.0, cy=0.0, cz=0.9, hx=0.2, hy=0.2, hz=0.1)
+
+    verdict = validate_stand_pose(
+        (0.55, 0.0, 0.79),
+        0.0,
+        target,
+        [target],
+        floor_z=0.0,
+        footprint_half_extent=(0.10, 0.30, 0.62),
+        standoff_range=(0.10, 0.20),
+    )
+
+    assert verdict.ok is True
+    assert verdict.standoff_m == pytest.approx(0.15)
 
 
 def test_compute_stand_pose_picks_open_side_of_l_counter():
