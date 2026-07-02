@@ -236,6 +236,7 @@ blueprint-build-post-training-data-package = "blueprint_pipeline.post_training_d
 blueprint-build-oscar-visual-augmentation-packet = "blueprint_pipeline.oscar_visual_augmentation_packet:main"
 blueprint-build-capture-batch-registry = "blueprint_pipeline.capture_batch_registry:main"
 blueprint-build-scene-asset-preflight = "blueprint_pipeline.scene_asset_preflight:main"
+blueprint-autogen-scene-eval-tasks = "blueprint_pipeline.scene_eval_autogen:main"
 blueprint-build-episode-specs = "blueprint_pipeline.episode_spec:main"
 blueprint-build-scene-wam-policy-episode-packet = "blueprint_pipeline.scene_wam_policy_episode_packet:main"
 blueprint-run-cpu-simulator-preflight = "blueprint_pipeline.cpu_simulator_preflight:main"
