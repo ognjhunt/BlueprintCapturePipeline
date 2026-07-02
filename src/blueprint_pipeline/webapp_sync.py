@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import hmac
 import os
 import time
+from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Dict, Mapping, Optional
 from urllib import error as urllib_error
@@ -394,6 +396,20 @@ def _placeholder_sync_allowed() -> bool:
     )
 
 
+def _pipeline_sync_headers(sync_token: str, body: bytes) -> Dict[str, str]:
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    signature = hmac.new(
+        sync_token.encode("utf-8"),
+        f"{timestamp}.".encode("utf-8") + body,
+        sha256,
+    ).hexdigest()
+    return {
+        "Content-Type": "application/json",
+        "X-Blueprint-Pipeline-Timestamp": timestamp,
+        "X-Blueprint-Pipeline-Signature": f"sha256={signature}",
+    }
+
+
 def _extract_webapp_response_ids(response: Mapping[str, Any]) -> Dict[str, Any]:
     keys = (
         "id",
@@ -635,13 +651,11 @@ def sync_webapp_pipeline_attachment(
     last_reason = "sync_unknown_failure"
 
     for attempt in range(1, max_attempts + 1):
+        request_body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         request = urllib_request.Request(
             sync_url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Blueprint-Pipeline-Token": sync_token,
-            },
+            data=request_body,
+            headers=_pipeline_sync_headers(sync_token, request_body),
             method="POST",
         )
         try:

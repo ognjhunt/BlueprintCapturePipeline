@@ -1,5 +1,7 @@
 .git
 .gitignore
+.agents/
+.claude/
 .pytest_cache
 .ruff_cache
 .venv

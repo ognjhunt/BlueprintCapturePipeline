@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 from urllib import error as urllib_error
 
@@ -373,6 +375,17 @@ def test_sync_webapp_pipeline_attachment_returns_buyer_access_and_checksums(monk
         assert timeout > 0
         if request.full_url.endswith("/buyer-access"):
             return _Response({"buyer_accessible": True})
+        timestamp = request.get_header("X-blueprint-pipeline-timestamp")
+        signature = request.get_header("X-blueprint-pipeline-signature")
+        assert timestamp
+        assert signature
+        expected = hmac.new(
+            b"token",
+            f"{timestamp}.".encode("utf-8") + request.data,
+            hashlib.sha256,
+        ).hexdigest()
+        assert signature == f"sha256={expected}"
+        assert request.get_header("X-blueprint-pipeline-token") is None
         return _Response(
             {
                 "attachment_id": "att-1",

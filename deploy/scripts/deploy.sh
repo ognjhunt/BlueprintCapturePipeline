@@ -62,7 +62,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="$(dirname "$DEPLOY_DIR")"
 TERRAFORM_DIR="$DEPLOY_DIR/terraform"
-FUNCTIONS_DIR="$PROJECT_ROOT"
+FUNCTIONS_DIR="$PROJECT_ROOT/functions"
 
 # Colors for output
 RED='\033[0;31m'
@@ -118,6 +118,9 @@ check_prerequisites() {
     check_command docker
     check_command terraform
     check_command jq
+    check_command python3
+
+    python3 "$PROJECT_ROOT/scripts/validate_pubsub_handoff_infra.py"
 
     # Check gcloud authentication
     if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" | head -n1 > /dev/null 2>&1; then
@@ -315,9 +318,10 @@ deploy_cloud_function() {
         --entry-point on_storage_finalize \
         --trigger-event-filters="type=google.cloud.storage.object.v1.finalized" \
         --trigger-event-filters="bucket=${STORAGE_BUCKET}" \
+        --trigger-location us \
         --memory 512M \
         --timeout 60s \
-        --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${PRIMARY_REGION},REGIONS=${SECONDARY_REGIONS},SWAP_TRIGGER_DISPATCH_MODE=pubsub,SWAP_TRIGGER_PUBSUB_TOPIC=${SWAP_TOPIC},SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF=true"
+        --set-env-vars "^~^PIPELINE_PROJECT_ID=${PROJECT_ID}~PIPELINE_REGION=${PRIMARY_REGION}~REGIONS=${SECONDARY_REGIONS}~SWAP_TRIGGER_DISPATCH_MODE=pubsub~SWAP_TRIGGER_PUBSUB_TOPIC=${SWAP_TOPIC}~SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF=true"
 
     gcloud functions deploy swap-dispatch-worker \
         --gen2 \
@@ -328,7 +332,7 @@ deploy_cloud_function() {
         --trigger-topic "${SWAP_TOPIC}" \
         --memory 4096M \
         --timeout 3600s \
-        --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${PRIMARY_REGION},REGIONS=${SECONDARY_REGIONS},PIPELINE_EXECUTION_MODE=cloud_run_job,PIPELINE_RUN_JOB_NAME=blueprint-pipeline,PIPELINE_RUN_JOB_REGION=${PRIMARY_REGION}"
+        --set-env-vars "^~^PIPELINE_PROJECT_ID=${PROJECT_ID}~PIPELINE_REGION=${PRIMARY_REGION}~REGIONS=${SECONDARY_REGIONS}~PIPELINE_EXECUTION_MODE=cloud_run_job~PIPELINE_RUN_JOB_NAME=blueprint-pipeline~PIPELINE_RUN_JOB_REGION=${PRIMARY_REGION}"
 
     log_success "Cloud Function deployed"
 }
@@ -437,7 +441,7 @@ create_cloud_tasks_queues() {
 create_pubsub_topics() {
     log_info "Creating Pub/Sub topics..."
 
-    TOPICS=("pipeline-trigger" "pipeline-trigger-dlq")
+    TOPICS=("$SWAP_TOPIC" "pipeline-trigger-dlq")
 
     for topic in "${TOPICS[@]}"; do
         if [[ "$DRY_RUN" == "true" ]]; then
@@ -453,7 +457,24 @@ create_pubsub_topics() {
         fi
     done
 
-    log_success "Pub/Sub topics created"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY-RUN] Would create pull subscription: blueprint-pipeline-handoff-listener"
+    elif gcloud pubsub subscriptions describe blueprint-pipeline-handoff-listener &>/dev/null; then
+        log_info "Subscription blueprint-pipeline-handoff-listener already exists"
+    else
+        gcloud pubsub subscriptions create blueprint-pipeline-handoff-listener \
+            --topic "$SWAP_TOPIC" \
+            --ack-deadline 600 \
+            --message-retention-duration 7d \
+            --min-retry-delay 60s \
+            --max-retry-delay 600s \
+            --dead-letter-topic pipeline-trigger-dlq \
+            --max-delivery-attempts 5 \
+            --quiet
+        log_info "Created subscription: blueprint-pipeline-handoff-listener"
+    fi
+
+    log_success "Pub/Sub topics and subscriptions created"
 }
 
 setup_iam() {
@@ -528,7 +549,8 @@ print_summary() {
     echo "  - Cloud Run Services (GPU): sam3-detect, vip-inpaint, deepprivacy2-anonymize, video-to-world"
     echo "  - Cloud Function: storage-trigger"
     echo "  - Cloud Tasks Queue: blueprint-pipeline-queue"
-    echo "  - Pub/Sub Topic: pipeline-trigger"
+    echo "  - Pub/Sub Topic: ${SWAP_TOPIC}"
+    echo "  - Pub/Sub Subscription: blueprint-pipeline-handoff-listener"
     echo ""
     echo "Service Accounts:"
     echo "  - pipeline-runner@${PROJECT_ID}.iam.gserviceaccount.com"

@@ -395,7 +395,9 @@ def test_post_training_export_includes_simulator_batch_trace_streams(tmp_path: P
         output_dir=job_dir,
     )
 
-    assert package["status"] == "export_ready_review_required"
+    assert package["status"] == "blocked_package_quality_gates"
+    assert "curation:clips_manifest_missing_or_empty" in package["blockers"]
+    assert "curation:sc3_action_normalization_blocked" in package["blockers"]
     assert package["included_artifacts"]["visual_review_ledger"] == "visual_review_ledger.json"
     assert package["included_artifacts"]["simulator_command_batch_visual_review_ledger"] == (
         "simulator_command_batch_visual_review_ledger.json"
@@ -1444,7 +1446,9 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert proof_boundary["robot_policy_execution_proven"] is False
     assert proof_boundary["public_claim_upgrade_allowed"] is False
     assert proof_boundary["fixture_only_proof"] is True
-    assert data_package_export["status"] == "export_ready_review_required"
+    assert data_package_export["status"] == "blocked_package_quality_gates"
+    assert "curation:clips_manifest_missing_or_empty" in data_package_export["blockers"]
+    assert "curation:sc3_action_normalization_blocked" in data_package_export["blockers"]
     assert data_package_export["package_type"] == "post_training_data_package"
     assert data_package_export["included_artifacts"]["normalized_attempt_trace"] == (
         "normalized_attempt_trace.json"
@@ -12230,7 +12234,11 @@ def test_isaac_lab_arena_results_feed_eval_package_and_delivery(
     assert (job_dir / "dataset_card.json").is_file()
     assert (job_dir / "license_manifest.json").is_file()
     assert (job_dir / "checksums.json").is_file()
-    assert package["status"] == "export_ready_review_required"
+    assert package["status"] == "blocked_package_quality_gates"
+    assert (
+        "curation:clip_arena_attempt_0001:min_frame_count_missing"
+        in package["blockers"]
+    )
     assert package["archive_manifest_path"] == "archive_manifest.json"
     assert archive["archive"]["exists"] is True
     assert delivery["status"] == "local_delivery_bundle_ready"

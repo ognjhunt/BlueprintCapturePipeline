@@ -401,6 +401,12 @@ resource "google_project_iam_member" "storage_trigger_pubsub" {
   member  = "serviceAccount:${google_service_account.storage_trigger.email}"
 }
 
+resource "google_project_iam_member" "pipeline_runner_pubsub_subscriber" {
+  project = var.project_id
+  role    = "roles/pubsub.subscriber"
+  member  = "serviceAccount:${google_service_account.pipeline_runner.email}"
+}
+
 # Cloud Tasks enqueue
 resource "google_project_iam_member" "storage_trigger_tasks" {
   project = var.project_id
@@ -443,6 +449,26 @@ resource "google_pubsub_topic" "pipeline_trigger" {
 # Dead letter topic for failed messages
 resource "google_pubsub_topic" "pipeline_dlq" {
   name   = "pipeline-trigger-dlq"
+  labels = local.common_labels
+}
+
+resource "google_pubsub_subscription" "pipeline_handoff_listener" {
+  name  = "blueprint-pipeline-handoff-listener"
+  topic = google_pubsub_topic.pipeline_trigger.id
+
+  ack_deadline_seconds       = 600
+  message_retention_duration = "604800s"
+
+  retry_policy {
+    minimum_backoff = "60s"
+    maximum_backoff = "600s"
+  }
+
+  dead_letter_policy {
+    dead_letter_topic     = google_pubsub_topic.pipeline_dlq.id
+    max_delivery_attempts = 5
+  }
+
   labels = local.common_labels
 }
 
@@ -1303,6 +1329,11 @@ output "cloud_tasks_queues" {
 output "pubsub_topic" {
   description = "Pub/Sub topic for pipeline triggers"
   value       = google_pubsub_topic.pipeline_trigger.id
+}
+
+output "pubsub_handoff_listener_subscription" {
+  description = "Pull subscription consumed by blueprint-pubsub-handoff-listener"
+  value       = google_pubsub_subscription.pipeline_handoff_listener.id
 }
 
 output "storage_trigger_function" {

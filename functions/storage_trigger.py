@@ -18,12 +18,6 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
-from blueprint_pipeline.capture_orchestrator import run_capture_pipeline  # noqa: E402
-from blueprint_pipeline.materialization import (  # noqa: E402
-    capture_materialization_readiness,
-    materialize_capture_bundle,
-)
-
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -214,6 +208,26 @@ def _pipeline_kwargs_from_payload(payload: Dict[str, Any], *, descriptor_uri: st
     if requested_lanes is not None:
         kwargs["requested_lanes"] = requested_lanes
     return kwargs
+
+
+def run_capture_pipeline(**kwargs: Any) -> Any:
+    from blueprint_pipeline.capture_orchestrator import run_capture_pipeline as _run_capture_pipeline
+
+    return _run_capture_pipeline(**kwargs)
+
+
+def capture_materialization_readiness(**kwargs: Any) -> Dict[str, Any]:
+    from blueprint_pipeline.materialization import (
+        capture_materialization_readiness as _capture_materialization_readiness,
+    )
+
+    return _capture_materialization_readiness(**kwargs)
+
+
+def materialize_capture_bundle(**kwargs: Any) -> Dict[str, Any]:
+    from blueprint_pipeline.materialization import materialize_capture_bundle as _materialize_capture_bundle
+
+    return _materialize_capture_bundle(**kwargs)
 
 
 def _descriptor_uri_for_capture(*, bucket: str, scene_id: str, capture_id: str) -> str:
