@@ -4488,6 +4488,20 @@ def build_live_robot_eval_closure_manifest(
         live_external_ready=live_external_ready,
         live_end_to_end_verified=all_ready,
     )
+    sc3_protocol = _read_optional_mapping(resolved_job_dir / "sc3_eval_protocol.json")
+    sc3_eval_protocol_summary = {
+        "path": "sc3_eval_protocol.json",
+        "present": bool(sc3_protocol),
+        "status": _string(sc3_protocol.get("status")) or "not_available",
+        "correlation_claim_status": (
+            _string(sc3_protocol.get("correlation_claim_status")) or "correlation_not_measured"
+        ),
+        "claim_boundary": {
+            "sc3_protocol_is_not_a_closure_gate": True,
+            "sc3_self_consistency_is_reliability_support_only": True,
+            "sc3_protocol_does_not_claim_blueprint_90_percent_accuracy": True,
+        },
+    }
 
     manifest = {
         "schema_version": LIVE_ROBOT_EVAL_CLOSURE_SCHEMA_VERSION,
@@ -4505,6 +4519,7 @@ def build_live_robot_eval_closure_manifest(
         "gates": gates,
         "requirement_coverage": requirement_coverage,
         "robot_team_beta_readiness": robot_team_beta_readiness,
+        "sc3_eval_protocol": sc3_eval_protocol_summary,
         "blockers": blockers,
         "evidence_sources": evidence_sources,
         "proof_boundary": proof_boundary,
