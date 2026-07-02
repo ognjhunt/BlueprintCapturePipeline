@@ -755,7 +755,11 @@ def test_geometry_stage_helper_edges(monkeypatch, tmp_path: Path) -> None:
             },
         ],
     )
-    assert "0.000000 0.000000 0.000000" in pointcloud_path.read_text(encoding="utf-8")
+    # All-malformed poses yield an honest empty pointcloud, never a
+    # fabricated origin vertex.
+    pointcloud_text = pointcloud_path.read_text(encoding="utf-8")
+    assert "element vertex 0" in pointcloud_text
+    assert "0.000000 0.000000 0.000000" not in pointcloud_text
 
     fallback = _build_fallback_provider_result(
         video_path=capture_root / "raw" / "walkthrough.mov",
