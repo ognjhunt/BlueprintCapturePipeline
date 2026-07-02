@@ -293,7 +293,7 @@ def _request_blockers(
             blockers.append(f"missing_env_{ALLOW_PROVIDER_LAUNCH_ENV}")
         if not allow_provider_launch:
             blockers.append("missing_cli_allow_provider_launch")
-        if not command_text:
+        if provider != "vast" and not command_text:
             blockers.append("missing_gpu_provider_launch_command")
         if provider_shape.get("api_payload_is_provider_adapter_template") is not True:
             blockers.append("provider_launch_request_not_adapter_template")
@@ -316,6 +316,80 @@ def _request_blockers(
         ):
             blockers.append("missing_provider_artifact_output_uri")
     return _dedupe(blockers)
+
+
+def _run_builtin_vast_provider_adapter(
+    *,
+    request_path: Path,
+    output_path: Path,
+    request: Mapping[str, Any],
+    result: Mapping[str, Any],
+    timeout_seconds: int | None,
+) -> dict[str, Any]:
+    from .vast_provider_adapter import run_vast_provider_adapter
+
+    provider_shape = _mapping(request.get("provider_request_shape"))
+    image = _mapping(provider_shape.get("image"))
+    inputs = _mapping(provider_shape.get("inputs"))
+    limits = _mapping(provider_shape.get("limits"))
+    max_live_minutes = max(
+        1,
+        int((_number(limits.get("hard_timeout_seconds")) or 300) // 60),
+    )
+    adapter_result = run_vast_provider_adapter(
+        job_dir=request_path.parent,
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        public_image=_string(image.get("configured_image_ref")) or None,
+        provider_bundle_url=_string(inputs.get("capture_root_bundle_uri")) or None,
+        provider_output_put_url=_string(
+            _mapping(inputs.get("artifact_output_write_auth")).get("signed_put_url")
+        )
+        or None,
+        provider_output_get_url=_string(inputs.get("artifact_output_uri")) or None,
+        max_live_minutes=max_live_minutes,
+        startup_timeout_seconds=max(60, int(_number(limits.get("hard_timeout_seconds")) or 300)),
+        poll_interval_seconds=max(
+            1,
+            int(_number(os.getenv("BLUEPRINT_GPU_PROVIDER_POLL_INTERVAL_SECONDS")) or 10),
+        ),
+    )
+    status = _string(adapter_result.get("status"))
+    blockers = _string_list(adapter_result.get("blockers"))
+    completed = status in {"completed", "success", "succeeded"}
+    persisted = dict(result)
+    persisted.update(
+        {
+            "status": "completed" if completed else status or "failed",
+            "reason": (
+                "builtin_vast_provider_adapter_completed"
+                if completed
+                else _string(adapter_result.get("reason"))
+                or "builtin_vast_provider_adapter_failed"
+            ),
+            "blockers": [] if completed else blockers or ["vast_provider_adapter_failed"],
+            "execution_performed": True,
+            "provider_launcher_command_executed": False,
+            "builtin_provider_adapter_executed": True,
+            "live_provider_calls_performed_by_launcher_module": True,
+            "live_provider_call_proven": bool(adapter_result.get("live_provider_call_proven")),
+            "provider_allocation_proven": bool(
+                adapter_result.get("provider_allocation_proven")
+                or adapter_result.get("vast_instance_ids")
+            ),
+            "provider_side_effects_may_have_occurred": True,
+            "adapter_result_path": str(request_path.parent / "vast_provider_adapter_result.json"),
+            "adapter_status": status,
+            "adapter_blockers": blockers,
+            "vast_instance_ids": adapter_result.get("vast_instance_ids") or [],
+            "all_vast_instances_destroyed_by_adapter": adapter_result.get(
+                "all_vast_instances_destroyed_by_adapter"
+            ),
+            "timeout_seconds": timeout_seconds,
+        }
+    )
+    return _write_result(output_path, persisted)
 
 
 def run_gpu_provider_launcher(
@@ -421,6 +495,15 @@ def run_gpu_provider_launcher(
             }
         )
         return _write_result(resolved_output, result)
+
+    if provider == "vast" and not command_text:
+        return _run_builtin_vast_provider_adapter(
+            request_path=request_path,
+            output_path=resolved_output,
+            request=request,
+            result=result,
+            timeout_seconds=timeout_seconds,
+        )
 
     try:
         argv = shlex.split(command_text)

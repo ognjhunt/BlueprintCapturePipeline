@@ -30,17 +30,18 @@ def _ready_provider_launch_request(
     path: Path,
     *,
     status: str = "request_manifest_ready",
+    provider: str = "runpod",
 ) -> Path:
     _write_json(
         path,
         {
             "schema_version": "robot_eval_gpu_provider_launch_request.v1",
             "job_id": "launcher-job-1",
-            "provider": "runpod",
+            "provider": provider,
             "status": status,
             "live_provider_calls_performed": False,
             "provider_request_shape": {
-                "provider_api": "runpod",
+                "provider_api": provider,
                 "api_payload_is_provider_adapter_template": True,
                 "api_payload_values_are_redacted": True,
                 "operation": "enqueue_runpod_serverless_or_on_demand_worker",
@@ -57,7 +58,7 @@ def _ready_provider_launch_request(
                     "--manifest ${BLUEPRINT_EVAL_MANIFEST_URI}"
                 ),
                 "environment": {
-                    "secret_env_var_names": ["RUNPOD_API_KEY"],
+                    "secret_env_var_names": ["RUNPOD_API_KEY" if provider != "vast" else "VAST_API_KEY"],
                     "secret_values_in_artifact": False,
                 },
                 "inputs": {
@@ -201,6 +202,60 @@ def test_provider_launcher_executes_operator_command_with_redacted_artifact(
     assert "<redacted:RUNPOD_API_KEY>" in stdout
     assert "secret-value-that-must-not-appear" not in persisted
     assert "secret-value-that-must-not-appear" not in stdout
+
+
+def test_provider_launcher_invokes_builtin_vast_adapter_without_operator_command(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+        provider="vast",
+    )
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+    calls: list[dict[str, object]] = []
+
+    def fake_vast_adapter(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(dict(kwargs))
+        _write_json(
+            tmp_path / "vast_provider_adapter_result.json",
+            {
+                "status": "completed",
+                "vast_instance_ids": ["vast-1"],
+                "all_vast_instances_destroyed_by_adapter": True,
+            },
+        )
+        return {
+            "status": "completed",
+            "vast_instance_ids": ["vast-1"],
+            "live_provider_call_proven": True,
+            "provider_allocation_proven": True,
+            "all_vast_instances_destroyed_by_adapter": True,
+            "blockers": [],
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter.run_vast_provider_adapter",
+        fake_vast_adapter,
+    )
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+    )
+
+    assert result["status"] == "completed"
+    assert result["execution_performed"] is True
+    assert result["provider_launcher_command_executed"] is False
+    assert result["builtin_provider_adapter_executed"] is True
+    assert result["live_provider_calls_performed_by_launcher_module"] is True
+    assert result["provider_allocation_proven"] is True
+    assert result["vast_instance_ids"] == ["vast-1"]
+    assert result["all_vast_instances_destroyed_by_adapter"] is True
+    assert calls
+    assert calls[0]["mode"] == "live-startup-probe"
+    assert calls[0]["allow_vast_api_call"] is True
+    assert calls[0]["allow_instance_launch"] is True
 
 
 def test_provider_launcher_records_command_failure(
