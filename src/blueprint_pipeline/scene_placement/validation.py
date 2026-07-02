@@ -254,9 +254,6 @@ def validate_stand_pose(
     """
     px, py, pz = (float(v) for v in position)
     yaw = float(yaw)
-    hx, hy = _yaw_rotated_aabb_half_extent(footprint_half_extent, yaw)
-    f_min = (px - hx, py - hy)
-    f_max = (px + hx, py + hy)
     pelvis_z = floor_z + pelvis_height
     floor_obstacle_ceiling = floor_z + foot_clearance
     failures: List[str] = []
@@ -280,6 +277,12 @@ def validate_stand_pose(
             facing_error_deg=float("nan"), standoff_m=float("nan"),
             on_floor=False, notes="INVALID: " + "; ".join(failures),
         )
+
+    # The yawed footprint extent needs a finite yaw (cos/sin of inf raise), so it is computed
+    # only after the finite-inputs guard above has had its chance to fail loud.
+    hx, hy = _yaw_rotated_aabb_half_extent(footprint_half_extent, yaw)
+    f_min = (px - hx, py - hy)
+    f_max = (px + hx, py + hy)
 
     # 1. CLIP — floor-occupancy model: an obstacle blocks the stance iff it reaches the floor under
     #    the footprint. Skip anything above the foot band or entirely below the declared floor.

@@ -16,6 +16,20 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _stub_ffmpeg_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The local deterministic lane requires host ffmpeg for clip keyframe paths. These tests
+    assert the gating semantics, not host tool installs, so make ffmpeg discoverable
+    hermetically (CI runners do not ship ffmpeg)."""
+    real_which = lps.shutil.which
+
+    def fake_which(cmd, *args, **kwargs):
+        if cmd == "ffmpeg":
+            return "/usr/bin/ffmpeg"
+        return real_which(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(lps.shutil, "which", fake_which)
+
+
 def _capture_root(tmp_path: Path, *, with_webapp_ids: bool = False) -> Path:
     capture_root = tmp_path / "local-blueprint" / "scenes" / "scene-1" / "captures" / "capture-1"
     descriptor: dict[str, object] = {"scene_id": "scene-1", "capture_id": "capture-1"}
@@ -33,7 +47,10 @@ def _capture_root(tmp_path: Path, *, with_webapp_ids: bool = False) -> Path:
     return capture_root
 
 
-def test_live_pipeline_setup_blocks_external_actions_without_gates(tmp_path: Path) -> None:
+def test_live_pipeline_setup_blocks_external_actions_without_gates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_ffmpeg_available(monkeypatch)
     capture_root = _capture_root(tmp_path)
     result = build_live_pipeline_setup_manifest(
         capture_root=capture_root,
@@ -143,6 +160,7 @@ def test_live_pipeline_setup_marks_live_sections_ready_when_explicitly_configure
 def test_live_pipeline_setup_accepts_owner_arena_results_without_overclaiming_webapp(
     tmp_path: Path, monkeypatch
 ) -> None:
+    _stub_ffmpeg_available(monkeypatch)
     capture_root = _capture_root(tmp_path, with_webapp_ids=False)
     arena_results = tmp_path / "arena-results"
     _write_json(

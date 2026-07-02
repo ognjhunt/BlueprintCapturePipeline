@@ -118,8 +118,10 @@ def test_render_shell_wall_hugging_pose_fails_floor_obstacle_clearance():
         bbox_max=(2.567994, 2.459342, 0.836052),
         centroid=(0.634028, 1.155576, 0.411154),
     )
-    # Latest failed shell run: no overlap by about 5 mm, but visually the G1 is pressed into
-    # the side return/cabinet edge. The deterministic gate must reject this before VLM review.
+    # Latest failed shell run: the axis-aligned boxes miss by about 5 mm, but visually the G1 is
+    # pressed into the side return/cabinet edge. The deterministic gate must reject this before
+    # VLM review. Under the yaw-rotated footprint AABB the swung corners turn that 5 mm visual
+    # gap into a small overlap, so the rejection is classified as a clip rather than clearance.
     v = validate_stand_pose(
         (2.381207, -0.433613, 0.84),
         1.629212,
@@ -128,9 +130,9 @@ def test_render_shell_wall_hugging_pose_fails_floor_obstacle_clearance():
         floor_z=0.05,
     )
 
-    assert v.clipping == []
-    assert any(f.startswith("clearance:kitchen_cabinet_1") for f in v.failures)
-    assert v.near_clearance[0][1] == pytest.approx(0.0054, abs=0.001)
+    assert any(f.startswith("clips:kitchen_cabinet_1") for f in v.failures)
+    assert v.clipping[0][0] == "kitchen_cabinet_1"
+    assert v.clipping[0][1] == pytest.approx(0.005, abs=0.002)
     assert v.ok is False
 
 
@@ -152,12 +154,14 @@ def test_usd_window_boundary_above_foot_band_still_requires_xy_clearance():
         centroid=(2.71, 1.22, 1.61),
         source="usd_shell",
     )
-    # Footprint x overlaps the window plane and y stops 3 cm short of it. A generic overhead object
-    # would be skipped, but a USD window/wall is a room boundary, so this is not a valid stance.
+    # Footprint x overlaps the window plane and the axis-aligned box stops 3 cm short in y. A
+    # generic overhead object would be skipped, but a USD window/wall is a room boundary, so this
+    # is not a valid stance. The yaw-rotated footprint AABB swings the corners across that 3 cm,
+    # so the boundary violation is now reported as a clip (plus the boundary-crossing check).
     v = validate_stand_pose((2.74, 0.19, 0.84), 2.1, target, [window], floor_z=0.05)
 
-    assert any(f.startswith("clearance:kitchen_windows") for f in v.failures)
-    assert v.near_clearance[0][1] == pytest.approx(0.03)
+    assert any(f.startswith("clips:kitchen_windows") for f in v.failures)
+    assert v.clipping[0][0] == "kitchen_windows"
     assert v.ok is False
 
 
@@ -520,9 +524,11 @@ def test_inf_yaw_fails():
 def test_subthreshold_rotation_frame_error_is_a_known_blind_spot():
     # Correct position, but yaw rotated 30deg in a flipped frame -> under the 35deg facing tol, so the
     # validator (by design) does NOT catch a pure-rotation frame bug. This locks the documented limit.
+    # The stance sits a step further back than the straight-on pose because the yaw-rotated footprint
+    # AABB swings the corners toward the sink and would otherwise under-run the standoff minimum.
     target, counter = _sink_and_counter()
     yaw = math.pi / 2 + math.radians(30)
-    v = validate_stand_pose((2.28, 0.44, 0.84), yaw, target, [target, counter], floor_z=0.05)
+    v = validate_stand_pose((2.28, 0.32, 0.84), yaw, target, [target, counter], floor_z=0.05)
     assert v.facing_error_deg == pytest.approx(30.0, abs=1.0)
     assert v.ok is True  # blind spot: sub-threshold rotation passes
 
