@@ -413,6 +413,62 @@ def _render(args) -> int:
             except Exception:  # noqa: BLE001
                 pass
 
+        # Optional probe/composite pass: hide the splat and capture the ROBOT ONLY
+        # (RGB + distance_to_camera). Answers "does the mesh render at all in this
+        # pipeline" and provides the inputs for a local depth-composite fallback
+        # when the splat pass does not depth-composite with mesh geometry.
+        robot_only = []
+        if render_options.get("robot_only_pass") and robot_report.get("composited"):
+            ro_dir = out_dir / "frames_robot_only"
+            ro_dir.mkdir(parents=True, exist_ok=True)
+            pf_imageables = [UsdGeom.Imageable(p) for p in pf]
+            for imageable in pf_imageables:
+                imageable.MakeInvisible()
+            for _ in range(10):
+                simulation_app.update()
+            for idx, cam in enumerate(cameras):
+                cid = str(cam.get("id") or f"cam_{idx}")
+                cam_path = f"{cam_root}/{cid}"
+                cam_out = ro_dir / cid
+                cam_out.mkdir(parents=True, exist_ok=True)
+                render_product = rep.create.render_product(cam_path, (int(args.width), int(args.height)))
+                writer = rep.WriterRegistry.get("BasicWriter")
+                writer.initialize(output_dir=str(cam_out), rgb=True, distance_to_camera=True)
+                writer.attach([render_product])
+                for _ in range(10):
+                    simulation_app.update()
+                for _ in range(int(args.subframes)):
+                    rep.orchestrator.step(rt_subframes=int(args.rt_subframes))
+                    simulation_app.update()
+                try:
+                    rep.orchestrator.wait_until_complete()
+                except Exception:  # noqa: BLE001
+                    pass
+                pngs = sorted(glob.glob(str(cam_out / "*.png")))
+                npys = sorted(glob.glob(str(cam_out / "*.npy")))
+                canonical = ro_dir / f"{cid}.png"
+                std = 0.0
+                if pngs:
+                    canonical.write_bytes(Path(pngs[-1]).read_bytes())
+                    std = _pixel_std(canonical)
+                if npys:
+                    (ro_dir / f"{cid}_distance.npy").write_bytes(Path(npys[-1]).read_bytes())
+                robot_only.append({"id": cid, "pixel_std": round(std, 3), "nonblank": std > 3.0,
+                                   "depth_npy": bool(npys)})
+                _phase(result_path, base, "runner_robot_only_rendered", camera_id=cid,
+                       pixel_std=round(std, 3))
+                try:
+                    writer.detach()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    render_product.destroy()
+                except Exception:  # noqa: BLE001
+                    pass
+            for imageable in pf_imageables:
+                imageable.MakeVisible()
+            robot_report["robot_only_pass"] = robot_only
+
         nonblank = sum(1 for r in rendered if r["nonblank"])
         threshold = max(1, round(0.6 * len(rendered))) if rendered else 1
         ok = nonblank >= threshold
