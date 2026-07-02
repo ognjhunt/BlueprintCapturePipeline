@@ -526,8 +526,22 @@ def evaluate_task(
     ceiling = None
     if structure is not None:
         ceiling = floor_z + structure.wall_height_m
+
+    def _eye_clear(point) -> bool:
+        # A camera eye is clear when it sits inside no obstacle/wall volume.
+        x, y, z = (float(v) for v in point)
+        for obs in placement_obstacles:
+            if (
+                obs.bbox_min[0] <= x <= obs.bbox_max[0]
+                and obs.bbox_min[1] <= y <= obs.bbox_max[1]
+                and obs.bbox_min[2] <= z <= obs.bbox_max[2]
+            ):
+                return False
+        return True
+
     cameras = stance_task_cameras(
-        pose, target, floor_z=floor_z, robot_profile=profile, ceiling_z=ceiling
+        pose, target, floor_z=floor_z, robot_profile=profile, ceiling_z=ceiling,
+        eye_clear_fn=_eye_clear,
     )
     cams_finite = all(
         math.isfinite(float(v))

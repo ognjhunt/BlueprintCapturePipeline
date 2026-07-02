@@ -288,20 +288,43 @@ def _render(args) -> int:
             robot_prim = stage.GetPrimAtPath(robot_report["prim_path"])
             try:
                 robot_prim.Load()
+                stage.Load()  # payloads stage-wide: instanceable robot meshes ride payloads
             except Exception:  # noqa: BLE001
                 pass
+
+            def _mesh_point_stats(prim):
+                # REAL geometry evidence: extentsHint composes with structure long
+                # before the mesh payload downloads, so bounds alone cannot prove
+                # the robot will draw. Count meshes whose `points` attribute holds
+                # actual data (traverse into instance prototypes, where
+                # instanceable robot assets keep their geometry).
+                meshes = 0
+                points = 0
+                it = iter(Usd.PrimRange(prim, Usd.TraverseInstanceProxies()))
+                for child in it:
+                    if child.IsA(UsdGeom.Mesh):
+                        arr = UsdGeom.Mesh(child).GetPointsAttr().Get()
+                        if arr:
+                            meshes += 1
+                            points += len(arr)
+                return meshes, points
+
             streamed = False
-            for i in range(120):  # ~120 x 10 updates; bounded wait for asset streaming
-                for _ in range(10):
+            for i in range(90):  # up to ~90 x 20 updates waiting for mesh payload data
+                for _ in range(20):
                     simulation_app.update()
-                cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
-                rng = cache.ComputeWorldBound(robot_prim).GetRange()
-                if not rng.IsEmpty():
+                meshes, points = _mesh_point_stats(robot_prim)
+                if meshes > 0 and points > 100:
                     streamed = True
-                    robot_report["world_bound_min"] = [round(float(v), 4) for v in rng.GetMin()]
-                    robot_report["world_bound_max"] = [round(float(v), 4) for v in rng.GetMax()]
-                    robot_report["updates_until_bound"] = (i + 1) * 10
+                    robot_report["mesh_prims_with_points"] = meshes
+                    robot_report["mesh_point_total"] = points
+                    robot_report["updates_until_mesh_data"] = (i + 1) * 20
                     break
+            cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+            rng = cache.ComputeWorldBound(robot_prim).GetRange()
+            if not rng.IsEmpty():
+                robot_report["world_bound_min"] = [round(float(v), 4) for v in rng.GetMin()]
+                robot_report["world_bound_max"] = [round(float(v), 4) for v in rng.GetMax()]
             robot_report["geometry_streamed"] = streamed
             ground_z = render_options.get("robot_ground_z")
             if streamed and ground_z is not None:

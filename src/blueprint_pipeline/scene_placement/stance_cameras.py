@@ -19,11 +19,15 @@ Pure + stdlib-only (``math``); hermetic to unit-test.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .perception_views import Camera
 from .robot_profile import RobotProfile
 from .types import SceneObject, StandPose, Vec3
+
+# Optional camera-eye clearance test: world point -> True when the eye position
+# is in open space (not inside a wall band or furniture volume).
+EyeClearFn = Callable[[Vec3], bool]
 
 DEFAULT_STANCE_CAMERA_IDS = ("head_pov", "third_person", "overhead", "task_focus")
 
@@ -66,6 +70,7 @@ def stance_task_cameras(
     width: int = 1280,
     height: int = 960,
     ceiling_z: Optional[float] = None,
+    eye_clear_fn: Optional[EyeClearFn] = None,
 ) -> Dict[str, Camera]:
     """Four named cameras framing the solved stance's manipulation moment.
 
@@ -100,12 +105,24 @@ def stance_task_cameras(
         max(tz + 0.4 * focus_back, floor_z + 0.3),
     )
 
-    third_back, third_side = 1.6, 1.1
-    third_eye = (
-        px - fwd[0] * third_back + left[0] * third_side,
-        py - fwd[1] * third_back + left[1] * third_side,
-        floor_z + eye_h + 0.5,
-    )
+    # Third-person eye: behind-left by default, but an offset eye can land inside
+    # a wall band or furniture (the stance is validated; the camera spot is not).
+    # With an ``eye_clear_fn``, try behind-left / behind-right / straight-behind /
+    # a closer high vantage, and take the first CLEAR one.
+    third_z = floor_z + eye_h + 0.5
+    third_candidates = [
+        (px - fwd[0] * 1.6 + left[0] * 1.1, py - fwd[1] * 1.6 + left[1] * 1.1, third_z),
+        (px - fwd[0] * 1.6 - left[0] * 1.1, py - fwd[1] * 1.6 - left[1] * 1.1, third_z),
+        (px - fwd[0] * 2.0, py - fwd[1] * 2.0, third_z),
+        (px - fwd[0] * 1.0 + left[0] * 0.7, py - fwd[1] * 1.0 + left[1] * 0.7, third_z + 0.4),
+        (px - fwd[0] * 1.0 - left[0] * 0.7, py - fwd[1] * 1.0 - left[1] * 0.7, third_z + 0.4),
+    ]
+    third_eye = third_candidates[0]
+    if eye_clear_fn is not None:
+        for candidate in third_candidates:
+            if eye_clear_fn(candidate):
+                third_eye = candidate
+                break
 
     overhead_z = floor_z + 3.2
     if ceiling_z is not None and math.isfinite(float(ceiling_z)):
