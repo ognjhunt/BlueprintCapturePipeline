@@ -349,39 +349,52 @@ class VastRenderProvider(GpuRenderProvider):
             return {"status": "blocked", "blockers": ["vast_offer_search_failed"],
                     "error": repr(e)[:200]}
         offers = _offers_from_response(resp)
-        offer = _select_offer(offers, max_hourly_rate=max_rate, min_gpu_ram_mb=min_ram)
-        attempts.append({"offer_search_status": s, "offer_count": len(offers),
-                         "selected": bool(offer)})
-        if not offer:
-            return {"status": "blocked",
-                    "blockers": ["no_vast_offer_matching_rate_and_gpu_memory"],
-                    "attempts": attempts}
-        ask_id = offer.get("ask_contract_id")
+        attempts.append({"offer_search_status": s, "offer_count": len(offers)})
         create_payload = request.get("create_payload") or {}
-        try:
-            cs, cresp = _api_json(method="PUT", path=f"/asks/{ask_id}/", api_key=key,
-                                  payload=create_payload, timeout_seconds=45)
-        except urllib.error.HTTPError as e:
-            return {"status": "blocked", "blockers": [f"vast_create_http_error:{e.code}"],
-                    "attempts": attempts}
-        except Exception as e:  # noqa: BLE001
-            return {"status": "blocked", "blockers": ["vast_create_failed"],
-                    "error": repr(e)[:200], "attempts": attempts}
-        iid = None
-        if isinstance(cresp, dict):
-            for k in ("new_contract", "instance_id", "id"):
-                if cresp.get(k):
-                    iid = str(cresp[k])
-                    break
-        attempts.append({"create_status": cs, "instance_id": iid,
-                         "gpu_name": offer.get("gpu_name"),
-                         "hourly_rate_usd": offer.get("hourly_rate_usd")})
-        if iid:
-            (job_dir / "started_vast_instance_id.txt").write_text(iid)
-            return {"status": "launched", "instance_id": iid, "mode": "vast_on_demand",
-                    "attempts": attempts}
-        return {"status": "blocked", "blockers": ["vast_instance_not_created"],
-                "attempts": attempts}
+        # Offers go stale between search and create (bundle staging can take minutes),
+        # and a stale ask 400s. Walk up to 3 candidate offers before giving up so one
+        # expired ask can't dud the whole provider in a race.
+        remaining = list(offers)
+        last_blocker = "no_vast_offer_matching_rate_and_gpu_memory"
+        for _try in range(3):
+            offer = _select_offer(remaining, max_hourly_rate=max_rate, min_gpu_ram_mb=min_ram)
+            if not offer:
+                break
+            remaining = [o for o in remaining if o is not offer]
+            ask_id = offer.get("ask_contract_id")
+            try:
+                cs, cresp = _api_json(method="PUT", path=f"/asks/{ask_id}/", api_key=key,
+                                      payload=create_payload, timeout_seconds=45)
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = (e.read() or b"")[:300].decode("utf-8", "replace")
+                except Exception:  # noqa: BLE001
+                    pass
+                attempts.append({"create_http_status": e.code, "ask_id": ask_id,
+                                 "create_error_body": body,
+                                 "gpu_name": offer.get("gpu_name")})
+                last_blocker = f"vast_create_http_error:{e.code}"
+                continue
+            except Exception as e:  # noqa: BLE001
+                attempts.append({"create_error": repr(e)[:200], "ask_id": ask_id})
+                last_blocker = "vast_create_failed"
+                continue
+            iid = None
+            if isinstance(cresp, dict):
+                for k in ("new_contract", "instance_id", "id"):
+                    if cresp.get(k):
+                        iid = str(cresp[k])
+                        break
+            attempts.append({"create_status": cs, "instance_id": iid,
+                             "gpu_name": offer.get("gpu_name"),
+                             "hourly_rate_usd": offer.get("hourly_rate_usd")})
+            if iid:
+                (job_dir / "started_vast_instance_id.txt").write_text(iid)
+                return {"status": "launched", "instance_id": iid, "mode": "vast_on_demand",
+                        "attempts": attempts}
+            last_blocker = "vast_instance_not_created"
+        return {"status": "blocked", "blockers": [last_blocker], "attempts": attempts}
 
     def stop(self, instance_id: str) -> dict:
         # Vast has no warm-preserving stopped state here: DELETE /instances destroys

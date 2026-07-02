@@ -721,3 +721,44 @@ def test_runpod_terminate_is_delete_and_fail_closed(tmp_path: Path, monkeypatch)
     assert "runpod_api_key_missing" in res["blockers"]
     # terminate is distinct from stop (DELETE vs POST /stop) — both exist on the provider
     assert hasattr(RunPodRenderProvider(), "terminate") and hasattr(RunPodRenderProvider(), "stop")
+
+
+def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatch) -> None:
+    """A stale ask 400s at create; the launch must record the error body and
+    fall through to the next candidate offer instead of blocking the race."""
+    import io
+    import urllib.error
+
+    def fake_key(_self):
+        return "vast-key"
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        if method == "POST" and path == "/bundles/":
+            return 200, {"offers": ["raw"]}
+        if method == "PUT" and path == "/asks/ask-stale/":
+            raise urllib.error.HTTPError(
+                "https://vast/asks/ask-stale/", 400, "Bad Request", None,
+                io.BytesIO(b'{"success": false, "msg": "ask expired"}'))
+        if method == "PUT" and path == "/asks/ask-fresh/":
+            return 200, {"new_contract": 777}
+        raise AssertionError((method, path))
+
+    stale = {"ask_contract_id": "ask-stale", "gpu_name": "RTX 4090", "hourly_rate_usd": 0.4}
+    fresh = {"ask_contract_id": "ask-fresh", "gpu_name": "RTX 4090", "hourly_rate_usd": 0.5}
+
+    def fake_select(offers, **_kw):
+        return offers[0] if offers else None
+
+    monkeypatch.setattr(VastRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._offers_from_response",
+                        lambda _resp: [stale, fresh])
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._select_offer", fake_select)
+
+    req = VastRenderProvider().build_request(_spec(), tmp_path)
+    res = VastRenderProvider().launch(tmp_path, req)
+
+    assert res["status"] == "launched"
+    assert res["instance_id"] == "777"
+    create_errors = [a for a in res.get("attempts", []) if a.get("create_http_status") == 400]
+    assert create_errors and "ask expired" in str(create_errors[0].get("create_error_body"))
