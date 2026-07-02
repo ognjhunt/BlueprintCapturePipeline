@@ -1581,28 +1581,32 @@ secret values and does not mean a live GPU provider call happened. These images
 and launch requests are startup/runtime scaffolds only; provider-native GPU
 evidence remains required for simulator proof.
 
-When `gpu_provider_launch_request.json` reaches `request_manifest_ready`, run a
-separate provider launcher instead of teaching the website or job orchestrator
-to call RunPod/Vast/GCP directly. The launcher is fail-closed until both
-`BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true` and `--allow-provider-launch` are
-present, and it only runs the command supplied through
-`BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND` or `--provider-launch-command`:
+When `gpu_provisioning_request.json` / `gpu_provider_launch_request.json`
+reaches `request_manifest_ready`, run the separate provider launcher instead of
+teaching the website or job orchestrator to call GPU providers directly. The
+launcher is fail-closed until both `BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true`
+and `--allow-provider-launch` are present. For Vast requests, the launcher has a
+built-in adapter path that maps the prepared worker image, manifest URI, signed
+output URL, timeouts, polling, and teardown policy into the repo-owned Vast
+adapter. Other providers still require the command supplied through
+`BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND` or `--provider-launch-command`.
 
 ```bash
 BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
-BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND="/path/to/provider-launch-adapter" \
 blueprint-run-gpu-provider-launcher \
   --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID" \
   --allow-provider-launch
 ```
 
-That command receives non-secret context such as
+For non-Vast providers, the supplied command receives non-secret context such as
 `BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST`, `BLUEPRINT_EVAL_MANIFEST_URI`,
 `BLUEPRINT_ARTIFACT_OUTPUT_URI`, `BLUEPRINT_WORKER_IMAGE_REF`, and the timeout
 limits. The launcher writes `gpu_provider_launcher_result.json` plus
 `gpu_provider_launcher.stdout.log` and `.stderr.log`, stores no raw command or
 secret values, redacts known secret env values from captured stdout/stderr logs,
-and does not upgrade simulator, allocation, or rank-fidelity proof by itself.
+and does not upgrade simulator or rank-fidelity proof by itself. Vast allocation
+is only treated as proven when the Vast adapter returns provider evidence, and
+teardown remains part of the adapter result/manifest.
 For RunPod, the repo-owned adapter command is
 `blueprint-run-runpod-provider-adapter`. It defaults to `--mode dry-run` and
 writes `runpod_provider_adapter_result.json` with the serverless `/run` and

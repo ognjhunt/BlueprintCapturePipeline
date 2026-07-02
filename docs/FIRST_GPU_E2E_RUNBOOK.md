@@ -961,31 +961,35 @@ Expected job artifacts:
 - `pipeline/robot_eval_jobs/<job_id>/gpu_provisioning_request.json`
 - `pipeline/robot_eval_jobs/<job_id>/gpu_provider_launch_request.json`
 - `pipeline/robot_eval_jobs/<job_id>/gpu_provider_launcher_result.json` after
-  an explicitly gated provider launcher command runs
+  the explicitly gated provider launcher runs
 - `pipeline/robot_eval_jobs/<job_id>/gpu_cost_control_ledger.json`
 - `pipeline/robot_eval_jobs/<job_id>/gpu_provisioning_result.json`
 - `pipeline/robot_eval_jobs/<job_id>/simulator_service_result.json`
 - `pipeline/robot_eval_jobs/<job_id>/live_eval_closure_manifest.json`
 
-If `gpu_provider_launch_request.json` is `request_manifest_ready`, launch the
-remote worker through an owner-supplied provider adapter rather than from the
-website request path:
+If `gpu_provisioning_request.json` / `gpu_provider_launch_request.json` is
+`request_manifest_ready`, launch the remote worker through the provider launcher
+rather than from the website request path. Vast requests can use the built-in
+Vast adapter path; non-Vast providers still use an owner-supplied provider
+adapter command.
 
 ```bash
 BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
-BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND="/path/to/provider-launch-adapter" \
 blueprint-run-gpu-provider-launcher \
   --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID" \
   --allow-provider-launch \
   --timeout-seconds 300
 ```
 
-The launcher passes the provider adapter the request path, manifest URI,
-artifact-output URI, worker image ref, provider name, job id, timeout, idle
-timeout, and watchdog TTL through environment variables. It records
-`gpu_provider_launcher_result.json` plus stdout/stderr logs, but stores no raw
-command or provider secret values and does not prove GPU allocation, simulator
-execution, or generated-world rank fidelity without provider/runtime evidence.
+For non-Vast providers, the launcher passes the provider adapter the request
+path, manifest URI, artifact-output URI, worker image ref, provider name, job
+id, timeout, idle timeout, and watchdog TTL through environment variables. For
+Vast, the built-in path passes those fields directly to the repo-owned Vast
+adapter and records instance ids, adapter result path, allocation evidence, and
+adapter teardown status when the adapter returns them. It records
+`gpu_provider_launcher_result.json` plus stdout/stderr logs where applicable,
+but stores no raw command or provider secret values and does not prove simulator
+execution or generated-world rank fidelity without provider/runtime evidence.
 
 For RunPod, use the repo-owned adapter as the provider command. Start with the
 dry-run request-shape proof:
