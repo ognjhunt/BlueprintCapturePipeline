@@ -218,6 +218,7 @@ def apply_robot_profile(profile) -> None:
     global MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M
     global MANIPULATION_SEED_MAX_SHOULDER_TO_AFFORDANCE_M
     global TASK_STANCE_DEFAULT_VALIDATION_STANDOFF_RANGE_M
+    global TASK_STANCE_CLOSE_REACH_GAP_RANGE_M
     global MANIPULATION_READY_ARM_JOINT_DELTAS, _NOMINAL_G1_REST_OFFSETS
     if profile is None:
         return
@@ -233,6 +234,12 @@ def apply_robot_profile(profile) -> None:
         G1_APPROX_ARM_SPAN_M + MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M
     )
     TASK_STANCE_DEFAULT_VALIDATION_STANDOFF_RANGE_M = tuple(profile.standoff_range_m)
+    # The close-reach gap ceiling is an arm-reach envelope: scale it with the
+    # profile's arm span (G1 baseline 0.45m span -> 0.72m max gap).
+    TASK_STANCE_CLOSE_REACH_GAP_RANGE_M = (
+        TASK_STANCE_CLOSE_REACH_GAP_RANGE_M[0],
+        max(0.72, round(0.72 * (G1_APPROX_ARM_SPAN_M / 0.45), 4)),
+    )
     if profile.manipulation_ready_arm_joint_deltas:
         MANIPULATION_READY_ARM_JOINT_DELTAS = dict(profile.manipulation_ready_arm_joint_deltas)
     if profile.link_rest_offsets:
@@ -1196,7 +1203,8 @@ def task_stance_distance_candidates(scenario: Mapping[str, Any] | None = None) -
     """
     scenario = scenario or {}
     raw = scenario.get("stance_distance_candidates_m")
-    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+    # An empty/exhausted explicit ladder means "derive", never "no candidates".
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)) and len(raw) > 0:
         distances = sorted({round(float(v), 4) for v in raw if float(v) > 0.0})
     elif _is_close_reach_task_target(scenario):
         distances = _close_reach_surface_standoff_candidates(scenario)
@@ -1291,7 +1299,7 @@ def plan_task_stance(
     manipulation_look_at=None,
     probe_collision=None,
     floor_z_hint: float | None = None,
-    robot_footprint_half_extent: Sequence[float] = ROBOT_FOOTPRINT_HALF_EXTENT,
+    robot_footprint_half_extent: Sequence[float] | None = None,
     placement_validator=None,
 ) -> dict[str, Any]:
     """Select a task start pose around a target object without scene-specific coordinates.
@@ -1303,6 +1311,9 @@ def plan_task_stance(
     robot from being accepted visually inside a sink/counter just because the pelvis center is a
     short radius from a small faucet or basin centroid.
     """
+    if robot_footprint_half_extent is None:
+        # Resolve at call time so apply_robot_profile() overrides reach the planner.
+        robot_footprint_half_extent = ROBOT_FOOTPRINT_HALF_EXTENT
     target = task_stance_target_for_scenario(scenario, manipulation_look_at)
     if target is None:
         return {

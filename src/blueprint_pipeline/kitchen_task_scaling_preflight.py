@@ -138,6 +138,58 @@ def default_task_specs() -> list[dict[str, Any]]:
     ]
 
 
+_TASK_SPEC_REQUIRED_KEYS = ("task_id", "description", "required_target_terms")
+_TASK_SPEC_KNOWN_KEYS = {
+    "task_id", "scenario_id", "description", "required_target_terms", "zone",
+    "preferred_stance_distance_m", "stance_distance_candidates_m",
+}
+
+
+def normalize_task_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate + default-fill one task spec so new tasks are pure data.
+
+    Required: task_id, description, required_target_terms. Everything else
+    (scenario id, zone, stance ladder) is derived or defaulted so a minimal
+    JSON entry is a runnable task.
+    """
+    missing = [k for k in _TASK_SPEC_REQUIRED_KEYS if not raw.get(k)]
+    if missing:
+        raise ValueError(
+            f"task spec {raw.get('task_id') or '<no id>'!r} missing required key(s): "
+            f"{', '.join(missing)}"
+        )
+    unknown = sorted(set(raw) - _TASK_SPEC_KNOWN_KEYS)
+    if unknown:
+        raise ValueError(
+            f"task spec {raw['task_id']!r} has unknown key(s): {', '.join(unknown)}"
+        )
+    spec = dict(raw)
+    spec["task_id"] = str(spec["task_id"])
+    spec.setdefault("scenario_id", f"lightwheel_kitchen_task_custom_{spec['task_id']}")
+    spec.setdefault("zone", "custom_manipulation")
+    # Deliberately NO default stance ladder: absent distances let the runner
+    # derive a robot-footprint-scaled ladder, so the same task spec places a
+    # small or a large robot correctly. Authors may still pin distances.
+    spec["required_target_terms"] = [str(t) for t in spec["required_target_terms"]]
+    return spec
+
+
+def load_task_specs_file(path: str | Path) -> list[dict[str, Any]]:
+    """Load arbitrary task specs from JSON: a list, or {"tasks": [...]}."""
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(payload, Mapping):
+        payload = payload.get("tasks", [])
+    if not isinstance(payload, list):
+        raise ValueError("task specs file must be a JSON list or {'tasks': [...]}")
+    specs = [normalize_task_spec(item) for item in payload]
+    seen: set[str] = set()
+    for spec in specs:
+        if spec["task_id"] in seen:
+            raise ValueError(f"duplicate task_id in task specs file: {spec['task_id']!r}")
+        seen.add(spec["task_id"])
+    return specs
+
+
 def perception_target_prompts_for_task(task_spec: Mapping[str, Any]) -> list[str]:
     """Build concise object prompts for SAM3/DA3/object-index support backends."""
     prompts: list[str] = []
@@ -194,23 +246,27 @@ def build_request(*, kitchen_usd: Path, task_specs: Sequence[Mapping[str, Any]])
     scenarios: list[dict[str, Any]] = []
     for spec in task_specs:
         description = str(spec["description"])
-        scenarios.append(
-            {
-                "scenario_id": spec["scenario_id"],
-                "task_id": spec["task_id"],
-                "description": description,
-                "task": description,
-                "task_description": description,
-                "task_instruction": description,
-                "task_target_deferred": True,
-                "floor_z_hint": 0.05,
-                "preferred_stance_distance_m": spec.get("preferred_stance_distance_m"),
-                "stance_distance_candidates_m": list(spec.get("stance_distance_candidates_m") or []),
-                "perception_target_prompts": perception_target_prompts_for_task(spec),
-                "target_object_ids": target_object_id_candidates_for_task(spec),
-                "affordance_object_ids": affordance_object_id_candidates_for_task(spec),
-            }
-        )
+        scenario: dict[str, Any] = {
+            "scenario_id": spec["scenario_id"],
+            "task_id": spec["task_id"],
+            "description": description,
+            "task": description,
+            "task_description": description,
+            "task_instruction": description,
+            "task_target_deferred": True,
+            "floor_z_hint": 0.05,
+            "perception_target_prompts": perception_target_prompts_for_task(spec),
+            "target_object_ids": target_object_id_candidates_for_task(spec),
+            "affordance_object_ids": affordance_object_id_candidates_for_task(spec),
+        }
+        # Stance hints are optional: when a spec doesn't pin them, OMIT the keys
+        # so the runner derives a robot-footprint-scaled ladder for the active
+        # robot profile instead of seeing an explicit empty/None hint.
+        if spec.get("preferred_stance_distance_m") is not None:
+            scenario["preferred_stance_distance_m"] = spec["preferred_stance_distance_m"]
+        if spec.get("stance_distance_candidates_m"):
+            scenario["stance_distance_candidates_m"] = list(spec["stance_distance_candidates_m"])
+        scenarios.append(scenario)
     return {
         "schema_version": "kitchen_task_scaling_preflight_request.v1",
         "kitchen_usd": str(kitchen_usd),
@@ -561,8 +617,16 @@ def evaluate_local_task_gates(
     }
 
 
-def _selected_specs(task_ids: Sequence[str]) -> list[dict[str, Any]]:
-    specs = default_task_specs()
+def _selected_specs(
+    task_ids: Sequence[str],
+    extra_specs: Sequence[Mapping[str, Any]] = (),
+) -> list[dict[str, Any]]:
+    """Built-in specs merged with ``extra_specs`` (same task_id: extra wins),
+    optionally filtered to ``task_ids``."""
+    by_id: dict[str, dict[str, Any]] = {str(s["task_id"]): dict(s) for s in default_task_specs()}
+    for extra in extra_specs:
+        by_id[str(extra["task_id"])] = dict(extra)
+    specs = list(by_id.values())
     if not task_ids:
         return specs
     wanted = set(task_ids)
@@ -585,6 +649,7 @@ def _blocked_manifest(
     task_specs: Sequence[Mapping[str, Any]],
     blockers: Sequence[str],
     kitchen_asset_materialization: Mapping[str, Any] | None = None,
+    robot_profile_id: str = "unitree_g1",
 ) -> dict[str, Any]:
     tasks = []
     for spec in task_specs:
@@ -623,11 +688,73 @@ def _blocked_manifest(
         "wam_pipeline_status": "not_run",
         "kitchen_usd": str(kitchen_usd) if kitchen_usd else None,
         "kitchen_asset_materialization": dict(kitchen_asset_materialization or {}),
+        "robot_profile_id": robot_profile_id,
         "blockers": list(blockers),
         "tasks": tasks,
     }
     _write_json(out_dir / "kitchen_task_scaling_preflight_manifest.json", manifest)
     return manifest
+
+
+def _effective_robot_profile_id(
+    *,
+    robot_id: str | None,
+    robot_profile_json: str | None,
+) -> str:
+    """The robot identity the manifest should honestly claim. A profile JSON
+    wins (its own robot_id), then an explicit --robot-id, then the G1 default."""
+    if robot_profile_json:
+        try:
+            payload = json.loads(Path(robot_profile_json).read_text(encoding="utf-8"))
+            profile_id = str(payload.get("robot_id") or "").strip()
+            if profile_id:
+                return profile_id
+        except (OSError, json.JSONDecodeError):
+            pass
+    return robot_id or "unitree_g1"
+
+
+def build_dry_render_command(
+    *,
+    request_path: Path,
+    kitchen_usd: Path,
+    out_dir: Path,
+    g1_usd: str | None = None,
+    robot_review_material_override: bool = False,
+    robot_id: str | None = None,
+    robot_profile_json: str | None = None,
+    python_executable: str | None = None,
+) -> list[str]:
+    """The exact no-GPU dry-render runner invocation the preflight executes."""
+    runner = _repo_root() / RUNNER_RELATIVE
+    cmd = [
+        python_executable or sys.executable,
+        str(runner),
+        "--request",
+        str(request_path),
+        "--kitchen-usd",
+        str(kitchen_usd),
+        "--out-dir",
+        str(out_dir),
+        "--dry-render",
+        "--manipulation-reach-arm",
+        "both",
+        "--width",
+        "1280",
+        "--height",
+        "960",
+        "--camera-vfov",
+        "90",
+    ]
+    if robot_review_material_override:
+        cmd.append("--robot-review-material-override")
+    if g1_usd:
+        cmd.extend(["--g1-usd", g1_usd])
+    if robot_id:
+        cmd.extend(["--robot-id", robot_id])
+    if robot_profile_json:
+        cmd.extend(["--robot-profile-json", robot_profile_json])
+    return cmd
 
 
 def run_preflight(
@@ -639,12 +766,19 @@ def run_preflight(
     source_repo_root: str | Path | None = None,
     robot_review_material_override: bool = False,
     task_ids: Sequence[str] = (),
+    task_specs_file: str | Path | None = None,
+    robot_id: str | None = None,
+    robot_profile_json: str | None = None,
     min_scene_objects: int = MIN_FULL_KITCHEN_OBJECT_COUNT,
     python_executable: str | None = None,
 ) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    specs = _selected_specs(task_ids)
+    extra_specs = load_task_specs_file(task_specs_file) if task_specs_file else ()
+    specs = _selected_specs(task_ids, extra_specs=extra_specs)
+    effective_robot_id = _effective_robot_profile_id(
+        robot_id=robot_id, robot_profile_json=robot_profile_json
+    )
     resolved_kitchen = kitchen_usd or resolve_kitchen_usd()
     materialization: dict[str, Any] = {"status": "not_needed"}
     if resolved_kitchen is None or not Path(resolved_kitchen).is_file():
@@ -665,36 +799,23 @@ def run_preflight(
                 *[str(item) for item in materialization.get("blockers", [])],
             ],
             kitchen_asset_materialization=materialization,
+            robot_profile_id=effective_robot_id,
         )
 
     request = build_request(kitchen_usd=Path(resolved_kitchen), task_specs=specs)
     request_path = out_dir / "kitchen_task_scaling_request.json"
     _write_json(request_path, request)
 
-    runner = _repo_root() / RUNNER_RELATIVE
-    cmd = [
-        python_executable or sys.executable,
-        str(runner),
-        "--request",
-        str(request_path),
-        "--kitchen-usd",
-        str(resolved_kitchen),
-        "--out-dir",
-        str(out_dir),
-        "--dry-render",
-        "--manipulation-reach-arm",
-        "both",
-        "--width",
-        "1280",
-        "--height",
-        "960",
-        "--camera-vfov",
-        "90",
-    ]
-    if robot_review_material_override:
-        cmd.append("--robot-review-material-override")
-    if g1_usd:
-        cmd.extend(["--g1-usd", g1_usd])
+    cmd = build_dry_render_command(
+        request_path=request_path,
+        kitchen_usd=Path(resolved_kitchen),
+        out_dir=out_dir,
+        g1_usd=g1_usd,
+        robot_review_material_override=robot_review_material_override,
+        robot_id=robot_id,
+        robot_profile_json=robot_profile_json,
+        python_executable=python_executable,
+    )
     completed = subprocess.run(cmd, cwd=str(_repo_root()), text=True, capture_output=True, check=False)
     run_record = {
         "cmd": cmd,
@@ -709,6 +830,7 @@ def run_preflight(
             kitchen_usd=Path(resolved_kitchen),
             task_specs=specs,
             blockers=["dry_render_command_failed"],
+            robot_profile_id=effective_robot_id,
         )
 
     task_reports = []
@@ -729,6 +851,7 @@ def run_preflight(
         "wam_pipeline_status": "not_run",
         "kitchen_usd": str(resolved_kitchen),
         "g1_usd": g1_usd,
+        "robot_profile_id": effective_robot_id,
         "kitchen_asset_materialization": materialization,
         "seed_media_preferences": {
             "robot_review_material_override": bool(robot_review_material_override),
@@ -1253,7 +1376,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-zip", default=None)
     parser.add_argument("--source-repo-root", default=None)
     parser.add_argument("--robot-review-material-override", action="store_true")
-    parser.add_argument("--task", action="append", default=[], choices=[s["task_id"] for s in default_task_specs()])
+    # No static choices= here: --task-file can introduce arbitrary task ids, and
+    # _selected_specs() already fails loudly on unknown ids after the merge.
+    parser.add_argument("--task", action="append", default=[])
+    parser.add_argument(
+        "--task-file",
+        default=None,
+        help="JSON task specs (list or {'tasks': [...]}); merged over the built-in "
+             "tasks by task_id so new tasks are data, not code",
+    )
+    parser.add_argument(
+        "--robot-id",
+        default=None,
+        help="registered robot profile id passed through to the dry-render runner "
+             "(default: unitree_g1)",
+    )
+    parser.add_argument(
+        "--robot-profile-json",
+        default=None,
+        help="RobotProfile JSON passed through to the dry-render runner (wins over --robot-id)",
+    )
     parser.add_argument("--min-scene-objects", type=int, default=MIN_FULL_KITCHEN_OBJECT_COUNT)
     parser.add_argument(
         "--export-policy-observation-from-manifest",
@@ -1347,6 +1489,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_repo_root=args.source_repo_root,
         robot_review_material_override=args.robot_review_material_override,
         task_ids=args.task,
+        task_specs_file=args.task_file,
+        robot_id=args.robot_id,
+        robot_profile_json=args.robot_profile_json,
         min_scene_objects=args.min_scene_objects,
     )
     print(json.dumps({"status": manifest.get("status"), "out_dir": str(Path(args.out_dir).resolve())}))
