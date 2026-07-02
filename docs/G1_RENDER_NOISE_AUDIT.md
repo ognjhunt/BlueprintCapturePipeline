@@ -124,6 +124,26 @@ recorded; `seed_frame_visual_quality_status` must be `completed`.
 modes; `kitchen_task_scaling_preflight` now records the normalized label alongside the legacy
 one.
 
+## 2026-07-02 fridge audit result (first GPU run of this harness)
+
+The "open the fridge door" audit on RunPod (RTX 4090 class, 1280x960) completed all seven
+variants and diagnosed **`render_budget_sample_starvation`**: default-budget 64-spp textured
+variants B/C came back starved/black (`dark_pixel_ratio` 1.0) while the same scene/stance/
+camera at 384 spp (D/E) was clean (E: `high_frequency_noise_estimate` 0.56 vs D raw 5.8),
+at ~11 s/frame render cost. Secondary findings (all downstream of the starved baseline):
+`pbr_specular_material_response` (F clean at the same budget), `lighting_underexposure`
+(G clean at the same budget), and `white_proxy_bounded_workaround_available` (A clean).
+The material-resolution manifest also proved the stock Isaac `G1/g1.usd` ships **zero
+texture asset references** (four OmniPBR `DefaultMaterial`s, 12/81 gprims unbound), so
+`verified_textured` is unreachable for this asset and textured renders must be labeled
+`textured_unverified`.
+
+Production change: `DEFAULT_PATH_TRACING_MIN/MAX_SAMPLES_PER_PIXEL` in
+`scripts/run_isaac_g1_kitchen_parity_eval.py` raised from 64/128 to 384/512 — the
+audit-proven clean budget for path-traced manipulation/verify review frames. Measured
+warmup also showed the first path-traced frame pays ~252 s of cold shader compile, which is
+why audit steps run under the dedicated 900 s watchdog documented above.
+
 ## Interpretation rules (priority order)
 
 1. all variants show black wedges/missing arms → `camera_pose_clipping`

@@ -539,7 +539,11 @@ def test_render_quality_config_enables_pathtraced_for_review_subframes(monkeypat
     )
 
     assert cfg["use_pathtraced"] is True
-    assert cfg["samples_per_pixel"] == 64
+    # The 2026-07-02 render-noise audit proved 64 spp starves manipulation POV frames
+    # (variants B/C black) while 384 spp is clean (variants D/E) — the floor is now the
+    # audit-proven clean budget.
+    assert cfg["samples_per_pixel"] == M.DEFAULT_PATH_TRACING_MIN_SAMPLES_PER_PIXEL
+    assert cfg["samples_per_pixel"] == 384
     assert cfg["optix_denoiser_requested"] is True
     assert cfg["firefly_filter_requested"] is True
 

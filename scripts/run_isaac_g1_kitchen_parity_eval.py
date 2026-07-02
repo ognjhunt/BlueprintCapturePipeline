@@ -203,8 +203,12 @@ MANIPULATION_REACH_BLOCKER_SET = {
 DEFAULT_RENDER_STEP_WATCHDOG_SECONDS = 180.0
 ROBOT_VISUAL_MESH_MISSING_BLOCKER = "robot_visual_mesh_missing"
 ROBOT_REVIEW_VISUAL_PROXY_USED_BLOCKER = "robot_review_visual_proxy_used"
-DEFAULT_PATH_TRACING_MIN_SAMPLES_PER_PIXEL = 64
-DEFAULT_PATH_TRACING_MAX_SAMPLES_PER_PIXEL = 128
+# The 2026-07-02 render-noise audit (docs/G1_RENDER_NOISE_AUDIT.md) diagnosed
+# render_budget_sample_starvation: default-budget 64-spp manipulation POV frames came back
+# starved/black (variants B/C, dark_pixel_ratio 1.0) while the same scene at 384 spp was clean
+# (variants D/E), at ~11s/frame render cost. 384 is the audit-proven clean budget.
+DEFAULT_PATH_TRACING_MIN_SAMPLES_PER_PIXEL = 384
+DEFAULT_PATH_TRACING_MAX_SAMPLES_PER_PIXEL = 512
 
 
 # ============================ testable helpers (no isaacsim) ============================
