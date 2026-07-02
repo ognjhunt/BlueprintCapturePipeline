@@ -77,12 +77,16 @@ SC3_EVAL_METRICS = {
 }
 
 SC3_SCOPE_CAVEAT = {
+    "paper_version": "arXiv:2606.18610v3",
+    "source_reverified_on": "2026-07-02",
     "training_hours": 381,
     "physical_scene_count": 1,
     "object_category_count": 12,
     "camera_view_count": 3,
+    "camera_views": ["two_third_person_cameras", "one_wrist_camera"],
     "policy_checkpoint_count": 7,
     "max_rollout_seconds": 20,
+    "action_representation": "7d_delta_end_effector_pose",
     "blueprint_implication": "not proof of universal all-task or all-scene grading",
 }
 
@@ -94,6 +98,14 @@ SC3_RECIPE_CONTRACT = {
         "uncertainty_driven_early_termination",
     ],
     "required_blueprint_layers": [
+        "synchronized_multi_view_cameras",
+        "robot_camera_profile",
+        "action_chunks",
+        "initial_observations",
+        "generated_rollout_frames",
+        "policy_requery_trace",
+        "success_criteria",
+        "failure_taxonomy",
         "configured_wam_rollout_adapter",
         "generated_rollout_visual_smoke",
         "external_episode_consistency_scorer",
@@ -307,7 +319,7 @@ def build_wam_backend_strategy_manifest(
         "schema_version": WAM_BACKEND_STRATEGY_SCHEMA_VERSION,
         "generated_at": generated_at,
         "status": "strategy_catalog_defined",
-        "source_reverified_on": "2026-06-29",
+        "source_reverified_on": "2026-07-02",
         "source_reverified_from_primary_sources": True,
         "preferred_configured_learned_wam_backend_candidate": (
             PREFERRED_CONFIGURED_LEARNED_WAM_BACKEND

@@ -1241,6 +1241,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
         "policy_execution_manifest.json",
         "policy_execution_trace.json",
         "policy_execution_trace.jsonl",
+        "sc3_eval_protocol.json",
         "training_request.json",
         "training_result.json",
         "evaluation_request.json",
@@ -1283,6 +1284,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     robot_pov_frames = _read_json(job_dir / "robot_pov_frame_sequence_manifest.json")
     robot_pov_storyboard = _read_json(job_dir / "robot_pov_render_storyboard.json")
     policy_execution = _read_json(job_dir / "policy_execution_manifest.json")
+    sc3_protocol = _read_json(job_dir / "sc3_eval_protocol.json")
     deployment = _read_json(job_dir / "deployment_outcome_ledger.json")
     live_closure = _read_json(job_dir / "live_eval_closure_manifest.json")
     data_package_export = _read_json(job_dir / "post_training_data_package_export_manifest.json")
@@ -1391,6 +1393,15 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert robot_pov_storyboard["local_robot_pov_render_generated"] is True
     assert robot_pov_storyboard["robot_pov_evidence_proven"] is False
     assert policy_execution["status"] == "completed"
+    assert sc3_protocol["schema_version"] == "sc3_eval_protocol.v1"
+    assert sc3_protocol["correlation_claim_status"] == "correlation_not_measured"
+    assert sc3_protocol["claim_boundary"][
+        "ninety_percent_or_better_blueprint_accuracy_claim_allowed"
+    ] is False
+    assert evaluation["sc3_eval_protocol_path"] == "sc3_eval_protocol.json"
+    assert proof_boundary["sc3_eval_protocol_path"] == "sc3_eval_protocol.json"
+    assert run_manifest["sc3_eval_protocol_path"] == "sc3_eval_protocol.json"
+    assert run_manifest["sc3_correlation_claim_status"] == "correlation_not_measured"
     assert (
         policy_execution["modality_results"]["high_level_skill_trace"]["attempt_count"]
         == (scenario_eval_matrix["scenario_eval_run_count"])
@@ -7227,6 +7238,12 @@ def test_robot_eval_job_policy_manifest_includes_adapter_smoke_contracts(
         "blueprint.robot_eval.action_trace.v1"
     )
     assert policy_manifest["interface_contract"]["reproducible_replay_required"] is True
+    assert policy_manifest["policy_adapter_pack_contract"][
+        "same_observation_action_contract_for_all_modes"
+    ] is True
+    assert policy_manifest["policy_adapter_pack_contract"][
+        "customer_owned_endpoint_or_container_launch_reviewable"
+    ] is True
     assert observation_manifest["policy_adapter_input_contract"]["observation_schema_id"] == (
         "blueprint.robot_eval.observation.v1"
     )
@@ -7270,6 +7287,9 @@ def test_robot_eval_job_policy_manifest_includes_adapter_smoke_contracts(
         )
         assert interface_contract["reproducible_replay"][
             "exact_scenario_eval_run_id_coverage_required"
+        ] is True
+        assert interface_contract["policy_adapter_pack"][
+            "launch_review_without_execution_supported"
         ] is True
         assert contract["proof_boundary"]["rank_fidelity_result_proven"] is False
     assert (
@@ -7416,6 +7436,13 @@ def test_robot_eval_job_accepts_one_complete_policy_modality(
         policy_manifest["modalities"]["docker_container"]["owner_system_review_required"] is False
     )
     assert policy_execution["selected_modalities"] == ["policy_api_endpoint"]
+    sc3_protocol = _read_json(job_dir / "sc3_eval_protocol.json")
+    assert sc3_protocol["policy_adapter_pack_contracts"][0][
+        "launch_reviewable_without_execution"
+    ] is True
+    assert sc3_protocol["claim_boundary"][
+        "correlation_requires_accepted_real_or_owner_anchors"
+    ] is True
 
 
 def test_robot_eval_job_consumes_staged_policy_package(

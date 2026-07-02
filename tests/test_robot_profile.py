@@ -16,6 +16,7 @@ from blueprint_pipeline.scene_placement.robot_profile import (
     get_robot_profile,
     known_robot_ids,
     register_robot_profile,
+    robot_embodiment_pack_contract,
     robot_profile_from_dict,
     robot_profile_from_json_file,
 )
@@ -50,6 +51,13 @@ def test_g1_profile_matches_runner_constants():
     assert p.shoulder_lateral_offset_m == pytest.approx(0.16)
     assert p.shoulder_above_root_m == pytest.approx(0.29)
     assert p.usd_prim_path == "/World/G1"
+    contract = robot_embodiment_pack_contract(p)
+    assert contract["schema_version"] == "robot_embodiment_pack.v1"
+    assert contract["g1_only_contract"] is False
+    assert contract["action_interface"]["schema_ref"] == (
+        "blueprint://schemas/robot_eval_action_trace.v1"
+    )
+    assert contract["claim_boundaries"]["unitree_g1_is_default_reference_embodiment_not_customer_requirement"] is True
 
 
 def test_unknown_robot_id_raises_with_known_ids():
@@ -99,6 +107,50 @@ def test_profile_round_trips_via_to_dict():
     p = get_robot_profile("unitree_g1")
     q = robot_profile_from_dict(p.to_dict())
     assert q == p
+
+
+def test_profile_from_dict_accepts_robot_embodiment_pack_fields():
+    p = robot_profile_from_dict(
+        {
+            "robot_id": "customer_mobile_manipulator",
+            "embodiment_type": "mobile_manipulator",
+            "kinematics": {
+                "base": "differential_drive",
+                "manipulators": ["right_arm"],
+            },
+            "action_interface": {
+                "schema_ref": "customer://schemas/mobile-manipulator-action.v1",
+                "chunk_hz": 10,
+            },
+            "camera_rigs": [
+                {"camera_id": "front_rgbd", "mount": "mast"},
+                {"camera_id": "wrist_rgb", "mount": "wrist"},
+            ],
+            "observation_schema": {
+                "schema_ref": "customer://schemas/mobile-manipulator-observation.v1"
+            },
+            "simulator_asset_refs": {
+                "urdf_uri": "s3://robot-team/private/customer_bot.urdf"
+            },
+            "controller_constraints": {"max_linear_mps": 0.8},
+            "calibration_requirements": {"camera_intrinsics_required": True},
+            "claim_boundaries": {
+                "robot_profile_is_configuration_not_execution_proof": True,
+                "customer_assets_private": True,
+            },
+        }
+    )
+
+    contract = robot_embodiment_pack_contract(p)
+
+    assert p.robot_id == "customer_mobile_manipulator"
+    assert p.usd_prim_path == "/World/Robot"
+    assert contract["embodiment_type"] == "mobile_manipulator"
+    assert contract["kinematics"]["base"] == "differential_drive"
+    assert len(contract["camera_rigs"]) == 2
+    assert contract["data_driven_profile"] is True
+    assert contract["g1_only_contract"] is False
+    assert contract["claim_boundaries"]["customer_assets_private"] is True
 
 
 # ----------------------------- derived reach -----------------------------

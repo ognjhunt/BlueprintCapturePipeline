@@ -45,7 +45,27 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _write_test_video(path: Path) -> None:
+def _write_test_video(path: Path, *, frame_count: int = 81) -> None:
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (640, 480))
+    assert writer.isOpened()
+    yy, xx = np.indices((480, 640))
+    for index in range(frame_count):
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        frame[..., 0] = (xx // 2 + index * 3) % 256
+        frame[..., 1] = (yy // 2 + 80 + index * 2) % 256
+        frame[..., 2] = ((xx + yy) // 3 + 40 + index) % 256
+        frame[::32, :] = (245, 245, 245)
+        frame[:, ::40] = (20, 20, 20)
+        offset = index % 40
+        frame[120:360, 250 + offset : 330 + offset] = (230, 230, 250)
+        writer.write(frame)
+    writer.release()
+
+
+def _write_short_low_quality_video(path: Path) -> None:
     cv2 = pytest.importorskip("cv2")
     np = pytest.importorskip("numpy")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,13 +95,17 @@ def _write_provider_zip(
     *,
     valid_video: bool = True,
     flat_dark_video: bool = False,
+    short_low_quality_video: bool = False,
     runtime_model_truth: bool = True,
     include_rollout_context: bool = True,
+    runtime_num_frames: int = 81,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     video_path = path.parent / "oscar_generated_rollout_source.mp4"
     if valid_video and flat_dark_video:
         _write_flat_dark_video(video_path)
+    elif valid_video and short_low_quality_video:
+        _write_short_low_quality_video(video_path)
     elif valid_video:
         _write_test_video(video_path)
     with zipfile.ZipFile(path, "w") as archive:
@@ -117,7 +141,7 @@ def _write_provider_zip(
             "runtime": "oscar_wam_provider_runtime",
             "model_candidate": "oscar_wam",
             "runtime_settings": {
-                "num_frames": 8,
+                "num_frames": runtime_num_frames,
                 "height": 480,
                 "width": 640,
                 "fps": 15.0,
@@ -467,7 +491,11 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
     def fake_poll(**kwargs: Any) -> dict[str, Any]:
         captured_poll.update(kwargs)
         provider_job = Path(kwargs["job_dir"])
-        _write_provider_zip(provider_job / "vast_provider_runtime_output.zip")
+        _write_provider_zip(
+            provider_job / "vast_provider_runtime_output.zip",
+            short_low_quality_video=True,
+            runtime_num_frames=49,
+        )
         return {"status": "completed", "job_dir": str(provider_job), "blockers": []}
 
     monkeypatch.setattr(adapter, "build_oscar_wam_provider_bundle", fake_build_bundle)
@@ -484,13 +512,13 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
         ]
     )
 
-    assert payload["status"] == "completed"
+    assert payload["status"] == "blocked"
     assert payload["mode"] == "vast_provider"
     assert payload["provider_output_zip_imported"] is True
     assert payload["provider_output_replayed"] is False
     assert payload["provider_output_imported_from_current_provider_run"] is True
     assert payload["fresh_provider_launch_attempted"] is True
-    assert payload["fresh_model_run_claimed"] is True
+    assert payload["fresh_model_run_claimed"] is False
     assert payload["generated_rollout_visual_smoke_status"] == "passed_visual_quality_smoke"
     assert payload["generated_rollout_visually_useful_for_success_review"] is False
     assert (
@@ -509,6 +537,10 @@ def test_provider_command_adapter_launches_and_imports_vast_provider_result(
         "generated_rollout_video_too_short_for_task_success_review"
         in payload["generated_rollout_review_usefulness_blockers"]
     )
+    assert "provider_generated_rollout_not_reviewable_for_task_success" in payload["blockers"]
+    assert "provider_generated_video_shorter_than_requested_oscar_num_frames" in payload[
+        "blockers"
+    ]
     assert payload["details"]["vast_provider_job_dir"] == str(work_dir / "vast_provider_run")
     assert payload["details"]["wam_compute_provider"] == "vast"
     assert Path(payload["rollouts"][0]["generated_video_path"]).is_file()

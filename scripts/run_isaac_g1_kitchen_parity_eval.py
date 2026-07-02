@@ -4116,6 +4116,30 @@ def compute_arm_reach_skeleton(
     return out
 
 
+MANIPULATION_POV_REACH_RAMP_START_FRACTION = 0.65
+
+
+def manipulation_reach_fraction_for_frame(
+    alpha: float,
+    *,
+    manipulation_cam: bool,
+    frame_count: int,
+) -> float:
+    """Return temporal reach conditioning for a rendered manipulation frame.
+
+    Manipulation-stand clips keep the pelvis fixed by design. The reach pose must still vary across
+    multi-frame clips so rendered review videos and OSCAR conditioning are not silent seed-only
+    repeats. Start from a visible forward-ready arm for robot POV framing, then finish at full reach.
+    """
+    if frame_count <= 1:
+        return 1.0 if manipulation_cam else 0.0
+    a = max(0.0, min(1.0, float(alpha)))
+    if not manipulation_cam:
+        return a
+    start = float(MANIPULATION_POV_REACH_RAMP_START_FRACTION)
+    return max(0.0, min(1.0, start + (1.0 - start) * a))
+
+
 def arm_reach_rotation(shoulder, rest_elbow, target, reach_frac):
     """Axis (unit xyz) + angle (radians) of the kinematic SHOULDER rotation that swings the rest
     upper-arm bone (shoulder->rest_elbow) toward the target (shoulder->target), scaled by reach_frac.
@@ -7113,6 +7137,12 @@ def _apply_render_quality_settings(
 
             settings = carb.settings.get_settings()
             for path, value in (
+                # Explicit per-frame sample budget, matching the render-noise audit path.
+                # rep.settings.set_render_pathtraced alone left /rtx/pathtracing/spp at the
+                # engine default, so every captured frame after a robot pose change rendered
+                # starved (metallic hf_noise 1.77 vs 0.58 with these keys set, 2026-07-02).
+                ("/rtx/pathtracing/spp", int(config["samples_per_pixel"])),
+                ("/rtx/pathtracing/totalSpp", int(config["samples_per_pixel"])),
                 ("/rtx/pathtracing/optixDenoiser/enabled", True),
                 ("/rtx/pathtracing/optixDenoiser/blendFactor", 0.0),
                 ("/rtx/pathtracing/fireflyFilter/enabled", True),
@@ -7150,10 +7180,15 @@ def _effective_render_rt_subframes(
 ) -> int:
     """Replicator step subframes after renderer-mode selection.
 
-    In realtime RTX lighting, ``render_subframes`` is the main accumulation lever. In path-traced mode
-    the selected ``samples_per_pixel`` is already the quality lever; keeping the old large
-    ``rt_subframes`` value would multiply render cost without improving the seed contract enough to
-    justify the timeout/spend risk.
+    In realtime RTX lighting, ``render_subframes`` is the main accumulation lever. In path-traced
+    mode ``samples_per_pixel`` is the quality lever ONLY for a static scene: path-tracing
+    accumulation RESETS on scene changes, and this runner moves the robot pose between captured
+    frames, so a single step per capture renders a starved, grainy frame (metallic robot measured
+    hf_noise 1.77 vs 0.58 for the same materials rendered static, 2026-07-02). The REAL sample
+    lever is the explicit ``/rtx/pathtracing/spp`` per-frame budget set by
+    ``_apply_render_quality_settings`` (subframes measurably did NOT reduce noise when spp was
+    starved, and multiply cost once spp is correct), so path-traced steps default to 1 subframe.
+    ``PARITY_PATH_TRACED_RT_SUBFRAMES`` still overrides for experiments.
     """
     requested = max(1, int(render_subframes))
     if not (render_quality or {}).get("use_pathtraced"):
@@ -7163,6 +7198,38 @@ def _effective_render_rt_subframes(
         return max(1, min(8, int(raw))) if raw else 1
     except ValueError:
         return 1
+
+
+def _capture_settle_steps(render_quality: Mapping[str, Any] | None) -> int:
+    """Extra replicator steps rendered after a pose change before each capture.
+
+    Ports the render-noise audit's empirically clean recipe (3 settle steps + 1
+    capture step per frame, ``per_variant_settle_frames`` in its manifest) into
+    the scenario loop. Path-tracing accumulates across repeated ``step()`` calls
+    on a still scene; a single step after robot motion rendered hf_noise
+    1.77-2.70 at the sink vs the audit's 0.58 with settling (2026-07-02).
+    Realtime RTX needs no settling. ``PARITY_CAPTURE_SETTLE_FRAMES`` overrides.
+    """
+    if not (render_quality or {}).get("use_pathtraced"):
+        return 0
+    raw = os.getenv("PARITY_CAPTURE_SETTLE_FRAMES", "").strip()
+    try:
+        return max(0, min(8, int(raw))) if raw else 3
+    except ValueError:
+        return 3
+
+
+def _effective_software_denoise(
+    software_denoise: bool,
+    render_quality: Mapping[str, Any] | None,
+) -> bool:
+    """Save path-traced review frames RAW, matching the audit's clean output
+    (``software_denoise_applied: false``). The median_firefly filter exists for
+    realtime firefly speckle; applied to residual path-tracing noise it
+    posterizes the frame instead of cleaning it."""
+    if (render_quality or {}).get("use_pathtraced"):
+        return False
+    return bool(software_denoise)
 
 
 def _write_render_step_timeout_result(path: Path, *, label: str, seconds: float, scenario_id: str) -> None:
@@ -8404,8 +8471,12 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         int(render_subframes),
         render_quality_diag,
     )
+    capture_settle_steps = _capture_settle_steps(render_quality_diag)
+    software_denoise = _effective_software_denoise(software_denoise, render_quality_diag)
     render_quality_diag["requested_replicator_rt_subframes"] = max(1, int(render_subframes))
     render_quality_diag["effective_replicator_rt_subframes"] = int(capture_rt_subframes)
+    render_quality_diag["capture_settle_steps"] = int(capture_settle_steps)
+    render_quality_diag["software_denoise_applied_to_saves"] = bool(software_denoise)
     try:
         (out_dir / "render_quality_settings.json").write_text(
             json.dumps(render_quality_diag, indent=2),
@@ -8962,6 +9033,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             t_sc = time.time()
             actions: list[dict] = []
             skel_rows: list[dict] = []
+            manipulation_reach_fractions: list[float] = []
             trace = (sdir / "trace.jsonl").open("w")
             rejected_total = response_total = 0
             cap = 0
@@ -8999,6 +9071,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     response_total += 1
                 route_distance_m = policy_mod.route_distance(sc["route_points"])
                 alpha = 0.0 if steps <= 1 else step / float(steps - 1)
+                manipulation_reach_frac = None
+                if manipulation_reach and effective_look_at is not None:
+                    manipulation_reach_frac = manipulation_reach_fraction_for_frame(
+                        alpha,
+                        manipulation_cam=bool(manipulation_cam),
+                        frame_count=int(steps),
+                    )
                 phase = policy_mod.gait_phase(alpha, route_distance_m)
                 moving = route_distance_m > 0.05 and step < max(1, steps - 1)
                 if art_ctx is not None:
@@ -9085,15 +9164,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     # -> no crash). The same requested arm set is used for render, camera metadata, and
                     # geometry validation so a both-arm seed cannot be validated as a one-arm frame.
                     if (kinematic_arm_pose and manipulation_reach
-                            and effective_look_at is not None):
-                        arm_frac = 1.0 if manipulation_cam else alpha
+                            and effective_look_at is not None
+                            and manipulation_reach_frac is not None):
                         try:
                             posed_count = _pose_arm_kinematic_usd(
                                 stage,
                                 binding["prim_path"],
                                 effective_look_at,
                                 arm=rendered_reach_arm,
-                                reach_frac=arm_frac,
+                                reach_frac=manipulation_reach_frac,
                                 forward_yaw=decision.yaw,
                             )
                             if step == 0:
@@ -9102,7 +9181,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                     f"arm={rendered_reach_arm} "
                                     f"requested_arm={manipulation_reach_arm} "
                                     f"posed_count={posed_count} "
-                                    f"seed=forward_ready "
+                                    f"reach_fraction={manipulation_reach_frac:.3f} "
                                     f"affordance={tuple(round(float(c), 3) for c in effective_look_at)}"
                                 )
                                 review_proxy_diag = None
@@ -9144,6 +9223,20 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 rec = policy_mod.action_record(
                     decision=decision, step=step, sim_time_s=step / float(fps), target=sc["target"],
                     scenario_eval_run_id=sc.get("scenario_eval_run_id"))
+                if manipulation_reach_frac is not None:
+                    rec["manipulation_reach_fraction"] = round(
+                        float(manipulation_reach_frac), 6
+                    )
+                    rec["manipulation_reach_fraction_source"] = (
+                        "temporal_robot_pov_reach_ramp"
+                        if manipulation_cam and steps > 1
+                        else "linear_reach_ramp"
+                    )
+                    rec["manipulation_stand_root_static_by_design"] = bool(
+                        manipulation_stand
+                    )
+                    rec["not_a_learned_robot_policy_action"] = True
+                    manipulation_reach_fractions.append(float(manipulation_reach_frac))
                 actions.append(rec)
                 trace.write(json.dumps(rec) + "\n")
                 if step % max(1, capture_every) == 0:
@@ -9191,6 +9284,11 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             **pov_geom,
                             "step": step,
                             "frame_index": cap,
+                            "manipulation_reach_fraction": (
+                                round(float(manipulation_reach_frac), 6)
+                                if manipulation_reach_frac is not None
+                                else None
+                            ),
                             "camera_meta": cam_meta,
                             "robot_visual_geometry": {
                                 "status": (
@@ -9274,9 +9372,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             yaw=decision.yaw,
                         )
                         if manipulation_reach and effective_look_at is not None:
-                            # For manipulation POVs the first frame is already "task started": arms
-                            # visible in a forward-ready seed. Navigation/follow shots can still ramp.
-                            reach_frac = 1.0 if manipulation_cam else alpha
+                            reach_frac = (
+                                manipulation_reach_frac
+                                if manipulation_reach_frac is not None
+                                else manipulation_reach_fraction_for_frame(
+                                    alpha,
+                                    manipulation_cam=bool(manipulation_cam),
+                                    frame_count=int(steps),
+                                )
+                            )
                             skel = compute_arm_reach_skeleton(
                                 skel,
                                 effective_look_at,
@@ -9295,6 +9399,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             "step": step, "sim_time_s": round(step / float(fps), 6),
                             "camera": "robot_pov", "landmarks": lms,  # OSCAR reads row["landmarks"]
                             "projected_landmark_count": len(lms),
+                            "manipulation_reach_fraction": round(float(reach_frac), 6),
                             "claim_boundary": {
                                 "projected_skeleton_trace_derived_from_seed_render_geometry": bool(
                                     manipulation_reach
@@ -9326,9 +9431,22 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 scenario_id=sid,
                             )
                             _log(f"first-frame warmup frame {wi} render took {time.time() - wts:.1f}s")
-                    # Accumulate RTX subframes inside a single Replicator step. Repeating plain
-                    # step() calls produces independent noisy frames rather than one denoised sample
-                    # accumulation.
+                    # Settle-then-capture, the render-noise audit's proven recipe: path tracing
+                    # accumulates across repeated step() calls on a still scene, so after the
+                    # pose change render a few settle steps before the capture step. (The
+                    # rt_subframes step parameter alone measurably did NOT accumulate on this
+                    # Kit build — settle steps did.)
+                    for _si in range(capture_settle_steps):
+                        if time.time() - t_sc > per_scenario_seconds:
+                            _log(f"scenario {sid}: settle hit scenario time cap at step {_si}")
+                            break
+                        _replicator_step_with_watchdog(
+                            rep,
+                            label=f"{sid}:frame:{cap}:settle:{_si}",
+                            result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
+                            scenario_id=sid,
+                            rt_subframes=1,
+                        )
                     _replicator_step_with_watchdog(
                         rep,
                         label=f"{sid}:frame:{cap}:rt_subframes:{capture_rt_subframes}",
@@ -9676,6 +9794,36 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 if isinstance(row.get("intrinsics"), Mapping)
                 and row["intrinsics"].get("available") is True
             )
+            if manipulation_reach_fractions:
+                unique_reach_fractions = sorted(
+                    {round(float(value), 6) for value in manipulation_reach_fractions}
+                )
+                temporal_status = (
+                    "PASS"
+                    if len(unique_reach_fractions) > 1
+                    and unique_reach_fractions[-1] > unique_reach_fractions[0]
+                    else "FAIL"
+                )
+                outcome["manipulation_temporal_conditioning"] = {
+                    "schema_version": "manipulation_temporal_conditioning.v1",
+                    "status": temporal_status,
+                    "frame_count": len(manipulation_reach_fractions),
+                    "reach_fraction_start": unique_reach_fractions[0],
+                    "reach_fraction_end": unique_reach_fractions[-1],
+                    "unique_reach_fraction_count": len(unique_reach_fractions),
+                    "root_static_by_design": bool(manipulation_stand),
+                    "rendered_usd_arm_pose_requested": bool(kinematic_arm_pose),
+                    "projected_skeleton_trace_requires_articulated": True,
+                    "claim_boundary": (
+                        "Temporal reach fractions are deterministic Isaac/WAM conditioning for "
+                        "review media. They are not learned manipulation, contact proof, physical "
+                        "reach proof, or task-success evidence."
+                    ),
+                }
+                if temporal_status != "PASS" and steps > 1:
+                    outcome["manipulation_temporal_conditioning"]["blockers"] = [
+                        "manipulation_reach_conditioning_static_across_frames"
+                    ]
             if depth_pass:
                 outcome["depth_render_pass"] = {
                     "schema_version": "isaac_g1_kitchen_parity_depth_pass.v1",

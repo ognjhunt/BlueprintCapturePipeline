@@ -27,6 +27,7 @@ class RobotProfile:
     """Embodiment parameters that drive placement, validation, and spawn."""
 
     robot_id: str
+    embodiment_type: str = "generic_robot"
 
     # Standing / footprint geometry. Footprint half extent is (front-back
     # depth, lateral width, vertical half height) in the robot's local frame.
@@ -69,6 +70,24 @@ class RobotProfile:
         default_factory=dict
     )
 
+    # Robot Embodiment Pack contract fields. These are optional for placement,
+    # but first-class for customer-owned robot/policy review surfaces.
+    kinematics: Dict[str, object] = field(default_factory=dict)
+    action_interface: Dict[str, object] = field(default_factory=dict)
+    camera_rigs: Tuple[Dict[str, object], ...] = ()
+    observation_schema: Dict[str, object] = field(default_factory=dict)
+    simulator_asset_refs: Dict[str, object] = field(default_factory=dict)
+    controller_constraints: Dict[str, object] = field(default_factory=dict)
+    calibration_requirements: Dict[str, object] = field(default_factory=dict)
+    claim_boundaries: Dict[str, object] = field(
+        default_factory=lambda: {
+            "robot_profile_is_configuration_not_execution_proof": True,
+            "robot_profile_does_not_prove_physical_readiness": True,
+            "robot_profile_does_not_prove_safety_validation": True,
+            "g1_reference_profile_is_not_customer_requirement": True,
+        }
+    )
+
     def max_shoulder_to_affordance_m(self, margin_m: float = 0.0) -> float:
         """Farthest shoulder→affordance distance a seed pose may claim reachable."""
         return self.arm_span_m + self.max_effector_to_affordance_m + margin_m
@@ -80,6 +99,7 @@ class RobotProfile:
         d["standoff_range_m"] = list(self.standoff_range_m)
         d["head_link_candidates"] = list(self.head_link_candidates)
         d["link_rest_offsets"] = [[name, list(off)] for name, off in self.link_rest_offsets]
+        d["camera_rigs"] = [dict(rig) for rig in self.camera_rigs]
         return d
 
 
@@ -97,6 +117,7 @@ _G1_LINK_REST_OFFSETS: Tuple[Tuple[str, Vec3], ...] = (
 
 UNITREE_G1_PROFILE = RobotProfile(
     robot_id="unitree_g1",
+    embodiment_type="humanoid",
     pelvis_height_m=0.79,
     footprint_half_extent_xyz=(0.12, 0.23, 0.62),
     arm_span_m=0.45,
@@ -107,11 +128,68 @@ UNITREE_G1_PROFILE = RobotProfile(
     usd_prim_path="/World/G1",
     articulation_name="g1",
     link_rest_offsets=_G1_LINK_REST_OFFSETS,
+    kinematics={
+        "base": "floating_or_locomotion_controller",
+        "manipulators": ["left_arm", "right_arm"],
+        "end_effectors": ["left_hand", "right_hand"],
+        "action_space": "whole_body_or_arm_hand_chunks",
+    },
+    action_interface={
+        "schema_ref": "blueprint://schemas/robot_eval_action_trace.v1",
+        "preferred_action_chunk": "unitree_g1_normalized_action_chunk",
+        "claim_boundary": "Unitree-native policy required for G1 policy-execution claims.",
+    },
+    camera_rigs=(
+        {
+            "camera_id": "head_rgbd",
+            "mount": "head",
+            "modalities": ["rgb", "depth"],
+            "calibration_status": "owner_or_profile_calibration_required_for_launch",
+        },
+        {
+            "camera_id": "wrist_or_hand_rgb",
+            "mount": "wrist_or_hand",
+            "modalities": ["rgb"],
+            "calibration_status": "optional_support_until_owner_calibrated",
+        },
+    ),
+    observation_schema={
+        "schema_ref": "blueprint://schemas/robot_eval_observation.v1",
+        "required_fields": [
+            "observation_id",
+            "scenario_eval_run_id",
+            "camera",
+            "visual_observation",
+        ],
+    },
+    simulator_asset_refs={
+        "usd_prim_path": "/World/G1",
+        "mjcf_root_env": "BLUEPRINT_MUJOCO_G1_MODEL_ROOT",
+        "isaac_asset_family": "Isaac/Robots/Unitree/G1",
+    },
+    controller_constraints={
+        "requires_unitree_native_policy_for_g1_policy_claims": True,
+        "wam_or_openvla_may_only_supply_evaluator_support": True,
+    },
+    calibration_requirements={
+        "owner_camera_intrinsics_required_for_launch_ready_profile": True,
+        "owner_camera_extrinsics_required_for_launch_ready_profile": True,
+        "default_profile_launch_mode": "smoke_only_until_owner_calibration",
+    },
+    claim_boundaries={
+        "robot_profile_is_configuration_not_execution_proof": True,
+        "unitree_g1_is_default_reference_embodiment_not_customer_requirement": True,
+        "profile_does_not_prove_unitree_policy_execution": True,
+        "profile_does_not_prove_physical_readiness": True,
+        "profile_does_not_prove_safety_validation": True,
+    },
 )
 
 _REGISTRY: Dict[str, RobotProfile] = {UNITREE_G1_PROFILE.robot_id: UNITREE_G1_PROFILE}
 
 DEFAULT_ROBOT_ID = UNITREE_G1_PROFILE.robot_id
+ROBOT_EMBODIMENT_PACK_SCHEMA_VERSION = "robot_embodiment_pack.v1"
+RobotEmbodimentPack = RobotProfile
 
 
 def register_robot_profile(profile: RobotProfile) -> RobotProfile:
@@ -164,9 +242,33 @@ def robot_profile_from_dict(data: Dict[str, object]) -> RobotProfile:
         kwargs["link_rest_offsets"] = tuple(
             (str(name), tuple(float(v) for v in off)) for name, off in kwargs["link_rest_offsets"]  # type: ignore[misc]
         )
+    if "camera_rigs" in kwargs:
+        kwargs["camera_rigs"] = tuple(
+            dict(rig) for rig in kwargs["camera_rigs"] if isinstance(rig, dict)  # type: ignore[union-attr]
+        )
     return RobotProfile(**kwargs)  # type: ignore[arg-type]
 
 
 def robot_profile_from_json_file(path: str | Path) -> RobotProfile:
     with open(path, "r", encoding="utf-8") as fh:
         return robot_profile_from_dict(json.load(fh))
+
+
+def robot_embodiment_pack_contract(profile: RobotProfile) -> Dict[str, object]:
+    """Return the review contract for a robot profile / embodiment pack."""
+
+    return {
+        "schema_version": ROBOT_EMBODIMENT_PACK_SCHEMA_VERSION,
+        "robot_id": profile.robot_id,
+        "embodiment_type": profile.embodiment_type,
+        "kinematics": dict(profile.kinematics),
+        "action_interface": dict(profile.action_interface),
+        "camera_rigs": [dict(rig) for rig in profile.camera_rigs],
+        "observation_schema": dict(profile.observation_schema),
+        "simulator_asset_refs": dict(profile.simulator_asset_refs),
+        "controller_constraints": dict(profile.controller_constraints),
+        "calibration_requirements": dict(profile.calibration_requirements),
+        "claim_boundaries": dict(profile.claim_boundaries),
+        "data_driven_profile": True,
+        "g1_only_contract": False,
+    }

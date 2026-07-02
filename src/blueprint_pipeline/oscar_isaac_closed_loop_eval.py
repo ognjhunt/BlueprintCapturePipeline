@@ -33,6 +33,7 @@ from .isaac_g1_policy import (
     interpolate_route,
 )
 from .oscar_wam_provider_command_adapter import run as run_oscar_wam_provider_adapter
+from .oscar_wam_command_adapter import DEFAULT_NUM_FRAMES as DEFAULT_OSCAR_NUM_FRAMES
 from .oscar_official_release import (
     OFFICIAL_OSCAR_HF_REPO,
     official_release_blockers,
@@ -1164,7 +1165,7 @@ def make_oscar_provider_command_wam_backend(
     *,
     work_dir: str | Path,
     task_prompt: str,
-    num_frames: int = 8,
+    num_frames: int = DEFAULT_OSCAR_NUM_FRAMES,
     num_steps: int = 35,
     guidance: float = 6.0,
     seed: int = 42,
@@ -1302,7 +1303,7 @@ def make_oscar_per_step_wam_backend(
     oscar_generate: Callable[[Mapping[str, Any]], Mapping[str, Any]],
     work_dir: str | Path,
     task_prompt: str,
-    num_frames: int = 8,
+    num_frames: int = DEFAULT_OSCAR_NUM_FRAMES,
     skeleton_for_action: Callable[[Mapping[str, Any], int], Sequence[Mapping[str, Any]]] | None = None,
     seed: int = 42,
 ) -> WamGenerateNext:
@@ -1686,7 +1687,7 @@ def materialize_projected_skeleton_trace_from_seed_geometry(
     route_payload: Mapping[str, Any],
     start_frame_path: str | Path,
     output_dir: str | Path,
-    num_frames: int = 8,
+    num_frames: int = DEFAULT_OSCAR_NUM_FRAMES,
 ) -> Path | None:
     """Convert a seed-render geometry sidecar into OSCAR's projected-skeleton trace format.
 
@@ -2805,7 +2806,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--route-file", required=True, help='JSON: {"route_points": [[x,y,z],...]}')
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--task-prompt", default="walk to the sink")
-    parser.add_argument("--num-frames", type=int, default=8, help="OSCAR clip length per step")
+    parser.add_argument(
+        "--num-frames",
+        type=int,
+        default=DEFAULT_OSCAR_NUM_FRAMES,
+        help="OSCAR clip length per step",
+    )
     parser.add_argument("--oscar-num-steps", type=int, default=35)
     parser.add_argument("--oscar-guidance", type=float, default=6.0)
     parser.add_argument("--oscar-seed", type=int, default=42)

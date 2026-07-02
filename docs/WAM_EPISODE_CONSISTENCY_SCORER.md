@@ -27,6 +27,14 @@ remain reliability and review signals only; they do not become generated-video
 success labels, policy-ranking outcomes, physical-robot proof, or public
 rank-fidelity claims.
 
+Job runs also write `sc3_eval_protocol.json` when the robot-eval orchestrator
+has enough local manifests to describe the protocol surface. That artifact
+records the required SC3-style data, accepted-anchor joins, correlation metric
+gates, robot embodiment pack boundary, and policy adapter pack boundary. It is a
+contract/readiness artifact only; `correlation_not_measured` is the correct
+status until accepted paired Blueprint predictions and real/owner outcomes are
+joined and the metrics are computed.
+
 ## Artifacts
 
 The OSCAR/Cosmos WAM evaluator writes:

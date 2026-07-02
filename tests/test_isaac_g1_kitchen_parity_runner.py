@@ -30,6 +30,34 @@ def test_runner_imports_without_isaacsim() -> None:
     assert hasattr(M, "run_scenarios") and hasattr(M, "parse_scenarios")
 
 
+def test_manipulation_reach_fraction_progresses_for_robot_pov() -> None:
+    values = [
+        M.manipulation_reach_fraction_for_frame(
+            step / 7.0,
+            manipulation_cam=True,
+            frame_count=8,
+        )
+        for step in range(8)
+    ]
+
+    assert values[0] == pytest.approx(M.MANIPULATION_POV_REACH_RAMP_START_FRACTION)
+    assert values[-1] == pytest.approx(1.0)
+    assert values == sorted(values)
+    assert len({round(value, 6) for value in values}) == 8
+    assert M.manipulation_reach_fraction_for_frame(
+        0.0,
+        manipulation_cam=True,
+        frame_count=1,
+    ) == pytest.approx(1.0)
+
+
+def test_manipulation_runner_does_not_hold_robot_pov_reach_constant() -> None:
+    source = _RUNNER.read_text()
+
+    assert "1.0 if manipulation_cam else alpha" not in source
+    assert "manipulation_reach_fraction" in source
+
+
 def test_resolve_existing_kitchen_usd_accepts_root_zip_layout(tmp_path: Path) -> None:
     kitchen_root = tmp_path / "bundle" / "kitchen"
     kitchen_root.mkdir(parents=True)
@@ -571,6 +599,10 @@ def test_render_quality_config_enables_pathtraced_for_review_subframes(monkeypat
     )
     assert forced["use_pathtraced"] is True
     assert forced["samples_per_pixel"] == 96
+    # Path-traced steps stay at 1 subframe: the sample lever is the explicit
+    # /rtx/pathtracing/spp per-frame budget set by _apply_render_quality_settings
+    # (8 subframes measurably did NOT reduce noise while spp was starved, and only
+    # multiply cost once spp is correct — metallic re-test 2026-07-02).
     assert M._effective_render_rt_subframes(32, cfg) == 1
     assert M._effective_render_rt_subframes(32, realtime) == 32
 
@@ -3932,3 +3964,71 @@ def test_placement_obstacles_use_fine_boxes_not_grouped_cabinet_slab(monkeypatch
     assert result["status"] == "accepted"
     assert result["blockers"] == []
     assert result["deterministic_geometry"]["ok"] is True
+
+
+def test_scenario_render_quality_sets_explicit_pathtracing_spp(tmp_path, monkeypatch) -> None:
+    """The scenario render path must set /rtx/pathtracing/spp AND totalSpp explicitly,
+    like the audit path does. Relying on rep.settings.set_render_pathtraced alone left
+    per-frame samples starved -> grainy specular robots (hf 1.77 vs 0.58, 2026-07-02)."""
+    import types as _types
+
+    set_calls: list = []
+
+    class _Settings:
+        def set(self, path, value):
+            set_calls.append((path, value))
+
+    fake_carb = _types.ModuleType("carb")
+    fake_carb.settings = _types.SimpleNamespace(get_settings=lambda: _Settings())
+    monkeypatch.setitem(sys.modules, "carb", fake_carb)
+
+    class _RepSettings:
+        def set_render_pathtraced(self, samples_per_pixel):
+            set_calls.append(("rep.set_render_pathtraced", samples_per_pixel))
+
+    fake_rep = _types.SimpleNamespace(settings=_RepSettings())
+
+    diag = M._apply_render_quality_settings(
+        fake_rep,
+        render_subframes=16,
+        manipulation_cam=True,
+        verify_cam=True,
+        out_dir=tmp_path,
+    )
+    assert diag["use_pathtraced"] is True
+    spp = diag["samples_per_pixel"]
+    assert ("/rtx/pathtracing/spp", spp) in set_calls
+    assert ("/rtx/pathtracing/totalSpp", spp) in set_calls
+
+
+def test_capture_settle_steps_match_audit_recipe(monkeypatch) -> None:
+    """Scenario captures must settle like the audit path: 3 extra replicator steps
+    after a pose change in path-traced mode (the audit's empirically clean recipe;
+    a single step per capture rendered hf 1.77-2.70 vs the audit's 0.58)."""
+    monkeypatch.delenv("PARITY_CAPTURE_SETTLE_FRAMES", raising=False)
+    assert M._capture_settle_steps({"use_pathtraced": True}) == 3
+    assert M._capture_settle_steps({"use_pathtraced": False}) == 0
+    assert M._capture_settle_steps(None) == 0
+    monkeypatch.setenv("PARITY_CAPTURE_SETTLE_FRAMES", "5")
+    assert M._capture_settle_steps({"use_pathtraced": True}) == 5
+    monkeypatch.setenv("PARITY_CAPTURE_SETTLE_FRAMES", "99")
+    assert M._capture_settle_steps({"use_pathtraced": True}) == 8
+    monkeypatch.setenv("PARITY_CAPTURE_SETTLE_FRAMES", "junk")
+    assert M._capture_settle_steps({"use_pathtraced": True}) == 3
+
+
+def test_scenario_frame_loop_settles_before_capture() -> None:
+    source = _RUNNER.read_text()
+    assert ":frame:{cap}:settle:" in source, (
+        "scenario frame loop must run audit-style settle steps before each capture"
+    )
+
+
+def test_software_denoise_skipped_for_pathtraced_saves(monkeypatch) -> None:
+    """Path-traced review frames save RAW like the audit (its clean frames have
+    software_denoise_applied false); the median_firefly filter posterizes
+    residual path-tracing noise instead of removing it."""
+    assert M._effective_software_denoise(True, {"use_pathtraced": True}) is False
+    assert M._effective_software_denoise(True, {"use_pathtraced": False}) is True
+    assert M._effective_software_denoise(False, {"use_pathtraced": False}) is False
+    assert M._effective_software_denoise(True, None) is True

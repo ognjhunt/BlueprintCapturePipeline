@@ -266,6 +266,10 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/policy_execution_manifest.json`
 - `robot_eval_jobs/<job_id>/policy_execution_trace.json`
 - `robot_eval_jobs/<job_id>/policy_execution_trace.jsonl`
+- `robot_eval_jobs/<job_id>/sc3_eval_protocol.json` records the SC3-style
+  evaluator protocol contract, required data, correlation/anchor gates, and
+  robot/policy adapter boundaries without launching a model or upgrading
+  generated support evidence
 - `robot_eval_jobs/<job_id>/unitree_policy_stack_installation_audit.json` when
   Unitree policy/provider configuration is probed; this is the aggregate gate
   for whether locomotion, manipulation runtime, and Unitree action-command
@@ -1122,6 +1126,10 @@ Cosmos-Predict2.5 at 0.897 / 0.090; on the out-of-distribution online split,
 Pearson is 0.870 versus 0.871 while MMRV is better at 0.171 versus 0.195. Its
 published scope is 381 hours in one table-bussing scene, 12 object categories,
 three camera views, seven policy checkpoints, and at most 20-second rollouts.
+Blueprint writes `sc3_eval_protocol.json` to keep those requirements, accepted
+anchor joins, correlation metrics, and robot/policy adapter contracts explicit.
+See
+[`docs/SC3_EVAL_PROTOCOL.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SC3_EVAL_PROTOCOL.md).
 `cosmos3_super` is a high-cost adjudication candidate, not the default local
 path; `cosmos3_edge` is not treated as a released/default runtime unless a
 future session reverifies availability from primary sources.

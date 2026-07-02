@@ -23,6 +23,7 @@ from .oscar_official_release import (
     OFFICIAL_OSCAR_SOURCE_COMMIT,
     OFFICIAL_OSCAR_SOURCE_URL,
 )
+from .oscar_wam_command_adapter import DEFAULT_NUM_FRAMES as DEFAULT_OSCAR_NUM_FRAMES
 
 DEFAULT_BLUEPRINT_REPO_URL = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"
 DEFAULT_OSCAR_SOURCE_URL = OFFICIAL_OSCAR_SOURCE_URL
@@ -73,7 +74,7 @@ def build_closed_loop_pod_startup(
     route_points: Sequence[Sequence[float]],
     steps: int,
     task_prompt: str = "walk to the sink",
-    num_frames: int = 8,
+    num_frames: int = DEFAULT_OSCAR_NUM_FRAMES,
     harness_backend_kind: str = "fixture",
     perception_target_prompts: Sequence[str] = (),
     require_real_perception_backend: bool = False,

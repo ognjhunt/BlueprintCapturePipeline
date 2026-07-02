@@ -2517,6 +2517,7 @@ def build_policy_execution_bundle(
                     "execution_performed": False,
                     "attempt_count": 0,
                     "reference": _redact(payload),
+                    "launch_reviewable_without_execution": True,
                     "default_test_policy": True,
                     "default_test_policy_execution_proven": False,
                     "robot_team_policy_execution_proven": False,
@@ -2527,6 +2528,7 @@ def build_policy_execution_bundle(
                         **dict(CLAIM_BOUNDARY),
                         "default_test_policy_execution_proven": False,
                         "robot_team_policy_execution_proven": False,
+                        "reviewable_policy_adapter_pack_is_not_execution_proof": True,
                     },
                 }
                 continue
@@ -2551,10 +2553,14 @@ def build_policy_execution_bundle(
                     "execution_performed": False,
                     "attempt_count": 0,
                     "reference": _redact(payload),
+                    "launch_reviewable_without_execution": True,
                     "blockers": [
                         "Set BLUEPRINT_ALLOW_POLICY_EXECUTION=true and pass allow_policy_execution.",
                     ],
-                    "claim_boundary": dict(CLAIM_BOUNDARY),
+                    "claim_boundary": {
+                        **dict(CLAIM_BOUNDARY),
+                        "reviewable_policy_adapter_pack_is_not_execution_proof": True,
+                    },
                 }
                 continue
             output_path = resolved_job_dir / "policy_execution" / f"{modality}_output.json"
@@ -2605,6 +2611,16 @@ def build_policy_execution_bundle(
             "status": status,
             "execution_performed": execution_performed,
             "reference_replayed": payload_result is not None and not execution_performed,
+            "launch_reviewable_without_execution": bool(
+                not execution_performed
+                and payload
+                and status
+                in {
+                    "reference_ready",
+                    "completed_reference_replay",
+                    "blocked_policy_execution_gate",
+                }
+            ),
             "default_test_policy": default_test_policy,
             "default_test_policy_execution_proven": (
                 default_test_policy and execution_proven_for_modality
@@ -2627,6 +2643,7 @@ def build_policy_execution_bundle(
                 "robot_team_policy_execution_proven": (
                     execution_proven_for_modality and not default_test_policy
                 ),
+                "reviewable_policy_adapter_pack_is_not_execution_proof": True,
             },
         }
 
@@ -2676,6 +2693,27 @@ def build_policy_execution_bundle(
         "attempt_count": len(all_attempts),
         **aggregate_coverage,
         "policy_execution_trace_path": "policy_execution_trace.json",
+        "reviewable_policy_adapter_modes": [
+            modality
+            for modality, result in modality_results.items()
+            if result.get("launch_reviewable_without_execution")
+        ],
+        "policy_adapter_pack_contract": {
+            "schema_version": "robot_team_policy_adapter_pack_contract.v1",
+            "same_observation_action_contract_for_all_modes": True,
+            "supported_modalities": list(POLICY_MODALITIES),
+            "selected_modalities": [
+                modality
+                for modality, result in modality_results.items()
+                if result.get("status") != "not_selected"
+            ],
+            "reviewable_policy_adapter_modes": [
+                modality
+                for modality, result in modality_results.items()
+                if result.get("launch_reviewable_without_execution")
+            ],
+            "execution_claim_requires_gated_policy_execution": True,
+        },
         "robot_policy_execution_proven": execution_proven,
         "default_test_policy_execution_proven": default_test_execution_proven,
         "robot_team_policy_execution_proven": robot_team_policy_execution_proven,

@@ -9,6 +9,7 @@ pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import oscar_isaac_closed_loop_gpu_launch as G
+from blueprint_pipeline.oscar_wam_command_adapter import DEFAULT_NUM_FRAMES
 from blueprint_pipeline.oscar_official_release import (
     OFFICIAL_OSCAR_HF_REVISION,
     OFFICIAL_OSCAR_SOURCE_COMMIT,
@@ -44,6 +45,7 @@ def test_startup_packages_setup_inputs_and_run(tmp_path: Path) -> None:
     # the loop is actually invoked with the wired args
     assert "-m blueprint_pipeline.oscar_isaac_closed_loop_eval" in script
     assert "--steps 3" in script
+    assert "--num-frames 8" in script
     assert "--oscar-repo /opt/oscar" in script
     assert "--harness-backend-kind fixture" in script
     # inputs baked in (no extra staging): start frame round-trips, route is inline
@@ -63,6 +65,7 @@ def test_startup_omits_upload_when_no_url(tmp_path: Path) -> None:
     )
     # no put URL -> the curl PUT guard is empty, no upload attempted
     assert 'if [ -n "" ]' in script
+    assert f"--num-frames {DEFAULT_NUM_FRAMES}" in script
     assert "real_provider_probe" not in script  # default harness kind is fixture for the safe v1
 
 

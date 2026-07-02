@@ -361,11 +361,18 @@ def test_wam_backend_strategy_catalog_preserves_corrected_paper_boundaries() -> 
         "cosmos_predict25_pearson"
     ] == 0.871
     assert cosmos3["sc3_eval_lineage"]["scope_caveat"] == {
+        "paper_version": "arXiv:2606.18610v3",
+        "source_reverified_on": "2026-07-02",
         "training_hours": 381,
         "physical_scene_count": 1,
         "object_category_count": 12,
         "camera_view_count": 3,
+        "camera_views": [
+            "two_third_person_cameras",
+            "one_wrist_camera",
+        ],
         "policy_checkpoint_count": 7,
+        "action_representation": "7d_delta_end_effector_pose",
         "max_rollout_seconds": 20,
         "blueprint_implication": "not proof of universal all-task or all-scene grading",
     }

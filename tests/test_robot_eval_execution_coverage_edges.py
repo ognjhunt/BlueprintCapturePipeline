@@ -503,6 +503,17 @@ def test_robot_eval_execution_remaining_policy_command_edges(
     )
     recorded = command_blocked["manifest"]["modality_results"]["recorded_action_trace"]
     assert recorded["status"] == "blocked_policy_execution_gate"
+    assert recorded["launch_reviewable_without_execution"] is True
+    assert "recorded_action_trace" in command_blocked["manifest"]["reviewable_policy_adapter_modes"]
+    assert (
+        command_blocked["manifest"]["policy_adapter_pack_contract"][
+            "same_observation_action_contract_for_all_modes"
+        ]
+        is True
+    )
+    assert command_blocked["manifest"]["policy_adapter_pack_contract"][
+        "execution_claim_requires_gated_policy_execution"
+    ] is True
     assert recorded["reference"]["token"] == "<redacted>"
 
     class Response:

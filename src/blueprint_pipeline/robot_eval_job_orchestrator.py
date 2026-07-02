@@ -62,6 +62,7 @@ from .robot_eval_execution import (
     default_test_policy_package_from_request,
     fingerprint_execution_artifacts,
 )
+from .sc3_eval_protocol import SC3_EVAL_PROTOCOL_ARTIFACT, build_sc3_eval_protocol_artifact
 from .robot_eval_dataset import build_real_site_robot_eval_dataset
 from .scene_asset_preflight import build_scene_asset_preflight
 from .simulation_automation import build_simulation_automation
@@ -1167,6 +1168,15 @@ def _policy_interface_contract(
             "scenario_eval_matrix": "scenario_eval_matrix.json",
             "policy_package_manifest": "policy_package_manifest.json",
         },
+        "policy_adapter_pack": {
+            "schema_version": "robot_team_policy_adapter_pack_contract.v1",
+            "adapter_pack_mode": modality,
+            "customer_supplied_policy_supported": True,
+            "launch_review_without_execution_supported": True,
+            "execution_claim_requires_policy_execution_manifest": True,
+            "same_observation_action_contract_for_all_modes": True,
+            "supported_modes": list(POLICY_MODALITY_ORDER),
+        },
         "reproducible_replay": {
             "exact_scenario_eval_run_id_coverage_required": True,
             "exact_scenario_variation_instance_id_coverage_required": True,
@@ -1240,6 +1250,20 @@ def _policy_package_manifest(
             "required_action_output_fields": list(POLICY_REQUIRED_ACTION_OUTPUT_FIELDS),
             "reproducible_replay_required": True,
             "runtime_spawn_goal_variation_mutation_allowed": False,
+        },
+        "policy_adapter_pack_contract": {
+            "schema_version": "robot_team_policy_adapter_pack_contract.v1",
+            "same_observation_action_contract_for_all_modes": True,
+            "supported_modalities": list(POLICY_MODALITY_ORDER),
+            "selected_modalities": selected_modalities,
+            "reviewable_without_execution": bool(selected_modalities and not missing_inputs),
+            "execution_claim_requires_policy_execution_manifest": True,
+            "provider_worker_http_workers_supported": True,
+            "customer_owned_endpoint_or_container_launch_reviewable": True,
+            "claim_boundary": (
+                "Adapter pack review validates references and IO contracts only; "
+                "policy execution proof must come from policy_execution_manifest.json."
+            ),
         },
         "downloads_performed": False,
         "policy_execution_proven": False,
@@ -8904,6 +8928,34 @@ def build_robot_eval_job(
         }
         _write_job_json(job_dir, "evaluation_result.json", eval_result)
 
+    sc3_eval_protocol = build_sc3_eval_protocol_artifact(
+        generated_at=generated_at,
+        job_request=request,
+        policy_package_manifest=policy_manifest,
+        policy_execution_manifest=_mapping(policy_execution.get("manifest")),
+        robot_pov_observation_manifest=robot_pov_manifest,
+        policy_ranking_scorecard=_read_optional_mapping(job_dir / "policy_ranking_scorecard.json"),
+        prediction_outcome_correlation_ledger=_read_optional_mapping(
+            job_dir / "wam_prediction_outcome_correlation_ledger.json"
+        ),
+        sim_vs_real_calibration_report=_mapping(deployment_validation.get("calibration_report")),
+        wam_eval_claim_boundary=_read_optional_mapping(job_dir / "wam_eval_claim_boundary.json"),
+    )
+    _write_job_json(job_dir, SC3_EVAL_PROTOCOL_ARTIFACT, sc3_eval_protocol)
+    eval_result = {
+        **dict(eval_result),
+        "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
+        "sc3_eval_protocol_status": sc3_eval_protocol.get("status"),
+        "sc3_correlation_claim_status": sc3_eval_protocol.get("correlation_claim_status"),
+        "claim_boundary": {
+            **_mapping(eval_result.get("claim_boundary")),
+            "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
+            "sc3_self_consistency_is_reliability_support_only": True,
+            "sc3_protocol_does_not_claim_blueprint_90_percent_accuracy": True,
+        },
+    }
+    _write_job_json(job_dir, "evaluation_result.json", eval_result)
+
     proof_boundary = _proof_boundary(
         simulator=simulator,
         simulator_result=sim_result,
@@ -8924,6 +8976,8 @@ def build_robot_eval_job(
             "generated_wam_rollouts_are_model_derived_support_artifacts": True,
             "customer_specific_srcc_claimed": False,
             "passing_wam_eval_is_not_rank_fidelity_result": True,
+            "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
+            "sc3_self_consistency_is_reliability_support_only": True,
             "claim_boundary": {
                 **_mapping(proof_boundary.get("claim_boundary")),
                 "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
@@ -8934,6 +8988,8 @@ def build_robot_eval_job(
                 "generated_wam_rollouts_are_model_derived_support_artifacts": True,
                 "customer_specific_srcc_claimed": False,
                 "passing_wam_eval_is_not_rank_fidelity_result": True,
+                "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
+                "sc3_self_consistency_is_reliability_support_only": True,
             },
         }
     elif simulator_policy_scorecard:
@@ -8947,6 +9003,8 @@ def build_robot_eval_job(
             "simulator_evaluator_only": True,
             "customer_specific_srcc_claimed": False,
             "passing_simulator_eval_is_not_rank_fidelity_result": True,
+            "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
+            "sc3_self_consistency_is_reliability_support_only": True,
             "claim_boundary": {
                 **_mapping(proof_boundary.get("claim_boundary")),
                 "wam_eval_claim_boundary_path": "wam_eval_claim_boundary.json",
@@ -8956,6 +9014,20 @@ def build_robot_eval_job(
                 "simulator_evaluator_only": True,
                 "customer_specific_srcc_claimed": False,
                 "passing_simulator_eval_is_not_rank_fidelity_result": True,
+                "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
+                "sc3_self_consistency_is_reliability_support_only": True,
+            },
+        }
+    else:
+        proof_boundary = {
+            **dict(proof_boundary),
+            "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
+            "sc3_self_consistency_is_reliability_support_only": True,
+            "claim_boundary": {
+                **_mapping(proof_boundary.get("claim_boundary")),
+                "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
+                "sc3_self_consistency_is_reliability_support_only": True,
+                "sc3_protocol_does_not_claim_blueprint_90_percent_accuracy": True,
             },
         }
     _write_job_json(job_dir, "proof_boundary.json", proof_boundary)
@@ -8980,6 +9052,8 @@ def build_robot_eval_job(
         "robot_pov_status": robot_pov_manifest.get("status"),
         "robot_pov_evidence_proven": bool(robot_pov_manifest.get("robot_pov_evidence_proven")),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
+        "sc3_eval_protocol_status": sc3_eval_protocol.get("status"),
+        "sc3_correlation_claim_status": sc3_eval_protocol.get("correlation_claim_status"),
         "deployment_outcome_status": _mapping(deployment_validation.get("ledger")).get("status"),
         "real_world_validation_followup_plan_status": _mapping(
             deployment_validation.get("followup_plan")
@@ -9292,6 +9366,9 @@ def build_robot_eval_job(
         "robot_pov_observation_status": robot_pov_manifest.get("status"),
         "robot_pov_evidence_proven": bool(robot_pov_manifest.get("robot_pov_evidence_proven")),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
+        "sc3_eval_protocol_status": sc3_eval_protocol.get("status"),
+        "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
+        "sc3_correlation_claim_status": sc3_eval_protocol.get("correlation_claim_status"),
         "arena_result_ingest_status": _mapping(arena_ingest.get("run_manifest")).get("status")
         if arena_ingest
         else None,
@@ -9390,6 +9467,7 @@ def build_robot_eval_job(
             "policy_execution_manifest": "policy_execution_manifest.json",
             "policy_execution_trace": "policy_execution_trace.json",
             "policy_execution_trace_jsonl": "policy_execution_trace.jsonl",
+            "sc3_eval_protocol": SC3_EVAL_PROTOCOL_ARTIFACT,
             "scheduler_decision": "scheduler_decision.json",
             "worker_launch_plan": "worker_launch_plan.json",
         "gpu_provider_launch_request": "gpu_provider_launch_request.json",
@@ -9479,6 +9557,9 @@ def build_robot_eval_job(
             "customer_handoff_ready": bool(
                 robot_team_grade_closure.get("sim_only_customer_handoff_complete")
             ),
+            "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
+            "sc3_self_consistency_is_reliability_support_only": True,
+            "sc3_protocol_does_not_claim_blueprint_90_percent_accuracy": True,
             "delivery_access_is_deployment_approval": False,
             "package_delivery_is_deployment_approval": False,
             "deployment_approval_proven": False,

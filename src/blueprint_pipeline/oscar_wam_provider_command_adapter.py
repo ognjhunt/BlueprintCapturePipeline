@@ -131,6 +131,16 @@ def _provider_runtime_result_proves_model_output(
     return True
 
 
+def _requested_runtime_num_frames(runtime_result_payload: Mapping[str, Any]) -> int:
+    settings = runtime_result_payload.get("runtime_settings")
+    if not isinstance(settings, Mapping):
+        return 0
+    try:
+        return int(float(settings.get("num_frames") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _write_output(output_path: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
     output = dict(payload)
     output.setdefault("schema_version", SCHEMA_VERSION)
@@ -302,6 +312,8 @@ def _extract_provider_payload(
         video_validations: list[dict[str, Any]] = []
         invalid_video_count = 0
         missing_extracted_video_count = 0
+        requested_num_frames = _requested_runtime_num_frames(runtime_result_payload)
+        short_requested_video_count = 0
         context_rows = _provider_rollout_context_rows_from_input_manifest()
         for rollout_index, item in enumerate(payload.get("rollouts", []) or []):
             if not isinstance(item, Mapping):
@@ -319,6 +331,28 @@ def _extract_provider_payload(
                 row["provider_original_generated_video_path_omitted"] = bool(original_video)
                 row["generated_video_path"] = extracted
                 validation = validate_generated_mp4_for_review(extracted)
+                validation_blockers = [
+                    str(blocker)
+                    for blocker in validation.get("blockers", []) or []
+                    if str(blocker)
+                ]
+                try:
+                    actual_frame_count = int(validation.get("frame_count") or 0)
+                except (TypeError, ValueError):
+                    actual_frame_count = 0
+                if (
+                    validation.get("status") == "completed"
+                    and requested_num_frames > 0
+                    and actual_frame_count < requested_num_frames
+                ):
+                    validation["status"] = "blocked"
+                    validation["requested_num_frames"] = requested_num_frames
+                    validation["actual_frame_count"] = actual_frame_count
+                    validation_blockers.append(
+                        "generated_video_frame_count_below_requested_oscar_num_frames"
+                    )
+                    validation["blockers"] = sorted(set(validation_blockers))
+                    short_requested_video_count += 1
                 video_validations.append(
                     {
                         "rollout_id": row.get("rollout_id"),
@@ -329,6 +363,13 @@ def _extract_provider_payload(
                 )
                 if validation.get("status") == "completed":
                     row["generated_video_review_validation"] = validation
+                    rewritten_rollouts.append(row)
+                elif (
+                    "generated_video_frame_count_below_requested_oscar_num_frames"
+                    in validation.get("blockers", [])
+                ):
+                    row["generated_video_review_validation"] = validation
+                    row["generated_video_below_requested_oscar_num_frames"] = True
                     rewritten_rollouts.append(row)
                 else:
                     invalid_video_count += 1
@@ -382,6 +423,8 @@ def _extract_provider_payload(
             blockers.append("provider_generated_video_not_reviewable")
         if invalid_video_count:
             blockers.append("provider_generated_video_decode_validation_failed")
+        if short_requested_video_count:
+            blockers.append("provider_generated_video_shorter_than_requested_oscar_num_frames")
         if missing_extracted_video_count:
             blockers.append("provider_generated_video_missing_from_output_zip")
         if payload.get("status") != "completed":
@@ -415,9 +458,22 @@ def _extract_provider_payload(
         payload["generated_rollout_review_usefulness_blockers"] = [
             str(item) for item in visual_smoke.get("review_usefulness_blockers", []) or []
         ]
-        if payload.get("status") == "completed" and visual_smoke.get(
-            "status"
-        ) == "failed_visual_quality_smoke":
+        if visual_smoke.get("review_usefulness_status") != "reviewable_for_task_success":
+            payload["status"] = "blocked"
+            payload["blockers"] = sorted(
+                set(
+                    [
+                        *[str(item) for item in payload.get("blockers", []) or [] if str(item)],
+                        "provider_generated_rollout_not_reviewable_for_task_success",
+                        *[
+                            str(item)
+                            for item in visual_smoke.get("review_usefulness_blockers", []) or []
+                            if str(item)
+                        ],
+                    ]
+                )
+            )
+        if visual_smoke.get("status") == "failed_visual_quality_smoke":
             payload["status"] = "blocked"
             payload["blockers"] = sorted(
                 set(
