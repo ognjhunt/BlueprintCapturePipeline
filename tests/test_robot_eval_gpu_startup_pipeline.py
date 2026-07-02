@@ -72,6 +72,7 @@ def test_runpod_secure_cloud_defaults_to_managed_customer_lane() -> None:
     assert plan["selected_provider_is_marketplace"] is False
     assert plan["managed_provider_policy"]["provider_api_priority"] == [  # type: ignore[index]
         "runpod",
+        "lambda_cloud",
         "gcp",
         "vast",
     ]
@@ -85,6 +86,177 @@ def test_runpod_secure_cloud_defaults_to_managed_customer_lane() -> None:
     assert session_policy["readiness_gate"]["readyz_required_before_first_infer"] is True  # type: ignore[index]
     assert session_policy["http_contract"]["canonical"]["infer"]["path"] == "/infer"  # type: ignore[index]
     assert plan["blockers"] == []
+
+
+def _runpod_isaac_request(
+    startup_pipeline: dict[str, object] | None = None,
+) -> dict[str, object]:
+    gpu_allocation: dict[str, object] = {
+        "allocation_allowed_by_webapp": False,
+        "gpu_spend_approved": False,
+        "max_budget_usd": 3.0,
+    }
+    if startup_pipeline is not None:
+        gpu_allocation["startup_pipeline"] = startup_pipeline
+    return {
+        "job_id": "job-large-runpod-isaac-image",
+        "execution_request": {
+            "webapp_role": "queue_and_forward_only",
+            "scheduler_owner": "BlueprintCapturePipeline",
+            "gpu_allocation": gpu_allocation,
+        },
+    }
+
+
+def _large_runpod_isaac_worker_launch_plan(
+    *,
+    warm_pool_policy: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "status": "awaiting_explicit_provider_gate",
+        "worker_image": {
+            "configured_image_ref": (
+                "docker.io/nijelhunt/blueprint-isaac-eval-worker:"
+                "20260626-faststart-amd64"
+            ),
+            "configured_image_ref_present": True,
+            "configured_image_ref_is_versioned": True,
+            "configured_image_ref_fetchable_by_provider": True,
+            "runtime_dependency_install_disallowed": True,
+            "image_size_diagnostic": {
+                "schema_version": "isaac_worker_image_manifest_diagnostic.v1",
+                "total_compressed_size_bytes": 10_706_674_165,
+                "largest_layer_size_bytes": 10_585_790_213,
+                "layer_count": 19,
+                "large_image_pull_risk": True,
+            },
+        },
+        "launch_mode": {
+            "warm_pool_policy": warm_pool_policy
+            or {
+                "decision": "scale_to_zero_on_demand",
+                "warm_worker_recommended": False,
+                "scale_to_zero_default": True,
+                "active_worker_target": 0,
+            }
+        },
+        "runtime_preflight_contract": {
+            "required_before_scene_load": True,
+            "required_for_provider": True,
+            "worker_blocks_scene_load_on_failed_preflight": True,
+            "required_checks": ["rtx_renderer_available"],
+        },
+    }
+
+
+def test_large_runpod_isaac_image_blocks_cold_customer_eval_before_allocation() -> None:
+    plan = build_gpu_startup_pipeline_plan(
+        request=_runpod_isaac_request(),
+        job_id="job-large-runpod-isaac-image",
+        provisioner="runpod",
+        simulator="isaac_sim",
+        scheduler_decision={"status": "awaiting_explicit_gpu_and_simulator_gates"},
+        worker_launch_plan=_large_runpod_isaac_worker_launch_plan(),
+        generated_at="2026-07-01T00:00:00Z",
+    )
+
+    assert plan["status"] == "blocked_before_customer_gpu_allocation"
+    assert "large_worker_image_requires_canary_or_warm_provider" in plan["blockers"]
+    worker_image_policy = plan["worker_image_policy"]  # type: ignore[index]
+    assert worker_image_policy["large_image_pull_risk"] is True
+    assert worker_image_policy["largest_layer_size_bytes"] == 10_585_790_213
+    cold_start_policy = plan["large_image_cold_start_policy"]  # type: ignore[index]
+    assert cold_start_policy["large_runpod_isaac_image"] is True
+    assert cold_start_policy["cold_scale_to_zero_start"] is True
+    assert cold_start_policy["same_image_startup_canary_completed"] is False
+    assert cold_start_policy["customer_eval_launch_allowed"] is False
+    assert cold_start_policy["canary_launch_allowed"] is False
+    assert plan["preflight_canary_policy"][  # type: ignore[index]
+        "same_image_startup_canary_required"
+    ] is True
+    assert "runpod_image_startup_canary_output.zip" in plan[
+        "preflight_canary_policy"
+    ]["required_artifacts"]  # type: ignore[index]
+
+
+def test_large_runpod_isaac_image_accepts_completed_same_image_canary() -> None:
+    plan = build_gpu_startup_pipeline_plan(
+        request=_runpod_isaac_request(
+            {"same_image_startup_canary_status": "completed"}
+        ),
+        job_id="job-large-runpod-isaac-image",
+        provisioner="runpod",
+        simulator="isaac_sim",
+        scheduler_decision={"status": "awaiting_explicit_gpu_and_simulator_gates"},
+        worker_launch_plan=_large_runpod_isaac_worker_launch_plan(),
+        generated_at="2026-07-01T00:00:00Z",
+    )
+
+    assert plan["status"] == "startup_pipeline_ready"
+    assert "large_worker_image_requires_canary_or_warm_provider" not in plan[
+        "blockers"
+    ]
+    cold_start_policy = plan["large_image_cold_start_policy"]  # type: ignore[index]
+    assert cold_start_policy["same_image_startup_canary_completed"] is True
+    assert cold_start_policy["customer_eval_launch_allowed"] is True
+    assert "runpod_image_startup_canary_output.zip" in plan[
+        "preflight_canary_policy"
+    ]["required_artifacts"]  # type: ignore[index]
+
+
+def test_large_runpod_isaac_image_canary_launch_is_allowed_without_eval_clearance() -> None:
+    plan = build_gpu_startup_pipeline_plan(
+        request=_runpod_isaac_request(
+            {
+                "mode": "image-startup-canary-pod",
+                "image_startup_canary_only": True,
+            }
+        ),
+        job_id="job-large-runpod-isaac-image",
+        provisioner="runpod",
+        simulator="isaac_sim",
+        scheduler_decision={"status": "awaiting_explicit_gpu_and_simulator_gates"},
+        worker_launch_plan=_large_runpod_isaac_worker_launch_plan(),
+        generated_at="2026-07-01T00:00:00Z",
+    )
+
+    assert plan["status"] == "startup_pipeline_ready"
+    cold_start_policy = plan["large_image_cold_start_policy"]  # type: ignore[index]
+    assert cold_start_policy["image_startup_canary_launch"] is True
+    assert cold_start_policy["canary_launch_allowed"] is True
+    assert cold_start_policy["customer_eval_launch_allowed"] is False
+    assert "large_worker_image_requires_canary_or_warm_provider" not in plan[
+        "blockers"
+    ]
+
+
+def test_large_runpod_isaac_image_accepts_warm_capacity_request() -> None:
+    plan = build_gpu_startup_pipeline_plan(
+        request=_runpod_isaac_request(),
+        job_id="job-large-runpod-isaac-image",
+        provisioner="runpod",
+        simulator="isaac_sim",
+        scheduler_decision={"status": "awaiting_explicit_gpu_and_simulator_gates"},
+        worker_launch_plan=_large_runpod_isaac_worker_launch_plan(
+            warm_pool_policy={
+                "decision": "warm_pool",
+                "warm_worker_recommended": True,
+                "scale_to_zero_default": False,
+                "active_worker_target": 1,
+            }
+        ),
+        generated_at="2026-07-01T00:00:00Z",
+    )
+
+    assert plan["status"] == "startup_pipeline_ready"
+    cold_start_policy = plan["large_image_cold_start_policy"]  # type: ignore[index]
+    assert cold_start_policy["large_runpod_isaac_image"] is True
+    assert cold_start_policy["warm_worker_available_or_requested"] is True
+    assert cold_start_policy["cold_scale_to_zero_start"] is False
+    assert cold_start_policy["customer_eval_launch_allowed"] is True
+    assert "large_worker_image_requires_canary_or_warm_provider" not in plan[
+        "blockers"
+    ]
 
 
 def test_vast_customer_lane_fails_closed_without_explicit_override() -> None:

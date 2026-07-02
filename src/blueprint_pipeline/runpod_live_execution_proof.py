@@ -244,7 +244,9 @@ def _runtime_output_zip_status(path: Path | None) -> dict[str, Any]:
     valid = False
     entry_count = 0
     error = None
-    if path.is_file() and stat.st_size > 0:
+    if path.is_file() and stat.st_size == 0:
+        error = "runtime_output_zip_zero_bytes"
+    elif path.is_file() and stat.st_size > 0:
         try:
             with zipfile.ZipFile(path) as archive:
                 entries = [name for name in archive.namelist() if name and not name.endswith("/")]
@@ -309,6 +311,7 @@ def collect_runpod_live_execution_proof(
     output_path: str | Path | None = None,
     pod_id: str | None = None,
     stop_pod: bool = False,
+    terminate_pod: bool = False,
     stop_on_startup_artifact_timeout: bool = False,
     startup_artifact_timeout_seconds: float | None = None,
     poll_interval_seconds: float = 15.0,
@@ -356,6 +359,7 @@ def collect_runpod_live_execution_proof(
         "job_id": _string(provider_request.get("job_id")) or _string(adapter_result.get("job_id")),
         "pod_id": resolved_pod_id or None,
         "stop_pod_requested": stop_pod,
+        "terminate_pod_requested": terminate_pod,
         "api_call_performed": False,
         "runpod_side_effects_may_have_occurred": False,
         "secret_values_in_artifact": False,
@@ -363,6 +367,7 @@ def collect_runpod_live_execution_proof(
         "active_pod_count_before": None,
         "active_pod_count_after": None,
         "pod_stop_performed": False,
+        "pod_terminate_performed": False,
         "stop_on_startup_artifact_timeout": stop_on_startup_artifact_timeout,
         "startup_artifact_timeout_seconds": startup_artifact_timeout_seconds,
         "runtime_output_zip_poll_requested": startup_artifact_poll_requested,
@@ -462,24 +467,38 @@ def collect_runpod_live_execution_proof(
                 "active_pod_count_before": _active_pod_count(before_pods),
             }
         )
+        teardown_requested = bool(stop_pod or terminate_pod)
         stop_response: dict[str, Any] | None = None
-        if stop_pod:
+        if teardown_requested:
             if not resolved_pod_id:
-                result.setdefault("blockers", []).append("missing_pod_id_for_stop")
+                result.setdefault("blockers", []).append(
+                    "missing_pod_id_for_terminate"
+                    if terminate_pod
+                    else "missing_pod_id_for_stop"
+                )
             else:
+                teardown_method = "DELETE" if terminate_pod else "POST"
+                teardown_action = "terminate" if terminate_pod else "stop"
                 stop_status, stop_response = _http_json(
-                    url=f"{RUNPOD_REST_API_BASE}/pods/{resolved_pod_id}/stop",
+                    url=(
+                        f"{RUNPOD_REST_API_BASE}/pods/{resolved_pod_id}"
+                        if terminate_pod
+                        else f"{RUNPOD_REST_API_BASE}/pods/{resolved_pod_id}/stop"
+                    ),
                     payload=None,
-                    method="POST",
+                    method=teardown_method,
                     api_key=api_key,
                     timeout_seconds=timeout_seconds,
                 )
                 result.update(
                     {
                         "runpod_side_effects_may_have_occurred": True,
-                        "pod_stop_performed": True,
-                        "stop_http_status_code": stop_status,
-                        "stop_response": _redact_runtime_value(stop_response),
+                        "pod_stop_performed": not terminate_pod,
+                        "pod_terminate_performed": bool(terminate_pod),
+                        "teardown_action": teardown_action,
+                        "teardown_http_method": teardown_method,
+                        "teardown_http_status_code": stop_status,
+                        "teardown_response": _redact_runtime_value(stop_response),
                     }
                 )
         after_status, after_response = _http_json(
@@ -504,20 +523,32 @@ def collect_runpod_live_execution_proof(
             blockers.append("runtime_manifest_missing")
         if result["active_pod_count_before"] is None or result["active_pod_count_after"] is None:
             blockers.append("active_pod_counts_not_verified")
-        if stop_pod and not result.get("pod_stop_performed"):
-            blockers.append("pod_stop_not_performed")
-        if stop_pod and result.get("active_pod_count_after", 0) > result.get(
+        if teardown_requested and not (
+            result.get("pod_stop_performed") or result.get("pod_terminate_performed")
+        ):
+            blockers.append(
+                "pod_terminate_not_performed"
+                if terminate_pod
+                else "pod_stop_not_performed"
+            )
+        if teardown_requested and result.get("active_pod_count_after", 0) > result.get(
             "active_pod_count_before", 0
         ):
-            blockers.append("active_pod_count_increased_after_stop")
+            blockers.append(
+                "active_pod_count_increased_after_terminate"
+                if terminate_pod
+                else "active_pod_count_increased_after_stop"
+            )
         shutdown_blockers = {
             "active_pod_counts_not_verified",
             "pod_stop_not_performed",
+            "pod_terminate_not_performed",
             "active_pod_count_increased_after_stop",
+            "active_pod_count_increased_after_terminate",
         }
         shutdown_proof = bool(
-            stop_pod
-            and result.get("pod_stop_performed")
+            teardown_requested
+            and (result.get("pod_stop_performed") or result.get("pod_terminate_performed"))
             and not any(blocker in shutdown_blockers for blocker in blockers)
         )
         adapter_submitted_pod = (
@@ -582,6 +613,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-path")
     parser.add_argument("--pod-id")
     parser.add_argument("--stop-pod", action="store_true")
+    parser.add_argument(
+        "--terminate-pod",
+        action="store_true",
+        help=(
+            "Delete the RunPod pod instead of stopping it. Prefer this for on-demand "
+            "cold-start canaries and failed startup attempts so container disk does not "
+            "remain billable."
+        ),
+    )
     parser.add_argument("--stop-on-startup-artifact-timeout", action="store_true")
     parser.add_argument("--startup-artifact-timeout-seconds", type=float)
     parser.add_argument("--poll-interval-seconds", type=float, default=15.0)
@@ -603,6 +643,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_path=args.output_path,
         pod_id=args.pod_id,
         stop_pod=args.stop_pod,
+        terminate_pod=args.terminate_pod,
         stop_on_startup_artifact_timeout=args.stop_on_startup_artifact_timeout,
         startup_artifact_timeout_seconds=args.startup_artifact_timeout_seconds,
         poll_interval_seconds=args.poll_interval_seconds,

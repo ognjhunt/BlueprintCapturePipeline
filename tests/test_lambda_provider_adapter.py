@@ -8,9 +8,10 @@ import pytest
 from blueprint_pipeline import lambda_provider_adapter as adapter
 from blueprint_pipeline.lambda_provider_adapter import (
     DEFAULT_LAMBDA_API_KEY_FILE,
+    LAMBDA_API_GATE_ENV,
     LAMBDA_API_KEY_ENV,
     LAMBDA_API_KEY_FILE_ENV,
-    LIVE_LAUNCH_NOT_IMPLEMENTED_BLOCKER,
+    LAMBDA_INSTANCE_IDS_ENV,
     main as lambda_adapter_main,
     run_lambda_provider_adapter,
 )
@@ -41,20 +42,52 @@ def _ready_lambda_request(path: Path) -> Path:
                         "registry.example/blueprint/isaac-eval-worker:2026-06-12"
                     ),
                     "configured_image_ref_is_versioned": True,
+                    "configured_image_ref_fetchable_by_provider": True,
                 },
+                "command": (
+                    "blueprint-run-robot-eval-worker --manifest "
+                    "${BLUEPRINT_EVAL_MANIFEST_URI}"
+                ),
                 "inputs": {
                     "manifest_uri": (
                         "r2://blueprint-artifacts/jobs/lambda-adapter-job-1/"
                         "worker_manifest.json"
                     ),
+                    "manifest_uri_fetchable_by_provider": True,
                     "capture_root_bundle_uri": (
                         "r2://blueprint-artifacts/jobs/lambda-adapter-job-1/"
                         "capture_root.tar"
                     ),
+                    "capture_root_bundle_uri_fetchable_by_provider": True,
                     "artifact_output_uri": (
                         "r2://blueprint-artifacts/jobs/lambda-adapter-job-1/out/"
                     ),
                     "artifact_output_uri_required": True,
+                    "artifact_output_uri_provider_writable": True,
+                    "artifact_output_write_auth_contract_ready": True,
+                    "artifact_output_write_auth": {
+                        "write_auth_contract_ready": True,
+                    },
+                },
+                "local_sim_only_prerequisite": {
+                    "status": "passed",
+                    "local_sim_only_evidence_clean": True,
+                    "blockers": [],
+                },
+                "limits": {
+                    "hard_timeout_seconds": 600,
+                    "idle_timeout_seconds": 60,
+                    "external_watchdog_ttl_seconds": 900,
+                    "external_watchdog_owner": "provider_launcher_or_owner_control_plane",
+                    "max_active_workers": 1,
+                    "requested_budget_usd": 0.25,
+                    "idle_shutdown_required": True,
+                },
+                "artifact_finalizer": {
+                    "upload_before_shutdown_required": True,
+                },
+                "environment": {
+                    "secret_values_in_artifact": False,
                 },
             },
         },
@@ -66,6 +99,8 @@ def _ready_lambda_request(path: Path) -> Path:
 def _clear_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(LAMBDA_API_KEY_ENV, raising=False)
     monkeypatch.delenv(LAMBDA_API_KEY_FILE_ENV, raising=False)
+    monkeypatch.delenv(LAMBDA_API_GATE_ENV, raising=False)
+    monkeypatch.delenv(LAMBDA_INSTANCE_IDS_ENV, raising=False)
 
 
 def test_read_api_key_prefers_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,20 +136,29 @@ def test_dry_run_is_consumable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         provider_launch_request_path=request_path,
         output_path=output_path,
         mode="dry-run",
+        region_name="us-west-1",
+        instance_type_name="gpu_1x_a10",
+        ssh_key_name="blueprint-key",
     )
 
     assert result["status"] == "dry_run_ready"
     assert result["blockers"] == []
     assert result["api_call_performed"] is False
-    assert result["live_launch_supported"] is False
     assert result["api_key_readiness"]["api_key_configured"] is True
     assert result["raw_api_key_stored"] is False
+    assert result["lambda_request"]["body"]["user_data"] == "<redacted:user_data>"
+    readiness = _read_json(tmp_path / "lambda_provider_readiness_manifest.json")
+    assert readiness["status"] == "ready_for_explicit_paid_provider_attempt"
+    assert readiness["lambda_launch_contract"]["ssh_key_names_required_count"] == 1
+    endpoint = _read_json(tmp_path / "provider_worker_endpoint_manifest.json")
+    assert endpoint["provider"] == "lambda_cloud"
     persisted = _read_json(output_path)
     assert persisted["status"] == "dry_run_ready"
     assert "secret_file_value" not in json.dumps(persisted)
+    assert "blueprint-run-robot-eval-worker" not in json.dumps(persisted)
 
 
-def test_live_mode_blocked_not_implemented(
+def test_live_mode_blocks_without_explicit_api_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     key_file = tmp_path / "lambda_api_key"
@@ -125,11 +169,16 @@ def test_live_mode_blocked_not_implemented(
     result = run_lambda_provider_adapter(
         provider_launch_request_path=request_path,
         output_path=tmp_path / "out.json",
-        mode="allocate",
+        mode="launch-instance",
+        region_name="us-west-1",
+        instance_type_name="gpu_1x_a10",
+        ssh_key_name="blueprint-key",
     )
 
     assert result["status"] == "blocked"
-    assert result["blockers"] == [LIVE_LAUNCH_NOT_IMPLEMENTED_BLOCKER]
+    assert result["reason"] == "lambda_api_gate_blocked"
+    assert f"missing_env_{LAMBDA_API_GATE_ENV}" in result["blockers"]
+    assert "missing_cli_allow_lambda_api_call" in result["blockers"]
     assert result["api_call_performed"] is False
     assert result["lambda_side_effects_may_have_occurred"] is False
 
@@ -165,6 +214,112 @@ def test_invalid_json_request_is_blocked(tmp_path: Path) -> None:
     assert result["blockers"] == ["invalid_provider_launch_request_json"]
 
 
+def test_launch_instance_submits_with_explicit_gates_and_redacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_file = tmp_path / "lambda_api_key"
+    key_file.write_text("secret_file_value\n", encoding="utf-8")
+    monkeypatch.setenv(LAMBDA_API_KEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(LAMBDA_API_GATE_ENV, "true")
+    request_path = _ready_lambda_request(tmp_path / "request.json")
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"data":{"instance_ids":["lambda-instance-1"]}}'
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["authorization"] = request.headers.get("Authorization")
+        return FakeResponse()
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
+
+    result = run_lambda_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "out.json",
+        mode="launch-instance",
+        allow_lambda_api_call=True,
+        region_name="us-west-1",
+        instance_type_name="gpu_1x_a10",
+        ssh_key_name="blueprint-key",
+    )
+
+    assert result["status"] == "submitted"
+    assert result["api_call_performed"] is True
+    assert result["lambda_side_effects_may_have_occurred"] is True
+    assert result["provider_job_submitted"] is True
+    assert result["lambda_instance_ids"] == ["lambda-instance-1"]
+    assert captured["url"] == "https://cloud.lambda.ai/api/v1/instance-operations/launch"
+    assert captured["authorization"] == "Bearer secret_file_value"
+    assert captured["body"]["region_name"] == "us-west-1"  # type: ignore[index]
+    assert captured["body"]["ssh_key_names"] == ["blueprint-key"]  # type: ignore[index]
+    assert captured["body"]["user_data"].startswith("#!/usr/bin/env bash")  # type: ignore[index]
+    persisted = _read_json(tmp_path / "out.json")
+    payload = json.dumps(persisted)
+    assert "secret_file_value" not in payload
+    assert "#!/usr/bin/env bash" not in payload
+    assert persisted["lambda_request"]["body"]["user_data"] == "<redacted:user_data>"
+
+
+def test_terminate_instances_writes_teardown_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_file = tmp_path / "lambda_api_key"
+    key_file.write_text("secret_file_value\n", encoding="utf-8")
+    monkeypatch.setenv(LAMBDA_API_KEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(LAMBDA_API_GATE_ENV, "true")
+    request_path = _ready_lambda_request(tmp_path / "request.json")
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"data":{"terminated_instances":[{"id":"lambda-instance-1","status":"terminating"}]}}'
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
+
+    result = run_lambda_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "out.json",
+        mode="terminate-instances",
+        allow_lambda_api_call=True,
+        instance_ids=["lambda-instance-1"],
+    )
+
+    assert result["status"] == "termination_requested"
+    assert result["provider_teardown_requested"] is True
+    assert captured["url"] == "https://cloud.lambda.ai/api/v1/instance-operations/terminate"
+    assert captured["body"] == {"instance_ids": ["lambda-instance-1"]}
+    teardown = _read_json(tmp_path / "lambda_provider_teardown_manifest.json")
+    assert teardown["status"] == "termination_requested"
+    assert teardown["continuing_spend_requires_followup_list_instances"] is True
+
+
 def test_cli_main_dry_run_returns_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -182,6 +337,12 @@ def test_cli_main_dry_run_returns_zero(
             str(output_path),
             "--mode",
             "dry-run",
+            "--lambda-region-name",
+            "us-west-1",
+            "--lambda-instance-type-name",
+            "gpu_1x_a10",
+            "--lambda-ssh-key-name",
+            "blueprint-key",
         ]
     )
 

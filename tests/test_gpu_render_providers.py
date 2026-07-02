@@ -219,6 +219,40 @@ def test_runpod_teardown_404_is_already_gone_success(tmp_path: Path, monkeypatch
     ]
 
 
+def test_runpod_inspect_redacts_and_marks_pre_runtime(monkeypatch) -> None:
+    def fake_key(_self):
+        return "rp-key"
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        assert method == "GET"
+        assert path == "/pods/pod-1"
+        assert body is None
+        assert key == "rp-key"
+        return 200, {
+            "id": "pod-1",
+            "desiredStatus": "RUNNING",
+            "publicIp": "",
+            "machineId": "machine-a",
+            "costPerHr": 0.69,
+            "createdAt": "2026-07-01 21:42:02.335 +0000 UTC",
+            "lastStartedAt": "2026-07-01 21:42:02.33 +0000 UTC",
+            "lastStatusChange": "Rented by User",
+            "imageName": "img:tag",
+        }
+
+    monkeypatch.setattr(RunPodRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
+
+    res = RunPodRenderProvider().inspect("pod-1")
+
+    assert res["status"] == "observed"
+    assert res["runtime_present"] is False
+    assert res["public_ip_present"] is False
+    assert res["machineId"] == "machine-a"
+    assert res["raw_provider_response_recorded"] is False
+    assert "env" not in res and "dockerStartCmd" not in res
+
+
 # ----------------------------- Vast translation -----------------------------
 
 def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:

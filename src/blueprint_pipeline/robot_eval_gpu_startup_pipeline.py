@@ -20,14 +20,20 @@ from .provider_worker_contract import (
 GPU_STARTUP_PIPELINE_PLAN_SCHEMA_VERSION = "robot_eval_gpu_startup_pipeline_plan.v1"
 
 LOCAL_PROVISIONERS = {"fixture_local", "local_process", "docker_local"}
-LIVE_GPU_PROVISIONERS = {"runpod", "vast", "gcp"}
-PROVIDER_PRIORITY = ["runpod", "gcp", "vast"]
+LIVE_GPU_PROVISIONERS = {"runpod", "lambda_cloud", "vast", "gcp"}
+PROVIDER_PRIORITY = ["runpod", "lambda_cloud", "gcp", "vast"]
 MANAGED_PROVIDER_PRIORITY = [
     "runpod_secure_cloud",
     "lambda_cloud",
     "aws_g6",
     "coreweave",
 ]
+LARGE_IMAGE_TOTAL_WARN_BYTES = 12_000_000_000
+LARGE_IMAGE_LAYER_WARN_BYTES = 8_000_000_000
+RUNPOD_IMAGE_STARTUP_CANARY_ARTIFACT = "runpod_image_startup_canary_output.zip"
+LARGE_WORKER_IMAGE_COLD_START_BLOCKER = (
+    "large_worker_image_requires_canary_or_warm_provider"
+)
 MARKETPLACE_PROVIDER_TIERS = {
     "marketplace",
     "marketplace_quarantined",
@@ -61,6 +67,26 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _bytes_value(value: Any) -> int | None:
+    number = _number(value)
+    if number is None or number < 0:
+        return None
+    return int(number)
+
+
 def _dedupe(values: Iterable[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -89,6 +115,8 @@ def _provider_tier(provisioner: str, startup_policy: Mapping[str, Any]) -> str:
         return explicit
     if provisioner == "runpod":
         return "managed_secure_cloud_preferred"
+    if provisioner == "lambda_cloud":
+        return "managed_lambda_cloud"
     if provisioner == "gcp":
         return "hyperscaler_managed"
     if provisioner == "vast":
@@ -114,8 +142,136 @@ def _startup_policy_from_request(request: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def _image_size_metadata(image: Mapping[str, Any]) -> dict[str, Any]:
+    for key in (
+        "image_size_diagnostic",
+        "worker_image_manifest_diagnostic",
+        "image_size_metadata",
+        "image_manifest",
+        "registry_manifest",
+        "manifest_inspection",
+    ):
+        metadata = _mapping(image.get(key))
+        if metadata:
+            return metadata
+    return {}
+
+
+def _image_layer_sizes_bytes(image: Mapping[str, Any]) -> list[int]:
+    metadata = _image_size_metadata(image)
+    sizes: list[int] = []
+    for source in (image, metadata):
+        for key in (
+            "compressed_layer_sizes_bytes",
+            "layer_sizes_bytes",
+            "layers_size_bytes",
+            "layer_size_bytes",
+        ):
+            value = source.get(key)
+            if isinstance(value, Sequence) and not isinstance(
+                value, (str, bytes, bytearray)
+            ):
+                for item in value:
+                    size = _bytes_value(item)
+                    if size is not None:
+                        sizes.append(size)
+            else:
+                size = _bytes_value(value)
+                if size is not None:
+                    sizes.append(size)
+        layers = source.get("layers")
+        if isinstance(layers, Sequence) and not isinstance(
+            layers, (str, bytes, bytearray)
+        ):
+            for layer in layers:
+                layer_mapping = _mapping(layer)
+                for key in ("compressed_size_bytes", "size_bytes", "size"):
+                    size = _bytes_value(layer_mapping.get(key))
+                    if size is not None:
+                        sizes.append(size)
+                        break
+    return sizes
+
+
+def _worker_image_size_diagnostic(
+    worker_launch_plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    image = _mapping(worker_launch_plan.get("worker_image"))
+    metadata = _image_size_metadata(image)
+    layer_sizes = _image_layer_sizes_bytes(image)
+    explicit_largest = next(
+        (
+            _bytes_value(source.get(key))
+            for source in (image, metadata)
+            for key in (
+                "largest_compressed_layer_size_bytes",
+                "largest_layer_size_bytes",
+                "max_layer_size_bytes",
+            )
+            if _bytes_value(source.get(key)) is not None
+        ),
+        None,
+    )
+    largest_layer_size = (
+        explicit_largest if explicit_largest is not None else max(layer_sizes, default=None)
+    )
+    explicit_total = next(
+        (
+            _bytes_value(source.get(key))
+            for source in (image, metadata)
+            for key in (
+                "total_compressed_size_bytes",
+                "compressed_size_bytes",
+                "manifest_total_size_bytes",
+                "total_layer_size_bytes",
+            )
+            if _bytes_value(source.get(key)) is not None
+        ),
+        None,
+    )
+    total_size = explicit_total if explicit_total is not None else (
+        sum(layer_sizes) if layer_sizes else None
+    )
+    explicit_large = next(
+        (
+            source.get("large_image_pull_risk")
+            for source in (image, metadata)
+            if isinstance(source.get("large_image_pull_risk"), bool)
+        ),
+        None,
+    )
+    large_total = (
+        total_size is not None and total_size >= LARGE_IMAGE_TOTAL_WARN_BYTES
+    )
+    large_layer = (
+        largest_layer_size is not None
+        and largest_layer_size >= LARGE_IMAGE_LAYER_WARN_BYTES
+    )
+    warnings: list[str] = []
+    if large_total:
+        warnings.append("large_worker_image_total_size_may_exceed_startup_watchdog")
+    if large_layer:
+        warnings.append("large_worker_image_layer_may_exceed_startup_watchdog")
+    return {
+        "metadata_present": bool(
+            metadata
+            or layer_sizes
+            or total_size is not None
+            or largest_layer_size is not None
+            or explicit_large is not None
+        ),
+        "total_compressed_size_bytes": total_size,
+        "largest_layer_size_bytes": largest_layer_size,
+        "large_image_pull_risk": bool(
+            explicit_large is True or large_total or large_layer
+        ),
+        "warnings": warnings,
+    }
+
+
 def _worker_image_policy(worker_launch_plan: Mapping[str, Any]) -> dict[str, Any]:
     image = _mapping(worker_launch_plan.get("worker_image"))
+    image_size_diagnostic = _worker_image_size_diagnostic(worker_launch_plan)
     return {
         "configured_image_ref": image.get("configured_image_ref"),
         "image_ref_env_var": image.get("image_ref_env_var"),
@@ -130,6 +286,215 @@ def _worker_image_policy(worker_launch_plan: Mapping[str, Any]) -> dict[str, Any
         "runtime_dependency_install_disallowed": bool(
             image.get("runtime_dependency_install_disallowed")
         ),
+        "image_size_metadata_available": bool(
+            image_size_diagnostic.get("metadata_present")
+        ),
+        "total_compressed_size_bytes": image_size_diagnostic.get(
+            "total_compressed_size_bytes"
+        ),
+        "largest_layer_size_bytes": image_size_diagnostic.get(
+            "largest_layer_size_bytes"
+        ),
+        "large_image_pull_risk": bool(
+            image_size_diagnostic.get("large_image_pull_risk")
+        ),
+        "image_size_warnings": _string_list(image_size_diagnostic.get("warnings")),
+    }
+
+
+def _active_worker_target(value: Any) -> int:
+    number = _number(value)
+    if number is None:
+        return 0
+    return max(0, int(number))
+
+
+def _startup_policy_bool(
+    startup_policy: Mapping[str, Any],
+    keys: Sequence[str],
+    *,
+    default: bool = False,
+) -> bool:
+    for key in keys:
+        if key in startup_policy:
+            return _bool_from_policy(startup_policy.get(key), default=default)
+    return default
+
+
+def _same_image_canary_status(startup_policy: Mapping[str, Any]) -> str:
+    return _string(
+        startup_policy.get("same_image_startup_canary_status")
+        or startup_policy.get("image_startup_canary_status")
+        or startup_policy.get("runpod_image_startup_canary_status")
+    ).lower()
+
+
+def _same_image_canary_completed(startup_policy: Mapping[str, Any]) -> bool:
+    if _startup_policy_bool(
+        startup_policy,
+        (
+            "same_image_startup_canary_completed",
+            "image_startup_canary_completed",
+            "runpod_image_startup_canary_completed",
+        ),
+        default=False,
+    ):
+        return True
+    return _same_image_canary_status(startup_policy) in {
+        "passed",
+        "success",
+        "succeeded",
+        "complete",
+        "completed",
+        "ready",
+    }
+
+
+def _image_startup_canary_launch(startup_policy: Mapping[str, Any]) -> bool:
+    if _startup_policy_bool(
+        startup_policy,
+        (
+            "image_startup_canary_only",
+            "same_image_startup_canary_only",
+            "runpod_image_startup_canary_only",
+        ),
+        default=False,
+    ):
+        return True
+    mode = _string(
+        startup_policy.get("mode")
+        or startup_policy.get("launch_mode")
+        or startup_policy.get("provider_mode")
+    ).lower()
+    return mode in {
+        "image-startup-canary-pod",
+        "image_startup_canary",
+        "same_image_startup_canary",
+        "runpod_image_startup_canary",
+        "canary_only",
+    }
+
+
+def _simulator_is_isaac(simulator: str) -> bool:
+    return simulator.strip().lower() in {"isaac", "isaac_sim", "isaac-sim"}
+
+
+def _large_image_cold_start_policy(
+    *,
+    provisioner: str,
+    simulator: str,
+    live_provider_job: bool,
+    startup_policy: Mapping[str, Any],
+    warm_pool_policy: Mapping[str, Any],
+    worker_image_policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    active_worker_target = _active_worker_target(
+        warm_pool_policy.get("active_worker_target")
+    )
+    warm_worker_available_or_requested = bool(
+        warm_pool_policy.get("warm_worker_recommended")
+    ) or active_worker_target > 0
+    warm_worker_available_or_requested = (
+        warm_worker_available_or_requested
+        or _startup_policy_bool(
+            startup_policy,
+            (
+                "warm_worker_available",
+                "warm_worker_requested",
+                "prewarmed_worker_available",
+                "prewarmed_worker_requested",
+            ),
+            default=False,
+        )
+    )
+    warm_decision = _string(warm_pool_policy.get("decision")).lower()
+    if warm_decision in {
+        "warm_pool",
+        "existing_warm_worker",
+        "existing_pod_start",
+        "reuse_warm_provider",
+    }:
+        warm_worker_available_or_requested = True
+    cold_scale_to_zero_start = not warm_worker_available_or_requested and (
+        not warm_decision
+        or warm_decision
+        in {
+            "scale_to_zero_on_demand",
+            "scale_to_zero",
+            "on_demand",
+            "cold_on_demand",
+        }
+        or warm_pool_policy.get("scale_to_zero_default") is not False
+    )
+    same_image_canary_completed = _same_image_canary_completed(startup_policy)
+    image_startup_canary_launch = _image_startup_canary_launch(startup_policy)
+    explicit_debug_override = _startup_policy_bool(
+        startup_policy,
+        (
+            "allow_large_runpod_image_fresh_start",
+            "large_runpod_image_fresh_start_override",
+        ),
+        default=False,
+    )
+    large_runpod_isaac_image = bool(
+        live_provider_job
+        and provisioner == "runpod"
+        and _simulator_is_isaac(simulator)
+        and worker_image_policy.get("large_image_pull_risk") is True
+    )
+    same_image_canary_required = bool(
+        large_runpod_isaac_image
+        and cold_scale_to_zero_start
+        and not same_image_canary_completed
+        and not warm_worker_available_or_requested
+    )
+    blockers: list[str] = []
+    if (
+        same_image_canary_required
+        and not image_startup_canary_launch
+        and not explicit_debug_override
+    ):
+        blockers.append(LARGE_WORKER_IMAGE_COLD_START_BLOCKER)
+    customer_eval_launch_allowed = bool(
+        not same_image_canary_required or explicit_debug_override
+    )
+    return {
+        "selected_provider": provisioner,
+        "simulator": simulator,
+        "large_runpod_isaac_image": large_runpod_isaac_image,
+        "large_image_pull_risk": bool(worker_image_policy.get("large_image_pull_risk")),
+        "image_size_metadata_available": bool(
+            worker_image_policy.get("image_size_metadata_available")
+        ),
+        "total_compressed_size_bytes": worker_image_policy.get(
+            "total_compressed_size_bytes"
+        ),
+        "largest_layer_size_bytes": worker_image_policy.get(
+            "largest_layer_size_bytes"
+        ),
+        "cold_scale_to_zero_start": cold_scale_to_zero_start,
+        "warm_worker_available_or_requested": warm_worker_available_or_requested,
+        "same_image_startup_canary_status": _same_image_canary_status(startup_policy)
+        or None,
+        "same_image_startup_canary_completed": same_image_canary_completed,
+        "image_startup_canary_launch": image_startup_canary_launch,
+        "same_image_startup_canary_required_before_customer_eval": bool(
+            large_runpod_isaac_image and not same_image_canary_completed
+        ),
+        "fresh_start_debug_override": explicit_debug_override,
+        "customer_eval_launch_allowed": customer_eval_launch_allowed,
+        "canary_launch_allowed": not blockers,
+        "required_artifact": (
+            RUNPOD_IMAGE_STARTUP_CANARY_ARTIFACT
+            if large_runpod_isaac_image
+            else None
+        ),
+        "blockers": blockers,
+        "claim_boundary": {
+            "canary_proves_container_user_command_and_artifact_upload_only": True,
+            "canary_proves_isaac_scene_or_wam_quality": False,
+            "canary_proves_robot_policy_readiness": False,
+        },
     }
 
 
@@ -301,6 +666,14 @@ def build_gpu_startup_pipeline_plan(
     )
     warm_pool_policy = _mapping(_mapping(worker_launch_plan.get("launch_mode")).get("warm_pool_policy"))
     worker_image_policy = _worker_image_policy(worker_launch_plan)
+    large_image_cold_start_policy = _large_image_cold_start_policy(
+        provisioner=provisioner,
+        simulator=simulator,
+        live_provider_job=live_provider_job,
+        startup_policy=startup_policy,
+        warm_pool_policy=warm_pool_policy,
+        worker_image_policy=worker_image_policy,
+    )
     worker_blockers = _string_list(worker_launch_plan.get("blockers"))
     scheduler_blockers = _string_list(scheduler_decision.get("blockers"))
     worker_session_policy = _provider_worker_session_policy(
@@ -328,6 +701,18 @@ def build_gpu_startup_pipeline_plan(
         warnings.append("scheduler_decision_has_blockers")
     if worker_session_blockers:
         blockers.extend(worker_session_blockers)
+    large_image_cold_start_blockers = _string_list(
+        large_image_cold_start_policy.get("blockers")
+    )
+    if large_image_cold_start_blockers:
+        blockers.extend(large_image_cold_start_blockers)
+    if (
+        large_image_cold_start_policy.get("large_runpod_isaac_image") is True
+        and large_image_cold_start_policy.get("image_startup_canary_launch") is not True
+        and large_image_cold_start_policy.get("same_image_startup_canary_completed")
+        is not True
+    ):
+        warnings.append("large_runpod_isaac_image_requires_same_image_startup_canary")
 
     status = (
         "blocked_before_customer_gpu_allocation"
@@ -340,6 +725,12 @@ def build_gpu_startup_pipeline_plan(
         runtime_preflight_contract=runtime_preflight_contract,
         live_provider_job=live_provider_job,
     )
+    required_artifacts = [
+        "worker_runtime_preflight.json",
+        "startup_worker_canary_result.json",
+    ]
+    if large_image_cold_start_policy.get("large_runpod_isaac_image") is True:
+        required_artifacts.append(RUNPOD_IMAGE_STARTUP_CANARY_ARTIFACT)
     return {
         "schema_version": GPU_STARTUP_PIPELINE_PLAN_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -387,10 +778,18 @@ def build_gpu_startup_pipeline_plan(
             "required_before_customer_eval": bool(external_execution),
             "customer_eval_waits_for_canary": bool(external_execution),
             "block_scene_load_until_preflight_passes": bool(external_execution),
-            "required_artifacts": [
-                "worker_runtime_preflight.json",
-                "startup_worker_canary_result.json",
-            ],
+            "required_artifacts": _dedupe(required_artifacts),
+            "same_image_startup_canary_required": bool(
+                large_image_cold_start_policy.get(
+                    "same_image_startup_canary_required_before_customer_eval"
+                )
+            ),
+            "same_image_startup_canary_artifact": (
+                RUNPOD_IMAGE_STARTUP_CANARY_ARTIFACT
+                if large_image_cold_start_policy.get("large_runpod_isaac_image")
+                is True
+                else None
+            ),
             "primary_result_artifact": runtime_preflight_contract.get(
                 "result_artifact"
             )
@@ -425,6 +824,7 @@ def build_gpu_startup_pipeline_plan(
             "worker_image_version_pin_required": True,
         },
         "worker_image_policy": worker_image_policy,
+        "large_image_cold_start_policy": large_image_cold_start_policy,
         "warm_pool_policy": {
             "decision": warm_pool_policy.get("decision") or "scale_to_zero_on_demand",
             "warm_worker_recommended": bool(

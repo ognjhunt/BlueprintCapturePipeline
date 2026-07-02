@@ -508,6 +508,7 @@ blueprint-collect-runpod-live-execution-proof \
   --runtime-output-zip "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_image_startup_canary_output.zip" \
   --startup-artifact-timeout-seconds 360 \
   --stop-on-startup-artifact-timeout \
+  --terminate-pod \
   --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_live_execution_canary_proof.json" \
   --allow-runpod-api-call
 ```
@@ -516,11 +517,115 @@ A canary timeout proves only that the selected image did not reach user-command
 artifact upload within the watchdog. It is not Isaac Sim execution proof. To
 hold a canary briefly for an immediate warm-host retry, set
 `BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS=<seconds>` and still collect
-zero-active-pod shutdown proof after the retry. If the launch request includes
-image-size metadata showing a large worker layer, fresh `on-demand-pod` attempts
-block before spend with `large_worker_image_requires_canary_or_warm_provider`.
-Set `BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START=true` only for an intentional
+zero-active-pod shutdown or termination proof after the retry. For cold canaries
+and failed startup attempts, prefer `--terminate-pod` so stopped container disk
+does not remain billable. If the launch request includes image-size metadata
+showing a large worker layer, fresh `on-demand-pod` attempts block before spend
+with `large_worker_image_requires_canary_or_warm_provider`. Set
+`BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START=true` only for an intentional
 debug retry with a wider observation window.
+
+Lambda Cloud is the second managed-provider lane. Use the Lambda adapter only
+after the job has a `gpu_provider_launch_request.json` with
+`status=request_manifest_ready`, local sim-only prerequisite evidence has passed,
+and the selected worker image is versioned and provider-fetchable. The adapter
+uses Lambda Cloud On-Demand Cloud APIs, not AWS Lambda. The official API uses
+Bearer auth at `https://cloud.lambda.ai/api/v1`; launch is
+`POST /instance-operations/launch` with `region_name`, `instance_type_name`, and
+exactly one SSH key name, and terminate is
+`POST /instance-operations/terminate` with `instance_ids`.
+
+Before an API key is installed, validate the request and Lambda launch config
+without a provider call:
+
+```bash
+blueprint-run-lambda-provider-adapter \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --mode dry-run \
+  --lambda-region-name "<lambda-region-name>" \
+  --lambda-instance-type-name "<lambda-instance-type-name>" \
+  --lambda-ssh-key-name "<lambda-ssh-key-name>" \
+  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/lambda_provider_adapter_result.json"
+```
+
+When the API key is available, keep it in the repo-standard secret file
+location and point the adapter at the file; do not place the raw key in launch
+requests, manifests, command logs, or docs:
+
+```bash
+mkdir -p "$HOME/.blueprint-secrets"
+chmod 700 "$HOME/.blueprint-secrets"
+# Write the Lambda Cloud API key to:
+#   $HOME/.blueprint-secrets/lambda_api_key
+chmod 600 "$HOME/.blueprint-secrets/lambda_api_key"
+export LAMBDA_API_KEY_FILE="$HOME/.blueprint-secrets/lambda_api_key"
+```
+
+Use no-spend inventory calls first to confirm the key, SSH key name, instance
+types, regions, and current running instances:
+
+```bash
+BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true \
+LAMBDA_API_KEY_FILE="$HOME/.blueprint-secrets/lambda_api_key" \
+blueprint-run-lambda-provider-adapter \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --mode list-instances \
+  --allow-lambda-api-call \
+  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/lambda_provider_adapter_result.inventory.json"
+
+BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true \
+LAMBDA_API_KEY_FILE="$HOME/.blueprint-secrets/lambda_api_key" \
+blueprint-run-lambda-provider-adapter \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --mode list-instance-types \
+  --allow-lambda-api-call \
+  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/lambda_provider_adapter_result.instance_types.json"
+
+BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true \
+LAMBDA_API_KEY_FILE="$HOME/.blueprint-secrets/lambda_api_key" \
+blueprint-run-lambda-provider-adapter \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --mode list-ssh-keys \
+  --allow-lambda-api-call \
+  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/lambda_provider_adapter_result.ssh_keys.json"
+```
+
+Only after the inventory is clean, submit a bounded launch:
+
+```bash
+BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true \
+LAMBDA_API_KEY_FILE="$HOME/.blueprint-secrets/lambda_api_key" \
+blueprint-run-lambda-provider-adapter \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --mode launch-instance \
+  --lambda-region-name "<lambda-region-name>" \
+  --lambda-instance-type-name "<lambda-instance-type-name>" \
+  --lambda-ssh-key-name "<lambda-ssh-key-name>" \
+  --allow-lambda-api-call \
+  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/lambda_provider_adapter_result.launch.json"
+```
+
+A Lambda launch response with `status=submitted` means the Lambda API accepted
+the launch request. It does not prove worker `/readyz`, simulator execution,
+artifact upload, visual usefulness, generated-world rank fidelity, safety, or
+physical-robot readiness. After the run, terminate by instance ID and then run
+`list-instances` again for zero-live-instance evidence:
+
+```bash
+BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true \
+LAMBDA_API_KEY_FILE="$HOME/.blueprint-secrets/lambda_api_key" \
+blueprint-run-lambda-provider-adapter \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --mode terminate-instances \
+  --instance-id "<lambda-instance-id>" \
+  --allow-lambda-api-call \
+  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/lambda_provider_adapter_result.terminate.json"
+```
+
+Do not use `sudo shutdown -h now` or `systemctl poweroff` as the closeout proof;
+Lambda documents that those commands leave instances in an alert state and
+billing can continue. Use Lambda terminate plus the follow-up inventory artifact
+for spend closure.
 
 From the WebApp repo, write the redacted forwarding preflight report before
 submitting a request:
@@ -954,6 +1059,7 @@ blueprint-collect-runpod-live-execution-proof \
   --startup-artifact-timeout-seconds 360 \
   --poll-interval-seconds 15 \
   --stop-on-startup-artifact-timeout \
+  --terminate-pod \
   --allow-runpod-api-call
 ```
 

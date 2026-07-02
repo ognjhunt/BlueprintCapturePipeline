@@ -109,6 +109,13 @@ class GpuRenderProvider:
     def stop(self, instance_id: str) -> dict:
         raise NotImplementedError
 
+    def inspect(self, instance_id: str) -> dict:
+        return {
+            "status": "unavailable",
+            "reason": "provider_inspect_not_implemented",
+            "instance_id": instance_id,
+        }
+
     def terminate(self, instance_id: str) -> dict:
         """Permanently delete the instance (releases its disk too). Defaults to stop(); RunPod
         overrides because a stopped pod keeps billing for its container disk."""
@@ -230,6 +237,41 @@ class RunPodRenderProvider(GpuRenderProvider):
         if s == 404:
             return {"status": "stopped", "http": s, "already_gone": True}
         return {"status": "stopped" if s in (200, 201, 204) else "stop_failed", "http": s}
+
+    def inspect(self, instance_id: str) -> dict:
+        key = self._key()
+        if not key:
+            return {
+                "status": "blocked",
+                "blockers": ["runpod_api_key_missing"],
+                "instance_id": instance_id,
+            }
+        s, body = _runpod_call("GET", f"/pods/{instance_id}", None, key=key, timeout=30)
+        if not isinstance(body, dict):
+            return {
+                "status": "unavailable",
+                "http": s,
+                "instance_id": instance_id,
+                "raw_provider_response_recorded": False,
+            }
+        runtime = body.get("runtime")
+        public_ip = str(body.get("publicIp") or "").strip()
+        return {
+            "status": "observed" if s == 200 else "unavailable",
+            "http": s,
+            "instance_id": instance_id,
+            "desiredStatus": body.get("desiredStatus"),
+            "runtime_present": runtime is not None,
+            "public_ip_present": bool(public_ip),
+            "machineId": body.get("machineId"),
+            "costPerHr": body.get("costPerHr"),
+            "createdAt": body.get("createdAt"),
+            "lastStartedAt": body.get("lastStartedAt"),
+            "lastStatusChange": body.get("lastStatusChange"),
+            "imageName": body.get("imageName"),
+            "error": body.get("error"),
+            "raw_provider_response_recorded": False,
+        }
 
     def terminate(self, instance_id: str) -> dict:
         """DELETE the pod — a stopped RunPod pod still bills for its 140GB+ container disk, so

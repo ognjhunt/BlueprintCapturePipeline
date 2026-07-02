@@ -1609,6 +1609,25 @@ RunPod active workers, max workers, and idle timeout are endpoint-level settings
 that must be configured on the endpoint. On-demand Pods do not get provider-native
 idle shutdown from the request payload, so the adapter carries the worker env
 shutdown controls and requires an external watchdog/owner terminator posture.
+For Lambda Cloud, the repo-owned adapter command is
+`blueprint-run-lambda-provider-adapter`. It targets Lambda Cloud On-Demand Cloud,
+not AWS Lambda. Dry-run mode writes `lambda_provider_adapter_result.json`,
+`lambda_provider_readiness_manifest.json`, and
+`provider_worker_endpoint_manifest.json` without an API call. Live API modes
+require `BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true`, `LAMBDA_API_KEY` or
+`LAMBDA_API_KEY_FILE`, and `--allow-lambda-api-call`. The adapter follows the
+official Lambda Cloud API shape: Bearer auth against
+`https://cloud.lambda.ai/api/v1`, `POST /instance-operations/launch` with
+`region_name`, `instance_type_name`, and exactly one `ssh_key_names` entry, and
+`POST /instance-operations/terminate` with `instance_ids`. Use `--mode
+list-instances`, `list-instance-types`, `list-ssh-keys`, `list-images`, or
+`list-regions` for no-spend account inventory after the API key is installed.
+A submitted Lambda launch is only provider allocation submission; it is not
+worker `/readyz`, simulator execution, artifact upload, teardown, safety,
+physical-robot readiness, or rank-fidelity proof. Terminate Lambda instances via
+the Lambda API/console and then run a list-instances follow-up; OS-level
+shutdown is not accepted as spend closure because Lambda documents that billing
+can continue.
 
 Each job also writes `gpu_cost_control_ledger.json` with requested budget,
 maximum billable GPU seconds, max workers, timeout, idle-shutdown/watchdog

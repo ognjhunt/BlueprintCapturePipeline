@@ -160,7 +160,7 @@ DEFAULT_STARTUP_EXPECTED_OUTPUTS = [
     "stderr_log",
 ]
 OPERATIONS = ("evaluate_only", "train_only", "train_then_evaluate")
-LIVE_GPU_PROVISIONERS = {"vast", "runpod", "gcp"}
+LIVE_GPU_PROVISIONERS = {"vast", "runpod", "lambda_cloud", "gcp"}
 WORKER_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_manifest.v1"
 WORKER_MANIFEST_URI_ENV = "BLUEPRINT_EVAL_MANIFEST_URI"
 WORKER_ARTIFACT_OUTPUT_URI_ENV = "BLUEPRINT_ARTIFACT_OUTPUT_URI"
@@ -176,12 +176,19 @@ ARTIFACT_OUTPUT_WRITE_PLAINTEXT_ENV_VARS_BY_SCHEME = {
     "r2": ["BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL", "AWS_ENDPOINT_URL"],
 }
 GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
+GENERIC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV = (
+    "BLUEPRINT_WORKER_IMAGE_MANIFEST_DIAGNOSTIC"
+)
 WORKER_IMAGE_REF_ENV_BY_SIMULATOR = {
     "isaac_sim": "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
     "isaac_lab_arena": "BLUEPRINT_ISAAC_ARENA_EVAL_WORKER_IMAGE_REF",
     "mujoco": "BLUEPRINT_MUJOCO_EVAL_WORKER_IMAGE_REF",
     "pybullet": "BLUEPRINT_PYBULLET_EVAL_WORKER_IMAGE_REF",
     "newton": "BLUEPRINT_NEWTON_EVAL_WORKER_IMAGE_REF",
+}
+WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV_BY_SIMULATOR = {
+    "isaac_sim": "BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC",
+    "isaac_lab_arena": "BLUEPRINT_ISAAC_ARENA_WORKER_IMAGE_MANIFEST_DIAGNOSTIC",
 }
 
 SIMULATOR_PROVIDER_PROFILES: Dict[str, Dict[str, Any]] = {
@@ -1995,6 +2002,8 @@ def _build_scheduler_decision(
 def _provider_credential_env_vars(provisioner: str) -> List[str]:
     if provisioner == "runpod":
         return ["RUNPOD_API_KEY"]
+    if provisioner == "lambda_cloud":
+        return ["LAMBDA_API_KEY"]
     if provisioner == "vast":
         return ["VAST_API_KEY"]
     if provisioner == "gcp":
@@ -2005,6 +2014,8 @@ def _provider_credential_env_vars(provisioner: str) -> List[str]:
 def _provider_launch_operation(provisioner: str) -> str:
     if provisioner == "runpod":
         return "enqueue_runpod_serverless_or_on_demand_worker"
+    if provisioner == "lambda_cloud":
+        return "launch_lambda_cloud_instance_and_run_worker"
     if provisioner == "vast":
         return "create_vast_instance_and_run_worker"
     if provisioner == "gcp":
@@ -2032,6 +2043,62 @@ def _configured_worker_image_ref(simulator: str) -> tuple[str, str]:
     if generic_image_ref:
         return generic_image_ref, GENERIC_WORKER_IMAGE_REF_ENV
     return "", env_var
+
+
+def _worker_image_manifest_diagnostic_env_var(simulator: str) -> str:
+    return WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV_BY_SIMULATOR.get(
+        simulator,
+        GENERIC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV,
+    )
+
+
+def _configured_worker_image_size_diagnostic(
+    simulator: str,
+    image_ref: str,
+) -> dict[str, Any]:
+    env_var = _worker_image_manifest_diagnostic_env_var(simulator)
+    path_text = _string(os.getenv(env_var))
+    source_env_var = env_var
+    if not path_text:
+        path_text = _string(os.getenv(GENERIC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV))
+        source_env_var = GENERIC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV
+    if not path_text:
+        return {
+            "image_size_diagnostic_env_var": env_var,
+            "image_size_diagnostic_present": False,
+        }
+    diagnostic_path = Path(path_text).expanduser()
+    base = {
+        "image_size_diagnostic_env_var": source_env_var,
+        "image_size_diagnostic_path": str(diagnostic_path),
+        "image_size_diagnostic_present": False,
+    }
+    if not diagnostic_path.is_file():
+        return base
+    try:
+        diagnostic = _mapping(read_json_any(diagnostic_path))
+    except Exception as exc:
+        return {
+            **base,
+            "image_size_diagnostic_read_error": type(exc).__name__,
+        }
+    diagnostic_image_ref = _string(diagnostic.get("image_ref"))
+    image_ref_matches = bool(
+        image_ref and diagnostic_image_ref and diagnostic_image_ref == image_ref
+    )
+    if not image_ref_matches:
+        return {
+            **base,
+            "image_size_diagnostic_image_ref": diagnostic_image_ref,
+            "image_size_diagnostic_image_ref_matches": False,
+        }
+    return {
+        **base,
+        "image_size_diagnostic_present": True,
+        "image_size_diagnostic_image_ref": diagnostic_image_ref or None,
+        "image_size_diagnostic_image_ref_matches": True,
+        "image_size_diagnostic": diagnostic,
+    }
 
 
 def _worker_image_ref_is_versioned(image_ref: str) -> bool:
@@ -2413,6 +2480,10 @@ def _build_worker_launch_plan(
         gpu_allocation=gpu_allocation,
         launch_limits=launch_limits,
     )
+    image_size_diagnostic = _configured_worker_image_size_diagnostic(
+        simulator,
+        image_ref,
+    )
     runtime_preflight_contract = _runtime_preflight_contract(
         simulator=simulator,
         provisioner=provisioner,
@@ -2513,6 +2584,7 @@ def _build_worker_launch_plan(
             "configured_image_ref_present": bool(image_ref),
             "configured_image_ref_is_versioned": image_ref_versioned,
             "configured_image_ref_fetchable_by_provider": image_ref_fetchable,
+            **image_size_diagnostic,
             "runtime_dependency_install_disallowed": True,
             "runtime_asset_guessing_disallowed": True,
         },

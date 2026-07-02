@@ -311,6 +311,12 @@ deterministic manifests that are safe to sync to WebApp as advisory status:
   `large_worker_image_requires_canary_or_warm_provider` unless
   `BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START=true` is set for an intentional
   debug retry.
+  The earlier `gpu_startup_pipeline_plan.json` now mirrors this fail-closed
+  behavior for RunPod Isaac customer evals: a large scale-to-zero worker image is
+  `blocked_before_customer_gpu_allocation` until warm capacity is requested or a
+  same-image `runpod_image_startup_canary_output.zip` has completed. That canary
+  artifact proves only container user-command execution and artifact upload, not
+  Isaac render quality, WAM quality, rank fidelity, or physical-robot readiness.
   Prefer S3-compatible object-store staging for RunPod canary bundle/callback
   URLs. `blueprint-stage-wam-provider-object-store` has historical WAM naming
   but stages a simulator-agnostic provider bundle and signed output PUT URL;

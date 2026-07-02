@@ -9136,6 +9136,7 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
     assert startup_plan["selected_provider_is_marketplace"] is False
     assert startup_plan["managed_provider_policy"]["provider_api_priority"] == [  # type: ignore[index]
         "runpod",
+        "lambda_cloud",
         "gcp",
         "vast",
     ]
@@ -9879,6 +9880,8 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    monkeypatch.delenv("BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC", raising=False)
+    monkeypatch.delenv("BLUEPRINT_WORKER_IMAGE_MANIFEST_DIAGNOSTIC", raising=False)
     capture_root = _build_capture_root(tmp_path)
     _write_robot_eval_cards(capture_root)
     _write_cpu_preflight_ready_scene_asset(capture_root)
@@ -10031,6 +10034,88 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
         remote_closure["contract_blockers"]
     )
     assert remote_closure["runtime_blockers"] == ["remote_provider_runtime_not_executed"]
+
+
+def test_live_provider_launch_blocks_large_runpod_isaac_image_without_canary_or_warm_capacity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_cpu_preflight_ready_scene_asset(capture_root)
+    request = _full_job_request(capture_root)
+    request["execution_request"] = _webapp_execution_request()
+    request["budget"] = {"budget_usd": 10, "timeout_seconds": 120}
+    request_path = tmp_path / "webapp-job-request.json"
+    _write_json(request_path, request)
+    image_ref = "registry.example/blueprint/isaac-eval-worker:2026-07-01"
+    image_diagnostic_path = tmp_path / "isaac_worker_image_manifest_diagnostic.json"
+    _write_json(
+        image_diagnostic_path,
+        {
+            "schema_version": "isaac_worker_image_manifest_diagnostic.v1",
+            "image_ref": image_ref,
+            "total_compressed_size_bytes": 10_706_674_165,
+            "largest_layer_size_bytes": 10_585_790_213,
+            "layer_count": 19,
+            "large_image_pull_risk": True,
+        },
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+    monkeypatch.setenv(
+        "BLUEPRINT_ARTIFACT_OUTPUT_URI",
+        "r2://blueprint-artifacts/jobs/job-live-provider-large-isaac-image",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_EVAL_MANIFEST_URI",
+        "r2://blueprint-artifacts/jobs/job-live-provider-large-isaac-image/worker_manifest.json",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI",
+        "r2://blueprint-artifacts/jobs/job-live-provider-large-isaac-image/capture-root.zip",
+    )
+    monkeypatch.setenv("BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF", image_ref)
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC",
+        str(image_diagnostic_path),
+    )
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-live-provider-large-isaac-image",
+        provisioner="runpod",
+        simulator="isaac_sim",
+        allow_gpu_provisioning=True,
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / (
+        "job-live-provider-large-isaac-image"
+    )
+    worker_plan = _read_json(job_dir / "worker_launch_plan.json")
+    startup_plan = _read_json(job_dir / "gpu_startup_pipeline_plan.json")
+    provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
+
+    assert worker_plan["worker_image"]["image_size_diagnostic_present"] is True  # type: ignore[index]
+    assert worker_plan["worker_image"]["image_size_diagnostic"][  # type: ignore[index]
+        "large_image_pull_risk"
+    ] is True
+    assert startup_plan["status"] == "blocked_before_customer_gpu_allocation"
+    assert "large_worker_image_requires_canary_or_warm_provider" in startup_plan[
+        "blockers"
+    ]
+    assert startup_plan["large_image_cold_start_policy"][  # type: ignore[index]
+        "customer_eval_launch_allowed"
+    ] is False
+    assert "runpod_image_startup_canary_output.zip" in startup_plan[
+        "preflight_canary_policy"
+    ]["required_artifacts"]  # type: ignore[index]
+    assert provider_launch["status"] == "blocked_by_startup_pipeline"
+    assert provider_launch["reason"] == "startup_pipeline_blocked"
+    assert "large_worker_image_requires_canary_or_warm_provider" in provider_launch[
+        "blockers"
+    ]
+    assert provider_launch["live_provider_calls_performed"] is False
 
 
 def test_marketplace_provider_requires_explicit_strict_preflight_override(

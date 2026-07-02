@@ -287,16 +287,16 @@ def test_runpod_create_allows_unitree_groot_sonic_full_loop_bundle_without_overr
             ),
         )
 
-    captured: dict[str, object] = {}
+    calls: list[dict[str, object]] = []
 
     def fake_runpod_request(**kwargs):
-        captured["path"] = kwargs["path"]
-        captured["payload"] = kwargs["payload"]
+        calls.append(dict(kwargs))
         return 200, {"id": "pod-123"}
 
     monkeypatch.delenv(runner.RUNPOD_UNITREE_GROOT_SONIC_FULL_LOOP_OVERRIDE_ENV, raising=False)
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV, "true")
     monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
     monkeypatch.setattr(
         runner,
@@ -319,8 +319,9 @@ def test_runpod_create_allows_unitree_groot_sonic_full_loop_bundle_without_overr
 
     assert manifest["status"] == "pod_created"
     assert manifest["pod_id"] == "pod-123"
-    assert captured["path"] == "/pods"
-    assert captured["payload"]["env"]["BLUEPRINT_RUNPOD_PROVIDER_BUNDLE_KIND"] == "wam"
+    assert [call["path"] for call in calls] == ["/pods"]
+    create_call = calls[0]
+    assert create_call["payload"]["env"]["BLUEPRINT_RUNPOD_PROVIDER_BUNDLE_KIND"] == "wam"
     assert manifest["full_loop_guard"]["status"] == "allowed"
     assert manifest["full_loop_guard"]["requested_loop_step_count"] == 12
     assert manifest["full_loop_guard"]["full_loop_launch_is_default"] is True

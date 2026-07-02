@@ -124,6 +124,12 @@ fresh RunPod `on-demand-pod` launches block before spend with
 `large_worker_image_requires_canary_or_warm_provider` unless
 `BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START=true` is set for an explicit
 debug retry.
+The earlier `gpu_startup_pipeline_plan.json` applies the same fail-closed
+contract for RunPod Isaac customer evals: a large scale-to-zero worker image is
+`blocked_before_customer_gpu_allocation` until warm capacity is requested or a
+same-image `runpod_image_startup_canary_output.zip` has completed. That canary
+artifact proves only container user-command execution and artifact upload, not
+Isaac render quality, WAM quality, rank fidelity, or physical-robot readiness.
 For durable canary staging, prefer S3-compatible object-store signed GET/PUT
 URLs from `blueprint-stage-wam-provider-object-store` over quick public tunnels.
 The helper name is historical; the staging transport is simulator-agnostic. Use

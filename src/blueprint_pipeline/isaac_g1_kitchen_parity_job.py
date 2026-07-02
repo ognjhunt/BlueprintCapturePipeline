@@ -10,7 +10,7 @@ Chain:
     -> bundle (runner + policy module + request.json + kitchen assets)
     -> stage to object store (signed GET/PUT)        [reused from the splat job]
     -> provider GPU pod runs run_isaac_g1_kitchen_parity_eval.py via a hardened bootstrap
-       (provider-agnostic: RunPod or Vast)            [reused gpu_render_providers]
+       (RunPod by default; Vast paid launch requires an explicit unstable override)
     -> RTX MP4s + traces + parity outcome JSON uploaded
     -> collect -> assemble the WAM-ready harness package with an honest claim boundary.
 
@@ -20,6 +20,7 @@ dynamic locomotion, not a learned policy, not readiness.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import time
@@ -33,7 +34,7 @@ from typing import Sequence
 
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
 from .isaac_particlefield_render_job import (
-    DEFAULT_WARM_CANDIDATES, _read_secret, default_image, stage_bundle, watch_and_collect,
+    DEFAULT_WARM_CANDIDATES, stage_bundle, watch_and_collect,
 )
 from .launch_provenance import (
     evaluate_dirty_tree_paid_launch_gate,
@@ -42,10 +43,22 @@ from .launch_provenance import (
 from .provider_race import boot_marker_present, race_launch
 
 SCHEMA_VERSION = "isaac_g1_kitchen_parity_job.v1"
+JOB_MANIFEST_FILENAME = "isaac_g1_kitchen_parity_job_manifest.json"
+LAUNCH_ATTEMPT_TRACE_FILENAME = "isaac_g1_kitchen_parity_launch_attempts.json"
 WORKER_BUNDLE_DIR = "/workspace/bundle"
 DEFAULT_G1_USD_RELATIVE = "Isaac/Robots/Unitree/G1/g1.usd"
 DEFAULT_KITCHEN_MAIN_USD = "Collected_KitchenRoom/KitchenRoom.usd"
 DEFAULT_VAST_MAX_HOURLY_RATE_USD = 5.0
+ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV = "BLUEPRINT_ALLOW_UNSTABLE_VAST_ISAAC_RENDER"
+ISAAC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF"
+ISAAC_WORKER_IMAGE_REF_FILE_ENV = "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE"
+ROBOT_EVAL_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
+DEFAULT_ISAAC_WORKER_IMAGE_REF_FILE = "~/.blueprint-secrets/isaac_eval_worker_image_ref"
+ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV = "BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD"
+DEFAULT_PARITY_IMAGE_REF = "docker.io/nijelhunt/blueprint-isaac-eval-worker:20260626-faststart-amd64"
+ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV = "BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC"
+DEFAULT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC = "output/isaac_worker_image_manifest_diagnostic.json"
+ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV = "BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START"
 PARITY_BUNDLE_REQUIRED_FILES = (
     "run_isaac_g1_kitchen_parity_eval.py",
     "isaac_g1_policy.py",
@@ -89,10 +102,250 @@ def _assert_parity_bundle_namelist(names: set[str]) -> None:
         raise RuntimeError(f"parity_bundle_missing_required_files:{','.join(missing)}")
 
 
+def _inspect_kitchen_asset_namelist(
+    names: Sequence[str],
+    *,
+    source: str,
+    byte_size: int | None = None,
+) -> dict:
+    """Validate a staged kitchen asset zip/tree before a GPU worker tries to open it."""
+    files = sorted(
+        {
+            str(name).lstrip("/")
+            for name in names
+            if str(name).strip() and not str(name).endswith("/")
+        }
+    )
+    candidates = [DEFAULT_KITCHEN_MAIN_USD, "KitchenRoom.usd"]
+    selected = next((candidate for candidate in candidates if candidate in files), "")
+    if not selected:
+        kitchen_room_files = sorted(
+            (name for name in files if name.endswith("/KitchenRoom.usd") or name == "KitchenRoom.usd"),
+            key=lambda name: (len(Path(name).parts), name),
+        )
+        selected = kitchen_room_files[0] if kitchen_room_files else ""
+    blockers: list[str] = []
+    if not files:
+        blockers.append("kitchen_asset_empty")
+    if not selected:
+        blockers.append("kitchen_main_usd_missing")
+    layout = "unknown"
+    if selected == DEFAULT_KITCHEN_MAIN_USD:
+        layout = "collected_kitchen_room"
+    elif selected == "KitchenRoom.usd":
+        layout = "root_kitchen_room"
+    elif selected:
+        layout = "nested_kitchen_room"
+    return {
+        "schema_version": "kitchen_asset_layout_validation.v1",
+        "status": "PASS" if not blockers else "FAIL",
+        "source": source,
+        "blockers": blockers,
+        "file_count": len(files),
+        "zip_bytes": byte_size,
+        "selected_kitchen_main_usd_relative": selected or None,
+        "expected_worker_kitchen_usd": (
+            f"{WORKER_BUNDLE_DIR}/kitchen/{selected}" if selected else None
+        ),
+        "layout": layout,
+        "sample_files": files[:40],
+        "raw_url_values_recorded": False,
+        "claim_boundary": (
+            "Kitchen asset layout validation proves only that the staged asset bundle contains "
+            "a usable KitchenRoom.usd path for the worker request. It does not prove Isaac can "
+            "render the scene, task success, WAM quality, physical reach, safety, or deployment readiness."
+        ),
+    }
+
+
+def _inspect_kitchen_asset_dir_layout(path: str | Path) -> dict:
+    root = Path(path)
+    if not root.is_dir():
+        return {
+            "schema_version": "kitchen_asset_layout_validation.v1",
+            "status": "FAIL",
+            "source": "local_asset_dir",
+            "blockers": ["kitchen_asset_dir_missing"],
+            "path": str(root),
+            "raw_url_values_recorded": False,
+        }
+    names = [
+        item.relative_to(root).as_posix()
+        for item in root.rglob("*")
+        if item.is_file()
+    ]
+    detail = _inspect_kitchen_asset_namelist(names, source="local_asset_dir")
+    detail["path"] = str(root)
+    return detail
+
+
+def _inspect_kitchen_asset_url_layout(kitchen_url: str, *, timeout: int = 1800) -> dict:
+    if not str(kitchen_url or "").strip():
+        return {
+            "schema_version": "kitchen_asset_layout_validation.v1",
+            "status": "FAIL",
+            "source": "reused_existing_url",
+            "blockers": ["kitchen_url_missing"],
+            "raw_url_values_recorded": False,
+        }
+    try:
+        data = urllib.request.urlopen(kitchen_url, timeout=timeout).read()
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            detail = _inspect_kitchen_asset_namelist(
+                zf.namelist(),
+                source="reused_existing_url",
+                byte_size=len(data),
+            )
+        return detail
+    except urllib.error.HTTPError as exc:
+        return {
+            "schema_version": "kitchen_asset_layout_validation.v1",
+            "status": "FAIL",
+            "source": "reused_existing_url",
+            "blockers": ["kitchen_url_fetch_failed"],
+            "http_status": exc.code,
+            "raw_url_values_recorded": False,
+        }
+    except zipfile.BadZipFile:
+        return {
+            "schema_version": "kitchen_asset_layout_validation.v1",
+            "status": "FAIL",
+            "source": "reused_existing_url",
+            "blockers": ["kitchen_url_not_zip"],
+            "raw_url_values_recorded": False,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "schema_version": "kitchen_asset_layout_validation.v1",
+            "status": "FAIL",
+            "source": "reused_existing_url",
+            "blockers": ["kitchen_url_inspection_failed"],
+            "error_type": type(exc).__name__,
+            "raw_url_values_recorded": False,
+        }
+
+
+def _write_job_manifest(out_dir: str | Path, manifest: dict) -> Path:
+    """Persist the top-level job result so CLI failures survive lost terminal output."""
+    out_path = Path(out_dir) / JOB_MANIFEST_FILENAME
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    return out_path
+
+
+def _write_launch_attempt_trace(job_dir: str | Path, trace: dict) -> Path:
+    out_path = Path(job_dir) / LAUNCH_ATTEMPT_TRACE_FILENAME
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(trace, indent=2, default=str), encoding="utf-8")
+    return out_path
+
+
 def parity_image() -> str:
     """Isaac worker image for the parity eval (defaults to the same Isaac eval worker)."""
-    ref = _read_secret("isaac_eval_worker_image_ref")
-    return ref or default_image()
+    image_config = _configured_isaac_worker_image_ref()
+    return str(image_config.get("image_ref") or DEFAULT_PARITY_IMAGE_REF)
+
+
+def _string(value) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _configured_isaac_worker_image_ref() -> dict:
+    explicit = _string(os.getenv(ISAAC_WORKER_IMAGE_REF_ENV))
+    if explicit:
+        return {
+            "image_ref": explicit,
+            "source": ISAAC_WORKER_IMAGE_REF_ENV,
+            "configured": True,
+            "image_ref_file": None,
+            "image_ref_file_present": False,
+            "raw_secret_values_recorded": False,
+        }
+    file_value = _string(os.getenv(ISAAC_WORKER_IMAGE_REF_FILE_ENV))
+    image_ref_file = Path(file_value or DEFAULT_ISAAC_WORKER_IMAGE_REF_FILE).expanduser()
+    if image_ref_file.is_file():
+        image_ref = image_ref_file.read_text(encoding="utf-8").strip()
+        return {
+            "image_ref": image_ref,
+            "source": ISAAC_WORKER_IMAGE_REF_FILE_ENV
+            if file_value
+            else "default_blueprint_secret_file_path",
+            "configured": bool(image_ref),
+            "image_ref_file": str(image_ref_file),
+            "image_ref_file_present": True,
+            "raw_secret_values_recorded": False,
+        }
+    generic = _string(os.getenv(ROBOT_EVAL_WORKER_IMAGE_REF_ENV))
+    if generic:
+        return {
+            "image_ref": generic,
+            "source": ROBOT_EVAL_WORKER_IMAGE_REF_ENV,
+            "configured": True,
+            "image_ref_file": str(image_ref_file),
+            "image_ref_file_present": False,
+            "raw_secret_values_recorded": False,
+        }
+    return {
+        "image_ref": "",
+        "source": None,
+        "configured": False,
+        "image_ref_file": str(image_ref_file),
+        "image_ref_file_present": False,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _isaac_worker_image_size_diagnostic(image_ref: str) -> dict:
+    explicit = _string(os.getenv(ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV))
+    selected = explicit or DEFAULT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC
+    path = Path(selected).expanduser()
+    base = {
+        "env_var": ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV,
+        "path": str(path),
+        "path_source": "env" if explicit else "default_output_path",
+        "path_present": path.is_file(),
+        "raw_secret_values_recorded": False,
+    }
+    if not path.is_file():
+        return {
+            **base,
+            "status": "missing",
+            "metadata_available_for_selected_image": False,
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {
+            **base,
+            "status": "unreadable",
+            "metadata_available_for_selected_image": False,
+            "error_type": type(exc).__name__,
+        }
+    manifest = dict(payload) if isinstance(payload, dict) else {}
+    manifest_image_ref = _string(manifest.get("image_ref"))
+    if manifest_image_ref and image_ref and manifest_image_ref != image_ref:
+        return {
+            **base,
+            "status": "ignored_image_ref_mismatch",
+            "metadata_available_for_selected_image": False,
+            "manifest_image_ref": manifest_image_ref,
+            "selected_image_ref": image_ref,
+        }
+    return {
+        **base,
+        "status": _string(manifest.get("status")) or "completed",
+        "metadata_available_for_selected_image": True,
+        "image_ref": manifest_image_ref or image_ref,
+        "layer_count": manifest.get("layer_count"),
+        "total_compressed_size_bytes": manifest.get("total_compressed_size_bytes"),
+        "largest_layer_size_bytes": manifest.get("largest_layer_size_bytes"),
+        "large_image_pull_risk": bool(manifest.get("large_image_pull_risk")),
+        "proof_boundary": (
+            "Worker image manifest metadata only. This does not prove container "
+            "startup, Isaac Sim execution, rendered RGB quality, WAM quality, or "
+            "robot readiness."
+        ),
+    }
 
 
 def _gemini_api_key_from_env() -> str:
@@ -209,6 +462,67 @@ while True:
     time.sleep(30); putout()
 '''
 
+IMAGE_STARTUP_CANARY_BOOTSTRAP = r'''
+import os, io, json, time, zipfile, pathlib, urllib.request, shutil, sys
+from datetime import datetime, timezone
+
+OUT="/workspace/out"
+pathlib.Path(OUT).mkdir(parents=True, exist_ok=True)
+for p in pathlib.Path(OUT).iterdir():
+    try:
+        shutil.rmtree(p) if p.is_dir() else p.unlink()
+    except Exception:
+        pass
+PUT=os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL","")
+SESSION=os.environ.get("BLUEPRINT_LAUNCH_SESSION_ID","")
+
+def putout():
+    try:
+        buf=io.BytesIO()
+        with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as z:
+            for p in pathlib.Path(OUT).rglob("*"):
+                if p.is_file():
+                    try:
+                        z.write(p, p.relative_to(OUT).as_posix())
+                    except Exception:
+                        pass
+        req=urllib.request.Request(PUT, data=buf.getvalue(), method="PUT", headers={"Content-Type":"application/zip"})
+        urllib.request.urlopen(req, timeout=120).read()
+    except Exception:
+        pass
+
+def mark(phase, **extra):
+    payload={"phase":phase, "launch_session_id":SESSION, **extra}
+    pathlib.Path(OUT, "bootstrap.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    putout()
+
+mark("runner_starting", image_startup_canary=True)
+canary={
+    "schema_version": "isaac_g1_parity_image_startup_canary.v1",
+    "status": "completed",
+    "image_startup_canary": True,
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "launch_session_id": SESSION,
+    "python_executable": sys.executable,
+    "python3_path": shutil.which("python3"),
+    "isaac_python_path": "/isaac-sim/python.sh" if pathlib.Path("/isaac-sim/python.sh").exists() else None,
+    "blueprint_worker_image_family": os.environ.get("BLUEPRINT_WORKER_IMAGE_FAMILY"),
+    "simulator_framework": os.environ.get("BLUEPRINT_SIMULATOR_FRAMEWORK"),
+    "claim_boundary": (
+        "This canary proves only that the selected worker image reached user command "
+        "execution and uploaded a provider output artifact for this launch session. It "
+        "does not prove Isaac Sim startup, scene loading, RTX rendering, policy execution, "
+        "WAM quality, or robot readiness."
+    ),
+}
+pathlib.Path(OUT, "isaac_g1_kitchen_parity_result.json").write_text(json.dumps(canary, indent=2), encoding="utf-8")
+pathlib.Path(OUT, "isaac_g1_parity_image_startup_canary.json").write_text(json.dumps(canary, indent=2), encoding="utf-8")
+mark("runner_done", rc=0, image_startup_canary=True)
+while True:
+    time.sleep(30)
+    putout()
+'''
+
 _EARLY_MARKER = r'''
 import os, io, json, zipfile, pathlib, urllib.request
 OUT="/workspace/out"; pathlib.Path(OUT).mkdir(parents=True, exist_ok=True)
@@ -222,14 +536,23 @@ except Exception: pass
 '''
 
 
-def docker_start_cmd() -> list[str]:
+def docker_start_cmd(*, image_startup_canary: bool = False) -> list[str]:
+    worker_script = IMAGE_STARTUP_CANARY_BOOTSTRAP if image_startup_canary else BOOTSTRAP
+    worker_script_name = "parity_image_startup_canary.py" if image_startup_canary else "boot.py"
+    worker_python_cmd = (
+        f'(python3 /workspace/{worker_script_name} || '
+        f'python /workspace/{worker_script_name} || '
+        f'/isaac-sim/python.sh /workspace/{worker_script_name})'
+        if image_startup_canary
+        else f"/isaac-sim/python.sh /workspace/{worker_script_name}"
+    )
     script = (
         "set +e\n"
         "mkdir -p /workspace/out\n"
         "cat > /workspace/early.py <<'EARLYEOF'\n" + _EARLY_MARKER + "\nEARLYEOF\n"
         "(python3 /workspace/early.py 2>/dev/null || /isaac-sim/python.sh /workspace/early.py 2>/dev/null) || true\n"
-        "cat > /workspace/boot.py <<'PYEOF'\n" + BOOTSTRAP + "\nPYEOF\n"
-        "/isaac-sim/python.sh /workspace/boot.py 2>&1 | tee /workspace/out/runner_console.log\n"
+        f"cat > /workspace/{worker_script_name} <<'PYEOF'\n" + worker_script + "\nPYEOF\n"
+        f"{worker_python_cmd} 2>&1 | tee /workspace/out/runner_console.log\n"
     )
     return ["-lc", script]
 
@@ -354,7 +677,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       serve: bool = False, inbox_get_url: str = "",
                       serve_idle_timeout_s: float = 1800.0,
                       serve_max_jobs: int | None = None,
-                      vast_max_hourly_rate_usd: float | None = None) -> RenderLaunchSpec:
+                      vast_max_hourly_rate_usd: float | None = None,
+                      image_startup_canary: bool = False) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -436,7 +760,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
             env["BLUEPRINT_WARM_INBOX_GET_URL"] = inbox_get_url
     return RenderLaunchSpec(
         name="blueprint-isaac-g1-kitchen-parity", image=image, env=env,
-        bootstrap_argv=docker_start_cmd(), entrypoint=["bash"],
+        bootstrap_argv=docker_start_cmd(image_startup_canary=image_startup_canary),
+        entrypoint=["bash"],
         container_disk_gb=container_disk_gb, volume_gb=volume_gb,
         max_hourly_rate_usd=(
             float(vast_max_hourly_rate_usd)
@@ -514,16 +839,134 @@ def _provider_names(provider: str | None) -> list[str]:
     return names or ["runpod"]
 
 
+def _env_truthy(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_paid_provider_policy(provider_names: Sequence[str], *, allow_paid: bool) -> tuple[list[str], dict]:
+    requested = [str(p).strip().lower() for p in provider_names if str(p).strip()]
+    if not allow_paid or "vast" not in requested or _env_truthy(ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV):
+        return requested, {
+            "status": "allowed",
+            "requested_providers": requested,
+            "paid_launch": bool(allow_paid),
+        }
+    filtered = [p for p in requested if p != "vast"]
+    policy = {
+        "status": "degraded" if filtered else "blocked",
+        "requested_providers": requested,
+        "effective_providers": filtered,
+        "disabled_paid_providers": ["vast"],
+        "blocker": "vast_provider_disabled_for_paid_isaac_review",
+        "override_env": ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV,
+        "reason": (
+            "Vast is not used as a default paid Isaac review-render fallback because this lane "
+            "requires reliable bootstrap/output markers before WAM can consume a seed."
+        ),
+    }
+    return filtered, policy
+
+
+def _paid_worker_image_policy(
+    *,
+    image: str | None,
+    allow_paid: bool,
+    provider_names: Sequence[str],
+    cold: bool,
+    warm_only: bool,
+    image_startup_canary: bool,
+) -> tuple[str, dict]:
+    cli_image = _string(image)
+    image_config = _configured_isaac_worker_image_ref()
+    direct_base_image_allowed = _env_truthy(ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV)
+    if cli_image:
+        selected_image = cli_image
+        configured = True
+        source = "cli_image_arg"
+    else:
+        selected_image = _string(image_config.get("image_ref")) or DEFAULT_PARITY_IMAGE_REF
+        configured = bool(image_config.get("configured"))
+        source = image_config.get("source") or "default_historical_parity_image"
+    image_size_diagnostic = _isaac_worker_image_size_diagnostic(selected_image)
+    blockers: list[str] = []
+    if allow_paid and not configured and not direct_base_image_allowed:
+        blockers.append("prebuilt_isaac_eval_worker_image_ref_missing")
+    cold_start_possible = bool(cold or not warm_only)
+    large_runpod_fresh_start = bool(
+        allow_paid
+        and "runpod" in {str(p).strip().lower() for p in provider_names}
+        and cold_start_possible
+        and image_size_diagnostic.get("large_image_pull_risk")
+        and not image_startup_canary
+        and not _env_truthy(ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV)
+    )
+    if large_runpod_fresh_start:
+        blockers.append("large_worker_image_requires_canary_or_warm_provider")
+    policy = {
+        "status": "blocked" if blockers else "allowed",
+        "selected_image_ref": selected_image,
+        "image_ref_source": source,
+        "prebuilt_worker_image_ref_configured": configured,
+        "worker_image_ref_file": image_config.get("image_ref_file"),
+        "worker_image_ref_file_present": bool(image_config.get("image_ref_file_present")),
+        "worker_image_manifest_diagnostic": image_size_diagnostic,
+        "direct_isaac_base_image_runpod_allowed": direct_base_image_allowed,
+        "direct_isaac_base_image_override_env": ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV,
+        "large_runpod_image_fresh_start_allowed": _env_truthy(
+            ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV
+        ) or bool(image_startup_canary),
+        "image_startup_canary": bool(image_startup_canary),
+        "runpod_cold_start_possible": cold_start_possible,
+        "large_runpod_image_fresh_start_override_env": ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV,
+        "blockers": blockers,
+        "blocker": blockers[0] if blockers else None,
+        "claim_boundary": (
+            "Worker image policy only gates provider startup risk. It does not prove "
+            "container startup, Isaac execution, rendered RGB quality, WAM quality, or "
+            "robot readiness."
+        ),
+    }
+    return selected_image, policy
+
+
+def _provider_startup_pre_runtime(snapshot: dict) -> bool:
+    return (
+        snapshot.get("status") == "observed"
+        and int(snapshot.get("http") or 0) == 200
+        and snapshot.get("runtime_present") is False
+        and snapshot.get("public_ip_present") is False
+    )
+
+
 def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts: int = 3,
                              marker_timeout: int = 150, poll: int = 15,
                              cold: bool = True,
-                             allow_cold_fallback: bool = True) -> dict:
+                             allow_cold_fallback: bool = True,
+                             startup_no_runtime_timeout: int = 0) -> dict:
     """Launch a pod, then wait for its container's early heartbeat (``bootstrap.json`` on the
     output URL). RunPod cold pods are ~50% flaky — created + billing but the container never runs.
     If no marker appears within ``marker_timeout``, terminate that pod and retry, so we never pay
     for a dead cold pod. Warm-restart duds are stopped rather than deleted so a preserved pod can be
     reused later. Returns the launch of the first pod that actually started."""
     attempts: list[dict] = []
+    trace = {
+        "schema_version": "isaac_g1_kitchen_parity_launch_attempts.v1",
+        "status": "starting",
+        "provider": getattr(prov, "name", "unknown"),
+        "marker_timeout_seconds": int(marker_timeout),
+        "poll_seconds": int(poll),
+        "max_attempts": int(max_attempts),
+        "startup_no_runtime_timeout_seconds": int(startup_no_runtime_timeout),
+        "cold": bool(cold),
+        "allow_cold_fallback": bool(allow_cold_fallback),
+        "attempts": attempts,
+        "proof_boundary": (
+            "Launch-attempt trace only. It proves provider API/result observation, "
+            "not container startup, Isaac execution, rendered RGB quality, WAM quality, "
+            "or robot readiness."
+        ),
+    }
+    trace_path = _write_launch_attempt_trace(job_dir, trace)
     for attempt in range(max_attempts):
         launch_session_id = uuid.uuid4().hex
         request_for_launch = _request_with_launch_session_nonce(request, launch_session_id)
@@ -536,17 +979,34 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
         )
         if launch.get("status") != "launched":
             attempts.append({"attempt": attempt, "result": "launch_call_failed", "detail": launch})
+            trace["status"] = "launch_call_failed"
+            _write_launch_attempt_trace(job_dir, trace)
             blockers = {str(b) for b in (launch.get("blockers") or [])}
             if "warm_restart_failed_cold_fallback_disabled" in blockers:
                 return {
                     "status": "blocked",
                     "blockers": ["warm_restart_failed_cold_fallback_disabled"],
                     "attempts": attempts,
+                    "attempt_trace_path": str(trace_path),
                 }
             continue
         iid = launch["instance_id"]
+        attempt_record = {
+            "attempt": attempt,
+            "instance_id": iid,
+            "marker_seen": False,
+            "launch_session_id": launch_session_id,
+            "launch_mode": launch.get("mode"),
+            "result": "waiting_for_marker",
+            "marker_timeout_seconds": int(marker_timeout),
+            "startup_no_runtime_timeout_seconds": int(startup_no_runtime_timeout),
+        }
+        attempts.append(attempt_record)
+        trace["status"] = "waiting_for_marker"
+        _write_launch_attempt_trace(job_dir, trace)
         t0 = time.time()
         marker_seen = False
+        startup_no_runtime = False
         while time.time() - t0 < marker_timeout:
             time.sleep(poll)
             marker_seen = boot_marker_present(
@@ -556,21 +1016,64 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
             )
             if marker_seen:
                 break
-        attempts.append({
-            "attempt": attempt,
-            "instance_id": iid,
-            "marker_seen": marker_seen,
-            "launch_session_id": launch_session_id,
-        })
+            elapsed = time.time() - t0
+            if startup_no_runtime_timeout and elapsed >= startup_no_runtime_timeout:
+                try:
+                    startup_snapshot = prov.inspect(iid)
+                except Exception as exc:  # noqa: BLE001
+                    startup_snapshot = {
+                        "status": "unavailable",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "raw_provider_response_recorded": False,
+                    }
+                attempt_record["startup_no_runtime_snapshot"] = startup_snapshot
+                attempt_record["startup_no_runtime_elapsed_seconds"] = round(elapsed, 1)
+                if _provider_startup_pre_runtime(startup_snapshot):
+                    startup_no_runtime = True
+                    break
+        attempt_record["elapsed_seconds"] = round(time.time() - t0, 1)
+        attempt_record["marker_seen"] = marker_seen
         if marker_seen:
+            attempt_record["result"] = "marker_verified"
+            trace["status"] = "marker_verified"
+            _write_launch_attempt_trace(job_dir, trace)
             mode = launch.get("mode") or ("cold_create" if cold else "warm_or_cold")
             return {"status": "launched", "instance_id": iid, "mode": f"{mode}_marker_verified",
-                    "attempts": attempts}
+                    "attempts": attempts, "attempt_trace_path": str(trace_path)}
         if str(launch.get("mode") or "").startswith("warm"):
-            prov.stop(iid)
+            teardown = prov.stop(iid)
+            attempt_record["teardown"] = teardown
+            attempt_record["result"] = (
+                "startup_no_runtime_timeout_stopped"
+                if startup_no_runtime
+                else "marker_timeout_stopped"
+            )
         else:
-            prov.terminate(iid)  # flaky cold pod (billing but not running) -> kill and retry
-    return {"status": "blocked", "blockers": ["all_launch_attempts_flaky"], "attempts": attempts}
+            teardown = prov.terminate(iid)  # flaky cold pod (billing but not running) -> kill and retry
+            attempt_record["teardown"] = teardown
+            attempt_record["result"] = (
+                "startup_no_runtime_timeout_terminated"
+                if startup_no_runtime
+                else "marker_timeout_terminated"
+            )
+        trace["status"] = attempt_record["result"]
+        _write_launch_attempt_trace(job_dir, trace)
+    trace["status"] = "blocked"
+    final_blockers = ["all_launch_attempts_flaky"]
+    if any(
+        str(item.get("result") or "").startswith("startup_no_runtime_timeout")
+        for item in attempts
+    ):
+        final_blockers.append("provider_startup_no_runtime_timeout")
+    trace["blockers"] = final_blockers
+    _write_launch_attempt_trace(job_dir, trace)
+    return {
+        "status": "blocked",
+        "blockers": final_blockers,
+        "attempts": attempts,
+        "attempt_trace_path": str(trace_path),
+    }
 
 
 # ----------------------------- orchestration -----------------------------
@@ -602,12 +1105,18 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
             data = _url.urlopen(get_url, timeout=60).read()
             with _zip.ZipFile(_io.BytesIO(data)) as z:
                 names = z.namelist()
+                bootstrap_session = ""
                 if "bootstrap.json" in names:
                     try:
                         bootstrap_detail = json.loads(z.read("bootstrap.json").decode())
                         if isinstance(bootstrap_detail, dict):
                             last_phase = bootstrap_detail.get("phase")
+                            bootstrap_session = str(
+                                bootstrap_detail.get("launch_session_id") or ""
+                            ).strip()
                     except Exception:  # noqa: BLE001
+                        bootstrap_detail = {}
+                        bootstrap_session = ""
                         pass
                 if "warm_serve_ready.json" in names:
                     detail = {}
@@ -620,6 +1129,21 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
                         continue
                     return {"ready": True, "elapsed_seconds": round(_time.monotonic() - start, 1),
                             "last_phase": last_phase, "serve_detail": detail, "instance_id": instance_id}
+                if (
+                    last_phase == "runner_done"
+                    and (
+                        not expected_session
+                        or bootstrap_session == expected_session
+                    )
+                ):
+                    return {
+                        "ready": False,
+                        "reason": "runner_completed_without_warm_serve_ready",
+                        "elapsed_seconds": round(_time.monotonic() - start, 1),
+                        "last_phase": last_phase,
+                        "instance_id": instance_id,
+                        "zip_entries": sorted(names),
+                    }
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):
                 return {
@@ -645,6 +1169,7 @@ def run_isaac_g1_kitchen_parity_job(
     allow_dirty_paid_launch: bool = False, cold: bool = False,
     image: str | None = None, key_prefix: str = "blueprint/isaac-g1-parity", max_seconds: int = 1500,
     marker_timeout: int = 900, max_attempts: int = 3,
+    startup_no_runtime_timeout: int = 0,
     width: int = 1280, height: int = 960, warmup: int = 6, per_scenario_seconds: int = 420,
     container_disk_gb: int = 140, volume_gb: int = 80,
     no_collision_probe: bool = False, focus_radius: float = 0.0, keep_objects: str = "",
@@ -669,6 +1194,7 @@ def run_isaac_g1_kitchen_parity_job(
     warm_only: bool = False,
     serve: bool = False, serve_idle_timeout_s: float = 1800.0,
     serve_max_jobs: int | None = None, serve_ready_timeout: int = 1800,
+    image_startup_canary: bool = False,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan.
 
@@ -679,10 +1205,12 @@ def run_isaac_g1_kitchen_parity_job(
     is responsible for tearing it down. ``serve`` allows an empty ``scenarios`` list (jobs arrive live)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    provider_names = _provider_names(provider)
+    requested_provider_names = _provider_names(provider)
+    provider_names = list(requested_provider_names)
     manifest: dict = {"schema_version": SCHEMA_VERSION, "status": "blocked", "blockers": [],
                       "provider": ",".join(provider_names), "policy_id": policy_id,
-                      "rendered_by": "isaac_rtx_g1_kitchen_parity"}
+                      "rendered_by": "isaac_rtx_g1_kitchen_parity",
+                      "image_startup_canary": bool(image_startup_canary)}
     configured_warm_candidates = tuple(
         c.strip()
         for c in (os.getenv("BLUEPRINT_RUNPOD_WARM_CANDIDATES") or "").split(",")
@@ -701,14 +1229,7 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["blockers"].append("unknown_render_provider")
         manifest["error"] = str(exc)
         return manifest
-    prov = providers[0]
-    multi_provider_race = len(providers) > 1 and not serve
-    if multi_provider_race:
-        manifest["providers"] = [p.name for p in providers]
-        manifest["provider_available"] = [p.available() for p in providers]
-    else:
-        manifest["provider_available"] = prov.available()
-    if not scenarios and not serve:
+    if not scenarios and not serve and not image_startup_canary:
         manifest["blockers"].append("no_scenarios")
         return manifest
     manifest["scenario_ids"] = [s.get("scenario_id") or s.get("id") for s in scenarios]
@@ -724,16 +1245,83 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["status"] = "blocked"
         manifest["note"] = launch_gate["note"]
         return manifest
+    effective_provider_names, provider_policy = _apply_paid_provider_policy(
+        provider_names,
+        allow_paid=allow_paid,
+    )
+    manifest["provider_policy"] = provider_policy
+    if not effective_provider_names:
+        manifest["provider"] = ",".join(requested_provider_names)
+        manifest["blockers"].append("vast_provider_disabled_for_paid_isaac_review")
+        manifest["note"] = (
+            "Vast paid Isaac review renders are disabled by default for this lane. "
+            f"Set {ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV}=1 only for an intentional Vast experiment."
+        )
+        return manifest
+    selected_image, image_policy = _paid_worker_image_policy(
+        image=image,
+        allow_paid=allow_paid,
+        provider_names=effective_provider_names,
+        cold=cold,
+        warm_only=warm_only,
+        image_startup_canary=image_startup_canary,
+    )
+    manifest["worker_image_policy"] = image_policy
+    if image_policy.get("status") == "blocked":
+        for blocker in image_policy.get("blockers") or []:
+            if blocker not in manifest["blockers"]:
+                manifest["blockers"].append(blocker)
+        manifest["note"] = (
+            "Paid Isaac review renders require a configured, published worker image and "
+            "a startup-safe provider path. "
+            f"Set {ISAAC_WORKER_IMAGE_REF_ENV}, {ISAAC_WORKER_IMAGE_REF_FILE_ENV}, "
+            f"or {ROBOT_EVAL_WORKER_IMAGE_REF_ENV}; use "
+            f"{ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV}=true or "
+            f"{ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV}=true only for deliberate debug runs."
+        )
+        return manifest
+    if effective_provider_names != provider_names:
+        provider_names = effective_provider_names
+        manifest["provider"] = ",".join(provider_names)
+        manifest["providers"] = provider_names
+        providers = [p for p in providers if p.name in set(provider_names)]
+    prov = providers[0]
+    multi_provider_race = len(providers) > 1 and not serve
+    if multi_provider_race:
+        manifest["providers"] = [p.name for p in providers]
+        manifest["provider_available"] = [p.available() for p in providers]
+    else:
+        manifest["provider_available"] = prov.available()
     # Stage the large kitchen tree ONCE (reused across iterations); keep the code bundle tiny.
     # A caller may pass a previously-staged kitchen_url to skip the 1.2GB re-upload entirely.
+    kitchen_main_usd_relative = DEFAULT_KITCHEN_MAIN_USD
     if kitchen_url:
-        manifest["kitchen_staging"] = {"status": "reused_existing_url"}
+        layout = _inspect_kitchen_asset_url_layout(kitchen_url)
+        manifest["kitchen_layout_validation"] = layout
+        if layout.get("status") != "PASS":
+            manifest["blockers"].append("kitchen_asset_layout_validation_failed")
+            return manifest
+        kitchen_main_usd_relative = str(layout["selected_kitchen_main_usd_relative"])
+        manifest["kitchen_staging"] = {
+            "status": "reused_existing_url",
+            "selected_kitchen_main_usd_relative": kitchen_main_usd_relative,
+        }
     elif kitchen_asset_dir is not None:
+        layout = _inspect_kitchen_asset_dir_layout(kitchen_asset_dir)
+        manifest["kitchen_layout_validation"] = layout
+        if layout.get("status") != "PASS":
+            manifest["blockers"].append("kitchen_asset_layout_validation_failed")
+            return manifest
+        kitchen_main_usd_relative = str(layout["selected_kitchen_main_usd_relative"])
         kzip = out_dir / "kitchen_assets.zip"
         _zip_dir(Path(kitchen_asset_dir), kzip)
         kjob = out_dir / "kitchen_object_store"
         kstaged = stage_bundle(kzip, kjob, key_prefix=key_prefix + "/kitchen")
-        manifest["kitchen_staging"] = {"status": kstaged["status"], "zip_bytes": kzip.stat().st_size}
+        manifest["kitchen_staging"] = {
+            "status": kstaged["status"],
+            "zip_bytes": kzip.stat().st_size,
+            "selected_kitchen_main_usd_relative": kitchen_main_usd_relative,
+        }
         if kstaged["status"] != "completed":
             manifest["blockers"].append("kitchen_staging_failed")
             manifest["kitchen_staging"]["stderr_tail"] = kstaged.get("stderr_tail")
@@ -749,7 +1337,9 @@ def run_isaac_g1_kitchen_parity_job(
             v["variant_id"] for v in render_noise_audit_plan["variants"]
         ]
     bundle_zip = build_parity_bundle(scenarios=scenarios, out_dir=out_dir,
-                                     kitchen_asset_dir=None, g1_usd=g1_usd,
+                                     kitchen_asset_dir=None,
+                                     kitchen_main_usd_relative=kitchen_main_usd_relative,
+                                     g1_usd=g1_usd,
                                      policy_id=policy_id, steps=steps,
                                      render_noise_audit_plan=render_noise_audit_plan)
     manifest["bundle_zip"] = str(bundle_zip)
@@ -770,7 +1360,7 @@ def run_isaac_g1_kitchen_parity_job(
             manifest["blockers"].append("warm_inbox_presign_failed")
             return manifest
         inbox_get_url = Path(inbox["warm_inbox_get_url_file"]).read_text().strip()
-    spec = build_launch_spec(job_dir, image=image or parity_image(), policy_id=policy_id,
+    spec = build_launch_spec(job_dir, image=selected_image, policy_id=policy_id,
                              steps=steps, kitchen_url=kitchen_url, width=width, height=height,
                              container_disk_gb=container_disk_gb, volume_gb=volume_gb,
                              serve=serve, inbox_get_url=inbox_get_url,
@@ -795,7 +1385,8 @@ def run_isaac_g1_kitchen_parity_job(
                              audit_warmup_frames=audit_warmup_frames,
                              audit_boost_light_intensity=audit_boost_light_intensity,
                              vast_max_hourly_rate_usd=vast_max_hourly_rate_usd,
-                             gemini_api_key=_gemini_api_key_from_env())
+                             gemini_api_key=_gemini_api_key_from_env(),
+                             image_startup_canary=image_startup_canary)
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
                                         "policy_id": policy_id, "steps": steps,
@@ -811,7 +1402,8 @@ def run_isaac_g1_kitchen_parity_job(
                                         ),
                                         "robot_review_material_override": bool(
                                             robot_review_material_override
-                                        )}
+                                        ),
+                                        "image_startup_canary": bool(image_startup_canary)}
     if not allow_paid:
         manifest["status"] = "prepared"
         manifest["note"] = f"bundled + staged + launchable on {prov.name}; re-run with allow_paid=True to spend GPU"
@@ -906,7 +1498,8 @@ def run_isaac_g1_kitchen_parity_job(
         launch = launch_with_marker_retry(prov, job_dir, request_body,
                                           marker_timeout=marker_timeout, max_attempts=max_attempts,
                                           cold=cold,
-                                          allow_cold_fallback=not warm_only)
+                                          allow_cold_fallback=not warm_only,
+                                          startup_no_runtime_timeout=startup_no_runtime_timeout)
         manifest["launch"] = launch
     if launch.get("status") != "launched":
         for blocker in launch.get("blockers") or []:
@@ -930,6 +1523,16 @@ def run_isaac_g1_kitchen_parity_job(
         if ready.get("ready"):
             manifest["status"] = "serving"
         else:
+            try:
+                teardown = prov.terminate(launch["instance_id"])
+            except Exception as exc:  # noqa: BLE001 - preserve cleanup failure in the manifest
+                teardown = {
+                    "status": "error",
+                    "operation": "terminate_not_ready_warm_serve_pod",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            manifest["warm_serve"]["not_ready_teardown"] = teardown
             manifest["blockers"].append("warm_serve_not_ready")
         return manifest
     render_out = out_dir / "render_output"
@@ -989,7 +1592,10 @@ def run_isaac_g1_kitchen_parity_job(
     runner_completed = not bool(result.get("timed_out_without_runner_done"))
     manifest["runner_completed"] = runner_completed
     manifest["parity_result_status"] = parity_status or None
-    if parity_status == "completed":
+    if parity_status == "completed" and image_startup_canary:
+        manifest["image_startup_canary_result"] = parity_result
+        manifest["status"] = "completed"
+    elif parity_status == "completed":
         manifest["harness"] = build_harness_package(result=parity_result, render_out_dir=render_out,
                                                     out_dir=out_dir)
         manifest["status"] = "completed"
@@ -1021,7 +1627,10 @@ def main(argv=None) -> int:
                     choices=["blueprint_default_walk_to_target_smoke_policy", "groot_sonic"])
     ap.add_argument("--steps", type=int, default=64)
     ap.add_argument("--provider", default="runpod",
-                    help="provider name, or comma-separated race list such as runpod,vast")
+                    help=(
+                        "provider name. RunPod is the paid default; Vast is disabled for paid "
+                        f"Isaac review renders unless {ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV}=1"
+                    ))
     ap.add_argument("--allow-paid", action="store_true")
     ap.add_argument(
         "--allow-dirty-paid-launch",
@@ -1046,6 +1655,40 @@ def main(argv=None) -> int:
         action="store_true",
         help="try warm candidates only; block instead of creating a cold pod if warm restart fails",
     )
+    ap.add_argument(
+        "--serve",
+        action="store_true",
+        help=(
+            "launch one persistent warm Isaac render worker, wait for warm_serve_ready, "
+            "and leave the pod running for WarmPoolClient job submissions"
+        ),
+    )
+    ap.add_argument(
+        "--serve-idle-timeout",
+        type=float,
+        default=1800.0,
+        help="seconds the warm serve worker may sit idle before exiting",
+    )
+    ap.add_argument(
+        "--serve-max-jobs",
+        type=int,
+        default=None,
+        help="optional maximum number of warm jobs to serve before exiting",
+    )
+    ap.add_argument(
+        "--serve-ready-timeout",
+        type=int,
+        default=1800,
+        help="seconds to wait for warm_serve_ready.json before marking the serve launch blocked",
+    )
+    ap.add_argument(
+        "--image-startup-canary",
+        action="store_true",
+        help=(
+            "run only a provider image startup/upload canary. This proves user command "
+            "execution in the selected image, not Isaac rendering, WAM quality, or task success."
+        ),
+    )
     ap.add_argument("--image", default=None)
     ap.add_argument("--max-seconds", type=int, default=1500)
     ap.add_argument("--container-disk-gb", type=int, default=140,
@@ -1055,6 +1698,15 @@ def main(argv=None) -> int:
     ap.add_argument("--marker-timeout", type=int, default=900,
                     help="seconds to wait for a pod's boot marker before reaping it as a dud "
                          "(must exceed the worker image pull time on a slow node)")
+    ap.add_argument(
+        "--startup-no-runtime-timeout",
+        type=int,
+        default=0,
+        help=(
+            "optional earlier RunPod guard: if provider inspection still shows no runtime/public IP "
+            "and no bootstrap marker after this many seconds, terminate the pod before marker-timeout"
+        ),
+    )
     ap.add_argument("--max-attempts", type=int, default=3,
                     help="cold-launch attempts before giving up")
     ap.add_argument("--vast-max-hourly-rate", type=float, default=None,
@@ -1119,7 +1771,13 @@ def main(argv=None) -> int:
         container_disk_gb=args.container_disk_gb, volume_gb=args.volume_gb,
         warm_candidates=tuple(args.warm_candidate or ()),
         warm_only=args.warm_only,
+        serve=args.serve,
+        serve_idle_timeout_s=args.serve_idle_timeout,
+        serve_max_jobs=args.serve_max_jobs,
+        serve_ready_timeout=args.serve_ready_timeout,
+        image_startup_canary=args.image_startup_canary,
         marker_timeout=args.marker_timeout, max_attempts=args.max_attempts,
+        startup_no_runtime_timeout=args.startup_no_runtime_timeout,
         vast_max_hourly_rate_usd=args.vast_max_hourly_rate,
         articulated=args.articulated, cheap_collision=args.cheap_collision,
         physics_articulation_drive=args.physics_articulation_drive,
@@ -1139,8 +1797,9 @@ def main(argv=None) -> int:
         audit_high_spp=args.audit_high_spp,
         audit_warmup_frames=args.audit_warmup_frames,
         audit_boost_light_intensity=args.audit_boost_light_intensity)
+    _write_job_manifest(args.out_dir, m)
     print(json.dumps(m, indent=2, default=str))
-    return 0 if m.get("status") in ("completed", "prepared") else 1
+    return 0 if m.get("status") in ("completed", "prepared", "serving") else 1
 
 
 if __name__ == "__main__":

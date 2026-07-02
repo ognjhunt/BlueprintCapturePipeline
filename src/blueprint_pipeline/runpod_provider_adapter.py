@@ -899,6 +899,7 @@ def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
         env["BLUEPRINT_ALLOW_GPU_PROVISIONING"] = "true"
     if _env_truthy("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"):
         env["BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"] = "true"
+    simulator_image_env = ""
     if image_ref:
         env[GENERIC_WORKER_IMAGE_REF_ENV] = image_ref
         simulator_image_env = WORKER_IMAGE_REF_ENV_BY_SIMULATOR.get(simulator)
@@ -1031,8 +1032,19 @@ def _image_startup_canary_command() -> str:
 OUT_DIR="${BLUEPRINT_CANARY_OUTPUT_DIR:-/workspace/blueprint_canary_output}"
 mkdir -p "$OUT_DIR"
 PYTHON_BIN="${BLUEPRINT_CANARY_PYTHON:-/isaac-sim/python.sh}"
-if [ ! -x "$PYTHON_BIN" ]; then
+if [ -z "${BLUEPRINT_CANARY_PYTHON:-}" ]; then
   PYTHON_BIN="$(command -v python3 || command -v python || true)"
+  if [ -z "$PYTHON_BIN" ] && [ -x /isaac-sim/python.sh ]; then
+    PYTHON_BIN="/isaac-sim/python.sh"
+  fi
+elif [ ! -x "$PYTHON_BIN" ]; then
+  RESOLVED_PYTHON_BIN="$(command -v "$PYTHON_BIN" || true)"
+  if [ -n "$RESOLVED_PYTHON_BIN" ]; then
+    PYTHON_BIN="$RESOLVED_PYTHON_BIN"
+  else
+    echo "blueprint canary blocked: BLUEPRINT_CANARY_PYTHON is not executable: $PYTHON_BIN" >&2
+    exit 127
+  fi
 fi
 if [ -z "$PYTHON_BIN" ]; then
   echo "blueprint canary blocked: no python runtime" >&2
@@ -1044,6 +1056,7 @@ import os
 import platform
 import shutil
 import socket
+import sys
 import time
 import urllib.request
 import zipfile
@@ -1058,7 +1071,10 @@ payload = {
     "status": "container_started",
     "job_id": os.environ.get("BLUEPRINT_ROBOT_EVAL_JOB_ID"),
     "hostname": socket.gethostname(),
-    "python_executable": os.environ.get("BLUEPRINT_CANARY_PYTHON") or "/isaac-sim/python.sh",
+    "python_executable": sys.executable,
+    "python_selection": "explicit_BLUEPRINT_CANARY_PYTHON"
+    if os.environ.get("BLUEPRINT_CANARY_PYTHON")
+    else "python3_or_python_before_isaac_python",
     "platform": platform.platform(),
     "image_ref": os.environ.get("BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF")
     or os.environ.get("BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF"),

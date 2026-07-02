@@ -23,6 +23,9 @@ from .wam_auxiliary_observation import build_wam_auxiliary_observation_manifest
 SCHEMA_VERSION = "kitchen_task_scaling_preflight.v1"
 LOCAL_PREFLIGHT_GATE_SET_VERSION = "kitchen_task_scaling_local_gates.v1"
 POLICY_OBSERVATION_EXPORT_SCHEMA_VERSION = "kitchen_task_policy_observation_export.v1"
+POLICY_OBSERVATION_EXPORT_INDEX_SCHEMA_VERSION = (
+    "kitchen_task_policy_observation_export_index.v1"
+)
 MIN_FULL_KITCHEN_OBJECT_COUNT = 20
 RUNNER_RELATIVE = "scripts/run_isaac_g1_kitchen_parity_eval.py"
 UNITREE_G1_SONIC_STATE_DIMS = {
@@ -949,7 +952,6 @@ def export_policy_observation_from_preflight(
             blockers.append(f"{label}_missing")
     summary = _read_json(summary_path) if summary_path.is_file() else {}
     stance_plan = _read_json(stance_path) if stance_path.is_file() else {}
-    placement = _read_json(placement_path) if placement_path.is_file() else {}
     geometry = _read_json(geometry_path) if geometry_path.is_file() else {}
     wam_seed_eligibility = _wam_seed_eligibility_from_summary(summary)
     bridge_readiness = _bridge_readiness_from_geometry(geometry) if geometry else {
@@ -1149,6 +1151,100 @@ def export_policy_observation_from_preflight(
     return export_manifest
 
 
+def export_all_policy_observations_from_preflight(
+    *,
+    preflight_manifest_path: str | Path,
+    out_dir: str | Path | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Export every task in a preflight manifest and write a compact task index."""
+    generated = generated_at or utc_now_iso()
+    manifest_path = Path(preflight_manifest_path).expanduser().resolve()
+    manifest = _read_json(manifest_path)
+    export_base = (
+        Path(out_dir).expanduser().resolve()
+        if out_dir
+        else (manifest_path.parent / "wam_seed").resolve()
+    )
+    tasks: list[dict[str, Any]] = []
+    for task_report in manifest.get("tasks") or []:
+        if not isinstance(task_report, Mapping):
+            continue
+        task_id = str(task_report.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        task_export = export_policy_observation_from_preflight(
+            preflight_manifest_path=manifest_path,
+            task_id=task_id,
+            out_dir=export_base / task_id,
+            generated_at=generated,
+        )
+        tasks.append(
+            {
+                "task_id": task_id,
+                "status": task_export.get("status"),
+                "task_status": task_export.get("task_status"),
+                "target_object_id": task_export.get("target_object_id"),
+                "policy_observation_path": task_export.get("policy_observation_path"),
+                "export_manifest_path": str(
+                    export_base / task_id / "kitchen_task_policy_observation_export_manifest.json"
+                ),
+                "wam_seed_eligibility": task_export.get("wam_seed_eligibility"),
+                "action_projection_bridge_readiness": task_export.get(
+                    "action_projection_bridge_readiness"
+                ),
+                "next_step": task_export.get("next_step"),
+                "blockers": task_export.get("blockers", []),
+            }
+        )
+    blockers: list[str] = []
+    if not tasks:
+        blockers.append("no_tasks_available_for_policy_observation_export")
+    if any(task.get("status") != "completed" for task in tasks):
+        blockers.append("one_or_more_policy_observation_exports_blocked")
+    index = {
+        "schema_version": POLICY_OBSERVATION_EXPORT_INDEX_SCHEMA_VERSION,
+        "status": "completed" if not blockers else "blocked",
+        "generated_at": generated,
+        "preflight_manifest_path": str(manifest_path),
+        "export_base_dir": str(export_base),
+        "tasks": tasks,
+        "blockers": sorted(set(blockers)),
+        "all_action_projection_bridges_ready": bool(tasks)
+        and all(
+            (
+                (task.get("action_projection_bridge_readiness") or {}).get("status")
+                == "ready"
+            )
+            for task in tasks
+        ),
+        "all_wam_seed_frames_review_quality_eligible": bool(tasks)
+        and all(
+            ((task.get("wam_seed_eligibility") or {}).get("status") == "eligible")
+            for task in tasks
+        ),
+        "next_step": (
+            "render_review_quality_isaac_rgb_policy_observations_before_wam"
+            if tasks
+            and any(
+                ((task.get("wam_seed_eligibility") or {}).get("status") != "eligible")
+                for task in tasks
+            )
+            else "run_source_policy_observation_visual_qa_before_bounded_wam_short_visual_sanity"
+            if tasks
+            else "fix_preflight_manifest_before_export"
+        ),
+        "claim_boundary": (
+            "This index summarizes policy-observation seed exports from a local "
+            "preflight manifest. It does not prove review-quality RGB, WAM success, "
+            "SAM3/DA3 completion, manipulation success, ranking safety, deployment "
+            "approval, or physical robot readiness."
+        ),
+    }
+    _write_json(export_base / "kitchen_task_policy_observation_export_index.json", index)
+    return index
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run local no-spend kitchen task-scaling preflight")
     parser.add_argument("--out-dir", default=None)
@@ -1171,6 +1267,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="task id to export when --export-policy-observation-from-manifest is provided",
     )
     parser.add_argument(
+        "--export-all-tasks",
+        action="store_true",
+        help="export every task in --export-policy-observation-from-manifest",
+    )
+    parser.add_argument(
         "--export-out-dir",
         default=None,
         help="optional output directory for exported policy-observation artifacts",
@@ -1181,6 +1282,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     if args.export_policy_observation_from_manifest:
+        if args.export_all_tasks:
+            export_index = export_all_policy_observations_from_preflight(
+                preflight_manifest_path=args.export_policy_observation_from_manifest,
+                out_dir=args.export_out_dir,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": export_index.get("status"),
+                        "export_index_path": str(
+                            (
+                                Path(args.export_out_dir).expanduser().resolve()
+                                if args.export_out_dir
+                                else Path(args.export_policy_observation_from_manifest)
+                                .expanduser()
+                                .resolve()
+                                .parent
+                                / "wam_seed"
+                            )
+                            / "kitchen_task_policy_observation_export_index.json"
+                        ),
+                        "task_count": len(export_index.get("tasks") or []),
+                    }
+                )
+            )
+            return 0 if export_index.get("status") == "completed" else 1
         if not args.export_task:
             raise SystemExit("--export-task is required with --export-policy-observation-from-manifest")
         export_manifest = export_policy_observation_from_preflight(

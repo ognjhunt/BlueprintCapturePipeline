@@ -30,6 +30,34 @@ def test_runner_imports_without_isaacsim() -> None:
     assert hasattr(M, "run_scenarios") and hasattr(M, "parse_scenarios")
 
 
+def test_resolve_existing_kitchen_usd_accepts_root_zip_layout(tmp_path: Path) -> None:
+    kitchen_root = tmp_path / "bundle" / "kitchen"
+    kitchen_root.mkdir(parents=True)
+    root_usd = kitchen_root / "KitchenRoom.usd"
+    root_usd.write_text("#usda root", encoding="utf-8")
+    requested = kitchen_root / "Collected_KitchenRoom" / "KitchenRoom.usd"
+
+    resolved, detail = M._resolve_existing_kitchen_usd(str(requested))
+
+    assert resolved == str(root_usd)
+    assert detail["requested_exists"] is False
+    assert detail["resolved_from_existing_candidate"] is True
+    assert str(root_usd) in detail["existing_candidate_paths"]
+
+
+def test_resolve_existing_kitchen_usd_keeps_collected_layout_when_present(tmp_path: Path) -> None:
+    kitchen_root = tmp_path / "bundle" / "kitchen"
+    collected_usd = kitchen_root / "Collected_KitchenRoom" / "KitchenRoom.usd"
+    collected_usd.parent.mkdir(parents=True)
+    collected_usd.write_text("#usda collected", encoding="utf-8")
+
+    resolved, detail = M._resolve_existing_kitchen_usd(str(collected_usd))
+
+    assert resolved == str(collected_usd)
+    assert detail["requested_exists"] is True
+    assert detail["resolved_from_existing_candidate"] is False
+
+
 def test_runner_writes_result_before_simulation_app_close() -> None:
     source = _RUNNER.read_text()
 
@@ -136,6 +164,41 @@ def test_bind_g1_visual_fallback_preserves_articulation_candidate_when_visual_mi
         "resolved:missing.usd",
         "resolved:physics.usd",
     ]
+
+
+def test_open_stage_waits_for_async_context_stage(monkeypatch) -> None:
+    stage = object()
+    state = {"updates": 0, "opened": None}
+
+    class _Context:
+        def open_stage(self, path):
+            state["opened"] = path
+            return True
+
+        def get_stage(self):
+            return stage if state["updates"] >= 2 else None
+
+    class _App:
+        def update(self):
+            state["updates"] += 1
+
+    omni_mod = types.ModuleType("omni")
+    usd_mod = types.ModuleType("omni.usd")
+    usd_mod.get_context = lambda: _Context()
+    kit_mod = types.ModuleType("omni.kit")
+    app_mod = types.ModuleType("omni.kit.app")
+    app_mod.get_app = lambda: _App()
+    omni_mod.usd = usd_mod
+    omni_mod.kit = kit_mod
+    kit_mod.app = app_mod
+    monkeypatch.setitem(sys.modules, "omni", omni_mod)
+    monkeypatch.setitem(sys.modules, "omni.usd", usd_mod)
+    monkeypatch.setitem(sys.modules, "omni.kit", kit_mod)
+    monkeypatch.setitem(sys.modules, "omni.kit.app", app_mod)
+
+    assert M._open_stage("/workspace/kitchen.usd", timeout_s=1.0) is stage
+    assert state["opened"] == "/workspace/kitchen.usd"
+    assert state["updates"] == 2
 
 
 def test_manipulation_cam_is_egocentric_vs_follow_chase() -> None:

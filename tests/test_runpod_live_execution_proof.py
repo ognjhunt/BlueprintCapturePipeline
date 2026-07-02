@@ -227,6 +227,79 @@ def test_runpod_live_execution_proof_stops_on_startup_artifact_timeout(
     assert "secret-runpod-key" not in persisted
 
 
+def test_runpod_live_execution_proof_can_terminate_on_startup_artifact_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _provider_launch_request(tmp_path / "gpu_provider_launch_request.json")
+    adapter_result = tmp_path / "runpod_provider_adapter_result.live.json"
+    _write_json(
+        adapter_result,
+        {
+            "schema_version": "runpod_provider_adapter_result.v1",
+            "status": "submitted",
+            "mode": "image-startup-canary-pod",
+            "job_id": "runpod-proof-job",
+            "api_call_performed": True,
+            "provider_job_submitted": True,
+            "runpod_response": {"id": "pod-123"},
+        },
+    )
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_GPU_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+    calls: list[dict[str, str]] = []
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self) -> bytes:
+            return self.body
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        calls.append({"url": request.full_url, "method": request.get_method()})
+        if request.full_url.endswith("/pods/pod-123") and request.get_method() == "DELETE":
+            return FakeResponse(b'{"id":"pod-123","desiredStatus":"TERMINATED"}')
+        if len([call for call in calls if call["url"].endswith("/pods")]) == 1:
+            return FakeResponse(b'[{"id":"pod-123","desiredStatus":"RUNNING"}]')
+        return FakeResponse(b"[]")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = collect_runpod_live_execution_proof(
+        provider_launch_request_path=request_path,
+        adapter_result_path=adapter_result,
+        runtime_output_zip_path=tmp_path / "missing-runtime-output.zip",
+        output_path=tmp_path / "runpod_live_execution_proof.json",
+        startup_artifact_timeout_seconds=0,
+        poll_interval_seconds=0,
+        stop_on_startup_artifact_timeout=True,
+        terminate_pod=True,
+        allow_runpod_api_call=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["pod_stop_performed"] is False
+    assert result["pod_terminate_performed"] is True
+    assert result["teardown_action"] == "terminate"
+    assert result["teardown_http_method"] == "DELETE"
+    assert result["shutdown_or_termination_proof"] is True
+    assert calls == [
+        {"url": "https://rest.runpod.io/v1/pods", "method": "GET"},
+        {"url": "https://rest.runpod.io/v1/pods/pod-123", "method": "DELETE"},
+        {"url": "https://rest.runpod.io/v1/pods", "method": "GET"},
+    ]
+
+
 def test_runpod_live_execution_proof_labels_fresh_large_image_timeout(
     tmp_path: Path,
     monkeypatch,
@@ -337,6 +410,48 @@ def test_runpod_live_execution_proof_rejects_empty_runtime_output_zip(
     assert result["runtime_output_zip_valid"] is False
     assert result["runtime_output_zip_entry_count"] == 0
     assert result["runtime_output_zip_error"] == "runtime_output_zip_empty"
+
+
+def test_runpod_live_execution_proof_rejects_zero_byte_runtime_output_zip(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _provider_launch_request(tmp_path / "gpu_provider_launch_request.json")
+    output_zip = tmp_path / "zero-byte-runtime-output.zip"
+    output_zip.write_bytes(b"")
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_GPU_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self) -> bytes:
+            return b"[]"
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda _request, timeout: FakeResponse())
+
+    result = collect_runpod_live_execution_proof(
+        provider_launch_request_path=request_path,
+        runtime_output_zip_path=output_zip,
+        output_path=tmp_path / "runpod_live_execution_proof.zero_byte_zip.json",
+        startup_artifact_timeout_seconds=0,
+        poll_interval_seconds=0,
+        allow_runpod_api_call=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert "provider_pod_startup_or_image_pull_timeout" in result["blockers"]
+    assert result["runtime_output_zip_present"] is False
+    assert result["runtime_output_zip_valid"] is False
+    assert result["runtime_output_zip_size_bytes"] == 0
+    assert result["runtime_output_zip_error"] == "runtime_output_zip_zero_bytes"
 
 
 def test_runpod_live_execution_proof_combines_runtime_manifest_for_production_proof(

@@ -382,6 +382,24 @@ def test_runpod_adapter_blocks_unfetchable_worker_image_ref(
     assert "prebuilt_worker_image_ref_not_provider_fetchable" in result["blockers"]
 
 
+def test_runpod_adapter_blocks_missing_worker_image_without_internal_error(
+    tmp_path: Path,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["provider_request_shape"]["image"]["configured_image_ref"] = ""  # type: ignore[index]
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="on-demand-pod",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "runpod_request_not_launchable"
+    assert "missing_provider_worker_image_ref" in result["blockers"]
+
+
 def test_runpod_adapter_blocks_missing_or_unfetchable_capture_bundle_uri(
     tmp_path: Path,
 ) -> None:
@@ -1476,8 +1494,16 @@ def test_runpod_adapter_builds_image_startup_canary_request(
     assert body["dockerEntrypoint"] == ["bash"]
     assert body["dockerStartCmd"][0] == "-lc"
     assert "runpod_image_startup_canary.v1" in body["dockerStartCmd"][1]
+    assert 'PYTHON_BIN="$(command -v python3 || command -v python || true)"' in body[
+        "dockerStartCmd"
+    ][1]
+    assert 'PYTHON_BIN="/isaac-sim/python.sh"' in body["dockerStartCmd"][1]
+    assert 'RESOLVED_PYTHON_BIN="$(command -v "$PYTHON_BIN" || true)"' in body[
+        "dockerStartCmd"
+    ][1]
     assert '"python3_path": shutil.which("python3")' in body["dockerStartCmd"][1]
     assert '"curl_path": shutil.which("curl")' in body["dockerStartCmd"][1]
+    assert '"python_executable": sys.executable' in body["dockerStartCmd"][1]
     assert body["env"]["BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY"] == "true"
     assert body["env"]["BLUEPRINT_CANARY_POST_UPLOAD_SLEEP_SECONDS"] == "300"
     assert body["env"]["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"] == (

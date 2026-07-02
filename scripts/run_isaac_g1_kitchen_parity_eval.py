@@ -2745,11 +2745,80 @@ def _disable_physics_cooking() -> None:
         pass
 
 
-def _open_stage(usd_path: str):
+def _open_stage(usd_path: str, *, timeout_s: float = 90.0):
     import omni.usd  # type: ignore
     ctx = omni.usd.get_context()
-    ctx.open_stage(usd_path)
-    return ctx.get_stage()
+    open_result = ctx.open_stage(usd_path)
+    stage = ctx.get_stage()
+    if stage is not None:
+        return stage
+    deadline = time.monotonic() + float(timeout_s)
+    updates = 0
+    last_update_error = None
+    while time.monotonic() < deadline:
+        try:
+            import omni.kit.app  # type: ignore
+            omni.kit.app.get_app().update()
+            updates += 1
+        except Exception as exc:  # noqa: BLE001
+            last_update_error = repr(exc)
+            time.sleep(0.1)
+        stage = ctx.get_stage()
+        if stage is not None:
+            return stage
+    raise RuntimeError(
+        "isaac_stage_open_failed:"
+        f"path={usd_path}:open_result={open_result!r}:updates={updates}:"
+        f"last_update_error={last_update_error}"
+    )
+
+
+def _kitchen_usd_resolution_candidates(kitchen_usd: str) -> list[Path]:
+    """Return local KitchenRoom.usd candidates for both supported extracted zip layouts."""
+    raw = str(kitchen_usd or "").strip()
+    if not raw or "://" in raw or raw.startswith("omniverse:"):
+        return []
+    path = Path(raw)
+    candidates: list[Path] = []
+
+    def add(candidate: Path) -> None:
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    if path.is_absolute():
+        add(path)
+        parts = path.parts
+        if "kitchen" in parts:
+            root = Path(*parts[: parts.index("kitchen") + 1])
+            add(root / "KitchenRoom.usd")
+            add(root / "Collected_KitchenRoom" / "KitchenRoom.usd")
+            try:
+                for found in sorted(root.rglob("KitchenRoom.usd"), key=lambda p: (len(p.parts), str(p))):
+                    add(found)
+            except OSError:
+                pass
+    return candidates
+
+
+def _resolve_existing_kitchen_usd(kitchen_usd: str) -> tuple[str, dict[str, Any]]:
+    """Resolve the actual extracted kitchen USD path without assuming one zip root layout."""
+    raw = str(kitchen_usd or "").strip()
+    candidates = _kitchen_usd_resolution_candidates(raw)
+    existing = next((p for p in candidates if p.is_file()), None)
+    resolved = str(existing) if existing is not None else raw
+    return resolved, {
+        "schema_version": "kitchen_usd_resolution.v1",
+        "requested_kitchen_usd": raw,
+        "resolved_kitchen_usd": resolved,
+        "resolved_from_existing_candidate": existing is not None and resolved != raw,
+        "requested_exists": Path(raw).is_file() if raw and "://" not in raw and not raw.startswith("omniverse:") else None,
+        "candidate_paths": [str(p) for p in candidates],
+        "existing_candidate_paths": [str(p) for p in candidates if p.is_file()],
+        "claim_boundary": (
+            "Kitchen USD resolution only records which extracted local USD path the Isaac worker "
+            "opened. It does not validate rendered quality, task success, or physical readiness."
+        ),
+    }
 
 
 def _task_description_for_scenario(scenario: Mapping[str, Any]) -> str:
@@ -8288,6 +8357,14 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
     if author_target_contact_material and not physics_articulation_drive:
         blockers.append("target_contact_material_requires_physics_articulation_drive")
     try:
+        kitchen_usd, kitchen_resolution = _resolve_existing_kitchen_usd(kitchen_usd)
+        try:
+            (out_dir / "kitchen_usd_resolution.json").write_text(
+                json.dumps(kitchen_resolution, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:  # noqa: BLE001
+            pass
         _log(f"opening kitchen USD: {kitchen_usd}")
         stage = _open_stage(_resolve_asset_uri(kitchen_usd))
         if cheap_collision:

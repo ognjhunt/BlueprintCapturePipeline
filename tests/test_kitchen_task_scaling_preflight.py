@@ -5,6 +5,7 @@ from pathlib import Path
 
 from blueprint_pipeline.kitchen_task_scaling_preflight import (
     affordance_object_id_candidates_for_task,
+    export_all_policy_observations_from_preflight,
     build_request,
     default_task_specs,
     evaluate_local_task_gates,
@@ -442,6 +443,73 @@ def test_export_policy_observation_marks_dry_render_preview_not_wam_eligible(
         "wam_seed_eligibility"
     ]["blockers"]
     assert export["next_step"] == "render_review_quality_isaac_rgb_policy_observation_before_wam"
+
+
+def test_export_all_policy_observations_writes_task_index(tmp_path: Path) -> None:
+    task_dir = _passing_task_dir(tmp_path)
+    report = evaluate_local_task_gates(
+        task_spec=default_task_specs()[0],
+        task_dir=task_dir,
+        min_scene_objects=20,
+    )
+    manifest_path = tmp_path / "kitchen_task_scaling_preflight_manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "schema_version": "kitchen_task_scaling_preflight.v1",
+            "status": "passed_local_preflight",
+            "tasks": [report],
+        },
+    )
+
+    index = export_all_policy_observations_from_preflight(
+        preflight_manifest_path=manifest_path,
+        generated_at="now",
+    )
+
+    assert index["status"] == "completed"
+    assert index["tasks"][0]["task_id"] == "sink_faucet"
+    assert index["tasks"][0]["action_projection_bridge_readiness"]["status"] == "ready"
+    assert index["all_action_projection_bridges_ready"] is True
+    assert index["all_wam_seed_frames_review_quality_eligible"] is True
+    assert (tmp_path / "wam_seed" / "sink_faucet" / "initial_policy_observation.json").is_file()
+    assert (tmp_path / "wam_seed" / "kitchen_task_policy_observation_export_index.json").is_file()
+
+
+def test_export_all_policy_observations_indexes_dry_seed_rgb_blocker(tmp_path: Path) -> None:
+    task_dir = _passing_task_dir(tmp_path)
+    summary_path = task_dir / "dry_render_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["render_source"] = "dry_render_preview"
+    summary["render_provenance"] = {
+        "render_source_note": "NOT a rendered frame: CPU-only dry-render preview."
+    }
+    _write_json(summary_path, summary)
+    report = evaluate_local_task_gates(
+        task_spec=default_task_specs()[0],
+        task_dir=task_dir,
+        min_scene_objects=20,
+    )
+    manifest_path = tmp_path / "kitchen_task_scaling_preflight_manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "schema_version": "kitchen_task_scaling_preflight.v1",
+            "status": "passed_local_preflight",
+            "tasks": [report],
+        },
+    )
+
+    index = export_all_policy_observations_from_preflight(
+        preflight_manifest_path=manifest_path,
+        generated_at="now",
+    )
+
+    assert index["status"] == "completed"
+    assert index["all_action_projection_bridges_ready"] is True
+    assert index["all_wam_seed_frames_review_quality_eligible"] is False
+    assert index["next_step"] == "render_review_quality_isaac_rgb_policy_observations_before_wam"
+    assert index["tasks"][0]["wam_seed_eligibility"]["status"] == "blocked"
 
 
 def test_build_request_keeps_targets_deferred_to_scene_semantics(tmp_path: Path) -> None:

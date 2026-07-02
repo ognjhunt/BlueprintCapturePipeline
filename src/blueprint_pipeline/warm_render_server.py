@@ -18,7 +18,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 
 class PresignedUrlAccessError(RuntimeError):
@@ -364,3 +364,156 @@ class WarmPoolClient:
                 pass
             sleep(interval_s)
         return None
+
+
+def _safe_request_id(value: str, *, fallback: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in value)
+    cleaned = "_".join(part for part in cleaned.split("_") if part)
+    return cleaned or fallback
+
+
+def _load_scenarios(path: str | Path) -> list[dict[str, Any]]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(payload, Mapping):
+        payload = payload.get("scenarios", [])
+    if not isinstance(payload, list):
+        raise ValueError("scenarios_must_be_list_or_mapping_with_scenarios")
+    return [dict(item) for item in payload if isinstance(item, Mapping)]
+
+
+def _warm_serve_url_files_from_manifest(manifest_path: str | Path) -> tuple[Path, Path]:
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    warm_serve = manifest.get("warm_serve") if isinstance(manifest, Mapping) else None
+    if not isinstance(warm_serve, Mapping):
+        raise ValueError("manifest_missing_warm_serve")
+    inbox_put = str(warm_serve.get("inbox_put_url_file") or "").strip()
+    output_get = str(warm_serve.get("output_get_url_file") or "").strip()
+    if not inbox_put or not output_get:
+        raise ValueError("manifest_missing_warm_serve_url_files")
+    return Path(inbox_put), Path(output_get)
+
+
+def submit_warm_render_batch(
+    *,
+    manifest_path: str | Path,
+    scenarios_path: str | Path,
+    out_dir: str | Path,
+    timeout_s: float = 900.0,
+    interval_s: float = 5.0,
+    stop_after: bool = False,
+    session_nonce: str | None = None,
+    http_put: Callable[[str, bytes], None] = _http_put_bytes,
+    http_get: Callable[[str], bytes] = _http_get_bytes,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Submit multiple scenarios through one warm-pool client session.
+
+    The sequence number is intentionally kept in one client instance for the whole batch. Creating a
+    new client per task would reset ``seq`` to 1, and the pod-side ``SignedUrlJobSource`` would ignore
+    later jobs as stale.
+    """
+    inbox_put_file, output_get_file = _warm_serve_url_files_from_manifest(manifest_path)
+    inbox_put_url = inbox_put_file.read_text(encoding="utf-8").strip()
+    output_get_url = output_get_file.read_text(encoding="utf-8").strip()
+    scenarios = _load_scenarios(scenarios_path)
+    resolved_out = Path(out_dir)
+    resolved_out.mkdir(parents=True, exist_ok=True)
+    client = WarmPoolClient(
+        inbox_put_url,
+        output_get_url,
+        http_put=http_put,
+        http_get=http_get,
+        session_nonce=session_nonce,
+    )
+    records: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    try:
+        for index, scenario in enumerate(scenarios, start=1):
+            raw_id = str(
+                scenario.get("scenario_id")
+                or scenario.get("id")
+                or scenario.get("task_id")
+                or f"job-{index}"
+            )
+            request_id = _safe_request_id(raw_id, fallback=f"job-{index}")
+            submitted = client.submit(scenario, request_id=request_id)
+            result = client.poll_result(
+                submitted,
+                timeout_s=timeout_s,
+                interval_s=interval_s,
+                clock=clock,
+                sleep=sleep,
+            )
+            record = {
+                "request_id": submitted,
+                "scenario_id": scenario.get("scenario_id") or scenario.get("id"),
+                "result_collected": result is not None,
+                "result": result,
+            }
+            if result is None:
+                record["blocker"] = "warm_render_result_timeout"
+                blockers.append("warm_render_result_timeout")
+            else:
+                (resolved_out / f"{submitted}.json").write_text(
+                    json.dumps(result, indent=2),
+                    encoding="utf-8",
+                )
+            records.append(record)
+    except PresignedUrlAccessError as exc:
+        blockers.append(exc.classification)
+        records.append({
+            "request_id": None,
+            "result_collected": False,
+            "blocker": exc.classification,
+            "operation": exc.operation,
+            "http_status": exc.status_code,
+        })
+    finally:
+        if stop_after:
+            try:
+                client.submit_stop()
+            except Exception as exc:  # noqa: BLE001
+                blockers.append(f"warm_stop_submit_failed:{type(exc).__name__}")
+    summary = {
+        "schema_version": "warm_render_batch_client.v1",
+        "status": "completed" if not blockers else "blocked",
+        "scenario_count": len(scenarios),
+        "results_collected": sum(1 for item in records if item.get("result_collected")),
+        "blockers": sorted(set(blockers)),
+        "session_nonce": client.session_nonce,
+        "records": records,
+        "raw_url_values_recorded": False,
+        "proof_boundary": (
+            "Warm render batch transport only. This proves job submission/result collection "
+            "from a serving pod, not Isaac render quality, WAM quality, task success, or robot readiness."
+        ),
+    }
+    (resolved_out / "warm_render_batch_results.json").write_text(
+        json.dumps(summary, indent=2),
+        encoding="utf-8",
+    )
+    return summary
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Submit a batch of scenarios to an Isaac warm serve pod")
+    parser.add_argument("--manifest", required=True, help="isaac_g1_kitchen_parity_job_manifest.json with warm_serve URL files")
+    parser.add_argument("--scenarios", required=True, help="JSON list or mapping with scenarios[] to submit")
+    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--timeout", type=float, default=900.0, help="seconds to wait for each warm result")
+    parser.add_argument("--interval", type=float, default=5.0, help="seconds between output polls")
+    parser.add_argument("--stop-after", action="store_true", help="submit a stop sentinel after the batch")
+    args = parser.parse_args(argv)
+    summary = submit_warm_render_batch(
+        manifest_path=args.manifest,
+        scenarios_path=args.scenarios,
+        out_dir=args.out_dir,
+        timeout_s=args.timeout,
+        interval_s=args.interval,
+        stop_after=args.stop_after,
+    )
+    print(json.dumps(summary, indent=2))
+    return 0 if summary.get("status") == "completed" else 1

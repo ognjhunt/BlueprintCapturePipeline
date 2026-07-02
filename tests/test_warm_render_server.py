@@ -20,6 +20,7 @@ from blueprint_pipeline.warm_render_server import (
     WarmJob,
     WarmPoolClient,
     serve_render_loop,
+    submit_warm_render_batch,
 )
 
 
@@ -323,3 +324,73 @@ def test_warm_pool_client_poll_result_times_out_when_absent() -> None:
     res = cli.poll_result("missing", timeout_s=3.0, interval_s=0.0,
                           clock=_advancing_clock(1.0), sleep=lambda s: None)
     assert res is None
+
+
+def test_submit_warm_render_batch_keeps_one_monotonic_client_session(tmp_path) -> None:
+    inbox_put_file = tmp_path / "warm_inbox_put_url.txt"
+    output_get_file = tmp_path / "provider_output_get_url.txt"
+    inbox_put_file.write_text("http://inbox/put", encoding="utf-8")
+    output_get_file.write_text("http://out/get", encoding="utf-8")
+    manifest_path = tmp_path / "isaac_g1_kitchen_parity_job_manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "status": "serving",
+            "warm_serve": {
+                "inbox_put_url_file": str(inbox_put_file),
+                "output_get_url_file": str(output_get_file),
+            },
+        }),
+        encoding="utf-8",
+    )
+    scenarios_path = tmp_path / "scenarios.json"
+    scenarios_path.write_text(
+        json.dumps({
+            "scenarios": [
+                {"scenario_id": "sink_faucet", "description": "turn on the faucet"},
+                {"scenario_id": "stovetop_knob", "description": "turn the stove knob"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    puts: list[dict] = []
+
+    def http_put(url, data):
+        assert url == "http://inbox/put"
+        puts.append(json.loads(data))
+
+    def http_get(url):
+        assert url == "http://out/get"
+        payload = puts[-1]
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr(
+                f"warm_results/{payload['request_id']}.json",
+                json.dumps({
+                    "status": "completed",
+                    "request_id": payload["request_id"],
+                    "warm_session_nonce": payload["warm_session_nonce"],
+                }),
+            )
+        return buf.getvalue()
+
+    summary = submit_warm_render_batch(
+        manifest_path=manifest_path,
+        scenarios_path=scenarios_path,
+        out_dir=tmp_path / "results",
+        timeout_s=5.0,
+        interval_s=0.0,
+        stop_after=True,
+        session_nonce="batch-session",
+        http_put=http_put,
+        http_get=http_get,
+        clock=_advancing_clock(1.0),
+        sleep=lambda s: None,
+    )
+
+    assert summary["status"] == "completed"
+    assert summary["results_collected"] == 2
+    assert [payload["seq"] for payload in puts] == [1, 2, 3]
+    assert [payload.get("request_id") for payload in puts[:2]] == ["sink_faucet", "stovetop_knob"]
+    assert puts[-1]["stop"] is True
+    assert (tmp_path / "results" / "sink_faucet.json").is_file()
+    assert (tmp_path / "results" / "warm_render_batch_results.json").is_file()

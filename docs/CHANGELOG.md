@@ -18,6 +18,12 @@
   where those sidecars exist. This is still not full G1 URDF FK, official
   WholeBodyControl execution, physical robot proof, contact validation, or task
   success proof.
+- Promoted the Lambda Cloud provider lane from a request-validation stub to a
+  gated Lambda Cloud API adapter with no-spend inventory modes, dry-run launch
+  payload generation, explicit launch/terminate calls, secret redaction, and
+  readiness/endpoint/teardown artifacts. Lambda launch submission remains
+  separate from worker readiness, simulator execution, artifact upload, spend
+  closure, safety, and rank-fidelity proof.
 
 ### Employee-Facing
 
@@ -28,6 +34,8 @@
 - Added contract tests for official-image defaults, OSCAR provider bundle
   diagnostics, sidecar FK skeleton traces, external episode consistency, visual
   quality blockers, multiview unavailability, and calibration guardrails.
+- Wired `lambda_cloud` into managed-provider priority, live-provider gate
+  metadata, provider credential contracts, and focused Lambda adapter coverage.
 
 ### Future-Agent-Facing
 
