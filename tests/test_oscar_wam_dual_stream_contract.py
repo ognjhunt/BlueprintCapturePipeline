@@ -26,6 +26,9 @@ def _pure_projected_skeleton_package(trace_path: Path) -> dict[str, object]:
             "skeleton_stream_image_aligned_to_rgb": True,
             "first_rgb_frame_anchors_scene_and_robot_appearance": True,
             "projected_g1_skeleton_landmark_draw_count": 6,
+            "projected_g1_skeleton_visible_landmark_draw_count": 4,
+            "projected_g1_skeleton_visible_segment_count": 2,
+            "projected_g1_skeleton_end_effector_axis_draw_count": 2,
             "visual_signal": {"status": "completed", "blockers": []},
         },
         "projected_skeleton_trace": {
