@@ -42,3 +42,9 @@ Unitree G1 remains a default/reference embodiment for local smoke and historical
 lanes. It is not required for customer robots. Cosmos3/SC3-style WAM remains a
 preferred evaluator recipe candidate when configured and gated; it is not a
 hardwired backend or universal grading proof.
+
+`live_eval_closure_manifest.json` carries a non-gating `sc3_eval_protocol`
+summary block; protocol readiness never becomes a closure gate. The phased
+implementation plan (accepted-anchor accumulation, computed correlation
+metrics, embodiment pack registry, policy adapter conformance) lives in
+[`docs/goals/2026-07-02-sc3-eval-robot-policy-agnostic-service-plan.md`](goals/2026-07-02-sc3-eval-robot-policy-agnostic-service-plan.md).

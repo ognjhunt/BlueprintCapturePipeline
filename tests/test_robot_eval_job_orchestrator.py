@@ -12493,3 +12493,49 @@ def test_robot_eval_job_can_run_fake_cosmos_wam_provider_adapter(
     assert claim_boundary["live_provider_calls_performed"] is True
     assert claim_boundary["rank_fidelity_result_proven"] is False
     assert run_manifest["public_claim_upgrade_allowed"] is False
+
+
+def test_live_robot_eval_closure_surfaces_sc3_protocol_without_gating(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-sc3-summary"
+    request = _full_job_request(capture_root)
+
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    summary = manifest["sc3_eval_protocol"]
+    assert summary["present"] is False
+    assert summary["status"] == "not_available"
+    assert summary["correlation_claim_status"] == "correlation_not_measured"
+    assert summary["claim_boundary"]["sc3_protocol_is_not_a_closure_gate"] is True
+    assert "sc3_eval_protocol" not in manifest["gate_order"]
+    assert not any("sc3" in blocker for blocker in manifest["blockers"])
+
+    _write_json(
+        job_dir / "sc3_eval_protocol.json",
+        {
+            "schema_version": "sc3_eval_protocol.v1",
+            "status": "protocol_defined",
+            "correlation_claim_status": "correlation_not_measured",
+        },
+    )
+    manifest = build_live_robot_eval_closure_manifest(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request=request,
+    )
+
+    summary = manifest["sc3_eval_protocol"]
+    assert summary["present"] is True
+    assert summary["status"] == "protocol_defined"
+    assert summary["correlation_claim_status"] == "correlation_not_measured"
+    assert summary["claim_boundary"][
+        "sc3_self_consistency_is_reliability_support_only"
+    ] is True
+    assert "sc3_eval_protocol" not in manifest["gate_order"]
+    assert not any("sc3" in blocker for blocker in manifest["blockers"])
