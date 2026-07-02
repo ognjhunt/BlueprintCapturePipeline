@@ -555,12 +555,68 @@ def _vast_paid_provider_preflight(
     }
 
 
+def _runpod_paid_provider_preflight(
+    *,
+    allow_paid_provider_launch: bool,
+    max_hourly_rate_usd: float,
+    max_live_minutes: int,
+    hard_cap_usd: float,
+) -> dict[str, Any]:
+    """Cost-enveloped RunPod gate mirroring the Vast preflight's discipline.
+
+    RunPod is the funded provider (Vast may carry no credits); a bounded OSCAR
+    generation (~10 min on a <=$0.80/hr pod) must be launchable under the same
+    no-spend preflight rules: explicit env gates, file-based secret, projected
+    cost under a hard cap. This preflight makes NO provider API calls.
+    """
+    blockers: list[str] = []
+    if not allow_paid_provider_launch:
+        blockers.append("closed_loop_paid_provider_launch_not_authorized")
+    if not _env_truthy("BLUEPRINT_ALLOW_RUNPOD_API_CALLS"):
+        blockers.append("missing_env_BLUEPRINT_ALLOW_RUNPOD_API_CALLS")
+    if not _env_truthy("BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH"):
+        blockers.append("missing_env_BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH")
+    key_file = Path(
+        _string(os.getenv("RUNPOD_API_KEY_FILE")) or "~/.blueprint-secrets/runpod_api_key"
+    ).expanduser()
+    if not key_file.is_file():
+        blockers.append("missing_file_based_secret_RUNPOD_API_KEY_FILE")
+    projected_incremental_cost = float(max_hourly_rate_usd) * (float(max_live_minutes) / 60.0)
+    if projected_incremental_cost > float(hard_cap_usd):
+        blockers.append(
+            "closed_loop_runpod_projected_cost_exceeds_hard_cap_usd"
+        )
+    return {
+        "schema_version": "closed_loop_paid_provider_preflight.v1",
+        "status": "ready" if not blockers else "blocked",
+        "provider": "runpod",
+        "max_hourly_rate_usd": float(max_hourly_rate_usd),
+        "max_live_minutes": int(max_live_minutes),
+        "projected_max_incremental_cost_usd": round(projected_incremental_cost, 6),
+        "hard_cap_usd": float(hard_cap_usd),
+        "blockers": sorted(set(blockers)),
+        "raw_secret_values_recorded": False,
+        "claim_boundary": {
+            "preflight_is_no_spend": True,
+            "preflight_does_not_call_runpod_api": True,
+            "secret_values_not_read_into_artifact": True,
+        },
+    }
+
+
 def _closed_loop_paid_provider_preflight(
     *,
     provider: str,
     allow_paid_provider_launch: bool,
 ) -> dict[str, Any]:
     provider_id = _string(provider).strip().lower()
+    if provider_id == "runpod":
+        return _runpod_paid_provider_preflight(
+            allow_paid_provider_launch=allow_paid_provider_launch,
+            max_hourly_rate_usd=_float_env("BLUEPRINT_RUNPOD_WAM_MAX_HOURLY_RATE", 0.80),
+            max_live_minutes=_int_env("BLUEPRINT_RUNPOD_WAM_MAX_LIVE_MINUTES", 30),
+            hard_cap_usd=_float_env("BLUEPRINT_RUNPOD_WAM_HARD_CAP_USD", 3.0),
+        )
     if provider_id == "vast":
         return _vast_paid_provider_preflight(
             allow_paid_provider_launch=allow_paid_provider_launch,

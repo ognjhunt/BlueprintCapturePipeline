@@ -2187,3 +2187,72 @@ def test_closed_loop_short_sanity_launch_plan_allows_fresh_vast_authorization(
     assert "short_visual_sanity_manifest_env_missing" in plan["blockers"]
     assert "redacted-test-key" not in json.dumps(plan)
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+
+
+def test_closed_loop_runpod_paid_preflight_ready_with_gates_and_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RunPod is a first-class paid closed-loop provider when its API/pod-launch
+    gates are set, the key file exists, and the projected cost fits the cap."""
+    key_file = tmp_path / "runpod_api_key"
+    key_file.write_text("redacted-test-key\n", encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_RUNPOD_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH", "true")
+    monkeypatch.setenv("RUNPOD_API_KEY_FILE", str(key_file))
+
+    readiness = L.build_closed_loop_wam_backend_readiness(
+        selected_backend="oscar_wam",
+        use_provider_command=True,
+        oscar_provider="runpod",
+        allow_paid_provider_launch=True,
+    )
+
+    preflight = readiness["paid_provider_preflight"]
+    assert preflight["status"] == "ready"
+    assert preflight["provider"] == "runpod"
+    assert preflight["projected_max_incremental_cost_usd"] <= preflight["hard_cap_usd"]
+
+
+def test_closed_loop_runpod_paid_preflight_blocks_without_gates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BLUEPRINT_ALLOW_RUNPOD_API_CALLS", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH", raising=False)
+    monkeypatch.setenv("RUNPOD_API_KEY_FILE", str(tmp_path / "missing_key"))
+
+    readiness = L.build_closed_loop_wam_backend_readiness(
+        selected_backend="oscar_wam",
+        use_provider_command=True,
+        oscar_provider="runpod",
+        allow_paid_provider_launch=True,
+    )
+
+    preflight = readiness["paid_provider_preflight"]
+    assert preflight["status"] == "blocked"
+    assert "missing_env_BLUEPRINT_ALLOW_RUNPOD_API_CALLS" in preflight["blockers"]
+    assert "missing_env_BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH" in preflight["blockers"]
+    assert "missing_file_based_secret_RUNPOD_API_KEY_FILE" in preflight["blockers"]
+
+
+def test_closed_loop_runpod_paid_preflight_blocks_over_hard_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key_file = tmp_path / "runpod_api_key"
+    key_file.write_text("redacted-test-key\n", encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_RUNPOD_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH", "true")
+    monkeypatch.setenv("RUNPOD_API_KEY_FILE", str(key_file))
+    monkeypatch.setenv("BLUEPRINT_RUNPOD_WAM_MAX_HOURLY_RATE", "10.0")
+    monkeypatch.setenv("BLUEPRINT_RUNPOD_WAM_MAX_LIVE_MINUTES", "120")
+    monkeypatch.setenv("BLUEPRINT_RUNPOD_WAM_HARD_CAP_USD", "3.0")
+
+    readiness = L.build_closed_loop_wam_backend_readiness(
+        selected_backend="oscar_wam",
+        use_provider_command=True,
+        oscar_provider="runpod",
+        allow_paid_provider_launch=True,
+    )
+
+    preflight = readiness["paid_provider_preflight"]
+    assert preflight["status"] == "blocked"
+    assert any("hard_cap" in b for b in preflight["blockers"])
