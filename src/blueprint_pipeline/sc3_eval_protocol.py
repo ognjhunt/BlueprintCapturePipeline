@@ -256,6 +256,37 @@ def _policy_adapter_review_contracts(
     return contracts
 
 
+def _action_chunks_requirement(
+    *,
+    selected_modalities: list[str],
+    policy_contracts: list[dict[str, Any]],
+    action_norm: Mapping[str, Any],
+) -> dict[str, Any]:
+    """SC3 action-chunk readiness requires validated per-dimension normalization.
+
+    Per the paper, actions must be 7-D delta-EE normalized per-dimension
+    across the corpus; presence of a selected modality alone is not enough.
+    """
+    blockers: list[str] = []
+    if not selected_modalities:
+        blockers.append("policy_package_selected_modality_missing")
+    norm_status = _string(action_norm.get("status"))
+    if not action_norm:
+        blockers.append("action_normalization_manifest_missing")
+    elif norm_status != "validated":
+        blockers.append("action_normalization_not_validated")
+    elif not _string(action_norm.get("action_norm_stats_path")):
+        blockers.append("action_norm_stats_missing")
+    return {
+        "status": "reviewable" if not blockers else "blocked",
+        "selected_policy_modalities": selected_modalities,
+        "policy_adapter_pack_count": len(policy_contracts),
+        "action_normalization_status": norm_status or "missing",
+        "action_norm_stats_path": _string(action_norm.get("action_norm_stats_path")) or None,
+        "blockers": blockers,
+    }
+
+
 def build_sc3_eval_protocol_artifact(
     *,
     generated_at: str,
@@ -267,10 +298,12 @@ def build_sc3_eval_protocol_artifact(
     prediction_outcome_correlation_ledger: Mapping[str, Any] | None = None,
     sim_vs_real_calibration_report: Mapping[str, Any] | None = None,
     wam_eval_claim_boundary: Mapping[str, Any] | None = None,
+    action_normalization_manifest: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a no-provider SC3-compatible protocol readiness artifact."""
 
     scorecard = _mapping(policy_ranking_scorecard)
+    action_norm = _mapping(action_normalization_manifest)
     correlation_ledger = _mapping(prediction_outcome_correlation_ledger)
     calibration_report = _mapping(sim_vs_real_calibration_report)
     wam_boundary = _mapping(wam_eval_claim_boundary)
@@ -321,12 +354,11 @@ def build_sc3_eval_protocol_artifact(
             "path": "robot_camera_profile_launch_readiness.json",
             "claim_boundary": "camera profile is calibration/review support, not owner proof by itself",
         },
-        "action_chunks": {
-            "status": "reviewable" if selected_modalities else "blocked",
-            "selected_policy_modalities": selected_modalities,
-            "policy_adapter_pack_count": len(policy_contracts),
-            "blockers": [] if selected_modalities else ["policy_package_selected_modality_missing"],
-        },
+        "action_chunks": _action_chunks_requirement(
+            selected_modalities=selected_modalities,
+            policy_contracts=policy_contracts,
+            action_norm=action_norm,
+        ),
         "initial_observations": {
             "status": "ready" if initial_observation_count > 0 else "blocked",
             "observation_count": initial_observation_count,

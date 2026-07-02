@@ -628,9 +628,28 @@ def _region_from_bounds(bounds: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _is_complete_xyz(value: Any) -> bool:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return False
+    if len(value) < 3:
+        return False
+    try:
+        [float(item) for item in value[:3]]
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _pose_from_zone(value: Any, *, fallback: Sequence[float]) -> Dict[str, Any]:
     xyz = _float_list(value, fallback=fallback)
-    return {"xyz": xyz, "rpy": [0.0, 0.0, 0.0], "source": "task_anchor_or_frame_default"}
+    fallback_applied = not _is_complete_xyz(value)
+    return {
+        "xyz": xyz,
+        "rpy": [0.0, 0.0, 0.0],
+        "source": "zone_fallback_estimate" if fallback_applied else "task_anchor_or_frame_default",
+        # A defaulted pose is an estimate that must be reviewed, never proof.
+        "pose_estimated": bool(fallback_applied),
+    }
 
 
 def _missing_proof_labels(

@@ -433,5 +433,55 @@ def test_cosmos_training_export_missing_and_selection_edge_branches(
         if line.strip()
     ]
 
-    assert manifest["status"] == "ready"
-    assert [row["frame_id"] for row in paired_rows] == ["flat", "bad-shape"]
+    # Records without real fx/fy calibration (and misshaped poses) are
+    # rejected instead of exported with guessed intrinsics / identity poses.
+    assert manifest["status"] == "missing"
+    assert paired_rows == []
+    assert manifest["rejected_record_count"] == 2
+    rejections = json.loads(
+        Path(manifest["export_rejection_manifest_path"]).read_text(encoding="utf-8")
+    )["rejections"]
+    reasons_by_frame = {row["frame_id"]: row["reasons"] for row in rejections}
+    assert "intrinsics_missing_or_implausible" in reasons_by_frame["flat"]
+    assert "pose_missing_or_misshaped" in reasons_by_frame["bad-shape"]
+
+
+def test_cosmos_training_export_blocks_synthetic_geometry_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-syn" / "captures" / "capture-syn"
+    geometry_dir = capture_root / "pipeline" / "geometry"
+    geometry_dir.mkdir(parents=True)
+    (geometry_dir / "geometry_summary.json").write_text(
+        json.dumps({"fallback_used": True, "fallback_kind": "internal_synthetic_geometry"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
+
+    manifest = export_cosmos_training_substrate(capture_root=capture_root)
+
+    assert manifest["status"] == "blocked"
+    assert "synthetic_or_fallback_geometry_disallowed" in manifest["reason"]
+
+
+def test_cosmos_training_export_stamps_dev_synthetic_geometry_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-dev" / "captures" / "capture-dev"
+    geometry_dir = capture_root / "pipeline" / "geometry"
+    geometry_dir.mkdir(parents=True)
+    (geometry_dir / "geometry_summary.json").write_text(
+        json.dumps({"fallback_used": True, "fallback_kind": "local_sfm_synthetic_dev"}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("BLUEPRINT_LAUNCH_PROOF_MODE", raising=False)
+
+    manifest = export_cosmos_training_substrate(capture_root=capture_root)
+
+    # Dev allowance: export proceeds (no dense records -> missing) but the
+    # manifest must carry the synthetic-geometry provenance stamp.
+    assert manifest["status"] == "missing"
+    assert manifest["geometry_provenance"]["synthetic_geometry"] is True
+    assert manifest["geometry_provenance"]["export_allowed_by"] == "synthetic_geometry_dev_allowance"

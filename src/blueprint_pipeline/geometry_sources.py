@@ -83,6 +83,76 @@ def _parse_intrinsics_from_arkit_row(row: Mapping[str, Any]) -> Optional[Dict[st
     }
 
 
+_SYNTHETIC_FALLBACK_KINDS = {
+    "internal_synthetic_geometry",
+    "local_sfm_synthetic_dev",
+    "local_da3_synthetic_depth",
+}
+
+
+class SyntheticGeometryExportError(RuntimeError):
+    """Raised when synthetic geometry reaches an export path that forbids it."""
+
+
+def reconcile_geometry_truth_flags(summary: Mapping[str, Any]) -> tuple[bool, bool]:
+    """Return (synthetic_geometry, fallback_used) with append-only semantics.
+
+    Truth flags may only strengthen: if any synthetic indicator is present
+    (explicit flag, a known synthetic fallback kind, or a synthetic warning),
+    both flags are treated as set even if a later stage rewrote
+    ``fallback_used`` to false. A relabel can never launder synthetic
+    geometry back into provider truth.
+    """
+    if not isinstance(summary, Mapping):
+        return (False, False)
+    fallback_kind = str(summary.get("fallback_kind") or "").strip()
+    warnings = {str(w) for w in (summary.get("warnings") or []) if w}
+    provider = summary.get("provider") if isinstance(summary.get("provider"), Mapping) else {}
+    provider_warnings = {str(w) for w in (provider.get("warnings") or []) if w}
+    synthetic = bool(
+        summary.get("synthetic_geometry")
+        or fallback_kind in _SYNTHETIC_FALLBACK_KINDS
+        or "synthetic_geometry_used" in warnings
+        or "synthetic_geometry_used" in provider_warnings
+        or "fallback_geometry_used" in warnings
+        or "fallback_geometry_used" in provider_warnings
+    )
+    fallback_used = bool(summary.get("fallback_used")) or synthetic
+    return (synthetic, fallback_used)
+
+
+def geometry_export_gate(
+    summary: Mapping[str, Any],
+    *,
+    export_name: str = "export",
+    env: Mapping[str, str] | None = None,
+) -> Dict[str, Any]:
+    """Gate package/eval exports on geometry truth flags.
+
+    Raises ``SyntheticGeometryExportError`` when the geometry is synthetic or
+    fallback-derived and synthetic geometry is disallowed (always the case in
+    production launch-proof mode). When allowed (dev), returns a provenance
+    stamp that MUST be attached to the export manifest.
+    """
+    from .launch_proof_policy import synthetic_geometry_allowed
+
+    synthetic, fallback_used = reconcile_geometry_truth_flags(summary)
+    if (synthetic or fallback_used) and not synthetic_geometry_allowed(env):
+        raise SyntheticGeometryExportError(
+            f"{export_name}_refused:synthetic_or_fallback_geometry_disallowed"
+        )
+    return {
+        "synthetic_geometry": synthetic,
+        "fallback_used": fallback_used,
+        "fallback_kind": summary.get("fallback_kind") if isinstance(summary, Mapping) else None,
+        "export_allowed_by": (
+            "provider_geometry"
+            if not (synthetic or fallback_used)
+            else "synthetic_geometry_dev_allowance"
+        ),
+    }
+
+
 def resolve_geometry_source(
     *,
     context: LocalCaptureContext,
@@ -205,7 +275,9 @@ def _load_pipeline_geometry(
             "timestamp_seconds": _safe_float(row.get("timestamp_seconds"), _safe_float(row.get("timestamp"))),
             "intrinsics_payload": dict(intrinsics) if isinstance(intrinsics, Mapping) else {},
             "trackingState": "normal",
-            "sharpnessScore": row.get("sharpness_score", 100.0),
+            # None means "not measured" — downstream gates must not treat a
+            # missing measurement as perfectly sharp.
+            "sharpnessScore": row.get("sharpness_score"),
             "relocalizationEvent": False,
             "worldMappingStatus": row.get("world_mapping_status", "mapped"),
             "anchorObservations": list(row.get("anchor_observations") or []),
@@ -245,10 +317,12 @@ def _load_pipeline_geometry(
     )
     quality = descriptor.get("quality") if isinstance(descriptor.get("quality"), Mapping) else {}
     summary = geometry_summary if isinstance(geometry_summary, Mapping) else {}
+    synthetic_geometry, fallback_used = reconcile_geometry_truth_flags(summary)
     return {
         "source": source or "video_to_world",
-        "fallback_used": bool(summary.get("fallback_used")),
+        "fallback_used": fallback_used,
         "fallback_kind": summary.get("fallback_kind"),
+        "synthetic_geometry": synthetic_geometry,
         "provider_native_result": bool(summary.get("provider_native_result")),
         "contract_ready_for_world_model": bool(summary.get("contract_ready_for_world_model")),
         "internal_fallback_ready": bool(summary.get("internal_fallback_ready")),

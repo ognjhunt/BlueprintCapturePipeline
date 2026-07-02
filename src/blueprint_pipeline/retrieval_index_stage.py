@@ -310,22 +310,36 @@ def _ensure_geometry_for_capture(
     return _load_descriptor(ctx)
 
 
+def _geometry_summary_blocking_fallback(geometry_summary: Mapping[str, Any]) -> bool:
+    """True when the summary carries fallback geometry that must never index.
+
+    The local_sfm dev lane is honestly labeled fallback/synthetic
+    (``fallback_kind == "local_sfm_synthetic_dev"``) but remains allowed as
+    degraded local reference media; every other fallback kind is blocking.
+    """
+    if not bool(geometry_summary.get("fallback_used")):
+        return False
+    fallback_kind = str(geometry_summary.get("fallback_kind") or "").strip()
+    geometry_source = str(geometry_summary.get("geometry_source") or "").strip()
+    return not (geometry_source == "local_sfm" and fallback_kind == "local_sfm_synthetic_dev")
+
+
 def _raise_if_geometry_not_reference_indexable(geometry_summary: Mapping[str, Any]) -> None:
     if not geometry_summary:
         return
     geometry_source = str(geometry_summary.get("geometry_source") or "").strip()
-    fallback_used = bool(geometry_summary.get("fallback_used"))
+    blocking_fallback = _geometry_summary_blocking_fallback(geometry_summary)
     geometry_live_ready = bool(geometry_summary.get("geometry_live_ready"))
     local_reference_ready = _geometry_summary_reference_indexable(geometry_summary)
-    if fallback_used or not (geometry_live_ready or local_reference_ready):
+    if blocking_fallback or not (geometry_live_ready or local_reference_ready):
         reason = geometry_source or "missing"
-        if fallback_used:
+        if blocking_fallback:
             reason = "fallback_geometry"
         raise PipelineError(f"geometry_not_live_video_to_world:{reason}")
 
 
 def _geometry_summary_reference_indexable(geometry_summary: Mapping[str, Any]) -> bool:
-    if not geometry_summary or bool(geometry_summary.get("fallback_used")):
+    if not geometry_summary or _geometry_summary_blocking_fallback(geometry_summary):
         return False
     geometry_source = str(geometry_summary.get("geometry_source") or "").strip()
     if geometry_source == "video_to_world":

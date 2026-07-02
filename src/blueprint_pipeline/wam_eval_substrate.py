@@ -12,6 +12,28 @@ EVALUATION_SUBSTRATE_REGISTRY_SCHEMA_VERSION = "evaluation_substrate_registry.v1
 EVALUATION_SUBSTRATE_REQUEST_SCHEMA_VERSION = "wam_evaluation_request.v1"
 WAM_EVAL_CLAIM_BOUNDARY_SCHEMA_VERSION = "wam_eval_claim_boundary.v1"
 
+# Correlation/rank-fidelity metric keys that fixture (smoke-substrate) runs may
+# never emit. Enforced by the claim-boundary helpers below, not by convention.
+FIXTURE_BLOCKED_CORRELATION_METRIC_KEYS = (
+    "mmrv",
+    "spearman",
+    "pearson",
+    "spearman_rank_correlation",
+    "pearson_success_rate_correlation",
+    "mean_maximum_rank_violation",
+    "mean_absolute_success_rate_error",
+    "correlation_metrics",
+    "sim_vs_real_correlation",
+)
+
+FIXTURE_BLOCKED_SPEARMAN_PEARSON_MMRV_STATUS = (
+    "blocked_fixture_evaluator_only_no_correlation_claims"
+)
+
+
+class FixtureClaimBoundaryError(ValueError):
+    """Raised when a fixture-labeled payload tries to emit blocked claims."""
+
 SUPPORTED_EVALUATION_SUBSTRATES = (
     "fixture_wam",
     "cosmos3_wam",
@@ -253,6 +275,7 @@ def build_wam_evaluation_request(
         "scenario_eval_matrix_path": scenario_eval_matrix_path,
         "policy_package_manifest_path": policy_package_manifest_path,
         "policy_ids": _string_list(policy_ids),
+        "fixture_evaluator_only": substrate == "fixture_wam",
         "blockers": list(blockers),
         "outputs_expected": {
             "wam_rollout_manifest": "wam_rollout_manifest.json",
@@ -270,6 +293,8 @@ def build_wam_evaluation_request(
         },
         "claim_boundary": {
             "request_is_not_provider_execution": True,
+            "fixture_evaluator_only": substrate == "fixture_wam",
+            "fixture_provenance_required_in_downstream_artifacts": True,
             "primary_proof_target": "policy_comparison_within_configured_evaluator",
             "policy_ranking_is_evaluator_bounded": True,
             "policy_ranking_compares_policies_on_same_scenario_matrix": True,
@@ -304,7 +329,30 @@ def build_wam_evaluation_request(
     }
 
 
-def build_wam_eval_claim_boundary(*, substrate: str, generated_at: str) -> Dict[str, Any]:
+def _resolve_fixture_evaluator_only(
+    substrate: str,
+    fixture_evaluator_only: Any | None,
+) -> bool:
+    resolved = (
+        substrate == "fixture_wam"
+        if fixture_evaluator_only is None
+        else bool(fixture_evaluator_only)
+    )
+    if substrate == "fixture_wam" and not resolved:
+        raise FixtureClaimBoundaryError(
+            "fixture_wam artifacts must carry fixture_evaluator_only=true; "
+            "relabeling a fixture run as model-backed is not allowed"
+        )
+    return resolved
+
+
+def build_wam_eval_claim_boundary(
+    *,
+    substrate: str,
+    generated_at: str,
+    fixture_evaluator_only: bool | None = None,
+) -> Dict[str, Any]:
+    fixture_only = _resolve_fixture_evaluator_only(substrate, fixture_evaluator_only)
     return {
         "schema_version": WAM_EVAL_CLAIM_BOUNDARY_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -318,7 +366,9 @@ def build_wam_eval_claim_boundary(*, substrate: str, generated_at: str) -> Dict[
         "policy_ranking_is_not_evaluation_readiness": True,
         "traditional_sim_is_optional_cross_check_for_wam_eval": True,
         "mmrv_pearson_spearman_require_validation_anchors": True,
-        "spearman_pearson_mmrv_status": "not_measured_until_real_anchors_exist",
+        "spearman_pearson_mmrv_status": FIXTURE_BLOCKED_SPEARMAN_PEARSON_MMRV_STATUS
+        if fixture_only
+        else "not_measured_until_real_anchors_exist",
         "forward_inverse_consistency_is_reliability_signal_not_success_label": True,
         "forward_inverse_consistency_is_reliability_review_signal_only": True,
         "forward_inverse_consistency_requires_reviewable_generated_rollout": True,
@@ -343,7 +393,10 @@ def build_wam_eval_claim_boundary(*, substrate: str, generated_at: str) -> Dict[
         "visual_smoke_required_for_review_grade_policy_ranking": True,
         "visual_smoke_required_for_review_grade_failure_diagnosis": True,
         "fixture_wam_is_deterministic_local_test_substrate": substrate == "fixture_wam",
-        "fixture_evaluator_only": substrate == "fixture_wam",
+        "fixture_evaluator_only": fixture_only,
+        "fixture_provenance_required_in_downstream_artifacts": True,
+        "correlation_metrics_blocked_for_fixture_runs": True,
+        "unlabeled_predicted_success_blocked_for_fixture_runs": True,
         "live_provider_calls_performed": False,
         "customer_specific_srcc_claimed": False,
         "customer_specific_srcc_requires_real_world_validation_rollouts": True,
@@ -355,3 +408,85 @@ def build_wam_eval_claim_boundary(*, substrate: str, generated_at: str) -> Dict[
         "non_ranking_operational_claim_validated": False,
         "public_claim_upgrade_allowed": False,
     }
+
+
+def _blocked_correlation_metric_keys(payload: Mapping[str, Any]) -> list[str]:
+    blocked: list[str] = []
+    for scope_name, scope in (("", payload), ("metrics.", _mapping(payload.get("metrics")))):
+        for key in FIXTURE_BLOCKED_CORRELATION_METRIC_KEYS:
+            if key in scope and scope.get(key) is not None:
+                blocked.append(f"{scope_name}{key}")
+    return blocked
+
+
+def fixture_claim_boundary_violations(
+    payload: Mapping[str, Any],
+    *,
+    fixture_evaluator_only: bool,
+) -> list[str]:
+    """Return schema violations for a fixture-labeled artifact payload.
+
+    Fixture runs may never emit correlation metrics (MMRV/Spearman/Pearson) or
+    ``predicted_success`` rows that are not explicitly fixture-labeled.
+    """
+
+    if not fixture_evaluator_only:
+        return []
+    violations = [
+        f"fixture_run_emits_blocked_correlation_metric:{key}"
+        for key in _blocked_correlation_metric_keys(payload)
+    ]
+    rows = payload.get("rollouts")
+    if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes, bytearray)):
+        for index, row in enumerate(rows):
+            if not isinstance(row, Mapping):
+                continue
+            for key in _blocked_correlation_metric_keys(row):
+                violations.append(
+                    f"fixture_run_emits_blocked_correlation_metric:rollouts[{index}].{key}"
+                )
+            if "predicted_success" in row and row.get("fixture_evaluator_only") is not True:
+                violations.append(
+                    f"fixture_run_emits_unlabeled_predicted_success:rollouts[{index}]"
+                )
+    if "predicted_success" in payload and payload.get("fixture_evaluator_only") is not True:
+        violations.append("fixture_run_emits_unlabeled_predicted_success:top_level")
+    return violations
+
+
+def enforce_fixture_claim_boundary(
+    payload: Mapping[str, Any],
+    *,
+    substrate: str,
+    fixture_evaluator_only: bool | None = None,
+) -> Dict[str, Any]:
+    """Stamp required fixture provenance and fail closed on blocked claims.
+
+    Returns a copy of ``payload`` with ``fixture_evaluator_only`` set as a
+    required field (and stamped onto every rollout row carrying
+    ``predicted_success``). Raises :class:`FixtureClaimBoundaryError` when a
+    fixture run tries to emit correlation metrics.
+    """
+
+    fixture_only = _resolve_fixture_evaluator_only(substrate, fixture_evaluator_only)
+    stamped: Dict[str, Any] = dict(payload)
+    stamped["fixture_evaluator_only"] = fixture_only
+    rows = stamped.get("rollouts")
+    if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes, bytearray)):
+        stamped_rows: list[Any] = []
+        for row in rows:
+            if isinstance(row, Mapping):
+                stamped_row = dict(row)
+                stamped_row["fixture_evaluator_only"] = fixture_only
+                stamped_rows.append(stamped_row)
+            else:
+                stamped_rows.append(row)
+        stamped["rollouts"] = stamped_rows
+    violations = fixture_claim_boundary_violations(
+        stamped, fixture_evaluator_only=fixture_only
+    )
+    if violations:
+        raise FixtureClaimBoundaryError(
+            "fixture claim boundary violations: " + ", ".join(sorted(violations))
+        )
+    return stamped

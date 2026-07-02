@@ -2413,6 +2413,7 @@ TRUSTED_WAM_MODEL_PAYLOAD_SCHEMAS = {
     "oscar_wam_command_adapter.v1",
     "oscar_cosmos_wam_command_adapter.v1",
     "oscar_wam_provider_command_adapter.v1",
+    "cosmos3_wam_command_adapter.v1",
 }
 
 

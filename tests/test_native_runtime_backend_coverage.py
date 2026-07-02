@@ -1008,3 +1008,58 @@ def test_native_runtime_cosmos_file_helpers(tmp_path: Path, monkeypatch: pytest.
     config = nrb.native_runtime_config_from_env()
     assert config.ws_base_url == "wss://runtime.example"
     assert config.root_dir == tmp_path / "runtime-root"
+
+
+def test_runtime_info_reports_truthful_selected_render_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    for name in (
+        "NATIVE_WORLD_MODEL_OUTPUT_PROFILE",
+        "NATIVE_WORLD_MODEL_ENABLE_TRUTHFUL_PREVIEW",
+        "NATIVE_WORLD_MODEL_SYNTHESIS_MODE",
+        "NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT",
+        "NATIVE_WORLD_MODEL_PRODUCTION_GRADE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def _readiness(*, ready: bool) -> dict:
+        return {
+            "ready": ready,
+            "package_ready": ready,
+            "model_ready": ready,
+            "checkpoint_ready": ready,
+            "packages": {"torch": ready},
+            "model_dir": "",
+            "checkpoint_path": "",
+            "cosmos_repo": "",
+            "notes": [] if ready else ["native_model_not_provisioned"],
+        }
+
+    # Default truthful-preview profile without a configured model must report
+    # the splat_only fallback, never a hard-coded cosmos identity.
+    monkeypatch.setattr(nrb, "_runtime_readiness", lambda: _readiness(ready=False))
+    info = store.runtime_info(service_version="test")
+    assert info["model_identity"]["model_family"] == "site_splat_truthful_preview"
+    assert info["model_identity"]["selected_runtime_path"] == "splat_only"
+    assert info["state_guarantees"]["render_source"] == "truthful_preview_splat"
+    assert info["state_guarantees"]["async_cosmos_refinement_enabled"] is False
+    assert info["readiness"]["selected_runtime_path"] == "splat_only"
+    assert info["engine_identity"]["selected_runtime_path"] == "splat_only"
+
+    # A ready cosmos runtime with truthful preview disabled selects cosmos_i2w.
+    monkeypatch.setenv("NATIVE_WORLD_MODEL_ENABLE_TRUTHFUL_PREVIEW", "0")
+    monkeypatch.setattr(nrb, "_runtime_readiness", lambda: _readiness(ready=True))
+    info = store.runtime_info(service_version="test")
+    assert info["model_identity"]["model_family"] == "cosmos_i2w_native"
+    assert info["state_guarantees"]["render_source"] == "cosmos_i2w"
+    assert info["readiness"]["selected_runtime_path"] == "cosmos_i2w"
+
+    # Explicitly requesting cosmos_i2w without a ready runtime is reported as
+    # unconfigured instead of pretending a cosmos model is present.
+    monkeypatch.setenv("NATIVE_WORLD_MODEL_SYNTHESIS_MODE", "cosmos_i2w")
+    monkeypatch.setattr(nrb, "_runtime_readiness", lambda: _readiness(ready=False))
+    info = store.runtime_info(service_version="test")
+    assert info["model_identity"]["model_family"] == "unconfigured"
+    assert info["state_guarantees"]["render_source"] == "unconfigured"
+    assert info["readiness"]["selected_runtime_path"] == "unconfigured"

@@ -8940,6 +8940,9 @@ def build_robot_eval_job(
         ),
         sim_vs_real_calibration_report=_mapping(deployment_validation.get("calibration_report")),
         wam_eval_claim_boundary=_read_optional_mapping(job_dir / "wam_eval_claim_boundary.json"),
+        action_normalization_manifest=_read_optional_mapping(
+            job_dir / "action_validation_manifest.json"
+        ),
     )
     _write_job_json(job_dir, SC3_EVAL_PROTOCOL_ARTIFACT, sc3_eval_protocol)
     eval_result = {

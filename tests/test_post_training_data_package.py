@@ -545,3 +545,45 @@ def test_post_training_data_package_private_helpers_cover_optional_edges(
         types.SimpleNamespace(DataFrame=lambda rows: _FakeDataFrame(rows)),
     )
     assert _write_native_parquet(tmp_path / "native" / "episodes.parquet", [{"episode_id": "e"}]) is True
+
+
+def test_dataset_card_surfaces_clip_curation_state(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+
+    # No curation/dedup manifests -> explicit not_run QA state.
+    build_post_training_data_package_export(capture_root=capture_root)
+    output_dir = capture_root / "pipeline" / "post_training_data_package"
+    dataset_card = json.loads((output_dir / "dataset_card.json").read_text(encoding="utf-8"))
+    assert dataset_card["clip_curation"]["curation_status"] == "not_run"
+    assert dataset_card["clip_curation"]["dedup_status"] == "not_run"
+
+    # With manifests present -> counts and provider provenance carried through.
+    curation_dir = capture_root / "derived" / "clip_curation"
+    dedup_dir = capture_root / "derived" / "semantic_dedup"
+    curation_dir.mkdir(parents=True)
+    dedup_dir.mkdir(parents=True)
+    (curation_dir / "clip_curation_manifest.json").write_text(
+        json.dumps({"accepted_clip_count": 3, "rejected_clip_count": 2}), encoding="utf-8"
+    )
+    (curation_dir / "clip_rejection_manifest.json").write_text(
+        json.dumps({"rejected_count": 2}), encoding="utf-8"
+    )
+    (dedup_dir / "semantic_dedup_manifest.json").write_text(
+        json.dumps(
+            {
+                "coverage": {"kept_clip_count": 2, "dropped_clip_count": 1},
+                "embedding_provider": {"name": "downsampled-pixel", "version": "1"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest = build_post_training_data_package_export(capture_root=capture_root)
+    dataset_card = json.loads((output_dir / "dataset_card.json").read_text(encoding="utf-8"))
+    curation = dataset_card["clip_curation"]
+    assert curation["curation_status"] == "run"
+    assert curation["accepted_clip_count"] == 3
+    assert curation["rejected_clip_count"] == 2
+    assert curation["post_dedup_clip_count"] == 2
+    assert curation["embedding_provider"]["name"] == "downsampled-pixel"
+    assert "clip_curation_manifest" in manifest["included_artifacts"]
+    assert "semantic_dedup_manifest" in manifest["included_artifacts"]

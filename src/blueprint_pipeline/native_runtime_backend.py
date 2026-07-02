@@ -830,6 +830,44 @@ class NativeWorldModelRuntimeStore:
             "refinement_status": refinement_status,
         }
 
+    def _selected_runtime_identity(self, readiness: Mapping[str, Any]) -> Dict[str, Any]:
+        """Truthful runtime identity for the actually selected render path.
+
+        ``model_family``/``render_source`` must reflect what a session will
+        really render (splat_only truthful preview vs cosmos_i2w vs
+        unconfigured), never a hard-coded cosmos label.
+        """
+
+        ready = bool(readiness.get("ready"))
+        primary_mode = self._preview_generation_mode()
+        if primary_mode == "cosmos_i2w":
+            if ready:
+                identity = {
+                    "selected_runtime_path": "cosmos_i2w",
+                    "model_family": "cosmos_i2w_native",
+                    "render_source": "cosmos_i2w",
+                }
+            else:
+                identity = {
+                    "selected_runtime_path": "unconfigured",
+                    "model_family": "unconfigured",
+                    "render_source": "unconfigured",
+                }
+        elif primary_mode == "splat_only":
+            identity = {
+                "selected_runtime_path": "splat_only",
+                "model_family": "site_splat_truthful_preview",
+                "render_source": "truthful_preview_splat",
+            }
+        else:
+            identity = {
+                "selected_runtime_path": primary_mode,
+                "model_family": primary_mode,
+                "render_source": primary_mode,
+            }
+        identity["async_cosmos_refinement_enabled"] = self._cosmos_refinement_enabled()
+        return identity
+
     def runtime_info(self, *, service_version: str) -> Dict[str, Any]:
         readiness = _runtime_readiness()
         readiness["prewarm_status"] = dict(self._prewarm_status)
@@ -837,6 +875,8 @@ class NativeWorldModelRuntimeStore:
         model_dir = str(readiness.get("model_dir") or "")
         cosmos_repo = str(readiness.get("cosmos_repo") or "")
         production_grade = bool(readiness["ready"] and _env_truthy("NATIVE_WORLD_MODEL_PRODUCTION_GRADE"))
+        runtime_identity = self._selected_runtime_identity(readiness)
+        readiness["selected_runtime_path"] = runtime_identity["selected_runtime_path"]
         return RuntimeMetadata(
             runtime_kind="native_world_model",
             production_grade=production_grade,
@@ -847,12 +887,14 @@ class NativeWorldModelRuntimeStore:
             engine_identity={
                 "engine": "native_site_world_runtime",
                 "mode": "contract_complete_native_backend",
+                "selected_runtime_path": runtime_identity["selected_runtime_path"],
                 "packages": dict(readiness.get("packages") or {}),
                 "cosmos_repo": cosmos_repo,
                 "prewarm_status": dict(self._prewarm_status),
             },
             model_identity={
-                "model_family": "cosmos_swm_native",
+                "model_family": runtime_identity["model_family"],
+                "selected_runtime_path": runtime_identity["selected_runtime_path"],
                 "model_id": str(os.getenv("COSMOS_MODEL_ID") or os.getenv("NATIVE_WORLD_MODEL_ID") or "unconfigured"),
                 "model_dir": model_dir,
                 "model_ready": bool(readiness["model_ready"]),
@@ -866,7 +908,10 @@ class NativeWorldModelRuntimeStore:
                 "authoritative_state": True,
                 "restart_safe": True,
                 "deterministic_replay": True,
-                "render_source": "cosmos_zero_ft_native",
+                "render_source": runtime_identity["render_source"],
+                "async_cosmos_refinement_enabled": runtime_identity[
+                    "async_cosmos_refinement_enabled"
+                ],
             },
             capabilities={
                 "site_world_package_registration": True,
