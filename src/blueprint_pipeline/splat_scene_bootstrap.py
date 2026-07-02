@@ -50,7 +50,10 @@ from .gaussian_splat_decode import (
 from .scene_placement import SceneObject
 from .scene_placement.perception_fusion import MultiViewPerceptionSceneSpatialIndex
 from .scene_placement.stance_cameras import to_splat_render_specs
-from .scene_placement.target_resolver import is_openable_target
+from .scene_placement.target_resolver import (
+    _canonical_group_for_token,
+    is_openable_target,
+)
 from .splat_depth import depth_provider_for_camera
 
 BOOTSTRAP_SCHEMA_VERSION = "splat_scene_bootstrap.v1"
@@ -80,6 +83,26 @@ _DETECT_PROMPT = (
 # Objects bigger than this on any axis are furniture/structure, not pick-up-able.
 _PICKUP_MAX_EXTENT_M = 0.6
 _PICKUP_MAX_Z_M = 1.6
+# Detections below this confidence are dropped before fusion — VLM detectors
+# hedge with low-confidence guesses that only pollute the catalog.
+DEFAULT_MIN_DETECTION_CONFIDENCE = 0.65
+
+
+def canonicalize_detection_label(label: str) -> str:
+    """Map a free-form VLM label onto its canonical fixture group when known.
+
+    The same physical object gets different names from different viewpoints
+    ("desk" vs "table", "shelf" vs "cabinet"); multi-view fusion clusters by
+    label, so without canonicalization cross-view matches never form. Tokens
+    with a synonym group collapse to the group name; unknown labels pass
+    through normalized (lowercase, underscores).
+    """
+    tokens = str(label or "").strip().lower().replace("_", " ").split()
+    for token in tokens:
+        group = _canonical_group_for_token(token)
+        if group:
+            return group
+    return "_".join(tokens)
 
 
 def _repo_root() -> Path:
@@ -283,7 +306,7 @@ def _gemini_detect_image(
 
 
 def gemini_view_detector(png_path: Path, camera: Mapping[str, object]) -> List[dict]:
-    """Default :data:`DetectFn`: Gemini 2D boxes on one rendered view."""
+    """Gemini 2D boxes on one rendered view."""
     raw = _gemini_detect_image(Path(png_path).read_bytes())
     records = _extract_json_list(raw)
     return detections_from_gemini_boxes(
@@ -291,6 +314,89 @@ def gemini_view_detector(png_path: Path, camera: Mapping[str, object]) -> List[d
         width=int(camera["width"]),  # type: ignore[arg-type]
         height=int(camera["height"]),  # type: ignore[arg-type]
     )
+
+
+def _openai_detect_image(image_bytes: bytes, *, model: str = "gpt-4o-mini") -> str:
+    """OpenAI vision fallback detector (plain REST, no SDK dependency).
+
+    Same prompt and the same normalized ``box_2d`` output contract as the Gemini
+    call, so one parser serves both. Used when no working Gemini key is present.
+    """
+    import base64
+    import urllib.request
+
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError("missing_OPENAI_API_KEY")
+    payload = {
+        "model": model,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,"
+                            + base64.b64encode(image_bytes).decode("ascii")
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": _DETECT_PROMPT
+                        + '\n\nWrap the list in an object: {"objects": [...]}.',
+                    },
+                ],
+            }
+        ],
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    return str(body["choices"][0]["message"]["content"] or "")
+
+
+def openai_view_detector(png_path: Path, camera: Mapping[str, object]) -> List[dict]:
+    """OpenAI-backed :data:`DetectFn` (same output contract as the Gemini one)."""
+    raw = _openai_detect_image(Path(png_path).read_bytes())
+    records = _extract_json_list(raw)
+    return detections_from_gemini_boxes(
+        records,
+        width=int(camera["width"]),  # type: ignore[arg-type]
+        height=int(camera["height"]),  # type: ignore[arg-type]
+    )
+
+
+def default_view_detector(png_path: Path, camera: Mapping[str, object]) -> List[dict]:
+    """Default :data:`DetectFn`: Gemini first, OpenAI vision as the fallback.
+
+    Tries Gemini only when a key is configured; any Gemini failure (revoked key,
+    quota, transient) falls through to OpenAI when ITS key is configured. Raises
+    the original error when no fallback is possible, so the per-view report
+    shows the real cause instead of a generic miss.
+    """
+    has_gemini = bool(
+        (os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+    )
+    has_openai = bool((os.getenv("OPENAI_API_KEY") or "").strip())
+    if has_gemini:
+        try:
+            return gemini_view_detector(png_path, camera)
+        except Exception:
+            if not has_openai:
+                raise
+    if has_openai:
+        return openai_view_detector(png_path, camera)
+    raise RuntimeError("no_vlm_detector_key_available (GOOGLE_GENAI_API_KEY or OPENAI_API_KEY)")
 
 
 # ----------------------------- render the views -----------------------------
@@ -335,18 +441,39 @@ def render_views_with_spark(
         manifest = json.loads(proc.stdout.strip().splitlines()[-1])
     except Exception:  # noqa: BLE001
         manifest = {}
-    if proc.returncode != 0 or manifest.get("status") not in {"completed", "ok"}:
-        return {
-            "status": "blocked",
-            "blockers": ["splat_render_failed"],
-            "returncode": proc.returncode,
-            "stderr_tail": (proc.stderr or "")[-2000:],
-        }
     rendered = {
         str(entry.get("id")): str(entry.get("path"))
         for entry in manifest.get("cameras", [])
         if entry.get("path")
     }
+    harness_ok = proc.returncode == 0 and manifest.get("status") in {"completed", "ok"}
+    if not harness_ok:
+        # The harness can die AFTER writing every frame (e.g. a browser-close
+        # timeout). The PNGs on disk are the actual evidence: if every planned
+        # view exists and is non-trivial, the render succeeded — record the
+        # harness hiccup honestly instead of discarding 20+ minutes of output.
+        on_disk = {
+            str(cam["id"]): str(out_dir / f"{cam['id']}.png")
+            for cam in cameras
+            if (out_dir / f"{cam['id']}.png").is_file()
+            and (out_dir / f"{cam['id']}.png").stat().st_size > 10_000
+        }
+        if len(on_disk) == len(cameras):
+            return {
+                "status": "completed",
+                "rendered": on_disk,
+                "note": "harness_exit_unclean_but_all_views_on_disk",
+                "returncode": proc.returncode,
+                "stderr_tail": (proc.stderr or "")[-800:],
+            }
+        return {
+            "status": "blocked",
+            "blockers": ["splat_render_failed"],
+            "returncode": proc.returncode,
+            "views_on_disk": len(on_disk),
+            "views_planned": len(cameras),
+            "stderr_tail": (proc.stderr or "")[-2000:],
+        }
     return {"status": "completed", "rendered": rendered, "harness_manifest": manifest}
 
 
@@ -427,7 +554,9 @@ def bootstrap_scene_sidecars(
     n_pullbacks: int = 4,
     width: int = 1024,
     height: int = 768,
-    min_views: int = 2,
+    min_views: int = 1,
+    merge_gap: float = 0.75,
+    min_confidence: float = DEFAULT_MIN_DETECTION_CONFIDENCE,
     depth_scale: int = 4,
     render_timeout_seconds: int = 1200,
 ) -> dict:
@@ -509,7 +638,7 @@ def bootstrap_scene_sidecars(
     rendered = render["rendered"]
 
     # 5+6. detect + depth per view
-    detect = detector or gemini_view_detector
+    detect = detector or default_view_detector
     views: List[dict] = []
     detect_stats: List[dict] = []
     for cam in cameras:
@@ -523,6 +652,13 @@ def bootstrap_scene_sidecars(
         except Exception as exc:  # noqa: BLE001 - a failed view degrades coverage, not the run
             detect_stats.append({"view": cam_id, "status": "detector_error", "error": str(exc)[:200]})
             continue
+        # Canonicalize labels (desk->table, shelf->cabinet, ...) so cross-view
+        # fusion can cluster, and drop low-confidence hedge guesses.
+        detections = [
+            {**det, "label": canonicalize_detection_label(str(det.get("label", "")))}
+            for det in detections
+            if float(det.get("confidence", 1.0) or 0.0) >= float(min_confidence)
+        ]
         provider = depth_provider_for_camera(splat, cam, depth_scale=depth_scale)
         views.append({"detections": detections, "depth_provider": provider, "camera": cam})
         detect_stats.append({"view": cam_id, "status": "ok", "detections": len(detections)})
@@ -532,12 +668,16 @@ def bootstrap_scene_sidecars(
         return report
 
     # 7. fuse
-    index = MultiViewPerceptionSceneSpatialIndex(views, min_views=min_views)
+    index = MultiViewPerceptionSceneSpatialIndex(
+        views, min_views=min_views, merge_gap=merge_gap
+    )
     objects = index.objects()
     report["steps"]["fuse"] = {
         "status": "completed",
         "fused_objects": len(objects),
         "min_views": min_views,
+        "merge_gap": merge_gap,
+        "min_confidence": min_confidence,
     }
     if not objects:
         report.update(status="blocked", blockers=["no_fused_objects"])
@@ -566,7 +706,9 @@ __all__ = [
     "bootstrap_scene_sidecars",
     "detections_from_gemini_boxes",
     "estimate_floor_z_from_points",
+    "default_view_detector",
     "gemini_view_detector",
+    "openai_view_detector",
     "labels_payload_from_objects",
     "plan_interior_views",
     "render_views_with_spark",
