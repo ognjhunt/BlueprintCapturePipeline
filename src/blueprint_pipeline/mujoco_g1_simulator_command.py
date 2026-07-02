@@ -4176,7 +4176,9 @@ def run_mujoco_g1_simulator_command(
     collision_proxy_mode: str = "aabb",
 ) -> dict[str, Any]:
     if platform.system().lower() == "linux":
-        os.environ.setdefault("MUJOCO_GL", "egl")
+        # EGL is only needed when frames are rendered; forcing it on GL-less hosts
+        # (CI runners, --skip-render-frames runs) crashes `import mujoco` at EGL load.
+        os.environ.setdefault("MUJOCO_GL", "egl" if render_frames else "disable")
     root = Path(capture_root).resolve()
     output_root = (
         Path(output_dir).resolve()
