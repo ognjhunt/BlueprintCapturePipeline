@@ -71,3 +71,26 @@ Proven examples (2026-07-02): the microwave task above passes all 10 local
 preflight gates for the G1 and a tall-humanoid profile with different
 auto-computed stances; an intentionally oversized 0.7 m-wide profile is
 rejected by the reach gate after 96/98 stance candidates clip.
+
+## Running WAM on a task seed (the correct lane)
+
+Use the **persistent policy+WAM loop**, not the bare closed-loop driver, for
+task-seed WAM generations — real policy actions condition OSCAR, which is what
+keeps the generated video sharp (edge density flat ~0.07–0.09 over 81 frames
+vs immediate decay with proxy-route conditioning):
+
+```bash
+python -m blueprint_pipeline.unitree_groot_n17_sonic_vast_persistent_session \
+  --policy-observation <seed_observation.json> \
+  --provider runpod --loop-step-count 2 \
+  --task-prompt "<task string>" \
+  --task-stance-plan <ABS path> --placement-validation <ABS path> \
+  --manipulation-pov-geometry <ABS path>
+```
+
+Sidecar paths must be ABSOLUTE. The seed observation JSON follows the
+`selected_initial_policy_observation.v1` seed-handoff pattern (see
+`output/sink_faucet_policy_wam_loop_20260702T/sink_faucet_policy_observation.json`
+for a worked example seeded from a real warm-serve render). Never pass
+`--num-frames` below the 81-frame default — short clips look like model
+failure and are useless as rollouts.

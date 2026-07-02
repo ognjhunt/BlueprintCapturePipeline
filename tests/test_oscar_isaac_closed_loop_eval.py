@@ -17,6 +17,7 @@ pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline import oscar_isaac_closed_loop_eval as L
+from blueprint_pipeline.oscar_wam_command_adapter import DEFAULT_NUM_FRAMES
 
 
 def _write_frame(path: Path, seed: int) -> Path:
@@ -1070,7 +1071,7 @@ def test_materialize_projected_skeleton_trace_from_seed_geometry_scales_to_seed(
         for line in out.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert len(rows) == 8
+    assert len(rows) == DEFAULT_NUM_FRAMES
     first = rows[0]
     last = rows[-1]
     assert first["image_size_px"] == [64, 48]
@@ -1642,6 +1643,8 @@ def test_closed_loop_cli_blocks_paid_multi_step_provider_without_projected_skele
     assert readiness["oscar_provider"] == "vast"
     assert readiness["paid_provider_preflight"]["provider"] == "vast"
     assert plan["oscar_provider"] == "vast"
+    assert plan["num_frames_per_step"] == DEFAULT_NUM_FRAMES
+    assert plan["oscar_runtime_settings"]["num_frames"] == DEFAULT_NUM_FRAMES
     assert readiness["seed_conditioning_preflight"]["required"] is True
     assert blocker in readiness["blockers"]
     assert blocker in plan["blockers"]
@@ -2256,3 +2259,23 @@ def test_closed_loop_runpod_paid_preflight_blocks_over_hard_cap(
     preflight = readiness["paid_provider_preflight"]
     assert preflight["status"] == "blocked"
     assert any("hard_cap" in b for b in preflight["blockers"])
+
+
+def test_cli_default_num_frames_is_standard_oscar_clip_length() -> None:
+    """A 'default' generation must be the standard 81-frame (5.4s) OSCAR clip.
+    The old default of 8 produced ~5-frame unusable rollouts that looked like
+    model failure (2026-07-02 sink_faucet incident)."""
+    import argparse
+
+    parser_actions = {}
+    real_parse = argparse.ArgumentParser.parse_args
+    try:
+        argparse.ArgumentParser.parse_args = lambda self, *a, **k: parser_actions.update(
+            {a.dest: a.default for a in self._actions}) or (_ for _ in ()).throw(SystemExit(0))
+        try:
+            L.main(["--start-frame", "x", "--route-file", "y", "--output-dir", "z"])
+        except SystemExit:
+            pass
+    finally:
+        argparse.ArgumentParser.parse_args = real_parse
+    assert parser_actions.get("num_frames") == 81
