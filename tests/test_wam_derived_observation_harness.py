@@ -1456,6 +1456,19 @@ def test_real_provider_backend_records_transformers_sam3_runtime(
     transformers_module.Sam3Model = FakeSam3Model
     transformers_module.Sam3Processor = FakeSam3Processor
     monkeypatch.setitem(sys.modules, "transformers", transformers_module)
+
+    class _FakeNoGrad:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *exc: Any) -> bool:
+            return False
+
+    # the provider imports torch for no_grad inference; keep the test hermetic on hosts
+    # (and CI runners) without the real torch wheel, matching the transformers fake above
+    torch_module = types.ModuleType("torch")
+    torch_module.no_grad = _FakeNoGrad
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
     monkeypatch.setattr(
         real_probe,
         "_module_available",
