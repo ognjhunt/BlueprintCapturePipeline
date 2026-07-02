@@ -59,7 +59,7 @@ def test_registry_returns_known_providers_and_rejects_unknown() -> None:
 def test_list_render_providers_reports_both_with_availability() -> None:
     listed = list_render_providers()
     names = {p["provider"] for p in listed}
-    assert names == {"runpod", "vast"}
+    assert names == {"runpod", "vast", "digitalocean"}
     for entry in listed:
         assert "available" in entry  # bool reflecting credential presence
 
@@ -762,3 +762,119 @@ def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatc
     assert res["instance_id"] == "777"
     create_errors = [a for a in res.get("attempts", []) if a.get("create_http_status") == 400]
     assert create_errors and "ask expired" in str(create_errors[0].get("create_error_body"))
+
+
+def test_default_runpod_gpu_types_exclude_consumer_4090_pool(monkeypatch) -> None:
+    """The GeForce 4090 pool produced ~10 dud nodes on 2026-07-02 (never-started
+    containers, driver segfaults, wedged workers). Default to the datacenter RTX
+    tier; BLUEPRINT_RUNPOD_GPU_TYPES re-adds types for deliberate experiments."""
+    monkeypatch.delenv("BLUEPRINT_RUNPOD_GPU_TYPES", raising=False)
+    spec = _spec()
+    assert "NVIDIA GeForce RTX 4090" not in spec.gpu_types
+    assert spec.gpu_types[0] == "NVIDIA L40S"
+    assert all(("GeForce" not in g) for g in spec.gpu_types)
+
+    monkeypatch.setenv(
+        "BLUEPRINT_RUNPOD_GPU_TYPES",
+        "NVIDIA GeForce RTX 4090, NVIDIA L40S",
+    )
+    spec2 = _spec()
+    assert spec2.gpu_types == ("NVIDIA GeForce RTX 4090", "NVIDIA L40S")
+
+
+# ----------------------------- DigitalOcean GPU Droplets -----------------------------
+
+def test_digitalocean_provider_is_registered() -> None:
+    from blueprint_pipeline.gpu_render_providers import DigitalOceanRenderProvider
+
+    assert "digitalocean" in {p["provider"] for p in list_render_providers()}
+    assert isinstance(get_render_provider("digitalocean"), DigitalOceanRenderProvider)
+
+
+def test_digitalocean_build_request_wraps_worker_in_user_data(monkeypatch, tmp_path: Path) -> None:
+    from blueprint_pipeline.gpu_render_providers import DigitalOceanRenderProvider
+
+    monkeypatch.delenv("BLUEPRINT_DO_GPU_SIZE", raising=False)
+    monkeypatch.delenv("BLUEPRINT_DO_GPU_REGION", raising=False)
+    spec = _spec()
+    body = DigitalOceanRenderProvider().build_request(spec, tmp_path)
+    assert body["size"] == "gpu-6000adax1-48gb"   # RT cores + 48GB default
+    assert body["region"] == "atl1"
+    assert body["image"] == "gpu-h100x1-base"     # NVIDIA AI/ML-ready (drivers+docker)
+    ud = body["user_data"]
+    assert "docker run" in ud and "--gpus all" in ud
+    assert spec.image in ud
+    # env + bootstrap ride base64 so presigned URLs / scripts survive shell quoting
+    assert "base64 -d" in ud
+    assert body["tags"] == ["blueprint-isaac-render"]
+
+
+def test_digitalocean_launch_fail_closed_without_token(monkeypatch, tmp_path: Path) -> None:
+    from blueprint_pipeline.gpu_render_providers import DigitalOceanRenderProvider
+
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tmp_path / "missing"))
+    p = DigitalOceanRenderProvider()
+    res = p.launch(tmp_path, {"name": "x"})
+    assert res["status"] == "blocked"
+    assert "digitalocean_token_missing" in res["blockers"]
+    assert p.available()["available"] is False
+
+
+def test_digitalocean_launch_creates_droplet_and_writes_id(monkeypatch, tmp_path: Path) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    calls = []
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        calls.append((method, path))
+        assert token == "t-redacted"
+        if method == "POST" and path == "/droplets":
+            return 202, {"droplet": {"id": 4242, "status": "new"}}
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    p = G.DigitalOceanRenderProvider()
+    res = p.launch(tmp_path, p.build_request(_spec(), tmp_path))
+    assert res["status"] == "launched"
+    assert res["instance_id"] == "4242"
+    assert res["mode"] == "do_gpu_droplet"
+    assert (tmp_path / "started_do_droplet_id.txt").read_text() == "4242"
+
+
+def test_digitalocean_terminate_deletes_droplet(monkeypatch, tmp_path: Path) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    calls = []
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        calls.append((method, path))
+        return 204, {}
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    res = G.DigitalOceanRenderProvider().terminate("4242")
+    assert res["status"] == "terminated"
+    assert ("DELETE", "/droplets/4242") in calls
+
+
+def test_digitalocean_stop_warns_droplets_bill_while_off(monkeypatch, tmp_path: Path) -> None:
+    """Powered-off droplets still bill full price; stop() must say so instead of
+    silently pretending it saved money."""
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        return 201, {"action": {"id": 1, "status": "in-progress"}}
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    res = G.DigitalOceanRenderProvider().stop("4242")
+    assert res["status"] == "stopped"
+    assert "billing" in json.dumps(res).lower()

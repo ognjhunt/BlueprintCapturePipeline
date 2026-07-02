@@ -230,11 +230,33 @@ def _parse_vast_instance(inst: Mapping[str, Any], *, now: float) -> GpuInstance:
     )
 
 
+DO_API = "https://api.digitalocean.com/v2"
+DO_TERMINAL_STATUSES = {"archive"}
+
+
+def _parse_do_droplet(droplet: Mapping[str, Any], *, now: float) -> GpuInstance:
+    """GPU droplets bill until DESTROYED — powered-off ("off") is still live spend."""
+    size = droplet.get("size") if isinstance(droplet.get("size"), Mapping) else {}
+    status = str(droplet.get("status") or "").lower()
+    started = _iso_to_epoch(droplet.get("created_at"))
+    return GpuInstance(
+        provider="digitalocean",
+        id=str(droplet.get("id") or ""),
+        name=str(droplet.get("name") or ""),
+        state=status or "unknown",
+        booted=status == "active",
+        live=status not in DO_TERMINAL_STATUSES,
+        cost_per_hr=_coerce_float(size.get("price_hourly")) or 0.0,
+        age_seconds=max(0.0, now - started) if started is not None else None,
+    )
+
+
 def collect_instances(
     *,
     now: float,
     runpod_pods: Sequence[Mapping[str, Any]] | None = None,
     vast_instances: Sequence[Mapping[str, Any]] | None = None,
+    do_droplets: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[GpuInstance]:
     """Parse raw provider JSON rows into :class:`GpuInstance` records (no network)."""
     instances: list[GpuInstance] = []
@@ -244,6 +266,9 @@ def collect_instances(
     for inst in vast_instances or []:
         if isinstance(inst, Mapping):
             instances.append(_parse_vast_instance(inst, now=now))
+    for droplet in do_droplets or []:
+        if isinstance(droplet, Mapping):
+            instances.append(_parse_do_droplet(droplet, now=now))
     return instances
 
 
@@ -316,6 +341,21 @@ def fetch_vast_instances(key: str, *, timeout: int = 30) -> list[dict[str, Any]]
     return _rows_from_payload(payload, "instances", "results", "data")
 
 
+def fetch_do_droplets(token: str, *, timeout: int = 30) -> list[dict[str, Any]]:
+    """Only GPU droplets (size slug gpu-*) count toward render-lane spend."""
+    status, payload = _http_request(
+        "GET", f"{DO_API}/droplets?per_page=200", key=token, timeout=timeout
+    )
+    if status not in (200, 201):
+        _warn(f"digitalocean droplet query failed (http={status})")
+        return []
+    rows = _rows_from_payload(payload, "droplets", "data")
+    return [
+        r for r in rows
+        if str((r.get("size") or {}).get("slug") or r.get("size_slug") or "").startswith("gpu-")
+    ]
+
+
 def _warn(message: str) -> None:
     print(f"warning: {message}", file=sys.stderr)
 
@@ -326,7 +366,7 @@ def _warn(message: str) -> None:
 # The render job writes the launched provider id into the run's
 # object_store_real_run dir: started_pod_id.txt (RunPod) / started_vast_instance_id.txt
 # (Vast). Both confer ownership — protect either against reaping.
-OWNER_ID_FILENAMES = ("started_pod_id.txt", "started_vast_instance_id.txt")
+OWNER_ID_FILENAMES = ("started_pod_id.txt", "started_vast_instance_id.txt", "started_do_droplet_id.txt")
 
 
 def _iter_owner_id_files(
@@ -590,7 +630,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     runpod_key = _read_secret("runpod_api_key")
     vast_key = _read_secret("vast_api_key")
-    if not runpod_key and not vast_key:
+    do_token = _read_secret("digitalocean_api_token")
+    if not runpod_key and not vast_key and not do_token:
         print(
             "No file-based GPU credentials found in ~/.blueprint-secrets "
             "(runpod_api_key, vast_api_key); nothing to check."
@@ -602,8 +643,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     vast_instances = (
         fetch_vast_instances(vast_key, timeout=args.timeout) if vast_key else []
     )
+    do_droplets = fetch_do_droplets(do_token, timeout=args.timeout) if do_token else []
     instances = collect_instances(
-        now=now, runpod_pods=runpod_pods, vast_instances=vast_instances
+        now=now, runpod_pods=runpod_pods, vast_instances=vast_instances,
+        do_droplets=do_droplets,
     )
 
     roots = [Path(p) for p in (args.output_root or default_output_roots())]

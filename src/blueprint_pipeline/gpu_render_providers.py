@@ -44,6 +44,23 @@ def _read_secret(name: str) -> str | None:
 
 # ----------------------------- neutral launch spec -----------------------------
 
+DEFAULT_RUNPOD_RENDER_GPU_TYPES: tuple = (
+    "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation", "NVIDIA RTX A6000",
+    "NVIDIA L40", "NVIDIA A40",
+)
+
+
+def _runpod_gpu_types_from_env() -> tuple:
+    import os
+
+    raw = (os.getenv("BLUEPRINT_RUNPOD_GPU_TYPES") or "").strip()
+    if raw:
+        types = tuple(t.strip() for t in raw.split(",") if t.strip())
+        if types:
+            return types
+    return DEFAULT_RUNPOD_RENDER_GPU_TYPES
+
+
 @dataclass
 class RenderLaunchSpec:
     """A provider-neutral GPU render launch request.
@@ -64,11 +81,11 @@ class RenderLaunchSpec:
     volume_gb: int = 80
     volume_mount_path: str = "/workspace"
     # RunPod GPU selection (provider GPU type ids, in priority order). All RTX-capable (RT cores
-    # required for Isaac RTX / splat rendering — A100/H100 excluded). Broad list to find capacity.
-    gpu_types: tuple = (
-        "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation", "NVIDIA RTX A6000",
-        "NVIDIA L40", "NVIDIA A40", "NVIDIA GeForce RTX 4090",
-    )
+    # required for Isaac RTX / splat rendering — A100/H100 excluded). Datacenter tier ONLY by
+    # default: the GeForce 4090 pool produced ~10 dud nodes on 2026-07-02 (never-started
+    # containers, driver-550 boot segfaults, wedged workers) while L40S/driver-580 nodes rendered
+    # fine. BLUEPRINT_RUNPOD_GPU_TYPES (comma-separated) re-adds types for deliberate experiments.
+    gpu_types: tuple = field(default_factory=lambda: _runpod_gpu_types_from_env())
     gpu_count: int = 1
     min_vcpu: int = 8
     min_ram_gb: int = 32
@@ -419,15 +436,172 @@ class VastRenderProvider(GpuRenderProvider):
 
 # ----------------------------- registry -----------------------------
 
+# ----------------------------- DigitalOcean GPU Droplets -----------------------------
+
+DO_API = "https://api.digitalocean.com/v2"
+DEFAULT_DO_GPU_SIZE = "gpu-6000adax1-48gb"   # RTX 6000 Ada: 3rd-gen RT cores + 48GB, $1.57/hr
+DEFAULT_DO_GPU_REGION = "atl1"               # GPU droplet regions: nyc2, tor1, atl1, ric1, ams3
+DO_GPU_BASE_IMAGE = "gpu-h100x1-base"        # "NVIDIA AI/ML Ready": Ubuntu + drivers + docker
+
+
+def _do_call(method: str, path: str, body: dict | None = None, *, token: str, timeout: int = 90):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        DO_API + path, data=data, method=method,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode()
+            return r.status, (json.loads(raw) if raw.strip() else {})
+    except urllib.error.HTTPError as e:
+        raw = ""
+        try:
+            raw = (e.read() or b"")[:400].decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            pass
+        return e.code, {"error": raw}
+
+
+def _do_user_data(spec: RenderLaunchSpec) -> str:
+    """Cloud-init script: run the worker container on the NVIDIA-ready droplet.
+
+    Env values (presigned URLs) and the bootstrap script ride base64 so no shell
+    quoting can corrupt them; the container runs exactly like RunPod's
+    dockerEntrypoint/dockerStartCmd pair.
+    """
+    import base64
+    import shlex
+
+    env_file = "\n".join(f"{k}={v}" for k, v in spec.env.items())
+    env_b64 = base64.b64encode(env_file.encode()).decode()
+    argv_b64 = base64.b64encode(json.dumps(list(spec.bootstrap_argv)).encode()).decode()
+    entrypoint = shlex.quote(spec.entrypoint[0] if spec.entrypoint else "bash")
+    return f"""#!/bin/bash
+set -x
+echo {env_b64} | base64 -d > /root/blueprint_worker.env
+echo {argv_b64} | base64 -d > /root/blueprint_argv.json
+python3 - <<'PY'
+import json, shlex
+argv = json.load(open("/root/blueprint_argv.json"))
+open("/root/blueprint_run.sh", "w").write(" ".join(shlex.quote(a) for a in argv))
+PY
+docker pull {shlex.quote(spec.image)}
+docker run -d --gpus all --name blueprint-worker \\
+  --env-file /root/blueprint_worker.env \\
+  --shm-size=8g \\
+  --entrypoint {entrypoint} \\
+  {shlex.quote(spec.image)} $(cat /root/blueprint_run.sh)
+"""
+
+
+class DigitalOceanRenderProvider(GpuRenderProvider):
+    """GPU Droplets (Paperspace's successor inside DigitalOcean) as a render leg.
+
+    VM-based: the NVIDIA AI/ML-ready image boots with drivers + docker, and
+    cloud-init user_data starts the same worker container RunPod runs. Slower
+    first boot than a container host (VM provision + image pull) but a
+    dedicated droplet, not a marketplace node lottery. Droplets bill until
+    DESTROYED — ``stop`` powers off but keeps billing; prefer ``terminate``.
+    """
+
+    name = "digitalocean"
+
+    def _token(self) -> str | None:
+        import os
+
+        path = Path(
+            (os.getenv("DIGITALOCEAN_TOKEN_FILE") or "").strip()
+            or "~/.blueprint-secrets/digitalocean_api_token"
+        ).expanduser()
+        try:
+            return path.read_text().strip() or None
+        except OSError:
+            return None
+
+    def available(self) -> dict:
+        ok = self._token() is not None
+        return {"provider": self.name, "available": ok,
+                "reason": None if ok else "digitalocean_token_missing"}
+
+    def build_request(self, spec: RenderLaunchSpec, job_dir: Path) -> dict:
+        import os
+
+        return {
+            "name": spec.name,
+            "region": (os.getenv("BLUEPRINT_DO_GPU_REGION") or "").strip() or DEFAULT_DO_GPU_REGION,
+            "size": (os.getenv("BLUEPRINT_DO_GPU_SIZE") or "").strip() or DEFAULT_DO_GPU_SIZE,
+            "image": DO_GPU_BASE_IMAGE,
+            "user_data": _do_user_data(spec),
+            "tags": ["blueprint-isaac-render"],
+            "ipv6": False,
+            "monitoring": False,
+        }
+
+    def launch(
+        self,
+        job_dir: Path,
+        request: dict,
+        *,
+        cold: bool = False,
+        allow_cold_fallback: bool = True,
+    ) -> dict:
+        token = self._token()
+        if not token:
+            return {"status": "blocked", "blockers": ["digitalocean_token_missing"]}
+        s, body = _do_call("POST", "/droplets", request, token=token)
+        if s not in (201, 202) or not isinstance(body, dict) or not body.get("droplet"):
+            return {"status": "blocked", "blockers": [f"do_droplet_create_http_{s}"],
+                    "detail": body if isinstance(body, dict) else {}}
+        iid = str(body["droplet"].get("id"))
+        (Path(job_dir) / "started_do_droplet_id.txt").write_text(iid)
+        return {"status": "launched", "instance_id": iid, "mode": "do_gpu_droplet",
+                "attempts": [{"create_status": s, "droplet_id": iid}]}
+
+    def inspect(self, instance_id: str) -> dict:
+        token = self._token()
+        if not token:
+            return {"status": "unavailable", "reason": "digitalocean_token_missing",
+                    "instance_id": instance_id}
+        s, body = _do_call("GET", f"/droplets/{instance_id}", token=token)
+        droplet = (body or {}).get("droplet") if isinstance(body, dict) else None
+        return {"status": "ok" if s == 200 else "unavailable", "http": s,
+                "instance_id": instance_id,
+                "droplet_status": (droplet or {}).get("status"),
+                "raw_provider_response_recorded": False}
+
+    def stop(self, instance_id: str) -> dict:
+        token = self._token()
+        if not token:
+            return {"status": "blocked", "blockers": ["digitalocean_token_missing"]}
+        s, _body = _do_call("POST", f"/droplets/{instance_id}/actions",
+                            {"type": "power_off"}, token=token)
+        return {"status": "stopped" if s in (200, 201) else "stop_failed", "http": s,
+                "warning": "powered-off droplets keep full billing until destroyed; "
+                           "use terminate() to stop spend"}
+
+    def terminate(self, instance_id: str) -> dict:
+        token = self._token()
+        if not token:
+            return {"status": "blocked", "blockers": ["digitalocean_token_missing"]}
+        s, _body = _do_call("DELETE", f"/droplets/{instance_id}", token=token)
+        if s in (204, 404):
+            return {"status": "terminated", "http": s, "already_gone": s == 404}
+        return {"status": "terminate_failed", "http": s}
+
+
 def get_render_provider(name: str | None, *, warm_candidates: Sequence[str] = ()) -> GpuRenderProvider:
     key = (name or "runpod").strip().lower()
     if key == "runpod":
         return RunPodRenderProvider(warm_candidates=warm_candidates)
     if key == "vast":
         return VastRenderProvider()
-    raise ValueError(f"unknown_render_provider:{name!r} (known: runpod, vast)")
+    if key == "digitalocean":
+        return DigitalOceanRenderProvider()
+    raise ValueError(f"unknown_render_provider:{name!r} (known: runpod, vast, digitalocean)")
 
 
 def list_render_providers() -> list[dict]:
     """Report each provider and whether its credentials are present in this env."""
-    return [RunPodRenderProvider().available(), VastRenderProvider().available()]
+    return [RunPodRenderProvider().available(), VastRenderProvider().available(),
+            DigitalOceanRenderProvider().available()]

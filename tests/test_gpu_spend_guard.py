@@ -397,3 +397,31 @@ def test_main_reap_terminates_only_unowned_dud(patched_guard, capsys) -> None:
     assert all("pod-healthy" not in u for u in terminated)
     assert all("pod-owned" not in u for u in terminated)
     assert "rp-super-secret" not in out
+
+
+def test_parse_digitalocean_droplet_counts_as_live_spend() -> None:
+    """GPU droplets bill until DESTROYED (even powered off) — the guard must list
+    them or a leaked droplet is invisible (the 2026-07-02 WAM-pod leak lesson,
+    provider-generalized)."""
+    from scripts.gpu_spend_guard import _parse_do_droplet, collect_instances
+
+    droplet = {
+        "id": 4242,
+        "name": "blueprint-isaac-render",
+        "status": "active",
+        "created_at": "2026-07-02T17:00:00Z",
+        "size": {"slug": "gpu-6000adax1-48gb", "price_hourly": 1.57},
+    }
+    inst = _parse_do_droplet(droplet, now=1_800_000_000.0)
+    assert inst.provider == "digitalocean"
+    assert inst.id == "4242"
+    assert inst.live is True
+    assert inst.cost_per_hr == 1.57
+
+    off = dict(droplet, status="off")
+    inst_off = _parse_do_droplet(off, now=1_800_000_000.0)
+    assert inst_off.live is True  # off still bills!
+    assert inst_off.state == "off"
+
+    listed = collect_instances(now=1_800_000_000.0, do_droplets=[droplet])
+    assert [i.provider for i in listed] == ["digitalocean"]
