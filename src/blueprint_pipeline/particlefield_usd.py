@@ -106,6 +106,11 @@ def write_particlefield_usd(
 
     stage = Usd.Stage.CreateNew(str(out_path))
     UsdGeom.SetStageUpAxis(stage, getattr(UsdGeom.Tokens, "z" if up_axis.upper() == "Z" else "y"))
+    # Splat centers/scales are METERS (straight from the 3DGS PLY). Without this,
+    # the stage defaults to Kit's 0.01 (centimeters) and unit-aware consumers
+    # mis-correct anything referenced in from meter-authored assets (a G1 robot
+    # referenced into a cm-declared stage renders at 1/100 scale).
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     UsdGeom.Xform.Define(stage, "/World")
     prim = stage.DefinePrim(prim_path, PARTICLEFIELD_SCHEMA)
     if not prim or not prim.IsValid():
