@@ -58,6 +58,127 @@ class SplatData:
         return self.xyz.min(axis=0), self.xyz.max(axis=0)
 
 
+@dataclass
+class CompressedSplatChunkBounds:
+    """Per-chunk quantization bounds read straight out of a compressed PLY header.
+
+    The PlayCanvas compressed format stores, per 256-splat chunk, the float
+    min/max of the splat CENTER positions (plus scale/color ranges) as plain
+    ``float`` properties of the ``chunk`` element — no bit unpacking required to
+    read them. That is enough for CPU scene analysis (world AABB, floor-height
+    estimate, label-alignment checks) without decoding 600k packed vertices or
+    shelling out to node.
+    """
+
+    chunk_count: int
+    vertex_count: int
+    min_xyz: np.ndarray  # (C, 3) float32 — per-chunk position minima
+    max_xyz: np.ndarray  # (C, 3) float32 — per-chunk position maxima
+
+    def aabb(self) -> tuple[np.ndarray, np.ndarray]:
+        return self.min_xyz.min(axis=0), self.max_xyz.max(axis=0)
+
+    def floor_z_estimate(
+        self,
+        *,
+        bin_m: float = 0.05,
+        band_m: float = 2.0,
+        prominence: float = 0.35,
+    ) -> float:
+        """Robust floor height: the LOWEST prominent mode of per-chunk z-minima.
+
+        Neither the straight minimum (one floater away from nonsense) nor a low
+        percentile (under-floor reconstruction fuzz spans tens of centimeters)
+        is reliable; the floor plane is where chunk minima PILE UP. We histogram
+        the minima above a floater-trimmed lower bound and return the center of
+        the first (lowest) bin whose count reaches ``prominence`` of the tallest
+        bin — sparse under-floor fuzz is skipped, dense wall/furniture bands
+        higher up never shadow the floor because we scan bottom-up.
+        """
+        z = self.min_xyz[:, 2].astype(np.float64)
+        lo = float(np.percentile(z, 0.5))
+        band = z[(z >= lo) & (z <= lo + band_m)]
+        if band.size == 0:
+            return lo
+        edges = np.arange(lo, lo + band_m + bin_m, bin_m)
+        hist, edges = np.histogram(band, bins=edges)
+        if hist.size == 0 or hist.max() == 0:
+            return lo
+        threshold = max(1.0, prominence * float(hist.max()))
+        for i, count in enumerate(hist):
+            if count >= threshold:
+                return float(0.5 * (edges[i] + edges[i + 1]))
+        return float(np.percentile(band, 5.0))
+
+
+_CHUNK_BOUND_PROPS = ("min_x", "min_y", "min_z", "max_x", "max_y", "max_z")
+
+
+def read_compressed_ply_chunk_bounds(path: str | Path) -> CompressedSplatChunkBounds:
+    """Read the ``chunk`` element bounds of a PlayCanvas compressed 3DGS PLY.
+
+    Raises ``ValueError`` when the file is not the compressed multi-element
+    layout (use :func:`read_standard_3dgs_ply` for standard PLYs).
+    """
+    path = Path(path)
+    with open(path, "rb") as handle:
+        magic = handle.readline().strip()
+        if magic != b"ply":
+            raise ValueError("not a PLY file (missing 'ply' magic)")
+        fmt: str | None = None
+        elements: list[tuple[str, int, list[tuple[str, str]]]] = []
+        while True:
+            line = handle.readline()
+            if not line:
+                raise ValueError("unexpected EOF in PLY header")
+            text = line.decode("latin-1").strip()
+            if text.startswith("format"):
+                fmt = text.split()[1]
+            elif text.startswith("element"):
+                parts = text.split()
+                elements.append((parts[1], int(parts[2]), []))
+            elif text.startswith("property") and elements:
+                parts = text.split()
+                elements[-1][2].append((parts[1], parts[-1]))
+            elif text == "end_header":
+                break
+        offset = handle.tell()
+    if fmt != "binary_little_endian":
+        raise ValueError(f"unsupported PLY format '{fmt}' (need binary_little_endian)")
+    names = [name for name, _, _ in elements]
+    if "chunk" not in names:
+        raise ValueError(
+            "not_a_compressed_splat_ply: no 'chunk' element "
+            "(use read_standard_3dgs_ply for standard 3DGS PLYs)"
+        )
+    if names[0] != "chunk":
+        raise ValueError("unsupported compressed PLY layout: 'chunk' is not the first element")
+    _, chunk_count, chunk_props = elements[0]
+    if any(ptype not in _FLOAT_PLY_TYPES for ptype, _ in chunk_props):
+        raise ValueError("non-float chunk property; unsupported compressed PLY variant")
+    prop_names = [name for _, name in chunk_props]
+    index = {name: i for i, name in enumerate(prop_names)}
+    missing = [key for key in _CHUNK_BOUND_PROPS if key not in index]
+    if missing:
+        raise ValueError(f"missing chunk bound properties: {missing}")
+    vertex_count = next((count for name, count, _ in elements if name == "vertex"), 0)
+    ncol = len(chunk_props)
+    flat = np.fromfile(path, dtype="<f4", count=chunk_count * ncol, offset=offset)
+    if flat.size != chunk_count * ncol:
+        raise ValueError(
+            f"truncated chunk element: expected {chunk_count * ncol} floats, got {flat.size}"
+        )
+    arr = flat.reshape(chunk_count, ncol)
+    min_xyz = arr[:, [index["min_x"], index["min_y"], index["min_z"]]].astype(np.float32, copy=True)
+    max_xyz = arr[:, [index["max_x"], index["max_y"], index["max_z"]]].astype(np.float32, copy=True)
+    return CompressedSplatChunkBounds(
+        chunk_count=chunk_count,
+        vertex_count=vertex_count,
+        min_xyz=min_xyz,
+        max_xyz=max_xyz,
+    )
+
+
 def _parse_ply_header(handle) -> tuple[str, int, list[tuple[str, str]], int]:
     """Return (format, vertex_count, [(type, name)], data_offset). Rejects multi-element
     (compressed) PLYs — those must go through :func:`convert_to_standard_ply` first."""

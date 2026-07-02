@@ -431,6 +431,59 @@ def resolve_target_by_label(
     return None
 
 
+# Instance tokens like ``pot_88`` / ``basin_cabinet_116`` name a SPECIFIC labeled
+# instance (InteriorGS task prompts embed them). The trailing digits are the
+# instance id; the prefix is the (normalized) label.
+_INSTANCE_TOKEN_RE = re.compile(r"\b([a-z][a-z0-9_]*?)_(\d+)\b")
+
+
+def resolve_target_by_instance(
+    task: str,
+    objects: List[SceneObject],
+) -> Optional[SceneObject]:
+    """Resolve ``<label>_<id>`` instance tokens to the exact labeled object.
+
+    Strongest, cheapest resolution tier for labeled scenes (InteriorGS): a task
+    like "Pick up pot_88 and place it in the target zone" names instance ``88``
+    directly, so no fuzzy matching or VLM is needed. Matching order per token:
+
+    1. an object whose ``extra['instance_name']`` equals the full token, then
+    2. an object whose ``id`` (or ``extra['ins_id']``) equals the numeric part
+       AND whose label is consistent with the token's label prefix, then
+    3. a bare id match (label prefix unverified — labels drift across exports).
+
+    Returns ``None`` when no token resolves, so callers can chain the label
+    fallback (:func:`resolve_target_by_label`).
+    """
+    if not objects:
+        return None
+    matches = list(_INSTANCE_TOKEN_RE.finditer((task or "").lower()))
+    if not matches:
+        return None
+    for match in matches:
+        token = match.group(0)
+        label_part, ins_id = match.group(1), match.group(2)
+        exact = [
+            obj for obj in objects
+            if str(obj.extra.get("instance_name", "")).lower() == token
+        ]
+        if exact:
+            return exact[0]
+        by_id = [
+            obj for obj in objects
+            if str(obj.id) == ins_id or str(obj.extra.get("ins_id", "")) == ins_id
+        ]
+        if not by_id:
+            continue
+        consistent = [
+            obj for obj in by_id
+            for label in ((obj.label or "").lower().replace(" ", "_"),)
+            if label and (label in label_part or label_part in label)
+        ]
+        return consistent[0] if consistent else by_id[0]
+    return None
+
+
 def resolve_targets_by_label(task: str, objects: List[SceneObject]) -> list[SceneObject]:
     """Resolve every distinct target group mentioned by ``task`` using the label fallback.
 

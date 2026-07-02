@@ -15,6 +15,15 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
+from .interiorgs_index import (
+    InteriorGSSceneSpatialIndex,
+    InteriorGSStructure,
+    build_interiorgs_probe,
+    load_interiorgs_labels,
+    load_interiorgs_structure,
+    point_in_polygon,
+    supporting_fixtures_for,
+)
 from .perception_index import PerceptionSceneSpatialIndex
 from .perception_fusion import (
     MultiViewPerceptionSceneSpatialIndex,
@@ -33,7 +42,7 @@ from .perception_adapter import (
     depth_provider_from_map,
     detections_from_sam3,
 )
-from .placement import compute_stand_pose
+from .placement import compute_stand_pose, ring_scan_stand_pose
 from .robot_profile import (
     DEFAULT_ROBOT_ID,
     UNITREE_G1_PROFILE,
@@ -59,9 +68,15 @@ from .validation import (
     validate_stand_pose,
     write_placement_validation_report,
 )
+from .stance_cameras import (
+    DEFAULT_STANCE_CAMERA_IDS,
+    stance_task_cameras,
+    to_splat_render_specs,
+)
 from .target_resolver import (
     GenerateFn,
     resolve_target,
+    resolve_target_by_instance,
     resolve_target_by_label,
 )
 from .types import Probe, SceneObject, SceneSpatialIndex, StandPose
@@ -79,6 +94,17 @@ __all__ = [
     "Probe",
     "UsdSceneSpatialIndex",
     "PerceptionSceneSpatialIndex",
+    "InteriorGSSceneSpatialIndex",
+    "InteriorGSStructure",
+    "build_interiorgs_probe",
+    "load_interiorgs_labels",
+    "load_interiorgs_structure",
+    "point_in_polygon",
+    "supporting_fixtures_for",
+    "stance_task_cameras",
+    "to_splat_render_specs",
+    "DEFAULT_STANCE_CAMERA_IDS",
+    "resolve_target_by_instance",
     "MultiViewPerceptionSceneSpatialIndex",
     "fuse_scene_objects",
     "aabb_iou",
@@ -93,6 +119,7 @@ __all__ = [
     "resolve_target",
     "resolve_target_by_label",
     "compute_stand_pose",
+    "ring_scan_stand_pose",
     "RobotProfile",
     "UNITREE_G1_PROFILE",
     "DEFAULT_ROBOT_ID",
@@ -127,18 +154,23 @@ __all__ = [
 def build_scene_index(backend: str, **kw) -> SceneSpatialIndex:
     """Construct a spatial index for the chosen ``backend``.
 
-    ``backend`` is ``"usd"`` (walk a stage / .usd path) or ``"perception"`` (unproject
-    2D detections + depth). Keyword args are forwarded verbatim to the backend's
-    constructor, so this is just a thin, swap-friendly entry point — callers name the
-    source of truth and get a :class:`SceneSpatialIndex` without importing the concrete
-    class.
+    ``backend`` is ``"usd"`` (walk a stage / .usd path), ``"perception"`` (unproject
+    2D detections + depth), or ``"interiorgs"`` (labeled 3DGS splat scene sidecars:
+    ``labels.json`` + optional ``structure.json``). Keyword args are forwarded verbatim
+    to the backend's constructor, so this is just a thin, swap-friendly entry point —
+    callers name the source of truth and get a :class:`SceneSpatialIndex` without
+    importing the concrete class.
     """
     key = (backend or "").strip().lower()
     if key == "usd":
         return UsdSceneSpatialIndex(**kw)
     if key == "perception":
         return PerceptionSceneSpatialIndex(**kw)
-    raise ValueError(f"unknown scene-index backend: {backend!r} (expected 'usd' or 'perception')")
+    if key == "interiorgs":
+        return InteriorGSSceneSpatialIndex(**kw)
+    raise ValueError(
+        f"unknown scene-index backend: {backend!r} (expected 'usd', 'perception', or 'interiorgs')"
+    )
 
 
 def place_robot_for_task(

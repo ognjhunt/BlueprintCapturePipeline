@@ -356,3 +356,89 @@ def compute_stand_pose(
             f"the most-open direction"
         ),
     )
+
+
+def ring_scan_stand_pose(
+    target: SceneObject,
+    *,
+    probe: Probe,
+    floor_z: float = 0.0,
+    pelvis_height: Optional[float] = None,
+    standing_distance: Optional[float] = None,
+    max_standing_distance: Optional[float] = None,
+    radial_step: float = 0.08,
+    n_azimuths: int = 36,
+    robot_profile: Optional["RobotProfile"] = None,
+) -> StandPose:
+    """Dense annulus scan around the target — the fallback when ray probing fails.
+
+    :func:`compute_stand_pose` probes straight rays THROUGH the target's footprint
+    center, which fails for a target pinned near a wall: every axis-aligned ray
+    from its center clips the wall band, even though a laterally-offset stance
+    half a footprint to the side is wide open (a rice cooker at the wall end of a
+    kitchen counter). This scans the full ring — ``n_azimuths`` bearings x radii
+    from ``standing_distance`` to ``max_standing_distance`` past the target
+    surface — and returns the CLOSEST clear spot, yawed at the target centroid.
+
+    Radii are center-to-surface (same convention as ``standing_distance`` in
+    :func:`compute_stand_pose`); keep ``max_standing_distance`` within the
+    validator's standoff ceiling or the winning spot may pass the probe but fail
+    the standoff gate. Returns ``clear=False`` (positioned at the target
+    footprint center direction of the first bearing) when the whole annulus is
+    blocked — the caller decides whether to accept, re-scope, or recapture.
+    """
+    pelvis_height = _resolve(pelvis_height, robot_profile, "pelvis_height_m", 0.79)
+    standing_distance = _resolve(standing_distance, robot_profile, "standing_distance_m", 0.55)
+    if max_standing_distance is None:
+        max_standing_distance = standing_distance + 0.6
+    degenerate_reason = _target_degeneracy_reason(target)
+    if degenerate_reason is not None:
+        return _degenerate_target_stand_pose(
+            target, reason=degenerate_reason, pelvis_height=pelvis_height, floor_z=floor_z
+        )
+    cx, cy = target.footprint_center()
+    centroid_xy = (target.centroid[0], target.centroid[1])
+    z = floor_z + pelvis_height
+    best: Tuple[float, Vec3, float] | None = None  # (distance, pose, standoff)
+    for k in range(max(1, int(n_azimuths))):
+        theta = 2.0 * math.pi * k / max(1, int(n_azimuths))
+        direction = (math.cos(theta), math.sin(theta))
+        half = _half_extent_along(target, direction)
+        out = half + float(standing_distance)
+        ceiling = half + float(max_standing_distance)
+        while out <= ceiling + 1e-9:
+            pose: Vec3 = (cx + direction[0] * out, cy + direction[1] * out, z)
+            yaw = _yaw_towards((pose[0], pose[1]), centroid_xy)
+            if probe(pose, yaw) == 0:
+                dist = math.hypot(pose[0] - cx, pose[1] - cy)
+                if best is None or dist < best[0]:
+                    best = (dist, pose, out - half)
+                break  # nearest clear radius on this bearing; move to the next
+            out += float(radial_step)
+    if best is not None:
+        _dist, pose, standoff = best
+        yaw = _yaw_towards((pose[0], pose[1]), centroid_xy)
+        return StandPose(
+            position=pose,
+            yaw=yaw,
+            target_id=target.id,
+            clear=True,
+            standoff_m=standoff,
+            notes=(
+                f"ring-scan stance; standoff {standoff:.2f} m from '{target.label}' "
+                f"({n_azimuths} bearings)"
+            ),
+        )
+    fallback_pose: Vec3 = (cx + float(standing_distance), cy, z)
+    return StandPose(
+        position=fallback_pose,
+        yaw=_yaw_towards((fallback_pose[0], fallback_pose[1]), centroid_xy),
+        target_id=target.id,
+        clear=False,
+        standoff_m=float(standing_distance),
+        notes=(
+            f"ring-scan found no clear stance for '{target.label}' "
+            f"({n_azimuths} bearings x radii {standing_distance:.2f}-"
+            f"{max_standing_distance:.2f} m past the surface)"
+        ),
+    )
