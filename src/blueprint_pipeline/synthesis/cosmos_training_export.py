@@ -59,6 +59,20 @@ def _normalized_intrinsics(record: Mapping[str, Any]) -> Dict[str, float]:
     }
 
 
+def _pose_matrix(record: Mapping[str, Any]) -> np.ndarray | None:
+    raw_pose = record.get("T_world_camera")
+    if raw_pose is None:
+        return None
+    pose = np.array(raw_pose, dtype=np.float32)
+    if pose.ndim == 1 and pose.size == 16:
+        pose = pose.reshape(4, 4)
+    if pose.shape != (4, 4):
+        return None
+    if not np.isfinite(pose).all():
+        return None
+    return pose
+
+
 def _split_name(frame_id: str) -> str:
     digest = hashlib.sha256(frame_id.encode("utf-8")).hexdigest()
     return "val" if int(digest[:2], 16) < 51 else "train"
@@ -202,6 +216,7 @@ def export_cosmos_training_substrate(
 
     paired_rows: List[Dict[str, Any]] = []
     k_reference_rows: List[Dict[str, Any]] = []
+    skipped_pose_rows: List[Dict[str, Any]] = []
     split_summary = {"train": 0, "val": 0}
 
     for selection in list(reference_selection_manifest.get("entries") or []):
@@ -218,14 +233,19 @@ def export_cosmos_training_substrate(
         if not references:
             continue
         frame_id = str(record.get("frame_id") or "").strip()
+        target_T = _pose_matrix(record)
+        if target_T is None:
+            skipped_pose_rows.append(
+                {
+                    "target_index": target_index,
+                    "target_frame_id": frame_id or None,
+                    "reason": "target_T_world_camera_missing_or_invalid",
+                }
+            )
+            continue
         split = _split_name(frame_id or f"frame_{target_index}")
         split_summary[split] += 1
         intrinsics = _normalized_intrinsics(record)
-        target_T = np.array(record.get("T_world_camera") or np.eye(4), dtype=np.float32)
-        if target_T.ndim == 1 and target_T.size == 16:
-            target_T = target_T.reshape(4, 4)
-        if target_T.shape != (4, 4):
-            target_T = np.eye(4, dtype=np.float32)
         plucker = compute_plucker_map(
             T_world_camera=target_T,
             intrinsics=intrinsics,
@@ -485,6 +505,8 @@ def export_cosmos_training_substrate(
         "k_reference_example_count": len(k_reference_rows),
         "selected_target_count": int(reference_selection_manifest.get("selected_target_count") or 0),
         "skipped_target_count": int(reference_selection_manifest.get("skipped_target_count") or 0),
+        "skipped_missing_pose_count": len(skipped_pose_rows),
+        "skipped_missing_pose_rows": skipped_pose_rows,
         "rejected_near_duplicate_count": int(reference_selection_manifest.get("rejected_near_duplicate_count") or 0),
         "train_count": split_summary["train"],
         "val_count": split_summary["val"],

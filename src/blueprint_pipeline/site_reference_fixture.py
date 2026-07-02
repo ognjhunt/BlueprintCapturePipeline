@@ -113,10 +113,10 @@ def _write_source_bundle(source_bundle: Path) -> None:
         {
             **common_identity,
             "generated_at": FIXTURE_GENERATED_AT,
-            "capture_source": "glasses",
-            "source_device": "meta_glasses",
-            "capture_modality": "glasses_video_only",
-            "capture_profile_id": "glasses_pov",
+            "capture_source": "iphone",
+            "source_device": "iphone_arkit_fixture",
+            "capture_modality": "iphone_arkit_lidar",
+            "capture_profile_id": "iphone_arkit_lidar",
             "video_uri": "walkthrough.mov",
             "width": 640,
             "height": 480,
@@ -147,6 +147,7 @@ def _write_source_bundle(source_bundle: Path) -> None:
             "capture_mode": {
                 "requested_mode": "site_world_candidate",
                 "requested_output": "site_world_candidate",
+                "resolved_mode": "site_world_candidate",
             },
             "capture_rights": {
                 "derived_scene_generation_allowed": True,
@@ -161,8 +162,8 @@ def _write_source_bundle(source_bundle: Path) -> None:
         raw_root / "capture_context.json",
         {
             **common_identity,
-            "captureSource": "glasses",
-            "captureModality": "glasses_video_only",
+            "captureSource": "iphone",
+            "captureModality": "iphone_arkit_lidar",
             "intake_complete": True,
             "disableDefaultPreview": True,
         },
@@ -234,6 +235,68 @@ def _write_source_bundle(source_bundle: Path) -> None:
         },
     )
     (raw_root / "walkthrough.mov").write_bytes(b"blueprint-site-reference-fixture-video\n")
+    _write_arkit_geometry_fixture(raw_root)
+
+
+def _write_arkit_geometry_fixture(raw_root: Path) -> None:
+    arkit_root = raw_root / "arkit"
+    frames_dir = arkit_root / "frames"
+    depth_dir = arkit_root / "depth"
+    confidence_dir = arkit_root / "confidence"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    depth_dir.mkdir(parents=True, exist_ok=True)
+    confidence_dir.mkdir(parents=True, exist_ok=True)
+    intrinsics = {
+        "fx": 520.0,
+        "fy": 520.0,
+        "cx": 32.0,
+        "cy": 24.0,
+        "width": 64,
+        "height": 48,
+    }
+    write_json(arkit_root / "intrinsics.json", intrinsics)
+    pose_rows: List[Dict[str, Any]] = []
+    frame_rows: List[Dict[str, Any]] = []
+    for frame_index in range(4):
+        frame_id = f"{frame_index:06d}"
+        checker = (np.indices((48, 64)).sum(axis=0) % 2).astype(np.float32) * 255.0
+        image = np.repeat(checker[:, :, None], 3, axis=2)
+        np.save(frames_dir / f"{frame_id}.npy", image)
+        (depth_dir / f"{frame_id}.png").write_bytes(b"fixture-depth")
+        (confidence_dir / f"{frame_id}.png").write_bytes(b"fixture-confidence")
+        pose_rows.append(
+            {
+                "frameIndex": frame_index,
+                "timestamp": float(frame_index) * 0.5,
+                "T_world_camera": [
+                    [1.0, 0.0, 0.0, frame_index * 0.2],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+            }
+        )
+        frame_rows.append(
+            {
+                "frameIndex": frame_index,
+                "timestamp": float(frame_index) * 0.5,
+                "trackingState": "normal",
+                "sharpnessScore": 120.0,
+                "relocalizationEvent": False,
+                "worldMappingStatus": "mapped",
+                "intrinsics": intrinsics,
+                "imageResolution": [64, 48],
+                "anchorObservations": ["fixture-entry"] if frame_index == 0 else [],
+            }
+        )
+    (arkit_root / "poses.jsonl").write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in pose_rows),
+        encoding="utf-8",
+    )
+    (arkit_root / "frames.jsonl").write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in frame_rows),
+        encoding="utf-8",
+    )
 
 
 def _write_privacy_artifact(capture_root: Path) -> None:

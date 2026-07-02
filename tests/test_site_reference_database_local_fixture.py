@@ -77,7 +77,7 @@ def test_site_reference_v1_fixture_projects_staged_capture_without_dense_leakage
     reference_rows = _load_jsonl(site_index_path)
     assert reference_rows
     assert all(row["site_id"] == "site-reference-fixture-site" for row in reference_rows)
-    assert all(row["geometry_source"] == "local_sfm" for row in reference_rows)
+    assert all(row["geometry_source"] == "arkit" for row in reference_rows)
     assert all(row["privacy_source"] == "privacy/final_walkthrough.mov" for row in reference_rows)
     assert all(row.get("depth_uri") for row in reference_rows)
     assert all(row.get("embedding_uri") for row in reference_rows)
@@ -88,8 +88,8 @@ def test_site_reference_v1_fixture_projects_staged_capture_without_dense_leakage
     assert validation["manifest_schema_valid"] is True
     assert validation["summary_projection_safe"] is True
     assert validation["runtime_adapter_consumption"]["local_contract_ready"] is True
-    assert validation["readiness"]["non_arkit_geometry"]["state"] == "degraded"
-    assert validation["readiness"]["swm_world_model"]["state"] == "blocked"
+    assert validation["readiness"]["non_arkit_geometry"]["state"] == "not_applicable"
+    assert validation["readiness"]["swm_world_model"]["state"] == "ready"
     assert validation["readiness"]["operational_live_provider_hosted"]["state"] == "blocked"
 
     assert first["reference_ids"] == second["reference_ids"]

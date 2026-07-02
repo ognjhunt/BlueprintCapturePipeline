@@ -527,9 +527,16 @@ def _today_stackable_work(*, proof_gaps: Iterable[Mapping[str, Any]]) -> list[Di
     if "missing_geometry_summary" in gap_codes:
         work.append(
             {
-                "lane": "local_geometry",
-                "safe_command": "python3 scripts/run_geometry_lane.py --capture-root <capture> --provider local_sfm --model local-sfm-offline",
-                "success_criteria": "geometry_summary.json exists with local_sfm reference media and no fallback geometry",
+                "lane": "provider_native_geometry",
+                "safe_command": (
+                    "VIDEO_TO_WORLD_URL=<provider-url> VIDEO_TO_WORLD_RUNNER_TOKEN=<token> "
+                    "python3 scripts/run_geometry_lane.py --capture-root <capture> "
+                    "--provider video_to_world --model video_to_world-default"
+                ),
+                "success_criteria": (
+                    "geometry_summary.json exists with geometry_source=video_to_world, "
+                    "fallback_used=false, provider_native_result=true, and geometry_live_ready=true"
+                ),
             }
         )
     if "missing_site_reference_manifest" in gap_codes or "missing_site_reference_index" in gap_codes:

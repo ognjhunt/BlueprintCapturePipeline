@@ -434,4 +434,12 @@ def test_cosmos_training_export_missing_and_selection_edge_branches(
     ]
 
     assert manifest["status"] == "ready"
-    assert [row["frame_id"] for row in paired_rows] == ["flat", "bad-shape"]
+    assert [row["frame_id"] for row in paired_rows] == ["flat"]
+    assert manifest["skipped_missing_pose_count"] == 1
+    assert manifest["skipped_missing_pose_rows"] == [
+        {
+            "target_index": 1,
+            "target_frame_id": "bad-shape",
+            "reason": "target_T_world_camera_missing_or_invalid",
+        }
+    ]

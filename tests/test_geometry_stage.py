@@ -246,11 +246,15 @@ def test_build_geometry_stage_contract_records_failed_status(monkeypatch, tmp_pa
     assert summary["fallback_kind"] == "internal_synthetic_geometry"
     assert summary["geometry_source"] == "fallback_geometry"
     assert summary["ready_for_world_model"] is False
-    assert summary["contract_ready_for_world_model"] is True
-    assert summary["internal_fallback_ready"] is True
+    assert summary["contract_ready_for_world_model"] is False
+    assert summary["internal_fallback_ready"] is False
+    assert summary["diagnostic_artifacts_shape_ready"] is True
+    assert summary["synthetic_geometry_used"] is True
+    assert summary["synthetic_artifacts_are_capture_truth"] is False
     assert summary["geometry_live_ready"] is False
     assert summary["site_faithful_market_ready"] is False
     assert "fallback_geometry_not_live_video_to_world" in summary["launch_blockers"]
+    assert "synthetic_geometry_not_capture_truth" in summary["launch_blockers"]
     assert status["status"] == "completed_with_fallback"
     assert status["geometry_source"] == "fallback_geometry"
     assert status["fallback_used"] is True
@@ -258,8 +262,8 @@ def test_build_geometry_stage_contract_records_failed_status(monkeypatch, tmp_pa
     assert status["geometry_live_ready"] is False
     assert manifest["provider"]["fallback_used"] is True
     assert manifest["provider"]["provider_native_result"] is False
-    assert manifest["world_model_contract"]["truth_label"] == "internal_fallback_not_site_faithful"
-    assert provider_result["status"] == "provider_failed_fallback_generated"
+    assert manifest["world_model_contract"]["truth_label"] == "synthetic_diagnostic_not_capture_truth"
+    assert provider_result["status"] == "provider_failed_synthetic_diagnostics_written"
     assert "boom" in provider_result["errors"]
     assert descriptor["geometry_ready"] is False
     assert descriptor["quality"]["geometry_ready"] is False
@@ -267,10 +271,10 @@ def test_build_geometry_stage_contract_records_failed_status(monkeypatch, tmp_pa
     assert descriptor["quality"]["fallback_used"] is True
     assert descriptor["world_model_candidate"] is False
     assert descriptor["metadata"]["geometry"]["ready_for_world_model"] is False
-    assert descriptor["metadata"]["geometry"]["internal_fallback_ready"] is True
+    assert descriptor["metadata"]["geometry"]["internal_fallback_ready"] is False
 
 
-def test_local_sfm_writes_degraded_geometry_summary(tmp_path: Path) -> None:
+def test_local_sfm_writes_synthetic_diagnostic_geometry_summary(tmp_path: Path) -> None:
     capture_root = _build_staged_capture(
         tmp_path,
         manifest_overrides={"capture_source": "meta_glasses", "capture_profile_id": "glasses_pov"},
@@ -284,11 +288,14 @@ def test_local_sfm_writes_degraded_geometry_summary(tmp_path: Path) -> None:
         (capture_root / "pipeline" / "geometry" / "logs" / "provider_result.json").read_text(encoding="utf-8")
     )
 
-    assert result.status == "completed_degraded"
-    assert summary["geometry_source"] == "local_sfm"
+    assert result.status == "completed_with_fallback"
+    assert summary["geometry_source"] == "fallback_geometry"
     assert summary["capture_source"] == "meta_glasses"
-    assert summary["fallback_used"] is False
+    assert summary["fallback_used"] is True
+    assert summary["fallback_kind"] == "internal_synthetic_geometry"
     assert summary["provider_native_result"] is False
+    assert summary["contract_ready_for_world_model"] is False
+    assert summary["diagnostic_artifacts_shape_ready"] is True
     assert summary["ready_for_world_model"] is False
     assert summary["geometry_live_ready"] is False
     assert summary["intrinsics_available"] is True
@@ -296,8 +303,11 @@ def test_local_sfm_writes_degraded_geometry_summary(tmp_path: Path) -> None:
     assert summary["scale_resolved"] is False
     assert summary["pose_track_count"] > 0
     assert "provider_native_geometry_missing" in summary["blockers"]
+    assert "synthetic_geometry_not_capture_truth" in summary["blockers"]
     assert "scale_not_proven" in summary["blockers"]
-    assert provider_result["geometry_source"] == "local_sfm"
+    assert provider_result["geometry_source"] == "fallback_geometry"
+    assert provider_result["metrics"]["requested_backend"] == "local_sfm_offline"
+    assert provider_result["metrics"]["real_sfm_runner_executed"] is False
     assert provider_result["provider_native_result"] is False
 
 
@@ -314,12 +324,16 @@ def test_video_to_world_missing_env_writes_provider_blocker_without_live_call(mo
     result = build_geometry_stage_contract(capture_root, provider="video_to_world")
     summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
 
-    assert result.status == "completed_degraded"
-    assert summary["geometry_source"] == "local_sfm"
+    assert result.status == "completed_with_fallback"
+    assert summary["geometry_source"] == "fallback_geometry"
+    assert summary["fallback_used"] is True
     assert summary["provider_native_result"] is False
+    assert summary["contract_ready_for_world_model"] is False
+    assert summary["diagnostic_artifacts_shape_ready"] is True
     assert summary["geometry_live_ready"] is False
     assert "provider_native_geometry_missing" in summary["blockers"]
     assert "video_to_world_runner_not_configured" in summary["blockers"]
+    assert "synthetic_geometry_not_capture_truth" in summary["blockers"]
     assert summary["provider_blocker"]["required_env"] == ["VIDEO_TO_WORLD_URL", "VIDEO_TO_WORLD_RUNNER_TOKEN"]
     assert "scripts/run_geometry_lane.py" in summary["provider_blocker"]["command"]
 
@@ -341,7 +355,8 @@ def test_production_fallback_geometry_cannot_mark_launch_ready(monkeypatch, tmp_
     status = json.loads(result.status_path.read_text(encoding="utf-8"))
 
     assert summary["fallback_used"] is True
-    assert summary["contract_ready_for_world_model"] is True
+    assert summary["contract_ready_for_world_model"] is False
+    assert summary["diagnostic_artifacts_shape_ready"] is True
     assert summary["ready_for_world_model"] is False
     assert summary["external_market_ready"] is False
     assert summary["site_faithful_market_ready"] is False

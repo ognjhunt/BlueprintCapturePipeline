@@ -330,13 +330,7 @@ def _geometry_summary_reference_indexable(geometry_summary: Mapping[str, Any]) -
     geometry_source = str(geometry_summary.get("geometry_source") or "").strip()
     if geometry_source == "video_to_world":
         return bool(geometry_summary.get("geometry_live_ready") or geometry_summary.get("ready_for_world_model"))
-    if geometry_source != "local_sfm":
-        return False
-    return bool(
-        geometry_summary.get("contract_ready_for_world_model")
-        and geometry_summary.get("intrinsics_available")
-        and int(geometry_summary.get("pose_track_count") or 0) > 0
-    )
+    return False
 
 
 def _reference_media_indexable(descriptor: Mapping[str, Any]) -> bool:
@@ -1975,22 +1969,17 @@ def _write_retrieval_validation(
         if str(record.get("geometry_source") or "").strip()
     }
     non_arkit_ready = bool(non_arkit_records) and all(source == "video_to_world" for source in non_arkit_sources)
-    non_arkit_degraded = bool(non_arkit_records) and not non_arkit_ready and non_arkit_sources.issubset({"local_sfm"})
     non_arkit_state = (
         "not_applicable"
         if not non_arkit_records
         else "ready"
         if non_arkit_ready
-        else "degraded"
-        if non_arkit_degraded
         else "blocked"
     )
     non_arkit_blockers = (
         []
         if not non_arkit_records or non_arkit_ready
-        else ["provider_native_geometry_missing", "swm_world_model_geometry_not_ready"]
-        if non_arkit_degraded
-        else ["non_arkit_geometry_not_live_video_to_world"]
+        else ["provider_native_geometry_missing", "non_arkit_geometry_not_live_video_to_world"]
     )
     local_contract_ready = not record_schema_errors and not manifest_schema_error and summary_projection_safe
     retrieval_ready = local_contract_ready and retrieval_query_count > 0

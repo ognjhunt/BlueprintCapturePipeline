@@ -95,10 +95,11 @@ site_frame_available=true
 scale_resolved=true
 ```
 
-`local_sfm` geometry is allowed for offline/degraded reference-media indexing
-when stable site identity and rights/privacy lineage exist. It must keep
-`provider_native_result=false`, `ready_for_world_model=false`, and
-`geometry_live_ready=false`.
+Current `local_sfm` output is synthetic diagnostic geometry only. It is not
+allowed for offline/degraded reference-media indexing and must keep
+`geometry_source=fallback_geometry`, `fallback_used=true`,
+`provider_native_result=false`, `contract_ready_for_world_model=false`,
+`ready_for_world_model=false`, and `geometry_live_ready=false`.
 
 Fallback geometry is allowed for local development and contract-shape debugging,
 but it must remain blocked for retrieval indexing, alpha readiness, launchable
@@ -111,6 +112,8 @@ geometry_source=fallback_geometry
 fallback_used=true
 fallback_kind=internal_synthetic_geometry
 fallback_kind=local_da3_synthetic_depth
+contract_ready_for_world_model=false
+internal_fallback_ready=false
 geometry_live_ready=false
 site_faithful_market_ready=false
 ```

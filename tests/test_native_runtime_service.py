@@ -310,9 +310,10 @@ def test_native_runtime_session_loads_site_reference_manifest_and_adapter_readin
     readiness = session["site_reference_runtime_adapter"]
     assert readiness["local_contract_ready"] is True
     assert readiness["runtime_adapter_ready"] is True
-    assert readiness["non_arkit_geometry_state"] == "degraded"
+    assert readiness["non_arkit_geometry_state"] == "blocked"
     assert readiness["world_model_ready"] is False
     assert readiness["selected_runtime_path"] == "splat_only"
+    assert "non_arkit_geometry_not_live_video_to_world" in readiness["blockers"]
     assert "native_model_not_provisioned" in readiness["backend_blockers"]
     assert Path(session["site_reference_runtime_artifact_path"]).is_file()
 

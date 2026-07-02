@@ -157,14 +157,15 @@ This is the file later stages should read first.
 
 `ready_for_world_model=true` means the artifacts came from the live `video_to_world`
 provider boundary, are not fallback or synthetic, and prove provider-native pose,
-intrinsics, timing, scale, and site-frame readiness. A local `local_sfm` artifact may
-set `contract_ready_for_world_model=true` and write well-formed poses/intrinsics/depth
-files for reference indexing, but it must keep `provider_native_result=false`,
-`geometry_live_ready=false`, and blockers such as `provider_native_geometry_missing`,
-`scale_not_proven`, and `site_frame_not_proven`. A fallback may still set
-`contract_ready_for_world_model=true` and `internal_fallback_ready=true` when it wrote
-well-formed diagnostic artifacts, but fallback is not enough for retrieval indexing,
-alpha readiness, launchable export packaging, or site-faithful claims.
+intrinsics, timing, scale, and site-frame readiness. The current local `local_sfm`
+path writes synthetic diagnostic tensors only; it must keep
+`geometry_source=fallback_geometry`, `fallback_used=true`,
+`provider_native_result=false`, `contract_ready_for_world_model=false`,
+`internal_fallback_ready=false`, and blockers such as
+`synthetic_geometry_not_capture_truth`, `provider_native_geometry_missing`,
+`scale_not_proven`, and `site_frame_not_proven`. Fallback may write well-formed
+diagnostic artifacts for shape tests, but fallback is not enough for retrieval
+indexing, alpha readiness, launchable export packaging, or site-faithful claims.
 
 ### `geometry_run_status.json`
 
@@ -376,22 +377,24 @@ Current behavior:
 - creates `pipeline/geometry/`
 - writes `geometry_inputs.json` and frozen provider request metadata
 - calls the swappable `video_to_world` runner service only when provider env is present
-- writes local degraded geometry when `--provider local_sfm` is selected, or when
-  `video_to_world` provider env is missing
+- writes explicitly labeled synthetic diagnostics when `--provider local_sfm` is
+  selected, or when `video_to_world` provider env is missing
 - writes normalized poses, intrinsics, depth, confidence, alignment, status, summary, and manifest files when the provider succeeds
 - writes an explicitly labeled internal fallback only when provider execution fails
 
 Local non-ARKit behavior:
 
-- local source is `geometry_source=local_sfm`
-- local proof preserves raw capture identity and produces contract-shaped poses,
-  intrinsics, frame index, depth, confidence, and trajectory summaries
-- local proof must set `provider_native_result=false`
-- local proof must set `ready_for_world_model=false`
-- local proof may be indexed as degraded reference media when stable site identity
-  and rights/privacy lineage exist
-- local proof must not satisfy SWM-style world-model readiness, hosted readiness,
-  launchable export packaging, or buyer/runtime provider success
+- current `local_sfm` request records `requested_geometry_source=local_sfm`, but
+  outputs `geometry_source=fallback_geometry` until a real SfM runner replaces the
+  synthetic diagnostic generator
+- local diagnostics preserve raw capture identity and produce contract-shaped
+  poses, intrinsics, frame index, depth, confidence, and trajectory summaries
+- local diagnostics must set `provider_native_result=false`
+- local diagnostics must set `ready_for_world_model=false`
+- local diagnostics must set `contract_ready_for_world_model=false`
+- local diagnostics must not be indexed as degraded reference media
+- local diagnostics must not satisfy SWM-style world-model readiness, hosted
+  readiness, launchable export packaging, or buyer/runtime provider success
 
 Fallback behavior:
 
@@ -399,6 +402,8 @@ Fallback behavior:
 - fallback kind is `internal_synthetic_geometry` or `local_da3_synthetic_depth`
 - fallback may be useful for local contract tests and downstream shape debugging
 - fallback must set `ready_for_world_model=false`
+- fallback must set `contract_ready_for_world_model=false`
+- fallback must set `internal_fallback_ready=false`
 - fallback must set `geometry_live_ready=false`
 - fallback must set `site_faithful_market_ready=false`
 - fallback must not satisfy retrieval indexing, alpha readiness, launchable export packaging, or buyer/runtime launch proof
@@ -409,8 +414,8 @@ Current recommendation:
 
 - default provider label: `video_to_world`
 - default model: `video_to_world-default`
-- local degraded provider label: `local_sfm`
-- local degraded model: `local-sfm-offline`
+- local diagnostic request label: `local_sfm`
+- local diagnostic model: `local-sfm-offline`
 - service preset: configure `VIDEO_TO_WORLD_PIPELINE_PRESET` or
   `VIDEO_TO_WORLD_COMMAND_TEMPLATE` on the runner service
 - local helper provider: `--provider local_da3` or `--provider da3` may exercise the
@@ -420,8 +425,9 @@ Current recommendation:
 Interpretation:
 
 - `video_to_world` is the stable service boundary for production proof.
-- `local_sfm` is an offline proof lane for reference-media usefulness, not a
-  provider-native world-model-ready lane.
+- `local_sfm` is currently a request label for synthetic diagnostic artifacts, not
+  an offline proof lane for reference-media usefulness and not a provider-native
+  world-model-ready lane.
 - DA3 is an implementation helper behind that boundary or an explicitly local
   development surface.
 - Better providers can replace the service internals as long as they preserve this
@@ -480,14 +486,16 @@ The bundle must not treat a geometry path as launchable unless
 
 The full implementation is complete when:
 
-1. `run_geometry_lane.py` produces `completed_degraded` for `local_sfm` proof or
-   `completed` for provider-native `video_to_world` proof on a staged capture with a real video.
+1. `run_geometry_lane.py` produces `completed_with_fallback` for current
+   synthetic `local_sfm` diagnostics or `completed` for provider-native
+   `video_to_world` proof on a staged capture with a real video.
 2. `camera/poses.jsonl` contains at least one pose entry.
 3. `camera/intrinsics.json` contains numeric intrinsics.
 4. `depth_manifest.json` and `confidence_manifest.json` index real files.
 5. `geometry_summary.json` exposes machine-readable readiness / scale / coverage fields.
 6. Qualification and downstream consumers can ingest `geometry_summary.json` without guessing.
-7. Local `local_sfm` geometry can satisfy degraded reference-media indexing only.
+7. Local `local_sfm` diagnostics cannot satisfy degraded reference-media indexing
+   until a real SfM runner proves capture-derived pose/intrinsics/depth truth.
 8. Fallback geometry cannot satisfy retrieval indexing, alpha readiness, launchable export
    packaging, or site-faithful world-model claims.
 

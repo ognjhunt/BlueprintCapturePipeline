@@ -105,11 +105,23 @@ def _target_intrinsics(record: Mapping[str, Any], image_shape: tuple[int, ...]) 
     }
 
 
-def _target_plucker_map(record: Mapping[str, Any], image_shape: tuple[int, ...]) -> np.ndarray | None:
-    pose = np.array(record.get("T_world_camera") or np.eye(4), dtype=np.float32)
+def _target_pose_matrix(record: Mapping[str, Any]) -> np.ndarray | None:
+    raw_pose = record.get("T_world_camera")
+    if raw_pose is None:
+        return None
+    pose = np.array(raw_pose, dtype=np.float32)
     if pose.ndim == 1 and pose.size == 16:
         pose = pose.reshape(4, 4)
     if pose.shape != (4, 4):
+        return None
+    if not np.isfinite(pose).all():
+        return None
+    return pose
+
+
+def _target_plucker_map(record: Mapping[str, Any], image_shape: tuple[int, ...]) -> np.ndarray | None:
+    pose = _target_pose_matrix(record)
+    if pose is None:
         return None
     intrinsics = _target_intrinsics(record, image_shape)
     return compute_plucker_map(
