@@ -62,6 +62,102 @@ def _transcode_ply_to_usd(ply: Path, usd: Path, *, python: str, fmt: str = "ligh
     return {"status": "completed", "usd": str(usd), "bytes": usd.stat().st_size, "format": fmt}
 
 
+def _load_render_options(cameras_path: Path) -> dict:
+    """Optional ``render_options.json`` next to cameras.json (bundle-driven knobs).
+
+    Bundle-side options survive warm pod restarts (container env is fixed at
+    create; the bundle is re-fetched every boot), so robot compositing config
+    rides here instead of argv/env. Absent file -> empty options.
+    """
+    options_path = Path(cameras_path).parent / "render_options.json"
+    if not options_path.is_file():
+        return {}
+    try:
+        payload = json.loads(options_path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _robot_usd_candidates(value: str) -> list:
+    """Resolve a robot USD reference: assets-root expansion + Isaac-6 short-path variants.
+
+    Mirrors the kitchen parity runner's proven resolution (relative asset paths
+    resolve against the worker's Isaac assets root; '/Isaac/Robots/Unitree/G1/'
+    also ships as the short '/Unitree/G1/' layout on Isaac 6 workers).
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    resolved = [raw]
+    if "://" not in raw and not raw.startswith("/") and not raw.startswith("omniverse:"):
+        try:
+            from isaacsim.storage.native import get_assets_root_path  # type: ignore
+
+            root = get_assets_root_path()
+            if root:
+                resolved.insert(0, root.rstrip("/") + "/" + raw.lstrip("/"))
+        except Exception:  # noqa: BLE001
+            pass
+    out = []
+    for cand in resolved:
+        for variant in (cand, cand.replace("/Isaac/Robots/Unitree/G1/", "/Unitree/G1/")):
+            if variant not in out:
+                out.append(variant)
+    return out
+
+
+def _composite_robot(stage, options: dict, *, Gf, UsdGeom, Sdf) -> dict:
+    """Reference the robot USD at the solved stance pose (visual compositing only).
+
+    ``options`` carries ``robot_usd`` (asset path/URI) and ``robot_pose``
+    ``[x, y, z, yaw_rad]`` — the pelvis-frame stance the placement preflight
+    validated. Returns a report dict; never raises (a missing robot asset is a
+    recorded blocker, not a wasted render).
+    """
+    robot_usd = str(options.get("robot_usd") or "").strip()
+    pose = options.get("robot_pose")
+    if not robot_usd or not isinstance(pose, (list, tuple)) or len(pose) != 4:
+        return {"requested": False}
+    report = {"requested": True, "robot_usd": robot_usd, "robot_pose": [float(v) for v in pose]}
+    try:
+        from pxr import Usd  # type: ignore
+
+        prim_path = str(options.get("robot_prim_path") or "/World/RobotVisual")
+        prim = stage.DefinePrim(Sdf.Path(prim_path), "Xform")
+        chosen = None
+        tried = []
+        for cand in _robot_usd_candidates(robot_usd):
+            tried.append(cand)
+            prim.GetReferences().ClearReferences()
+            prim.GetReferences().AddReference(cand)
+            composed = any(True for child in Usd.PrimRange(prim) if child.GetPath() != prim.GetPath())
+            if composed:
+                chosen = cand
+                break
+        report["candidates_tried"] = tried
+        if chosen is None:
+            prim.GetReferences().ClearReferences()
+            stage.RemovePrim(Sdf.Path(prim_path))
+            report.update(composited=False, blocker="robot_usd_unresolvable")
+            return report
+        x, y, z, yaw = (float(v) for v in pose)
+        import math as _math
+
+        matrix = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), _math.degrees(yaw)))
+        matrix.SetTranslateOnly(Gf.Vec3d(x, y, z))
+        xformable = UsdGeom.Xformable(prim)
+        xformable.ClearXformOpOrder()
+        xformable.AddTransformOp().Set(matrix)
+        child_count = sum(1 for child in Usd.PrimRange(prim)) - 1
+        report.update(composited=True, resolved_usd=chosen, prim_path=prim_path,
+                      composed_prim_count=child_count)
+        return report
+    except Exception as exc:  # noqa: BLE001
+        report.update(composited=False, blocker="robot_composite_exception", error=repr(exc)[:400])
+        return report
+
+
 def _camera_xform(Gf, position, target, up):
     """Camera local-to-world transform (USD camera looks down local -Z, +Y up)."""
     eye = Gf.Vec3d(*[float(x) for x in position])
@@ -175,6 +271,65 @@ def _render(args) -> int:
                                       "blockers": ["no_particlefield_prim_in_stage"], "prim_types": prim_types})
             return 2
 
+        # Optional robot compositing at the validated stance (bundle-driven).
+        render_options = _load_render_options(Path(args.cameras)) if args.cameras else {}
+        robot_report = _composite_robot(stage, render_options, Gf=Gf, UsdGeom=UsdGeom, Sdf=Sdf)
+        if robot_report.get("requested"):
+            _phase(result_path, base, "runner_robot_composited", robot=robot_report)
+        if robot_report.get("composited"):
+            # A composed reference is only STRUCTURE — the payload meshes stream
+            # asynchronously (here from the Isaac cloud assets bucket). Capturing
+            # before they arrive renders an invisible robot with bit-identical
+            # frames to a robot-less run. Load payloads explicitly and pump
+            # updates until the robot's world bound is non-empty (or a bounded
+            # timeout), recording the bound as placement ground truth.
+            from pxr import Usd  # type: ignore
+
+            robot_prim = stage.GetPrimAtPath(robot_report["prim_path"])
+            try:
+                robot_prim.Load()
+            except Exception:  # noqa: BLE001
+                pass
+            streamed = False
+            for i in range(120):  # ~120 x 10 updates; bounded wait for asset streaming
+                for _ in range(10):
+                    simulation_app.update()
+                cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+                rng = cache.ComputeWorldBound(robot_prim).GetRange()
+                if not rng.IsEmpty():
+                    streamed = True
+                    robot_report["world_bound_min"] = [round(float(v), 4) for v in rng.GetMin()]
+                    robot_report["world_bound_max"] = [round(float(v), 4) for v in rng.GetMax()]
+                    robot_report["updates_until_bound"] = (i + 1) * 10
+                    break
+            robot_report["geometry_streamed"] = streamed
+            ground_z = render_options.get("robot_ground_z")
+            if streamed and ground_z is not None:
+                # Ground snap: place the robot's lowest point exactly on the
+                # floor, independent of whether the asset's root origin is the
+                # pelvis or the feet.
+                shift = float(ground_z) - float(robot_report["world_bound_min"][2])
+                if abs(shift) > 1e-4:
+                    x, y, z, yaw = (float(v) for v in robot_report["robot_pose"])
+                    import math as _math
+
+                    matrix = Gf.Matrix4d().SetRotate(
+                        Gf.Rotation(Gf.Vec3d(0, 0, 1), _math.degrees(yaw))
+                    )
+                    matrix.SetTranslateOnly(Gf.Vec3d(x, y, z + shift))
+                    xformable = UsdGeom.Xformable(robot_prim)
+                    xformable.ClearXformOpOrder()
+                    xformable.AddTransformOp().Set(matrix)
+                    robot_report["ground_snap_shift_z"] = round(shift, 4)
+                    for _ in range(10):
+                        simulation_app.update()
+                    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+                    rng = cache.ComputeWorldBound(robot_prim).GetRange()
+                    if not rng.IsEmpty():
+                        robot_report["world_bound_min"] = [round(float(v), 4) for v in rng.GetMin()]
+                        robot_report["world_bound_max"] = [round(float(v), 4) for v in rng.GetMax()]
+            _phase(result_path, base, "runner_robot_geometry", robot=robot_report)
+
         # warm up so the splat/materials upload to the GPU before any capture
         for _ in range(int(args.warmup_frames)):
             simulation_app.update()
@@ -253,9 +408,11 @@ def _render(args) -> int:
             "nonblank_camera_count": nonblank,
             "nonblank_threshold": threshold,
             "mp4": mp4,
+            "robot": robot_report,
             "blockers": [] if ok else ["isaac_particlefield_render_produced_blank_or_few_frames"],
             "proof_boundary": {
                 "captured_scene_displayed_in_isaac_rtx": bool(ok),
+                "robot_visual_composited_at_stance": bool(robot_report.get("composited")),
                 "physics_navigation_control_proven": False,
                 "physical_robot_readiness_proven": False,
             },

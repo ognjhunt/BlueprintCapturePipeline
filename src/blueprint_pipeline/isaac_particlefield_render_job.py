@@ -27,7 +27,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider, list_render_providers
 
@@ -173,12 +173,22 @@ def derive_cameras_for(standard_ply: str | Path, *, up_axis: int | None = None) 
 def build_render_bundle(
     *, usdc_path: str | Path, cameras: Sequence[dict], out_dir: Path,
     canary_camera_id: str = "third_person",
+    render_options: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Assemble the pod bundle: ParticleField USD + cameras.json + canary cameras + the runner."""
+    """Assemble the pod bundle: ParticleField USD + cameras.json + canary cameras + the runner.
+
+    ``render_options`` (e.g. ``{"robot_usd": ..., "robot_pose": [x, y, z, yaw]}``)
+    is written as ``render_options.json`` next to cameras.json — bundle-driven so
+    it survives warm pod restarts whose container env was set at create time.
+    """
     bundle = out_dir / "bundle"
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "scene_particlefield.usdc").write_bytes(Path(usdc_path).read_bytes())
     (bundle / "cameras.json").write_text(json.dumps(list(cameras)), encoding="utf-8")
+    if render_options:
+        (bundle / "render_options.json").write_text(
+            json.dumps(dict(render_options)), encoding="utf-8"
+        )
     canary = [c for c in cameras if c.get("id") == canary_camera_id] or list(cameras)[:1]
     (bundle / "cameras_canary.json").write_text(json.dumps(canary), encoding="utf-8")
     runner = _repo_root() / "scripts" / "run_isaac_splat_nurec_render.py"
@@ -296,7 +306,8 @@ def _runner_result_from_dir(out_dir: Path) -> tuple[dict, str | None]:
 def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provider=None,
                       max_seconds: int = 1200, poll: int = 25,
                       stop_on_success: bool = True,
-                      preserve_instance: bool = False) -> dict:
+                      preserve_instance: bool = False,
+                      keep_running: bool = False) -> dict:
     """Poll the heartbeat-uploaded output (provider-neutral signed GET url), then stop the
     instance via the provider. A worker that reached bootstrap/runner output is preserved with
     stop() even when validation blocks, so it can be warm-restarted. True no-output launch duds are
@@ -382,7 +393,14 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         and (preserve_instance or (stop_on_success and runner_started))
         and hasattr(provider, "stop")
     )
-    if should_preserve_for_warm_reuse:
+    if keep_running:
+        # Caller explicitly wants the pod left RUNNING (warm follow-up jobs;
+        # compute keeps billing until the caller stops it). No teardown call.
+        # Unlike preserve_instance (which still terminates duds for cost
+        # protection), this is an explicit user directive to keep the pod up.
+        teardown = {"status": "skipped", "note": "pod_left_running_by_request"}
+        teardown_reason = "left_running_by_request"
+    elif should_preserve_for_warm_reuse:
         teardown = provider.stop(instance_id)
         teardown_reason = "runner_done_preserved_for_warm_reuse"
     else:
@@ -425,6 +443,9 @@ def run_isaac_particlefield_render_job(
     cameras_file: str = "cameras.json", allow_paid: bool = False, cold: bool = False,
     image: str | None = None, key_prefix: str = "blueprint/isaac-splat", up_axis: int | None = None,
     max_seconds: int = 1200, provider: str = "runpod",
+    render_options: Mapping[str, Any] | None = None,
+    warm_candidates: Sequence[str] | None = None,
+    preserve_instance: bool = False,
 ) -> dict:
     """Full job, provider-agnostic. Without ``allow_paid`` it prepares + stages and returns a
     launchable plan. ``provider`` selects the GPU backend (``runpod`` or ``vast``); the
@@ -435,7 +456,12 @@ def run_isaac_particlefield_render_job(
                       "rendered_by": "isaac_rtx_particlefield", "source": str(source),
                       "provider": (provider or "runpod").lower()}
     try:
-        prov = get_render_provider(provider, warm_candidates=DEFAULT_WARM_CANDIDATES)
+        prov = get_render_provider(
+            provider,
+            warm_candidates=(
+                tuple(warm_candidates) if warm_candidates is not None else DEFAULT_WARM_CANDIDATES
+            ),
+        )
     except ValueError as exc:
         manifest["blockers"].append("unknown_render_provider")
         manifest["error"] = str(exc)
@@ -453,7 +479,12 @@ def run_isaac_particlefield_render_job(
             return manifest
         cameras = derive_cameras_for(std, up_axis=up_axis)
     manifest["camera_ids"] = [c.get("id") for c in cameras]
-    bundle_zip = build_render_bundle(usdc_path=asset["usdc"], cameras=cameras, out_dir=out_dir)
+    if render_options:
+        manifest["render_options"] = dict(render_options)
+    bundle_zip = build_render_bundle(
+        usdc_path=asset["usdc"], cameras=cameras, out_dir=out_dir,
+        render_options=render_options,
+    )
     manifest["bundle_zip"] = str(bundle_zip)
     job_dir = out_dir / "object_store_real_run"
     staged = stage_bundle(bundle_zip, job_dir, key_prefix=key_prefix)
@@ -479,7 +510,9 @@ def run_isaac_particlefield_render_job(
         manifest["blockers"].append("launch_failed")
         return manifest
     result = watch_and_collect(job_dir, out_dir / "render_output", launch["instance_id"],
-                               provider=prov, max_seconds=max_seconds)
+                               provider=prov, max_seconds=max_seconds,
+                               preserve_instance=preserve_instance,
+                               keep_running=preserve_instance)
     manifest["render"] = result
     manifest["status"] = "completed" if result.get("status") == "completed" else "blocked"
     return manifest
