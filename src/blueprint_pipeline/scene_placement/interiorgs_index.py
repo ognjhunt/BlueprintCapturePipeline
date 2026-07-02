@@ -27,7 +27,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from .robot_profile import RobotProfile
 from .types import Probe, SceneObject, Vec3
@@ -365,6 +365,7 @@ def build_interiorgs_probe(
     standoff_obstacles: Sequence[SceneObject] | None = None,
     min_standoff_gap: float | None = None,
     obstacle_boxes: Sequence[SceneObject] | None = None,
+    region_of=None,
 ) -> Probe:
     """Floor-occupancy probe over the labeled boxes + structure walls.
 
@@ -428,12 +429,16 @@ def build_interiorgs_probe(
             continue  # carpet/rug/mat: walk over it
         blockers.append(obs)
 
+    # Region lookup priority: an explicit ``region_of`` callable (e.g. a splat
+    # free-space component map for scenes with no structure.json) supersedes the
+    # structure room polygons. Both answer the same question — "which contiguous
+    # floor region is this point in?" — with None meaning blocked/occupied.
     structure = index.structure
+    if region_of is None and structure is not None and structure.rooms:
+        region_of = structure.room_index_of_point
     target_room: Optional[int] = None
-    if require_room and structure is not None and structure.rooms and target is not None:
-        target_room = structure.room_index_of_point(
-            (float(target.centroid[0]), float(target.centroid[1]))
-        )
+    if require_room and region_of is not None and target is not None:
+        target_room = region_of((float(target.centroid[0]), float(target.centroid[1])))
 
     def probe(pose: Vec3, yaw: float) -> int:
         px, py = float(pose[0]), float(pose[1])
@@ -452,12 +457,12 @@ def build_interiorgs_probe(
                 (obs.bbox_max[0], obs.bbox_max[1]),
             ):
                 hits += 1
-        if require_room and structure is not None and structure.rooms:
-            room = structure.room_index_of_point((px, py))
+        if require_room and region_of is not None:
+            room = region_of((px, py))
             if room is None:
-                hits += 1  # inside a wall band or outside the floor plan
+                hits += 1  # inside a wall band / occupied cell / outside the plan
             elif target_room is not None and room != target_room:
-                hits += 1  # would stand in a different room than the target
+                hits += 1  # would stand in a different floor region than the target
         for fixture in fixtures:
             gap_x = max(
                 fixture.bbox_min[0] - f_max[0], f_min[0] - fixture.bbox_max[0], 0.0

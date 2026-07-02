@@ -102,3 +102,47 @@ class TestRefineCoarseObstacles:
         refined, report = refine_coarse_obstacles([far_jumbo], splat, floor_z=0.0)
         assert refined == [far_jumbo]
         assert report["refined"][0]["kept_coarse_box"] is True
+
+
+class TestFreeComponents:
+    def test_wall_splits_two_regions(self):
+        # A dense wall of points along x=1.5 splits free space into two components.
+        pts = [(1.5, y, z) for y in np.arange(0.0, 3.0, 0.04) for z in (0.3, 0.6, 0.9)]
+        # Anchor the grid x-extent WITHOUT extending y past the wall (that would
+        # open a bypass row around the wall's end).
+        pts += [(0.0, 1.5, 0.5), (3.0, 1.5, 0.5)]
+        splat = _splat_from_points(np.array(pts, dtype=np.float32))
+        grid = build_floor_occupancy_grid(splat, floor_z=0.0)
+        region_of = grid.region_of_fn(min_weight=2.0)
+        left = region_of((1.0, 1.5))
+        right = region_of((2.0, 1.5))
+        on_wall = region_of((1.5, 1.5))
+        assert left is not None and right is not None
+        assert left != right
+        assert on_wall is None
+
+    def test_outside_grid_is_none(self):
+        splat = _splat_from_points(np.array([[0.0, 0.0, 0.5]], dtype=np.float32))
+        region_of = build_floor_occupancy_grid(splat, floor_z=0.0).region_of_fn(min_weight=0.5)
+        assert region_of((100.0, 100.0)) is None
+
+
+class TestWallBoxesFromSplat:
+    def test_tall_mass_becomes_walls_low_mass_does_not(self):
+        from blueprint_pipeline.splat_occupancy import wall_boxes_from_splat
+
+        pts = []
+        # A wall: mass at head height along x=0..2 at y=0
+        for x in np.arange(0.0, 2.0, 0.04):
+            for z in (1.7, 2.0, 2.3):
+                pts.append((x, 0.0, z))
+        # A counter: mass only below the wall band
+        for x in np.arange(0.0, 2.0, 0.04):
+            pts.append((x, 2.0, 0.8))
+        splat = _splat_from_points(np.array(pts, dtype=np.float32))
+        walls = wall_boxes_from_splat(splat, floor_z=0.0, min_cell_weight=2.0)
+        assert walls, "expected wall boxes from head-height mass"
+        assert all(w.label == "wall" and w.source == "splat_occupancy_wall" for w in walls)
+        assert all(abs(w.bbox_min[1]) < 0.3 for w in walls)  # only along y=0
+        # Full-height boxes: floor to wall_top.
+        assert all(w.bbox_min[2] == 0.0 and w.bbox_max[2] == 2.6 for w in walls)

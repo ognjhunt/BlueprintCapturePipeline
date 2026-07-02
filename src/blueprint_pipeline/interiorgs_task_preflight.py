@@ -41,7 +41,11 @@ from .gaussian_splat_decode import (
     read_compressed_ply_chunk_bounds,
     read_standard_3dgs_ply,
 )
-from .splat_occupancy import refine_coarse_obstacles
+from .splat_occupancy import (
+    build_floor_occupancy_grid,
+    refine_coarse_obstacles,
+    wall_boxes_from_splat,
+)
 from .scene_placement import (
     DEFAULT_ROBOT_ID,
     InteriorGSSceneSpatialIndex,
@@ -106,12 +110,17 @@ def discover_scene_assets(scene_dir: str | Path) -> dict[str, Optional[Path]]:
         if candidates:
             splat = candidates[0]
             break
-    labels = scene_dir / "labels.json"
+    labels: Optional[Path] = None
+    for name in ("labels.json", "labels.bootstrap.json"):
+        candidate = scene_dir / name
+        if candidate.is_file():
+            labels = candidate
+            break
     structure = scene_dir / "structure.json"
     task_files = sorted(scene_dir.glob("task_targets*.json"))
     return {
         "splat": splat,
-        "labels": labels if labels.is_file() else None,
+        "labels": labels,
         "structure": structure if structure.is_file() else None,
         "task_file": task_files[0] if task_files else None,
     }
@@ -334,9 +343,15 @@ def evaluate_task(
     *,
     profile: RobotProfile,
     obstacles: Optional[List[SceneObject]] = None,
+    region_of=None,
     generate=None,
 ) -> dict[str, Any]:
-    """Run resolution → stance → validation → cameras for one task; return the report."""
+    """Run resolution → stance → validation → cameras for one task; return the report.
+
+    ``region_of`` is an optional ``(x, y) tuple -> Optional[int]`` floor-region
+    lookup that supersedes structure.json room polygons (used when the scene has
+    no structure file and connectivity comes from splat free-space components).
+    """
     objects = index.objects()
     gates: list[dict] = []
 
@@ -376,6 +391,7 @@ def evaluate_task(
         robot_profile=profile,
         standoff_obstacles=fixtures,
         obstacle_boxes=placement_obstacles,
+        region_of=region_of,
     )
     openable = is_openable_target(target)
     # The validator measures standoff as the FOOTPRINT-edge -> box-edge gap, while
@@ -475,9 +491,14 @@ def evaluate_task(
     )
 
     structure = index.structure
-    if structure is not None and structure.rooms:
-        stance_room = structure.room_index_of_point((pose.position[0], pose.position[1]))
-        target_room = structure.room_index_of_point(
+    room_lookup = region_of
+    room_source = "free_space_components"
+    if room_lookup is None and structure is not None and structure.rooms:
+        room_lookup = structure.room_index_of_point
+        room_source = "structure_rooms"
+    if room_lookup is not None:
+        stance_room = room_lookup((pose.position[0], pose.position[1]))
+        target_room = room_lookup(
             (float(target.centroid[0]), float(target.centroid[1]))
         )
         same_room = stance_room is not None and (
@@ -487,7 +508,11 @@ def evaluate_task(
             _gate(
                 "stance_in_target_room",
                 same_room,
-                evidence={"stance_room": stance_room, "target_room": target_room},
+                evidence={
+                    "stance_room": stance_room,
+                    "target_room": target_room,
+                    "source": room_source,
+                },
             )
         )
     else:
@@ -536,7 +561,7 @@ def build_refined_obstacles(
     cache_dir: Path,
     *,
     repo_root: Path | None = None,
-) -> tuple[Optional[List[SceneObject]], dict[str, Any]]:
+) -> tuple[Optional[List[SceneObject]], dict[str, Any], Any]:
     """Decode the splat (cached) and carve jumbo label AABBs into occupancy columns.
 
     Coarse label boxes around L-shaped fixtures swallow the open floor in front
@@ -544,6 +569,10 @@ def build_refined_obstacles(
     them back to the occupied footprint. Fail-open: when the decode toolchain is
     unavailable the caller falls back to the coarse boxes with an explicit note —
     never a fabricated refinement.
+
+    Returns ``(refined_obstacles, report, decoded_splat)``; the decoded
+    :class:`SplatData` is reused by callers for occupancy walls / free-space
+    connectivity so the PLY is only decoded once per run.
     """
     ensure_dir(cache_dir)
     decoded = cache_dir / "decoded_standard_3dgs.ply"
@@ -552,15 +581,19 @@ def build_refined_obstacles(
             splat_path, decoded, repo_root=repo_root or _repo_root()
         )
         if status.get("status") != "completed":
-            return None, {"status": "blocked", **status}
+            return None, {"status": "blocked", **status}, None
     try:
         splat = read_standard_3dgs_ply(decoded)
     except Exception as exc:  # noqa: BLE001 - surfaces as a skipped refinement
-        return None, {"status": "blocked", "blockers": ["decoded_ply_unreadable"], "error": str(exc)}
+        return (
+            None,
+            {"status": "blocked", "blockers": ["decoded_ply_unreadable"], "error": str(exc)},
+            None,
+        )
     refined, report = refine_coarse_obstacles(
         index.obstacle_boxes(), splat, floor_z=index.floor_z
     )
-    return refined, {"status": "completed", **report}
+    return refined, {"status": "completed", **report}, splat
 
 
 # ----------------------------- optional local splat render -----------------------------
@@ -649,11 +682,21 @@ def run_preflight(
     robot_profile_json: str | Path | None = None,
     out_dir: str | Path,
     splat_refine: bool = True,
+    bootstrap_missing_sidecars: bool = False,
+    bootstrap_detector=None,
     render_views: bool = False,
     render_limit: int = 1,
+    render_timeout_seconds: int = 900,
     generate=None,
 ) -> dict[str, Any]:
-    """End-to-end CPU preflight; writes ``preflight_manifest.json`` under ``out_dir``."""
+    """End-to-end CPU preflight; writes ``preflight_manifest.json`` under ``out_dir``.
+
+    With ``bootstrap_missing_sidecars`` a bare PLY is enough: missing labels /
+    tasks are generated by :func:`splat_scene_bootstrap.bootstrap_scene_sidecars`
+    (Spark views + VLM detection + splat depth), and missing structure geometry
+    is substituted at runtime from splat occupancy (wall boxes + free-space
+    connectivity), so the SAME gate chain runs label-free.
+    """
     out_path = Path(out_dir)
     ensure_dir(out_path)
     assets = discover_scene_assets(scene_dir) if scene_dir else {}
@@ -661,6 +704,23 @@ def run_preflight(
     labels_path = Path(labels) if labels else assets.get("labels")
     structure_path = Path(structure) if structure else assets.get("structure")
     task_path = Path(task_file) if task_file else assets.get("task_file")
+
+    bootstrap_report: Optional[dict[str, Any]] = None
+    if (
+        bootstrap_missing_sidecars
+        and labels_path is None
+        and splat_path is not None
+        and Path(splat_path).is_file()
+    ):
+        from .splat_scene_bootstrap import bootstrap_scene_sidecars
+
+        bootstrap_report = bootstrap_scene_sidecars(
+            splat_path, out_path / "bootstrap", detector=bootstrap_detector
+        )
+        if bootstrap_report.get("status") == "completed":
+            labels_path = Path(bootstrap_report["labels_path"])
+            if task_path is None:
+                task_path = Path(bootstrap_report["task_targets_path"])
 
     if robot_profile_json:
         profile = robot_profile_from_json_file(robot_profile_json)
@@ -684,13 +744,29 @@ def run_preflight(
             "Proves placement intent, not rendering, physics, or manipulation success."
         ),
     }
+    if bootstrap_report is not None:
+        manifest["sidecar_bootstrap"] = {
+            k: v for k, v in bootstrap_report.items() if k != "steps"
+        }
+        manifest["sidecar_bootstrap"]["steps"] = {
+            name: step.get("status") if isinstance(step, dict) else step
+            for name, step in (bootstrap_report.get("steps") or {}).items()
+        }
 
     index: Optional[InteriorGSSceneSpatialIndex] = None
     if labels_path is not None and Path(labels_path).is_file():
+        # Bootstrapped labels are unprojected detections whose box bottoms are
+        # noisier than curated exports; trust the splat's own floor estimate.
+        floor_override = (
+            bootstrap_report.get("floor_z")
+            if bootstrap_report is not None and bootstrap_report.get("status") == "completed"
+            else None
+        )
         try:
             index = InteriorGSSceneSpatialIndex(
                 labels_path,
                 structure_path if structure_path and Path(structure_path).is_file() else None,
+                floor_z=floor_override,
             )
         except Exception as exc:  # noqa: BLE001 - surfaces as a failed scene gate
             manifest["labels_error"] = str(exc)
@@ -702,13 +778,30 @@ def run_preflight(
     manifest["scene_gates_passed"] = scene_ok
 
     refined_obstacles: Optional[List[SceneObject]] = None
+    decoded_splat = None
     if splat_refine and index is not None and splat_path is not None and Path(splat_path).is_file():
-        refined_obstacles, refine_report = build_refined_obstacles(
+        refined_obstacles, refine_report, decoded_splat = build_refined_obstacles(
             index, Path(splat_path), out_path / "cache"
         )
         manifest["splat_occupancy_refinement"] = refine_report
     elif not splat_refine:
         manifest["splat_occupancy_refinement"] = {"status": "disabled"}
+
+    # No structure.json: substitute wall geometry + floor connectivity from splat
+    # occupancy so the probe still cannot step through walls or across rooms.
+    region_of = None
+    if index is not None and index.structure is None and decoded_splat is not None:
+        splat_walls = wall_boxes_from_splat(decoded_splat, floor_z=index.floor_z)
+        base_obstacles = (
+            refined_obstacles if refined_obstacles is not None else index.obstacle_boxes()
+        )
+        refined_obstacles = list(base_obstacles) + splat_walls
+        grid = build_floor_occupancy_grid(decoded_splat, floor_z=index.floor_z)
+        region_of = grid.region_of_fn()
+        manifest["occupancy_structure_substitute"] = {
+            "wall_boxes": len(splat_walls),
+            "free_space_regions": True,
+        }
 
     task_reports: list[dict[str, Any]] = []
     if index is not None:
@@ -728,6 +821,7 @@ def run_preflight(
                     spec["task_id"],
                     profile=profile,
                     obstacles=refined_obstacles,
+                    region_of=region_of,
                     generate=generate,
                 )
             )
@@ -740,6 +834,12 @@ def run_preflight(
         "scene_gates_passed": scene_ok,
     }
 
+    # Persist CPU placement proof before optional rendering. Local Spark rendering
+    # is advisory and may be slow or unavailable; it must not hide the preflight
+    # manifest needed for provider handoff.
+    manifest_path = out_path / "preflight_manifest.json"
+    write_json(manifest_path, manifest)
+
     if render_views and splat_path is not None and passed:
         renders: list[dict[str, Any]] = []
         for task_report in passed[: max(0, int(render_limit))]:
@@ -750,13 +850,16 @@ def run_preflight(
                 {
                     "task_id": task_report["task_id"],
                     **render_task_views(
-                        splat_path, task_report, out_path / "renders" / slug
+                        splat_path,
+                        task_report,
+                        out_path / "renders" / slug,
+                        timeout_seconds=render_timeout_seconds,
                     ),
                 }
             )
         manifest["splat_renders"] = renders
 
-    write_json(out_path / "preflight_manifest.json", manifest)
+    write_json(manifest_path, manifest)
     return manifest
 
 
@@ -790,11 +893,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="skip carving jumbo label boxes with splat occupancy (use coarse AABBs)",
     )
     parser.add_argument(
+        "--bootstrap-missing-sidecars",
+        action="store_true",
+        help=(
+            "when labels.json is missing, auto-generate labels + tasks from the "
+            "bare PLY (Spark views + Gemini detection + splat depth)"
+        ),
+    )
+    parser.add_argument(
         "--render-views",
         action="store_true",
         help="render stance cameras for passing tasks via the local Spark splat harness",
     )
     parser.add_argument("--render-limit", type=int, default=1)
+    parser.add_argument(
+        "--render-timeout-seconds",
+        type=int,
+        default=900,
+        help="outer timeout for each optional local splat render command",
+    )
     return parser
 
 
@@ -815,8 +932,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         robot_profile_json=args.robot_profile_json,
         out_dir=args.out,
         splat_refine=not args.no_splat_refine,
+        bootstrap_missing_sidecars=args.bootstrap_missing_sidecars,
         render_views=args.render_views,
         render_limit=args.render_limit,
+        render_timeout_seconds=args.render_timeout_seconds,
     )
     summary = manifest["summary"]
     print(

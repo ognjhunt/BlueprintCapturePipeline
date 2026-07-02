@@ -63,6 +63,59 @@ class FloorOccupancyGrid:
     def occupied_mask(self, min_weight: float = DEFAULT_MIN_CELL_WEIGHT) -> np.ndarray:
         return self.weights >= float(min_weight)
 
+    def free_component_labels(
+        self, min_weight: float = DEFAULT_MIN_CELL_WEIGHT
+    ) -> np.ndarray:
+        """4-connected component id per FREE cell (0 = occupied / not free).
+
+        This is the splat-native replacement for structure.json room polygons:
+        two points are "in the same room" iff their free cells are floor-
+        connected without crossing occupied cells. Component ids are stable for
+        a given grid (scan order), start at 1, and 0 marks occupied cells.
+        """
+        occupied = self.occupied_mask(min_weight)
+        labels = np.zeros(self.weights.shape, dtype=np.int32)
+        next_label = 1
+        nx, ny = self.weights.shape
+        for sx in range(nx):
+            for sy in range(ny):
+                if occupied[sx, sy] or labels[sx, sy]:
+                    continue
+                stack = [(sx, sy)]
+                labels[sx, sy] = next_label
+                while stack:
+                    x, y = stack.pop()
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        px, py = x + dx, y + dy
+                        if 0 <= px < nx and 0 <= py < ny and not occupied[px, py] and not labels[px, py]:
+                            labels[px, py] = next_label
+                            stack.append((px, py))
+                next_label += 1
+        return labels
+
+    def region_of_fn(self, min_weight: float = DEFAULT_MIN_CELL_WEIGHT):
+        """A ``(x, y) -> Optional[int]`` free-space region lookup for the probe.
+
+        Returns ``None`` for occupied cells and for points outside the grid, so
+        the placement probe treats both as blocked — matching how the
+        structure.json same-room rule treats wall bands and out-of-plan points.
+        """
+        labels = self.free_component_labels(min_weight)
+        nx, ny = labels.shape
+        ox, oy = self.origin_xy
+        cell = self.cell_m
+
+        def region_of(xy):
+            x, y = float(xy[0]), float(xy[1])
+            ix = int(math.floor((x - ox) / cell))
+            iy = int(math.floor((y - oy) / cell))
+            if not (0 <= ix < nx and 0 <= iy < ny):
+                return None
+            value = int(labels[ix, iy])
+            return value if value > 0 else None
+
+        return region_of
+
 
 def build_floor_occupancy_grid(
     splat: SplatData,
@@ -185,6 +238,66 @@ def _column_boxes_for_object(
     return boxes
 
 
+def wall_boxes_from_splat(
+    splat: SplatData,
+    *,
+    floor_z: float,
+    cell_m: float = DEFAULT_CELL_M,
+    wall_band: Tuple[float, float] = (1.6, 2.4),
+    min_opacity: float = DEFAULT_MIN_OPACITY,
+    min_cell_weight: float = DEFAULT_MIN_CELL_WEIGHT,
+    wall_top_m: float = 2.6,
+) -> List[SceneObject]:
+    """Wall obstacle boxes for a scene with NO structure.json.
+
+    Cells with splat mass in the high band (``floor_z + wall_band``) are walls,
+    doorframe headers, or tall furniture — every one of them is something a
+    stance must not clip and the probe must not walk through, so we emit one
+    full-height cell box per occupied high-band cell. Adjacent cells along x are
+    merged into runs to keep the obstacle count sane.
+    """
+    grid = build_floor_occupancy_grid(
+        splat, floor_z=floor_z, cell_m=cell_m, z_band=wall_band, min_opacity=min_opacity
+    )
+    occupied = grid.occupied_mask(min_cell_weight)
+    ox, oy = grid.origin_xy
+    boxes: List[SceneObject] = []
+    n = 0
+    nx, ny = occupied.shape
+    for iy in range(ny):
+        ix = 0
+        while ix < nx:
+            if not occupied[ix, iy]:
+                ix += 1
+                continue
+            run_start = ix
+            while ix < nx and occupied[ix, iy]:
+                ix += 1
+            x0 = ox + run_start * cell_m
+            x1 = ox + ix * cell_m
+            y0 = oy + iy * cell_m
+            y1 = y0 + cell_m
+            bbox_min = (x0, y0, floor_z)
+            bbox_max = (x1, y1, floor_z + float(wall_top_m))
+            centroid = (
+                0.5 * (x0 + x1), 0.5 * (y0 + y1), floor_z + 0.5 * float(wall_top_m)
+            )
+            boxes.append(
+                SceneObject(
+                    id=f"splatwall_{n}",
+                    label="wall",
+                    bbox_min=bbox_min,
+                    bbox_max=bbox_max,
+                    centroid=centroid,
+                    category="structural",
+                    source="splat_occupancy_wall",
+                    extra={"wall_band": list(wall_band)},
+                )
+            )
+            n += 1
+    return boxes
+
+
 def refine_coarse_obstacles(
     obstacles: Sequence[SceneObject],
     splat: SplatData,
@@ -248,4 +361,5 @@ __all__ = [
     "FloorOccupancyGrid",
     "build_floor_occupancy_grid",
     "refine_coarse_obstacles",
+    "wall_boxes_from_splat",
 ]

@@ -86,6 +86,18 @@ const contentTypes = {
   ".spz": "application/octet-stream",
 };
 
+function withTimeout(promise, timeoutMs, label) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`${label}_timeout_${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
+}
+
 async function main() {
   const blockers = [];
   // static file server: tool dir + the splat at /splat
@@ -133,9 +145,13 @@ async function main() {
     await page.goto(`${base}/harness.html`, { waitUntil: "load", timeout: 60000 });
     await page.waitForFunction("window.__sparkReady===true", { timeout: 60000 });
 
-    const bounds = await page.evaluate(
-      async ({ u, w, h, bgc }) => await window.BlueprintSplat.load(u, w, h, bgc),
-      { u: `${base}/splat`, w: width, h: height, bgc: bg },
+    const bounds = await withTimeout(
+      page.evaluate(
+        async ({ u, w, h, bgc }) => await window.BlueprintSplat.load(u, w, h, bgc),
+        { u: `${base}/splat`, w: width, h: height, bgc: bg },
+      ),
+      loadTimeoutMs,
+      "splat_load",
     );
     result.bounds = bounds;
     if (!bounds || !isFinite(bounds.radius) || bounds.radius <= 0) {
