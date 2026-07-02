@@ -200,6 +200,20 @@ def test_missing_and_unsupported_inputs_block(tmp_path: Path) -> None:
     assert any(item.startswith("unsupported_scene_suffix") for item in unsupported["blockers"])
 
 
+def test_malformed_ply_blocks_instead_of_raising(tmp_path: Path) -> None:
+    corrupt = tmp_path / "corrupt.ply"
+    corrupt.write_bytes(b"ply\nformat binary_little_endian 1.0\nno header end here")
+    manifest = sea.generate_scene_eval_tasks(corrupt, tmp_path / "out_corrupt")
+    assert manifest["status"] == "blocked"
+    assert any(
+        item.startswith("scene_file_unreadable_or_malformed") for item in manifest["blockers"]
+    )
+    assert (tmp_path / "out_corrupt" / "scene_eval_autogen_manifest.json").is_file()
+
+    code = sea.main([str(corrupt), "--output-dir", str(tmp_path / "cli_corrupt")])
+    assert code == 1
+
+
 def test_scenario_family_library_feeds_variation_instantiator_shape(tmp_path: Path) -> None:
     scene = _write_ascii_ply(tmp_path / "site.ply", _room_points())
     manifest = sea.generate_scene_eval_tasks(scene, tmp_path / "out")

@@ -404,6 +404,20 @@ def ingest_scene_file(scene_path: Path) -> Dict[str, Any]:
         scene.update(status="blocked", blockers=[f"unsupported_scene_suffix:{suffix or 'none'}"])
         return scene
 
+    try:
+        return _ingest_supported_scene_file(scene_path, suffix, scene)
+    except Exception as exc:  # noqa: BLE001 - fail closed on corrupt/malformed inputs
+        scene.update(
+            status="blocked",
+            blockers=[f"scene_file_unreadable_or_malformed:{type(exc).__name__}"],
+        )
+        scene["limitations"].append(str(exc)[:500])
+        return scene
+
+
+def _ingest_supported_scene_file(
+    scene_path: Path, suffix: str, scene: Dict[str, Any]
+) -> Dict[str, Any]:
     if suffix == ".ply":
         inspection = inspect_ply_asset(scene_path)
         estimate: Dict[str, Any] = {
