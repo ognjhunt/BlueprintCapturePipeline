@@ -36,7 +36,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
+from .robot_profile import RobotProfile
 from .types import SceneObject, StandPose, Vec3
+
+
+def _resolve_profile_scalar(
+    explicit: Optional[float],
+    profile: Optional[RobotProfile],
+    profile_field: str,
+    default: float,
+) -> float:
+    """Explicit kwarg > robot profile field > historical default."""
+    if explicit is not None:
+        return float(explicit)
+    if profile is not None:
+        return float(getattr(profile, profile_field))
+    return float(default)
 
 
 PLACEMENT_VALIDATION_SCHEMA_VERSION = "placement_validation.v1"
@@ -196,16 +211,17 @@ def validate_stand_pose(
     obstacles: Sequence[SceneObject],
     floor_z: float,
     *,
-    footprint_half_extent: Tuple[float, float, float] = (0.28, 0.28, 0.62),
-    pelvis_height: float = 0.79,
-    max_facing_error_deg: float = DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG,
-    standoff_range: Tuple[float, float] = DEFAULT_VALIDATION_STANDOFF_RANGE,
-    floor_tol: float = 0.08,
-    foot_clearance: float = 0.40,
+    footprint_half_extent: Optional[Tuple[float, float, float]] = None,
+    pelvis_height: Optional[float] = None,
+    max_facing_error_deg: Optional[float] = None,
+    standoff_range: Optional[Tuple[float, float]] = None,
+    floor_tol: Optional[float] = None,
+    foot_clearance: Optional[float] = None,
     clip_area_eps: float = DEFAULT_VALIDATION_CLIP_AREA_EPS_M2,
-    min_obstacle_clearance_m: float = DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M,
+    min_obstacle_clearance_m: Optional[float] = None,
     standoff_obstacles: Optional[Sequence[SceneObject]] = None,
     forward_axis_yaw_offset_deg: float = 0.0,
+    robot_profile: Optional[RobotProfile] = None,
 ) -> PlacementVerdict:
     """Validate that ``position``/``yaw`` stands the robot correctly for acting on ``target``.
 
@@ -251,7 +267,38 @@ def validate_stand_pose(
     runner's normal +x-forward pelvis frame. Passing a non-zero offset models a caller applying yaw in a
     rotated/flipped frame; the validator then fails with ``forward_frame_mismatch`` if that applied
     forward axis would not look at the target.
+
+    ``robot_profile`` supplies robot-specific defaults (footprint, pelvis height,
+    tolerances) for any knob the caller leaves unset; an explicit kwarg always wins
+    over the profile. With neither, the historical G1-scale defaults apply unchanged.
     """
+    if footprint_half_extent is None:
+        footprint_half_extent = (
+            robot_profile.footprint_half_extent_xyz
+            if robot_profile is not None
+            else DEFAULT_VALIDATION_FOOTPRINT_HALF_EXTENT
+        )
+    if standoff_range is None:
+        standoff_range = (
+            robot_profile.standoff_range_m
+            if robot_profile is not None
+            else DEFAULT_VALIDATION_STANDOFF_RANGE
+        )
+    pelvis_height = _resolve_profile_scalar(
+        pelvis_height, robot_profile, "pelvis_height_m", DEFAULT_VALIDATION_PELVIS_HEIGHT_M
+    )
+    max_facing_error_deg = _resolve_profile_scalar(
+        max_facing_error_deg, robot_profile, "max_facing_error_deg",
+        DEFAULT_VALIDATION_MAX_FACING_ERROR_DEG,
+    )
+    floor_tol = _resolve_profile_scalar(floor_tol, robot_profile, "floor_tol_m", 0.08)
+    foot_clearance = _resolve_profile_scalar(
+        foot_clearance, robot_profile, "foot_clearance_m", 0.40
+    )
+    min_obstacle_clearance_m = _resolve_profile_scalar(
+        min_obstacle_clearance_m, robot_profile, "min_obstacle_clearance_m",
+        DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M,
+    )
     px, py, pz = (float(v) for v in position)
     yaw = float(yaw)
     pelvis_z = floor_z + pelvis_height

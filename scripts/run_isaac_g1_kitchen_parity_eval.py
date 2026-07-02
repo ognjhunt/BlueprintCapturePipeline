@@ -176,6 +176,69 @@ MANIPULATION_READY_ARM_JOINT_DELTAS = {
         "right_wrist_pitch_joint": -0.15,
     },
 }
+ACTIVE_ROBOT_PROFILE = None  # set by apply_robot_profile(); None = built-in G1 defaults
+
+
+def _robot_profile_module():
+    """Dual-path import mirroring _resolve_task_target_via_scene_placement: the
+    provider bundle ships scene_placement flat; the repo/tests have the package."""
+    try:
+        from scene_placement import robot_profile  # type: ignore
+        return robot_profile
+    except ImportError:
+        try:
+            from blueprint_pipeline.scene_placement import robot_profile  # type: ignore
+            return robot_profile
+        except ImportError:
+            return None
+
+
+def resolve_robot_profile_from_args(args):
+    """--robot-profile-json > --robot-id > registry default (unitree_g1).
+
+    Returns None when scene_placement is not importable (degraded worker):
+    apply_robot_profile(None) is a no-op and the built-in G1 constants stand.
+    """
+    rp = _robot_profile_module()
+    if rp is None:
+        return None
+    profile_json = getattr(args, "robot_profile_json", None)
+    if profile_json:
+        return rp.robot_profile_from_json_file(profile_json)
+    return rp.get_robot_profile(getattr(args, "robot_id", None) or rp.DEFAULT_ROBOT_ID)
+
+
+def apply_robot_profile(profile) -> None:
+    """Point every robot-scale module constant at ``profile`` so placement,
+    reach gating, and the dry-render skeleton stop assuming the G1. A None
+    profile keeps the G1 defaults (worker without scene_placement)."""
+    global ACTIVE_ROBOT_PROFILE, ROBOT_FOOTPRINT_HALF_EXTENT, ROBOT_PELVIS_HEIGHT_M
+    global G1_APPROX_ARM_SPAN_M, G1_APPROX_SHOULDER_FORWARD_OFFSET_M
+    global G1_APPROX_SHOULDER_LATERAL_OFFSET_M, G1_APPROX_SHOULDER_ABOVE_ROOT_M
+    global MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M
+    global MANIPULATION_SEED_MAX_SHOULDER_TO_AFFORDANCE_M
+    global TASK_STANCE_DEFAULT_VALIDATION_STANDOFF_RANGE_M
+    global MANIPULATION_READY_ARM_JOINT_DELTAS, _NOMINAL_G1_REST_OFFSETS
+    if profile is None:
+        return
+    ACTIVE_ROBOT_PROFILE = profile
+    ROBOT_FOOTPRINT_HALF_EXTENT = tuple(profile.footprint_half_extent_xyz)
+    ROBOT_PELVIS_HEIGHT_M = float(profile.pelvis_height_m)
+    G1_APPROX_ARM_SPAN_M = float(profile.arm_span_m)
+    G1_APPROX_SHOULDER_FORWARD_OFFSET_M = float(profile.shoulder_forward_offset_m)
+    G1_APPROX_SHOULDER_LATERAL_OFFSET_M = float(profile.shoulder_lateral_offset_m)
+    G1_APPROX_SHOULDER_ABOVE_ROOT_M = float(profile.shoulder_above_root_m)
+    MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M = float(profile.max_effector_to_affordance_m)
+    MANIPULATION_SEED_MAX_SHOULDER_TO_AFFORDANCE_M = (
+        G1_APPROX_ARM_SPAN_M + MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M
+    )
+    TASK_STANCE_DEFAULT_VALIDATION_STANDOFF_RANGE_M = tuple(profile.standoff_range_m)
+    if profile.manipulation_ready_arm_joint_deltas:
+        MANIPULATION_READY_ARM_JOINT_DELTAS = dict(profile.manipulation_ready_arm_joint_deltas)
+    if profile.link_rest_offsets:
+        _NOMINAL_G1_REST_OFFSETS = tuple(profile.link_rest_offsets)
+
+
 MANIPULATION_ARM_LINK_NAME_TOKENS = (
     "shoulder",
     "upper_arm",
@@ -5622,8 +5685,9 @@ def _placement_verdict_to_dict(verdict) -> dict[str, Any]:
     }
 
 
-def _footprint_box_for_pose(pose, half_extent=ROBOT_FOOTPRINT_HALF_EXTENT) -> dict[str, list[float]]:
-    hx, hy, hz = (abs(float(v)) for v in half_extent)
+def _footprint_box_for_pose(pose, half_extent=None) -> dict[str, list[float]]:
+    # Resolve at call time (not def time) so apply_robot_profile() overrides land here too.
+    hx, hy, hz = (abs(float(v)) for v in (half_extent or ROBOT_FOOTPRINT_HALF_EXTENT))
     return {
         "bbox_min_xyz": _rounded_xyz((float(pose[0]) - hx, float(pose[1]) - hy, float(pose[2]) - hz)),
         "bbox_max_xyz": _rounded_xyz((float(pose[0]) + hx, float(pose[1]) + hy, float(pose[2]) + hz)),
@@ -10926,6 +10990,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--request", help="execution request JSON (scenarios + asset hints)")
     ap.add_argument("--kitchen-usd", help="path/URI to Collected_KitchenRoom/KitchenRoom.usd")
     ap.add_argument("--g1-usd", help="path/URI to the official Isaac G1 USD")
+    ap.add_argument(
+        "--robot-id",
+        help="registered robot profile id (default: unitree_g1); drives footprint/"
+             "pelvis/reach scaling for placement and seed gating",
+    )
+    ap.add_argument(
+        "--robot-profile-json",
+        help="path to a RobotProfile JSON (wins over --robot-id); lets a new robot "
+             "be pure data with no code change",
+    )
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--policy", default="blueprint_default_walk_to_target_smoke_policy")
     ap.add_argument("--steps", type=int, default=64)
@@ -11045,6 +11119,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_arg_parser().parse_args(argv)
+
+    # Robot embodiment first: every downstream placement/reach/seed constant must
+    # already be profile-scaled before scenarios are planned or rendered.
+    apply_robot_profile(resolve_robot_profile_from_args(args))
 
     manip_look_at = None
     if args.manipulation_look_at:

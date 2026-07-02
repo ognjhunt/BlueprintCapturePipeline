@@ -34,6 +34,16 @@ from .perception_adapter import (
     detections_from_sam3,
 )
 from .placement import compute_stand_pose
+from .robot_profile import (
+    DEFAULT_ROBOT_ID,
+    UNITREE_G1_PROFILE,
+    RobotProfile,
+    get_robot_profile,
+    known_robot_ids,
+    register_robot_profile,
+    robot_profile_from_dict,
+    robot_profile_from_json_file,
+)
 from .validation import (
     DEFAULT_VALIDATION_FOOTPRINT_HALF_EXTENT,
     DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M,
@@ -83,6 +93,14 @@ __all__ = [
     "resolve_target",
     "resolve_target_by_label",
     "compute_stand_pose",
+    "RobotProfile",
+    "UNITREE_G1_PROFILE",
+    "DEFAULT_ROBOT_ID",
+    "get_robot_profile",
+    "known_robot_ids",
+    "register_robot_profile",
+    "robot_profile_from_dict",
+    "robot_profile_from_json_file",
     "validate_stand_pose",
     "validate_placement",
     "PlacementVerdict",

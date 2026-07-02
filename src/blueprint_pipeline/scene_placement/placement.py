@@ -26,7 +26,22 @@ from __future__ import annotations
 import math
 from typing import List, Optional, Tuple
 
+from .robot_profile import RobotProfile
 from .types import Probe, SceneObject, StandPose, Vec3
+
+
+def _resolve(
+    explicit: Optional[float],
+    profile: Optional[RobotProfile],
+    profile_field: str,
+    default: float,
+) -> float:
+    """Explicit kwarg > robot profile field > historical default."""
+    if explicit is not None:
+        return float(explicit)
+    if profile is not None:
+        return float(getattr(profile, profile_field))
+    return float(default)
 
 # Unit step directions in the floor (xy) plane. Cardinals are the bread-and-butter
 # (counters/walls are axis-aligned in practice); diagonals are opt-in for targets
@@ -191,16 +206,17 @@ def compute_stand_pose(
     target: SceneObject,
     *,
     probe: Probe,
-    pelvis_height: float = 0.79,
+    pelvis_height: Optional[float] = None,
     floor_z: float = 0.0,
-    standing_distance: float = 0.55,
-    step: float = 0.10,
-    max_out: float = 2.5,
-    clearance: float = 0.10,
+    standing_distance: Optional[float] = None,
+    step: Optional[float] = None,
+    max_out: Optional[float] = None,
+    clearance: Optional[float] = None,
     include_diagonals: bool = False,
     preferred_direction: Optional[Tuple[float, float]] = None,
     openable_target: bool | None = None,
-    openable_standoff_extra_m: float = 0.25,
+    openable_standoff_extra_m: Optional[float] = None,
+    robot_profile: Optional["RobotProfile"] = None,
 ) -> StandPose:
     """Resolve the pelvis pose that stands the robot on the target's open side.
 
@@ -236,7 +252,20 @@ def compute_stand_pose(
     ``openable_target`` adds a conservative door/drawer swing margin to the
     requested standoff. It is a label-derived placement hint, not proof that the
     fixture actually opens or that manipulation succeeds.
+
+    ``robot_profile`` supplies robot-specific defaults (pelvis height, standing
+    distance, probe tuning) for any of the above knobs the caller leaves unset;
+    an explicit kwarg always wins over the profile. With neither, the historical
+    G1-scale defaults apply unchanged.
     """
+    pelvis_height = _resolve(pelvis_height, robot_profile, "pelvis_height_m", 0.79)
+    standing_distance = _resolve(standing_distance, robot_profile, "standing_distance_m", 0.55)
+    step = _resolve(step, robot_profile, "probe_step_m", 0.10)
+    max_out = _resolve(max_out, robot_profile, "probe_max_out_m", 2.5)
+    clearance = _resolve(clearance, robot_profile, "probe_clearance_m", 0.10)
+    openable_standoff_extra_m = _resolve(
+        openable_standoff_extra_m, robot_profile, "openable_standoff_extra_m", 0.25
+    )
     degenerate_reason = _target_degeneracy_reason(target)
     if degenerate_reason is not None:
         return _degenerate_target_stand_pose(
