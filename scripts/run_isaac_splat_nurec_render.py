@@ -124,17 +124,31 @@ def _composite_robot(stage, options: dict, *, Gf, UsdGeom, Sdf) -> dict:
         from pxr import Usd  # type: ignore
 
         prim_path = str(options.get("robot_prim_path") or "/World/RobotVisual")
-        prim = stage.DefinePrim(Sdf.Path(prim_path), "Xform")
         chosen = None
         tried = []
-        for cand in _robot_usd_candidates(robot_usd):
-            tried.append(cand)
-            prim.GetReferences().ClearReferences()
-            prim.GetReferences().AddReference(cand)
-            composed = any(True for child in Usd.PrimRange(prim) if child.GetPath() != prim.GetPath())
+        pre_authored = stage.GetPrimAtPath(Sdf.Path(prim_path))
+        if pre_authored and pre_authored.IsValid() and pre_authored.HasAuthoredReferences():
+            # The reference was authored into the stage BEFORE open (runtime-added
+            # instanceable references can miss the Fabric render index entirely).
+            prim = pre_authored
+            composed = any(
+                True for child in Usd.PrimRange(prim) if child.GetPath() != prim.GetPath()
+            )
             if composed:
-                chosen = cand
-                break
+                chosen = "(pre_authored_in_stage)"
+                report["pre_authored"] = True
+        else:
+            prim = stage.DefinePrim(Sdf.Path(prim_path), "Xform")
+            for cand in _robot_usd_candidates(robot_usd):
+                tried.append(cand)
+                prim.GetReferences().ClearReferences()
+                prim.GetReferences().AddReference(cand)
+                composed = any(
+                    True for child in Usd.PrimRange(prim) if child.GetPath() != prim.GetPath()
+                )
+                if composed:
+                    chosen = cand
+                    break
         report["candidates_tried"] = tried
         if chosen is None:
             prim.GetReferences().ClearReferences()
@@ -147,8 +161,9 @@ def _composite_robot(stage, options: dict, *, Gf, UsdGeom, Sdf) -> dict:
         matrix = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), _math.degrees(yaw)))
         matrix.SetTranslateOnly(Gf.Vec3d(x, y, z))
         xformable = UsdGeom.Xformable(prim)
-        xformable.ClearXformOpOrder()
-        xformable.AddTransformOp().Set(matrix)
+        if not report.get("pre_authored"):
+            xformable.ClearXformOpOrder()
+            xformable.AddTransformOp().Set(matrix)
         child_count = sum(1 for child in Usd.PrimRange(prim)) - 1
         report.update(composited=True, resolved_usd=chosen, prim_path=prim_path,
                       composed_prim_count=child_count)
@@ -424,6 +439,15 @@ def _render(args) -> int:
             pf_imageables = [UsdGeom.Imageable(p) for p in pf]
             for imageable in pf_imageables:
                 imageable.MakeInvisible()
+            # The splat is self-emissive; the mesh robot needs real lights or it
+            # renders black. Lights are authored invisible in the stage — enable
+            # them ONLY for this pass so the splat pass stays unlit.
+            lights_prim = None
+            lights_path = str(render_options.get("lights_path") or "")
+            if lights_path:
+                lights_prim = stage.GetPrimAtPath(Sdf.Path(lights_path))
+                if lights_prim and lights_prim.IsValid():
+                    UsdGeom.Imageable(lights_prim).MakeVisible()
             for _ in range(10):
                 simulation_app.update()
             for idx, cam in enumerate(cameras):
@@ -467,6 +491,8 @@ def _render(args) -> int:
                     pass
             for imageable in pf_imageables:
                 imageable.MakeVisible()
+            if lights_prim and lights_prim.IsValid():
+                UsdGeom.Imageable(lights_prim).MakeInvisible()
             robot_report["robot_only_pass"] = robot_only
 
         nonblank = sum(1 for r in rendered if r["nonblank"])

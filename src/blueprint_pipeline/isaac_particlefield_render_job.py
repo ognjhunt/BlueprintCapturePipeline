@@ -170,6 +170,58 @@ def derive_cameras_for(standard_ply: str | Path, *, up_axis: int | None = None) 
     return derive_eval_cameras(geom)
 
 
+def author_robot_into_stage(
+    usdc_path: str | Path,
+    *,
+    robot_usd: str,
+    robot_pose: Sequence[float],
+    prim_path: str = "/World/RobotVisual",
+    lights_path: str = "/World/CompositeLights",
+) -> dict:
+    """Author the robot reference + composite lights INTO the stage, pre-open.
+
+    Runtime-added instanceable references can fail to sync into Isaac's Fabric
+    scene delegate (the robot composes in USD — bounds, mesh points — but never
+    reaches the RTX render index; depth annotators see nothing). Content present
+    at ``open_stage`` time always ingests, so the reference is authored locally
+    into the bundle's USDC. The referenced asset URL resolves on the WORKER at
+    open (no local fetch). Lights are authored INVISIBLE — the splat pass is
+    self-emissive and must stay unlit; the runner enables them for the
+    robot-only pass so the mesh is not black.
+    """
+    import math as _math
+
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux  # type: ignore
+
+    stage = Usd.Stage.Open(str(usdc_path))
+    if stage is None:
+        return {"status": "blocked", "blockers": ["stage_open_failed"]}
+    prim = stage.DefinePrim(Sdf.Path(prim_path), "Xform")
+    prim.GetReferences().ClearReferences()
+    prim.GetReferences().AddReference(str(robot_usd))
+    x, y, z, yaw = (float(v) for v in robot_pose)
+    matrix = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), _math.degrees(yaw)))
+    matrix.SetTranslateOnly(Gf.Vec3d(x, y, z))
+    xformable = UsdGeom.Xformable(prim)
+    xformable.ClearXformOpOrder()
+    xformable.AddTransformOp().Set(matrix)
+
+    lights_root = UsdGeom.Xform.Define(stage, Sdf.Path(lights_path))
+    UsdGeom.Imageable(lights_root.GetPrim()).MakeInvisible()
+    dome = UsdLux.DomeLight.Define(stage, Sdf.Path(f"{lights_path}/Dome"))
+    dome.CreateIntensityAttr(400.0)
+    distant = UsdLux.DistantLight.Define(stage, Sdf.Path(f"{lights_path}/Distant"))
+    distant.CreateIntensityAttr(2500.0)
+    stage.GetRootLayer().Save()
+    return {
+        "status": "completed",
+        "robot_prim_path": prim_path,
+        "lights_path": lights_path,
+        "robot_usd": str(robot_usd),
+        "robot_pose": [x, y, z, yaw],
+    }
+
+
 def build_render_bundle(
     *, usdc_path: str | Path, cameras: Sequence[dict], out_dir: Path,
     canary_camera_id: str = "third_person",
@@ -480,6 +532,17 @@ def run_isaac_particlefield_render_job(
         cameras = derive_cameras_for(std, up_axis=up_axis)
     manifest["camera_ids"] = [c.get("id") for c in cameras]
     if render_options:
+        render_options = dict(render_options)
+        robot_usd = str(render_options.get("robot_usd") or "")
+        robot_pose = render_options.get("robot_pose")
+        if robot_usd and isinstance(robot_pose, (list, tuple)) and len(robot_pose) == 4:
+            authored = author_robot_into_stage(
+                asset["usdc"], robot_usd=robot_usd, robot_pose=robot_pose
+            )
+            manifest["robot_authoring"] = authored
+            if authored.get("status") == "completed":
+                render_options.setdefault("robot_prim_path", authored["robot_prim_path"])
+                render_options.setdefault("lights_path", authored["lights_path"])
         manifest["render_options"] = dict(render_options)
     bundle_zip = build_render_bundle(
         usdc_path=asset["usdc"], cameras=cameras, out_dir=out_dir,
