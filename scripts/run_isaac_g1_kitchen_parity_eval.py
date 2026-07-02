@@ -203,8 +203,12 @@ MANIPULATION_REACH_BLOCKER_SET = {
 DEFAULT_RENDER_STEP_WATCHDOG_SECONDS = 180.0
 ROBOT_VISUAL_MESH_MISSING_BLOCKER = "robot_visual_mesh_missing"
 ROBOT_REVIEW_VISUAL_PROXY_USED_BLOCKER = "robot_review_visual_proxy_used"
-DEFAULT_PATH_TRACING_MIN_SAMPLES_PER_PIXEL = 64
-DEFAULT_PATH_TRACING_MAX_SAMPLES_PER_PIXEL = 128
+# The 2026-07-02 render-noise audit (docs/G1_RENDER_NOISE_AUDIT.md) diagnosed
+# render_budget_sample_starvation: default-budget 64-spp manipulation POV frames came back
+# starved/black (variants B/C, dark_pixel_ratio 1.0) while the same scene at 384 spp was clean
+# (variants D/E), at ~11s/frame render cost. 384 is the audit-proven clean budget.
+DEFAULT_PATH_TRACING_MIN_SAMPLES_PER_PIXEL = 384
+DEFAULT_PATH_TRACING_MAX_SAMPLES_PER_PIXEL = 512
 
 
 # ============================ testable helpers (no isaacsim) ============================
@@ -337,6 +341,11 @@ DEFAULT_AUDIT_HIGH_SAMPLES_PER_PIXEL = 384
 DEFAULT_AUDIT_WARMUP_FRAMES = 8
 DEFAULT_AUDIT_PER_VARIANT_SETTLE_FRAMES = 3
 DEFAULT_AUDIT_BOOST_LIGHT_INTENSITY = 4500.0
+# Audit steps are path traced (up to DEFAULT_AUDIT_HIGH_SAMPLES_PER_PIXEL spp) and the first
+# warmup frame additionally pays cold shader compile, so the generic realtime-step watchdog
+# (DEFAULT_RENDER_STEP_WATCHDOG_SECONDS) is far too tight for them: the 2026-07-02 GPU run was
+# killed at `audit:warmup:0` after 180s before rendering a single variant.
+DEFAULT_AUDIT_RENDER_STEP_WATCHDOG_SECONDS = 900.0
 _AUDIT_MATERIAL_MONOTONIC_RANK = {
     "textured_original": 0,
     "simplified_diffuse": 1,
@@ -6891,6 +6900,17 @@ def _render_step_watchdog_seconds() -> float:
         return DEFAULT_RENDER_STEP_WATCHDOG_SECONDS
 
 
+def _audit_render_step_watchdog_seconds() -> float:
+    raw = os.getenv("PARITY_AUDIT_RENDER_STEP_WATCHDOG_SECONDS", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    # Never tighter than the generic step watchdog an operator may have raised.
+    return max(DEFAULT_AUDIT_RENDER_STEP_WATCHDOG_SECONDS, _render_step_watchdog_seconds())
+
+
 def _auto_render_settle_seconds(
     *,
     configured_settle_seconds: float,
@@ -10715,6 +10735,7 @@ def run_render_noise_audit(*, kitchen_usd: str, g1_usd: str, scenario: Mapping[s
             _replicator_step_with_watchdog(
                 rep, label=f"{sid}:audit:warmup:{wi}",
                 result_path=result_path, scenario_id=sid, rt_subframes=1,
+                timeout_seconds=_audit_render_step_watchdog_seconds(),
             )
             warmup_seconds.append(round(time.time() - t_warm, 3))
         _log(f"render-noise audit: warmup done ({[f'{s:.1f}' for s in warmup_seconds]})")
@@ -10780,11 +10801,13 @@ def run_render_noise_audit(*, kitchen_usd: str, g1_usd: str, scenario: Mapping[s
                     _replicator_step_with_watchdog(
                         rep, label=f"{sid}:audit:{vid}:settle:{si}",
                         result_path=result_path, scenario_id=sid, rt_subframes=1,
+                        timeout_seconds=_audit_render_step_watchdog_seconds(),
                     )
                 t_capture = time.time()
                 _replicator_step_with_watchdog(
                     rep, label=f"{sid}:audit:{vid}:capture",
                     result_path=result_path, scenario_id=sid, rt_subframes=1,
+                    timeout_seconds=_audit_render_step_watchdog_seconds(),
                 )
                 record["capture_seconds"] = round(time.time() - t_capture, 3)
                 variant_dir = audit_dir / "variants" / vid

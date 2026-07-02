@@ -374,6 +374,9 @@ import os, sys, io, time, json, zipfile, threading, subprocess, urllib.request, 
 OUT="/workspace/out"; BUNDLE="/workspace/bundle"
 for d in (OUT, BUNDLE): pathlib.Path(d).mkdir(parents=True, exist_ok=True)
 for p in pathlib.Path(OUT).iterdir():
+    # tee already holds runner_console.log open; unlinking it detaches the inode and the
+    # console then never reaches the output zip (every crash so far collected an empty tail).
+    if p.name == "runner_console.log": continue
     try:
         shutil.rmtree(p) if p.is_dir() else p.unlink()
     except Exception: pass
