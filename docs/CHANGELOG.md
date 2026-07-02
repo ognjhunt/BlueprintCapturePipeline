@@ -18,12 +18,24 @@
   where those sidecars exist. This is still not full G1 URDF FK, official
   WholeBodyControl execution, physical robot proof, contact validation, or task
   success proof.
-- Promoted the Lambda Cloud provider lane from a request-validation stub to a
-  gated Lambda Cloud API adapter with no-spend inventory modes, dry-run launch
-  payload generation, explicit launch/terminate calls, secret redaction, and
-  readiness/endpoint/teardown artifacts. Lambda launch submission remains
-  separate from worker readiness, simulator execution, artifact upload, spend
-  closure, safety, and rank-fidelity proof.
+- Added kitchen task scaling preflight and G1 render-noise audit support for
+  Isaac/G1 fridge review media. The audit now separates texture asset
+  resolution, render sample budget, denoiser behavior, material response,
+  lighting, and camera/pose issues before WAM seed frames are treated as useful
+  support artifacts.
+- Promoted provider startup paths with stronger RunPod/Lambda/live-proof
+  handling, warm render server behavior, GPU startup manifests, and no-spend or
+  dry-run modes where applicable. Provider launch, endpoint readiness,
+  simulator execution, artifact upload, cost/teardown closure, safety, and
+  rank-fidelity proof remain separate claims.
+- Fixed the headless MuJoCo `--skip-render-frames` Linux path so GL-less runners
+  default `MUJOCO_GL=disable` for non-rendering simulator commands while keeping
+  EGL for actual render-frame runs.
+- Raised path-traced manipulation/verify review defaults after the first G1
+  render-noise audit diagnosed 64-spp sample starvation and clean 384-spp
+  variants. The stock Isaac G1 asset still had no texture asset references, so
+  textured outputs must remain labeled `textured_unverified` unless a future
+  asset resolves real texture refs.
 
 ### Employee-Facing
 
@@ -31,11 +43,31 @@
   detection, OpenAI episode-consistency scoring, SC3-style distinct-view guards,
   rank-fidelity calibration requirements, and sidecar FK metadata propagation
   across the persistent Unitree GR00T N1.7 SONIC / OSCAR WAM path.
+- Added local and OpenAI WAM episode-consistency scorer entrypoints, rank
+  fidelity anchor requests/calibration reports, and the accepted-anchor
+  computation path in
+  `src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py`.
 - Added contract tests for official-image defaults, OSCAR provider bundle
   diagnostics, sidecar FK skeleton traces, external episode consistency, visual
   quality blockers, multiview unavailability, and calibration guardrails.
+- Added `src/blueprint_pipeline/kitchen_task_scaling_preflight.py`,
+  `src/blueprint_pipeline/g1_render_noise_audit.py`, and
+  `scripts/run_g1_render_noise_audit.py`, with runner/job coverage for the
+  kitchen scaling and render-noise variant matrix.
+- Hardened provider startup and kitchen parity flow across
+  `src/blueprint_pipeline/robot_eval_gpu_startup_pipeline.py`,
+  `src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`,
+  `src/blueprint_pipeline/lambda_provider_adapter.py`,
+  `src/blueprint_pipeline/runpod_provider_adapter.py`,
+  `src/blueprint_pipeline/runpod_live_execution_proof.py`,
+  `src/blueprint_pipeline/gpu_render_providers.py`, and
+  `src/blueprint_pipeline/warm_render_server.py`.
 - Wired `lambda_cloud` into managed-provider priority, live-provider gate
   metadata, provider credential contracts, and focused Lambda adapter coverage.
+- Added official SAM3 depth harness provider support in
+  `src/blueprint_pipeline/wam_real_provider_validation_probe.py` and hardened
+  related test fixtures for SAM3, host `ffmpeg`, placement yaw validation, and
+  dual-stream skeleton visibility counters.
 
 ### Future-Agent-Facing
 
@@ -46,6 +78,17 @@
 - If reusing RunPod pods, verify image compatibility first. Older hot pods may
   have been launched from the PyTorch carrier image; current WAM defaults expect
   the pinned official OSCAR image.
+- The G1 render-noise audit is a simulator/render-quality diagnostic only. Its
+  proxy, simplified-diffuse, and `textured_unverified` labels can gate WAM seed
+  media choices, but they do not prove physical robot readiness, task success,
+  contact correctness, policy quality, verified G1 material fidelity, or WAM
+  rank fidelity.
+- The Linux MuJoCo fix is scoped to GL selection for packaged simulator
+  commands. It fixes GL-less `--skip-render-frames` execution and does not add
+  new render-frame, physics-fidelity, provider-runtime, or deployment proof.
+- Evidence boundary: this entry covers committed history dated 2026-07-01 from
+  `681dd698` through `38771dc3`. Current working tree inspection found no
+  uncommitted local changes to attribute to July 1.
 
 ## 2026-06-30
 

@@ -159,6 +159,26 @@ class TestRunPreflight:
         assert gates["labels_loaded"] == "FAIL"
         assert manifest["summary"]["tasks_evaluated"] == 0
 
+    def test_render_exception_preserves_cpu_manifest(
+        self, scene_dir, tmp_path, monkeypatch
+    ):
+        out = tmp_path / "out"
+
+        def fail_render(*_args, **_kwargs):
+            raise RuntimeError("synthetic render hang")
+
+        monkeypatch.setattr(
+            "blueprint_pipeline.interiorgs_task_preflight.render_task_views",
+            fail_render,
+        )
+        with pytest.raises(RuntimeError, match="synthetic render hang"):
+            run_preflight(scene_dir=scene_dir, out_dir=out, render_views=True)
+
+        saved = json.loads((out / "preflight_manifest.json").read_text())
+        assert saved["summary"]["tasks_evaluated"] == 3
+        assert saved["summary"]["tasks_passed"] >= 1
+        assert "splat_renders" not in saved
+
 
 class TestRenderTaskViews:
     def test_blocked_when_harness_missing(self, tmp_path):
