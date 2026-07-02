@@ -795,10 +795,12 @@ def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_pat
     assert eval_manifest["artifacts"]["geometry_summary"].startswith("../geometry/")
     geometry_conditioning = launchable_export["bundles"]["geometry_conditioning"]
     assert geometry_conditioning["launchable"] is False
-    assert geometry_conditioning["geometry_source"] == "local_sfm"
-    assert geometry_conditioning["local_reference_ready"] is True
-    assert geometry_conditioning["non_arkit_geometry_state"] == "degraded"
-    assert "geometry_source_not_video_to_world:local_sfm" in geometry_conditioning["blockers"]
+    assert geometry_conditioning["geometry_source"] == "fallback_geometry"
+    assert geometry_conditioning["fallback_used"] is True
+    assert geometry_conditioning["local_reference_ready"] is False
+    assert geometry_conditioning["non_arkit_geometry_state"] == "blocked"
+    assert "geometry_source_not_video_to_world:fallback_geometry" in geometry_conditioning["blockers"]
+    assert "synthetic_geometry_not_capture_truth" in geometry_conditioning["blockers"]
     assert eval_manifest["validation_gates"]["geometry_conditioning_ready"]["passed"] is False
 
 

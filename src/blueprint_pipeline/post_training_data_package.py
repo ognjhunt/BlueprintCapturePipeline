@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 import tarfile
 from hashlib import sha256
@@ -21,6 +22,14 @@ CUSTOMER_HANDOFF_REPORT_SCHEMA_VERSION = "post_training_customer_handoff_report.
 DELIVERY_MANIFEST_SCHEMA_VERSION = "post_training_delivery_manifest.v1"
 SIGNED_ACCESS_MANIFEST_SCHEMA_VERSION = "post_training_signed_access_manifest.v1"
 HANDOFF_SUMMARY_SCHEMA_VERSION = "post_training_data_package_handoff_summary.v1"
+CURATION_REPORT_SCHEMA_VERSION = "post_training_curation_report.v1"
+SEMANTIC_DEDUP_REPORT_SCHEMA_VERSION = "post_training_semantic_dedup_report.v1"
+SC3_ACTION_REPORT_SCHEMA_VERSION = "post_training_sc3_action_normalization_report.v1"
+OSCAR_MIN_FRAME_COUNT = 16
+OSCAR_MAX_STATIC_CAMERA_MOTION_M = 0.05
+OSCAR_MIN_ACTION_MOTION_SCORE = 1e-4
+OSCAR_MIN_VISIBLE_SKELETON_FRACTION = 0.5
+OSCAR_MIN_SHARPNESS_SCORE = 5.0
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "post_training_data_package_export",
@@ -69,6 +78,451 @@ def _string_list(value: Any) -> List[str]:
         if text and text not in out:
             out.append(text)
     return out
+
+
+def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _finite_int(value: Any) -> int | None:
+    number = _finite_float(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _clip_rows(clips: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for index, item in enumerate(clips.get("clips") or []):
+        if isinstance(item, Mapping):
+            row = dict(item)
+        elif isinstance(item, str):
+            row = {"clip_id": item, "clip_path": item}
+        else:
+            continue
+        row.setdefault("clip_id", row.get("id") or row.get("path") or row.get("clip_path") or f"clip_{index}")
+        rows.append(row)
+    return rows
+
+
+def _clip_id(row: Mapping[str, Any], index: int) -> str:
+    return str(row.get("clip_id") or row.get("id") or row.get("clip_path") or row.get("path") or f"clip_{index}").strip()
+
+
+def _attempt_actions(attempt: Mapping[str, Any]) -> List[Any]:
+    actions = attempt.get("actions")
+    if isinstance(actions, Sequence) and not isinstance(actions, (str, bytes, bytearray)):
+        return list(actions)
+    action_trace = attempt.get("action_trace")
+    if isinstance(action_trace, Sequence) and not isinstance(action_trace, (str, bytes, bytearray)):
+        return list(action_trace)
+    return []
+
+
+def _action_vector_from_mapping(action: Mapping[str, Any]) -> List[float] | None:
+    candidates = [
+        action.get("sc3_7d_delta_ee_pose"),
+        action.get("sc3_action_vector"),
+        action.get("action_vector_7d"),
+        action.get("delta_end_effector_pose_7d"),
+        action.get("delta_ee_pose_7d"),
+    ]
+    normalized = _mapping(action.get("normalized_action"))
+    if normalized:
+        candidates.extend(
+            [
+                normalized.get("sc3_7d_delta_ee_pose"),
+                normalized.get("sc3_action_vector"),
+                normalized.get("action_vector_7d"),
+                normalized.get("delta_end_effector_pose_7d"),
+                normalized.get("delta_ee_pose_7d"),
+            ]
+        )
+    for candidate in candidates:
+        if isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes, bytearray)) and len(candidate) == 7:
+            vector = [_finite_float(value) for value in candidate]
+            if all(value is not None for value in vector):
+                return [float(value) for value in vector if value is not None]
+
+    delta_position = action.get("delta_position_m") or action.get("translation_delta_m")
+    delta_rotation = action.get("delta_rotation_axis_angle") or action.get("rotation_delta_axis_angle")
+    gripper = (
+        action.get("gripper_delta")
+        if action.get("gripper_delta") is not None
+        else action.get("gripper")
+    )
+    if (
+        isinstance(delta_position, Sequence)
+        and not isinstance(delta_position, (str, bytes, bytearray))
+        and len(delta_position) == 3
+        and isinstance(delta_rotation, Sequence)
+        and not isinstance(delta_rotation, (str, bytes, bytearray))
+        and len(delta_rotation) == 3
+    ):
+        values = [
+            *[_finite_float(value) for value in delta_position],
+            *[_finite_float(value) for value in delta_rotation],
+            _finite_float(gripper if gripper is not None else 0.0),
+        ]
+        if all(value is not None for value in values):
+            return [float(value) for value in values if value is not None]
+    return None
+
+
+def _sc3_action_vector(action: Any) -> List[float] | None:
+    if isinstance(action, Sequence) and not isinstance(action, (str, bytes, bytearray)) and len(action) == 7:
+        values = [_finite_float(value) for value in action]
+        if all(value is not None for value in values):
+            return [float(value) for value in values if value is not None]
+    if isinstance(action, Mapping):
+        return _action_vector_from_mapping(action)
+    return None
+
+
+def _sc3_action_vectors_for_attempt(attempt: Mapping[str, Any]) -> List[List[float]]:
+    vectors: List[List[float]] = []
+    for action in _attempt_actions(attempt):
+        vector = _sc3_action_vector(action)
+        if vector is not None:
+            vectors.append(vector)
+    return vectors
+
+
+def _build_sc3_action_report(
+    *,
+    trace: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    attempts = _rows(trace, "attempts")
+    rows: List[Dict[str, Any]] = []
+    blockers: List[str] = []
+    action_count = 0
+    valid_count = 0
+    for attempt_index, attempt in enumerate(attempts):
+        attempt_id = str(attempt.get("attempt_id") or f"attempt_{attempt_index}").strip()
+        actions = _attempt_actions(attempt)
+        vectors = _sc3_action_vectors_for_attempt(attempt)
+        action_count += len(actions)
+        valid_count += len(vectors)
+        attempt_blockers: List[str] = []
+        if not actions:
+            attempt_blockers.append("sc3_action_trace_missing")
+        if len(vectors) != len(actions):
+            attempt_blockers.append("sc3_7d_delta_end_effector_pose_missing_or_invalid")
+        if vectors and not any(any(abs(value) > OSCAR_MIN_ACTION_MOTION_SCORE for value in vector) for vector in vectors):
+            attempt_blockers.append("sc3_action_vectors_all_zero")
+        blockers.extend(f"{attempt_id}:{blocker}" for blocker in attempt_blockers)
+        rows.append(
+            {
+                "attempt_id": attempt_id,
+                "action_count": len(actions),
+                "valid_sc3_7d_action_count": len(vectors),
+                "vectors": vectors,
+                "status": "passed" if not attempt_blockers else "blocked",
+                "blockers": attempt_blockers,
+            }
+        )
+    if not attempts:
+        blockers.append("sc3_attempt_trace_missing")
+    if action_count == 0:
+        blockers.append("sc3_action_trace_missing")
+    status = "passed" if not blockers else "blocked"
+    return {
+        "schema_version": SC3_ACTION_REPORT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": status,
+        "action_representation": "7d_delta_end_effector_pose",
+        "attempt_count": len(attempts),
+        "action_count": action_count,
+        "valid_sc3_7d_action_count": valid_count,
+        "rows": rows,
+        "blockers": _string_list(blockers),
+        "claim_boundary": {
+            "action_normalization_validated": status == "passed",
+            "missing_actions_exported_as_identity_pose": False,
+            "sc3_action_contract_satisfied": status == "passed",
+        },
+    }
+
+
+def _attempts_by_id(trace: Mapping[str, Any]) -> Dict[str, Mapping[str, Any]]:
+    out: Dict[str, Mapping[str, Any]] = {}
+    for index, attempt in enumerate(_rows(trace, "attempts")):
+        attempt_id = str(attempt.get("attempt_id") or f"attempt_{index}").strip()
+        if attempt_id:
+            out[attempt_id] = attempt
+        scenario_id = str(attempt.get("scenario_id") or "").strip()
+        if scenario_id:
+            out.setdefault(scenario_id, attempt)
+    return out
+
+
+def _evidence_gate(
+    *,
+    explicit: Any,
+    measured: float | None,
+    threshold: float,
+    op: str,
+    missing_blocker: str,
+) -> tuple[bool, List[str], Dict[str, Any]]:
+    if isinstance(explicit, bool):
+        return explicit, [] if explicit else [missing_blocker.replace("_missing", "_failed")], {"explicit": explicit}
+    if measured is None:
+        return False, [missing_blocker], {"value": None, "threshold": threshold, "operator": op}
+    passed = measured >= threshold if op == ">=" else measured <= threshold
+    return passed, [] if passed else [missing_blocker.replace("_missing", "_failed")], {
+        "value": measured,
+        "threshold": threshold,
+        "operator": op,
+    }
+
+
+def _build_curation_report(
+    *,
+    clips: Mapping[str, Any],
+    trace: Mapping[str, Any],
+    sc3_action_report: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    rows = _clip_rows(clips)
+    attempts = _attempts_by_id(trace)
+    accepted: List[str] = []
+    rejected: List[Dict[str, Any]] = []
+    blockers: List[str] = []
+    clip_reports: List[Dict[str, Any]] = []
+    for index, clip in enumerate(rows):
+        clip_name = _clip_id(clip, index)
+        curation = _mapping(clip.get("curation") or clip.get("quality") or clip.get("oscar_curation"))
+        attempt_ref = str(clip.get("attempt_id") or clip.get("scenario_id") or "").strip()
+        attempt = attempts.get(attempt_ref, {})
+        vectors = _sc3_action_vectors_for_attempt(attempt) if attempt else []
+
+        frame_count = _finite_int(
+            _first_present(
+                curation.get("frame_count"),
+                clip.get("frame_count"),
+                clip.get("num_frames"),
+                clip.get("video_frame_count"),
+            )
+        )
+        static_motion = _finite_float(
+            _first_present(
+                curation.get("camera_motion_m"),
+                clip.get("camera_motion_m"),
+                clip.get("max_camera_motion_m"),
+            )
+        )
+        action_motion = _finite_float(
+            _first_present(
+                curation.get("action_motion_score"),
+                clip.get("action_motion_score"),
+                clip.get("manipulator_motion_score"),
+            )
+        )
+        if action_motion is None and vectors:
+            action_motion = max(sum(abs(value) for value in vector) for vector in vectors)
+        visibility = _finite_float(
+            _first_present(
+                curation.get("visible_skeleton_fraction"),
+                clip.get("visible_skeleton_fraction"),
+                clip.get("target_visibility_fraction"),
+                clip.get("visibility_fraction"),
+            )
+        )
+        sharpness = _finite_float(
+            _first_present(
+                curation.get("sharpness_score"),
+                clip.get("sharpness_score"),
+                curation.get("mean_sharpness_score"),
+                clip.get("mean_sharpness_score"),
+            )
+        )
+
+        clip_blockers: List[str] = []
+        frame_passed, frame_blockers, frame_evidence = _evidence_gate(
+            explicit=curation.get("min_frame_filter_passed") if "min_frame_filter_passed" in curation else clip.get("min_frame_filter_passed"),
+            measured=float(frame_count) if frame_count is not None else None,
+            threshold=float(OSCAR_MIN_FRAME_COUNT),
+            op=">=",
+            missing_blocker="min_frame_count_missing",
+        )
+        static_passed, static_blockers, static_evidence = _evidence_gate(
+            explicit=curation.get("static_camera_filter_passed") if "static_camera_filter_passed" in curation else clip.get("static_camera_filter_passed"),
+            measured=static_motion,
+            threshold=OSCAR_MAX_STATIC_CAMERA_MOTION_M,
+            op="<=",
+            missing_blocker="static_camera_evidence_missing",
+        )
+        action_passed, action_blockers, action_evidence = _evidence_gate(
+            explicit=curation.get("meaningful_action_filter_passed") if "meaningful_action_filter_passed" in curation else clip.get("meaningful_action_filter_passed"),
+            measured=action_motion,
+            threshold=OSCAR_MIN_ACTION_MOTION_SCORE,
+            op=">=",
+            missing_blocker="meaningful_action_evidence_missing",
+        )
+        visibility_passed, visibility_blockers, visibility_evidence = _evidence_gate(
+            explicit=curation.get("visible_skeleton_filter_passed") if "visible_skeleton_filter_passed" in curation else clip.get("visible_skeleton_filter_passed"),
+            measured=visibility,
+            threshold=OSCAR_MIN_VISIBLE_SKELETON_FRACTION,
+            op=">=",
+            missing_blocker="visible_skeleton_evidence_missing",
+        )
+        sharpness_passed, sharpness_blockers, sharpness_evidence = _evidence_gate(
+            explicit=curation.get("blur_filter_passed") if "blur_filter_passed" in curation else clip.get("blur_filter_passed"),
+            measured=sharpness,
+            threshold=OSCAR_MIN_SHARPNESS_SCORE,
+            op=">=",
+            missing_blocker="blur_or_sharpness_evidence_missing",
+        )
+        for gate_blockers in (
+            frame_blockers,
+            static_blockers,
+            action_blockers,
+            visibility_blockers,
+            sharpness_blockers,
+        ):
+            clip_blockers.extend(gate_blockers)
+        passed = bool(
+            frame_passed
+            and static_passed
+            and action_passed
+            and visibility_passed
+            and sharpness_passed
+        )
+        if passed:
+            accepted.append(clip_name)
+        else:
+            rejected.append({"clip_id": clip_name, "blockers": clip_blockers})
+            blockers.extend(f"{clip_name}:{blocker}" for blocker in clip_blockers)
+        clip_reports.append(
+            {
+                "clip_id": clip_name,
+                "status": "accepted" if passed else "rejected",
+                "attempt_ref": attempt_ref or None,
+                "gates": {
+                    "min_frame": {"passed": frame_passed, **frame_evidence},
+                    "static_camera": {"passed": static_passed, **static_evidence},
+                    "meaningful_action": {"passed": action_passed, **action_evidence},
+                    "visible_skeleton": {"passed": visibility_passed, **visibility_evidence},
+                    "blur_or_sharpness": {"passed": sharpness_passed, **sharpness_evidence},
+                },
+                "blockers": clip_blockers,
+            }
+        )
+    if not rows:
+        blockers.append("clips_manifest_missing_or_empty")
+    if sc3_action_report.get("status") != "passed":
+        blockers.append("sc3_action_normalization_blocked")
+    status = "passed" if rows and not blockers else "blocked"
+    return {
+        "schema_version": CURATION_REPORT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": status,
+        "filter_family": "oscar_style_source_data_curation",
+        "thresholds": {
+            "min_frame_count": OSCAR_MIN_FRAME_COUNT,
+            "max_static_camera_motion_m": OSCAR_MAX_STATIC_CAMERA_MOTION_M,
+            "min_action_motion_score": OSCAR_MIN_ACTION_MOTION_SCORE,
+            "min_visible_skeleton_fraction": OSCAR_MIN_VISIBLE_SKELETON_FRACTION,
+            "min_sharpness_score": OSCAR_MIN_SHARPNESS_SCORE,
+        },
+        "source_clip_count": len(rows),
+        "accepted_clip_count": len(accepted),
+        "rejected_clip_count": len(rejected),
+        "accepted_clip_ids": accepted,
+        "rejected_clips": rejected,
+        "clips": clip_reports,
+        "blockers": _string_list(blockers),
+    }
+
+
+def _semantic_dedup_key(clip: Mapping[str, Any]) -> str:
+    curation = _mapping(clip.get("curation") or clip.get("quality") or clip.get("oscar_curation"))
+    direct = str(
+        curation.get("semantic_dedup_key")
+        or clip.get("semantic_dedup_key")
+        or clip.get("dedup_key")
+        or ""
+    ).strip()
+    if direct:
+        return direct
+    visual = str(
+        curation.get("visual_embedding_hash")
+        or clip.get("visual_embedding_hash")
+        or clip.get("visual_hash")
+        or ""
+    ).strip()
+    trajectory = str(
+        curation.get("trajectory_hash")
+        or clip.get("trajectory_hash")
+        or clip.get("action_trajectory_hash")
+        or ""
+    ).strip()
+    if visual and trajectory:
+        return f"visual:{visual}|trajectory:{trajectory}"
+    return ""
+
+
+def _build_semantic_dedup_report(
+    *,
+    clips: Mapping[str, Any],
+    curation_report: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    accepted_ids = set(_string_list(curation_report.get("accepted_clip_ids")))
+    rows = [
+        clip
+        for index, clip in enumerate(_clip_rows(clips))
+        if _clip_id(clip, index) in accepted_ids
+    ]
+    groups: Dict[str, List[str]] = {}
+    missing: List[str] = []
+    for index, clip in enumerate(rows):
+        clip_name = _clip_id(clip, index)
+        key = _semantic_dedup_key(clip)
+        if not key:
+            missing.append(clip_name)
+            continue
+        groups.setdefault(key, []).append(clip_name)
+    duplicate_groups = [
+        {"semantic_dedup_key": key, "clip_ids": ids}
+        for key, ids in groups.items()
+        if len(ids) > 1
+    ]
+    blockers: List[str] = []
+    if missing and len(rows) > 1:
+        blockers.extend(f"{clip_id}:semantic_dedup_evidence_missing" for clip_id in missing)
+    if duplicate_groups:
+        blockers.extend(
+            f"semantic_duplicate_group:{group['semantic_dedup_key']}"
+            for group in duplicate_groups
+        )
+    status = "passed" if not blockers else "blocked"
+    return {
+        "schema_version": SEMANTIC_DEDUP_REPORT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": status,
+        "source": "visual_semantic_key_plus_trajectory_key",
+        "accepted_input_clip_count": len(rows),
+        "deduped_clip_count": len(rows) - sum(max(0, len(group["clip_ids"]) - 1) for group in duplicate_groups),
+        "duplicate_group_count": len(duplicate_groups),
+        "duplicate_groups": duplicate_groups,
+        "clips_missing_dedup_evidence": missing,
+        "blockers": _string_list(blockers),
+    }
 
 
 def _rows(payload: Mapping[str, Any], key: str) -> List[Dict[str, Any]]:
@@ -589,6 +1043,7 @@ def _rows_for_optional_exports(
         attempt_id = str(attempt.get("attempt_id") or f"attempt_{index}").strip()
         scenario_id = str(attempt.get("scenario_id") or "").strip()
         labels = labels_by_attempt.get(attempt_id) or labels_by_scenario.get(scenario_id) or []
+        sc3_vectors = _sc3_action_vectors_for_attempt(attempt)
         rows.append(
             {
                 "episode_id": attempt_id,
@@ -602,6 +1057,8 @@ def _rows_for_optional_exports(
                 "status": attempt.get("status") or "unknown",
                 "metrics": dict(_mapping(attempt.get("metrics"))),
                 "actions": attempt.get("actions") or attempt.get("action_trace") or [],
+                "sc3_7d_delta_end_effector_actions": sc3_vectors,
+                "sc3_action_contract_valid": bool(sc3_vectors),
                 "observations": attempt.get("observations") or attempt.get("observation_refs") or [],
                 "failure_labels": labels,
                 "package_metrics": dict(metrics),
@@ -624,6 +1081,8 @@ def _rows_for_optional_exports(
             "status": "missing_source_attempts",
             "metrics": dict(metrics),
             "actions": [],
+            "sc3_7d_delta_end_effector_actions": [],
+            "sc3_action_contract_valid": False,
             "observations": [],
             "failure_labels": list(label_rows),
             "package_metrics": dict(metrics),
@@ -649,6 +1108,10 @@ def _flat_export_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]
                 "status": row.get("status"),
                 "metrics_json": json.dumps(row.get("metrics") or {}, sort_keys=True),
                 "actions_json": json.dumps(row.get("actions") or [], sort_keys=True),
+                "sc3_7d_actions_json": json.dumps(
+                    row.get("sc3_7d_delta_end_effector_actions") or [],
+                    sort_keys=True,
+                ),
                 "observations_json": json.dumps(row.get("observations") or [], sort_keys=True),
                 "failure_labels_json": json.dumps(
                     row.get("failure_labels") or [],
@@ -725,6 +1188,7 @@ def _write_optional_exports(
             "scenario": row.get("scenario_id"),
             "observation": row.get("observations") or [],
             "action": row.get("actions") or [],
+            "sc3_7d_delta_end_effector_action": row.get("sc3_7d_delta_end_effector_actions") or [],
             "reward_or_success": 1.0 if row.get("success") else 0.0,
             "metadata": {
                 "scene_id": scene_id,
@@ -868,6 +1332,9 @@ def _write_package_files(
     labels: Mapping[str, Any],
     metrics: Mapping[str, Any],
     clips: Mapping[str, Any],
+    curation_report: Mapping[str, Any],
+    semantic_dedup_report: Mapping[str, Any],
+    sc3_action_report: Mapping[str, Any],
     generated_at: str,
     scene_id: str,
     capture_id: str,
@@ -904,6 +1371,9 @@ def _write_package_files(
             "clips": [],
         },
     )
+    write_json(output_dir / "curation_report.json", dict(curation_report))
+    write_json(output_dir / "semantic_dedup_report.json", dict(semantic_dedup_report))
+    write_json(output_dir / "sc3_action_normalization_report.json", dict(sc3_action_report))
     dataset_card = {
         "schema_version": "post_training_data_package_dataset_card.v1",
         "generated_at": generated_at,
@@ -912,6 +1382,11 @@ def _write_package_files(
         "dataset_type": "real_site_robot_eval_post_training_package",
         "attempt_count": len(attempts),
         "failure_label_count": len(label_rows),
+        "curated_clip_count": int(curation_report.get("accepted_clip_count") or 0),
+        "semantic_dedup_status": semantic_dedup_report.get("status"),
+        "sc3_action_contract_status": sc3_action_report.get("status"),
+        # Upstream pipeline-stage curation/dedup (pre-export gating), distinct
+        # from the in-export curation_report/semantic_dedup_report QA above.
         "clip_curation": dict(clip_curation or {"curation_status": "not_run", "dedup_status": "not_run"}),
         "source_artifacts": dict(included_artifacts),
         "proof_boundary": dict(CLAIM_BOUNDARY),
@@ -983,6 +1458,9 @@ def _write_package_files(
         "failure_labels_jsonl": "data/failure_labels.jsonl",
         "metrics_json": "data/metrics.json",
         "clips_manifest": "clips_manifest.json",
+        "curation_report": "curation_report.json",
+        "semantic_dedup_report": "semantic_dedup_report.json",
+        "sc3_action_normalization_report": "sc3_action_normalization_report.json",
         "dataset_card": "dataset_card.json",
         "license_manifest": "license_manifest.json",
         "optional_export_manifest": "optional_export_manifest.json",
@@ -1034,6 +1512,9 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
         output_dir / "data" / "failure_labels.jsonl",
         output_dir / "data" / "metrics.json",
         output_dir / "clips_manifest.json",
+        output_dir / "curation_report.json",
+        output_dir / "semantic_dedup_report.json",
+        output_dir / "sc3_action_normalization_report.json",
         output_dir / "customer_handoff_report.json",
         output_dir / "customer_handoff_report.md",
         output_dir / "delivery_manifest.json",
@@ -1292,20 +1773,8 @@ def build_post_training_data_package_export(
         if candidate.is_file():
             included_artifacts[key] = _relative_to(resolved_output_dir, candidate)
 
-    required = (
-        "normalized_attempt_trace",
-        "failure_labels",
-        "prediction_outcome_ledger",
-        "calibration_report",
-        "breakage_library",
-        "site_card",
-        "task_cards",
-        "scenario_cards",
-        "eval_cards",
-        "proof_boundaries",
-    )
-    missing = [key for key in required if key not in included_artifacts]
-    status = "blocked_missing_inputs" if missing else "export_ready_review_required"
+    # required/missing/status are computed further below (after trace/labels/
+    # clips are read) since main's quality-gate blockers need those inputs.
     live_closure = (
         _read_optional_mapping(resolved_job_dir / "live_eval_closure_manifest.json")
         if resolved_job_dir
@@ -1335,6 +1804,49 @@ def build_post_training_data_package_export(
         _read_optional_mapping(resolved_job_dir / "clips_manifest.json")
         if resolved_job_dir
         else {}
+    )
+    sc3_action_report = _build_sc3_action_report(trace=trace, generated_at=generated_at)
+    curation_report = _build_curation_report(
+        clips=clips,
+        trace=trace,
+        sc3_action_report=sc3_action_report,
+        generated_at=generated_at,
+    )
+    semantic_dedup_report = _build_semantic_dedup_report(
+        clips=clips,
+        curation_report=curation_report,
+        generated_at=generated_at,
+    )
+    included_artifacts["curation_report"] = "curation_report.json"
+    included_artifacts["semantic_dedup_report"] = "semantic_dedup_report.json"
+    included_artifacts["sc3_action_normalization_report"] = "sc3_action_normalization_report.json"
+    required = (
+        "normalized_attempt_trace",
+        "failure_labels",
+        "prediction_outcome_ledger",
+        "calibration_report",
+        "breakage_library",
+        "site_card",
+        "task_cards",
+        "scenario_cards",
+        "eval_cards",
+        "proof_boundaries",
+    )
+    missing = [key for key in required if key not in included_artifacts]
+    quality_gate_blockers = [
+        *[f"curation:{blocker}" for blocker in _string_list(curation_report.get("blockers"))],
+        *[
+            f"semantic_dedup:{blocker}"
+            for blocker in _string_list(semantic_dedup_report.get("blockers"))
+        ],
+        *[f"sc3_action:{blocker}" for blocker in _string_list(sc3_action_report.get("blockers"))],
+    ]
+    status = (
+        "blocked_missing_inputs"
+        if missing
+        else "blocked_package_quality_gates"
+        if quality_gate_blockers
+        else "export_ready_review_required"
     )
     job_request = (
         _read_optional_mapping(resolved_job_dir / "job_request.json")
@@ -1421,6 +1933,9 @@ def build_post_training_data_package_export(
         labels=labels,
         metrics=metrics,
         clips=clips,
+        curation_report=curation_report,
+        semantic_dedup_report=semantic_dedup_report,
+        sc3_action_report=sc3_action_report,
         generated_at=generated_at,
         scene_id=context.scene_id,
         capture_id=context.capture_id,
@@ -1492,6 +2007,9 @@ def build_post_training_data_package_export(
     manifest_claim_boundary = {
         **dict(CLAIM_BOUNDARY),
         "post_training_package_export_ready": status == "export_ready_review_required",
+        "oscar_style_curation_filters_proven": curation_report.get("status") == "passed",
+        "semantic_dedup_proven": semantic_dedup_report.get("status") == "passed",
+        "sc3_7d_action_contract_proven": sc3_action_report.get("status") == "passed",
         "review_acceptance_proven": live_gate_references["review_acceptance"]["passed"],
         "rights_privacy_scope_proven": live_gate_references["rights_privacy_scope"][
             "passed"
@@ -1521,13 +2039,21 @@ def build_post_training_data_package_export(
         "capture_id": context.capture_id,
         "package_type": "post_training_data_package",
         "status": status,
-        "blockers": [f"missing_{key}" for key in missing],
+        "blockers": [f"missing_{key}" for key in missing] + quality_gate_blockers,
         "included_artifacts": included_artifacts,
         "handoff_records": handoff_records,
         "manifest_counts": {
             "attempt_count": int(trace.get("attempt_count") or 0),
             "failure_label_count": int(labels.get("label_count") or 0),
             "clip_count": int(clips.get("clip_count") or 0),
+            "curated_clip_count": int(curation_report.get("accepted_clip_count") or 0),
+            "rejected_clip_count": int(curation_report.get("rejected_clip_count") or 0),
+            "semantic_duplicate_group_count": int(
+                semantic_dedup_report.get("duplicate_group_count") or 0
+            ),
+            "valid_sc3_7d_action_count": int(
+                sc3_action_report.get("valid_sc3_7d_action_count") or 0
+            ),
             "visual_augmentation_variant_count": int(
                 visual_augmentation_packet.get("variant_count") or 0
             ),
@@ -1559,6 +2085,9 @@ def build_post_training_data_package_export(
             or "simulator_command_batch_visual_review_ledger" in included_artifacts,
             "arena_metrics_included": bool(metrics),
             "clips_manifest_included": bool(clips),
+            "oscar_style_curation_filters_passed": curation_report.get("status") == "passed",
+            "semantic_dedup_passed": semantic_dedup_report.get("status") == "passed",
+            "sc3_7d_action_contract_passed": sc3_action_report.get("status") == "passed",
             "calibration_included": "calibration_report" in included_artifacts,
             "simulator_provider_adapter_included": "simulator_provider_adapter_manifest"
             in included_artifacts,
@@ -1606,6 +2135,9 @@ def build_post_training_data_package_export(
         "checksums_path": "checksums.json",
         "archive_manifest_path": "archive_manifest.json",
         "archive": archive_manifest["archive"],
+        "curation_report_path": "curation_report.json",
+        "semantic_dedup_report_path": "semantic_dedup_report.json",
+        "sc3_action_normalization_report_path": "sc3_action_normalization_report.json",
         "optional_export_manifest_path": "optional_export_manifest.json",
         "visual_augmentation_support_manifest_path": (
             "visual_augmentation_support_manifest.json"

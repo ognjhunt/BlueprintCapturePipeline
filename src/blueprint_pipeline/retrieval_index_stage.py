@@ -310,47 +310,29 @@ def _ensure_geometry_for_capture(
     return _load_descriptor(ctx)
 
 
-def _geometry_summary_blocking_fallback(geometry_summary: Mapping[str, Any]) -> bool:
-    """True when the summary carries fallback geometry that must never index.
-
-    The local_sfm dev lane is honestly labeled fallback/synthetic
-    (``fallback_kind == "local_sfm_synthetic_dev"``) but remains allowed as
-    degraded local reference media; every other fallback kind is blocking.
-    """
-    if not bool(geometry_summary.get("fallback_used")):
-        return False
-    fallback_kind = str(geometry_summary.get("fallback_kind") or "").strip()
-    geometry_source = str(geometry_summary.get("geometry_source") or "").strip()
-    return not (geometry_source == "local_sfm" and fallback_kind == "local_sfm_synthetic_dev")
-
-
 def _raise_if_geometry_not_reference_indexable(geometry_summary: Mapping[str, Any]) -> None:
     if not geometry_summary:
         return
     geometry_source = str(geometry_summary.get("geometry_source") or "").strip()
-    blocking_fallback = _geometry_summary_blocking_fallback(geometry_summary)
+    fallback_used = bool(geometry_summary.get("fallback_used"))
     geometry_live_ready = bool(geometry_summary.get("geometry_live_ready"))
     local_reference_ready = _geometry_summary_reference_indexable(geometry_summary)
-    if blocking_fallback or not (geometry_live_ready or local_reference_ready):
+    if fallback_used or not (geometry_live_ready or local_reference_ready):
         reason = geometry_source or "missing"
-        if blocking_fallback:
+        if fallback_used:
             reason = "fallback_geometry"
         raise PipelineError(f"geometry_not_live_video_to_world:{reason}")
 
 
 def _geometry_summary_reference_indexable(geometry_summary: Mapping[str, Any]) -> bool:
-    if not geometry_summary or _geometry_summary_blocking_fallback(geometry_summary):
+    # Fallback/synthetic geometry (including the local_sfm dev lane) is never
+    # reference-indexable; only real video_to_world geometry qualifies.
+    if not geometry_summary or bool(geometry_summary.get("fallback_used")):
         return False
     geometry_source = str(geometry_summary.get("geometry_source") or "").strip()
     if geometry_source == "video_to_world":
         return bool(geometry_summary.get("geometry_live_ready") or geometry_summary.get("ready_for_world_model"))
-    if geometry_source != "local_sfm":
-        return False
-    return bool(
-        geometry_summary.get("contract_ready_for_world_model")
-        and geometry_summary.get("intrinsics_available")
-        and int(geometry_summary.get("pose_track_count") or 0) > 0
-    )
+    return False
 
 
 def _reference_media_indexable(descriptor: Mapping[str, Any]) -> bool:
@@ -1989,22 +1971,17 @@ def _write_retrieval_validation(
         if str(record.get("geometry_source") or "").strip()
     }
     non_arkit_ready = bool(non_arkit_records) and all(source == "video_to_world" for source in non_arkit_sources)
-    non_arkit_degraded = bool(non_arkit_records) and not non_arkit_ready and non_arkit_sources.issubset({"local_sfm"})
     non_arkit_state = (
         "not_applicable"
         if not non_arkit_records
         else "ready"
         if non_arkit_ready
-        else "degraded"
-        if non_arkit_degraded
         else "blocked"
     )
     non_arkit_blockers = (
         []
         if not non_arkit_records or non_arkit_ready
-        else ["provider_native_geometry_missing", "swm_world_model_geometry_not_ready"]
-        if non_arkit_degraded
-        else ["non_arkit_geometry_not_live_video_to_world"]
+        else ["provider_native_geometry_missing", "non_arkit_geometry_not_live_video_to_world"]
     )
     local_contract_ready = not record_schema_errors and not manifest_schema_error and summary_projection_safe
     retrieval_ready = local_contract_ready and retrieval_query_count > 0

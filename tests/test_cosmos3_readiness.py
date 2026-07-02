@@ -254,7 +254,7 @@ def test_cosmos3_readiness_recommends_stackable_work_for_missing_site_and_export
         "missing_site_reference_manifest"
     ]
     assert {item["lane"] for item in report["today_stackable_work"]} == {
-        "local_geometry",
+        "provider_native_geometry",
         "site_reference_database",
         "cosmos_predict25_export",
     }

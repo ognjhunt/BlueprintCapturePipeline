@@ -54,6 +54,19 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _first_existing_frame_path(*roots: Path, frame_id: str) -> Optional[str]:
+    suffixes = (".jpg", ".jpeg", ".png", ".npy")
+    folders = ("frames", "images", "frames/images")
+    for root in roots:
+        for folder in folders:
+            base = root / folder
+            for suffix in suffixes:
+                candidate = base / f"{frame_id}{suffix}"
+                if candidate.is_file():
+                    return str(candidate)
+    return None
+
+
 def _parse_intrinsics_from_arkit_row(row: Mapping[str, Any]) -> Optional[Dict[str, float]]:
     raw = row.get("intrinsics")
     res = row.get("imageResolution")
@@ -209,6 +222,11 @@ def _load_arkit_geometry(
         frame_id = _zero_pad_frame_id(frame_index)
         depth_path = arkit_root / "depth" / f"{frame_id}.png"
         confidence_path = arkit_root / "confidence" / f"{frame_id}.png"
+        source_image_path = _first_existing_frame_path(
+            arkit_root,
+            context.raw_root,
+            frame_id=frame_id,
+        )
         frame_meta[frame_id] = {
             "frame_index": _safe_int(frame_index),
             "timestamp_seconds": _safe_float(row.get("timestamp")),
@@ -218,7 +236,7 @@ def _load_arkit_geometry(
             "relocalizationEvent": bool(row.get("relocalizationEvent", False)),
             "worldMappingStatus": row.get("worldMappingStatus"),
             "anchorObservations": list(row.get("anchorObservations") or []),
-            "source_image_path": None,
+            "source_image_path": source_image_path,
             "depth_path": str(depth_path) if depth_path.is_file() else None,
             "confidence_path": str(confidence_path) if confidence_path.is_file() else None,
             "pose_confidence": 1.0,

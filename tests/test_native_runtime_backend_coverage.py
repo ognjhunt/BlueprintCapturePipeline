@@ -186,7 +186,9 @@ def test_native_runtime_low_level_helper_edges(tmp_path: Path, monkeypatch: pyte
     assert nrb._site_reference_geometry_state(vtw_index)["state"] == "ready"
     blank_index = tmp_path / "blank_index.jsonl"
     blank_index.write_text("\n" + json.dumps({"geometry_source": "local_sfm"}) + "\n", encoding="utf-8")
-    assert nrb._site_reference_geometry_state(blank_index)["state"] == "degraded"
+    # local_sfm is synthetic/fallback geometry and is never treated as usable
+    # (degraded-but-indexable); it's fully blocked like any other non-live source.
+    assert nrb._site_reference_geometry_state(blank_index)["state"] == "blocked"
 
     original_open = Path.open
 

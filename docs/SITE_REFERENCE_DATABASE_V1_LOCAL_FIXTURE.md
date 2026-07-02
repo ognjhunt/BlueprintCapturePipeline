@@ -5,7 +5,7 @@ This fixture proves the local Site Reference Database v1 path from a staged capt
 It is intentionally local-only:
 
 - no World Labs, Cosmos, SWM, video_to_world, storage, Firebase, or WebApp calls
-- local `local_sfm` geometry only, marked degraded for non-ARKit readiness
+- local ARKit-style fixture geometry, not synthetic non-ARKit `local_sfm` fallback
 - deterministic local embeddings, not a model checkpoint
 - dense frame, depth, confidence, embedding, pose, and geometry fields stay in object-storage artifacts
 - WebApp receives only `site_reference_summary_projection.json`

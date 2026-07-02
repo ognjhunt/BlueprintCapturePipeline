@@ -100,10 +100,19 @@ def test_retrieval_index_descriptor_video_selection_and_chunk_edges(
             "intrinsics_available": True,
             "pose_track_count": 1,
         }
-    ) is True
+    ) is False
     ris._raise_if_geometry_not_reference_indexable({})
     with pytest.raises(PipelineError, match="fallback_geometry"):
         ris._raise_if_geometry_not_reference_indexable({"fallback_used": True, "geometry_source": "local_sfm"})
+    with pytest.raises(PipelineError, match="geometry_not_live_video_to_world:local_sfm"):
+        ris._raise_if_geometry_not_reference_indexable(
+            {
+                "geometry_source": "local_sfm",
+                "contract_ready_for_world_model": True,
+                "intrinsics_available": True,
+                "pose_track_count": 1,
+            }
+        )
 
     privacy_video = ctx.capture_root / "privacy" / "final_walkthrough.mp4"
     privacy_video.parent.mkdir(parents=True, exist_ok=True)
@@ -495,10 +504,11 @@ def test_retrieval_index_stage_site_reference_and_validation_helpers(
         geometry_summary_path.write_text(
             json.dumps(
                 {
-                    "geometry_source": "local_sfm",
-                    "contract_ready_for_world_model": True,
-                    "intrinsics_available": True,
-                    "pose_track_count": 2,
+                    "geometry_source": "video_to_world",
+                    "fallback_used": False,
+                    "provider_native_result": True,
+                    "ready_for_world_model": True,
+                    "geometry_live_ready": True,
                 }
             ),
             encoding="utf-8",

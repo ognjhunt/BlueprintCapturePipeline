@@ -42,6 +42,39 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _frame_sharpness_score(image_path: str) -> Optional[float]:
+    """Return an image-derived sharpness score, or None when no frame is readable."""
+
+    if not image_path:
+        return None
+    path = Path(image_path).expanduser()
+    if not path.is_file():
+        return None
+    try:
+        if path.suffix.lower() == ".npy":
+            array = np.load(path)
+        else:
+            from PIL import Image
+
+            array = np.asarray(Image.open(path).convert("L"), dtype=np.float32)
+    except Exception:
+        return None
+    if array.ndim == 3:
+        gray = array.astype(np.float32).mean(axis=2)
+    else:
+        gray = array.astype(np.float32)
+    if gray.size < 9:
+        return 0.0
+    dx = np.diff(gray, axis=1)
+    dy = np.diff(gray, axis=0)
+    if dx.size == 0 or dy.size == 0:
+        return 0.0
+    score = float(np.var(dx) + np.var(dy))
+    if not math.isfinite(score):
+        return None
+    return round(max(0.0, score), 6)
+
+
 def _frame_id(frame_index: int) -> str:
     return str(int(frame_index)).zfill(6)
 
@@ -386,7 +419,7 @@ def _build_manifest_payload(
             "authoritative": False,
             "raw_capture_authoritative": True,
             "truth_label": (
-                "internal_fallback_not_site_faithful"
+                "synthetic_diagnostic_not_capture_truth"
                 if fallback_used
                 else "video_to_world_derived_geometry"
                 if geometry_live_ready
@@ -739,9 +772,18 @@ def _build_fallback_provider_result(
         "provider_warnings": [f"provider_failed:{provider_error.__class__.__name__}", "fallback_geometry_used"],
         "provider_errors": [str(provider_error)],
         "loop_closure_detected": False,
+        "geometry_source": "fallback_geometry",
+        "provider_native_result": False,
         "fallback_used": True,
         "fallback_kind": "internal_synthetic_geometry",
         "synthetic_geometry": True,
+        "synthetic_geometry_used": True,
+        "synthetic_artifact_truth": {
+            "poses_are_capture_truth": False,
+            "intrinsics_are_calibrated_capture_truth": False,
+            "depth_is_sensor_or_sfm_truth": False,
+            "intended_use": "diagnostic_shape_only",
+        },
     }
 
 
@@ -772,22 +814,28 @@ def _build_local_sfm_provider_result(
         [
             "local_sfm_relative_geometry_only",
             "synthetic_geometry_used",
+            "local_sfm_real_runner_not_implemented",
+            "local_sfm_uses_synthetic_diagnostics_only",
             "scale_not_proven",
             "site_frame_not_proven",
         ]
     )
     if provider_blocker is not None:
         warnings.append(str(provider_blocker.get("reason") or "video_to_world_runner_not_configured"))
-    local["geometry_source"] = "local_sfm"
+    local["geometry_source"] = "fallback_geometry"
+    local["requested_geometry_source"] = "local_sfm"
     local["provider_native_result"] = False
     # Truth flags are append-only: this path reuses the synthetic fabricator,
     # so it must stay labeled as fallback/synthetic. No real SfM ran here.
     local["fallback_used"] = True
-    local["fallback_kind"] = "local_sfm_synthetic_dev"
+    local["fallback_kind"] = "internal_synthetic_geometry"
     local["synthetic_geometry"] = True
+    local["synthetic_geometry_used"] = True
     local["provider_metrics"] = {
         **dict(local.get("provider_metrics") or {}),
-        "backend": "local_sfm_synthetic_dev",
+        "backend": "local_sfm_offline",
+        "requested_backend": "local_sfm_offline",
+        "real_sfm_runner_executed": False,
         "provider_native_result": False,
         "scale_resolved": False,
         "site_frame_available": False,
@@ -795,7 +843,7 @@ def _build_local_sfm_provider_result(
         "provider_blocker": dict(provider_blocker) if isinstance(provider_blocker, Mapping) else None,
     }
     local["provider_warnings"] = list(dict.fromkeys(warnings))
-    local["provider_errors"] = []
+    local["provider_errors"] = [] if provider_blocker is not None else ["local_sfm_real_runner_not_implemented"]
     local["provider_blocker"] = dict(provider_blocker) if isinstance(provider_blocker, Mapping) else None
     local["site_frame_available"] = False
     local["scale_resolved"] = False
@@ -1314,10 +1362,10 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         "non_arkit_local",
     }
     frame_geometry_source = (
-        "local_sfm"
-        if local_sfm_provider
-        else "fallback_geometry"
+        "fallback_geometry"
         if provider_result_fallback
+        else "local_sfm"
+        if local_sfm_provider
         else "local_da3"
         if local_da3_provider
         else "video_to_world"
@@ -1330,6 +1378,10 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             "producer": provider,
             "model": model,
             "execution_mode": execution_mode,
+            "calibration_truth": "synthetic_diagnostic_not_calibrated"
+            if provider_result_fallback
+            else "provider_output",
+            "capture_truth": not provider_result_fallback,
         },
     }
     write_json(intrinsics_path, intrinsics_payload)
@@ -1348,6 +1400,9 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         image_path = str(frame.get("image_path") or "")
         depth_path = str(frame.get("depth_path") or "")
         confidence_path = str(frame.get("confidence_path") or "")
+        sharpness_score = _frame_sharpness_score(image_path)
+        if sharpness_score is None and frame.get("sharpness_score") is not None:
+            sharpness_score = _safe_float(frame.get("sharpness_score"))
         pose_records.append(
             {
                 "frame_id": frame_id,
@@ -1358,6 +1413,9 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
                 "camera_from_world": frame.get("camera_from_world"),
                 "pose_confidence": pose_confidence,
                 "is_keyframe": bool(frame.get("is_keyframe")),
+                "pose_truth_source": "synthetic_diagnostic"
+                if provider_result_fallback
+                else frame_geometry_source,
             }
         )
         frame_index_records.append(
@@ -1368,18 +1426,20 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
                 "image_path": image_path,
                 "depth_path": depth_path,
                 "confidence_path": confidence_path,
-                "pose_present": True,
-                "intrinsics_present": True,
+                "pose_present": bool(frame.get("world_from_camera")) and not provider_result_fallback,
+                "intrinsics_present": bool(provider_result.get("intrinsics")) and not provider_result_fallback,
                 "pose_confidence": pose_confidence,
-                # Only carry a sharpness value that was actually measured by the
-                # provider; a missing measurement must stay visible as missing.
-                "sharpness_score": (
-                    _safe_float(frame.get("sharpness_score"))
-                    if frame.get("sharpness_score") is not None
-                    else None
-                ),
-                "sharpness_measured": frame.get("sharpness_score") is not None,
+                # Only carry a sharpness value that was actually measured
+                # (image gradient variance) or provider-reported; a missing
+                # measurement stays visible as missing, never a stamped constant.
+                "sharpness_score": sharpness_score,
+                "sharpness_score_source": "image_gradient_variance"
+                if sharpness_score is not None
+                else "missing",
+                "sharpness_measured": sharpness_score is not None,
                 "geometry_source": frame_geometry_source,
+                "synthetic_geometry_used": provider_result_fallback,
+                "capture_truth": not provider_result_fallback,
             }
         )
         depth_artifacts.append(
@@ -1392,6 +1452,10 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
                 "height": _safe_int(frame.get("height") or intrinsics_payload.get("image_height")),
                 "min_depth_m": _safe_float(frame.get("min_depth_m")),
                 "max_depth_m": _safe_float(frame.get("max_depth_m")),
+                "metric_depth_truth": not provider_result_fallback,
+                "depth_source": "synthetic_diagnostic"
+                if provider_result_fallback
+                else frame_geometry_source,
             }
         )
         confidence_artifacts.append(
@@ -1472,10 +1536,10 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         else None
     )
     geometry_source = (
-        "local_sfm"
-        if local_sfm_provider
-        else "fallback_geometry"
+        "fallback_geometry"
         if fallback_used
+        else "local_sfm"
+        if local_sfm_provider
         else "local_da3"
         if local_da3_provider
         else "video_to_world"
@@ -1487,7 +1551,13 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         )
     )
     launch_blockers = (
-        ["fallback_geometry_not_launchable", "fallback_geometry_not_live_video_to_world"]
+        [
+            "fallback_geometry_not_launchable",
+            "fallback_geometry_not_live_video_to_world",
+            "synthetic_geometry_not_capture_truth",
+            "synthetic_intrinsics_not_calibrated",
+            "synthetic_depth_not_sensor_depth_or_sfm",
+        ]
         if fallback_used
         else []
     )
@@ -1524,7 +1594,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         provider=provider,
         model=model,
         execution_mode=execution_mode,
-        status="provider_failed_fallback_generated" if fallback_used else "succeeded",
+        status="provider_failed_synthetic_diagnostics_written" if fallback_used else "succeeded",
         geometry_source=geometry_source,
         provider_native_result=provider_native_result,
         fallback_used=fallback_used,
@@ -1559,10 +1629,15 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     scale_resolved = bool(provider_result.get("scale_resolved")) or bool(
         scale_assessment.get("metric_trusted")
     )
-    contract_ready_for_world_model = bool(
+    diagnostic_artifacts_shape_ready = bool(
         pose_records and depth_artifacts and confidence_artifacts and intrinsics_available
     )
-    internal_fallback_ready = bool(contract_ready_for_world_model and fallback_used)
+    contract_ready_for_world_model = bool(
+        diagnostic_artifacts_shape_ready
+        and not fallback_used
+        and provider_native_result
+    )
+    internal_fallback_ready = False
     geometry_live_ready = bool(
         contract_ready_for_world_model
         and provider_native_result
@@ -1626,6 +1701,9 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         "ready_for_world_model": ready_for_world_model,
         "contract_ready_for_world_model": contract_ready_for_world_model,
         "internal_fallback_ready": internal_fallback_ready,
+        "diagnostic_artifacts_shape_ready": diagnostic_artifacts_shape_ready,
+        "synthetic_geometry_used": fallback_used,
+        "synthetic_artifacts_are_capture_truth": not fallback_used,
         "geometry_live_ready": geometry_live_ready,
         "external_market_ready": external_market_ready,
         "site_faithful_market_ready": site_faithful_market_ready,

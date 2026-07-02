@@ -771,14 +771,11 @@ def _geometry_conditioning_truth(scene_memory_bundle_manifest: Mapping[str, Any]
             and scale_resolved
         )
     )
-    # The honestly-labeled local_sfm dev lane stays usable as degraded local
-    # reference; every other fallback kind is a blocking fallback.
-    blocking_fallback = fallback_used and not (
-        geometry_source == "local_sfm"
-        and str(geometry_summary.get("fallback_kind") or "") == "local_sfm_synthetic_dev"
-    )
+    # Fallback/synthetic geometry (including local_sfm) is never treated as
+    # live/reference-ready; contract_ready_for_world_model already requires
+    # not fallback_used, so no fallback kind gets a carve-out here.
     blockers = list(geometry_summary.get("launch_blockers") or [])
-    if geometry_summary_path and blocking_fallback:
+    if geometry_summary_path and fallback_used:
         blockers.append("fallback_geometry_not_live_video_to_world")
     if geometry_summary_path and geometry_source != "video_to_world":
         blockers.append(f"geometry_source_not_video_to_world:{geometry_source or 'missing'}")
@@ -793,7 +790,7 @@ def _geometry_conditioning_truth(scene_memory_bundle_manifest: Mapping[str, Any]
     local_reference_ready = bool(
         geometry_summary_path
         and geometry_source == "local_sfm"
-        and not blocking_fallback
+        and not fallback_used
         and contract_ready_for_world_model
     )
     non_arkit_geometry_state = (

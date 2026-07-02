@@ -470,20 +470,12 @@ def _site_reference_geometry_state(site_index_path: Optional[Path]) -> Dict[str,
             "swm_world_model_ready": True,
             "blockers": [],
         }
-    if non_arkit_sources.issubset({"local_sfm"}):
-        return {
-            "state": "degraded",
-            "sources": sorted(non_arkit_sources),
-            "provider_native_geometry_ready": False,
-            "swm_world_model_ready": False,
-            "blockers": ["provider_native_geometry_missing"],
-        }
     return {
         "state": "blocked",
         "sources": sorted(non_arkit_sources),
         "provider_native_geometry_ready": False,
         "swm_world_model_ready": False,
-        "blockers": ["non_arkit_geometry_not_live_video_to_world"],
+        "blockers": ["provider_native_geometry_missing", "non_arkit_geometry_not_live_video_to_world"],
     }
 
 

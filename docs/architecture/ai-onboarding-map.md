@@ -191,12 +191,13 @@ pipeline/geometry/depth/*
 pipeline/geometry/confidence/*
 ```
 
-For non-ARKit captures, local `local_sfm` geometry may support degraded
-reference-media indexing, but only a live `video_to_world` provider result with
-`fallback_used=false`, `provider_native_result=true`,
-`site_frame_available=true`, `scale_resolved=true`, and
-`geometry_live_ready=true` can satisfy site-faithful/SWM-style geometry proof.
-Fallback geometry is useful for local contract shape debugging only.
+For non-ARKit captures, current `local_sfm` output is synthetic diagnostic
+geometry only. It must remain blocked from reference-media indexing. Only a live
+`video_to_world` provider result with `fallback_used=false`,
+`provider_native_result=true`, `site_frame_available=true`,
+`scale_resolved=true`, and `geometry_live_ready=true` can satisfy
+site-faithful/SWM-style geometry proof. Fallback geometry is useful for local
+contract shape debugging only.
 
 Runtime-facing package work is mostly in:
 

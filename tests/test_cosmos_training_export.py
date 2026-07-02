@@ -433,8 +433,10 @@ def test_cosmos_training_export_missing_and_selection_edge_branches(
         if line.strip()
     ]
 
-    # Records without real fx/fy calibration (and misshaped poses) are
-    # rejected instead of exported with guessed intrinsics / identity poses.
+    # Neither fixture record has real fx/fy calibration, so both are
+    # rejected instead of exported with guessed intrinsics; "bad-shape" is
+    # separately unusable on pose grounds too. No identity-filled poses or
+    # guessed intrinsics reach the exported training targets.
     assert manifest["status"] == "missing"
     assert paired_rows == []
     assert manifest["rejected_record_count"] == 2
@@ -443,7 +445,20 @@ def test_cosmos_training_export_missing_and_selection_edge_branches(
     )["rejections"]
     reasons_by_frame = {row["frame_id"]: row["reasons"] for row in rejections}
     assert "intrinsics_missing_or_implausible" in reasons_by_frame["flat"]
+    assert "intrinsics_missing_or_implausible" in reasons_by_frame["bad-shape"]
     assert "pose_missing_or_misshaped" in reasons_by_frame["bad-shape"]
+    assert "pose_missing_or_misshaped" not in reasons_by_frame["flat"]
+
+    # The pose-specific skip ledger only captures "bad-shape" (its pose is
+    # genuinely malformed); "flat"'s pose is fine, only its intrinsics are missing.
+    assert manifest["skipped_missing_pose_count"] == 1
+    assert manifest["skipped_missing_pose_rows"] == [
+        {
+            "target_index": 1,
+            "target_frame_id": "bad-shape",
+            "reason": "target_T_world_camera_missing_or_invalid",
+        }
+    ]
 
 
 def test_cosmos_training_export_blocks_synthetic_geometry_in_production(

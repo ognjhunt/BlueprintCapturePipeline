@@ -21,7 +21,10 @@ def test_evaluation_substrate_registry_preserves_wam_and_sim_aliases(tmp_path: P
     registry = build_evaluation_substrate_registry(generated_at="2026-06-20T00:00:00+00:00")
 
     assert registry["schema_version"] == "evaluation_substrate_registry.v1"
-    assert registry["default_primary_substrate"] == "fixture_wam"
+    assert registry["default_primary_substrate"] == "classical_sim_mujoco"
+    assert registry["default_primary_substrate_is_learned_model"] is False
+    assert registry["preferred_configured_learned_wam_substrate"] == "cosmos3_wam"
+    assert registry["fixture_wam_is_not_default_learned_backend"] is True
     assert set(registry["supported_substrates"]) == {
         "fixture_wam",
         "cosmos3_wam",
@@ -31,9 +34,20 @@ def test_evaluation_substrate_registry_preserves_wam_and_sim_aliases(tmp_path: P
         "recorded_trace",
     }
     assert registry["entries"]["fixture_wam"]["local_available"] is True
+    assert registry["entries"]["fixture_wam"]["learned_model_backend"] is False
+    assert registry["entries"]["fixture_wam"]["deterministic_fixture"] is True
+    assert registry["entries"]["fixture_wam"]["proof_ceiling"] == (
+        "deterministic_fixture_not_learned_model_backend"
+    )
     assert registry["entries"]["cosmos3_wam"]["live_provider_required"] is True
+    assert registry["entries"]["cosmos3_wam"]["learned_model_backend"] is True
+    assert registry["entries"]["cosmos3_wam"]["backbone"] == "Cosmos3-Nano"
+    assert registry["entries"]["cosmos3_wam"]["model_id"] == "nvidia/Cosmos3-Nano"
+    assert registry["entries"]["cosmos3_wam"]["adapter_id"] == "deepinfra_cosmos3_nano_api"
     assert registry["entries"]["classical_sim_mujoco"]["family"] == "classical_simulation"
     assert registry["contract"]["generated_rollouts_are_model_derived_support_artifacts"] is True
+    assert registry["contract"]["deterministic_fixture_is_not_learned_model_backend"] is True
+    assert registry["contract"]["learned_wam_requires_provider_execution_manifest"] is True
     assert (
         registry["contract"]["customer_specific_srcc_requires_real_world_validation_rollouts"]
         is True
@@ -95,6 +109,9 @@ def test_wam_request_and_claim_boundary_normalize_policy_ids() -> None:
     )
     assert boundary["evaluation_substrate"] == "cosmos3_wam"
     assert boundary["fixture_wam_is_deterministic_local_test_substrate"] is False
+    assert boundary["fixture_wam_is_not_learned_model_backend"] is False
+    assert boundary["learned_model_backend_executed"] is False
+    assert boundary["learned_model_backend_requires_provider_execution_manifest"] is True
     assert boundary["generated_rollouts_are_raw_capture_evidence"] is False
 
 

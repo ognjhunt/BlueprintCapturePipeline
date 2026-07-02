@@ -320,6 +320,7 @@ def test_cosmos_benchmark_private_helpers_and_runtime_probe(monkeypatch, tmp_pat
     intrinsics = cosmos_benchmark._target_intrinsics({}, (2, 3, 3))
     assert intrinsics["width"] == 3
     assert cosmos_benchmark._target_plucker_map({"T_world_camera": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], "intrinsics": {"width": 3, "height": 2}}, (2, 3, 3)).shape[0] == 6
+    assert cosmos_benchmark._target_plucker_map({"intrinsics": {"width": 3, "height": 2}}, (2, 3, 3)) is None
     assert cosmos_benchmark._target_plucker_map({"T_world_camera": [[1, 0], [0, 1]]}, (2, 3, 3)) is None
     assert cosmos_benchmark._smoke_manifest_base(
         benchmark_root=tmp_path,

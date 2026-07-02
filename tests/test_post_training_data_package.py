@@ -63,7 +63,19 @@ def _seed_ready_job(job_dir: Path) -> None:
                     "success": True,
                     "status": "passed",
                     "metrics": {"score": 1.0},
-                    "action_trace": [{"joint": "arm"}],
+                    "action_trace": [
+                        {
+                            "sc3_7d_delta_ee_pose": [
+                                0.05,
+                                0.0,
+                                0.01,
+                                0.0,
+                                0.0,
+                                0.02,
+                                1.0,
+                            ]
+                        }
+                    ],
                     "observation_refs": [{"frame": "000001"}],
                 }
             ],
@@ -80,7 +92,24 @@ def _seed_ready_job(job_dir: Path) -> None:
         },
     )
     _write_json(job_dir / "arena_eval_metrics.json", {"score": 1.0, "attempt_count": 1})
-    _write_json(job_dir / "clips_manifest.json", {"clip_count": 1, "clips": ["clip-1.mp4"]})
+    _write_json(
+        job_dir / "clips_manifest.json",
+        {
+            "clip_count": 1,
+            "clips": [
+                {
+                    "clip_id": "clip-1",
+                    "clip_path": "clip-1.mp4",
+                    "attempt_id": "attempt-1",
+                    "frame_count": 32,
+                    "camera_motion_m": 0.0,
+                    "visible_skeleton_fraction": 0.9,
+                    "sharpness_score": 72.0,
+                    "semantic_dedup_key": "scene-1|task-1|attempt-1",
+                }
+            ],
+        },
+    )
     for name in (
         "prediction_outcome_ledger.json",
         "calibration_report.json",
@@ -178,6 +207,10 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
     assert manifest["manifest_counts"]["attempt_count"] == 1
     assert manifest["manifest_counts"]["failure_label_count"] == 1
     assert manifest["manifest_counts"]["clip_count"] == 1
+    assert manifest["manifest_counts"]["curated_clip_count"] == 1
+    assert manifest["manifest_counts"]["rejected_clip_count"] == 0
+    assert manifest["manifest_counts"]["semantic_duplicate_group_count"] == 0
+    assert manifest["manifest_counts"]["valid_sc3_7d_action_count"] == 1
     assert manifest["included_artifacts"]["signed_access_manifest"] == (
         "signed_access_manifest.json"
     )
@@ -205,6 +238,12 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
     assert manifest["export_policy"]["speed_curriculum_plan_included"] is True
     assert manifest["export_policy"]["action_chunk_continuity_qa_included"] is True
     assert manifest["export_policy"]["intervention_safety_ledger_included"] is True
+    assert manifest["export_policy"]["oscar_style_curation_filters_passed"] is True
+    assert manifest["export_policy"]["semantic_dedup_passed"] is True
+    assert manifest["export_policy"]["sc3_7d_action_contract_passed"] is True
+    assert manifest["claim_boundary"]["oscar_style_curation_filters_proven"] is True
+    assert manifest["claim_boundary"]["semantic_dedup_proven"] is True
+    assert manifest["claim_boundary"]["sc3_7d_action_contract_proven"] is True
     assert manifest["rl_post_training_handoff_packet_path"] == (
         "rl_post_training_handoff_packet.json"
     )
@@ -224,12 +263,147 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
     assert package_index["files"]["rl_post_training_handoff_packet"] == (
         "rl_post_training_handoff_packet.json"
     )
+    assert package_index["files"]["curation_report"] == "curation_report.json"
+    assert package_index["files"]["semantic_dedup_report"] == "semantic_dedup_report.json"
+    assert package_index["files"]["sc3_action_normalization_report"] == (
+        "sc3_action_normalization_report.json"
+    )
+    curation = json.loads((output_dir / "curation_report.json").read_text(encoding="utf-8"))
+    semantic_dedup = json.loads(
+        (output_dir / "semantic_dedup_report.json").read_text(encoding="utf-8")
+    )
+    sc3_action = json.loads(
+        (output_dir / "sc3_action_normalization_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert curation["status"] == "passed"
+    assert semantic_dedup["status"] == "passed"
+    assert sc3_action["status"] == "passed"
+    assert sc3_action["claim_boundary"]["missing_actions_exported_as_identity_pose"] is False
     optional = json.loads((output_dir / "optional_export_manifest.json").read_text(encoding="utf-8"))
     assert optional["formats"]["hdf5"]["status"] == "written_native"
     assert optional["formats"]["parquet"]["status"] == "written_native"
     archive_members = json.loads((output_dir / "archive_manifest.json").read_text(encoding="utf-8"))
     assert "exports/rlds/episodes.jsonl" in archive_members["included_files"]
     assert "rl_post_training_handoff_packet.json" in archive_members["included_files"]
+    assert "curation_report.json" in archive_members["included_files"]
+    assert "semantic_dedup_report.json" in archive_members["included_files"]
+    assert "sc3_action_normalization_report.json" in archive_members["included_files"]
+
+
+def test_post_training_data_package_blocks_invalid_sc3_actions_and_source_filters(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    _write_json(
+        job_dir / "normalized_attempt_trace.json",
+        {
+            "attempt_count": 1,
+            "attempts": [
+                {
+                    "attempt_id": "attempt-1",
+                    "scenario_id": "scenario-1",
+                    "task_id": "task-1",
+                    "policy_id": "policy-1",
+                    "success": True,
+                    "status": "passed",
+                    "metrics": {"score": 1.0},
+                    "action_trace": [{"joint": "arm"}],
+                }
+            ],
+        },
+    )
+    _write_json(
+        job_dir / "clips_manifest.json",
+        {
+            "clip_count": 1,
+            "clips": [
+                {
+                    "clip_id": "clip-1",
+                    "clip_path": "clip-1.mp4",
+                    "attempt_id": "attempt-1",
+                    "frame_count": 4,
+                    "camera_motion_m": 0.0,
+                    "action_motion_score": 0.1,
+                    "visible_skeleton_fraction": 0.9,
+                    "sharpness_score": 0.0,
+                    "semantic_dedup_key": "scene-1|task-1|attempt-1",
+                }
+            ],
+        },
+    )
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    assert manifest["status"] == "blocked_package_quality_gates"
+    assert "curation:clip-1:min_frame_count_failed" in manifest["blockers"]
+    assert "curation:clip-1:blur_or_sharpness_evidence_failed" in manifest["blockers"]
+    assert (
+        "sc3_action:attempt-1:sc3_7d_delta_end_effector_pose_missing_or_invalid"
+        in manifest["blockers"]
+    )
+    assert manifest["claim_boundary"]["post_training_package_export_ready"] is False
+    assert manifest["claim_boundary"]["oscar_style_curation_filters_proven"] is False
+    assert manifest["claim_boundary"]["sc3_7d_action_contract_proven"] is False
+
+
+def test_post_training_data_package_blocks_semantic_duplicate_clips(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    _write_json(
+        job_dir / "clips_manifest.json",
+        {
+            "clip_count": 2,
+            "clips": [
+                {
+                    "clip_id": "clip-1",
+                    "clip_path": "clip-1.mp4",
+                    "attempt_id": "attempt-1",
+                    "frame_count": 32,
+                    "camera_motion_m": 0.0,
+                    "action_motion_score": 0.1,
+                    "visible_skeleton_fraction": 0.9,
+                    "sharpness_score": 72.0,
+                    "semantic_dedup_key": "duplicate-scene-task-trajectory",
+                },
+                {
+                    "clip_id": "clip-2",
+                    "clip_path": "clip-2.mp4",
+                    "attempt_id": "attempt-1",
+                    "frame_count": 32,
+                    "camera_motion_m": 0.0,
+                    "action_motion_score": 0.1,
+                    "visible_skeleton_fraction": 0.9,
+                    "sharpness_score": 72.0,
+                    "semantic_dedup_key": "duplicate-scene-task-trajectory",
+                },
+            ],
+        },
+    )
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+    )
+
+    assert manifest["status"] == "blocked_package_quality_gates"
+    assert (
+        "semantic_dedup:semantic_duplicate_group:duplicate-scene-task-trajectory"
+        in manifest["blockers"]
+    )
+    assert manifest["manifest_counts"]["semantic_duplicate_group_count"] == 1
+    assert manifest["claim_boundary"]["semantic_dedup_proven"] is False
 
 
 def test_post_training_data_package_writes_blocked_customer_handoff_manifests(

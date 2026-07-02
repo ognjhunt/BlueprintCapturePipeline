@@ -120,7 +120,9 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
             image_path = frames_dir / f"frame_{frame_index:06d}.npy"
             depth_path = depth_dir / f"depth_{frame_index:06d}.npy"
             confidence_path = confidence_dir / f"confidence_{frame_index:06d}.npy"
-            np.save(image_path, np.full((16, 24, 3), 100 + frame_index, dtype=np.float32))
+            checker = (np.indices((16, 24)).sum(axis=0) % 2).astype(np.float32) * 255.0
+            image = np.repeat(checker[:, :, None], 3, axis=2)
+            np.save(image_path, image)
             np.save(depth_path, np.full((16, 24), 1.0 + frame_index * 0.1, dtype=np.float32))
             np.save(confidence_path, np.full((16, 24), 0.8, dtype=np.float32))
             frames.append(
@@ -223,7 +225,7 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
     assert validation["readiness"]["operational_live_provider_hosted"]["state"] == "blocked"
 
 
-def test_retrieval_index_allows_local_sfm_as_degraded_reference_media(monkeypatch, tmp_path: Path) -> None:
+def test_retrieval_index_rejects_local_sfm_synthetic_diagnostics(monkeypatch, tmp_path: Path) -> None:
     capture_root = _build_staged_glasses_capture(tmp_path, with_privacy_video=True)
     monkeypatch.setattr(
         "blueprint_pipeline.retrieval_index_stage._generate_embeddings",
@@ -231,22 +233,17 @@ def test_retrieval_index_allows_local_sfm_as_degraded_reference_media(monkeypatc
     )
 
     build_geometry_stage_contract(capture_root, provider="local_sfm", model="local-sfm-offline")
-    result = run_retrieval_index_stage(capture_root=capture_root, embedding_model=object())
+    summary = json.loads(
+        (capture_root / "pipeline" / "geometry" / "geometry_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["geometry_source"] == "fallback_geometry"
+    assert summary["fallback_used"] is True
+    assert summary["synthetic_artifacts_are_capture_truth"] is False
 
-    assert result["status"] == "completed"
-    rows = [
-        json.loads(line)
-        for line in (capture_root / "world_model_export" / "dense_index.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    assert rows
-    assert all(row["geometry_source"] == "local_sfm" for row in rows)
-    site_root = capture_root.parents[3] / "sites" / "site-1" / "reference_memory"
-    validation = json.loads((site_root / "retrieval_validation.json").read_text(encoding="utf-8"))
-    assert validation["readiness"]["retrieval"]["state"] == "ready"
-    assert validation["readiness"]["non_arkit_geometry"]["state"] == "degraded"
-    assert "provider_native_geometry_missing" in validation["readiness"]["non_arkit_geometry"]["blockers"]
-    assert validation["readiness"]["swm_world_model"]["state"] == "blocked"
+    with pytest.raises(Exception, match="geometry_not_live_video_to_world:fallback_geometry"):
+        run_retrieval_index_stage(capture_root=capture_root, embedding_model=object())
 
 
 def test_retrieval_index_rejects_fallback_geometry_even_if_descriptor_is_stale(monkeypatch, tmp_path: Path) -> None:

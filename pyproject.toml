@@ -37,6 +37,7 @@ dependencies = [
 [project.optional-dependencies]
 cloud = [
     "google-cloud-storage>=2.10.0",
+    "google-cloud-pubsub>=2.21.0",
     "boto3>=1.34.0",
 ]
 runtime = [
@@ -126,6 +127,7 @@ blueprint-preflight-capture = "blueprint_pipeline.preflight_capture:main"
 blueprint-check-cpu-env = "blueprint_pipeline.cpu_env_doctor:main"
 blueprint-agent-review = "blueprint_pipeline.agent_review_cli:main"
 blueprint-run-e2e = "blueprint_pipeline.run_e2e:main"
+blueprint-pubsub-handoff-listener = "blueprint_pipeline.pubsub_handoff_listener:main"
 blueprint-build-object-index = "blueprint_pipeline.object_index_stage:main"
 blueprint-sync-skills = "blueprint_pipeline.agent_runtime.skill_sync:main"
 blueprint-build-object-geometry = "blueprint_pipeline.object_geometry_stage:main"
