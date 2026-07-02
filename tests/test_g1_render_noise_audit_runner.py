@@ -127,3 +127,51 @@ def test_audit_captures_raw_frames_without_software_denoise() -> None:
     audit_fn = source[source.index("def run_render_noise_audit("):]
     audit_fn = audit_fn[: audit_fn.index("\ndef build_arg_parser")]
     assert "software_denoise=False" in audit_fn
+
+
+def test_audit_render_step_watchdog_default_env_override_and_floor(monkeypatch) -> None:
+    monkeypatch.delenv("PARITY_AUDIT_RENDER_STEP_WATCHDOG_SECONDS", raising=False)
+    monkeypatch.delenv("PARITY_RENDER_STEP_WATCHDOG_SECONDS", raising=False)
+    assert (
+        M._audit_render_step_watchdog_seconds()
+        == M.DEFAULT_AUDIT_RENDER_STEP_WATCHDOG_SECONDS
+    )
+    # Audit steps are path traced (first warmup frame also pays cold shader compile),
+    # so their watchdog must be much larger than the generic realtime-step bound.
+    assert (
+        M.DEFAULT_AUDIT_RENDER_STEP_WATCHDOG_SECONDS
+        > M.DEFAULT_RENDER_STEP_WATCHDOG_SECONDS
+    )
+
+    monkeypatch.setenv("PARITY_AUDIT_RENDER_STEP_WATCHDOG_SECONDS", "1234.5")
+    assert M._audit_render_step_watchdog_seconds() == 1234.5
+
+    monkeypatch.setenv("PARITY_AUDIT_RENDER_STEP_WATCHDOG_SECONDS", "not-a-number")
+    assert (
+        M._audit_render_step_watchdog_seconds()
+        == M.DEFAULT_AUDIT_RENDER_STEP_WATCHDOG_SECONDS
+    )
+
+    # A generic watchdog raised above the audit default is never undercut.
+    monkeypatch.delenv("PARITY_AUDIT_RENDER_STEP_WATCHDOG_SECONDS", raising=False)
+    monkeypatch.setenv(
+        "PARITY_RENDER_STEP_WATCHDOG_SECONDS",
+        str(M.DEFAULT_AUDIT_RENDER_STEP_WATCHDOG_SECONDS + 100.0),
+    )
+    assert (
+        M._audit_render_step_watchdog_seconds()
+        == M.DEFAULT_AUDIT_RENDER_STEP_WATCHDOG_SECONDS + 100.0
+    )
+
+
+def test_every_audit_render_step_uses_the_audit_watchdog() -> None:
+    source = _RUNNER.read_text()
+    audit_fn = source[source.index("def run_render_noise_audit("):]
+    audit_fn = audit_fn[: audit_fn.index("\ndef build_arg_parser")]
+    # Every replicator step inside the audit (warmup, settle, capture) must carry the
+    # audit watchdog; the generic 180s default killed the 2026-07-02 run at warmup:0.
+    calls = audit_fn.split("_replicator_step_with_watchdog(")[1:]
+    assert len(calls) >= 3
+    for call in calls:
+        # The argument list of one call fits well within this window.
+        assert "timeout_seconds=_audit_render_step_watchdog_seconds()" in call[:400]

@@ -40,6 +40,12 @@ need to be un-authored mid-run; scene, task, stance, camera, arm pose, and resol
 identical across variants. Declared pass/fail comparisons each isolate exactly one variable
 (`validate_variant_plan` enforces this); anything else is exploratory.
 
+Audit render steps (warmup, per-variant settle, capture) run under a dedicated watchdog
+(`PARITY_AUDIT_RENDER_STEP_WATCHDOG_SECONDS`, default 900s) instead of the generic 180s
+realtime-step watchdog: audit steps are path traced at up to the high-spp budget and the
+first warmup frame additionally pays cold shader compile, which exceeded 180s and killed
+the 2026-07-02 GPU run at `audit:warmup:0` before any variant rendered.
+
 ## Dynamic path (no hardcoded coordinates)
 
 The worker mode reuses the normal seed-render chain in

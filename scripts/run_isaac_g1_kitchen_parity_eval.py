@@ -337,6 +337,11 @@ DEFAULT_AUDIT_HIGH_SAMPLES_PER_PIXEL = 384
 DEFAULT_AUDIT_WARMUP_FRAMES = 8
 DEFAULT_AUDIT_PER_VARIANT_SETTLE_FRAMES = 3
 DEFAULT_AUDIT_BOOST_LIGHT_INTENSITY = 4500.0
+# Audit steps are path traced (up to DEFAULT_AUDIT_HIGH_SAMPLES_PER_PIXEL spp) and the first
+# warmup frame additionally pays cold shader compile, so the generic realtime-step watchdog
+# (DEFAULT_RENDER_STEP_WATCHDOG_SECONDS) is far too tight for them: the 2026-07-02 GPU run was
+# killed at `audit:warmup:0` after 180s before rendering a single variant.
+DEFAULT_AUDIT_RENDER_STEP_WATCHDOG_SECONDS = 900.0
 _AUDIT_MATERIAL_MONOTONIC_RANK = {
     "textured_original": 0,
     "simplified_diffuse": 1,
@@ -6891,6 +6896,17 @@ def _render_step_watchdog_seconds() -> float:
         return DEFAULT_RENDER_STEP_WATCHDOG_SECONDS
 
 
+def _audit_render_step_watchdog_seconds() -> float:
+    raw = os.getenv("PARITY_AUDIT_RENDER_STEP_WATCHDOG_SECONDS", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    # Never tighter than the generic step watchdog an operator may have raised.
+    return max(DEFAULT_AUDIT_RENDER_STEP_WATCHDOG_SECONDS, _render_step_watchdog_seconds())
+
+
 def _auto_render_settle_seconds(
     *,
     configured_settle_seconds: float,
@@ -10715,6 +10731,7 @@ def run_render_noise_audit(*, kitchen_usd: str, g1_usd: str, scenario: Mapping[s
             _replicator_step_with_watchdog(
                 rep, label=f"{sid}:audit:warmup:{wi}",
                 result_path=result_path, scenario_id=sid, rt_subframes=1,
+                timeout_seconds=_audit_render_step_watchdog_seconds(),
             )
             warmup_seconds.append(round(time.time() - t_warm, 3))
         _log(f"render-noise audit: warmup done ({[f'{s:.1f}' for s in warmup_seconds]})")
@@ -10780,11 +10797,13 @@ def run_render_noise_audit(*, kitchen_usd: str, g1_usd: str, scenario: Mapping[s
                     _replicator_step_with_watchdog(
                         rep, label=f"{sid}:audit:{vid}:settle:{si}",
                         result_path=result_path, scenario_id=sid, rt_subframes=1,
+                        timeout_seconds=_audit_render_step_watchdog_seconds(),
                     )
                 t_capture = time.time()
                 _replicator_step_with_watchdog(
                     rep, label=f"{sid}:audit:{vid}:capture",
                     result_path=result_path, scenario_id=sid, rt_subframes=1,
+                    timeout_seconds=_audit_render_step_watchdog_seconds(),
                 )
                 record["capture_seconds"] = round(time.time() - t_capture, 3)
                 variant_dir = audit_dir / "variants" / vid
