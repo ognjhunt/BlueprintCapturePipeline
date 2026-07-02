@@ -30,10 +30,13 @@ green suite that silently skipped them is a false safety signal during the launc
 
 ## Proposed fix
 
-1. **Canonical env installs the geometry extra by default:** `uv sync --extra dev` (or
-   `pip install -e '.[geometry,cloud]'`) becomes the documented + scripted single path
-   (Makefile target `make env`); `cpu_env_doctor` verifies it.
-2. **CI job matrix includes a leg with the geometry extra installed** that runs the
+1. **Canonical env installs the dev extra by default:** `uv sync --extra dev` (or
+   `pip install -e '.[dev]'`, per `docs/DEV_SETUP.md`) becomes the documented + scripted
+   single path (Makefile target `make env`); `cpu_env_doctor` verifies it. Note:
+   `.[geometry,cloud]` alone is insufficient — the env contract also requires `cv2`
+   (`opencv-python-headless`), which ships in the `dev`/`runtime` extras, and without it
+   ~32 video/WAM validation tests skip.
+2. **CI job matrix includes a leg with the dev extra installed** that runs the
    dry-render/placement/POV suites and **fails if they skip**: run with
    `-W error::pytest.PytestUnraisableExceptionWarning` plus a skip-budget check
    (e.g. `--strict-skip` wrapper or asserting `skipped == 0` for those files via
