@@ -352,8 +352,18 @@ def test_live_pipeline_input_intake_accepts_webapp_site_library_id_locations(
 
 
 def test_live_pipeline_input_intake_staged_arena_results_feed_control_plane(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The local deterministic lane requires host ffmpeg for clip keyframe paths; this test
+    # asserts control-plane gating semantics, not host tool installs (CI has no ffmpeg).
+    import shutil as _shutil
+
+    real_which = _shutil.which
+    monkeypatch.setattr(
+        _shutil,
+        "which",
+        lambda cmd, *a, **kw: "/usr/bin/ffmpeg" if cmd == "ffmpeg" else real_which(cmd, *a, **kw),
+    )
     capture_root = _capture_root(tmp_path)
     manifest_path = _control_manifest(tmp_path, capture_root)
     results_dir = _arena_results(tmp_path / "arena-results")
