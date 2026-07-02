@@ -351,6 +351,11 @@ def test_docker_start_cmd_runs_parity_runner() -> None:
     assert "shutil.rmtree(p)" in body
     assert 'mark("runner_done", rc=rc)' in body
     assert "while True:" in body and "putout()" in body
+    # tee opens runner_console.log before boot.py's OUT cleanup runs; the cleanup must skip
+    # it or the console writes to an unlinked inode and never reaches the output zip.
+    assert 'if p.name == "runner_console.log": continue' in body
+    cleanup_skip = body.index('if p.name == "runner_console.log": continue')
+    assert body.index("pathlib.Path(OUT).iterdir()") < cleanup_skip < body.index("shutil.rmtree(p)")
 
 
 def test_docker_start_cmd_can_run_image_startup_canary() -> None:
