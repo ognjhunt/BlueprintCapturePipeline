@@ -45,6 +45,7 @@ DEFAULT_LAMBDA_API_KEY_FILE = "~/.blueprint-secrets/lambda_api_key"
 LAMBDA_API_GATE_ENV = "BLUEPRINT_ALLOW_LAMBDA_API_CALLS"
 LAMBDA_API_BASE_ENV = "LAMBDA_API_BASE"
 DEFAULT_LAMBDA_API_BASE = "https://cloud.lambda.ai/api/v1"
+LAMBDA_API_USER_AGENT = "curl/8.7.1"
 LAMBDA_REGION_NAME_ENV = "BLUEPRINT_LAMBDA_REGION_NAME"
 LAMBDA_INSTANCE_TYPE_NAME_ENV = "BLUEPRINT_LAMBDA_INSTANCE_TYPE_NAME"
 LAMBDA_SSH_KEY_NAME_ENV = "BLUEPRINT_LAMBDA_SSH_KEY_NAME"
@@ -63,6 +64,7 @@ GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
 PROVIDER_LAUNCH_REQUEST_ENV = "BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST"
 PROVIDER_ADAPTER_OUTPUT_ENV = "BLUEPRINT_GPU_PROVIDER_ADAPTER_OUTPUT"
 SIGNED_URL_SIGNATURE_PARAM = "x-goog-" + "signature="
+SIGNED_URL_QUERY_KEY_MARKERS = ("signature", "credential", "security-token")
 LAMBDA_CLOUD_INIT_USER_DATA_MAX_BYTES = 1_000_000
 REMOTE_PROVIDER_ARTIFACT_OUTPUT_URI_SCHEMES = {"gs", "s3", "r2"}
 SENSITIVE_ENV_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
@@ -176,6 +178,31 @@ def _json_env(name: str) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return None
+
+
+def _read_runtime_file_value(value: Any) -> str:
+    path_text = _string(value)
+    if not path_text:
+        return ""
+    path = Path(path_text).expanduser()
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _input_value(inputs: Mapping[str, Any], key: str) -> str:
+    return _string(inputs.get(key)) or _read_runtime_file_value(inputs.get(f"{key}_file"))
+
+
+def _signed_put_url_from_inputs(inputs: Mapping[str, Any]) -> str:
+    return (
+        _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
+        or _read_runtime_file_value(inputs.get("artifact_output_signed_put_url_file"))
+        or _read_runtime_file_value(inputs.get("runtime_manifest_signed_put_url_file"))
+    )
 
 
 def _provider_shape(request: Mapping[str, Any]) -> Dict[str, Any]:
@@ -420,8 +447,11 @@ def _worker_env(request: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
         or _string(inputs.get("simulator"))
     )
     env = {
-        "BLUEPRINT_EVAL_MANIFEST_URI": _string(inputs.get("manifest_uri")),
-        "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI": _string(inputs.get("capture_root_bundle_uri")),
+        "BLUEPRINT_EVAL_MANIFEST_URI": _input_value(inputs, "manifest_uri"),
+        "BLUEPRINT_CAPTURE_ROOT_BUNDLE_URI": _input_value(
+            inputs,
+            "capture_root_bundle_uri",
+        ),
         "BLUEPRINT_ROBOT_EVAL_JOB_ID": _string(request.get("job_id")),
         "BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME": "true",
         "BLUEPRINT_GPU_PROVIDER": LAMBDA_PROVIDER_NAME,
@@ -437,8 +467,11 @@ def _worker_env(request: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
     }
     artifact_output_required = _bool(inputs.get("artifact_output_uri_required"))
     if artifact_output_required is not False:
-        env["BLUEPRINT_ARTIFACT_OUTPUT_URI"] = _string(inputs.get("artifact_output_uri"))
-    signed_put_url = _string(os.getenv("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"))
+        env["BLUEPRINT_ARTIFACT_OUTPUT_URI"] = _input_value(
+            inputs,
+            "artifact_output_uri",
+        )
+    signed_put_url = _signed_put_url_from_inputs(inputs)
     if signed_put_url:
         env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"] = signed_put_url
     if _env_truthy("BLUEPRINT_ALLOW_GPU_PROVISIONING"):
@@ -461,6 +494,7 @@ def _worker_env(request: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
     plaintext_values = _mapping(
         environment.get("plaintext_env_values") or environment.get("plaintext_env")
     )
+    plaintext_value_files = _mapping(environment.get("plaintext_env_value_files"))
     for key, value in plaintext_values.items():
         env_key = _string(key)
         env_value = _string(value)
@@ -469,6 +503,14 @@ def _worker_env(request: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
         if plaintext_names and env_key not in plaintext_names:
             continue
         if SIGNED_URL_SIGNATURE_PARAM in env_value.lower():
+            continue
+        env[env_key] = env_value
+    for key, value in plaintext_value_files.items():
+        env_key = _string(key)
+        env_value = _read_runtime_file_value(value)
+        if not env_key or not env_value or env_key in secret_names or env_key in env:
+            continue
+        if plaintext_names and env_key not in plaintext_names:
             continue
         env[env_key] = env_value
     forwarded_secret_names: list[str] = []
@@ -516,13 +558,19 @@ def _generated_user_data(request: Mapping[str, Any]) -> tuple[str, dict[str, Any
     if image_ref:
         script_lines.extend(
             [
-                f"docker pull {shlex.quote(image_ref)}",
+                'DOCKER_CMD="docker"',
+                'if command -v sudo >/dev/null 2>&1; then DOCKER_CMD="sudo docker"; fi',
+                "mkdir -p /workspace/out",
+                "chmod 777 /workspace /workspace/out || true",
+                f"$DOCKER_CMD pull {shlex.quote(image_ref)}",
                 (
-                    "docker run --rm --gpus all "
+                    "$DOCKER_CMD run --rm --gpus all "
                     f"--name {shlex.quote(container_name)} "
+                    "--entrypoint bash "
+                    "-v /workspace:/workspace "
                     f"{docker_env_flags} "
                     f"{shlex.quote(image_ref)} "
-                    f"bash -lc {shlex.quote(command)}"
+                    f"-lc {shlex.quote(command)}"
                 ),
             ]
         )
@@ -638,17 +686,17 @@ def _request_summary(request: Mapping[str, Any]) -> Dict[str, Any]:
             "configured_image_ref_fetchable_by_provider"
         )
         is not False,
-        "manifest_uri_present": bool(_string(inputs.get("manifest_uri"))),
+        "manifest_uri_present": bool(_input_value(inputs, "manifest_uri")),
         "manifest_uri_fetchable_by_provider": inputs.get("manifest_uri_fetchable_by_provider")
         is True,
         "capture_root_bundle_uri_present": bool(
-            _string(inputs.get("capture_root_bundle_uri"))
+            _input_value(inputs, "capture_root_bundle_uri")
         ),
         "capture_root_bundle_uri_fetchable_by_provider": inputs.get(
             "capture_root_bundle_uri_fetchable_by_provider"
         )
         is True,
-        "artifact_output_uri_present": bool(_string(inputs.get("artifact_output_uri"))),
+        "artifact_output_uri_present": bool(_input_value(inputs, "artifact_output_uri")),
         "artifact_output_uri_provider_writable": inputs.get(
             "artifact_output_uri_provider_writable"
         )
@@ -683,7 +731,7 @@ def _request_blockers(request: Mapping[str, Any], *, mode: str) -> list[str]:
     provider_shape = _provider_shape(request)
     local_sim_only_prerequisite = _local_sim_only_prerequisite(request)
     artifact_finalizer = _mapping(provider_shape.get("artifact_finalizer"))
-    artifact_output_uri = _string(inputs.get("artifact_output_uri"))
+    artifact_output_uri = _input_value(inputs, "artifact_output_uri")
     artifact_output_required = _bool(inputs.get("artifact_output_uri_required"))
     artifact_output_scheme = urllib.parse.urlparse(artifact_output_uri).scheme or "local"
     artifact_output_write_auth = _mapping(inputs.get("artifact_output_write_auth"))
@@ -699,11 +747,11 @@ def _request_blockers(request: Mapping[str, Any], *, mode: str) -> list[str]:
         blockers.append("prebuilt_worker_image_ref_not_versioned")
     if image.get("configured_image_ref_fetchable_by_provider") is False:
         blockers.append("prebuilt_worker_image_ref_not_provider_fetchable")
-    if not _string(inputs.get("manifest_uri")):
+    if not _input_value(inputs, "manifest_uri"):
         blockers.append("missing_provider_worker_manifest_uri")
     if inputs.get("manifest_uri_fetchable_by_provider") is not True:
         blockers.append("provider_worker_manifest_uri_not_fetchable")
-    if not _string(inputs.get("capture_root_bundle_uri")):
+    if not _input_value(inputs, "capture_root_bundle_uri"):
         blockers.append("missing_provider_capture_root_bundle_uri")
     if inputs.get("capture_root_bundle_uri_fetchable_by_provider") is not True:
         blockers.append("provider_capture_root_bundle_uri_not_fetchable")
@@ -771,6 +819,19 @@ def _request_blockers(request: Mapping[str, Any], *, mode: str) -> list[str]:
 def _redact_signed_url_text(text: str) -> str:
     parsed = urllib.parse.urlsplit(text)
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if query and any(
+        any(marker in key.lower() for marker in SIGNED_URL_QUERY_KEY_MARKERS)
+        for key, _value in query
+    ):
+        return urllib.parse.urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                "REDACTED_QUERY",
+                parsed.fragment,
+            )
+        )
     redacted_query = [
         (key, "<redacted:signed-url-signature>")
         if key.lower() == SIGNED_URL_SIGNATURE_PARAM.rstrip("=").lower()
@@ -853,6 +914,7 @@ def _http_json(
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": LAMBDA_API_USER_AGENT,
         },
     )
     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
@@ -919,13 +981,13 @@ def _provider_readiness_manifest(
             ),
         },
         "provider_inputs": {
-            "manifest_uri_present": bool(_string(inputs.get("manifest_uri"))),
+            "manifest_uri_present": bool(_input_value(inputs, "manifest_uri")),
             "manifest_uri_fetchable_by_provider": inputs.get(
                 "manifest_uri_fetchable_by_provider"
             )
             is True,
             "capture_root_bundle_uri_present": bool(
-                _string(inputs.get("capture_root_bundle_uri"))
+                _input_value(inputs, "capture_root_bundle_uri")
             ),
             "capture_root_bundle_uri_fetchable_by_provider": inputs.get(
                 "capture_root_bundle_uri_fetchable_by_provider"
@@ -934,10 +996,10 @@ def _provider_readiness_manifest(
         },
         "artifact_output": {
             "artifact_output_uri_present": bool(
-                _string(inputs.get("artifact_output_uri"))
+                _input_value(inputs, "artifact_output_uri")
             ),
             "artifact_output_uri_scheme": urllib.parse.urlparse(
-                _string(inputs.get("artifact_output_uri"))
+                _input_value(inputs, "artifact_output_uri")
             ).scheme
             or None,
             "artifact_output_uri_provider_writable": inputs.get(

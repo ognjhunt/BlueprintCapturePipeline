@@ -8775,7 +8775,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             _log(f"scenario {scenario_id}: render settle complete; starting RTX capture")
 
         def _render_scenario(sc):
-            nonlocal topdown_annot
+            nonlocal over_annot, pov_annot, verify_annot, topdown_annot
             sid = sc["scenario_id"]
             sdir = out_dir / sid
             (sdir / "frames").mkdir(parents=True, exist_ok=True)
@@ -9343,6 +9343,27 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         over_frame_path,
                         software_denoise=software_denoise,
                     )
+                    if not over_ok:
+                        try:
+                            _log(
+                                f"scenario {sid}: overview annotator empty at frame {cap}; "
+                                "recreating render product"
+                            )
+                            over_annot = _make_render_product(over_cam, width, height)
+                            _replicator_step_with_watchdog(
+                                rep,
+                                label=f"{sid}:overview:{cap}:recreate",
+                                result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
+                                scenario_id=sid,
+                                rt_subframes=capture_rt_subframes,
+                            )
+                            over_ok = _save_rgb(
+                                over_annot,
+                                over_frame_path,
+                                software_denoise=software_denoise,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - frame-save fallback is diagnostic
+                            _log(f"scenario {sid}: overview render-product recreate failed ({exc!r})")
                     if over_ok:
                         _append_camera_contract_row(
                             _isaac_camera_contract(stage, over_cam, width, height),
@@ -9359,6 +9380,27 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     pov_frame_path = sdir / "frames" / f"robot_pov_{cap:04d}.png"
                     pov_ok = _save_rgb(pov_annot, pov_frame_path,
                                        software_denoise=software_denoise)
+                    if not pov_ok:
+                        try:
+                            _log(
+                                f"scenario {sid}: robot_pov annotator empty at frame {cap}; "
+                                "recreating render product"
+                            )
+                            pov_annot = _make_render_product(pov_cam, width, height)
+                            _replicator_step_with_watchdog(
+                                rep,
+                                label=f"{sid}:robot_pov:{cap}:recreate",
+                                result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
+                                scenario_id=sid,
+                                rt_subframes=capture_rt_subframes,
+                            )
+                            pov_ok = _save_rgb(
+                                pov_annot,
+                                pov_frame_path,
+                                software_denoise=software_denoise,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - frame-save fallback is diagnostic
+                            _log(f"scenario {sid}: robot_pov render-product recreate failed ({exc!r})")
                     if pov_ok:
                         _append_camera_contract_row(
                             _isaac_camera_contract(stage, pov_cam, width, height),
@@ -9413,6 +9455,27 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             verify_frame_path,
                             software_denoise=software_denoise,
                         )
+                        if not verify_ok:
+                            try:
+                                _log(
+                                    f"scenario {sid}: verify annotator empty at frame {cap}; "
+                                    "recreating render product"
+                                )
+                                verify_annot = _make_render_product(verify_cam_path, width, height)
+                                _replicator_step_with_watchdog(
+                                    rep,
+                                    label=f"{sid}:verify:{cap}:recreate",
+                                    result_path=out_dir / "isaac_g1_kitchen_parity_result.json",
+                                    scenario_id=sid,
+                                    rt_subframes=capture_rt_subframes,
+                                )
+                                verify_ok = _save_rgb(
+                                    verify_annot,
+                                    verify_frame_path,
+                                    software_denoise=software_denoise,
+                                )
+                            except Exception as exc:  # noqa: BLE001 - frame-save fallback is diagnostic
+                                _log(f"scenario {sid}: verify render-product recreate failed ({exc!r})")
                         if verify_ok:
                             _append_camera_contract_row(
                                 _isaac_camera_contract(stage, verify_cam_path, width, height),

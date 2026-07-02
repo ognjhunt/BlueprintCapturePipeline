@@ -158,6 +158,63 @@ def test_dry_run_is_consumable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert "blueprint-run-robot-eval-worker" not in json.dumps(persisted)
 
 
+def test_dry_run_can_resolve_signed_url_files_without_persisting_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_file = tmp_path / "lambda_api_key"
+    key_file.write_text("secret_file_value\n", encoding="utf-8")
+    monkeypatch.setenv(LAMBDA_API_KEY_FILE_ENV, str(key_file))
+    bundle_url_file = tmp_path / "provider_bundle_url.txt"
+    output_url_file = tmp_path / "provider_output_put_url.txt"
+    bundle_url_file.write_text(
+        "https://object-store.example/bundle.zip?X-Amz-Signature=bundle-secret\n",
+        encoding="utf-8",
+    )
+    kitchen_url_file = tmp_path / "kitchen_bundle_url.txt"
+    kitchen_url_file.write_text(
+        "https://object-store.example/kitchen.zip?X-Amz-Signature=kitchen-secret\n",
+        encoding="utf-8",
+    )
+    output_url_file.write_text(
+        "https://object-store.example/output.zip?X-Amz-Signature=put-secret\n",
+        encoding="utf-8",
+    )
+    request_path = _ready_lambda_request(tmp_path / "request.json")
+    request = _read_json(request_path)
+    inputs = request["provider_request_shape"]["inputs"]  # type: ignore[index]
+    inputs.pop("manifest_uri")  # type: ignore[union-attr]
+    inputs.pop("capture_root_bundle_uri")  # type: ignore[union-attr]
+    inputs["manifest_uri_file"] = str(bundle_url_file)  # type: ignore[index]
+    inputs["capture_root_bundle_uri_file"] = str(bundle_url_file)  # type: ignore[index]
+    inputs["artifact_output_uri_required"] = False  # type: ignore[index]
+    inputs["artifact_output_signed_put_url_file"] = str(output_url_file)  # type: ignore[index]
+    environment = request["provider_request_shape"]["environment"]  # type: ignore[index]
+    environment["plaintext_env_var_names"] = ["KITCHEN_BUNDLE_URL"]  # type: ignore[index]
+    environment["plaintext_env_value_files"] = {  # type: ignore[index]
+        "KITCHEN_BUNDLE_URL": str(kitchen_url_file)
+    }
+    _write_json(request_path, request)
+
+    result = run_lambda_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "out.json",
+        mode="dry-run",
+        region_name="us-west-1",
+        instance_type_name="gpu_1x_a10",
+        ssh_key_name="blueprint-key",
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert result["request_summary"]["manifest_uri_present"] is True
+    assert result["request_summary"]["capture_root_bundle_uri_present"] is True
+    persisted = json.dumps(_read_json(tmp_path / "out.json"))
+    assert "bundle-secret" not in persisted
+    assert "put-secret" not in persisted
+    assert "kitchen-secret" not in persisted
+    assert "X-Amz-Signature" not in persisted
+
+
 def test_live_mode_blocks_without_explicit_api_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -242,6 +299,9 @@ def test_launch_instance_submits_with_explicit_gates_and_redacts(
         captured["timeout"] = timeout
         captured["body"] = json.loads(request.data.decode("utf-8"))
         captured["authorization"] = request.headers.get("Authorization")
+        captured["user_agent"] = (
+            request.headers.get("User-agent") or request.headers.get("User-Agent")
+        )
         return FakeResponse()
 
     monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
@@ -263,9 +323,15 @@ def test_launch_instance_submits_with_explicit_gates_and_redacts(
     assert result["lambda_instance_ids"] == ["lambda-instance-1"]
     assert captured["url"] == "https://cloud.lambda.ai/api/v1/instance-operations/launch"
     assert captured["authorization"] == "Bearer secret_file_value"
+    assert captured["user_agent"] == "curl/8.7.1"
     assert captured["body"]["region_name"] == "us-west-1"  # type: ignore[index]
     assert captured["body"]["ssh_key_names"] == ["blueprint-key"]  # type: ignore[index]
     assert captured["body"]["user_data"].startswith("#!/usr/bin/env bash")  # type: ignore[index]
+    assert 'DOCKER_CMD="sudo docker"' in captured["body"]["user_data"]  # type: ignore[operator]
+    assert "--entrypoint bash" in captured["body"]["user_data"]  # type: ignore[operator]
+    assert "-v /workspace:/workspace" in captured["body"]["user_data"]  # type: ignore[operator]
+    assert " bash -lc " not in captured["body"]["user_data"]  # type: ignore[operator]
+    assert " -lc 'blueprint-run-robot-eval-worker" in captured["body"]["user_data"]  # type: ignore[operator]
     persisted = _read_json(tmp_path / "out.json")
     payload = json.dumps(persisted)
     assert "secret_file_value" not in payload
