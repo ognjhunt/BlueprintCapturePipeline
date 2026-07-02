@@ -15,6 +15,7 @@ import numpy as np
 from .capture_bridge import CaptureDescriptor
 from .common import PipelineError, ensure_dir, utc_now_iso, write_json
 from .geometry_da3 import run_da3_provider
+from .launch_proof_policy import synthetic_geometry_allowed
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
 from .video_to_world_client import run_video_to_world_provider
 
@@ -308,6 +309,7 @@ def _build_status_payload(
     geometry_source: str = "pending",
     fallback_used: bool = False,
     fallback_kind: Optional[str] = None,
+    synthetic_geometry: bool = False,
     provider_native_result: Optional[bool] = None,
     contract_ready_for_world_model: bool = False,
     internal_fallback_ready: bool = False,
@@ -324,6 +326,7 @@ def _build_status_payload(
         "geometry_source": geometry_source,
         "fallback_used": bool(fallback_used),
         "fallback_kind": fallback_kind,
+        "synthetic_geometry": bool(synthetic_geometry),
         "provider_native_result": provider_native_result,
         "ready_for_world_model": ready_for_world_model,
         "contract_ready_for_world_model": bool(contract_ready_for_world_model),
@@ -541,6 +544,18 @@ def _video_to_world_provider_blocker() -> Optional[Dict[str, Any]]:
     }
 
 
+class SyntheticGeometryDisallowedError(PipelineError):
+    """Raised when a synthetic-geometry path is requested but disallowed.
+
+    Production launch-proof mode never fabricates geometry; the stage writes a
+    blocked artifact instead of synthetic tensors.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"synthetic_geometry_disallowed:{reason}")
+        self.reason = reason
+
+
 def _run_geometry_provider(
     *,
     video_path: Path,
@@ -555,6 +570,8 @@ def _run_geometry_provider(
 ) -> Dict[str, Any]:
     provider_key = str(provider or "").strip().lower()
     if provider_key in {"local_sfm", "sfm", "offline_sfm", "non_arkit_local"}:
+        if not synthetic_geometry_allowed():
+            raise SyntheticGeometryDisallowedError("local_sfm_synthetic_dev_requested")
         return _build_local_sfm_provider_result(
             video_path=video_path,
             geometry_root=geometry_root,
@@ -579,6 +596,10 @@ def _run_geometry_provider(
         return result
     provider_blocker = _video_to_world_provider_blocker()
     if provider_blocker is not None:
+        if not synthetic_geometry_allowed():
+            raise SyntheticGeometryDisallowedError(
+                str(provider_blocker.get("reason") or "video_to_world_runner_not_configured")
+            )
         return _build_local_sfm_provider_result(
             video_path=video_path,
             geometry_root=geometry_root,
@@ -654,9 +675,8 @@ def _write_ascii_pointcloud(path: Path, poses: List[Mapping[str, Any]]) -> None:
             )
         except (TypeError, ValueError, IndexError):
             continue
-    if not points:
-        points = [(0.0, 0.0, 0.0)]
-
+    # An empty trajectory yields an honest 0-vertex pointcloud, never a
+    # fabricated origin point.
     lines = [
         "ply",
         "format ascii 1.0",
@@ -756,6 +776,7 @@ def _build_fallback_provider_result(
         "provider_native_result": False,
         "fallback_used": True,
         "fallback_kind": "internal_synthetic_geometry",
+        "synthetic_geometry": True,
         "synthetic_geometry_used": True,
         "synthetic_artifact_truth": {
             "poses_are_capture_truth": False,
@@ -792,6 +813,7 @@ def _build_local_sfm_provider_result(
     warnings.extend(
         [
             "local_sfm_relative_geometry_only",
+            "synthetic_geometry_used",
             "local_sfm_real_runner_not_implemented",
             "local_sfm_uses_synthetic_diagnostics_only",
             "scale_not_proven",
@@ -803,8 +825,12 @@ def _build_local_sfm_provider_result(
     local["geometry_source"] = "fallback_geometry"
     local["requested_geometry_source"] = "local_sfm"
     local["provider_native_result"] = False
+    # Truth flags are append-only: this path reuses the synthetic fabricator,
+    # so it must stay labeled as fallback/synthetic. No real SfM ran here.
     local["fallback_used"] = True
     local["fallback_kind"] = "internal_synthetic_geometry"
+    local["synthetic_geometry"] = True
+    local["synthetic_geometry_used"] = True
     local["provider_metrics"] = {
         **dict(local.get("provider_metrics") or {}),
         "backend": "local_sfm_offline",
@@ -813,6 +839,7 @@ def _build_local_sfm_provider_result(
         "provider_native_result": False,
         "scale_resolved": False,
         "site_frame_available": False,
+        "synthetic_geometry": True,
         "provider_blocker": dict(provider_blocker) if isinstance(provider_blocker, Mapping) else None,
     }
     local["provider_warnings"] = list(dict.fromkeys(warnings))
@@ -1033,6 +1060,116 @@ def _patch_descriptor_with_geometry(
     write_json(context.descriptor_path, descriptor_payload)
 
 
+def _write_blocked_geometry_artifacts(
+    *,
+    context: LocalCaptureContext,
+    provider: str,
+    model: str,
+    execution_mode: str,
+    summary_path: Path,
+    status_path: Path,
+    manifest_path: Path,
+    inputs_path: Path,
+    provider_request_path: Path,
+    provider_result_path: Path,
+    intrinsics_path: Path,
+    poses_path: Path,
+    trajectory_summary_path: Path,
+    keyframes_path: Path,
+    frame_index_path: Path,
+    depth_manifest_path: Path,
+    confidence_manifest_path: Path,
+    implementation_notes_path: Path,
+    dynamic_mask_manifest_path: Path,
+    geometry_root: Path,
+    reason: str,
+) -> GeometryStageResult:
+    """Record a blocked geometry run without fabricating any tensors.
+
+    No depth/pose/intrinsics artifacts are written; the run is marked
+    blocked so downstream stages and gates fail closed instead of consuming
+    synthetic geometry.
+    """
+    status_label = "blocked_geometry_unavailable"
+    launch_blockers = [
+        "geometry_provider_unavailable",
+        "synthetic_geometry_disallowed",
+        reason,
+    ]
+    blockers = list(dict.fromkeys(launch_blockers))
+    summary_payload = {
+        "schema_version": "v1",
+        "generated_at": utc_now_iso(),
+        "stage": "geometry",
+        "status": status_label,
+        "geometry_source": "unavailable",
+        "fallback_used": False,
+        "fallback_kind": None,
+        "synthetic_geometry": False,
+        "provider_native_result": False,
+        "ready_for_world_model": False,
+        "contract_ready_for_world_model": False,
+        "internal_fallback_ready": False,
+        "geometry_live_ready": False,
+        "external_market_ready": False,
+        "site_faithful_market_ready": False,
+        "launch_blockers": blockers,
+        "blockers": blockers,
+        "blocked_reason": reason,
+        "intrinsics_available": False,
+        "site_frame_available": False,
+        "scale_resolved": False,
+    }
+    write_json(summary_path, summary_payload)
+    write_json(
+        status_path,
+        _build_status_payload(
+            provider=provider,
+            model=model,
+            execution_mode=execution_mode,
+            status=status_label,
+            ready_for_world_model=False,
+            geometry_source="unavailable",
+            launch_blockers=blockers,
+            blocking_issues=blockers,
+        ),
+    )
+    write_json(
+        manifest_path,
+        _build_manifest_payload(
+            context=context,
+            provider=provider,
+            model=model,
+            execution_mode=execution_mode,
+            status=status_label,
+            summary_path=summary_path,
+            status_path=status_path,
+            inputs_path=inputs_path,
+            provider_request_path=provider_request_path,
+            provider_result_path=provider_result_path,
+            intrinsics_path=intrinsics_path,
+            poses_path=poses_path,
+            trajectory_summary_path=trajectory_summary_path,
+            keyframes_path=keyframes_path,
+            frame_index_path=frame_index_path,
+            depth_manifest_path=depth_manifest_path,
+            confidence_manifest_path=confidence_manifest_path,
+            implementation_notes_path=implementation_notes_path,
+            dynamic_mask_manifest_path=dynamic_mask_manifest_path,
+            geometry_source="unavailable",
+            launch_blockers=blockers,
+        ),
+    )
+    return GeometryStageResult(
+        capture_root=context.capture_root,
+        geometry_root=geometry_root,
+        manifest_path=manifest_path,
+        summary_path=summary_path,
+        status_path=status_path,
+        status=status_label,
+    )
+
+
 def build_geometry_stage_contract(
     capture_root: str | Path,
     *,
@@ -1155,7 +1292,55 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             execution_mode=execution_mode,
             video_probe=video_probe,
         )
+    except SyntheticGeometryDisallowedError as exc:
+        return _write_blocked_geometry_artifacts(
+            context=context,
+            provider=provider,
+            model=model,
+            execution_mode=execution_mode,
+            summary_path=summary_path,
+            status_path=status_path,
+            manifest_path=manifest_path,
+            inputs_path=inputs_path,
+            provider_request_path=provider_request_path,
+            provider_result_path=provider_result_path,
+            intrinsics_path=intrinsics_path,
+            poses_path=poses_path,
+            trajectory_summary_path=trajectory_summary_path,
+            keyframes_path=keyframes_path,
+            frame_index_path=frame_index_path,
+            depth_manifest_path=depth_manifest_path,
+            confidence_manifest_path=confidence_manifest_path,
+            implementation_notes_path=implementation_notes_path,
+            dynamic_mask_manifest_path=dynamic_mask_manifest_path,
+            geometry_root=geometry_root,
+            reason=exc.reason,
+        )
     except Exception as exc:
+        if not synthetic_geometry_allowed():
+            return _write_blocked_geometry_artifacts(
+                context=context,
+                provider=provider,
+                model=model,
+                execution_mode=execution_mode,
+                summary_path=summary_path,
+                status_path=status_path,
+                manifest_path=manifest_path,
+                inputs_path=inputs_path,
+                provider_request_path=provider_request_path,
+                provider_result_path=provider_result_path,
+                intrinsics_path=intrinsics_path,
+                poses_path=poses_path,
+                trajectory_summary_path=trajectory_summary_path,
+                keyframes_path=keyframes_path,
+                frame_index_path=frame_index_path,
+                depth_manifest_path=depth_manifest_path,
+                confidence_manifest_path=confidence_manifest_path,
+                implementation_notes_path=implementation_notes_path,
+                dynamic_mask_manifest_path=dynamic_mask_manifest_path,
+                geometry_root=geometry_root,
+                reason=f"provider_failed:{exc.__class__.__name__}",
+            )
         provider_result = _build_fallback_provider_result(
             video_path=video_path,
             geometry_root=geometry_root,
@@ -1244,10 +1429,14 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
                 "pose_present": bool(frame.get("world_from_camera")) and not provider_result_fallback,
                 "intrinsics_present": bool(provider_result.get("intrinsics")) and not provider_result_fallback,
                 "pose_confidence": pose_confidence,
+                # Only carry a sharpness value that was actually measured
+                # (image gradient variance) or provider-reported; a missing
+                # measurement stays visible as missing, never a stamped constant.
                 "sharpness_score": sharpness_score,
                 "sharpness_score_source": "image_gradient_variance"
                 if sharpness_score is not None
                 else "missing",
+                "sharpness_measured": sharpness_score is not None,
                 "geometry_source": frame_geometry_source,
                 "synthetic_geometry_used": provider_result_fallback,
                 "capture_truth": not provider_result_fallback,
@@ -1340,6 +1529,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         "non_arkit_local",
     }
     fallback_used = bool(provider_result.get("fallback_used"))
+    synthetic_geometry = bool(provider_result.get("synthetic_geometry"))
     fallback_kind = (
         str(provider_result.get("fallback_kind") or "internal_synthetic_geometry")
         if fallback_used
@@ -1506,6 +1696,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         "canonical_frame_id": pose_records[0]["frame_id"] if pose_records else None,
         "fallback_used": fallback_used,
         "fallback_kind": fallback_kind,
+        "synthetic_geometry": synthetic_geometry,
         "provider_native_result": provider_native_result,
         "ready_for_world_model": ready_for_world_model,
         "contract_ready_for_world_model": contract_ready_for_world_model,
@@ -1584,6 +1775,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             geometry_source=geometry_source,
             fallback_used=fallback_used,
             fallback_kind=fallback_kind,
+            synthetic_geometry=synthetic_geometry,
             provider_native_result=provider_native_result,
             contract_ready_for_world_model=contract_ready_for_world_model,
             internal_fallback_ready=internal_fallback_ready,

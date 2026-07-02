@@ -771,6 +771,9 @@ def _geometry_conditioning_truth(scene_memory_bundle_manifest: Mapping[str, Any]
             and scale_resolved
         )
     )
+    # Fallback/synthetic geometry (including local_sfm) is never treated as
+    # live/reference-ready; contract_ready_for_world_model already requires
+    # not fallback_used, so no fallback kind gets a carve-out here.
     blockers = list(geometry_summary.get("launch_blockers") or [])
     if geometry_summary_path and fallback_used:
         blockers.append("fallback_geometry_not_live_video_to_world")

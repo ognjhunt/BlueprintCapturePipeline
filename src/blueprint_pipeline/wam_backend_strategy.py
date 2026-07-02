@@ -8,11 +8,33 @@ rank fidelity has been calibrated, or that generated media is physical proof.
 from __future__ import annotations
 
 import copy
+import importlib.util
+import json
+import os
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
 WAM_BACKEND_STRATEGY_SCHEMA_VERSION = "wam_backend_strategy_manifest.v1"
 PREFERRED_CONFIGURED_LEARNED_WAM_BACKEND = "cosmos3_wam"
+
+COSMOS3_WAM_PRECONDITIONS_SCHEMA_VERSION = "cosmos3_wam_precondition_checks.v1"
+COSMOS3_WAM_ADAPTER_MODULE = "blueprint_pipeline.cosmos3_wam_command_adapter"
+# SPEC-06 owns the external episode-consistency scorer; until one of these
+# modules exists (or a caller passes an explicit availability flag), the
+# scorer precondition fails and cosmos3_wam stays aspirational.
+COSMOS3_CONSISTENCY_SCORER_MODULES = (
+    "blueprint_pipeline.sc3_consistency_scorer",
+    "blueprint_pipeline.wam_consistency_scorer",
+)
+COSMOS3_PROVIDER_COMMAND_ENVS = (
+    "BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND",
+)
+COSMOS3_CHECKPOINT_ENVS = (
+    "BLUEPRINT_COSMOS3_WAM_CHECKPOINT",
+    "BLUEPRINT_COSMOS3_NANO_CHECKPOINT",
+)
+COSMOS3_CALIBRATION_ANCHORS_PATH_ENV = "BLUEPRINT_COSMOS3_CALIBRATION_ANCHORS_PATH"
 
 SOURCE_URLS = {
     "oscar": "https://arxiv.org/html/2606.04463v2",
@@ -248,6 +270,130 @@ BACKEND_STRATEGY_CATALOG: dict[str, dict[str, Any]] = {
 }
 
 
+def _module_present(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _calibration_anchor_rows_from_path(anchors_path: Path) -> int:
+    if not anchors_path.is_file():
+        return 0
+    try:
+        payload = json.loads(anchors_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, Mapping):
+        raw = payload.get("anchors") or payload.get("usable_anchor_count")
+        if isinstance(raw, int):
+            return max(raw, 0)
+        rows = raw if isinstance(raw, list) else []
+    else:
+        rows = []
+    return sum(1 for row in rows if isinstance(row, Mapping))
+
+
+def evaluate_cosmos3_wam_preconditions(
+    *,
+    calibration_anchors_path: str | Path | None = None,
+    consistency_scorer_available: bool | None = None,
+) -> dict[str, Any]:
+    """Machine-check the strategy-doc preconditions for cosmos3_wam.
+
+    The aspirational/preferred-candidate state is DERIVED from these checks,
+    never asserted: until every check passes, cosmos3_wam must report
+    ``aspirational: true``.
+    """
+
+    adapter_present = _module_present(COSMOS3_WAM_ADAPTER_MODULE)
+    provider_env_present = [
+        name for name in COSMOS3_PROVIDER_COMMAND_ENVS if str(os.getenv(name) or "").strip()
+    ]
+    checkpoint_env_present = [
+        name
+        for name in COSMOS3_CHECKPOINT_ENVS
+        if Path(str(os.getenv(name) or "").strip() or "/nonexistent").expanduser().exists()
+    ]
+    checkpoint_or_provider_configured = bool(provider_env_present or checkpoint_env_present)
+    scorer_modules_present = [
+        name for name in COSMOS3_CONSISTENCY_SCORER_MODULES if _module_present(name)
+    ]
+    scorer_available = (
+        bool(consistency_scorer_available)
+        if consistency_scorer_available is not None
+        else bool(scorer_modules_present)
+    )
+    anchors_path = Path(
+        str(
+            calibration_anchors_path
+            or os.getenv(COSMOS3_CALIBRATION_ANCHORS_PATH_ENV)
+            or ""
+        ).strip()
+        or "/nonexistent"
+    ).expanduser()
+    anchor_row_count = _calibration_anchor_rows_from_path(anchors_path)
+    checks = {
+        "adapter_module_present": {
+            "passed": adapter_present,
+            "detail": COSMOS3_WAM_ADAPTER_MODULE,
+        },
+        "checkpoint_or_provider_runtime_configured": {
+            "passed": checkpoint_or_provider_configured,
+            "detail": {
+                "provider_command_envs_present": provider_env_present,
+                "checkpoint_envs_present": checkpoint_env_present,
+            },
+        },
+        "explicit_run_gates_defined": {
+            "passed": True,
+            "detail": [
+                "BLUEPRINT_ALLOW_LOCAL_WAM_MODEL",
+                "BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER",
+            ],
+        },
+        "consistency_scorer_available": {
+            "passed": scorer_available,
+            "detail": {
+                "scorer_modules_present": scorer_modules_present,
+                "explicit_flag_used": consistency_scorer_available is not None,
+            },
+        },
+        "calibration_anchors_present": {
+            "passed": anchor_row_count > 0,
+            "detail": {
+                "anchors_path": str(anchors_path) if anchors_path.is_file() else None,
+                "usable_anchor_row_count": anchor_row_count,
+            },
+        },
+    }
+    all_met = all(bool(check["passed"]) for check in checks.values())
+    return {
+        "schema_version": COSMOS3_WAM_PRECONDITIONS_SCHEMA_VERSION,
+        "backend_id": "cosmos3_wam",
+        "checks": checks,
+        "preconditions_met": all_met,
+        "aspirational": not all_met,
+        "preferred_candidate_state": (
+            "preferred_configured_candidate" if all_met else "aspirational"
+        ),
+        "state_derived_from_machine_checks": True,
+        "state_asserted_manually": False,
+    }
+
+
+def _attach_derived_cosmos3_state(row: dict[str, Any]) -> dict[str, Any]:
+    if str(row.get("backend_id")) != "cosmos3_wam":
+        return row
+    preconditions = evaluate_cosmos3_wam_preconditions()
+    row["preconditions"] = preconditions
+    row["aspirational"] = preconditions["aspirational"]
+    row["preferred_candidate_state"] = preconditions["preferred_candidate_state"]
+    return row
+
+
 def get_wam_backend_strategy(backend_id: str) -> dict[str, Any]:
     """Return a copy of one backend strategy row."""
 
@@ -262,7 +408,7 @@ def get_wam_backend_strategy(backend_id: str) -> dict[str, Any]:
             "runtime_gates": COMMON_RUNTIME_GATES,
             "claim_boundary": COMMON_CLAIM_BOUNDARY,
         }
-    return copy.deepcopy(row)
+    return _attach_derived_cosmos3_state(copy.deepcopy(row))
 
 
 def wam_backend_strategy_rows(
@@ -271,7 +417,10 @@ def wam_backend_strategy_rows(
     """Return catalog rows, optionally filtered and preserving requested order."""
 
     if backend_ids is None:
-        return [copy.deepcopy(row) for row in BACKEND_STRATEGY_CATALOG.values()]
+        return [
+            _attach_derived_cosmos3_state(copy.deepcopy(row))
+            for row in BACKEND_STRATEGY_CATALOG.values()
+        ]
     seen: set[str] = set()
     rows: list[dict[str, Any]] = []
     for backend_id in backend_ids:
@@ -315,6 +464,7 @@ def build_wam_backend_strategy_manifest(
         selected_backend_ids=selected_set,
         configured_backend_ids=configured_set,
     )
+    cosmos3_preconditions = evaluate_cosmos3_wam_preconditions()
     return {
         "schema_version": WAM_BACKEND_STRATEGY_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -324,6 +474,11 @@ def build_wam_backend_strategy_manifest(
         "preferred_configured_learned_wam_backend_candidate": (
             PREFERRED_CONFIGURED_LEARNED_WAM_BACKEND
         ),
+        "cosmos3_wam_preconditions": cosmos3_preconditions,
+        "cosmos3_wam_aspirational": cosmos3_preconditions["aspirational"],
+        "cosmos3_wam_preferred_candidate_state": cosmos3_preconditions[
+            "preferred_candidate_state"
+        ],
         "preferred_configured_backend_is_not_permanent_dependency": True,
         "backend_swap_boundary": (
             "model adapters sit behind Blueprint capture, observation/action, "
@@ -355,6 +510,7 @@ def build_wam_backend_strategy_manifest(
         "claim_boundary": {
             **COMMON_CLAIM_BOUNDARY,
             "cosmos3_preference_is_backend_strategy_not_public_accuracy_claim": True,
+            "cosmos3_preferred_candidate_state_is_machine_derived_not_asserted": True,
             "cosmos3_preference_does_not_prove_universal_all_task_grading": True,
             "cosmos3_wam_never_auto_runs_without_explicit_adapter_and_gates": True,
             "oscar_and_cosmos_predict25_remain_baseline_compatibility_lineage": True,

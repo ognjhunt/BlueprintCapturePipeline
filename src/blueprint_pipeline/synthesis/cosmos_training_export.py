@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 import numpy as np
 
 from ..common import ensure_dir, read_json_any, utc_now_iso, write_json
+from ..geometry_sources import SyntheticGeometryExportError, geometry_export_gate
 from ..local_capture import resolve_local_capture_context
 from .cosmos_capture_bootstrap import extract_video_bootstrap_records, resolve_video_bootstrap_sources
 from .future_anchor_regrounding import build_future_anchor_regrounding_manifest
@@ -45,21 +46,44 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     )
 
 
-def _normalized_intrinsics(record: Mapping[str, Any]) -> Dict[str, float]:
+def _normalized_intrinsics(record: Mapping[str, Any]) -> Dict[str, float] | None:
+    """Return validated intrinsics or None when calibration is missing.
+
+    Guessed focal lengths / image sizes must never feed conditioning maps;
+    a record without real fx/fy/width/height is rejected, not defaulted.
+    Only the principal point may fall back to image center, and that fact is
+    recorded.
+    """
     intrinsics = dict(record.get("intrinsics") or {}) if isinstance(record.get("intrinsics"), Mapping) else {}
-    width = float(intrinsics.get("width") or intrinsics.get("w") or 640.0)
-    height = float(intrinsics.get("height") or intrinsics.get("h") or 480.0)
+    width = intrinsics.get("width") or intrinsics.get("w")
+    height = intrinsics.get("height") or intrinsics.get("h")
+    fx = intrinsics.get("fx")
+    fy = intrinsics.get("fy")
+    if not width or not height or not fx or not fy:
+        return None
+    width_f = float(width)
+    height_f = float(height)
+    fx_f = float(fx)
+    fy_f = float(fy)
+    if width_f <= 0 or height_f <= 0 or fx_f <= 0 or fy_f <= 0:
+        return None
+    principal_point_defaulted = intrinsics.get("cx") is None or intrinsics.get("cy") is None
     return {
-        "fx": float(intrinsics.get("fx") or max(width, 1.0)),
-        "fy": float(intrinsics.get("fy") or max(height, 1.0)),
-        "cx": float(intrinsics.get("cx") or width / 2.0),
-        "cy": float(intrinsics.get("cy") or height / 2.0),
-        "width": width,
-        "height": height,
+        "fx": fx_f,
+        "fy": fy_f,
+        "cx": float(intrinsics.get("cx") if intrinsics.get("cx") is not None else width_f / 2.0),
+        "cy": float(intrinsics.get("cy") if intrinsics.get("cy") is not None else height_f / 2.0),
+        "width": width_f,
+        "height": height_f,
+        "principal_point_defaulted": float(bool(principal_point_defaulted)),
     }
 
 
-def _pose_matrix(record: Mapping[str, Any]) -> np.ndarray | None:
+def _pose_matrix(record: Mapping[str, Any]) -> "np.ndarray | None":
+    """Return the record's 4x4 world-from-camera pose or None when absent.
+
+    Missing/misshaped poses are rejected upstream — never identity-filled.
+    """
     raw_pose = record.get("T_world_camera")
     if raw_pose is None:
         return None
@@ -71,6 +95,10 @@ def _pose_matrix(record: Mapping[str, Any]) -> np.ndarray | None:
     if not np.isfinite(pose).all():
         return None
     return pose
+
+
+# Backward-compat alias for the name used before this file's history merged.
+_record_pose_matrix = _pose_matrix
 
 
 def _split_name(frame_id: str) -> str:
@@ -90,6 +118,29 @@ def export_cosmos_training_substrate(
     plucker_root = export_root / "plucker"
     ensure_dir(export_root)
     ensure_dir(plucker_root)
+
+    geometry_summary_path = pipeline_root / "geometry" / "geometry_summary.json"
+    geometry_summary = read_json_any(geometry_summary_path) if geometry_summary_path.is_file() else {}
+    try:
+        geometry_provenance = geometry_export_gate(
+            geometry_summary if isinstance(geometry_summary, Mapping) else {},
+            export_name="cosmos_training_export",
+        )
+    except SyntheticGeometryExportError as exc:
+        blocked_manifest = {
+            "schema_version": "v1",
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "reason": str(exc),
+            "capture_id": context.capture_id,
+            "scene_id": context.scene_id,
+            "geometry_provenance": {
+                "synthetic_geometry": True,
+                "export_allowed_by": None,
+            },
+        }
+        write_json(export_root / "manifest.json", blocked_manifest)
+        return blocked_manifest
 
     dense_index_path = context.capture_root / "world_model_export" / "dense_index.jsonl"
     task_anchor_path = pipeline_root / "evaluation_prep" / "task_anchor_manifest.json"
@@ -145,6 +196,7 @@ def export_cosmos_training_substrate(
             "generated_at": utc_now_iso(),
             "status": "missing",
             "reason": "insufficient_dense_index_records",
+            "geometry_provenance": geometry_provenance,
             "source_mode": source_mode,
             "bootstrap_origin": bootstrap_origin,
             "bootstrap_source_manifest_path": str(bootstrap_source_manifest_path.resolve()) if bootstrap_source_manifest_path else None,
@@ -216,6 +268,7 @@ def export_cosmos_training_substrate(
 
     paired_rows: List[Dict[str, Any]] = []
     k_reference_rows: List[Dict[str, Any]] = []
+    rejected_rows: List[Dict[str, Any]] = []
     skipped_pose_rows: List[Dict[str, Any]] = []
     split_summary = {"train": 0, "val": 0}
 
@@ -233,19 +286,32 @@ def export_cosmos_training_substrate(
         if not references:
             continue
         frame_id = str(record.get("frame_id") or "").strip()
+        intrinsics = _normalized_intrinsics(record)
         target_T = _pose_matrix(record)
-        if target_T is None:
-            skipped_pose_rows.append(
+        if intrinsics is None or target_T is None:
+            # Never guess calibration or identity-fill poses into training
+            # targets — skip the record and make the rejection auditable.
+            rejected_rows.append(
                 {
+                    "frame_id": frame_id or f"frame_{target_index}",
                     "target_index": target_index,
-                    "target_frame_id": frame_id or None,
-                    "reason": "target_T_world_camera_missing_or_invalid",
+                    "reasons": [
+                        *(["intrinsics_missing_or_implausible"] if intrinsics is None else []),
+                        *(["pose_missing_or_misshaped"] if target_T is None else []),
+                    ],
                 }
             )
+            if target_T is None:
+                skipped_pose_rows.append(
+                    {
+                        "target_index": target_index,
+                        "target_frame_id": frame_id or None,
+                        "reason": "target_T_world_camera_missing_or_invalid",
+                    }
+                )
             continue
         split = _split_name(frame_id or f"frame_{target_index}")
         split_summary[split] += 1
-        intrinsics = _normalized_intrinsics(record)
         plucker = compute_plucker_map(
             T_world_camera=target_T,
             intrinsics=intrinsics,
@@ -355,6 +421,7 @@ def export_cosmos_training_substrate(
 
     paired_path = export_root / "paired_reference_target.jsonl"
     k_reference_path = export_root / "k_reference_conditioning.jsonl"
+    rejection_manifest_path = export_root / "export_rejection_manifest.json"
     split_path = export_root / "train_val_split.json"
     trainer_config_path = export_root / "trainer_config.json"
     checkpoint_layout_path = export_root / "checkpoint_layout.json"
@@ -362,6 +429,15 @@ def export_cosmos_training_substrate(
 
     _write_jsonl(paired_path, paired_rows)
     _write_jsonl(k_reference_path, k_reference_rows)
+    write_json(
+        rejection_manifest_path,
+        {
+            "schema_version": "v1",
+            "generated_at": utc_now_iso(),
+            "rejected_count": len(rejected_rows),
+            "rejections": rejected_rows,
+        },
+    )
     write_json(
         split_path,
         {
@@ -464,6 +540,9 @@ def export_cosmos_training_substrate(
         "scene_id": context.scene_id,
         "source_mode": source_mode,
         "bootstrap_origin": bootstrap_origin,
+        "geometry_provenance": geometry_provenance,
+        "rejected_record_count": len(rejected_rows),
+        "export_rejection_manifest_path": str(rejection_manifest_path.resolve()),
         "paired_reference_target_path": str(paired_path.resolve()),
         "k_reference_conditioning_path": str(k_reference_path.resolve()),
         "train_val_split_path": str(split_path.resolve()),

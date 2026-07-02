@@ -325,6 +325,8 @@ def _raise_if_geometry_not_reference_indexable(geometry_summary: Mapping[str, An
 
 
 def _geometry_summary_reference_indexable(geometry_summary: Mapping[str, Any]) -> bool:
+    # Fallback/synthetic geometry (including the local_sfm dev lane) is never
+    # reference-indexable; only real video_to_world geometry qualifies.
     if not geometry_summary or bool(geometry_summary.get("fallback_used")):
         return False
     geometry_source = str(geometry_summary.get("geometry_source") or "").strip()

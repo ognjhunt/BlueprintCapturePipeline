@@ -9,8 +9,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
-from .common import read_json_any
+import json
+
+from .common import read_json_any, utc_now_iso
+from .wam_backend_strategy import get_wam_backend_strategy
 from .wam_eval_substrate import (
+    FIXTURE_BLOCKED_CORRELATION_METRIC_KEYS,
     WAM_EVALUATION_SUBSTRATES,
     build_wam_eval_claim_boundary,
     normalize_evaluation_substrate,
@@ -54,6 +58,16 @@ WAM_PROVIDER_AUTH_ENV_BY_SUBSTRATE = {
 
 LIVE_WAM_PROVIDER_ENV_VAR = "BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER"
 LIVE_WAM_PROVIDER_SUBSTRATES = frozenset(WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE)
+
+WAM_PROVIDER_BACKBONE_IDENTITY_CHECK_SCHEMA_VERSION = (
+    "wam_provider_backbone_identity_check.v1"
+)
+WAM_PROVIDER_BACKBONE_IDENTITY_ERROR_SCHEMA_VERSION = (
+    "wam_provider_backbone_identity_error.v1"
+)
+WAM_PROVIDER_BACKBONE_IDENTITY_ERROR_ARTIFACT = (
+    "wam_provider_backbone_identity_error.json"
+)
 
 
 def _mapping(value: Any) -> Dict[str, Any]:
@@ -331,19 +345,118 @@ def normalize_provider_rollouts(
         rollout["uncertainty_score"] = _number(rollout.get("uncertainty_score"), 0.35)
         rollout["failure_mode_ids"] = _string_list(rollout.get("failure_mode_ids"))
         rollout["ood_flags"] = _string_list(rollout.get("ood_flags"))
-        rollout["metrics"] = {
+        fixture_only = substrate == "fixture_wam"
+        metrics = {
             **_mapping(rollout.get("metrics")),
             "world_model_uncertainty": _number(rollout.get("uncertainty_score"), 0.35),
         }
+        if fixture_only:
+            # Fixture runs may never emit correlation metrics; enforce at the
+            # schema helper, not by convention.
+            metrics = {
+                key: value
+                for key, value in metrics.items()
+                if key not in FIXTURE_BLOCKED_CORRELATION_METRIC_KEYS
+            }
+        rollout["metrics"] = metrics
+        # Required provenance field: every downstream rollout row must say
+        # whether it came from the deterministic fixture substrate.
+        rollout["fixture_evaluator_only"] = fixture_only
         rollout["claim_boundary"] = {
             **_mapping(rollout.get("claim_boundary")),
             "model_derived_support_artifact": True,
             "raw_capture_evidence": False,
+            "fixture_evaluator_only": fixture_only,
             "rank_fidelity_result_proven": False,
             "public_claim_upgrade_allowed": False,
         }
         rollouts.append(rollout)
     return rollouts
+
+
+def expected_base_model_for_substrate(substrate: str) -> str:
+    """Expected backbone for a substrate, sourced from the strategy catalog."""
+
+    return _string(get_wam_backend_strategy(substrate).get("base_model"))
+
+
+def _normalized_model_identity(value: Any) -> str:
+    text = _string(value).lower()
+    return "".join(char for char in text if char.isalnum())
+
+
+def _self_reported_base_model(payload: Any) -> str:
+    source = _mapping(payload)
+    provenance = _mapping(source.get("model_provenance"))
+    return _string(source.get("base_model") or provenance.get("base_model"))
+
+
+def check_provider_backbone_identity(
+    *,
+    payload: Any,
+    substrate: str,
+    generated_at: str | None = None,
+) -> Dict[str, Any]:
+    """Verify a provider payload's self-reported ``base_model`` against the substrate.
+
+    Backend-agnostic: the expected backbone comes from the
+    ``wam_backend_strategy`` catalog row for the substrate, so ``cosmos3_wam``
+    artifacts can never be produced by a Cosmos-Predict2.5 command (and vice
+    versa). Payloads that do not self-report a base model are not failed here;
+    they simply cannot claim a verified backbone.
+    """
+
+    expected = expected_base_model_for_substrate(substrate)
+    reported = _self_reported_base_model(payload)
+    if not reported:
+        status = "not_self_reported"
+        mismatch = False
+    elif not expected:
+        status = "no_expected_base_model_for_substrate"
+        mismatch = False
+    elif _normalized_model_identity(reported) == _normalized_model_identity(expected):
+        status = "verified"
+        mismatch = False
+    else:
+        status = "mismatch"
+        mismatch = True
+    return {
+        "schema_version": WAM_PROVIDER_BACKBONE_IDENTITY_CHECK_SCHEMA_VERSION,
+        "generated_at": generated_at or utc_now_iso(),
+        "evaluation_substrate": substrate,
+        "expected_base_model": expected or None,
+        "self_reported_base_model": reported or None,
+        "status": status,
+        "backbone_identity_verified": status == "verified",
+        "backbone_identity_mismatch": mismatch,
+        "expected_base_model_source": "wam_backend_strategy_catalog",
+    }
+
+
+def _write_backbone_identity_error_artifact(
+    *,
+    output_dir: Path,
+    check: Mapping[str, Any],
+) -> str:
+    error_payload = {
+        "schema_version": WAM_PROVIDER_BACKBONE_IDENTITY_ERROR_SCHEMA_VERSION,
+        "error": "wam_provider_backbone_identity_mismatch",
+        "detail": (
+            "provider output self-reported base_model "
+            f"{check.get('self_reported_base_model')!r} but substrate "
+            f"{check.get('evaluation_substrate')!r} requires "
+            f"{check.get('expected_base_model')!r}; the provider payload is "
+            "rejected so mislabeled artifacts are never produced"
+        ),
+        "check": dict(check),
+    }
+    error_path = output_dir / WAM_PROVIDER_BACKBONE_IDENTITY_ERROR_ARTIFACT
+    output_dir.mkdir(parents=True, exist_ok=True)
+    error_path.write_text(
+        json.dumps(error_payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return error_path.name
 
 
 def run_provider_command(
@@ -440,11 +553,33 @@ def run_provider_command(
     stderr_log.write_text(completed.stderr or "", encoding="utf-8")
     payload: Any = {}
     blockers: list[str] = []
+    backbone_check: Dict[str, Any] | None = None
     if output_path.is_file():
         try:
             payload = read_json_any(output_path)
         except Exception as exc:
             blockers.append(f"wam_provider_output_json_invalid:{type(exc).__name__}")
+        else:
+            backbone_check = check_provider_backbone_identity(
+                payload=payload,
+                substrate=substrate,
+            )
+            if backbone_check.get("backbone_identity_mismatch"):
+                error_artifact = _write_backbone_identity_error_artifact(
+                    output_dir=output_path.parent,
+                    check=backbone_check,
+                )
+                blockers.append(
+                    "wam_provider_backbone_identity_mismatch:"
+                    f"{substrate}_requires_{_normalized_model_identity(backbone_check.get('expected_base_model')) or 'unknown'}"
+                    f"_got_{_normalized_model_identity(backbone_check.get('self_reported_base_model')) or 'unknown'}"
+                )
+                backbone_check = {
+                    **backbone_check,
+                    "error_artifact": f"wam_provider/{error_artifact}",
+                }
+                # Hard-fail: mislabeled backbone output must never be consumed.
+                payload = {}
     detail = {
         "returncode": completed.returncode,
         "duration_seconds": duration,
@@ -452,6 +587,8 @@ def run_provider_command(
         "stderr_log": "wam_provider/wam_provider.stderr.log",
         "output_path": "wam_provider/wam_provider_output.json",
     }
+    if backbone_check is not None:
+        detail["backbone_identity_check"] = backbone_check
     if blockers:
         detail["blockers"] = blockers
     status = (

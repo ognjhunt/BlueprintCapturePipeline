@@ -54,6 +54,20 @@ def fallback_geometry_launchable_allowed(env: Mapping[str, str] | None = None) -
     return parse_bool(source.get("BLUEPRINT_ALLOW_FALLBACK_GEOMETRY_LAUNCH"), default=True)
 
 
+def synthetic_geometry_allowed(env: Mapping[str, str] | None = None) -> bool:
+    """Whether fabricated (synthetic dev) geometry may be generated at all.
+
+    Production launch-proof mode always forbids synthetic geometry; outside
+    production it defaults to allowed so hermetic CPU tests and local e2e runs
+    keep working, and can be disabled explicitly with
+    BLUEPRINT_ALLOW_SYNTHETIC_GEOMETRY=0.
+    """
+    if production_launch_mode(env):
+        return False
+    source = os.environ if env is None else env
+    return parse_bool(source.get("BLUEPRINT_ALLOW_SYNTHETIC_GEOMETRY"), default=True)
+
+
 def buyer_access_required(env: Mapping[str, str] | None = None) -> bool:
     return production_launch_mode(env) or parse_bool(
         (os.environ if env is None else env).get("PIPELINE_SYNC_BUYER_ACCESS_REQUIRED"),

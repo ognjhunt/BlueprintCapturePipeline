@@ -1288,6 +1288,42 @@ def _write_optional_exports(
     }
 
 
+def _clip_curation_summary(capture_root: Path) -> Dict[str, Any]:
+    """Summarize clip curation + semantic dedup state for the package.
+
+    Absence of the manifests is an explicit QA state, never silently green;
+    coverage counts, when present, are post-dedup.
+    """
+    curation = _read_optional_mapping(
+        capture_root / "derived" / "clip_curation" / "clip_curation_manifest.json"
+    )
+    rejections = _read_optional_mapping(
+        capture_root / "derived" / "clip_curation" / "clip_rejection_manifest.json"
+    )
+    dedup = _read_optional_mapping(
+        capture_root / "derived" / "semantic_dedup" / "semantic_dedup_manifest.json"
+    )
+    dedup_coverage = _mapping(dedup.get("coverage"))
+    return {
+        "curation_status": "run" if curation else "not_run",
+        "dedup_status": "run" if dedup else "not_run",
+        "accepted_clip_count": curation.get("accepted_clip_count"),
+        "rejected_clip_count": (
+            rejections.get("rejected_count")
+            if rejections
+            else curation.get("rejected_clip_count")
+        ),
+        "post_dedup_clip_count": dedup_coverage.get("kept_clip_count"),
+        "dedup_dropped_clip_count": dedup_coverage.get("dropped_clip_count"),
+        "embedding_provider": _mapping(dedup.get("embedding_provider")) or None,
+        "qa_note": (
+            "clip curation and semantic dedup manifests included"
+            if curation and dedup
+            else "clip curation/dedup not run for this bundle; coverage counts are uncurated"
+        ),
+    }
+
+
 def _write_package_files(
     *,
     output_dir: Path,
@@ -1304,6 +1340,7 @@ def _write_package_files(
     capture_id: str,
     visual_augmentation_packet: Mapping[str, Any] | None = None,
     rl_post_training_handoff: Mapping[str, Any] | None = None,
+    clip_curation: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     data_dir = output_dir / "data"
     attempts = _rows(trace, "attempts")
@@ -1348,6 +1385,9 @@ def _write_package_files(
         "curated_clip_count": int(curation_report.get("accepted_clip_count") or 0),
         "semantic_dedup_status": semantic_dedup_report.get("status"),
         "sc3_action_contract_status": sc3_action_report.get("status"),
+        # Upstream pipeline-stage curation/dedup (pre-export gating), distinct
+        # from the in-export curation_report/semantic_dedup_report QA above.
+        "clip_curation": dict(clip_curation or {"curation_status": "not_run", "dedup_status": "not_run"}),
         "source_artifacts": dict(included_artifacts),
         "proof_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -1724,6 +1764,17 @@ def build_post_training_data_package_export(
         if value:
             included_artifacts[key] = _relative_to(resolved_output_dir, pipeline_dir / value)
 
+    for key, relative_path in (
+        ("clip_curation_manifest", "derived/clip_curation/clip_curation_manifest.json"),
+        ("clip_rejection_manifest", "derived/clip_curation/clip_rejection_manifest.json"),
+        ("semantic_dedup_manifest", "derived/semantic_dedup/semantic_dedup_manifest.json"),
+    ):
+        candidate = context.capture_root / relative_path
+        if candidate.is_file():
+            included_artifacts[key] = _relative_to(resolved_output_dir, candidate)
+
+    # required/missing/status are computed further below (after trace/labels/
+    # clips are read) since main's quality-gate blockers need those inputs.
     live_closure = (
         _read_optional_mapping(resolved_job_dir / "live_eval_closure_manifest.json")
         if resolved_job_dir
@@ -1782,13 +1833,24 @@ def build_post_training_data_package_export(
         "proof_boundaries",
     )
     missing = [key for key in required if key not in included_artifacts]
+    # Attempt-trace producers that never claimed to capture SC3 7D action
+    # vectors (e.g. isaac_lab_arena result ingestion) legitimately have no
+    # action data at all; that absence is surfaced in sc3_action_report /
+    # sc3_action_contract_status but must not hard-block export. Malformed
+    # action data (present but invalid shape/values) still blocks.
+    _SC3_NO_ACTION_DATA_BLOCKERS = {"sc3_attempt_trace_missing", "sc3_action_trace_missing"}
+    sc3_action_export_blockers = [
+        blocker
+        for blocker in _string_list(sc3_action_report.get("blockers"))
+        if blocker.rsplit(":", 1)[-1] not in _SC3_NO_ACTION_DATA_BLOCKERS
+    ]
     quality_gate_blockers = [
         *[f"curation:{blocker}" for blocker in _string_list(curation_report.get("blockers"))],
         *[
             f"semantic_dedup:{blocker}"
             for blocker in _string_list(semantic_dedup_report.get("blockers"))
         ],
-        *[f"sc3_action:{blocker}" for blocker in _string_list(sc3_action_report.get("blockers"))],
+        *[f"sc3_action:{blocker}" for blocker in sc3_action_export_blockers],
     ]
     status = (
         "blocked_missing_inputs"
@@ -1890,6 +1952,7 @@ def build_post_training_data_package_export(
         capture_id=context.capture_id,
         visual_augmentation_packet=visual_augmentation_packet,
         rl_post_training_handoff=rl_post_training_handoff,
+        clip_curation=_clip_curation_summary(context.capture_root),
     )
     live_gate_references = {
         gate_id: _live_closure_gate_reference(live_closure, gate_id)

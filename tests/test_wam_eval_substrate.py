@@ -113,3 +113,108 @@ def test_wam_request_and_claim_boundary_normalize_policy_ids() -> None:
     assert boundary["learned_model_backend_executed"] is False
     assert boundary["learned_model_backend_requires_provider_execution_manifest"] is True
     assert boundary["generated_rollouts_are_raw_capture_evidence"] is False
+
+
+def test_fixture_claim_boundary_is_required_and_blocks_correlation_claims() -> None:
+    from blueprint_pipeline.wam_eval_substrate import FixtureClaimBoundaryError
+
+    boundary = build_wam_eval_claim_boundary(
+        substrate="fixture_wam",
+        generated_at="2026-07-02T00:00:00+00:00",
+    )
+    assert boundary["fixture_evaluator_only"] is True
+    assert boundary["fixture_provenance_required_in_downstream_artifacts"] is True
+    assert boundary["correlation_metrics_blocked_for_fixture_runs"] is True
+    assert boundary["unlabeled_predicted_success_blocked_for_fixture_runs"] is True
+    assert boundary["spearman_pearson_mmrv_status"] == (
+        "blocked_fixture_evaluator_only_no_correlation_claims"
+    )
+
+    model_boundary = build_wam_eval_claim_boundary(
+        substrate="cosmos3_wam",
+        generated_at="2026-07-02T00:00:00+00:00",
+    )
+    assert model_boundary["fixture_evaluator_only"] is False
+    assert model_boundary["spearman_pearson_mmrv_status"] == (
+        "not_measured_until_real_anchors_exist"
+    )
+
+    with pytest.raises(FixtureClaimBoundaryError):
+        build_wam_eval_claim_boundary(
+            substrate="fixture_wam",
+            generated_at="2026-07-02T00:00:00+00:00",
+            fixture_evaluator_only=False,
+        )
+
+    request = build_wam_evaluation_request(
+        job_id="job-1",
+        substrate="fixture_wam",
+        generated_at="2026-07-02T00:00:00+00:00",
+    )
+    assert request["fixture_evaluator_only"] is True
+    assert request["claim_boundary"]["fixture_evaluator_only"] is True
+
+    model_request = build_wam_evaluation_request(
+        job_id="job-1",
+        substrate="cosmos3_wam",
+        generated_at="2026-07-02T00:00:00+00:00",
+    )
+    assert model_request["fixture_evaluator_only"] is False
+
+
+def test_enforce_fixture_claim_boundary_stamps_provenance_and_fails_closed() -> None:
+    from blueprint_pipeline.wam_eval_substrate import (
+        FixtureClaimBoundaryError,
+        enforce_fixture_claim_boundary,
+        fixture_claim_boundary_violations,
+    )
+
+    stamped = enforce_fixture_claim_boundary(
+        {
+            "rollouts": [
+                {"policy_id": "policy-1", "predicted_success": True},
+            ]
+        },
+        substrate="fixture_wam",
+    )
+    assert stamped["fixture_evaluator_only"] is True
+    assert stamped["rollouts"][0]["fixture_evaluator_only"] is True
+
+    with pytest.raises(FixtureClaimBoundaryError):
+        enforce_fixture_claim_boundary(
+            {"mmrv": 0.12},
+            substrate="fixture_wam",
+        )
+
+    with pytest.raises(FixtureClaimBoundaryError):
+        enforce_fixture_claim_boundary(
+            {"metrics": {"spearman": 0.9}},
+            substrate="fixture_wam",
+        )
+
+    with pytest.raises(FixtureClaimBoundaryError):
+        enforce_fixture_claim_boundary(
+            {"rollouts": [{"metrics": {"pearson": 0.8}}]},
+            substrate="fixture_wam",
+        )
+
+    violations = fixture_claim_boundary_violations(
+        {
+            "predicted_success": True,
+            "rollouts": [{"predicted_success": True}],
+        },
+        fixture_evaluator_only=True,
+    )
+    assert "fixture_run_emits_unlabeled_predicted_success:top_level" in violations
+    assert "fixture_run_emits_unlabeled_predicted_success:rollouts[0]" in violations
+    assert (
+        fixture_claim_boundary_violations({"mmrv": 0.5}, fixture_evaluator_only=False)
+        == []
+    )
+
+    model_payload = enforce_fixture_claim_boundary(
+        {"mmrv": None, "rollouts": [{"predicted_success": True}]},
+        substrate="cosmos3_wam",
+    )
+    assert model_payload["fixture_evaluator_only"] is False
+    assert model_payload["rollouts"][0]["fixture_evaluator_only"] is False

@@ -291,8 +291,10 @@ def test_local_sfm_writes_synthetic_diagnostic_geometry_summary(tmp_path: Path) 
     assert result.status == "completed_with_fallback"
     assert summary["geometry_source"] == "fallback_geometry"
     assert summary["capture_source"] == "meta_glasses"
+    # local_sfm reuses the synthetic fabricator, so truth flags must say so.
     assert summary["fallback_used"] is True
     assert summary["fallback_kind"] == "internal_synthetic_geometry"
+    assert summary["synthetic_geometry"] is True
     assert summary["provider_native_result"] is False
     assert summary["contract_ready_for_world_model"] is False
     assert summary["diagnostic_artifacts_shape_ready"] is True
@@ -327,6 +329,7 @@ def test_video_to_world_missing_env_writes_provider_blocker_without_live_call(mo
     assert result.status == "completed_with_fallback"
     assert summary["geometry_source"] == "fallback_geometry"
     assert summary["fallback_used"] is True
+    assert summary["synthetic_geometry"] is True
     assert summary["provider_native_result"] is False
     assert summary["contract_ready_for_world_model"] is False
     assert summary["diagnostic_artifacts_shape_ready"] is True
@@ -338,7 +341,7 @@ def test_video_to_world_missing_env_writes_provider_blocker_without_live_call(mo
     assert "scripts/run_geometry_lane.py" in summary["provider_blocker"]["command"]
 
 
-def test_production_fallback_geometry_cannot_mark_launch_ready(monkeypatch, tmp_path: Path) -> None:
+def test_production_provider_failure_blocks_without_fabricating_geometry(monkeypatch, tmp_path: Path) -> None:
     capture_root = _build_staged_capture(tmp_path)
     monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
     monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
@@ -353,15 +356,56 @@ def test_production_fallback_geometry_cannot_mark_launch_ready(monkeypatch, tmp_
 
     summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
     status = json.loads(result.status_path.read_text(encoding="utf-8"))
+    geometry_root = capture_root / "pipeline" / "geometry"
 
-    assert summary["fallback_used"] is True
-    assert summary["contract_ready_for_world_model"] is False
-    assert summary["diagnostic_artifacts_shape_ready"] is True
+    assert result.status == "blocked_geometry_unavailable"
+    assert summary["status"] == "blocked_geometry_unavailable"
+    assert summary["geometry_source"] == "unavailable"
+    assert summary["fallback_used"] is False
+    assert summary["synthetic_geometry"] is False
     assert summary["ready_for_world_model"] is False
     assert summary["external_market_ready"] is False
-    assert summary["site_faithful_market_ready"] is False
-    assert "fallback_geometry_not_launchable" in summary["launch_blockers"]
+    assert "geometry_provider_unavailable" in summary["launch_blockers"]
+    assert "synthetic_geometry_disallowed" in summary["launch_blockers"]
+    assert status["status"] == "blocked_geometry_unavailable"
     assert status["ready_for_world_model"] is False
+    # No fabricated tensors may exist anywhere in the geometry lane.
+    assert not list((geometry_root / "depth").glob("*.npy"))
+    assert not list((geometry_root / "confidence").glob("*.npy"))
+    assert not list((geometry_root / "frames").rglob("*.npy"))
+    assert not (geometry_root / "camera" / "poses.jsonl").exists()
+    assert not (geometry_root / "camera" / "intrinsics.json").exists()
+
+
+def test_production_local_sfm_request_blocks_without_fabricating_geometry(monkeypatch, tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(tmp_path)
+    monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
+
+    result = build_geometry_stage_contract(capture_root, provider="local_sfm", model="local-sfm-offline")
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+
+    assert result.status == "blocked_geometry_unavailable"
+    assert "synthetic_geometry_disallowed" in summary["launch_blockers"]
+    assert "local_sfm_synthetic_dev_requested" in summary["launch_blockers"]
+    geometry_root = capture_root / "pipeline" / "geometry"
+    assert not list((geometry_root / "depth").glob("*.npy"))
+    assert not (geometry_root / "camera" / "poses.jsonl").exists()
+
+
+def test_synthetic_geometry_disabled_env_blocks_dev_fallback(monkeypatch, tmp_path: Path) -> None:
+    capture_root = _build_staged_capture(tmp_path)
+    monkeypatch.delenv("BLUEPRINT_LAUNCH_PROOF_MODE", raising=False)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SYNTHETIC_GEOMETRY", "0")
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
+
+    def _failing_provider(**_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _failing_provider)
+
+    result = build_geometry_stage_contract(capture_root)
+    assert result.status == "blocked_geometry_unavailable"
 
 
 def test_assess_geometry_scale_respects_metric_policy() -> None:
@@ -723,7 +767,11 @@ def test_geometry_stage_helper_edges(monkeypatch, tmp_path: Path) -> None:
             },
         ],
     )
-    assert "0.000000 0.000000 0.000000" in pointcloud_path.read_text(encoding="utf-8")
+    # All-malformed poses yield an honest empty pointcloud, never a
+    # fabricated origin vertex.
+    pointcloud_text = pointcloud_path.read_text(encoding="utf-8")
+    assert "element vertex 0" in pointcloud_text
+    assert "0.000000 0.000000 0.000000" not in pointcloud_text
 
     fallback = _build_fallback_provider_result(
         video_path=capture_root / "raw" / "walkthrough.mov",
@@ -821,3 +869,60 @@ def test_geometry_stage_da3_and_empty_frame_edges(monkeypatch, tmp_path: Path) -
     assert summary["geometry_source"] == "local_da3"
     assert "local_da3_not_live_video_to_world" in summary["launch_blockers"]
     assert "intrinsics_missing" in summary["launch_blockers"]
+
+
+def test_local_sfm_builder_truth_flags_are_append_only(tmp_path: Path) -> None:
+    local = geometry_stage._build_local_sfm_provider_result(
+        video_path=tmp_path / "walkthrough.mp4",
+        geometry_root=tmp_path / "geometry",
+        video_probe={"width": 320, "height": 240, "duration_seconds": 1.0},
+        provider_blocker=None,
+    )
+    # The local_sfm relabel must never clear the synthetic/fallback truth.
+    assert local["fallback_used"] is True
+    assert local["synthetic_geometry"] is True
+    assert local["fallback_kind"] == "internal_synthetic_geometry"
+    assert local["requested_geometry_source"] == "local_sfm"
+    assert "synthetic_geometry_used" in local["provider_warnings"]
+
+
+def test_reconcile_geometry_truth_flags_cannot_weaken() -> None:
+    from blueprint_pipeline.geometry_sources import reconcile_geometry_truth_flags
+
+    # A later relabel that resets fallback_used cannot launder synthetic truth.
+    laundered = {
+        "fallback_used": False,
+        "fallback_kind": "local_sfm_synthetic_dev",
+        "synthetic_geometry": False,
+    }
+    synthetic, fallback_used = reconcile_geometry_truth_flags(laundered)
+    assert synthetic is True
+    assert fallback_used is True
+
+    honest_provider = {"fallback_used": False, "fallback_kind": None}
+    synthetic, fallback_used = reconcile_geometry_truth_flags(honest_provider)
+    assert synthetic is False
+    assert fallback_used is False
+
+
+def test_geometry_export_gate_blocks_synthetic_in_production(monkeypatch) -> None:
+    from blueprint_pipeline.geometry_sources import (
+        SyntheticGeometryExportError,
+        geometry_export_gate,
+    )
+
+    synthetic_summary = {"fallback_used": True, "fallback_kind": "internal_synthetic_geometry"}
+
+    with pytest.raises(SyntheticGeometryExportError):
+        geometry_export_gate(
+            synthetic_summary,
+            export_name="cosmos_training_export",
+            env={"BLUEPRINT_LAUNCH_PROOF_MODE": "production"},
+        )
+
+    stamp = geometry_export_gate(synthetic_summary, export_name="cosmos_training_export", env={})
+    assert stamp["synthetic_geometry"] is True
+    assert stamp["export_allowed_by"] == "synthetic_geometry_dev_allowance"
+
+    clean = geometry_export_gate({"fallback_used": False}, env={"BLUEPRINT_LAUNCH_PROOF_MODE": "production"})
+    assert clean["export_allowed_by"] == "provider_geometry"
