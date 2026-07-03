@@ -25,6 +25,9 @@ MODEL_ENV = "BLUEPRINT_GEMINI_WAM_SUCCESS_LABEL_MODEL"
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_OUTPUT_FILENAME = "wam_success_labels.command.json"
 DEFAULT_MAX_INLINE_BYTES = 95 * 1024 * 1024
+DEFAULT_MAX_FRAMES = 6
+DEFAULT_MAX_FRAME_DIMENSION = 768
+DEFAULT_JPEG_QUALITY = 82
 
 
 def _string(value: Any) -> str:
@@ -278,6 +281,8 @@ def _confidence_or_none(value: Any) -> float | None:
 
 def _provider_error_blocker(exc: Exception) -> str:
     text = str(exc)
+    if "API_KEY_INVALID" in text or "API key not valid" in text:
+        return "gemini_authentication_failed"
     if "RESOURCE_EXHAUSTED" in text or "prepayment credits are depleted" in text:
         return "gemini_resource_exhausted_or_billing_credits_depleted"
     if "PERMISSION_DENIED" in text:
@@ -324,6 +329,78 @@ def _extract_first_keyframe(
     return keyframe_path
 
 
+def _video_sample_indices(frame_count: int, max_frames: int) -> list[int]:
+    if frame_count <= 0:
+        return list(range(max(1, max_frames)))
+    if max_frames <= 1:
+        return [0]
+    raw = [
+        round(index * (frame_count - 1) / max(1, max_frames - 1))
+        for index in range(max_frames)
+    ]
+    indices: list[int] = []
+    for value in raw:
+        if value not in indices:
+            indices.append(value)
+    return indices
+
+
+def _sample_video_frames(
+    *,
+    video_path: Path,
+    max_frames: int,
+    max_dimension: int,
+    jpeg_quality: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    try:
+        import cv2  # type: ignore[import-not-found]
+    except ImportError:
+        return [], ["missing_cv2_for_gemini_wam_success_frames"]
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return [], ["generated_video_open_failed_for_gemini_success_frame_sampling"]
+    try:
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        frames: list[dict[str, Any]] = []
+        for frame_index in _video_sample_indices(frame_count, max_frames):
+            if frame_count > 0:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                continue
+            height, width = frame.shape[:2]
+            largest = max(height, width)
+            if max_dimension > 0 and largest > max_dimension:
+                scale = max_dimension / float(largest)
+                frame = cv2.resize(
+                    frame,
+                    (max(1, int(width * scale)), max(1, int(height * scale))),
+                    interpolation=cv2.INTER_AREA,
+                )
+            ok, encoded = cv2.imencode(
+                ".jpg",
+                frame,
+                [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)],
+            )
+            if not ok:
+                continue
+            frames.append(
+                {
+                    "frame_index": frame_index,
+                    "jpeg_bytes": encoded.tobytes(),
+                    "mime_type": "image/jpeg",
+                    "evidence_ref": f"{video_path.resolve()}#frame={frame_index}",
+                }
+            )
+            if len(frames) >= max_frames:
+                break
+        blockers = [] if frames else ["generated_video_gemini_frame_sampling_produced_no_frames"]
+        return frames, blockers
+    finally:
+        capture.release()
+
+
 def _gemini_label_one(
     *,
     client: Any,
@@ -332,6 +409,7 @@ def _gemini_label_one(
     request: Mapping[str, Any],
     rollout: Mapping[str, Any],
     video_path: Path,
+    sampled_frames: Sequence[Mapping[str, Any]] = (),
     keyframe_path: Path | None = None,
 ) -> dict[str, Any]:
     mime_type = mimetypes.guess_type(video_path.name)[0] or "video/mp4"
@@ -345,7 +423,7 @@ def _gemini_label_one(
     prompt = {
         "instruction": (
             "You are judging a generated world-model rollout video for a robot manipulation task. "
-            "The inputs include the MP4 and, when available, a still keyframe image extracted from that MP4. "
+            "The visual inputs include either sampled frames from the MP4, the MP4 itself, or a still keyframe extracted from that MP4. "
             "Use the visible robot, scene objects, and target evidence in either input. "
             "Return compact JSON only. Judge whether the generated video shows realistic task success. "
             "Be strict: do not infer success from provider completion, scene motion, camera motion, or a valid video. "
@@ -370,14 +448,29 @@ def _gemini_label_one(
             "scenario_eval_run_id": rollout.get("scenario_eval_run_id"),
             "policy_id": rollout.get("policy_id"),
             "model_rollout_confidence": rollout.get("model_rollout_confidence"),
+            "sampled_frame_indices": [
+                frame.get("frame_index") for frame in sampled_frames if isinstance(frame, Mapping)
+            ],
         },
         "claim_boundary": (
             "This is only a semantic label on generated video, not physical robot proof."
         ),
     }
     contents: list[Any] = [json.dumps(prompt, sort_keys=True)]
-    contents.append(types_module.Part.from_bytes(data=video_path.read_bytes(), mime_type=mime_type))
-    if keyframe_path and keyframe_path.is_file():
+    if sampled_frames:
+        for frame in sampled_frames:
+            frame_bytes = frame.get("jpeg_bytes") if isinstance(frame, Mapping) else None
+            if not isinstance(frame_bytes, (bytes, bytearray)):
+                continue
+            contents.append(
+                types_module.Part.from_bytes(
+                    data=bytes(frame_bytes),
+                    mime_type=_string(frame.get("mime_type")) or "image/jpeg",
+                )
+            )
+    else:
+        contents.append(types_module.Part.from_bytes(data=video_path.read_bytes(), mime_type=mime_type))
+    if not sampled_frames and keyframe_path and keyframe_path.is_file():
         keyframe_mime = mimetypes.guess_type(keyframe_path.name)[0] or "image/jpeg"
         contents.append(
             types_module.Part.from_bytes(
@@ -431,9 +524,22 @@ def _gemini_label_one(
         ),
         "task_success_criteria": success_criteria,
         "evidence_refs": [
-            str(path.resolve())
-            for path in (video_path, keyframe_path)
-            if path is not None and path.exists()
+            str(video_path.resolve()),
+            *[
+                _string(frame.get("evidence_ref"))
+                for frame in sampled_frames
+                if isinstance(frame, Mapping) and _string(frame.get("evidence_ref"))
+            ],
+            *(
+                [str(keyframe_path.resolve())]
+                if not sampled_frames and keyframe_path and keyframe_path.exists()
+                else []
+            ),
+        ],
+        "video_evidence_mode": "sampled_frames" if sampled_frames else "inline_video",
+        "sampled_frame_count": len(sampled_frames),
+        "sampled_frame_indices": [
+            frame.get("frame_index") for frame in sampled_frames if isinstance(frame, Mapping)
         ],
         "label_source": "gemini_generated_video_judge",
         "model": model,
@@ -456,6 +562,7 @@ def build_gemini_wam_success_labels(
     output_path: str | Path | None = None,
     model: str | None = None,
     max_rollouts: int = 5,
+    max_frames: int | None = None,
     max_inline_bytes: int | None = None,
 ) -> dict[str, Any]:
     resolved_input = Path(input_path).resolve()
@@ -474,8 +581,20 @@ def build_gemini_wam_success_labels(
         _string(os.getenv("BLUEPRINT_GEMINI_WAM_SUCCESS_MAX_INLINE_BYTES"))
         or DEFAULT_MAX_INLINE_BYTES
     )
+    frame_limit = max_frames or int(
+        _string(os.getenv("BLUEPRINT_GEMINI_WAM_SUCCESS_MAX_FRAMES")) or DEFAULT_MAX_FRAMES
+    )
+    max_frame_dimension = int(
+        _string(os.getenv("BLUEPRINT_GEMINI_WAM_SUCCESS_MAX_FRAME_DIMENSION"))
+        or DEFAULT_MAX_FRAME_DIMENSION
+    )
+    jpeg_quality = int(
+        _string(os.getenv("BLUEPRINT_GEMINI_WAM_SUCCESS_JPEG_QUALITY"))
+        or DEFAULT_JPEG_QUALITY
+    )
     blockers: list[str] = []
     labels: list[dict[str, Any]] = []
+    sampled_rollouts: list[dict[str, Any]] = []
     if not _truthy(os.getenv(GATE_ENV)):
         blockers.append(f"missing_env_{GATE_ENV}")
     api_key, api_key_source = _api_key()
@@ -520,8 +639,28 @@ def build_gemini_wam_success_labels(
                 except OSError:
                     blockers.append("generated_video_stat_failed")
                     continue
-                if size_bytes > max_bytes:
+                sampled_frames, frame_blockers = _sample_video_frames(
+                    video_path=video_path,
+                    max_frames=frame_limit,
+                    max_dimension=max_frame_dimension,
+                    jpeg_quality=jpeg_quality,
+                )
+                sampled_rollouts.append(
+                    {
+                        "rollout_id": rollout.get("rollout_id"),
+                        "generated_video_path": str(video_path.resolve()),
+                        "sampled_frame_count": len(sampled_frames),
+                        "sampled_frame_indices": [
+                            frame.get("frame_index")
+                            for frame in sampled_frames
+                            if isinstance(frame, Mapping)
+                        ],
+                        "frame_blockers": frame_blockers,
+                    }
+                )
+                if size_bytes > max_bytes and not sampled_frames:
                     blockers.append("generated_video_too_large_for_inline_gemini_label")
+                    blockers.extend(frame_blockers)
                     continue
                 keyframe_path = _extract_first_keyframe(
                     video_path=video_path,
@@ -537,6 +676,7 @@ def build_gemini_wam_success_labels(
                             request=request,
                             rollout=rollout,
                             video_path=video_path,
+                            sampled_frames=sampled_frames,
                             keyframe_path=keyframe_path,
                         )
                     )
@@ -553,6 +693,7 @@ def build_gemini_wam_success_labels(
         "api_key_configured": bool(api_key_source),
         "blockers": sorted(set(blockers)),
         "label_count": len(labels),
+        "sampled_rollouts": sampled_rollouts,
         "labels": labels,
         "visual_evidence_used": bool(labels),
         "raw_credentials_written_to_artifacts": False,
@@ -578,12 +719,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=os.getenv("BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"))
     parser.add_argument("--model", default=None)
     parser.add_argument("--max-rollouts", type=int, default=5)
+    parser.add_argument("--max-frames", type=int, default=None)
     args = parser.parse_args(argv)
     result = build_gemini_wam_success_labels(
         input_path=args.input,
         output_path=args.output,
         model=args.model,
         max_rollouts=args.max_rollouts,
+        max_frames=args.max_frames,
     )
     print(
         json.dumps(

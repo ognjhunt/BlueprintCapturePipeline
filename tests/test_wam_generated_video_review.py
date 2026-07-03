@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pytest
 pytest.importorskip("PIL")
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from blueprint_pipeline.wam_generated_video_review import (
     assess_source_policy_observation_visual_qa,
@@ -45,11 +45,137 @@ def _write_dark_frame(path: Path, *, size: tuple[int, int] = (320, 240)) -> Path
     return path
 
 
+def _write_abstract_low_res_frame(path: Path, *, size: tuple[int, int] = (128, 128)) -> Path:
+    width, height = size
+    image = Image.new("RGB", size, (245, 245, 245))
+    draw = ImageDraw.Draw(image)
+    blocks = [
+        ((0, 0, 34, 128), (180, 255, 255)),
+        ((28, 0, 58, 128), (40, 120, 255)),
+        ((48, 0, 78, 128), (250, 20, 40)),
+        ((68, 0, 96, 128), (250, 230, 30)),
+        ((88, 0, 128, 128), (255, 245, 255)),
+        ((38, 64, 88, 118), (20, 18, 30)),
+        ((20, 84, 66, 118), (235, 200, 140)),
+    ]
+    for box, color in blocks:
+        draw.rectangle(box, fill=color)
+    image = image.filter(ImageFilter.GaussianBlur(radius=max(1.0, width / 80.0)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+    return path
+
+
 def _write_speckled_frame(path: Path, *, size: tuple[int, int] = (640, 480)) -> Path:
     rng = np.random.default_rng(17)
     noise = rng.integers(0, 256, size=(size[1], size[0], 3), dtype=np.uint8)
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(noise, mode="RGB").save(path)
+    return path
+
+
+def _write_renderer_grain_frame(path: Path, *, size: tuple[int, int] = (640, 480)) -> Path:
+    width, height = size
+    rng = np.random.default_rng(23)
+    x_gradient = np.tile(np.linspace(72, 205, width, dtype=np.float32), (height, 1))
+    y_gradient = np.tile(np.linspace(24, 116, height, dtype=np.float32), (width, 1)).T
+    base = np.dstack((x_gradient, np.roll(x_gradient, 48, axis=1), y_gradient))
+    grain_mask = rng.random((height, width, 1)) < 0.025
+    grain = rng.choice(np.array([-64.0, 64.0], dtype=np.float32), size=(height, width, 1))
+    frame = np.clip(base + grain_mask * grain, 0, 255).astype(np.uint8)
+    image = Image.fromarray(frame, mode="RGB")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+    return path
+
+
+def _write_smoothed_renderer_grain_frame(
+    path: Path,
+    *,
+    size: tuple[int, int] = (640, 480),
+) -> Path:
+    width, height = size
+    rng = np.random.default_rng(123)
+    x_gradient = np.tile(np.linspace(120, 220, width, dtype=np.float32), (height, 1))
+    y_gradient = np.tile(np.linspace(95, 210, height, dtype=np.float32), (width, 1)).T
+    base = np.dstack((x_gradient, np.roll(x_gradient, 70, axis=1), y_gradient)).astype(np.uint8)
+    image = Image.fromarray(base, mode="RGB")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle(
+        (width // 2 - 110, height // 2 - 50, width // 2 + 110, height // 2 + 70),
+        fill=(42, 42, 42),
+        outline=(220, 220, 220),
+        width=3,
+    )
+    for x0 in range(width // 2 - 90, width // 2 + 100, 18):
+        draw.line((x0, height // 2 - 35, x0, height // 2 + 55), fill=(180, 180, 180), width=2)
+    for y0 in range(height // 2 - 35, height // 2 + 60, 18):
+        draw.line((width // 2 - 90, y0, width // 2 + 90, y0), fill=(70, 70, 70), width=1)
+    for x0 in (width // 2 - 60, width // 2, width // 2 + 60):
+        draw.ellipse(
+            (x0 - 14, height // 2 + 75, x0 + 14, height // 2 + 103),
+            fill=(22, 22, 22),
+            outline=(120, 120, 120),
+            width=2,
+        )
+    arr = np.asarray(image).astype(np.float32)
+    grain_mask = rng.random((height, width, 1)) < 0.05
+    grain = rng.choice(np.array([-70.0, 70.0], dtype=np.float32), size=(height, width, 1))
+    image = Image.fromarray(np.clip(arr + grain_mask * grain, 0, 255).astype(np.uint8), mode="RGB")
+    image = (
+        image.filter(ImageFilter.MedianFilter(size=3))
+        .filter(ImageFilter.MedianFilter(size=3))
+        .filter(ImageFilter.SMOOTH_MORE)
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+    return path
+
+
+def _write_moderate_renderer_speckle_frame(
+    path: Path,
+    *,
+    size: tuple[int, int] = (640, 480),
+) -> Path:
+    width, height = size
+    rng = np.random.default_rng(77)
+    x_gradient = np.tile(np.linspace(90, 220, width, dtype=np.float32), (height, 1))
+    y_gradient = np.tile(np.linspace(95, 190, height, dtype=np.float32), (width, 1)).T
+    base = np.dstack((x_gradient, np.roll(x_gradient, 60, axis=1), y_gradient)).astype(np.uint8)
+    image = Image.fromarray(base, mode="RGB")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle(
+        (width // 2 - 140, height // 2 - 90, width // 2 + 140, height // 2 + 90),
+        fill=(62, 62, 62),
+        outline=(210, 210, 210),
+        width=4,
+    )
+    for x0 in range(width // 2 - 120, width // 2 + 125, 20):
+        draw.line((x0, height // 2 - 75, x0, height // 2 + 75), fill=(150, 150, 150), width=1)
+    for y0 in range(height // 2 - 70, height // 2 + 75, 22):
+        draw.line((width // 2 - 120, y0, width // 2 + 120, y0), fill=(80, 80, 80), width=1)
+    draw.rectangle(
+        (width // 2 - 70, height // 2 + 10, width // 2 + 70, height // 2 + 80),
+        fill=(38, 38, 38),
+        outline=(160, 160, 160),
+        width=2,
+    )
+    arr = np.asarray(image).astype(np.float32)
+    global_mask = rng.random((height, width, 1)) < 0.01
+    center_mask = np.zeros((height, width, 1), dtype=bool)
+    center_mask[
+        height // 4 : 3 * height // 4,
+        width // 4 : 3 * width // 4,
+        :,
+    ] = rng.random((height // 2, width // 2, 1)) < 0.18
+    grain = rng.choice(np.array([-55.0, 55.0], dtype=np.float32), size=(height, width, 1))
+    image = Image.fromarray(
+        np.clip(arr + (global_mask | center_mask) * grain, 0, 255).astype(np.uint8),
+        mode="RGB",
+    )
+    image = image.filter(ImageFilter.MedianFilter(size=3))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
     return path
 
 
@@ -221,6 +347,69 @@ def test_source_policy_observation_visual_qa_rejects_speckled_review_source(
     assert "source_policy_observation_speckled_or_noisy_for_review_quality" in qa["blockers"]
     assert qa["metrics"]["edge_density"] > 0.45
     assert qa["metrics"]["center_crop"]["edge_density"] > 0.35
+
+
+def test_source_policy_observation_visual_qa_rejects_renderer_grain_review_source(
+    tmp_path: Path,
+) -> None:
+    frame = _write_renderer_grain_frame(tmp_path / "renderer_grain.png")
+
+    qa = assess_source_policy_observation_visual_qa(
+        frame,
+        generated_at="now",
+        target_object_id="knob",
+        task_id="stovetop_knob",
+        visual_profile="review_quality",
+        review_quality_required=True,
+    )
+
+    assert qa["status"] == "failed_visual_quality_gate"
+    assert qa["visual_success"] is False
+    assert "source_policy_observation_speckled_or_noisy_for_review_quality" in qa["blockers"]
+    assert qa["metrics"]["speckle_residual_ratio_gt12"] > 0.02
+    assert qa["metrics"]["center_crop"]["speckle_residual_ratio_gt12"] > 0.02
+
+
+def test_source_policy_observation_visual_qa_rejects_smoothed_renderer_grain_review_source(
+    tmp_path: Path,
+) -> None:
+    frame = _write_smoothed_renderer_grain_frame(tmp_path / "renderer_grain_smoothed.png")
+
+    qa = assess_source_policy_observation_visual_qa(
+        frame,
+        generated_at="now",
+        target_object_id="knob",
+        task_id="stovetop_knob",
+        visual_profile="review_quality",
+        review_quality_required=True,
+    )
+
+    assert qa["status"] == "failed_visual_quality_gate"
+    assert qa["visual_success"] is False
+    assert "source_policy_observation_speckled_or_noisy_for_review_quality" in qa["blockers"]
+    assert qa["metrics"]["sharpness_laplacian_variance"] < 200.0
+    assert qa["metrics"]["center_crop"]["edge_density"] > 0.08
+
+
+def test_source_policy_observation_visual_qa_rejects_moderate_renderer_speckle_review_source(
+    tmp_path: Path,
+) -> None:
+    frame = _write_moderate_renderer_speckle_frame(tmp_path / "renderer_speckle_moderate.png")
+
+    qa = assess_source_policy_observation_visual_qa(
+        frame,
+        generated_at="now",
+        target_object_id="knob",
+        task_id="stovetop_knob",
+        visual_profile="review_quality",
+        review_quality_required=True,
+    )
+
+    assert qa["status"] == "failed_visual_quality_gate"
+    assert qa["visual_success"] is False
+    assert "source_policy_observation_speckled_or_noisy_for_review_quality" in qa["blockers"]
+    assert qa["metrics"]["speckle_residual_mean"] > 0.7
+    assert qa["metrics"]["center_crop"]["speckle_residual_ratio_gt12"] > 0.01
 
 
 def test_source_policy_observation_visual_qa_records_low_detail_projected_robot_regions_as_advisory(
@@ -835,3 +1024,32 @@ def test_generated_frame_edge_explosion_marks_visual_success_false(tmp_path: Pat
 
     assert report["visual_success"] is False
     assert "wam_generated_frame_edge_structure_explosion" in report["blockers"]
+
+
+def test_low_resolution_abstract_generated_frame_marks_visual_success_false(
+    tmp_path: Path,
+) -> None:
+    source = _write_good_frame(tmp_path / "source.jpg", size=(1280, 960))
+    generated = _write_abstract_low_res_frame(tmp_path / "generated-abstract.jpg")
+
+    report = write_persistent_wam_visual_quality_artifacts(
+        job_dir=tmp_path / "job",
+        generated_at="now",
+        source_frame_path=source,
+        generated_frame_paths=[generated],
+        review_video_path=tmp_path / "review.mp4",
+        video_status=_video_status(width=128, height=128, fps="4/1", frames=9),
+        visual_profile="smoke",
+        requested_settings={"width": 128, "height": 128, "fps": 4, "num_frames": 9},
+        provider_status="completed",
+        live_wam_generation_success_count=1,
+        learned_wam_model_success_count=1,
+    )
+
+    assert report["provider_completed"] is True
+    assert report["live_wam_generation_success"] is True
+    assert report["visual_success"] is False
+    assert report["provider_completed_visual_quality_failed"] is True
+    assert "wam_generated_frame_too_low_resolution_for_task_success_review" in report[
+        "blockers"
+    ]

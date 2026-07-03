@@ -1880,6 +1880,96 @@ def test_runpod_persistent_session_blocks_unsealed_wam_carrier_before_staging(
     assert image_policy["runtime_dependency_install_disallowed_for_paid_launch"] is True
 
 
+def test_runpod_persistent_session_sealed_wam_carrier_uses_sealed_bootstrap_before_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    frame = _write_reviewable_frame(tmp_path / "frame.jpg")
+    observation_path = _policy_observation(tmp_path / "observation.json", frame)
+    monkeypatch.delenv(session.UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV, raising=False)
+    monkeypatch.setenv(session.RUNPOD_UNITREE_GROOT_SONIC_REQUIRE_SEALED_IMAGE_ENV, "true")
+    monkeypatch.setenv(session.RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV, "true")
+    monkeypatch.setenv(
+        session.PERSISTENT_SESSION_PUBLIC_IMAGE_ENV,
+        "docker.io/nijelhunt/blueprint-unitree-groot-sonic-wam:20260703-sealed-groot",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_stage(**kwargs):
+        captured["bootstrap_at_stage"] = session.os.environ.get(
+            session.UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV
+        )
+        stage_dir = Path(kwargs["job_dir"])
+        stage_dir.mkdir(parents=True)
+        (stage_dir / "provider_bundle_url.txt").write_text("https://store.example/bundle.zip")
+        (stage_dir / "provider_output_put_url.txt").write_text("https://store.example/out.zip?put")
+        (stage_dir / "provider_output_get_url.txt").write_text("https://store.example/out.zip?get")
+        return {"status": "completed", "blockers": []}
+
+    def fake_create(**kwargs):
+        captured["bootstrap_at_create"] = session.os.environ.get(
+            session.UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV
+        )
+        captured["image_name"] = kwargs["image_name"]
+        runpod_dir = Path(kwargs["job_dir"])
+        runpod_dir.mkdir(parents=True, exist_ok=True)
+        (runpod_dir / "runpod_wam_async_create_manifest.json").write_text(
+            json.dumps({"status": "pod_created"}),
+            encoding="utf-8",
+        )
+        return {"status": "pod_created", "pod_id": "pod-123"}
+
+    def fake_poll(**kwargs):
+        runpod_dir = Path(kwargs["job_dir"])
+        (runpod_dir / "runpod_wam_async_poll_manifest.json").write_text(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "output_zip_present": False,
+                    "provider_command_status": "blocked",
+                    "provider_command_blockers": [
+                        "runpod_provider_runtime_output_zip_not_received_locally"
+                    ],
+                    "teardown_performed": True,
+                    "continuing_spend_from_this_run": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "status": "blocked",
+            "output_zip_present": False,
+            "provider_command_status": "blocked",
+            "provider_command_blockers": [
+                "runpod_provider_runtime_output_zip_not_received_locally"
+            ],
+            "teardown_performed": True,
+            "continuing_spend_from_this_run": False,
+        }
+
+    monkeypatch.setattr(session, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(session, "create_runpod_wam_async_run", fake_create)
+    monkeypatch.setattr(session, "poll_runpod_wam_async_run", fake_poll)
+
+    output, exit_code = session.run_persistent_session_runpod(
+        policy_observation_path=observation_path,
+        job_dir=tmp_path / "jobs",
+        loop_step_count=1,
+        timeout_seconds=60,
+        max_wait_seconds=20,
+    )
+
+    assert exit_code == 2
+    assert output["status"] == "blocked"
+    assert "runpod_unitree_groot_sonic_runtime_bootstrap_disallowed" not in output["blockers"]
+    assert captured["bootstrap_at_stage"] == "sealed_image"
+    assert captured["bootstrap_at_create"] == "sealed_image"
+    assert (
+        captured["image_name"]
+        == "docker.io/nijelhunt/blueprint-unitree-groot-sonic-wam:20260703-sealed-groot"
+    )
+
+
 def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: Path) -> None:
     job = tmp_path / "job"
     job.mkdir()

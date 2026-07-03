@@ -207,6 +207,8 @@ def _normalise_bootstrap_mode() -> str:
         return "uv_sync"
     if raw in {"system_python", "system_python_minimal", "minimal_system_python", "minimal"}:
         return "system_python_minimal"
+    if raw in {"sealed", "sealed_image", "prebaked", "prebuilt", "prebuilt_image"}:
+        return "sealed_image"
     return raw
 
 
@@ -550,6 +552,7 @@ def _materialize_groot_model_path(
     model_path: str,
     venv_python: Path,
     env: dict[str, str],
+    allow_snapshot_download: bool = True,
 ) -> dict[str, Any]:
     raw_model_path = model_path.strip()
     if not raw_model_path:
@@ -577,6 +580,43 @@ def _materialize_groot_model_path(
         }
 
     safe_name = raw_model_path.replace("/", "__")
+    sealed_snapshot_candidates = [
+        Path(
+            os.environ.get(
+                "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SEALED_MODEL_ROOT",
+                "",
+            )
+        ).expanduser(),
+        Path("/opt/blueprint/groot_runtime/model_snapshots") / safe_name,
+    ]
+    sealed_snapshot_candidates = [
+        path for path in sealed_snapshot_candidates if str(path).strip() not in {"", "."}
+    ]
+    for sealed_candidate in sealed_snapshot_candidates:
+        processor_config = sealed_candidate / "processor" / "processor_config.json"
+        if processor_config.is_file():
+            return {
+                "status": "completed",
+                "source": "sealed_image_local_snapshot",
+                "raw_model_path": raw_model_path,
+                "resolved_model_path": str(sealed_candidate),
+                "snapshot_download_ran": False,
+                "processor_config_present": True,
+            }
+    if not allow_snapshot_download:
+        return {
+            "status": "blocked",
+            "blockers": ["blocked_sealed_image_missing_local_gr00t_model_snapshot"],
+            "source": "sealed_image_local_snapshot",
+            "raw_model_path": raw_model_path,
+            "resolved_model_path": None,
+            "snapshot_download_ran": False,
+            "expected_local_snapshot_paths": [
+                str(path) for path in sealed_snapshot_candidates
+            ],
+            "processor_config_present": False,
+        }
+
     local_dir = output_dir / "groot_runtime" / "model_snapshots" / safe_name
     script = r"""
 import json
@@ -809,7 +849,7 @@ def _bootstrap_gr00t_policy_server(
                 "uv_sync": sync,
                 "venv_python": str(venv_python),
             }, None
-    elif bootstrap_mode == "system_python_minimal":
+    elif bootstrap_mode in {"system_python_minimal", "sealed_image"}:
         python_executable, system_python = _system_python_executable()
         _phase(
             "gr00t_system_python_selected",
@@ -846,27 +886,34 @@ def _bootstrap_gr00t_policy_server(
                 "system_python": system_python,
                 "system_python_torch_preflight": system_python_torch_preflight,
             }, None
-        _phase("gr00t_system_python_minimal_deps_install_started")
-        system_python_deps = _install_system_python_minimal_deps(
-            output_dir=output_dir,
-            python_executable=python_executable,
-        )
-        _phase(
-            "gr00t_system_python_minimal_deps_install_completed",
-            status=system_python_deps.get("status"),
-            requirements_count=system_python_deps.get("requirements_count"),
-        )
-        if system_python_deps.get("status") == "blocked":
-            return {
-                "requested": True,
-                "status": "blocked",
-                "blockers": ["blocked_system_python_minimal_deps_install_failed"],
-                "bootstrap_mode": bootstrap_mode,
-                "checkout": checkout,
-                "system_python": system_python,
-                "system_python_torch_preflight": system_python_torch_preflight,
-                "system_python_deps": system_python_deps,
-            }, None
+        if bootstrap_mode == "sealed_image":
+            system_python_deps = {
+                "status": "skipped",
+                "reason": "sealed_image_uses_prebaked_system_python_deps",
+                "requirements_count": 0,
+            }
+        else:
+            _phase("gr00t_system_python_minimal_deps_install_started")
+            system_python_deps = _install_system_python_minimal_deps(
+                output_dir=output_dir,
+                python_executable=python_executable,
+            )
+            _phase(
+                "gr00t_system_python_minimal_deps_install_completed",
+                status=system_python_deps.get("status"),
+                requirements_count=system_python_deps.get("requirements_count"),
+            )
+            if system_python_deps.get("status") == "blocked":
+                return {
+                    "requested": True,
+                    "status": "blocked",
+                    "blockers": ["blocked_system_python_minimal_deps_install_failed"],
+                    "bootstrap_mode": bootstrap_mode,
+                    "checkout": checkout,
+                    "system_python": system_python,
+                    "system_python_torch_preflight": system_python_torch_preflight,
+                    "system_python_deps": system_python_deps,
+                }, None
         _phase("gr00t_system_python_import_preflight_started")
         system_python_import_preflight = _python_import_preflight(
             python_executable=python_executable,
@@ -910,6 +957,7 @@ def _bootstrap_gr00t_policy_server(
         model_path=model_path,
         venv_python=venv_python,
         env=env,
+        allow_snapshot_download=bootstrap_mode != "sealed_image",
     )
     _phase(
         "gr00t_model_snapshot_completed",

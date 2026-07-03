@@ -126,6 +126,14 @@ def test_gemini_task_success_context_requires_prompt_or_metadata(tmp_path: Path)
     )
 
 
+def test_gemini_provider_error_maps_invalid_api_key() -> None:
+    blocker = gemini_labeler._provider_error_blocker(
+        RuntimeError("400 INVALID_ARGUMENT API_KEY_INVALID API key not valid")
+    )
+
+    assert blocker == "gemini_authentication_failed"
+
+
 def test_gemini_wam_success_labeler_uses_sdk_without_writing_secret(
     tmp_path: Path,
     monkeypatch,
@@ -218,3 +226,108 @@ def test_gemini_wam_success_labeler_uses_sdk_without_writing_secret(
     assert output.is_file()
     serialized = output.read_text(encoding="utf-8")
     assert "secret-gemini-key" not in serialized
+
+
+def test_gemini_wam_success_labeler_prefers_sampled_video_frames(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(gemini_labeler.GATE_ENV, "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "secret-gemini-key")
+    monkeypatch.setattr(
+        gemini_labeler,
+        "_sample_video_frames",
+        lambda **_kwargs: (
+            [
+                {
+                    "frame_index": 0,
+                    "jpeg_bytes": b"frame-zero",
+                    "mime_type": "image/jpeg",
+                    "evidence_ref": "rollout.mp4#frame=0",
+                },
+                {
+                    "frame_index": 8,
+                    "jpeg_bytes": b"frame-eight",
+                    "mime_type": "image/jpeg",
+                    "evidence_ref": "rollout.mp4#frame=8",
+                },
+            ],
+            [],
+        ),
+    )
+
+    google_module = types.ModuleType("google")
+    genai_module = types.ModuleType("google.genai")
+    types_module = types.ModuleType("google.genai.types")
+
+    class FakePart:
+        @staticmethod
+        def from_bytes(*, data, mime_type):
+            assert data in {b"frame-zero", b"frame-eight"}
+            assert mime_type == "image/jpeg"
+            return {"data": data, "mime_type": mime_type}
+
+    class FakeGenerateContentConfig:
+        def __init__(self, *, response_mime_type):
+            assert response_mime_type == "application/json"
+
+    class FakeModels:
+        def generate_content(self, *, model, contents, config):
+            assert model == "gemini-test-flash-model"
+            prompt = contents[0]
+            assert "Open the articulated target" in prompt
+            assert "sampled_frame_indices" in prompt
+            assert (
+                len(
+                    [
+                        item
+                        for item in contents
+                        if isinstance(item, dict) and item["mime_type"] == "image/jpeg"
+                    ]
+                )
+                == 2
+            )
+            return types.SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "success": False,
+                        "confidence": 0.76,
+                        "rationale": "The target motion is not caused by visible robot contact.",
+                        "task_completion_evidence": [],
+                        "failure_modes": ["target_motion_not_robot_caused"],
+                        "end_effector_reaches_target": False,
+                        "target_state_change_visible": True,
+                        "robot_caused_target_motion": False,
+                    }
+                )
+            )
+
+    class FakeClient:
+        def __init__(self, *, api_key):
+            assert api_key == "secret-gemini-key"
+            self.models = FakeModels()
+
+    types_module.Part = FakePart
+    types_module.GenerateContentConfig = FakeGenerateContentConfig
+    genai_module.Client = FakeClient
+    genai_module.types = types_module
+    google_module.genai = genai_module
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.genai", genai_module)
+    monkeypatch.setitem(sys.modules, "google.genai.types", types_module)
+
+    result = gemini_labeler.build_gemini_wam_success_labels(
+        input_path=_request(tmp_path),
+        output_path=tmp_path / "wam_success_labels.command.json",
+        model="gemini-test-flash-model",
+        max_frames=2,
+    )
+
+    assert result["status"] == "completed"
+    assert result["label_count"] == 1
+    assert result["sampled_rollouts"][0]["sampled_frame_count"] == 2
+    assert result["labels"][0]["success"] is False
+    assert result["labels"][0]["video_evidence_mode"] == "sampled_frames"
+    assert result["labels"][0]["sampled_frame_count"] == 2
+    assert result["labels"][0]["sampled_frame_indices"] == [0, 8]
+    assert "rollout.mp4#frame=8" in result["labels"][0]["evidence_refs"]

@@ -858,7 +858,7 @@ def _frame_visual_stats(
         result["blockers"] = ["frame_missing_for_visual_quality"]
         return result
     try:
-        from PIL import Image
+        from PIL import Image, ImageFilter
         import numpy as np
     except Exception as exc:  # pragma: no cover - dependency/environment edge.
         result["blockers"] = [f"visual_quality_dependency_import_failed:{type(exc).__name__}"]
@@ -897,6 +897,11 @@ def _frame_visual_stats(
     center_x1 = min(width, max(center_x0 + 1, int(width * 0.75)))
     center = luma[center_y0:center_y1, center_x0:center_x1]
     center_gradient = gradient_magnitude[center_y0:center_y1, center_x0:center_x1]
+    median_luma = np.asarray(rgb.convert("L").filter(ImageFilter.MedianFilter(size=3))).astype(
+        "float32"
+    )
+    speckle_residual = np.abs(luma - median_luma)
+    center_speckle_residual = speckle_residual[center_y0:center_y1, center_x0:center_x1]
     center_histogram, _ = np.histogram(center, bins=128, range=(0, 255))
     center_probabilities = center_histogram[center_histogram > 0] / max(
         int(center_histogram.sum()),
@@ -945,6 +950,15 @@ def _frame_visual_stats(
             "entropy_bits": _round_float(entropy_bits, 6),
             "edge_density": _round_float(edge_density, 6),
             "sharpness_laplacian_variance": _round_float(sharpness_laplacian_variance, 3),
+            "speckle_residual_mean": _round_float(float(speckle_residual.mean()), 6),
+            "speckle_residual_p95": _round_float(
+                float(np.percentile(speckle_residual, 95)),
+                6,
+            ),
+            "speckle_residual_ratio_gt12": _round_float(
+                float((speckle_residual > 12.0).mean()),
+                6,
+            ),
             "center_crop": {
                 "x0": int(center_x0),
                 "y0": int(center_y0),
@@ -955,6 +969,10 @@ def _frame_visual_stats(
                 "dark_pixel_ratio": _round_float(float((center < 32.0).mean()), 6),
                 "entropy_bits": _round_float(center_entropy, 6),
                 "edge_density": _round_float(float((center_gradient > 18.0).mean()), 6),
+                "speckle_residual_ratio_gt12": _round_float(
+                    float((center_speckle_residual > 12.0).mean()),
+                    6,
+                ),
             },
             "drift_from_source": drift,
             "blockers": [],
@@ -1455,6 +1473,9 @@ def _source_policy_observation_blockers(
     center_dark_ratio = float(center.get("dark_pixel_ratio") or 0.0)
     center_edge_density = float(center.get("edge_density") or 0.0)
     center_entropy = float(center.get("entropy_bits") or 0.0)
+    speckle_residual_mean = float(stats.get("speckle_residual_mean") or 0.0)
+    speckle_residual_ratio = float(stats.get("speckle_residual_ratio_gt12") or 0.0)
+    center_speckle_residual_ratio = float(center.get("speckle_residual_ratio_gt12") or 0.0)
     if review_quality_required and (
         width < REVIEW_QUALITY_MIN_WIDTH or height < REVIEW_QUALITY_MIN_HEIGHT
     ):
@@ -1470,6 +1491,29 @@ def _source_policy_observation_blockers(
         and edge_density > 0.45
         and center_edge_density > 0.35
         and sharpness > 5000.0
+    ):
+        blockers.append("source_policy_observation_speckled_or_noisy_for_review_quality")
+    if (
+        review_quality_required
+        and speckle_residual_ratio > 0.02
+        and center_speckle_residual_ratio > 0.02
+        and sharpness < 3000.0
+    ):
+        blockers.append("source_policy_observation_speckled_or_noisy_for_review_quality")
+    if (
+        review_quality_required
+        and speckle_residual_ratio > 0.002
+        and center_speckle_residual_ratio > 0.002
+        and (edge_density > 0.08 or center_edge_density > 0.08)
+        and sharpness < 200.0
+    ):
+        blockers.append("source_policy_observation_speckled_or_noisy_for_review_quality")
+    if (
+        review_quality_required
+        and speckle_residual_mean > 0.7
+        and speckle_residual_ratio > 0.01
+        and center_speckle_residual_ratio > 0.01
+        and sharpness < 700.0
     ):
         blockers.append("source_policy_observation_speckled_or_noisy_for_review_quality")
     if center_dark_ratio > 0.65 or center_edge_density < 0.004 or center_entropy < 1.8:
@@ -1699,6 +1743,8 @@ def _generated_frame_quality_blockers(frame_stats: Sequence[Mapping[str, Any]]) 
         if stats.get("status") != "completed":
             blockers.extend(str(item) for item in stats.get("blockers") or [])
             continue
+        if int(stats.get("width") or 0) < 256 or int(stats.get("height") or 0) < 256:
+            blockers.append("wam_generated_frame_too_low_resolution_for_task_success_review")
         if float(stats.get("mean_luma") or 0.0) < 35.0 or float(
             stats.get("dark_pixel_ratio") or 0.0
         ) > 0.55:

@@ -156,6 +156,8 @@ MANIPULATION_RENDERED_SEED_SHOULDER_MARGIN_M = 0.10
 MANIPULATION_RENDERED_SEED_EFFECTOR_MARGIN_M = 0.05
 MANIPULATION_STANCE_APPROX_SHOULDER_MARGIN_M = 0.10
 MANIPULATION_STANCE_APPROX_EFFECTOR_MARGIN_M = 0.10
+VISIBLE_REACH_FINAL_MAX_EFFECTOR_TO_AFFORDANCE_M = 0.12
+MANIPULATION_ENDPOINT_AFFORDANCE_AIM_START_FRACTION = 0.82
 MANIPULATION_HIGH_REACH_MIN_AFFORDANCE_ABOVE_SHOULDER_M = 0.22
 MANIPULATION_HIGH_REACH_MAX_SEED_Z_ABOVE_SHOULDER_M = 0.38
 MANIPULATION_HIGH_REACH_SEED_HEIGHT_FRACTION = 0.75
@@ -287,6 +289,8 @@ MANIPULATION_REACH_BLOCKER_SET = {
 DEFAULT_RENDER_STEP_WATCHDOG_SECONDS = 180.0
 ROBOT_VISUAL_MESH_MISSING_BLOCKER = "robot_visual_mesh_missing"
 ROBOT_REVIEW_VISUAL_PROXY_USED_BLOCKER = "robot_review_visual_proxy_used"
+REVIEW_TASK_SUCCESS_EVIDENCE_SCHEMA_VERSION = "isaac_g1_review_task_success_evidence.v1"
+REVIEW_CAMERA_EVIDENCE_SCHEMA_VERSION = "isaac_g1_review_camera_evidence.v1"
 # The 2026-07-02 render-noise audit (docs/G1_RENDER_NOISE_AUDIT.md) diagnosed
 # render_budget_sample_starvation: default-budget 64-spp manipulation POV frames came back
 # starved/black (variants B/C, dark_pixel_ratio 1.0) while the same scene at 384 spp was clean
@@ -329,6 +333,13 @@ def parse_scenarios(request: Mapping[str, Any]) -> list[dict]:
                 "manipulation_target_position_xyz",
                 "target_object_position_xyz",
                 "look_at_position_xyz",
+                "task_affordance_xyz",
+                "manipulation_affordance_xyz",
+                "affordance_position_xyz",
+                "task_target_bbox_min_xyz",
+                "task_target_bbox_max_xyz",
+                "target_object_bbox_min_xyz",
+                "target_object_bbox_max_xyz",
                 "approach_position_xyz",
                 "robot_start_position_xyz",
                 "stance_distance_candidates_m",
@@ -347,10 +358,13 @@ def parse_scenarios(request: Mapping[str, Any]) -> list[dict]:
                 "task_affordance_object_ids",
                 "target_object_label",
                 "task_target_object_label",
+                "task_id",
                 "task",
                 "task_description",
                 "description",
                 "task_instruction",
+                "task_success_contract",
+                "success_contract",
             ):
                 if key in raw:
                     out[-1][key] = raw[key]
@@ -380,6 +394,13 @@ def parse_scenarios(request: Mapping[str, Any]) -> list[dict]:
             "manipulation_target_position_xyz",
             "target_object_position_xyz",
             "look_at_position_xyz",
+            "task_affordance_xyz",
+            "manipulation_affordance_xyz",
+            "affordance_position_xyz",
+            "task_target_bbox_min_xyz",
+            "task_target_bbox_max_xyz",
+            "target_object_bbox_min_xyz",
+            "target_object_bbox_max_xyz",
             "approach_position_xyz",
             "robot_start_position_xyz",
             "stance_distance_candidates_m",
@@ -398,10 +419,13 @@ def parse_scenarios(request: Mapping[str, Any]) -> list[dict]:
             "task_affordance_object_ids",
             "target_object_label",
             "task_target_object_label",
+            "task_id",
             "task",
             "task_description",
             "description",
             "task_instruction",
+            "task_success_contract",
+            "success_contract",
         ):
             if key in raw:
                 out[-1][key] = raw[key]
@@ -722,6 +746,25 @@ def _placement_validation_passed(validation: Mapping[str, Any] | None) -> bool:
         "clear",
         "ok",
     }
+
+
+def _placement_corrected_root_pose(
+    validation: Mapping[str, Any] | None,
+) -> tuple[float, float, float] | None:
+    if not isinstance(validation, Mapping):
+        return None
+    diagnostics = validation.get("place_root_diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        ground_truth = validation.get("ground_truth_placement")
+        if isinstance(ground_truth, Mapping):
+            diagnostics = ground_truth.get("place_root_diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        return None
+    corrected = diagnostics.get("corrected_root_translation_xyz")
+    xyz = _optional_xyz(corrected)
+    if xyz is None:
+        return None
+    return (float(xyz[0]), float(xyz[1]), float(xyz[2]))
 
 
 def _task_stance_angle_priority(offset_deg: float) -> int:
@@ -1425,6 +1468,26 @@ def plan_task_stance(
                     if not _placement_validation_passed(validation):
                         rejected_by_placement_validation += 1
                         continue
+                    corrected_root_pose = _placement_corrected_root_pose(validation)
+                    if reachability_estimate is not None and corrected_root_pose is not None:
+                        corrected_reachability = _task_stance_reachability_estimate(
+                            corrected_root_pose,
+                            yaw,
+                            affordance_target,
+                        )
+                        if corrected_reachability is not None:
+                            record["pre_placement_reachability_estimate"] = reachability_estimate
+                            corrected_reachability["pose_source"] = (
+                                "placement_corrected_root_translation_xyz"
+                            )
+                            corrected_reachability["pre_placement_reachability_status"] = (
+                                reachability_estimate.get("status")
+                            )
+                            record["reachability_estimate"] = corrected_reachability
+                            record["placement_corrected_root_pose"] = [
+                                round(float(v), 6) for v in corrected_root_pose
+                            ]
+                            reachability_estimate = corrected_reachability
                 if (
                     reachability_estimate is not None
                     and reachability_estimate.get("status") != "PASS"
@@ -1543,6 +1606,317 @@ def mp4_command(frames_glob: str, fps: int, out_path: str) -> list[str]:
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out_path]
 
 
+def _status_passed(value: Mapping[str, Any] | None) -> bool:
+    return bool(
+        isinstance(value, Mapping)
+        and str(value.get("status") or "").strip().upper() in {"PASS", "PASSED"}
+    )
+
+
+def _reach_feasibility_passed(value: Mapping[str, Any] | None) -> bool:
+    return bool(
+        isinstance(value, Mapping)
+        and str(value.get("status") or "").strip().upper() in {"PASS", "PASSED"}
+    )
+
+
+def _reach_feasibility_blockers(value: Mapping[str, Any] | None) -> list[str]:
+    if not isinstance(value, Mapping):
+        return []
+    blockers: list[str] = []
+    for key in ("blockers", "all_arm_blockers"):
+        blockers.extend(str(b) for b in (value.get(key) or []) if b)
+    by_arm = value.get("by_arm")
+    if isinstance(by_arm, Mapping):
+        for arm_report in by_arm.values():
+            if isinstance(arm_report, Mapping):
+                blockers.extend(str(b) for b in (arm_report.get("blockers") or []) if b)
+    return blockers
+
+
+def _nearest_effector_distance_to_affordance_m(value: Mapping[str, Any] | None) -> float | None:
+    if not isinstance(value, Mapping):
+        return None
+    distances: list[float] = []
+
+    def collect(mapping: Mapping[str, Any] | None) -> None:
+        if not isinstance(mapping, Mapping):
+            return
+        for raw in mapping.values():
+            try:
+                distances.append(float(raw))
+            except Exception:  # noqa: BLE001
+                pass
+
+    collect(value.get("effector_distance_to_affordance_m"))
+    by_arm = value.get("effector_distance_to_affordance_m_by_arm")
+    if isinstance(by_arm, Mapping):
+        for arm_distances in by_arm.values():
+            collect(arm_distances if isinstance(arm_distances, Mapping) else None)
+    return min(distances) if distances else None
+
+
+def _pov_geometry_reach_feasibility_evidence(
+    pov_geometry: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    frames_checked = 0
+    passing_frame_indices: list[int] = []
+    final_frame_index: int | None = None
+    final_frame_passed: bool | None = None
+    final_frame_nearest_effector_m: float | None = None
+    final_frame_close_enough: bool | None = None
+
+    if not isinstance(pov_geometry, Mapping):
+        blockers.append("visible_reach_pov_geometry_missing")
+    else:
+        frames = pov_geometry.get("frames")
+        if isinstance(frames, Sequence) and not isinstance(frames, (str, bytes, bytearray)):
+            frame_rows = [
+                (idx, frame)
+                for idx, frame in enumerate(frames)
+                if isinstance(frame, Mapping)
+            ]
+            frames_checked = len(frame_rows)
+            for idx, frame in frame_rows:
+                reach = (
+                    frame.get("reach_feasibility")
+                    if isinstance(frame.get("reach_feasibility"), Mapping)
+                    else None
+                )
+                if _reach_feasibility_passed(reach):
+                    passing_frame_indices.append(idx)
+            if frame_rows:
+                final_frame_index, final_frame = frame_rows[-1]
+                final_reach = (
+                    final_frame.get("reach_feasibility")
+                    if isinstance(final_frame.get("reach_feasibility"), Mapping)
+                    else None
+                )
+                final_frame_passed = _reach_feasibility_passed(final_reach)
+                final_frame_nearest_effector_m = _nearest_effector_distance_to_affordance_m(
+                    final_frame
+                )
+                if not final_frame_passed:
+                    blockers.append("visible_reach_final_frame_reach_feasibility_not_passed")
+                    blockers.extend(_reach_feasibility_blockers(final_reach))
+                if final_frame_nearest_effector_m is None:
+                    blockers.append("visible_reach_final_frame_effector_distance_missing")
+                    final_frame_close_enough = False
+                else:
+                    final_frame_close_enough = (
+                        final_frame_nearest_effector_m
+                        <= float(VISIBLE_REACH_FINAL_MAX_EFFECTOR_TO_AFFORDANCE_M)
+                    )
+                    if not final_frame_close_enough:
+                        blockers.append(
+                            "visible_reach_final_frame_effector_not_close_enough"
+                        )
+            else:
+                blockers.append("visible_reach_reach_feasibility_frames_missing")
+        else:
+            reach = (
+                pov_geometry.get("reach_feasibility")
+                if isinstance(pov_geometry.get("reach_feasibility"), Mapping)
+                else None
+            )
+            final_frame_passed = _reach_feasibility_passed(reach)
+            final_frame_nearest_effector_m = _nearest_effector_distance_to_affordance_m(
+                pov_geometry
+            )
+            if not final_frame_passed:
+                blockers.append("visible_reach_reach_feasibility_not_passed")
+                blockers.extend(_reach_feasibility_blockers(reach))
+            if final_frame_nearest_effector_m is None:
+                blockers.append("visible_reach_final_frame_effector_distance_missing")
+                final_frame_close_enough = False
+            else:
+                final_frame_close_enough = (
+                    final_frame_nearest_effector_m
+                    <= float(VISIBLE_REACH_FINAL_MAX_EFFECTOR_TO_AFFORDANCE_M)
+                )
+                if not final_frame_close_enough:
+                    blockers.append("visible_reach_final_frame_effector_not_close_enough")
+
+    if not passing_frame_indices and frames_checked:
+        blockers.append("visible_reach_no_frame_with_passing_reach_feasibility")
+
+    blockers = sorted({str(b) for b in blockers if b})
+    passed = not blockers
+    return {
+        "schema_version": "visible_reach_feasibility_evidence.v1",
+        "status": "PASS" if passed else "FAIL",
+        "blockers": blockers,
+        "frames_checked": frames_checked,
+        "passing_frame_count": len(passing_frame_indices),
+        "passing_frame_indices": passing_frame_indices[:20],
+        "final_frame_index": final_frame_index,
+        "final_frame_reach_feasibility_passed": final_frame_passed,
+        "final_frame_nearest_effector_to_affordance_m": (
+            round(float(final_frame_nearest_effector_m), 4)
+            if final_frame_nearest_effector_m is not None
+            else None
+        ),
+        "max_final_effector_to_affordance_m": round(
+            float(VISIBLE_REACH_FINAL_MAX_EFFECTOR_TO_AFFORDANCE_M),
+            4,
+        ),
+        "final_frame_effector_close_enough": final_frame_close_enough,
+        "requirement": (
+            "Visible reach success requires the final sampled manipulation frame to have passing "
+            "reach feasibility and a hand/wrist close enough to the task affordance to be visually "
+            "credible. Arm visibility/framing alone is not enough."
+        ),
+    }
+
+
+def _review_grade_task_success_evidence(outcome: Mapping[str, Any]) -> dict[str, Any]:
+    """Separate trace success from review-grade visible robot task success."""
+    blockers: list[str] = []
+    trace_task_success = bool(outcome.get("task_success"))
+    if not trace_task_success:
+        blockers.append("trace_task_success_false")
+
+    camera_evidence = (
+        outcome.get("review_camera_evidence")
+        if isinstance(outcome.get("review_camera_evidence"), Mapping)
+        else {}
+    )
+    if not camera_evidence:
+        blockers.append("review_camera_evidence_missing")
+
+    camera_mode = str(camera_evidence.get("robot_pov_camera_mode") or "").strip()
+    if camera_mode == "root_follow":
+        blockers.append("robot_pov_is_root_follow_camera_not_head_pov")
+    elif camera_mode and camera_mode != "robot_mounted_manipulation":
+        blockers.append(f"robot_pov_camera_mode_not_review_grade:{camera_mode}")
+
+    if camera_evidence.get("visible_embodied_robot_action_evidence") is not True:
+        blockers.append("visible_embodied_robot_action_not_proven")
+
+    robot_visual = (
+        outcome.get("robot_visual_geometry")
+        if isinstance(outcome.get("robot_visual_geometry"), Mapping)
+        else {}
+    )
+    if robot_visual and not _status_passed(robot_visual):
+        blockers.extend(str(b) for b in (robot_visual.get("blockers") or []))
+        blockers.append("robot_visual_geometry_not_review_ready")
+
+    manipulation_pov = (
+        outcome.get("manipulation_pov_geometry")
+        if isinstance(outcome.get("manipulation_pov_geometry"), Mapping)
+        else {}
+    )
+    if manipulation_pov and not _status_passed(manipulation_pov):
+        blockers.extend(str(b) for b in (manipulation_pov.get("blockers") or []))
+        blockers.append("manipulation_pov_geometry_not_review_ready")
+
+    if str(outcome.get("task_success_contract") or "").strip().lower() == "visible_reach_to_affordance":
+        reach_contract = (
+            outcome.get("visible_reach_to_affordance_success")
+            if isinstance(outcome.get("visible_reach_to_affordance_success"), Mapping)
+            else {}
+        )
+        if not _status_passed(reach_contract):
+            blockers.append("visible_reach_success_contract_not_passed")
+            blockers.extend(str(b) for b in (reach_contract.get("blockers") or []))
+
+    blockers = sorted({str(b) for b in blockers if b})
+    review_task_success = bool(trace_task_success and not blockers)
+    return {
+        "schema_version": REVIEW_TASK_SUCCESS_EVIDENCE_SCHEMA_VERSION,
+        "status": "PASS" if review_task_success else "FAIL",
+        "review_task_success": review_task_success,
+        "trace_task_success": trace_task_success,
+        "blockers": blockers,
+        "camera_evidence": dict(camera_evidence),
+        "claim_boundary": (
+            "Review-grade task success requires both the internal trace success and visible embodied "
+            "robot-action evidence in the review media. A root-position trace or camera-only motion "
+            "does not prove review-grade task success."
+        ),
+    }
+
+
+def _scenario_task_success_contract(scenario: Mapping[str, Any]) -> str:
+    return (
+        str(
+            scenario.get("task_success_contract")
+            or scenario.get("success_contract")
+            or "root_navigation_to_target"
+        )
+        .strip()
+        .lower()
+        or "root_navigation_to_target"
+    )
+
+
+def _apply_visible_reach_to_affordance_success_contract(
+    outcome: dict[str, Any],
+    *,
+    placement_validation: Mapping[str, Any] | None,
+    pov_geometry: Mapping[str, Any] | None,
+    robot_visual_ready: bool,
+    temporal_conditioning: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    reach_feasibility_evidence = _pov_geometry_reach_feasibility_evidence(pov_geometry)
+    if not _status_passed(placement_validation):
+        blockers.append("visible_reach_placement_validation_not_passed")
+        if isinstance(placement_validation, Mapping):
+            blockers.extend(str(b) for b in (placement_validation.get("blockers") or []))
+    if not _status_passed(pov_geometry):
+        blockers.append("visible_reach_pov_geometry_not_passed")
+        if isinstance(pov_geometry, Mapping):
+            blockers.extend(str(b) for b in (pov_geometry.get("blockers") or []))
+    if not robot_visual_ready:
+        blockers.append("visible_reach_robot_visual_geometry_not_review_ready")
+    if not _status_passed(temporal_conditioning):
+        blockers.append("visible_reach_temporal_conditioning_not_passed")
+        if isinstance(temporal_conditioning, Mapping):
+            blockers.extend(str(b) for b in (temporal_conditioning.get("blockers") or []))
+    if not _status_passed(reach_feasibility_evidence):
+        blockers.append("visible_reach_reach_feasibility_not_passed")
+        blockers.extend(str(b) for b in (reach_feasibility_evidence.get("blockers") or []))
+    blockers = sorted({str(b) for b in blockers if b})
+    passed = not blockers
+    contract_result = {
+        "schema_version": "visible_reach_to_affordance_success_contract.v1",
+        "status": "PASS" if passed else "FAIL",
+        "task_success_contract": "visible_reach_to_affordance",
+        "blockers": blockers,
+        "required_evidence": {
+            "placement_validation_passed": _status_passed(placement_validation),
+            "manipulation_pov_geometry_passed": _status_passed(pov_geometry),
+            "robot_visual_geometry_review_ready": bool(robot_visual_ready),
+            "temporal_reach_conditioning_passed": _status_passed(temporal_conditioning),
+            "reach_feasibility_passed": _status_passed(reach_feasibility_evidence),
+        },
+        "reach_feasibility_evidence": reach_feasibility_evidence,
+        "claim_boundary": (
+            "This contract proves a visible reach-toward-affordance review task only. It does not "
+            "prove faucet state change, contact force, water flow, physical reach, learned policy "
+            "quality, or deployment readiness."
+        ),
+    }
+    outcome["visible_reach_to_affordance_success"] = contract_result
+    outcome["task_success_contract"] = "visible_reach_to_affordance"
+    if passed:
+        outcome["task_success"] = True
+        outcome["task_status"] = "passed"
+        outcome["failure_mode_ids"] = []
+        outcome["failure_reason"] = None
+        outcome["goal_reached"] = True
+        outcome["endpoint_clean"] = True
+    else:
+        outcome["task_success"] = False
+        outcome["task_status"] = "failed_task_criteria"
+        outcome["failure_mode_ids"] = blockers
+        outcome["failure_reason"] = ",".join(blockers)
+    return contract_result
+
+
 def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[Mapping[str, Any]],
                  policy_id: str, kitchen_usd: str, g1_usd: str | None,
                  blockers: Sequence[str],
@@ -1551,6 +1925,18 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
                  actuator_output_mode: str | None = None,
                  authored_target_contact_material: Any | None = None) -> dict:
     passed = sum(1 for o in outcomes if o.get("task_success"))
+    scenario_rows: list[dict[str, Any]] = []
+    review_grade_passed = 0
+    for s, o in zip(scenarios, outcomes):
+        review_evidence = _review_grade_task_success_evidence(o)
+        if review_evidence["review_task_success"]:
+            review_grade_passed += 1
+        scenario_rows.append({
+            "scenario_id": s.get("scenario_id"),
+            **dict(o),
+            "review_task_success": review_evidence["review_task_success"],
+            "review_task_success_evidence": review_evidence,
+        })
     result_blockers = list(blockers)
     if scenarios and not outcomes and not result_blockers:
         result_blockers.append("scenario_execution_returned_no_outcomes")
@@ -1618,16 +2004,19 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
         "scenario_count": len(scenarios),
         "scenarios_executed": len(outcomes),
         "scenarios_passed": passed,
+        "review_grade_scenarios_passed": review_grade_passed,
+        "review_grade_success_claim_boundary": (
+            "Use review_grade_scenarios_passed/review_task_success for human-showable task success. "
+            "scenarios_passed/task_success is the internal trace outcome and can be true even when "
+            "the media does not visibly show the robot performing the task."
+        ),
         "rendered_by_isaac_rtx": True,
         "per_frame_camera_contract_emitted": camera_contract_frames > 0,
         "per_frame_camera_contract_frames": camera_contract_frames,
         "per_frame_camera_contract_available_intrinsics_frames": camera_contract_intrinsics_frames,
         "actuator_output_mode": actuator_output_mode,
         "blockers": result_blockers,
-        "scenarios": [
-            {"scenario_id": s.get("scenario_id"), **o}
-            for s, o in zip(scenarios, outcomes)
-        ],
+        "scenarios": scenario_rows,
         "proof_boundary": proof_boundary,
     }
     if authored_target_contact_material is not None:
@@ -2061,6 +2450,43 @@ def _manipulation_seed_arm_target_for_shoulder(
     )
 
 
+def _manipulation_arm_target_for_reach_fraction(
+    shoulder,
+    affordance,
+    reach_frac: float,
+    *,
+    forward_yaw: float | None = None,
+    forward_xy: Sequence[float] | None = None,
+) -> tuple[float, float, float]:
+    """Return the generic arm target for the current reach phase.
+
+    Early frames stay in the forward-ready seed posture used for policy conditioning. Near the end of
+    a review rollout, the target blends to the resolved task affordance so the final sampled frame can
+    be judged as a visible endpoint attempt instead of just a plausible arm seed.
+    """
+    seed_target = _manipulation_seed_arm_target_for_shoulder(
+        shoulder,
+        affordance,
+        forward_yaw=forward_yaw,
+        forward_xy=forward_xy,
+    )
+    try:
+        aff = (float(affordance[0]), float(affordance[1]), float(affordance[2]))
+    except Exception:  # noqa: BLE001
+        return seed_target
+    frac = max(0.0, min(1.0, float(reach_frac)))
+    start = max(0.0, min(0.99, float(MANIPULATION_ENDPOINT_AFFORDANCE_AIM_START_FRACTION)))
+    if frac <= start:
+        return seed_target
+    blend = (frac - start) / (1.0 - start)
+    blend = blend * blend * (3.0 - 2.0 * blend)
+    return (
+        seed_target[0] * (1.0 - blend) + aff[0] * blend,
+        seed_target[1] * (1.0 - blend) + aff[1] * blend,
+        seed_target[2] * (1.0 - blend) + aff[2] * blend,
+    )
+
+
 def _projection_dict(px) -> dict[str, Any] | None:
     if px is None:
         return None
@@ -2137,10 +2563,9 @@ def _manipulation_pov_geometry_single(
     """Machine-check that the actual USD arm links are visible in the head POV.
 
     The articulated skeleton trace is optional and may be disabled for crash-safe kinematic renders,
-    so manipulation media needs an independent USD-link projection check. This is an initial seed
-    frame gate: the target affordance and task-side hand/wrist arm chain must be visible, and the arm
-    must be held in a forward-ready posture. It deliberately does NOT require the gripper to be at or
-    aimed at the affordance; the policy/WAM rollout is responsible for completing the manipulation.
+    so manipulation media needs an independent USD-link projection check. The target affordance and
+    task-side hand/wrist arm chain must be visible. Endpoint success is handled by the final-frame
+    distance gate; this projection check alone is not contact or task-completion proof.
     """
     blockers: list[str] = []
     aff = (float(affordance[0]), float(affordance[1]), float(affordance[2]))
@@ -2266,11 +2691,9 @@ def _manipulation_pov_geometry_single(
                 4,
             ),
             "claim_boundary": (
-                "Reach feasibility is a conservative static seed-conditioning gate using the "
-                "Unitree G1 size scale and USD link geometry. The initial arms still point "
-                "straight out from robot yaw rather than pre-contacting or aiming at the "
-                "affordance. This is not contact proof, inverse-kinematics proof, force-control "
-                "proof, or physical robot validation."
+                "Reach feasibility is a conservative static geometry gate using the Unitree G1 "
+                "size scale and USD link positions. It is not contact proof, inverse-kinematics "
+                "proof, force-control proof, task completion, or physical robot validation."
             ),
             "required_for_seed_geometry": True,
         }
@@ -2300,8 +2723,8 @@ def _manipulation_pov_geometry_single(
                 abs(effector[2] - shoulder[2]) / arm_len if arm_len > 1e-6 else 1.0
             )
             extension_blockers: list[str] = []
-            # Reject the bad seed class where the arm is visible but hanging nearly vertical. Do not
-            # require the hand to align with the affordance; the initial image is just a ready state.
+            # Reject the bad class where the arm is visible but hanging nearly vertical. Endpoint
+            # closeness to the affordance is measured separately by the final-frame contract.
             if horizontal_extension_ratio < 0.35 or vertical_drop_ratio > 0.85:
                 extension_blockers.append("manipulation_pov_arm_not_extended_forward")
             if arm_len < 0.12:
@@ -2314,8 +2737,8 @@ def _manipulation_pov_geometry_single(
                 "horizontal_extension_ratio": round(float(horizontal_extension_ratio), 4),
                 "vertical_drop_ratio": round(float(vertical_drop_ratio), 4),
                 "claim_boundary": (
-                    "Forward extension checks initial manipulation readiness only. It does not require "
-                    "aiming at/contact with the affordance or prove task completion."
+                    "Forward extension checks visible arm posture only. It does not prove contact, "
+                    "force-control behavior, task completion, or physical robot readiness."
                 ),
             }
     if arm_extension.get("status") != "PASS":
@@ -2346,9 +2769,9 @@ def _manipulation_pov_geometry_single(
         "arm_extension": arm_extension,
         "projected_landmarks": projected,
         "claim_boundary": (
-            "This checks initial camera framing of USD robot links against the resolved task affordance. "
-            "It is not manipulation success, contact proof, force-control proof, physical reach "
-            "validation, or deployment readiness."
+            "This checks camera framing and posed USD robot-link geometry against the resolved task "
+            "affordance. It is not contact proof, force-control proof, physical validation, or "
+            "deployment readiness."
         ),
     }
 
@@ -2536,14 +2959,12 @@ def _manipulation_pov_geometry(
             "g1_approx_arm_span_m": round(float(G1_APPROX_ARM_SPAN_M), 4),
             "required_for_seed_geometry": True,
             "claim_boundary": (
-                "Reach feasibility is a conservative static seed-conditioning gate using the "
-                "Unitree G1 size scale and USD link geometry. It requires at least one "
-                "manipulation arm seed to be close enough while the initial arms still point "
-                "straight out from robot yaw rather than pre-contacting or aiming at the "
-                "affordance. Both-hand visibility and forward extension are separate hard "
-                "seed-framing gates. This is not contact proof, inverse-kinematics proof, "
-                "force-control proof, or physical robot validation. SAM3/DA3 can refine "
-                "affordance/mask/depth evidence for this gate when configured."
+                "Reach feasibility is a conservative static geometry gate using the Unitree G1 "
+                "size scale and USD link positions. It requires at least one manipulation arm to "
+                "be close enough to the resolved affordance while visibility and forward extension "
+                "remain separate hard gates. This is not contact proof, inverse-kinematics proof, "
+                "force-control proof, task completion, or physical robot validation. SAM3/DA3 can "
+                "refine affordance/mask/depth evidence for this gate when configured."
             ),
         },
         "arm_extension": {
@@ -2551,16 +2972,16 @@ def _manipulation_pov_geometry(
             "blockers": extension_blockers,
             "by_arm": extension_by_arm,
             "claim_boundary": (
-                "Forward extension checks initial manipulation readiness only. It does not require "
-                "aiming at/contact with the affordance or prove task completion."
+                "Forward extension checks visible arm posture only. It does not prove contact, "
+                "force-control behavior, task completion, or physical robot readiness."
             ),
         },
         "projected_landmarks": projected,
         "per_arm_geometry": per_arm,
         "claim_boundary": (
-            "This checks initial camera framing of USD robot links against the resolved task affordance. "
-            "It is not manipulation success, contact proof, physical reach validation, or deployment "
-            "readiness."
+            "This checks camera framing and posed USD robot-link geometry against the resolved task "
+            "affordance. It is not contact proof, physical reach validation, task completion, or "
+            "deployment readiness."
         ),
     }
 
@@ -4077,14 +4498,14 @@ def compute_arm_reach_skeleton(
     arm: str = "right",
     forward_yaw: float | None = None,
 ):
-    """Re-pose one arm of a world-space skeleton into a forward-ready seed.
+    """Re-pose one arm of a world-space skeleton into the current manipulation reach phase.
 
     The walk policy never moves the arms, so the skeleton (OSCAR's action conditioning) just shows a
     rigid robot. This rotates the arm chain about the shoulder so the hand travels from its rest spot
-    to a shoulder-relative forward-ready target as ``reach_frac`` goes 0->1. The task target is only
-    fallback direction context when a robot yaw is unavailable; it is not treated as a solved reach or
-    contact point. Each arm link keeps its rest fractional distance from the shoulder, and the seed is
-    clamped to the arm's length so it never overstretches. Pure geometry, GPU-independent.
+    to a shoulder-relative reach target as ``reach_frac`` goes 0->1. Early frames preserve the
+    forward-ready seed used for policy conditioning; endpoint frames aim at the resolved affordance for
+    visible review. Each arm link keeps its rest fractional distance from the shoulder, and the reach
+    is clamped to the arm's length so it never overstretches. Pure geometry, GPU-independent.
 
     ``skeleton`` is ``[(name, (x,y,z)), ...]``; returns the same shape with the arm links re-placed.
     """
@@ -4127,12 +4548,13 @@ def compute_arm_reach_skeleton(
     shoulder = centroid(sh)
     hand_rest = centroid(hand)
     arm_len = length(sub(hand_rest, shoulder)) or 1e-6
-    seed_target = _manipulation_seed_arm_target_for_shoulder(
+    reach_target = _manipulation_arm_target_for_reach_fraction(
         shoulder,
         target,
+        reach_frac,
         forward_yaw=forward_yaw,
     )
-    to_target = sub(seed_target, shoulder)
+    to_target = sub(reach_target, shoulder)
     tlen = length(to_target) or 1e-6
     reach_dist = min(arm_len, tlen)
     hand_reach = add(shoulder, scale(to_target, reach_dist / tlen))  # clamped along shoulder->target
@@ -4244,15 +4666,15 @@ def _pose_arm_kinematic_usd(
     reach_frac: float = 1.0,
     forward_yaw: float | None = None,
 ) -> int:
-    """Kinematically pose the G1 arm(s) into a manipulation-ready forward seed.
+    """Kinematically pose the G1 arm(s) into the current manipulation reach phase.
 
     Pure USD: rotate the requested arm link set about the shoulder pivot so the
-    shoulder->effector direction points into the robot's forward-ready corridor. Some G1 USD variants do not place
+    shoulder->effector direction points into the current reach target. Some G1 USD variants do not place
     elbow/wrist/hand links below the shoulder link in an ordinary transform hierarchy, so rotating
     only the shoulder can report success while the visible/measured hand stays in rest pose. This path
     therefore authors target world transforms for every actual side-arm link prim and then verifies
-    that the measured effector link moved. It seeds the frame; it does not claim contact or task
-    completion. No physics tensor view is used.
+    that the measured effector link moved. Endpoint aiming is review geometry, not contact or task
+    completion proof. No physics tensor view is used.
     """
     from pxr import Usd, UsdGeom, Gf  # type: ignore
     sides = ("left", "right") if arm == "both" else (arm,)
@@ -4263,8 +4685,8 @@ def _pose_arm_kinematic_usd(
     for side in sides:
         shoulder = (_find_arm_link(links, side, "shoulder", "pitch")
                     or _find_arm_link(links, side, "shoulder"))
-        # Align shoulder->effector with the robot-forward seed. The effector is not translated to the
-        # affordance; distance remains metadata for the downstream policy/WAM rollout.
+        # Align shoulder->effector with the current reach target. The effector is not translated
+        # beyond its arm span; final distance remains a measured success-gate input.
         effector = (_find_arm_link(links, side, "hand") or _find_arm_link(links, side, "palm")
                     or _find_arm_link(links, side, "wrist") or _find_arm_link(links, side, "elbow"))
         if shoulder is None or effector is None:
@@ -4275,15 +4697,16 @@ def _pose_arm_kinematic_usd(
         sp = sh_w.ExtractTranslation()
         ep = el_w.ExtractTranslation()
         shoulder_xyz = (float(sp[0]), float(sp[1]), float(sp[2]))
-        seed_target = _manipulation_seed_arm_target_for_shoulder(
+        reach_target = _manipulation_arm_target_for_reach_fraction(
             shoulder_xyz,
             target,
+            reach_frac,
             forward_yaw=forward_yaw,
         )
         axis, angle = arm_reach_rotation(
             shoulder_xyz,
             (float(ep[0]), float(ep[1]), float(ep[2])),
-            seed_target,
+            reach_target,
             reach_frac,
         )
         if angle < 1e-4:
@@ -7089,9 +7512,10 @@ def _render_quality_config(
 ) -> dict[str, Any]:
     """Return scene-agnostic RTX quality settings for review manipulation frames.
 
-    ``render_subframes`` alone does not switch Replicator out of the realtime RTX lighting path. For
-    reviewed manipulation/verify frames, multi-subframe renders should use the path-traced renderer so
-    samples accumulate into one cleaner frame while preserving authored materials/textures.
+    Review seed frames default to real-time RTX lighting because it is deterministic/rasterized
+    enough for policy/WAM source observations and avoids Monte-Carlo speckle on non-white robot
+    materials. Path tracing remains available as an explicit audit/rendering mode when physically
+    richer lighting is more important than seed-frame cleanliness.
     """
     subframes = max(1, int(render_subframes))
     raw_mode = str(
@@ -7105,7 +7529,7 @@ def _render_quality_config(
     elif normalized_mode in pathtraced_modes:
         use_pathtraced = True
     else:
-        use_pathtraced = subframes > 1 and (bool(manipulation_cam) or bool(verify_cam))
+        use_pathtraced = False
 
     if samples_per_pixel is None:
         raw_spp = os.getenv("PARITY_PATH_TRACING_SAMPLES_PER_PIXEL", "").strip()
@@ -7255,12 +7679,18 @@ def _effective_software_denoise(
     software_denoise: bool,
     render_quality: Mapping[str, Any] | None,
 ) -> bool:
-    """Save path-traced review frames RAW, matching the audit's clean output
-    (``software_denoise_applied: false``). The median_firefly filter exists for
-    realtime firefly speckle; applied to residual path-tracing noise it
-    posterizes the frame instead of cleaning it."""
+    """Return whether saved RGB review frames should get deterministic CPU denoise.
+
+    The renderer can still emit path-tracing speckle after a non-white review-material pose change
+    even when RTX/OptiX denoise is requested. Keep the saved-frame cleanup deterministic and recorded
+    in the render-quality manifest; the downstream source QA gate remains the authority on whether
+    the frame is clean enough to use as policy/WAM evidence.
+    """
     if (render_quality or {}).get("use_pathtraced"):
-        return False
+        raw = os.getenv("PARITY_SOFTWARE_DENOISE_PATH_TRACED", "auto").strip().lower()
+        if raw in {"0", "false", "no", "off", "none", "disabled", "raw"}:
+            return False
+        return bool(software_denoise)
     return bool(software_denoise)
 
 
@@ -9102,6 +9532,12 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             last_root_diagnostics: dict[str, Any] | None = None
             stance_plan_path = sdir / "task_stance_plan.json"
             scenario_robot_render_diag = dict(robot_render_diag or {})
+            pov_camera_mode = "robot_mounted_manipulation" if manipulation_cam else "root_follow"
+            pov_camera_label = (
+                "robot-mounted manipulation POV"
+                if manipulation_cam
+                else "root-follow camera saved under the legacy robot_pov filename"
+            )
             def _write_pov_geometry_report() -> dict[str, Any] | None:
                 if not pov_geometry_records:
                     return None
@@ -9129,13 +9565,21 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 contract: Mapping[str, Any],
                 frame_path: Path,
                 frame_index: int,
+                *,
+                camera_role: str,
+                camera_mode: str,
+                extra: Mapping[str, Any] | None = None,
             ) -> None:
                 row = dict(contract)
                 row.update({
                     "frame_index": int(frame_index),
                     "rgb_frame_path": str(frame_path),
                     "scenario_id": sid,
+                    "camera_role": camera_role,
+                    "camera_mode": camera_mode,
                 })
+                if extra:
+                    row.update(dict(extra))
                 camera_contract_rows.append(row)
 
             if manipulation_stand:
@@ -9770,6 +10214,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             _isaac_camera_contract(stage, over_cam, width, height),
                             over_frame_path,
                             cap,
+                            camera_role="overview",
+                            camera_mode="static_overview",
                         )
                     if over_ok and over_depth_annot is not None:
                         if _save_depth(
@@ -9807,6 +10253,13 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             _isaac_camera_contract(stage, pov_cam, width, height),
                             pov_frame_path,
                             cap,
+                            camera_role="robot_pov_compat",
+                            camera_mode=pov_camera_mode,
+                            extra={
+                                "robot_pov_filename_compatibility": True,
+                                "true_robot_head_pov": bool(manipulation_cam),
+                                "camera_mode_label": pov_camera_label,
+                            },
                         )
                         if groot_policy_enabled:
                             last_groot_policy_frame_path = pov_frame_path
@@ -9884,6 +10337,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 _isaac_camera_contract(stage, verify_cam_path, width, height),
                                 verify_frame_path,
                                 cap,
+                                camera_role="third_person_verify",
+                                camera_mode="third_person_verify",
                             )
                     if topdown_enabled and stance_plan is not None and debug_root_path is not None:
                         floor_z = float(decision.root_pose[2]) - ROBOT_PELVIS_HEIGHT_M
@@ -9928,6 +10383,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 _isaac_camera_contract(stage, topdown_cam_path, width, height),
                                 placement_topdown_frame_path,
                                 cap,
+                                camera_role="placement_topdown",
+                                camera_mode="orthographic_or_topdown_debug",
                             )
                         placement_topdown_layout_frame_path = (
                             sdir / "frames" / f"placement_topdown_layout_{cap:04d}.png"
@@ -10201,6 +10658,64 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     "blockers": pov_geometry_report.get("blockers", []),
                     "frames_checked": pov_geometry_report.get("frames_checked"),
                 }
+            robot_visual_ready = bool(
+                not robot_visual_missing
+                and (
+                    not (manipulation_cam or verify_cam)
+                    or _status_passed(outcome.get("robot_visual_geometry"))
+                )
+            )
+            pov_geometry_ready = _status_passed(pov_geometry_report)
+            task_success_contract = _scenario_task_success_contract(sc)
+            contract_result: dict[str, Any] | None = None
+            if task_success_contract == "visible_reach_to_affordance":
+                contract_result = _apply_visible_reach_to_affordance_success_contract(
+                    outcome,
+                    placement_validation=placement_validation_manifest,
+                    pov_geometry=pov_geometry_report,
+                    robot_visual_ready=robot_visual_ready,
+                    temporal_conditioning=outcome.get("manipulation_temporal_conditioning"),
+                )
+            if task_success_contract == "visible_reach_to_affordance":
+                visible_embodied_robot_action = bool(
+                    contract_result is not None and contract_result.get("status") == "PASS"
+                )
+            else:
+                visible_embodied_robot_action = bool(
+                    manipulation_cam
+                    and manipulation_reach
+                    and robot_visual_ready
+                    and pov_geometry_ready
+                )
+            review_camera_blockers: list[str] = []
+            if pov_camera_mode == "root_follow":
+                review_camera_blockers.append("robot_pov_is_root_follow_camera_not_head_pov")
+            if not visible_embodied_robot_action:
+                review_camera_blockers.append("visible_embodied_robot_action_not_proven")
+            if manipulation_cam and manipulation_reach and not pov_geometry_ready:
+                review_camera_blockers.append("manipulation_pov_geometry_not_review_ready")
+            if not robot_visual_ready:
+                review_camera_blockers.append("robot_visual_geometry_not_review_ready")
+            outcome["review_camera_evidence"] = {
+                "schema_version": REVIEW_CAMERA_EVIDENCE_SCHEMA_VERSION,
+                "robot_pov_camera_mode": pov_camera_mode,
+                "robot_pov_camera_mode_label": pov_camera_label,
+                "robot_pov_filename_compatibility": True,
+                "robot_pov_is_true_robot_head_pov": bool(manipulation_cam),
+                "verify_camera_requested": bool(verify_cam),
+                "manipulation_camera_requested": bool(manipulation_cam),
+                "manipulation_reach_requested": bool(manipulation_reach),
+                "task_success_contract": task_success_contract,
+                "visible_embodied_robot_action_evidence": visible_embodied_robot_action,
+                "robot_visual_geometry_review_ready": robot_visual_ready,
+                "manipulation_pov_geometry_review_ready": pov_geometry_ready,
+                "blockers": sorted(set(review_camera_blockers)),
+                "claim_boundary": (
+                    "The legacy robot_pov file can be a root-follow camera unless manipulation_cam is "
+                    "enabled. Visible embodied robot-action evidence requires a true robot-mounted "
+                    "manipulation camera plus review-ready robot/action geometry."
+                ),
+            }
             outcomes.append(outcome)  # record BEFORE MP4 — MP4 is optional, frames already uploaded
             for name in ("overview", "robot_pov", "placement_topdown"):
                 glob = str(sdir / "frames" / f"{name}_*.png")

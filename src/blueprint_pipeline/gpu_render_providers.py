@@ -497,22 +497,40 @@ def _do_user_data(spec: RenderLaunchSpec) -> str:
     env_file = "\n".join(f"{k}={v}" for k, v in spec.env.items())
     env_b64 = base64.b64encode(env_file.encode()).decode()
     argv_b64 = base64.b64encode(json.dumps(list(spec.bootstrap_argv)).encode()).decode()
-    entrypoint = shlex.quote(spec.entrypoint[0] if spec.entrypoint else "bash")
+    entrypoint = spec.entrypoint[0] if spec.entrypoint else "bash"
+    image_json = json.dumps(spec.image)
+    entrypoint_json = json.dumps(entrypoint)
     return f"""#!/bin/bash
-set -x
+set -euo pipefail
 echo {env_b64} | base64 -d > /root/blueprint_worker.env
 echo {argv_b64} | base64 -d > /root/blueprint_argv.json
+mkdir -p /root/blueprint-workspace/out
+chmod 0777 /root/blueprint-workspace /root/blueprint-workspace/out
 python3 - <<'PY'
-import json, shlex
+import json
 argv = json.load(open("/root/blueprint_argv.json"))
-open("/root/blueprint_run.sh", "w").write(" ".join(shlex.quote(a) for a in argv))
+open("/root/blueprint_argv_decoded.json", "w").write(json.dumps(argv, indent=2))
 PY
 docker pull {shlex.quote(spec.image)}
-docker run -d --gpus all --name blueprint-worker \\
-  --env-file /root/blueprint_worker.env \\
-  --shm-size=8g \\
-  --entrypoint {entrypoint} \\
-  {shlex.quote(spec.image)} $(cat /root/blueprint_run.sh)
+python3 - <<'PY'
+import json, subprocess
+argv = json.load(open("/root/blueprint_argv.json"))
+cmd = [
+    "docker", "run", "-d",
+    "--gpus", "all",
+    "--name", "blueprint-worker",
+    "--user", "0:0",
+    "--env-file", "/root/blueprint_worker.env",
+    "-v", "/root/blueprint-workspace:/workspace",
+    "--workdir", "/workspace",
+    "--shm-size=8g",
+    "--entrypoint", {entrypoint_json},
+    {image_json},
+    *argv,
+]
+open("/root/blueprint_docker_cmd.json", "w").write(json.dumps(cmd, indent=2))
+subprocess.check_call(cmd)
+PY
 """
 
 
@@ -709,6 +727,10 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             "size": (os.getenv("BLUEPRINT_DO_GPU_SIZE") or "").strip() or DEFAULT_DO_GPU_SIZE,
             "image": DO_GPU_BASE_IMAGE,
             "user_data": _do_user_data(spec),
+            "env": dict(spec.env),
+            "_blueprint_worker_image": spec.image,
+            "_blueprint_bootstrap_argv": list(spec.bootstrap_argv),
+            "_blueprint_entrypoint": list(spec.entrypoint),
             "tags": ["blueprint-isaac-render"],
             "ipv6": False,
             "monitoring": False,
@@ -726,6 +748,26 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         if not token:
             return {"status": "blocked", "blockers": ["digitalocean_token_missing"]}
         launch_request = dict(request)
+        worker_env = launch_request.pop("env", None)
+        worker_image = launch_request.pop("_blueprint_worker_image", None)
+        bootstrap_argv = launch_request.pop("_blueprint_bootstrap_argv", None)
+        entrypoint = launch_request.pop("_blueprint_entrypoint", None)
+        if (
+            isinstance(worker_env, dict)
+            and worker_image
+            and isinstance(bootstrap_argv, list)
+        ):
+            launch_request["user_data"] = _do_user_data(
+                RenderLaunchSpec(
+                    name=str(launch_request.get("name") or "blueprint-isaac-g1-kitchen-parity"),
+                    image=str(worker_image),
+                    env=dict(worker_env),
+                    bootstrap_argv=[str(item) for item in bootstrap_argv],
+                    entrypoint=[str(item) for item in entrypoint]
+                    if isinstance(entrypoint, list)
+                    else ["bash"],
+                )
+            )
         ssh_key_detail: dict = {
             "source": "request",
             "account_lookup_performed": False,

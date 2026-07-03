@@ -15,6 +15,15 @@ PNG_1X1 = (
 )
 
 
+def _provider_runner_namespace(tmp_path: Path) -> dict[str, object]:
+    namespace: dict[str, object] = {
+        "__name__": "blueprint_unitree_groot_sonic_provider_runner_test",
+        "__file__": str(tmp_path / "unitree_groot_n17_sonic_provider_runner.py"),
+    }
+    exec(smoke.PROVIDER_RUNNER, namespace)
+    return namespace
+
+
 def _frame(path: Path) -> Path:
     path.write_bytes(PNG_1X1)
     return path
@@ -60,6 +69,9 @@ def test_groot_n17_sonic_provider_bundle_contains_runtime_contract(tmp_path: Pat
     assert '"processor_config.json"' in runner_text
     assert "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE" in runner_text
     assert "system_python_minimal" in runner_text
+    assert "sealed_image" in runner_text
+    assert "sealed_image_uses_prebaked_system_python_deps" in runner_text
+    assert "blocked_sealed_image_missing_local_gr00t_model_snapshot" in runner_text
     assert "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT" in runner_text
     assert "--filter=blob:none --sparse" in runner_text
     assert "httpx>=0.27.0" in runner_text
@@ -195,3 +207,123 @@ def test_groot_n17_sonic_provider_smoke_dry_run(tmp_path: Path) -> None:
         "runtime_execution_blockers"
     ]
     assert Path(summary["bundle_manifest_path"]).is_file()
+
+
+def test_groot_sealed_image_bootstrap_uses_prebaked_system_python(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    namespace = _provider_runner_namespace(tmp_path)
+    repo_root = tmp_path / "Isaac-GR00T"
+    (repo_root / "gr00t" / "eval").mkdir(parents=True)
+    (repo_root / "gr00t" / "eval" / "run_gr00t_server.py").write_text(
+        "print('server')\n",
+        encoding="utf-8",
+    )
+    model_root = tmp_path / "model"
+    (model_root / "processor").mkdir(parents=True)
+    (model_root / "processor" / "processor_config.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER", "true")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE", "sealed-image")
+    monkeypatch.setenv("BLUEPRINT_UNITREE_GROOT_N17_SONIC_REMOTE_ROOT", str(repo_root))
+
+    monkeypatch.setitem(
+        namespace,
+        "_system_python_executable",
+        lambda: (
+            "python3",
+            {"status": "completed", "configured": False, "executable": "python3"},
+        ),
+    )
+
+    import_preflights: list[list[str]] = []
+
+    def fake_import_preflight(*, python_executable, output_dir, modules, log_name):
+        import_preflights.append(list(modules))
+        return {
+            "status": "completed",
+            "python_executable": python_executable,
+            "log_path": str(output_dir / log_name),
+            "modules": list(modules),
+        }
+
+    monkeypatch.setitem(namespace, "_python_import_preflight", fake_import_preflight)
+    monkeypatch.setitem(
+        namespace,
+        "_install_system_python_minimal_deps",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("sealed image mode must not install runtime deps")
+        ),
+    )
+
+    tcp_checks = iter([False, True])
+
+    def fake_tcp_ready(host: str, port: int) -> bool:
+        return next(tcp_checks, True)
+
+    class FakeProcess:
+        pid = 1234
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    popen_calls: list[list[str]] = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append(list(command))
+        return FakeProcess()
+
+    monkeypatch.setitem(namespace, "_tcp_ready", fake_tcp_ready)
+    monkeypatch.setattr(namespace["subprocess"], "Popen", fake_popen)
+
+    result, process = namespace["_bootstrap_gr00t_policy_server"](
+        output_dir=tmp_path / "output",
+        policy_server_url="tcp://127.0.0.1:5550",
+        model_path=str(model_root),
+    )
+
+    assert process is not None
+    assert result["status"] == "completed"
+    assert result["bootstrap_mode"] == "sealed_image"
+    assert result["system_python_deps"] == {
+        "status": "skipped",
+        "reason": "sealed_image_uses_prebaked_system_python_deps",
+        "requirements_count": 0,
+    }
+    assert result["model_resolution"]["source"] == "local_path"
+    assert result["model_resolution"]["snapshot_download_ran"] is False
+    assert import_preflights == [
+        ["torch"],
+        ["huggingface_hub", "httpx", "zmq", "transformers"],
+    ]
+    assert popen_calls and popen_calls[0][0] == "python3"
+
+
+def test_groot_sealed_image_blocks_missing_local_checkpoint_without_download(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    namespace = _provider_runner_namespace(tmp_path)
+    monkeypatch.setenv(
+        "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SEALED_MODEL_ROOT",
+        str(tmp_path / "missing_model"),
+    )
+
+    result = namespace["_materialize_groot_model_path"](
+        output_dir=tmp_path / "output",
+        model_path="LucaFrat/groot-bs16",
+        venv_python=Path("python3"),
+        env={},
+        allow_snapshot_download=False,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["snapshot_download_ran"] is False
+    assert result["blockers"] == [
+        "blocked_sealed_image_missing_local_gr00t_model_snapshot"
+    ]

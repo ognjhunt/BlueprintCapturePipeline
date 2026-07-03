@@ -23,6 +23,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -47,6 +49,9 @@ SCHEMA_VERSION = "isaac_g1_kitchen_parity_job.v1"
 JOB_MANIFEST_FILENAME = "isaac_g1_kitchen_parity_job_manifest.json"
 LAUNCH_ATTEMPT_TRACE_FILENAME = "isaac_g1_kitchen_parity_launch_attempts.json"
 WORKER_BUNDLE_DIR = "/workspace/bundle"
+PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS = frozenset({
+    "digitalocean_gpu_size_region_unavailable",
+})
 DEFAULT_G1_USD_RELATIVE = "Isaac/Robots/Unitree/G1/g1.usd"
 DEFAULT_KITCHEN_MAIN_USD = "Collected_KitchenRoom/KitchenRoom.usd"
 DEFAULT_VAST_MAX_HOURLY_RATE_USD = 5.0
@@ -255,6 +260,109 @@ def _write_launch_attempt_trace(job_dir: str | Path, trace: dict) -> Path:
     return out_path
 
 
+def _int_or_none(value) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _probe_video_file(path: str | Path) -> dict:
+    """Best-effort local media metadata for collected provider videos."""
+    video_path = Path(path)
+    if not video_path.is_file():
+        return {
+            "status": "missing",
+            "path": str(video_path),
+            "blockers": ["video_file_missing"],
+        }
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return {
+            "status": "unavailable",
+            "path": str(video_path),
+            "tool": "ffprobe",
+            "blockers": ["ffprobe_not_found"],
+        }
+    proc = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(video_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return {
+            "status": "failed",
+            "path": str(video_path),
+            "tool": ffprobe,
+            "exit_code": proc.returncode,
+            "stderr_tail": proc.stderr[-400:],
+            "blockers": ["ffprobe_failed"],
+        }
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return {
+            "status": "failed",
+            "path": str(video_path),
+            "tool": ffprobe,
+            "blockers": ["ffprobe_output_not_json"],
+        }
+    streams = payload.get("streams") if isinstance(payload.get("streams"), list) else []
+    video_stream = next(
+        (
+            item
+            for item in streams
+            if isinstance(item, dict) and item.get("codec_type") == "video"
+        ),
+        {},
+    )
+    format_info = payload.get("format") if isinstance(payload.get("format"), dict) else {}
+    fps = None
+    rate = str(video_stream.get("r_frame_rate") or "").strip()
+    if "/" in rate:
+        num, den = rate.split("/", 1)
+        den_f = _float_or_none(den)
+        if den_f:
+            fps = (_float_or_none(num) or 0.0) / den_f
+    else:
+        fps = _float_or_none(rate)
+    return {
+        "status": "ready",
+        "path": str(video_path),
+        "tool": ffprobe,
+        "width": _int_or_none(video_stream.get("width")),
+        "height": _int_or_none(video_stream.get("height")),
+        "frame_count": _int_or_none(video_stream.get("nb_frames")),
+        "fps": fps,
+        "duration_seconds": (
+            _float_or_none(video_stream.get("duration"))
+            or _float_or_none(format_info.get("duration"))
+        ),
+        "codec_name": video_stream.get("codec_name") or None,
+    }
+
+
 def parity_image() -> str:
     """Isaac worker image for the parity eval (defaults to the same Isaac eval worker)."""
     image_config = _configured_isaac_worker_image_ref()
@@ -385,7 +493,7 @@ def _vast_max_hourly_rate_from_env(default: float = DEFAULT_VAST_MAX_HOURLY_RATE
 
 # diagnostics-streaming pod bootstrap for the parity runner
 BOOTSTRAP = r'''
-import os, sys, io, time, json, zipfile, threading, subprocess, urllib.request, pathlib, shutil
+import os, sys, io, time, json, zipfile, threading, subprocess, urllib.request, pathlib, shutil, signal
 OUT="/workspace/out"; BUNDLE="/workspace/bundle"
 for d in (OUT, BUNDLE): pathlib.Path(d).mkdir(parents=True, exist_ok=True)
 for p in pathlib.Path(OUT).iterdir():
@@ -416,6 +524,11 @@ def mark(ph, **k):
 def hb():
     while True:
         time.sleep(25); putout()
+def runner_timeout_seconds():
+    raw=os.environ.get("PARITY_RUNNER_TIMEOUT_SECONDS","")
+    if not raw: return 0
+    try: return max(1, int(float(raw)))
+    except Exception: return 0
 mark("bootstrap_fetching")
 data=urllib.request.urlopen(GETB, timeout=600).read()
 zipfile.ZipFile(io.BytesIO(data)).extractall(BUNDLE)
@@ -476,8 +589,25 @@ if os.environ.get("PARITY_SERVE","")=="1":
     if os.environ.get("PARITY_SERVE_IDLE_TIMEOUT",""): cmd += ["--serve-idle-timeout", os.environ["PARITY_SERVE_IDLE_TIMEOUT"]]
     if os.environ.get("PARITY_SERVE_MAX_JOBS",""): cmd += ["--serve-max-jobs", os.environ["PARITY_SERVE_MAX_JOBS"]]
 mark("runner_starting", cmd=cmd)
-rc=subprocess.call(cmd)
-mark("runner_done", rc=rc)
+timeout=runner_timeout_seconds()
+started=time.monotonic()
+proc=subprocess.Popen(cmd, start_new_session=True)
+try:
+    rc=proc.wait(timeout=timeout if timeout > 0 else None)
+    mark("runner_done", rc=rc, elapsed_seconds=round(time.monotonic()-started,1),
+         timeout_seconds=timeout)
+except subprocess.TimeoutExpired:
+    try: os.killpg(proc.pid, signal.SIGTERM)
+    except Exception: pass
+    try:
+        rc=proc.wait(timeout=30)
+    except Exception:
+        try: os.killpg(proc.pid, signal.SIGKILL)
+        except Exception: pass
+        try: rc=proc.wait(timeout=10)
+        except Exception: rc=None
+    mark("runner_timeout", rc=rc, timeout_seconds=timeout,
+         elapsed_seconds=round(time.monotonic()-started,1), cmd=cmd)
 # Keep the container process alive after runner completion so RunPod does not restart it and
 # clobber the final output object before the parent collector observes runner_done.
 while True:
@@ -713,7 +843,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       serve_idle_timeout_s: float = 1800.0,
                       serve_max_jobs: int | None = None,
                       vast_max_hourly_rate_usd: float | None = None,
-                      image_startup_canary: bool = False) -> RenderLaunchSpec:
+                      image_startup_canary: bool = False,
+                      runner_timeout_seconds: int = 0) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
@@ -725,6 +856,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         "RENDER_WIDTH": str(width), "RENDER_HEIGHT": str(height), "RENDER_FPS": str(fps),
         "RENDER_WARMUP": str(warmup), "PARITY_PER_SCENARIO_SECONDS": str(per_scenario_seconds),
     }
+    if runner_timeout_seconds and runner_timeout_seconds > 0:
+        env["PARITY_RUNNER_TIMEOUT_SECONDS"] = str(int(runner_timeout_seconds))
     if no_collision_probe:
         env["PARITY_NO_PROBE"] = "1"
     if focus_radius and focus_radius > 0:
@@ -815,7 +948,13 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
 
 # ----------------------------- WAM-ready harness package -----------------------------
 
-def build_harness_package(*, result: dict, render_out_dir: Path, out_dir: Path) -> dict:
+def build_harness_package(
+    *,
+    result: dict,
+    render_out_dir: Path,
+    out_dir: Path,
+    requested_render_settings: dict | None = None,
+) -> dict:
     """Assemble the WAM-ready harness package from the collected Isaac run: per-scenario MP4s +
     traces + outcome become the inputs the WAM video-fidelity evaluator consumes. Running the
     OSCAR/COSMOS model itself is a separate GPU/checkpoint-gated step; this packages its inputs
@@ -825,18 +964,25 @@ def build_harness_package(*, result: dict, render_out_dir: Path, out_dir: Path) 
     for sc in scenarios:
         sid = sc.get("scenario_id")
         sdir = render_out_dir / str(sid)
+        overview_mp4 = sdir / "overview.mp4"
+        robot_pov_mp4 = sdir / "robot_pov.mp4"
         items.append({
             "scenario_id": sid,
             "task_success": sc.get("task_success"),
             "trace_jsonl": str(sdir / "trace.jsonl"),
-            "overview_mp4": str(sdir / "overview.mp4"),
-            "robot_pov_mp4": str(sdir / "robot_pov.mp4"),
-            "wam_reference_video": str(sdir / "overview.mp4"),
+            "overview_mp4": str(overview_mp4),
+            "robot_pov_mp4": str(robot_pov_mp4),
+            "wam_reference_video": str(overview_mp4),
+            "media_metadata": {
+                "overview_mp4": _probe_video_file(overview_mp4),
+                "robot_pov_mp4": _probe_video_file(robot_pov_mp4),
+            },
         })
     package = {
         "schema_version": "isaac_g1_kitchen_parity_harness.v1",
         "policy_id": result.get("policy_id") if isinstance(result, dict) else None,
         "rendered_by_isaac_rtx": True,
+        "requested_render_settings": requested_render_settings or {},
         "scenarios_executed": result.get("scenarios_executed") if isinstance(result, dict) else 0,
         "scenarios_passed": result.get("scenarios_passed") if isinstance(result, dict) else 0,
         "wam_evaluator": {
@@ -1112,6 +1258,50 @@ def _provider_startup_pre_runtime(snapshot: dict) -> bool:
     )
 
 
+def _unique_strings(values: Sequence[str]) -> list[str]:
+    ordered: list[str] = []
+    for value in values:
+        if value and value not in ordered:
+            ordered.append(value)
+    return ordered
+
+
+def _launch_attempt_detail_blockers(attempts: Sequence[dict]) -> list[str]:
+    blockers: list[str] = []
+    for attempt in attempts:
+        detail = attempt.get("detail") if isinstance(attempt, dict) else None
+        if not isinstance(detail, dict):
+            continue
+        blockers.extend(str(item) for item in (detail.get("blockers") or []) if item)
+    return _unique_strings(blockers)
+
+
+def _launch_failure_blockers(attempts: Sequence[dict]) -> list[str]:
+    """Classify launch failures without conflating provider capacity with dead pods."""
+    detail_blockers = _launch_attempt_detail_blockers(attempts)
+    capacity_blockers = [
+        blocker
+        for blocker in detail_blockers
+        if blocker in PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS
+    ]
+    if capacity_blockers and all(
+        (item.get("result") if isinstance(item, dict) else None) == "launch_call_failed"
+        for item in attempts
+    ):
+        return _unique_strings([
+            *capacity_blockers,
+            "provider_capacity_unavailable_before_instance_created",
+        ])
+    final_blockers = ["all_launch_attempts_flaky"]
+    if any(
+        str(item.get("result") or "").startswith("startup_no_runtime_timeout")
+        for item in attempts
+        if isinstance(item, dict)
+    ):
+        final_blockers.append("provider_startup_no_runtime_timeout")
+    return final_blockers
+
+
 def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts: int = 3,
                              marker_timeout: int = 150, poll: int = 15,
                              cold: bool = True,
@@ -1234,12 +1424,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
         trace["status"] = attempt_record["result"]
         _write_launch_attempt_trace(job_dir, trace)
     trace["status"] = "blocked"
-    final_blockers = ["all_launch_attempts_flaky"]
-    if any(
-        str(item.get("result") or "").startswith("startup_no_runtime_timeout")
-        for item in attempts
-    ):
-        final_blockers.append("provider_startup_no_runtime_timeout")
+    final_blockers = _launch_failure_blockers(attempts)
     trace["blockers"] = final_blockers
     _write_launch_attempt_trace(job_dir, trace)
     return {
@@ -1304,15 +1489,20 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
                     return {"ready": True, "elapsed_seconds": round(_time.monotonic() - start, 1),
                             "last_phase": last_phase, "serve_detail": detail, "instance_id": instance_id}
                 if (
-                    last_phase == "runner_done"
+                    last_phase in {"runner_done", "runner_timeout"}
                     and (
                         not expected_session
                         or bootstrap_session == expected_session
                     )
                 ):
+                    reason = (
+                        "runner_timeout_without_warm_serve_ready"
+                        if last_phase == "runner_timeout"
+                        else "runner_completed_without_warm_serve_ready"
+                    )
                     return {
                         "ready": False,
-                        "reason": "runner_completed_without_warm_serve_ready",
+                        "reason": reason,
                         "elapsed_seconds": round(_time.monotonic() - start, 1),
                         "last_phase": last_phase,
                         "instance_id": instance_id,
@@ -1344,7 +1534,8 @@ def run_isaac_g1_kitchen_parity_job(
     image: str | None = None, key_prefix: str = "blueprint/isaac-g1-parity", max_seconds: int = 1500,
     marker_timeout: int = 900, max_attempts: int = 3,
     startup_no_runtime_timeout: int = 0,
-    width: int = 1280, height: int = 960, warmup: int = 6, per_scenario_seconds: int = 420,
+    width: int = 1280, height: int = 960, fps: int = 20,
+    warmup: int = 6, per_scenario_seconds: int = 420,
     container_disk_gb: int = 140, volume_gb: int = 80,
     no_collision_probe: bool = False, focus_radius: float = 0.0, keep_objects: str = "",
     settle_seconds: int = 0, cheap_collision: bool = False, articulated: bool = False,
@@ -1388,6 +1579,16 @@ def run_isaac_g1_kitchen_parity_job(
                       "provider": ",".join(provider_names), "policy_id": policy_id,
                       "rendered_by": "isaac_rtx_g1_kitchen_parity",
                       "image_startup_canary": bool(image_startup_canary)}
+    requested_render_settings = {
+        "steps": int(steps),
+        "width": int(width),
+        "height": int(height),
+        "fps": int(fps),
+        "warmup_frames": int(warmup),
+        "per_scenario_seconds": int(per_scenario_seconds),
+        "expected_frame_count_per_scenario": int(steps),
+    }
+    manifest["requested_render_settings"] = requested_render_settings
     configured_warm_candidates = tuple(
         c.strip()
         for c in (os.getenv("BLUEPRINT_RUNPOD_WARM_CANDIDATES") or "").split(",")
@@ -1569,8 +1770,16 @@ def run_isaac_g1_kitchen_parity_job(
             manifest["blockers"].append("warm_inbox_presign_failed")
             return manifest
         inbox_get_url = Path(inbox["warm_inbox_get_url_file"]).read_text().strip()
+    runner_timeout_seconds = 0
+    if not serve and max_seconds and max_seconds > 60:
+        scenario_budget = max(1, len(scenarios)) * max(1, int(per_scenario_seconds))
+        runner_timeout_seconds = max(
+            300,
+            min(int(max_seconds) - 60, scenario_budget + 420),
+        )
     spec = build_launch_spec(job_dir, image=selected_image, policy_id=policy_id,
                              steps=steps, kitchen_url=kitchen_url, width=width, height=height,
+                             fps=fps,
                              container_disk_gb=container_disk_gb, volume_gb=volume_gb,
                              serve=serve, inbox_get_url=inbox_get_url,
                              serve_idle_timeout_s=serve_idle_timeout_s, serve_max_jobs=serve_max_jobs,
@@ -1600,10 +1809,14 @@ def run_isaac_g1_kitchen_parity_job(
                              groot_policy_command_timeout_seconds=(
                                  effective_groot_policy_command_timeout_seconds
                              ),
-                             image_startup_canary=image_startup_canary)
+                             image_startup_canary=image_startup_canary,
+                             runner_timeout_seconds=runner_timeout_seconds)
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
                                         "policy_id": policy_id, "steps": steps,
+                                        "width": int(width), "height": int(height),
+                                        "fps": int(fps),
+                                        "runner_timeout_seconds": int(runner_timeout_seconds),
                                         "container_disk_gb": int(container_disk_gb),
                                         "volume_gb": int(volume_gb),
                                         "vast_max_hourly_rate_usd": spec.max_hourly_rate_usd,
@@ -1725,7 +1938,17 @@ def run_isaac_g1_kitchen_parity_job(
         for blocker in launch.get("blockers") or []:
             if blocker not in manifest["blockers"]:
                 manifest["blockers"].append(blocker)
-        manifest["blockers"].append("launch_failed_all_attempts_flaky")
+        failed_launch_blocker = (
+            "launch_failed_provider_capacity_unavailable"
+            if any(
+                blocker in PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS
+                or blocker == "provider_capacity_unavailable_before_instance_created"
+                for blocker in (launch.get("blockers") or [])
+            )
+            else "launch_failed_all_attempts_flaky"
+        )
+        if failed_launch_blocker not in manifest["blockers"]:
+            manifest["blockers"].append(failed_launch_blocker)
         return manifest
     if serve:
         # Warm pod: leave it RUNNING. Wait for the serve-ready marker, then hand the caller the inbox
@@ -1765,6 +1988,7 @@ def run_isaac_g1_kitchen_parity_job(
         "runner_result_source": result.get("runner_result_source"),
         "last_bootstrap": result.get("last_bootstrap"),
         "runner_console_tail": result.get("runner_console_tail"),
+        "runner_timeout_observed": result.get("runner_timeout_observed"),
     }
     if render_noise_audit:
         audit_worker_result: dict = {}
@@ -1809,15 +2033,24 @@ def run_isaac_g1_kitchen_parity_job(
         pass
     manifest["parity_result"] = parity_result
     parity_status = str(parity_result.get("status") or "").strip().lower()
-    runner_completed = not bool(result.get("timed_out_without_runner_done"))
+    runner_timeout_observed = bool(result.get("runner_timeout_observed"))
+    runner_completed = (
+        not bool(result.get("timed_out_without_runner_done"))
+        and not runner_timeout_observed
+    )
     manifest["runner_completed"] = runner_completed
+    manifest["runner_timeout_observed"] = runner_timeout_observed
     manifest["parity_result_status"] = parity_status or None
     if parity_status == "completed" and image_startup_canary:
         manifest["image_startup_canary_result"] = parity_result
         manifest["status"] = "completed"
     elif parity_status == "completed":
-        manifest["harness"] = build_harness_package(result=parity_result, render_out_dir=render_out,
-                                                    out_dir=out_dir)
+        manifest["harness"] = build_harness_package(
+            result=parity_result,
+            render_out_dir=render_out,
+            out_dir=out_dir,
+            requested_render_settings=requested_render_settings,
+        )
         manifest["status"] = "completed"
     elif runner_completed and parity_result:
         manifest["status"] = "blocked"
@@ -1826,6 +2059,8 @@ def run_isaac_g1_kitchen_parity_job(
                 manifest["blockers"].append(blocker)
         if "isaac_parity_result_blocked" not in manifest["blockers"]:
             manifest["blockers"].append("isaac_parity_result_blocked")
+    elif runner_timeout_observed:
+        manifest["blockers"].append("isaac_runner_timeout")
     elif runner_completed:
         manifest["blockers"].append("isaac_runner_completed_without_result")
     else:
@@ -1863,6 +2098,9 @@ def main(argv=None) -> int:
         help="timeout for each GR00T/SONIC policy command call inside the Isaac worker",
     )
     ap.add_argument("--steps", type=int, default=64)
+    ap.add_argument("--width", type=int, default=1280)
+    ap.add_argument("--height", type=int, default=960)
+    ap.add_argument("--fps", type=int, default=20)
     ap.add_argument("--provider", default="runpod",
                     help=(
                         "provider name. RunPod is the paid default; Vast is disabled for paid "
@@ -2012,6 +2250,7 @@ def main(argv=None) -> int:
         scenarios=scenarios, out_dir=args.out_dir, kitchen_asset_dir=args.kitchen_asset_dir,
         kitchen_url=args.kitchen_url,
         g1_usd=args.g1_usd, policy_id=args.policy, steps=args.steps, provider=args.provider,
+        width=args.width, height=args.height, fps=args.fps,
         groot_policy_command=args.groot_policy_command,
         groot_policy_command_timeout_seconds=args.groot_policy_command_timeout_seconds,
         allow_paid=args.allow_paid, allow_dirty_paid_launch=args.allow_dirty_paid_launch,

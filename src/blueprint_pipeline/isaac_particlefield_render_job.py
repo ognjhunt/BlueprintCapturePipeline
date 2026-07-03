@@ -399,7 +399,7 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
                 last_console_tail = console.read_text(encoding="utf-8", errors="replace")[-4000:]
             except Exception:  # noqa: BLE001
                 pass
-        if boot.get("phase") == "runner_done":
+        if boot.get("phase") in {"runner_done", "runner_timeout"}:
             done = True
             break
         bootstrap_matches_current_launch = bool(
@@ -437,11 +437,15 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
     completed = bool(done and last.get("status") == "completed")
     runner_started = bool(done or last or last_boot or last_console_tail)
     runner_done_observed = last_boot.get("phase") == "runner_done"
+    runner_timeout_observed = last_boot.get("phase") == "runner_timeout"
     timed_out_without_runner_done = not done
+    provider_name = str(getattr(provider, "name", "") or "").strip().lower()
+    stop_releases_compute = provider_name != "digitalocean"
     should_preserve_for_warm_reuse = bool(
         done
         and runner_done_observed
         and not done_from_final_result_without_runner_done
+        and stop_releases_compute
         and (preserve_instance or (stop_on_success and runner_started))
         and hasattr(provider, "stop")
     )
@@ -460,11 +464,17 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         # providers that bill stopped disks (notably RunPod) release storage as well as compute.
         teardown = provider.terminate(instance_id)
         teardown_reason = (
+            "runner_timeout_terminated"
+            if runner_timeout_observed
+            else
             "final_result_without_runner_done_terminated"
             if done_from_final_result_without_runner_done
             else
             "timeout_without_runner_done_terminated"
             if timed_out_without_runner_done
+            else
+            "runner_done_terminated_no_warm_reuse"
+            if done and runner_done_observed
             else "launch_dud_terminated"
         )
     return {"status": "completed" if completed else "blocked",
@@ -473,6 +483,7 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             "teardown": teardown, "teardown_reason": teardown_reason,
             "timed_out_without_runner_done": timed_out_without_runner_done,
             "runner_done_observed": runner_done_observed,
+            "runner_timeout_observed": runner_timeout_observed,
             "final_result_without_runner_done": done_from_final_result_without_runner_done,
             "elapsed_seconds": round(time.time() - t0, 1)}
 

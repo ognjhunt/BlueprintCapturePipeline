@@ -349,7 +349,11 @@ def test_docker_start_cmd_runs_parity_runner() -> None:
     assert "/isaac-sim/python.sh /workspace/boot.py" in body
     assert "pathlib.Path(OUT).iterdir()" in body
     assert "shutil.rmtree(p)" in body
-    assert 'mark("runner_done", rc=rc)' in body
+    assert "PARITY_RUNNER_TIMEOUT_SECONDS" in body
+    assert "subprocess.Popen(cmd, start_new_session=True)" in body
+    assert "os.killpg(proc.pid, signal.SIGTERM)" in body
+    assert 'mark("runner_done", rc=rc' in body
+    assert 'mark("runner_timeout"' in body
     assert "while True:" in body and "putout()" in body
     # tee opens runner_console.log before boot.py's OUT cleanup runs; the cleanup must skip
     # it or the console writes to an unlinked inode and never reaches the output zip.
@@ -381,11 +385,32 @@ def test_build_launch_spec_carries_policy_and_signed_urls(tmp_path: Path) -> Non
     assert spec.image == "img:tag"
     assert spec.env["PARITY_POLICY"] == "groot_sonic"
     assert spec.env["PARITY_STEPS"] == "80"
+    assert spec.env["RENDER_WIDTH"] == "1280"
+    assert spec.env["RENDER_HEIGHT"] == "960"
+    assert spec.env["RENDER_FPS"] == "20"
+    assert "PARITY_RUNNER_TIMEOUT_SECONDS" not in spec.env
     assert spec.env["BLUEPRINT_EVAL_MANIFEST_URI"].endswith("sig=A")
     assert spec.env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"].endswith("sig=B")
     assert spec.bootstrap_argv[0] == "-lc"
     assert spec.container_disk_gb >= 120
     assert spec.max_hourly_rate_usd == 5.0
+
+
+def test_build_launch_spec_threads_runner_timeout(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+
+    spec = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="p",
+        steps=8,
+        runner_timeout_seconds=840,
+    )
+
+    assert spec.env["PARITY_RUNNER_TIMEOUT_SECONDS"] == "840"
 
 
 def test_build_launch_spec_threads_groot_policy_command(tmp_path: Path) -> None:
@@ -656,17 +681,46 @@ def test_manipulation_stand_flag_threads_env_and_bootstrap(tmp_path: Path) -> No
 
 
 def test_build_harness_package_is_wam_ready_and_honest(tmp_path: Path) -> None:
+    def _fake_probe(path: Path) -> dict:
+        return {
+            "status": "ready",
+            "path": str(path),
+            "width": 640,
+            "height": 480,
+            "frame_count": 81,
+            "fps": 20.0,
+        }
+
+    original_probe = J._probe_video_file
+    J._probe_video_file = _fake_probe
     result = {
         "policy_id": "blueprint_default_walk_to_target_smoke_policy",
         "scenarios_executed": 2, "scenarios_passed": 1,
         "scenarios": [{"scenario_id": "entry_to_sink", "task_success": True},
                       {"scenario_id": "narrow_passage_to_sink", "task_success": False}],
     }
-    pkg = J.build_harness_package(result=result, render_out_dir=tmp_path / "render", out_dir=tmp_path / "out")
+    try:
+        pkg = J.build_harness_package(
+            result=result,
+            render_out_dir=tmp_path / "render",
+            out_dir=tmp_path / "out",
+            requested_render_settings={
+                "width": 640,
+                "height": 480,
+                "fps": 20,
+                "expected_frame_count_per_scenario": 81,
+            },
+        )
+    finally:
+        J._probe_video_file = original_probe
     assert pkg["wam_evaluator"]["evaluates"] == "video_rollout_fidelity_not_task_success"
     assert pkg["wam_evaluator"]["status"] == "inputs_ready_pending_model_run"
+    assert pkg["requested_render_settings"]["width"] == 640
+    assert pkg["requested_render_settings"]["expected_frame_count_per_scenario"] == 81
     assert len(pkg["wam_evaluator"]["inputs"]) == 2
     assert pkg["wam_evaluator"]["inputs"][0]["overview_mp4"].endswith("entry_to_sink/overview.mp4")
+    assert pkg["wam_evaluator"]["inputs"][0]["media_metadata"]["overview_mp4"]["width"] == 640
+    assert pkg["wam_evaluator"]["inputs"][0]["media_metadata"]["overview_mp4"]["frame_count"] == 81
     assert "not task success" in pkg["claim_boundary"].lower()
     assert (tmp_path / "out" / "isaac_g1_kitchen_parity_harness.json").is_file()
 
@@ -682,10 +736,24 @@ def test_job_prepared_plan_without_spend(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(J, "stage_bundle", _fake_stage)
     m = J.run_isaac_g1_kitchen_parity_job(scenarios=_SCENARIOS, out_dir=tmp_path / "job",
                                           provider="vast", allow_paid=False,
-                                          robot_review_material_override=True)
+                                          robot_review_material_override=True,
+                                          width=640, height=480, fps=20, steps=81)
     assert m["status"] == "prepared"
     assert m["provider"] == "vast"
     assert m["launch_request_shape"]["provider"] == "vast"
+    assert m["requested_render_settings"] == {
+        "steps": 81,
+        "width": 640,
+        "height": 480,
+        "fps": 20,
+        "warmup_frames": 6,
+        "per_scenario_seconds": 420,
+        "expected_frame_count_per_scenario": 81,
+    }
+    assert m["launch_request_shape"]["steps"] == 81
+    assert m["launch_request_shape"]["width"] == 640
+    assert m["launch_request_shape"]["height"] == 480
+    assert m["launch_request_shape"]["fps"] == 20
     assert m["launch_request_shape"]["vast_max_hourly_rate_usd"] == 5.0
     assert m["launch_request_shape"]["container_disk_gb"] == 140
     assert m["launch_request_shape"]["volume_gb"] == 80
@@ -1543,6 +1611,56 @@ def test_launch_with_marker_retry_terminates_all_flaky_pods(tmp_path: Path, monk
     assert trace["attempts"][-1]["result"] == "marker_timeout_terminated"
 
 
+def test_launch_with_marker_retry_reports_provider_capacity_before_instance(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+
+    class _CapacityBlockedProvider:
+        name = "digitalocean"
+
+        def __init__(self) -> None:
+            self.launch_calls = 0
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            self.launch_calls += 1
+            return {
+                "status": "blocked",
+                "blockers": ["digitalocean_gpu_size_region_unavailable"],
+                "attempts": [
+                    {
+                        "create_status": 422,
+                        "size": "gpu-l40sx1-48gb",
+                        "region": "tor1",
+                        "retryable_region_capacity_error": True,
+                    }
+                ],
+            }
+
+    provider = _CapacityBlockedProvider()
+    monkeypatch.setattr(
+        J.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("marker polled")),
+    )
+
+    res = J.launch_with_marker_retry(provider, jd, {"img": "x"}, max_attempts=2)
+
+    assert res["status"] == "blocked"
+    assert res["blockers"] == [
+        "digitalocean_gpu_size_region_unavailable",
+        "provider_capacity_unavailable_before_instance_created",
+    ]
+    assert provider.launch_calls == 2
+    assert all(item["result"] == "launch_call_failed" for item in res["attempts"])
+    trace = json.loads((jd / J.LAUNCH_ATTEMPT_TRACE_FILENAME).read_text(encoding="utf-8"))
+    assert trace["status"] == "blocked"
+    assert trace["blockers"] == res["blockers"]
+
+
 def test_launch_with_marker_retry_terminates_pre_runtime_stall(
     tmp_path: Path,
     monkeypatch,
@@ -1775,6 +1893,63 @@ def test_job_warm_only_blocks_without_cold_spend(tmp_path: Path, monkeypatch) ->
     assert provider.launch_calls == [(False, False)]
 
 
+def test_job_reports_provider_capacity_without_flaky_launch_label(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_test_worker_image(monkeypatch)
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
+    )
+
+    def _fake_stage(bundle_zip, job_dir, *, key_prefix):
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+        (job_dir / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+        (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+        return {"status": "completed"}
+
+    class _CapacityBlockedProvider:
+        name = "digitalocean"
+
+        def available(self):
+            return {"provider": self.name, "available": True, "reason": None}
+
+        def build_request(self, spec, job_dir):
+            return {"image": spec.image}
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            return {
+                "status": "blocked",
+                "blockers": ["digitalocean_gpu_size_region_unavailable"],
+            }
+
+    provider = _CapacityBlockedProvider()
+    monkeypatch.setattr(J, "stage_bundle", _fake_stage)
+    monkeypatch.setattr(J, "get_render_provider", lambda name, warm_candidates=(): provider)
+    monkeypatch.setattr(
+        J.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("marker polled")),
+    )
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="digitalocean",
+        allow_paid=True,
+        max_attempts=1,
+    )
+
+    assert m["status"] == "blocked"
+    assert "digitalocean_gpu_size_region_unavailable" in m["blockers"]
+    assert "provider_capacity_unavailable_before_instance_created" in m["blockers"]
+    assert "launch_failed_provider_capacity_unavailable" in m["blockers"]
+    assert "launch_failed_all_attempts_flaky" not in m["blockers"]
+
+
 def _install_fake_warm_serve_stack(monkeypatch, tmp_path: Path, *, ready: bool):
     _set_test_worker_image(monkeypatch)
     monkeypatch.setenv(J.ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV, "true")
@@ -2005,6 +2180,45 @@ def test_await_warm_serve_ready_fails_fast_when_runner_done_without_ready(
     assert res["reason"] == "runner_completed_without_warm_serve_ready"
     assert res["last_phase"] == "runner_done"
     assert "isaac_runner_exception.json" in res["zip_entries"]
+    assert slept["called"] is False
+
+
+def test_await_warm_serve_ready_fails_fast_when_runner_timeout_without_ready(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import io as _io
+    import zipfile as _zip
+
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+    (jd / "launch_session_nonce.txt").write_text("fresh-session", encoding="utf-8")
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w") as z:
+        z.writestr("bootstrap.json", json.dumps({
+            "phase": "runner_timeout",
+            "launch_session_id": "fresh-session",
+            "timeout_seconds": 840,
+        }))
+        z.writestr("runner_console.log", "SimulationApp boot did not finish\n")
+    data = buf.getvalue()
+
+    class _R:
+        def read(self) -> bytes:
+            return data
+
+    slept = {"called": False}
+    monkeypatch.setattr(J.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(J.time, "sleep", lambda _s: slept.__setitem__("called", True))
+    monkeypatch.setattr(J.urllib.request, "urlopen", lambda _url, timeout=60: _R())
+
+    res = J._await_warm_serve_ready(jd, instance_id="pod1", timeout_s=120, poll_interval_s=30)
+
+    assert res["ready"] is False
+    assert res["reason"] == "runner_timeout_without_warm_serve_ready"
+    assert res["last_phase"] == "runner_timeout"
+    assert "runner_console.log" in res["zip_entries"]
     assert slept["called"] is False
 
 

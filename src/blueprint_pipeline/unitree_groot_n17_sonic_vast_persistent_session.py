@@ -178,6 +178,7 @@ SYNTHETIC_FALLBACK_WAM_SOURCE_KINDS = {
 DEFAULT_INNER_POLICY_COMMAND = (
     "python -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
 )
+UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE"
 RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV = {
     OSCAR_WAM_VISUAL_PROFILE_ENV: "smoke",
     "BLUEPRINT_OSCAR_WAM_NUM_STEPS": "2",
@@ -187,7 +188,7 @@ RUNPOD_WAM_CARRIER_SMOKE_DEFAULT_ENV = {
     "BLUEPRINT_OSCAR_WAM_WIDTH": "128",
     "BLUEPRINT_OSCAR_WAM_FPS": "4",
     "BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS": "1200",
-    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE": "system_python_minimal",
+    UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV: "system_python_minimal",
     "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT": "true",
     "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS": "2400",
 }
@@ -200,7 +201,7 @@ RUNPOD_WAM_CARRIER_REVIEW_QUALITY_DEFAULT_ENV = {
     "BLUEPRINT_OSCAR_WAM_WIDTH": "640",
     "BLUEPRINT_OSCAR_WAM_FPS": "15",
     "BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS": "1200",
-    "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE": "system_python_minimal",
+    UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV: "system_python_minimal",
     "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SPARSE_CHECKOUT": "true",
     "BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS": "2400",
 }
@@ -5453,6 +5454,30 @@ def _runpod_unitree_groot_sonic_image_contract_policy(
     }
 
 
+def _runpod_unitree_groot_sonic_should_default_to_sealed_bootstrap(
+    *,
+    provider_bundle_kind: str,
+    previous_bootstrap_mode: str | None,
+) -> bool:
+    if _string(provider_bundle_kind).lower() != "wam":
+        return False
+    if previous_bootstrap_mode is not None:
+        return False
+    runtime_bootstrap_allowed = _truthy(
+        os.getenv(RUNPOD_UNITREE_GROOT_SONIC_ALLOW_RUNTIME_BOOTSTRAP_ENV)
+    )
+    if runtime_bootstrap_allowed:
+        return False
+    require_sealed_image = True
+    explicit_require = _string(os.getenv(RUNPOD_UNITREE_GROOT_SONIC_REQUIRE_SEALED_IMAGE_ENV))
+    if explicit_require:
+        require_sealed_image = _truthy(explicit_require)
+    return bool(
+        require_sealed_image
+        and _truthy(os.getenv(RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV))
+    )
+
+
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -9776,6 +9801,13 @@ def run_persistent_session_runpod(
         wam_carrier_defaults = _runpod_wam_carrier_defaults_for_profile(visual_profile)
         for key, value in wam_carrier_defaults.items():
             os.environ.setdefault(key, value)
+        if _runpod_unitree_groot_sonic_should_default_to_sealed_bootstrap(
+            provider_bundle_kind=runpod_provider_bundle_kind,
+            previous_bootstrap_mode=previous_wam_default_env.get(
+                UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV
+            ),
+        ):
+            os.environ[UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV] = "sealed_image"
         if visual_profile == "smoke":
             os.environ["BLUEPRINT_OSCAR_WAM_NUM_FRAMES"] = str(
                 max(
@@ -9802,7 +9834,7 @@ def run_persistent_session_runpod(
         image_contract_policy = _runpod_unitree_groot_sonic_image_contract_policy(
             provider_bundle_kind=runpod_provider_bundle_kind,
             image_name=runpod_image_name,
-            bootstrap_mode=os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE"),
+            bootstrap_mode=os.environ.get(UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV),
         )
         if image_contract_policy.get("status") == "blocked":
             output = _blocked_payload(

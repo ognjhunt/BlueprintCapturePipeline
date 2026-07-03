@@ -6,8 +6,10 @@ fail-closed no-spend guards, and provider-parameterized teardown.
 """
 from __future__ import annotations
 
+import base64
 import io
 import json
+import re
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -495,6 +497,53 @@ def test_watch_and_collect_stops_successful_pod_for_warm_reuse(tmp_path: Path, m
     assert res["teardown"]["status"] == "stopped"
 
 
+def test_watch_and_collect_terminates_digitalocean_runner_done(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from blueprint_pipeline import isaac_particlefield_render_job as job
+
+    class _FakeProvider:
+        name = "digitalocean"
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.terminated: str | None = None
+
+        def stop(self, instance_id: str) -> dict:
+            self.stopped = instance_id
+            return {"status": "stopped", "http": 201}
+
+        def terminate(self, instance_id: str) -> dict:
+            self.terminated = instance_id
+            return {"status": "terminated", "http": 204}
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bootstrap.json", json.dumps({"phase": "runner_done", "rc": 0}))
+        zf.writestr("isaac_g1_kitchen_parity_result.json", json.dumps({"status": "completed"}))
+    payload_bytes = payload.getvalue()
+
+    class _Response:
+        def read(self) -> bytes:
+            return payload_bytes
+
+    monkeypatch.setattr(job.urllib.request, "urlopen", lambda _url, timeout=60: _Response())
+    monkeypatch.setattr(job.time, "sleep", lambda _seconds: None)
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+    fake = _FakeProvider()
+
+    res = job.watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1)
+
+    assert res["status"] == "completed"
+    assert fake.terminated == "inst-9"
+    assert fake.stopped is None
+    assert res["teardown_reason"] == "runner_done_terminated_no_warm_reuse"
+    assert res["teardown"]["status"] == "terminated"
+
+
 def test_watch_and_collect_stops_blocked_runner_pod_for_warm_reuse(tmp_path: Path, monkeypatch) -> None:
     from blueprint_pipeline import isaac_particlefield_render_job as job
 
@@ -539,6 +588,54 @@ def test_watch_and_collect_stops_blocked_runner_pod_for_warm_reuse(tmp_path: Pat
     assert fake.stopped == "inst-9"
     assert fake.terminated is None
     assert res["teardown"]["status"] == "stopped"
+
+
+def test_watch_and_collect_terminates_runner_timeout(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import isaac_particlefield_render_job as job
+
+    class _FakeProvider:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.terminated: str | None = None
+
+        def stop(self, instance_id: str) -> dict:
+            self.stopped = instance_id
+            return {"status": "stopped", "http": 204}
+
+        def terminate(self, instance_id: str) -> dict:
+            self.terminated = instance_id
+            return {"status": "terminated", "http": 204}
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bootstrap.json", json.dumps({
+            "phase": "runner_timeout",
+            "timeout_seconds": 840,
+        }))
+        zf.writestr("runner_console.log", "SimulationApp boot did not finish\n")
+    payload_bytes = payload.getvalue()
+
+    class _Response:
+        def read(self) -> bytes:
+            return payload_bytes
+
+    monkeypatch.setattr(job.urllib.request, "urlopen", lambda _url, timeout=60: _Response())
+    monkeypatch.setattr(job.time, "sleep", lambda _seconds: None)
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+    fake = _FakeProvider()
+
+    res = job.watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1)
+
+    assert res["status"] == "blocked"
+    assert res["runner_timeout_observed"] is True
+    assert res["timed_out_without_runner_done"] is False
+    assert res["teardown_reason"] == "runner_timeout_terminated"
+    assert fake.terminated == "inst-9"
+    assert fake.stopped is None
 
 
 def test_watch_and_collect_ignores_stale_result_before_runner_done(tmp_path: Path, monkeypatch) -> None:
@@ -802,10 +899,20 @@ def test_digitalocean_build_request_wraps_worker_in_user_data(monkeypatch, tmp_p
     assert body["region"] == "atl1"
     assert body["image"] == "gpu-h100x1-base"     # NVIDIA AI/ML-ready (drivers+docker)
     ud = body["user_data"]
-    assert "docker run" in ud and "--gpus all" in ud
+    assert "set -x" not in ud
+    assert "set -euo pipefail" in ud
+    assert "mkdir -p /root/blueprint-workspace/out" in ud
+    assert '"docker", "run", "-d"' in ud
+    assert '"--gpus", "all"' in ud
+    assert '"--user", "0:0"' in ud
+    assert '"-v", "/root/blueprint-workspace:/workspace"' in ud
+    assert '"--workdir", "/workspace"' in ud
     assert spec.image in ud
     # env + bootstrap ride base64 so presigned URLs / scripts survive shell quoting
     assert "base64 -d" in ud
+    assert "$(cat /root/blueprint_run.sh)" not in ud
+    assert "subprocess.check_call(cmd)" in ud
+    assert "blueprint_argv_decoded.json" in ud
     assert body["tags"] == ["blueprint-isaac-render"]
 
 
@@ -848,6 +955,45 @@ def test_digitalocean_launch_creates_droplet_and_writes_id(monkeypatch, tmp_path
     assert res["mode"] == "do_gpu_droplet"
     assert res["ssh_key_configuration"]["source"] == "account_keys_api_first_available"
     assert (tmp_path / "started_do_droplet_id.txt").read_text() == "4242"
+
+
+def test_digitalocean_launch_regenerates_user_data_after_nonce_injection(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.setenv("BLUEPRINT_DO_SSH_KEY_IDS", "123")
+    created: dict = {}
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        assert token == "t-redacted"
+        if method == "POST" and path == "/droplets":
+            created["body"] = body
+            return 202, {"droplet": {"id": 4242, "status": "new"}}
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    provider = G.DigitalOceanRenderProvider()
+    request = provider.build_request(_spec(), tmp_path)
+    request["env"]["BLUEPRINT_LAUNCH_SESSION_ID"] = "nonce-123"
+
+    res = provider.launch(tmp_path, request)
+
+    assert res["status"] == "launched"
+    body = created["body"]
+    assert "env" not in body
+    assert "_blueprint_worker_image" not in body
+    match = re.search(
+        r"echo ([A-Za-z0-9+/=]+) \| base64 -d > /root/blueprint_worker.env",
+        body["user_data"],
+    )
+    assert match is not None
+    env_text = base64.b64decode(match.group(1)).decode()
+    assert "BLUEPRINT_LAUNCH_SESSION_ID=nonce-123" in env_text
 
 
 def test_digitalocean_launch_uses_configured_ssh_keys_without_account_lookup(monkeypatch, tmp_path: Path) -> None:

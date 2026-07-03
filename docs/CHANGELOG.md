@@ -1,5 +1,80 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-02
+
+### User-Facing
+
+- Added 3DGS/InteriorGS scene placement support for labels-free PLY sidecar
+  bootstrapping, local depth/composite helpers, robot-only probe passes, and G1
+  ParticleField visual compositing. These are source-observation and render
+  support paths; they do not prove physical robot execution, contact fidelity,
+  task success, or deployment readiness.
+- Added SC3 protocol and provider-agnostic robot-eval adapter contracts,
+  including closure planning, WAM/scorer separation, and the start of a
+  ranker-validation policy ladder. SC3 consistency, WAM execution, and
+  generated-video labels remain separate evidence layers.
+- Added launch/beta readiness audit specs for geometry truth, clip curation,
+  semantic deduplication, action normalization, Cosmos3 WAM adapter work, SC3
+  scoring, calibration, temporal alignment, immutable raw captures, enrichment,
+  launch gates, CPU safety, and city-launch refresh.
+- Hardened capture truth and PTDP quality gates so fabricated geometry
+  fallbacks, malformed action data, curation gaps, dedup drift, and absent vs.
+  invalid SC3 action payloads are handled more explicitly.
+- Added scene-eval auto-generation from a single PLY/USD scene and made corrupt
+  or malformed scene files fail closed rather than raising through the caller.
+- Expanded paid-provider launch discipline: RunPod offer retry/error capture,
+  datacenter RTX pool pinning, DigitalOcean GPU Droplets provider support,
+  Lambda runtime handoff hardening, built-in Vast launcher automation, and
+  Pub/Sub handoff deployment infrastructure.
+- Guarded paid GR00T/SONIC WAM runs behind runtime plus sealed-image proof,
+  added sealed WAM image packaging, strict generated-video task-success judging,
+  remote-build packet generation, and a no-spend provider-readiness audit.
+
+### Employee-Facing
+
+- Added or extended CLI/script surfaces in `pyproject.toml` and scripts for
+  SC3 protocol handling, scene eval autogen, Pub/Sub handoff listening,
+  provider launcher automation, sealed GR00T/SONIC WAM image build/push,
+  remote-build packets, and provider-readiness audits.
+- Added new core modules including `sc3_eval_protocol.py`,
+  `scene_eval_autogen.py`, `action_normalization.py`,
+  `clip_curation_stage.py`, `semantic_dedup_stage.py`,
+  `cosmos3_wam_command_adapter.py`, `policy_ranking_ladder.py`,
+  `pubsub_handoff_listener.py`,
+  `unitree_groot_sonic_wam_image_remote_build_packet.py`, and
+  `unitree_groot_sonic_provider_readiness.py`.
+- Updated geometry, retrieval, native runtime, WAM backend/substrate,
+  PTDP/export, robot-eval orchestration, provider launch, Isaac/G1 parity, and
+  webapp-sync paths with focused tests around the new contracts and blockers.
+- Updated docs in `README.md`, `docs/SC3_EVAL_PROTOCOL.md`,
+  `docs/WAM_EPISODE_CONSISTENCY_SCORER.md`,
+  `docs/FIRST_GPU_E2E_RUNBOOK.md`, `docs/architecture/*`, and
+  `docs/specs/launch-audit-2026-07-02/*`.
+- Uncommitted local work was present in the working tree around the July 2/3
+  boundary, touching Isaac/G1 render quality, provider bootstrap quoting,
+  provider smoke/persistent-session checks, WAM generated-video review, and
+  related tests. Because several file mtimes are after midnight on July 3, this
+  entry labels that work as uncommitted and does not treat it as completed
+  July 2 proof.
+
+### Future-Agent-Facing
+
+- Preserve the proof hierarchy: raw capture/provenance evidence remains
+  authoritative. The July 2 SC3, Cosmos3, WAM, generated-video, render,
+  readiness, and provider artifacts are downstream support/evaluation layers
+  unless a separate artifact proves a stronger claim.
+- The launch/beta audit specs identify blockers and implementation direction;
+  they are not themselves public readiness, deployment approval, safety
+  validation, physical-robot readiness, or successful task execution.
+- Provider changes improve launch paths, cost controls, image sealing, and
+  handoff infrastructure. They do not prove live paid-provider completion
+  without matching runtime, artifact upload, spend, teardown, and closure
+  evidence.
+- Evidence boundary: this entry covers committed history with July 2 committer
+  dates from `483bde16` through `006616a3`. The current working tree also has
+  uncommitted local changes spanning late July 2 and early July 3; keep those
+  separate in any later closeout or push summary.
+
 ## 2026-07-01
 
 ### User-Facing

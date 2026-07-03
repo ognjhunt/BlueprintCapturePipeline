@@ -431,6 +431,29 @@ def test_manipulation_seed_arm_target_is_forward_ready_not_affordance_contact() 
     assert fallback_seed != side_handle
 
 
+def test_manipulation_reach_target_blends_to_affordance_only_at_endpoint() -> None:
+    shoulder = (0.0, 0.0, 1.2)
+    side_handle = (0.0, 0.45, 1.0)
+
+    seed = M._manipulation_arm_target_for_reach_fraction(
+        shoulder,
+        side_handle,
+        M.MANIPULATION_ENDPOINT_AFFORDANCE_AIM_START_FRACTION,
+        forward_yaw=0.0,
+    )
+    endpoint = M._manipulation_arm_target_for_reach_fraction(
+        shoulder,
+        side_handle,
+        1.0,
+        forward_yaw=0.0,
+    )
+
+    assert seed[0] > shoulder[0]
+    assert seed[1] == pytest.approx(shoulder[1])
+    assert seed != side_handle
+    assert endpoint == pytest.approx(side_handle)
+
+
 def test_manipulation_arm_link_name_filter_is_side_and_arm_specific() -> None:
     assert M._is_manipulation_arm_link_name("right_shoulder_pitch_link", "right")
     assert M._is_manipulation_arm_link_name("right_wrist_roll_link", "right")
@@ -556,7 +579,9 @@ def test_render_step_watchdog_timeout_result_is_fail_closed(tmp_path, monkeypatc
     assert payload["rendered_by_isaac_rtx"] is True
 
 
-def test_render_quality_config_enables_pathtraced_for_review_subframes(monkeypatch) -> None:
+def test_render_quality_config_defaults_seed_frames_to_realtime_and_keeps_explicit_pathtraced(
+    monkeypatch,
+) -> None:
     monkeypatch.delenv("PARITY_RENDER_QUALITY_MODE", raising=False)
     monkeypatch.delenv("PARITY_PATH_TRACING_SAMPLES_PER_PIXEL", raising=False)
 
@@ -566,14 +591,10 @@ def test_render_quality_config_enables_pathtraced_for_review_subframes(monkeypat
         verify_cam=True,
     )
 
-    assert cfg["use_pathtraced"] is True
-    # The 2026-07-02 render-noise audit proved 64 spp starves manipulation POV frames
-    # (variants B/C black) while 384 spp is clean (variants D/E) — the floor is now the
-    # audit-proven clean budget.
-    assert cfg["samples_per_pixel"] == M.DEFAULT_PATH_TRACING_MIN_SAMPLES_PER_PIXEL
-    assert cfg["samples_per_pixel"] == 384
-    assert cfg["optix_denoiser_requested"] is True
-    assert cfg["firefly_filter_requested"] is True
+    assert cfg["use_pathtraced"] is False
+    assert cfg["samples_per_pixel"] == 0
+    assert cfg["optix_denoiser_requested"] is False
+    assert cfg["firefly_filter_requested"] is False
 
     realtime = M._render_quality_config(
         render_subframes=32,
@@ -595,19 +616,24 @@ def test_render_quality_config_enables_pathtraced_for_review_subframes(monkeypat
         manipulation_cam=False,
         verify_cam=False,
         mode="pathtraced",
-        samples_per_pixel=96,
     )
     assert forced["use_pathtraced"] is True
-    assert forced["samples_per_pixel"] == 96
+    # Explicit path tracing still uses the audit-proven floor. It is opt-in because source seed
+    # cleanliness beats physically richer GI/reflections for policy/WAM observation frames.
+    assert forced["samples_per_pixel"] == M.DEFAULT_PATH_TRACING_MIN_SAMPLES_PER_PIXEL
+    assert forced["samples_per_pixel"] == 384
+    assert forced["optix_denoiser_requested"] is True
+    assert forced["firefly_filter_requested"] is True
     # Path-traced steps stay at 1 subframe: the sample lever is the explicit
     # /rtx/pathtracing/spp per-frame budget set by _apply_render_quality_settings
     # (8 subframes measurably did NOT reduce noise while spp was starved, and only
     # multiply cost once spp is correct — metallic re-test 2026-07-02).
-    assert M._effective_render_rt_subframes(32, cfg) == 1
+    assert M._effective_render_rt_subframes(32, forced) == 1
+    assert M._effective_render_rt_subframes(32, cfg) == 32
     assert M._effective_render_rt_subframes(32, realtime) == 32
 
 
-def test_default_software_denoise_removes_firefly_speckle_for_source_qa(
+def test_default_software_denoise_does_not_upgrade_random_noise_to_source_qa(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -637,8 +663,8 @@ def test_default_software_denoise_removes_firefly_speckle_for_source_qa(
         review_quality_required=True,
     )
 
-    assert qa["status"] == "passed_visual_quality_gate"
-    assert qa["blockers"] == []
+    assert qa["status"] == "failed_visual_quality_gate"
+    assert "source_policy_observation_speckled_or_noisy_for_review_quality" in qa["blockers"]
     assert qa["metrics"]["edge_density"] < 0.45
 
 
@@ -774,6 +800,32 @@ def test_arm_reach_skeleton_moves_hand_toward_faucet_and_into_view() -> None:
     assert rest_hand[1] < half["right_hand_palm_link"][1] < full["right_hand_palm_link"][1]
 
 
+def test_arm_reach_skeleton_endpoint_aims_at_affordance_not_just_forward_seed() -> None:
+    rest = [
+        ("torso_link", (0.0, 0.0, 1.1)),
+        ("right_shoulder_link", (0.0, 0.0, 1.0)),
+        ("right_elbow_link", (0.15, 0.0, 1.0)),
+        ("right_wrist_link", (0.30, 0.0, 1.0)),
+        ("right_hand_palm_link", (0.45, 0.0, 1.0)),
+    ]
+    side_handle = (0.0, 0.45, 1.0)
+
+    seed_phase = dict(
+        M.compute_arm_reach_skeleton(
+            rest,
+            side_handle,
+            M.MANIPULATION_ENDPOINT_AFFORDANCE_AIM_START_FRACTION,
+            forward_yaw=0.0,
+        )
+    )
+    endpoint = dict(M.compute_arm_reach_skeleton(rest, side_handle, 1.0, forward_yaw=0.0))
+
+    assert seed_phase["right_hand_palm_link"][0] > 0.0
+    assert seed_phase["right_hand_palm_link"][1] < 0.05
+    assert endpoint["right_hand_palm_link"][1] > 0.40
+    assert math.dist(endpoint["right_hand_palm_link"], side_handle) < 0.02
+
+
 def test_manipulation_ready_arm_pose_defaults_to_both_arms() -> None:
     deltas = M.manipulation_ready_arm_joint_deltas()
     assert deltas["left_shoulder_pitch_joint"] < 0
@@ -898,7 +950,7 @@ def test_groot_policy_command_infer_builds_payload_and_returns_action(tmp_path: 
     assert call["command_value_redacted"] == "<configured>"
 
 
-def test_arm_reach_skeleton_can_pose_both_arms_for_first_frame() -> None:
+def test_arm_reach_skeleton_can_pose_both_arms_for_seed_phase() -> None:
     rest = [
         ("left_shoulder_link", (0.0, -0.2, 1.1)),
         ("left_hand_palm_link", (0.0, -0.45, 0.8)),
@@ -906,17 +958,25 @@ def test_arm_reach_skeleton_can_pose_both_arms_for_first_frame() -> None:
         ("right_hand_palm_link", (0.0, 0.45, 0.8)),
     ]
     target = (0.5, 0.0, 0.95)
-    full = dict(M.compute_arm_reach_skeleton(rest, target, 1.0, arm="both", forward_yaw=0.0))
-    assert full["left_hand_palm_link"][0] > rest[1][1][0]
-    assert full["right_hand_palm_link"][0] > rest[3][1][0]
-    assert full["left_hand_palm_link"][1] < 0.0
-    assert full["right_hand_palm_link"][1] > 0.0
+    seed_phase = dict(
+        M.compute_arm_reach_skeleton(
+            rest,
+            target,
+            M.MANIPULATION_ENDPOINT_AFFORDANCE_AIM_START_FRACTION,
+            arm="both",
+            forward_yaw=0.0,
+        )
+    )
+    assert seed_phase["left_hand_palm_link"][0] > rest[1][1][0]
+    assert seed_phase["right_hand_palm_link"][0] > rest[3][1][0]
+    assert seed_phase["left_hand_palm_link"][1] < 0.0
+    assert seed_phase["right_hand_palm_link"][1] > 0.0
     assert (
-        full["right_hand_palm_link"][1] - full["left_hand_palm_link"][1]
+        seed_phase["right_hand_palm_link"][1] - seed_phase["left_hand_palm_link"][1]
         > 0.30
     )
-    assert full["left_hand_palm_link"] != rest[1][1]
-    assert full["right_hand_palm_link"] != rest[3][1]
+    assert seed_phase["left_hand_palm_link"] != rest[1][1]
+    assert seed_phase["right_hand_palm_link"] != rest[3][1]
 
 
 def test_skeleton_world_for_frame_falls_back_when_articulation_has_no_links() -> None:
@@ -1440,6 +1500,46 @@ def test_task_stance_reach_uses_effector_neighborhood_not_tiny_shoulder_cutoff()
         shoulder_margin_m=M.MANIPULATION_RENDERED_SEED_SHOULDER_MARGIN_M,
         effector_margin_m=0.0,
     ) == ["manipulation_pov_effector_too_far_from_affordance"]
+
+
+def test_task_stance_recomputes_reach_after_placement_root_correction() -> None:
+    scenario = {
+        "task_target_position_xyz": [2.277888, 1.333059, 0.848527],
+        "task_affordance_xyz": [2.489866, 1.069795, 0.886474],
+        "target_object_bbox_min_xyz": [2.009021, 0.89582, 0.555082],
+        "target_object_bbox_max_xyz": [2.546755, 1.770299, 1.141971],
+        "stance_distance_candidates_m": [0.24],
+        "floor_z_hint": 0.05,
+    }
+
+    def probe(_pose, yaw):
+        return 0 if abs(float(yaw)) < 1e-6 else 1
+
+    def placement_validator(_pose, _yaw, _record):
+        return {
+            "status": "accepted",
+            "blockers": [],
+            "place_root_diagnostics": {
+                "corrected_root_translation_xyz": [1.600195, 1.06979, 0.84],
+            },
+        }
+
+    plan = M.plan_task_stance(
+        scenario=scenario,
+        probe_collision=probe,
+        placement_validator=placement_validator,
+    )
+
+    assert plan["status"] == "blocked"
+    assert plan["blockers"] == ["no_reach_seed_task_stance_candidate"]
+    candidate = plan["candidates"][0]
+    assert candidate["pre_placement_reachability_estimate"]["status"] == "PASS"
+    assert candidate["reachability_estimate"]["status"] == "FAIL"
+    assert candidate["reachability_estimate"]["pose_source"] == "placement_corrected_root_translation_xyz"
+    assert candidate["placement_corrected_root_pose"] == [1.600195, 1.06979, 0.84]
+    assert "manipulation_pov_effector_too_far_from_affordance" in candidate[
+        "reachability_estimate"
+    ]["blockers"]
 
 
 def test_handleless_top_cabinet_derives_scoped_lower_front_edge_affordance() -> None:
@@ -3040,9 +3140,259 @@ def test_build_result_aggregates_and_labels_truthfully() -> None:
                          kitchen_usd="k.usd", g1_usd="g1.usd", blockers=[])
     assert res["status"] == "completed"
     assert res["scenarios_passed"] == 1 and res["scenarios_executed"] == 2
+    assert res["review_grade_scenarios_passed"] == 0
     assert res["rendered_by_isaac_rtx"] is True
     assert "not dynamic locomotion" in res["proof_boundary"].lower()
     assert res["scenarios"][0]["scenario_id"] == "a" and res["scenarios"][0]["task_success"] is True
+    assert res["scenarios"][0]["review_task_success"] is False
+    assert "review_camera_evidence_missing" in res["scenarios"][0]["review_task_success_evidence"]["blockers"]
+
+
+def test_build_result_counts_review_grade_success_only_with_visible_action_evidence() -> None:
+    res = M.build_result(
+        scenarios=[{"scenario_id": "visible_reach"}],
+        outcomes=[
+            {
+                "task_success": True,
+                "review_camera_evidence": {
+                    "robot_pov_camera_mode": "robot_mounted_manipulation",
+                    "visible_embodied_robot_action_evidence": True,
+                },
+                "robot_visual_geometry": {"status": "PASS", "blockers": []},
+                "manipulation_pov_geometry": {"status": "PASS", "blockers": []},
+            }
+        ],
+        policy_id="blueprint_default_walk_to_target_smoke_policy",
+        kitchen_usd="k.usd",
+        g1_usd="g1.usd",
+        blockers=[],
+    )
+
+    assert res["scenarios_passed"] == 1
+    assert res["review_grade_scenarios_passed"] == 1
+    assert res["scenarios"][0]["review_task_success"] is True
+    assert res["scenarios"][0]["review_task_success_evidence"]["blockers"] == []
+
+
+def test_visible_reach_success_contract_passes_only_with_required_evidence() -> None:
+    outcome = {
+        "task_success": False,
+        "task_status": "failed_task_criteria",
+        "failure_mode_ids": ["failure_target_not_reached"],
+    }
+
+    contract = M._apply_visible_reach_to_affordance_success_contract(
+        outcome,
+        placement_validation={"status": "PASS", "blockers": []},
+        pov_geometry={
+            "status": "PASS",
+            "blockers": [],
+            "reach_feasibility": {"status": "PASS", "blockers": []},
+            "effector_distance_to_affordance_m": {"hand": 0.08},
+        },
+        robot_visual_ready=True,
+        temporal_conditioning={"status": "PASS", "blockers": []},
+    )
+
+    assert contract["status"] == "PASS"
+    assert outcome["task_success"] is True
+    assert outcome["task_status"] == "passed"
+    assert outcome["failure_mode_ids"] == []
+    assert "faucet state change" in contract["claim_boundary"]
+
+
+def test_visible_reach_success_contract_fails_without_pov_geometry() -> None:
+    outcome = {"task_success": False}
+
+    contract = M._apply_visible_reach_to_affordance_success_contract(
+        outcome,
+        placement_validation={"status": "PASS", "blockers": []},
+        pov_geometry={"status": "FAIL", "blockers": ["arm_not_in_frame"]},
+        robot_visual_ready=True,
+        temporal_conditioning={"status": "PASS", "blockers": []},
+    )
+
+    assert contract["status"] == "FAIL"
+    assert outcome["task_success"] is False
+    assert "visible_reach_pov_geometry_not_passed" in outcome["failure_mode_ids"]
+    assert "arm_not_in_frame" in outcome["failure_mode_ids"]
+
+
+def test_visible_reach_success_contract_fails_when_final_frame_reach_is_infeasible() -> None:
+    outcome = {"task_success": False}
+
+    contract = M._apply_visible_reach_to_affordance_success_contract(
+        outcome,
+        placement_validation={"status": "PASS", "blockers": []},
+        pov_geometry={
+            "status": "PASS",
+            "blockers": [],
+            "frames": [
+                {
+                    "status": "PASS",
+                    "reach_feasibility": {
+                        "status": "FAIL",
+                        "blockers": [
+                            "manipulation_pov_affordance_outside_g1_reach_envelope",
+                            "manipulation_pov_effector_too_far_from_affordance",
+                        ],
+                        "passing_arms": [],
+                    },
+                }
+            ],
+        },
+        robot_visual_ready=True,
+        temporal_conditioning={"status": "PASS", "blockers": []},
+    )
+
+    assert contract["status"] == "FAIL"
+    assert outcome["task_success"] is False
+    assert "visible_reach_reach_feasibility_not_passed" in outcome["failure_mode_ids"]
+    assert "visible_reach_final_frame_reach_feasibility_not_passed" in outcome["failure_mode_ids"]
+    assert "manipulation_pov_effector_too_far_from_affordance" in outcome["failure_mode_ids"]
+    assert contract["reach_feasibility_evidence"]["final_frame_reach_feasibility_passed"] is False
+
+
+def test_visible_reach_success_contract_fails_when_final_frame_effector_is_not_close_enough() -> None:
+    outcome = {"task_success": False}
+
+    contract = M._apply_visible_reach_to_affordance_success_contract(
+        outcome,
+        placement_validation={"status": "PASS", "blockers": []},
+        pov_geometry={
+            "status": "PASS",
+            "blockers": [],
+            "frames": [
+                {
+                    "status": "PASS",
+                    "reach_feasibility": {"status": "PASS", "blockers": []},
+                    "effector_distance_to_affordance_m_by_arm": {
+                        "left": {"hand": 0.2195, "wrist": 0.3973},
+                        "right": {"hand": 0.2303, "wrist": 0.3485},
+                    },
+                }
+            ],
+        },
+        robot_visual_ready=True,
+        temporal_conditioning={"status": "PASS", "blockers": []},
+    )
+
+    assert contract["status"] == "FAIL"
+    assert outcome["task_success"] is False
+    assert "visible_reach_reach_feasibility_not_passed" in outcome["failure_mode_ids"]
+    assert "visible_reach_final_frame_effector_not_close_enough" in outcome["failure_mode_ids"]
+    evidence = contract["reach_feasibility_evidence"]
+    assert evidence["final_frame_reach_feasibility_passed"] is True
+    assert evidence["final_frame_effector_close_enough"] is False
+    assert evidence["final_frame_nearest_effector_to_affordance_m"] == 0.2195
+    assert evidence["max_final_effector_to_affordance_m"] == 0.12
+
+
+def test_visible_reach_review_grade_rejects_failed_reach_contract() -> None:
+    res = M.build_result(
+        scenarios=[{"scenario_id": "faucet_reach"}],
+        outcomes=[
+            {
+                "task_success": True,
+                "task_success_contract": "visible_reach_to_affordance",
+                "visible_reach_to_affordance_success": {
+                    "status": "FAIL",
+                    "blockers": ["visible_reach_reach_feasibility_not_passed"],
+                },
+                "review_camera_evidence": {
+                    "robot_pov_camera_mode": "robot_mounted_manipulation",
+                    "visible_embodied_robot_action_evidence": True,
+                },
+                "robot_visual_geometry": {"status": "PASS", "blockers": []},
+                "manipulation_pov_geometry": {"status": "PASS", "blockers": []},
+            }
+        ],
+        policy_id="blueprint_default_walk_to_target_smoke_policy",
+        kitchen_usd="k.usd",
+        g1_usd="g1.usd",
+        blockers=[],
+    )
+
+    blockers = res["scenarios"][0]["review_task_success_evidence"]["blockers"]
+    assert res["review_grade_scenarios_passed"] == 0
+    assert res["scenarios"][0]["review_task_success"] is False
+    assert "visible_reach_success_contract_not_passed" in blockers
+    assert "visible_reach_reach_feasibility_not_passed" in blockers
+
+
+def test_build_result_rejects_root_follow_camera_as_review_grade_success() -> None:
+    res = M.build_result(
+        scenarios=[{"scenario_id": "camera_motion_only"}],
+        outcomes=[
+            {
+                "task_success": True,
+                "review_camera_evidence": {
+                    "robot_pov_camera_mode": "root_follow",
+                    "visible_embodied_robot_action_evidence": False,
+                },
+            }
+        ],
+        policy_id="blueprint_default_walk_to_target_smoke_policy",
+        kitchen_usd="k.usd",
+        g1_usd="g1.usd",
+        blockers=[],
+    )
+
+    blockers = res["scenarios"][0]["review_task_success_evidence"]["blockers"]
+    assert res["scenarios_passed"] == 1
+    assert res["review_grade_scenarios_passed"] == 0
+    assert res["scenarios"][0]["review_task_success"] is False
+    assert "robot_pov_is_root_follow_camera_not_head_pov" in blockers
+    assert "visible_embodied_robot_action_not_proven" in blockers
+
+
+def test_runner_labels_legacy_robot_pov_as_root_follow_when_not_manipulation() -> None:
+    source = _RUNNER.read_text()
+
+    assert 'pov_camera_mode = "robot_mounted_manipulation" if manipulation_cam else "root_follow"' in source
+    assert "camera_mode=pov_camera_mode" in source
+    assert '"true_robot_head_pov": bool(manipulation_cam)' in source
+
+
+def test_parse_scenarios_preserves_explicit_task_success_contract() -> None:
+    parsed = M.parse_scenarios({
+        "scenarios": [
+            {
+                "scenario_id": "reach_handle",
+                "description": "Reach toward the faucet handle.",
+                "task_success_contract": "visible_reach_to_affordance",
+                "task_id": "sink_faucet_reach",
+                "target_object_ids": ["sink", "basin"],
+                "affordance_object_ids": ["faucet", "handle"],
+            }
+        ]
+    })
+
+    assert parsed[0]["task_target_deferred"] is True
+    assert parsed[0]["task_success_contract"] == "visible_reach_to_affordance"
+    assert parsed[0]["task_id"] == "sink_faucet_reach"
+
+
+def test_parse_scenarios_preserves_explicit_task_affordance_and_bounds() -> None:
+    parsed = M.parse_scenarios({
+        "scenarios": [
+            {
+                "scenario_id": "microwave_reach",
+                "description": "Reach toward the microwave door handle.",
+                "task_target_position_xyz": [-1.721881, 1.512216, 1.242495],
+                "task_affordance_xyz": [-1.591312, 1.471274, 1.241574],
+                "target_object_bbox_min_xyz": [-1.864127, 1.205936, 1.056935],
+                "target_object_bbox_max_xyz": [-1.579635, 1.818496, 1.428055],
+            }
+        ]
+    })
+
+    scenario = parsed[0]
+    assert scenario["task_target_deferred"] is True
+    assert scenario["task_target_position_xyz"] == [-1.721881, 1.512216, 1.242495]
+    assert scenario["task_affordance_xyz"] == [-1.591312, 1.471274, 1.241574]
+    assert scenario["target_object_bbox_min_xyz"] == [-1.864127, 1.205936, 1.056935]
+    assert scenario["target_object_bbox_max_xyz"] == [-1.579635, 1.818496, 1.428055]
 
 
 def test_root_displacement_metrics_reports_drop_and_missing_pose() -> None:
@@ -4045,11 +4395,15 @@ def test_placement_obstacles_use_fine_boxes_not_grouped_cabinet_slab(monkeypatch
 
 
 def test_scenario_render_quality_sets_explicit_pathtracing_spp(tmp_path, monkeypatch) -> None:
-    """The scenario render path must set /rtx/pathtracing/spp AND totalSpp explicitly,
-    like the audit path does. Relying on rep.settings.set_render_pathtraced alone left
-    per-frame samples starved -> grainy specular robots (hf 1.77 vs 0.58, 2026-07-02)."""
+    """Explicit path-traced scenario renders must set /rtx/pathtracing/spp AND totalSpp.
+
+    Realtime RTX is the default seed-frame path, but the explicit path-traced/audit path still
+    needs the same sample budget hardening. Relying on rep.settings.set_render_pathtraced alone
+    left per-frame samples starved -> grainy specular robots (hf 1.77 vs 0.58, 2026-07-02).
+    """
     import types as _types
 
+    monkeypatch.setenv("PARITY_RENDER_QUALITY_MODE", "pathtraced")
     set_calls: list = []
 
     class _Settings:
@@ -4102,11 +4456,13 @@ def test_scenario_frame_loop_settles_before_capture() -> None:
     )
 
 
-def test_software_denoise_skipped_for_pathtraced_saves(monkeypatch) -> None:
-    """Path-traced review frames save RAW like the audit (its clean frames have
-    software_denoise_applied false); the median_firefly filter posterizes
-    residual path-tracing noise instead of removing it."""
-    assert M._effective_software_denoise(True, {"use_pathtraced": True}) is False
+def test_software_denoise_applies_to_pathtraced_review_saves_unless_disabled(monkeypatch) -> None:
+    """Non-white review-material path-traced frames can still save speckled; deterministic
+    saved-frame denoise is allowed, and source QA remains the pass/fail authority."""
+    monkeypatch.delenv("PARITY_SOFTWARE_DENOISE_PATH_TRACED", raising=False)
+    assert M._effective_software_denoise(True, {"use_pathtraced": True}) is True
     assert M._effective_software_denoise(True, {"use_pathtraced": False}) is True
     assert M._effective_software_denoise(False, {"use_pathtraced": False}) is False
     assert M._effective_software_denoise(True, None) is True
+    monkeypatch.setenv("PARITY_SOFTWARE_DENOISE_PATH_TRACED", "raw")
+    assert M._effective_software_denoise(True, {"use_pathtraced": True}) is False
