@@ -213,6 +213,124 @@ def test_groot_sonic_injected_infer_returns_step_decision_without_gpu() -> None:
     assert decision.joint_targets == {"left_shoulder_pitch_joint": 0.2}
 
 
+def test_groot_sonic_isaac_bridge_accepts_named_joint_targets_only() -> None:
+    ready = P.groot_sonic_isaac_bridge_readiness(
+        {
+            "action": {
+                "action_type": "unitree_g1_sonic_control_targets",
+                "joint_targets": {"left_shoulder_pitch_joint": 0.2},
+            }
+        }
+    )
+
+    assert ready["status"] == "ready"
+    assert ready["ready"] is True
+    assert ready["joint_target_count"] == 1
+    assert ready["supported_isaac_control_fields"] == ["joint_targets"]
+    assert ready["blockers"] == []
+
+
+def test_groot_sonic_isaac_bridge_converts_unitree_hand_targets() -> None:
+    ready = P.groot_sonic_action_to_isaac_joint_targets(
+        {
+            "action": {
+                "action_type": "unitree_g1_sonic_latent_action_chunk",
+                "action_chunk": [0.1, -0.1, 0.2],
+                "hand_targets": {
+                    "left_hand_joints": [0.1, 0.2],
+                    "right_hand_joints": [0.3, 0.4],
+                },
+            }
+        }
+    )
+
+    assert ready["status"] == "ready"
+    assert ready["ready"] is True
+    assert ready["joint_target_count"] == 4
+    assert ready["conversion"] == "unitree_sonic_control_vectors_to_named_isaac_joint_targets"
+    assert ready["joint_targets"]["left_hand_thumb_0_joint"] == 0.1
+    assert ready["joint_targets"]["left_hand_thumb_1_joint"] == 0.2
+    assert ready["joint_targets"]["right_hand_thumb_0_joint"] == 0.3
+    assert ready["joint_targets"]["right_hand_thumb_1_joint"] == 0.4
+    assert ready["blockers"] == []
+
+
+def test_groot_sonic_isaac_bridge_reports_ready_for_real_policy_call_shape() -> None:
+    ready = P.groot_sonic_isaac_bridge_readiness(
+        {
+            "action": {
+                "action_type": "unitree_g1_sonic_latent_action_chunk",
+                "action_chunk": [0.1, -0.1, 0.2],
+                "hand_targets": {
+                    "left_hand_joints": [0.1, 0.2],
+                    "right_hand_joints": [0.3, 0.4],
+                },
+                "unitree_g1_sonic_control_fields": [
+                    "left_hand_joints",
+                    "motion_token",
+                    "right_hand_joints",
+                ],
+            }
+        }
+    )
+
+    assert ready["status"] == "ready"
+    assert ready["ready"] is True
+    assert ready["joint_target_count"] == 4
+    assert ready["source_fields"] == ["left_hand_joints", "right_hand_joints"]
+    assert ready["blockers"] == []
+
+
+def test_groot_sonic_isaac_bridge_rejects_latent_chunk_without_control_vectors() -> None:
+    blocked = P.groot_sonic_isaac_bridge_readiness(
+        {
+            "action": {
+                "action_type": "unitree_g1_sonic_latent_action_chunk",
+                "action_chunk": [0.1, -0.1, 0.2],
+            }
+        }
+    )
+
+    assert blocked["status"] == "blocked"
+    assert blocked["ready"] is False
+    assert "unsupported_sonic_latent_action_chunk_requires_explicit_isaac_converter" in blocked[
+        "blockers"
+    ]
+    assert blocked["required_isaac_control_fields"] == ["joint_targets"]
+
+
+def test_groot_sonic_injected_infer_rejects_action_chunk_without_isaac_targets() -> None:
+    policy = P.make_policy(
+        "groot_sonic",
+        infer=lambda _obs: {
+            "action_type": "unitree_g1_sonic_latent_action_chunk",
+            "action_chunk": [0.1, -0.1, 0.2],
+        },
+    )
+    policy.reset({"instruction": "open the fridge"})
+
+    with pytest.raises(RuntimeError, match="groot_sonic_isaac_bridge_unready"):
+        policy.step(P.StepContext(step=0, num_steps=1, instruction="open the fridge"))
+
+
+def test_groot_sonic_injected_infer_uses_converted_unitree_hand_targets() -> None:
+    policy = P.make_policy(
+        "groot_sonic",
+        infer=lambda _obs: {
+            "root_position": [0.25, 0.5, 0.79],
+            "hand_targets": {"left_hand_joints": [0.1, 0.2]},
+        },
+    )
+    policy.reset({"instruction": "open the fridge"})
+
+    decision = policy.step(P.StepContext(step=0, num_steps=1, instruction="open the fridge"))
+
+    assert decision.joint_targets == {
+        "left_hand_thumb_0_joint": 0.1,
+        "left_hand_thumb_1_joint": 0.2,
+    }
+
+
 def test_gait_joint_deltas_match_mujoco_source() -> None:
     joints = list(P.G1_GAIT_JOINTS)
     addr = {n: i for i, n in enumerate(joints)}

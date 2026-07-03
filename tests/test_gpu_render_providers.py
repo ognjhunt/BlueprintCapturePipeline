@@ -826,12 +826,17 @@ def test_digitalocean_launch_creates_droplet_and_writes_id(monkeypatch, tmp_path
     tok = tmp_path / "do_token"
     tok.write_text("t-redacted")
     monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.delenv("BLUEPRINT_DO_SSH_KEY_IDS", raising=False)
+    monkeypatch.setenv("BLUEPRINT_DO_SSH_KEY_IDS_FILE", str(tmp_path / "missing_do_ssh_keys"))
     calls = []
 
     def fake_call(method, path, body=None, *, token, timeout=90):
         calls.append((method, path))
         assert token == "t-redacted"
+        if method == "GET" and path == "/account/keys?per_page=200":
+            return 200, {"ssh_keys": [{"id": 98765, "name": "worker-key"}]}
         if method == "POST" and path == "/droplets":
+            assert body["ssh_keys"] == [98765]
             return 202, {"droplet": {"id": 4242, "status": "new"}}
         raise AssertionError((method, path))
 
@@ -841,7 +846,134 @@ def test_digitalocean_launch_creates_droplet_and_writes_id(monkeypatch, tmp_path
     assert res["status"] == "launched"
     assert res["instance_id"] == "4242"
     assert res["mode"] == "do_gpu_droplet"
+    assert res["ssh_key_configuration"]["source"] == "account_keys_api_first_available"
     assert (tmp_path / "started_do_droplet_id.txt").read_text() == "4242"
+
+
+def test_digitalocean_launch_uses_configured_ssh_keys_without_account_lookup(monkeypatch, tmp_path: Path) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.setenv("BLUEPRINT_DO_SSH_KEY_IDS", "123, fingerprint-abc")
+    calls = []
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        calls.append((method, path))
+        assert path != "/account/keys?per_page=200"
+        if method == "POST" and path == "/droplets":
+            assert body["ssh_keys"] == [123, "fingerprint-abc"]
+            return 202, {"droplet": {"id": 4242, "status": "new"}}
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    res = G.DigitalOceanRenderProvider().launch(
+        tmp_path,
+        G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path),
+    )
+
+    assert res["status"] == "launched"
+    assert res["ssh_key_configuration"]["source"] == "BLUEPRINT_DO_SSH_KEY_IDS"
+    assert calls == [("POST", "/droplets")]
+
+
+def test_digitalocean_launch_retries_gpu_size_region_unavailable(monkeypatch, tmp_path: Path) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.setenv("BLUEPRINT_DO_SSH_KEY_IDS", "123")
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_SIZES", "gpu-6000adax1-48gb,gpu-l40sx1-48gb")
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_REGIONS", "atl1,nyc2")
+    calls = []
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        assert method == "POST"
+        assert path == "/droplets"
+        calls.append((body["size"], body["region"]))
+        if body["size"] == "gpu-l40sx1-48gb" and body["region"] == "nyc2":
+            return 202, {"droplet": {"id": 4242, "status": "new"}}
+        return 422, {
+            "error": '{"id":"unprocessable_entity","message":"Size is not available in this region."}\n'
+        }
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    res = G.DigitalOceanRenderProvider().launch(
+        tmp_path,
+        G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path),
+    )
+
+    assert res["status"] == "launched"
+    assert res["instance_id"] == "4242"
+    assert calls == [
+        ("gpu-6000adax1-48gb", "atl1"),
+        ("gpu-6000adax1-48gb", "nyc2"),
+        ("gpu-l40sx1-48gb", "atl1"),
+        ("gpu-l40sx1-48gb", "nyc2"),
+    ]
+    assert res["attempts"][-1]["size"] == "gpu-l40sx1-48gb"
+    assert res["attempts"][-1]["region"] == "nyc2"
+    assert res["budget_policy"]["max_hourly_rate_usd"] == pytest.approx(1.75)
+
+
+def test_digitalocean_launch_blocks_h200_without_hourly_budget_override(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.setenv("BLUEPRINT_DO_SSH_KEY_IDS", "123")
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_SIZES", "gpu-h200x1-141gb")
+    monkeypatch.delenv("BLUEPRINT_DO_MAX_HOURLY_RATE_USD", raising=False)
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        raise AssertionError("must not create an over-budget DigitalOcean droplet")
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    res = G.DigitalOceanRenderProvider().launch(
+        tmp_path,
+        G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path),
+    )
+
+    assert res["status"] == "blocked"
+    assert "digitalocean_gpu_size_over_budget" in res["blockers"]
+    assert res["budget_policy"]["rejected_size_candidates"] == [
+        {
+            "size": "gpu-h200x1-141gb",
+            "hourly_rate_usd": 3.44,
+            "reason": "over_max_hourly_rate",
+        }
+    ]
+
+
+def test_digitalocean_launch_blocks_without_ssh_key(monkeypatch, tmp_path: Path) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.delenv("BLUEPRINT_DO_SSH_KEY_IDS", raising=False)
+    monkeypatch.setenv("BLUEPRINT_DO_SSH_KEY_IDS_FILE", str(tmp_path / "missing_do_ssh_keys"))
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        assert method == "GET"
+        assert path == "/account/keys?per_page=200"
+        return 200, {"ssh_keys": []}
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    res = G.DigitalOceanRenderProvider().launch(
+        tmp_path,
+        G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path),
+    )
+
+    assert res["status"] == "blocked"
+    assert "digitalocean_ssh_key_missing" in res["blockers"]
+    assert res["ssh_key_configuration"]["raw_provider_response_recorded"] is False
 
 
 def test_digitalocean_terminate_deletes_droplet(monkeypatch, tmp_path: Path) -> None:

@@ -442,6 +442,27 @@ DO_API = "https://api.digitalocean.com/v2"
 DEFAULT_DO_GPU_SIZE = "gpu-6000adax1-48gb"   # RTX 6000 Ada: 3rd-gen RT cores + 48GB, $1.57/hr
 DEFAULT_DO_GPU_REGION = "atl1"               # GPU droplet regions: nyc2, tor1, atl1, ric1, ams3
 DO_GPU_BASE_IMAGE = "gpu-h100x1-base"        # "NVIDIA AI/ML Ready": Ubuntu + drivers + docker
+DEFAULT_DO_GPU_SIZE_CANDIDATES = (
+    DEFAULT_DO_GPU_SIZE,
+    "gpu-l40sx1-48gb",
+    "gpu-4000adax1-20gb",
+)
+DEFAULT_DO_GPU_REGION_CANDIDATES = (DEFAULT_DO_GPU_REGION, "nyc2", "tor1", "ric1", "ams3")
+DO_GPU_HOURLY_RATE_USD = {
+    "gpu-4000adax1-20gb": 0.76,
+    "gpu-l40sx1-48gb": 1.57,
+    "gpu-6000adax1-48gb": 1.57,
+    "gpu-mi300x1-192gb": 1.99,
+    "gpu-h100x1-80gb": 3.39,
+    "gpu-h200x1-141gb": 3.44,
+}
+DEFAULT_DO_MAX_HOURLY_RATE_USD = 1.75
+DO_GPU_SIZE_CANDIDATES_ENV = "BLUEPRINT_DO_GPU_SIZES"
+DO_GPU_REGION_CANDIDATES_ENV = "BLUEPRINT_DO_GPU_REGIONS"
+DO_GPU_MAX_HOURLY_RATE_ENV = "BLUEPRINT_DO_MAX_HOURLY_RATE_USD"
+DO_SSH_KEY_IDS_ENV = "BLUEPRINT_DO_SSH_KEY_IDS"
+DO_SSH_KEY_IDS_FILE_ENV = "BLUEPRINT_DO_SSH_KEY_IDS_FILE"
+DEFAULT_DO_SSH_KEY_IDS_FILE = "~/.blueprint-secrets/digitalocean_ssh_key_ids"
 
 
 def _do_call(method: str, path: str, body: dict | None = None, *, token: str, timeout: int = 90):
@@ -493,6 +514,161 @@ docker run -d --gpus all --name blueprint-worker \\
   --entrypoint {entrypoint} \\
   {shlex.quote(spec.image)} $(cat /root/blueprint_run.sh)
 """
+
+
+def _parse_do_ssh_key_ids(raw: str) -> list[int | str]:
+    keys: list[int | str] = []
+    for part in raw.replace("\n", ",").split(","):
+        value = part.strip()
+        if not value:
+            continue
+        keys.append(int(value) if value.isdigit() else value)
+    return keys
+
+
+def _parse_csv_values(raw: str) -> list[str]:
+    return [part.strip() for part in raw.replace("\n", ",").split(",") if part.strip()]
+
+
+def _ordered_unique(values: Sequence[str]) -> list[str]:
+    ordered: list[str] = []
+    for value in values:
+        if value and value not in ordered:
+            ordered.append(value)
+    return ordered
+
+
+def _do_size_candidates(initial: str) -> list[str]:
+    import os
+
+    configured = _parse_csv_values(os.getenv(DO_GPU_SIZE_CANDIDATES_ENV) or "")
+    if configured:
+        return _ordered_unique(configured)
+    return _ordered_unique([initial, *DEFAULT_DO_GPU_SIZE_CANDIDATES])
+
+
+def _do_region_candidates(initial: str) -> list[str]:
+    import os
+
+    configured = _parse_csv_values(os.getenv(DO_GPU_REGION_CANDIDATES_ENV) or "")
+    if configured:
+        return _ordered_unique(configured)
+    return _ordered_unique([initial, *DEFAULT_DO_GPU_REGION_CANDIDATES])
+
+
+def _do_max_hourly_rate_usd() -> float:
+    import os
+
+    raw = (os.getenv(DO_GPU_MAX_HOURLY_RATE_ENV) or "").strip()
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return DEFAULT_DO_MAX_HOURLY_RATE_USD
+
+
+def _filter_do_size_candidates_by_budget(size_candidates: Sequence[str]) -> tuple[list[str], dict]:
+    max_hourly = _do_max_hourly_rate_usd()
+    allowed: list[str] = []
+    rejected: list[dict] = []
+    for size in size_candidates:
+        hourly = DO_GPU_HOURLY_RATE_USD.get(size)
+        if hourly is None:
+            rejected.append({
+                "size": size,
+                "reason": "unknown_hourly_rate",
+            })
+            continue
+        if hourly > max_hourly:
+            rejected.append({
+                "size": size,
+                "hourly_rate_usd": hourly,
+                "reason": "over_max_hourly_rate",
+            })
+            continue
+        allowed.append(size)
+    return allowed, {
+        "max_hourly_rate_usd": max_hourly,
+        "max_hourly_rate_env": DO_GPU_MAX_HOURLY_RATE_ENV,
+        "allowed_size_candidates": allowed,
+        "rejected_size_candidates": rejected,
+    }
+
+
+def _do_size_region_unavailable(body: dict) -> bool:
+    text = json.dumps(body, sort_keys=True).lower() if isinstance(body, dict) else ""
+    return "size is not available in this region" in text
+
+
+def _configured_do_ssh_key_ids() -> tuple[list[int | str], dict]:
+    import os
+
+    raw = (os.getenv(DO_SSH_KEY_IDS_ENV) or "").strip()
+    if raw:
+        return _parse_do_ssh_key_ids(raw), {
+            "source": DO_SSH_KEY_IDS_ENV,
+            "account_lookup_performed": False,
+        }
+    path = Path(
+        (os.getenv(DO_SSH_KEY_IDS_FILE_ENV) or "").strip()
+        or DEFAULT_DO_SSH_KEY_IDS_FILE
+    ).expanduser()
+    if path.is_file():
+        configured = path.read_text(encoding="utf-8").strip()
+        if configured:
+            return _parse_do_ssh_key_ids(configured), {
+                "source": DO_SSH_KEY_IDS_FILE_ENV
+                if os.getenv(DO_SSH_KEY_IDS_FILE_ENV)
+                else "default_file:digitalocean_ssh_key_ids",
+                "account_lookup_performed": False,
+            }
+    return [], {
+        "source": None,
+        "account_lookup_performed": False,
+    }
+
+
+def _account_do_ssh_key_ids(token: str) -> tuple[list[int | str], dict]:
+    status, body = _do_call("GET", "/account/keys?per_page=200", token=token, timeout=45)
+    if status != 200 or not isinstance(body, dict):
+        return [], {
+            "source": "account_keys_api",
+            "account_lookup_performed": True,
+            "account_lookup_status": status,
+            "raw_provider_response_recorded": False,
+            "blocker": "digitalocean_ssh_key_lookup_failed",
+        }
+    keys: list[int | str] = []
+    for item in body.get("ssh_keys") or []:
+        if not isinstance(item, dict):
+            continue
+        key_id = item.get("id") or item.get("fingerprint")
+        if key_id:
+            keys.append(key_id)
+    return keys[:1], {
+        "source": "account_keys_api_first_available",
+        "account_lookup_performed": True,
+        "account_lookup_status": status,
+        "account_key_count": len(keys),
+        "raw_provider_response_recorded": False,
+    }
+
+
+def _resolve_do_ssh_key_ids(token: str) -> tuple[list[int | str], dict]:
+    keys, detail = _configured_do_ssh_key_ids()
+    if keys:
+        detail["configured_key_count"] = len(keys)
+        return keys, detail
+    keys, detail = _account_do_ssh_key_ids(token)
+    if keys:
+        detail["configured_key_count"] = len(keys)
+        return keys, detail
+    detail.setdefault("blocker", "digitalocean_ssh_key_missing")
+    detail["configured_key_count"] = 0
+    return [], detail
 
 
 class DigitalOceanRenderProvider(GpuRenderProvider):
@@ -549,14 +725,81 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         token = self._token()
         if not token:
             return {"status": "blocked", "blockers": ["digitalocean_token_missing"]}
-        s, body = _do_call("POST", "/droplets", request, token=token)
-        if s not in (201, 202) or not isinstance(body, dict) or not body.get("droplet"):
-            return {"status": "blocked", "blockers": [f"do_droplet_create_http_{s}"],
-                    "detail": body if isinstance(body, dict) else {}}
-        iid = str(body["droplet"].get("id"))
-        (Path(job_dir) / "started_do_droplet_id.txt").write_text(iid)
-        return {"status": "launched", "instance_id": iid, "mode": "do_gpu_droplet",
-                "attempts": [{"create_status": s, "droplet_id": iid}]}
+        launch_request = dict(request)
+        ssh_key_detail: dict = {
+            "source": "request",
+            "account_lookup_performed": False,
+            "configured_key_count": len(launch_request.get("ssh_keys") or []),
+        }
+        if not launch_request.get("ssh_keys"):
+            ssh_keys, ssh_key_detail = _resolve_do_ssh_key_ids(token)
+            if not ssh_keys:
+                return {
+                    "status": "blocked",
+                    "blockers": [ssh_key_detail.get("blocker") or "digitalocean_ssh_key_missing"],
+                    "ssh_key_configuration": ssh_key_detail,
+                }
+            launch_request["ssh_keys"] = ssh_keys
+        create_attempts: list[dict] = []
+        initial_region = str(launch_request.get("region") or DEFAULT_DO_GPU_REGION)
+        initial_size = str(launch_request.get("size") or DEFAULT_DO_GPU_SIZE)
+        size_candidates, budget_policy = _filter_do_size_candidates_by_budget(
+            _do_size_candidates(initial_size)
+        )
+        if not size_candidates:
+            return {
+                "status": "blocked",
+                "blockers": ["digitalocean_gpu_size_over_budget"],
+                "budget_policy": budget_policy,
+                "ssh_key_configuration": ssh_key_detail,
+            }
+        for size in size_candidates:
+            for region in _do_region_candidates(initial_region):
+                attempt_request = dict(launch_request, size=size, region=region)
+                s, body = _do_call("POST", "/droplets", attempt_request, token=token)
+                if s in (201, 202) and isinstance(body, dict) and body.get("droplet"):
+                    iid = str(body["droplet"].get("id"))
+                    (Path(job_dir) / "started_do_droplet_id.txt").write_text(iid)
+                    create_attempts.append({
+                        "create_status": s,
+                        "droplet_id": iid,
+                        "size": size,
+                        "region": region,
+                    })
+                    return {
+                        "status": "launched",
+                        "instance_id": iid,
+                        "mode": "do_gpu_droplet",
+                        "ssh_key_configuration": ssh_key_detail,
+                        "budget_policy": budget_policy,
+                        "attempts": create_attempts,
+                    }
+                attempt = {
+                    "create_status": s,
+                    "size": size,
+                    "region": region,
+                    "retryable_region_capacity_error": _do_size_region_unavailable(
+                        body if isinstance(body, dict) else {}
+                    ),
+                }
+                if isinstance(body, dict) and body.get("error"):
+                    attempt["error"] = str(body.get("error"))[:300]
+                create_attempts.append(attempt)
+                if not attempt["retryable_region_capacity_error"]:
+                    return {
+                        "status": "blocked",
+                        "blockers": [f"do_droplet_create_http_{s}"],
+                        "attempts": create_attempts,
+                        "budget_policy": budget_policy,
+                        "ssh_key_configuration": ssh_key_detail,
+                    }
+        return {
+            "status": "blocked",
+            "blockers": ["digitalocean_gpu_size_region_unavailable"],
+            "attempts": create_attempts,
+            "budget_policy": budget_policy,
+            "ssh_key_configuration": ssh_key_detail,
+        }
 
     def inspect(self, instance_id: str) -> dict:
         token = self._token()

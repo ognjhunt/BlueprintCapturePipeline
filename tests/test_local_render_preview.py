@@ -59,13 +59,13 @@ def test_pov_framing_discriminates_arm_in_frame_vs_cropped() -> None:
     eye, tgt = M.manipulation_cam_pose(root, yaw, look_at=look_at, reach_arm="right")
     lms = M._project_skeleton(skel, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
                               vfov_deg=68.0, width=1280, height=960)
-    ids = {l["landmark_id"] for l in lms}
+    ids = {landmark["landmark_id"] for landmark in lms}
     assert any(("right_hand" in i) or ("right_wrist" in i) for i in ids), ids
 
     # Camera planted in front of the robot looking further forward: the arm is behind the eye.
     bad = M._project_skeleton(skel, eye=(2.0, 0.0, 1.2), target=(4.0, 0.0, 1.0),
                               up=(0.0, 0.0, 1.0), vfov_deg=68.0, width=1280, height=960)
-    bad_ids = {l["landmark_id"] for l in bad}
+    bad_ids = {landmark["landmark_id"] for landmark in bad}
     assert not any("right_hand" in i for i in bad_ids), bad_ids
 
 
@@ -527,6 +527,29 @@ def test_robot_review_material_binds_only_robot_geometry() -> None:
     assert diag["status"] == "PASS"
     assert diag["gprim_count"] == 1
     assert diag["material_bound_gprim_count"] == 1
+
+
+def test_non_white_robot_review_material_uses_dark_matte_color() -> None:
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdGeom, UsdShade  # type: ignore
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World/G1")
+    UsdGeom.Mesh.Define(stage, "/World/G1/torso_mesh")
+
+    bound = M._apply_robot_review_material(
+        stage,
+        "/World/G1",
+        override_authored_materials=True,
+        material_mode="non_white_matte",
+    )
+
+    assert bound >= 2
+    shader = UsdShade.Shader(stage.GetPrimAtPath("/World/Materials/RobotReviewVisible/PreviewSurface"))
+    color = shader.GetInput("diffuseColor").Get()
+    assert tuple(round(float(v), 2) for v in color) == (0.32, 0.42, 0.5)
+    assert max(float(v) for v in color) < 0.75
+    assert float(shader.GetInput("roughness").Get()) == pytest.approx(0.78)
 
 
 def test_robot_material_preservation_normalizes_visibility_without_override() -> None:

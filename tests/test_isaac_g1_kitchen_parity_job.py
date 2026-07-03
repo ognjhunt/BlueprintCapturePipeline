@@ -388,6 +388,31 @@ def test_build_launch_spec_carries_policy_and_signed_urls(tmp_path: Path) -> Non
     assert spec.max_hourly_rate_usd == 5.0
 
 
+def test_build_launch_spec_threads_groot_policy_command(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+
+    spec = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="groot_sonic",
+        steps=8,
+        groot_policy_command=(
+            "python -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
+        ),
+        groot_policy_command_timeout_seconds=15,
+    )
+
+    assert spec.env["PARITY_GROOT_POLICY_COMMAND"] == (
+        "python -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
+    )
+    assert spec.env["PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"] == "15.0"
+    assert "--groot-policy-command" in spec.bootstrap_argv[1]
+    assert "--groot-policy-command-timeout-seconds" in spec.bootstrap_argv[1]
+
+
 def test_build_launch_spec_canary_uses_canary_bootstrap(tmp_path: Path) -> None:
     jd = tmp_path / "object_store_real_run"
     jd.mkdir()
@@ -402,6 +427,23 @@ def test_build_launch_spec_canary_uses_canary_bootstrap(tmp_path: Path) -> None:
     )
     assert "parity_image_startup_canary.py" in spec.bootstrap_argv[1]
     assert "run_isaac_g1_kitchen_parity_eval.py" not in spec.bootstrap_argv[1]
+
+
+def test_parity_bundle_ships_groot_policy_command_modules(tmp_path: Path) -> None:
+    bundle_zip = J.build_parity_bundle(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        policy_id="groot_sonic",
+        steps=4,
+    )
+
+    with zipfile.ZipFile(bundle_zip) as zf:
+        names = set(zf.namelist())
+
+    assert "blueprint_pipeline/__init__.py" in names
+    assert "blueprint_pipeline/common.py" in names
+    assert "blueprint_pipeline/unitree_groot_n17_sonic_policy_runtime.py" in names
+    assert "blueprint_pipeline/unitree_groot_n17_sonic_policy_server_command.py" in names
 
 
 def test_build_launch_spec_allows_vast_rate_override(monkeypatch, tmp_path: Path) -> None:
@@ -540,6 +582,28 @@ def test_robot_review_material_override_threads_env_and_bootstrap(tmp_path: Path
     body = J.docker_start_cmd()[1]
     assert "PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE" in body
     assert "--robot-review-material-override" in body
+
+
+def test_non_white_robot_review_material_mode_threads_env_and_bootstrap(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+
+    spec = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="p",
+        steps=8,
+        robot_review_material_override=True,
+        robot_review_material_mode="non_white_matte",
+    )
+
+    assert spec.env["PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE"] == "1"
+    assert spec.env["PARITY_ROBOT_REVIEW_MATERIAL_MODE"] == "non_white_matte"
+    body = J.docker_start_cmd()[1]
+    assert "PARITY_ROBOT_REVIEW_MATERIAL_MODE" in body
+    assert "--robot-review-material-mode" in body
 
 
 def test_collision_approximation_and_verify_cam_thread_env_and_bootstrap(tmp_path: Path) -> None:
@@ -827,6 +891,194 @@ def test_paid_runpod_launch_blocks_before_staging_without_prebuilt_worker_image(
     assert m["worker_image_policy"]["worker_image_ref_file_present"] is False
     assert m["worker_image_policy"]["direct_isaac_base_image_runpod_allowed"] is False
     assert "staging" not in m
+
+
+def test_paid_groot_sonic_isaac_parity_blocks_before_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_test_worker_image(monkeypatch)
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
+    )
+
+    def _stage_should_not_run(*_args, **_kwargs):
+        raise AssertionError("unwired groot_sonic parity policy should block before staging")
+
+    monkeypatch.setattr(J, "stage_bundle", _stage_should_not_run)
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="runpod",
+        policy_id="groot_sonic",
+        allow_paid=True,
+        allow_dirty_paid_launch=True,
+    )
+
+    assert m["status"] == "blocked"
+    assert "groot_sonic_policy_not_connected_to_isaac_parity_runner" in m["blockers"]
+    assert (
+        "groot_sonic_policy_runtime_presence_not_proven_for_selected_image"
+        in m["blockers"]
+    )
+    assert m["policy_runtime_policy"]["status"] == "blocked"
+    assert m["policy_runtime_policy"]["policy_command_configured"] is False
+    assert m["policy_runtime_policy"]["runtime_location_proven"] is False
+    assert "prior Unitree GR00T/SONIC provider action-command evidence" in m[
+        "policy_runtime_policy"
+    ]["claim_boundary"]
+    assert "staging" not in m
+
+
+def test_paid_groot_sonic_policy_command_without_runtime_presence_blocks_before_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_test_worker_image(monkeypatch)
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
+    )
+
+    def _stage_should_not_run(*_args, **_kwargs):
+        raise AssertionError("command-only groot_sonic paid run should block before staging")
+
+    monkeypatch.setattr(J, "stage_bundle", _stage_should_not_run)
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="runpod",
+        policy_id="groot_sonic",
+        allow_paid=True,
+        allow_dirty_paid_launch=True,
+        groot_policy_command=(
+            "python -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
+        ),
+    )
+
+    assert m["status"] == "blocked"
+    assert (
+        "groot_sonic_policy_runtime_presence_not_proven_for_selected_image"
+        in m["blockers"]
+    )
+    assert m["policy_runtime_policy"]["status"] == "blocked"
+    assert m["policy_runtime_policy"]["policy_command_configured"] is True
+    assert m["policy_runtime_policy"]["runtime_location_proven"] is False
+    assert m["policy_runtime_policy"][
+        "runtime_dependency_install_disallowed_for_paid_launch"
+    ] is True
+    assert "command string alone is not enough" in m["policy_runtime_policy"]["reason"]
+    assert "staging" not in m
+
+
+def test_paid_groot_sonic_runtime_policy_allows_external_policy_server(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        J.UNITREE_GROOT_POLICY_SERVER_URL_ENV,
+        "tcp://policy-server.example:5555",
+    )
+
+    policy = J._groot_sonic_policy_runtime_policy(
+        policy_id="groot_sonic",
+        selected_image="registry.example/blueprint/isaac-eval-worker:test",
+        allow_paid=True,
+        image_startup_canary=False,
+        effective_groot_policy_command=(
+            "python -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
+        ),
+        effective_groot_policy_command_timeout_seconds=30.0,
+    )
+
+    assert policy["status"] == "configured"
+    assert policy["runtime_location_proven"] is True
+    assert policy["runtime_location_source"] == "external_policy_server_url"
+    assert policy["blockers"] == []
+
+
+def test_paid_groot_sonic_runtime_policy_allows_confirmed_prebaked_image(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(J.ISAAC_G1_GROOT_POLICY_RUNTIME_MODE_ENV, "prebaked_worker_image")
+    monkeypatch.setenv(J.ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED_ENV, "true")
+
+    policy = J._groot_sonic_policy_runtime_policy(
+        policy_id="groot_sonic",
+        selected_image="registry.example/blueprint/isaac-groot-sonic-worker:test",
+        allow_paid=True,
+        image_startup_canary=False,
+        effective_groot_policy_command=(
+            "python -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
+        ),
+        effective_groot_policy_command_timeout_seconds=30.0,
+    )
+
+    assert policy["status"] == "configured"
+    assert policy["runtime_location_proven"] is True
+    assert policy["runtime_location_source"] == "prebaked_worker_image_contract"
+    assert policy["blockers"] == []
+
+
+def test_groot_sonic_policy_command_allows_no_spend_prepared_plan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_test_worker_image(monkeypatch)
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
+    )
+    captured: dict = {}
+
+    class _FakeProvider:
+        name = "runpod"
+
+        def available(self):
+            return {"available": True}
+
+        def build_request(self, spec, job_dir):
+            captured["request"] = {"env": spec.env, "image": spec.image, "job_dir": str(job_dir)}
+            return captured["request"]
+
+    def _fake_stage(bundle_zip, job_dir, *, key_prefix):
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+        (job_dir / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+        (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+        return {"status": "completed", "manifest": {"key_prefix": key_prefix}}
+
+    monkeypatch.setattr(J, "get_render_provider", lambda name, warm_candidates=(): _FakeProvider())
+    monkeypatch.setattr(J, "stage_bundle", _fake_stage)
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="runpod",
+        policy_id="groot_sonic",
+        allow_paid=False,
+        groot_policy_command=(
+            "python -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
+        ),
+    )
+
+    assert m["status"] == "prepared"
+    assert m["policy_runtime_policy"]["status"] == "configured_unproven_no_spend_plan"
+    assert m["policy_runtime_policy"]["policy_command_configured"] is True
+    assert m["policy_runtime_policy"]["runtime_location_proven"] is False
+    assert (
+        "groot_sonic_policy_runtime_presence_not_proven_for_selected_image"
+        in m["policy_runtime_policy"]["blockers"]
+    )
+    assert m["launch_request_shape"]["groot_policy_command_configured"] is True
+    assert captured["request"]["env"]["PARITY_GROOT_POLICY_COMMAND"] == (
+        "python -m blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command"
+    )
 
 
 def test_paid_runpod_large_worker_image_requires_canary_or_override(

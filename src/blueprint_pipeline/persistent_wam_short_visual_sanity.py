@@ -24,6 +24,7 @@ from .unitree_groot_n17_sonic_vast_persistent_session import (
     _mapping,
     _read_json,
     _string,
+    _string_list,
     assess_source_policy_observation_visual_qa,
     run_persistent_session,
     run_persistent_session_runpod,
@@ -197,6 +198,8 @@ def _manifest_blockers(
     result: Mapping[str, Any],
     visual_report: Mapping[str, Any],
     video_status: Mapping[str, Any],
+    task_success_judge: Mapping[str, Any],
+    task_success_judge_path: str | None,
     source_qa_status: str,
     paid_provider: Mapping[str, Any],
 ) -> list[str]:
@@ -225,6 +228,21 @@ def _manifest_blockers(
         blockers.append(
             "short_visual_sanity_review_video_frame_count_below_review_quality_minimum"
         )
+    if not task_success_judge_path:
+        blockers.append("short_visual_sanity_task_success_judge_missing")
+    elif not Path(task_success_judge_path).is_file():
+        blockers.append("short_visual_sanity_task_success_judge_missing")
+    elif not task_success_judge:
+        blockers.append("short_visual_sanity_task_success_judge_empty")
+    else:
+        task_claim_boundary = _mapping(task_success_judge.get("claim_boundary"))
+        if task_claim_boundary.get("visual_quality_is_not_task_success") is not True:
+            blockers.append("short_visual_sanity_task_success_judge_boundary_missing")
+        if (
+            task_success_judge.get("task_success_proven") is True
+            and task_success_judge.get("true_manipulation_success_proven") is not True
+        ):
+            blockers.append("short_visual_sanity_task_success_judge_overclaims_success")
     profile_contract = _mapping(visual_report.get("profile_contract"))
     if visual_report and _string(visual_report.get("visual_profile")) != "review_quality":
         blockers.append("short_visual_sanity_quality_report_not_review_quality_profile")
@@ -281,6 +299,12 @@ def _write_blocked_preflight_manifest(
         "provider_success": False,
         "provider_success_separate_from_visually_useful_rollout": True,
         "visually_useful_rollout": False,
+        "task_success_judge_status": "not_run_source_observation_qa_blocked",
+        "task_success_proven": False,
+        "true_manipulation_success_proven": False,
+        "generated_video_task_success_label_from_generated_video": False,
+        "generated_video_task_success_label_status": "not_run_source_observation_qa_blocked",
+        "task_success_blockers": ["source_policy_observation_visual_qa_failed"],
         "source_policy_observation_visual_qa_status": source_qa.get("status"),
         "source_policy_observation_visual_qa_path": str(source_qa_path),
         "paid_provider": {
@@ -301,6 +325,10 @@ def _write_blocked_preflight_manifest(
             "provider_success": False,
             "provider_success_separate_from_visually_useful_rollout": True,
             "visually_useful_rollout": False,
+            "visual_sanity_passed_is_not_task_success": True,
+            "visual_quality_is_not_task_success": True,
+            "task_success_judge_required_for_task_success_claim": True,
+            "generated_video_success_label_is_support_only": True,
             "generated_observation_review_support_only": True,
             "review_quality_gate_is_not_scale_up_approval": True,
             "generated_world_rank_fidelity_result_proven": False,
@@ -347,9 +375,13 @@ def _build_short_sanity_manifest(
     review_video_path = _resolve_artifact_path(
         result.get("review_video_path") or postprocess.get("review_video_path")
     )
+    task_success_judge_path = _resolve_artifact_path(
+        result.get("task_success_judge_path") or postprocess.get("task_success_judge")
+    )
     visual_report = _read_json_if_present(visual_report_path)
     video_status = _read_json_if_present(video_status_path)
     source_qa = _read_json_if_present(source_qa_path)
+    task_success_judge = _read_json_if_present(task_success_judge_path)
     paid_provider = _paid_provider_status(provider=provider, result=result)
     source_qa_status = _string(source_qa.get("status")) or _string(
         visual_report.get("source_policy_observation_visual_qa_status")
@@ -358,6 +390,8 @@ def _build_short_sanity_manifest(
         result=result,
         visual_report=visual_report,
         video_status=video_status,
+        task_success_judge=task_success_judge,
+        task_success_judge_path=task_success_judge_path,
         source_qa_status=source_qa_status,
         paid_provider=paid_provider,
     )
@@ -367,6 +401,9 @@ def _build_short_sanity_manifest(
     passed = not blockers
     provider_success = result.get("status") == "completed"
     visually_useful_rollout = visual_report.get("visual_success") is True
+    generated_video_task_success_label = _mapping(
+        task_success_judge.get("generated_video_semantic_success_label")
+    )
     manifest = {
         "schema_version": PERSISTENT_WAM_SHORT_VISUAL_SANITY_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -385,6 +422,26 @@ def _build_short_sanity_manifest(
         "provider_success": provider_success,
         "provider_success_separate_from_visually_useful_rollout": True,
         "visually_useful_rollout": visually_useful_rollout,
+        "task_success_judge_path": task_success_judge_path,
+        "task_success_judge_status": _string(task_success_judge.get("status")) or None,
+        "task_success_proven": bool(task_success_judge.get("task_success_proven")),
+        "true_manipulation_success_proven": bool(
+            task_success_judge.get("true_manipulation_success_proven")
+        ),
+        "generated_video_task_success_label_from_generated_video": bool(
+            generated_video_task_success_label.get("success_label_from_generated_video")
+        ),
+        "generated_video_task_success_label_status": _string(
+            generated_video_task_success_label.get("status")
+        )
+        or None,
+        "generated_video_semantic_success": bool(
+            generated_video_task_success_label.get("generated_video_semantic_success")
+        ),
+        "generated_video_semantic_failure": bool(
+            generated_video_task_success_label.get("generated_video_semantic_failure")
+        ),
+        "task_success_blockers": _string_list(task_success_judge.get("blockers")),
         "persistent_session_result_path": str(
             Path(str(result.get("job_dir"))) / "unitree_groot_n17_sonic_vast_persistent_session_result.json"
         )
@@ -420,6 +477,10 @@ def _build_short_sanity_manifest(
             "provider_success": provider_success,
             "provider_success_separate_from_visually_useful_rollout": True,
             "visually_useful_rollout": visually_useful_rollout,
+            "visual_sanity_passed_is_not_task_success": True,
+            "visual_quality_is_not_task_success": True,
+            "task_success_judge_required_for_task_success_claim": True,
+            "generated_video_success_label_is_support_only": True,
             "source_observation_qa_is_required_before_provider_run": True,
             "generated_observation_review_support_only": True,
             "review_quality_gate_is_not_scale_up_approval": True,

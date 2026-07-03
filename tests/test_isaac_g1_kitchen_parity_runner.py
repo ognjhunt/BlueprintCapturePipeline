@@ -820,6 +820,84 @@ def test_apply_joint_deltas_updates_only_available_joint_targets() -> None:
     assert targets == pytest.approx([0.15, 0.0, 2.77])
 
 
+def test_apply_named_joint_targets_overrides_available_absolute_targets() -> None:
+    targets = [1.0, 2.0, 3.0]
+    applied = M._apply_named_joint_targets(
+        targets,
+        {
+            "right_shoulder_pitch_joint": 0,
+            "right_elbow_joint": 2,
+        },
+        {
+            "right_shoulder_pitch_joint": -0.4,
+            "missing_joint": 99.0,
+            "right_elbow_joint": "0.35",
+            "bad_joint_value": object(),
+        },
+    )
+
+    assert applied == ["right_shoulder_pitch_joint", "right_elbow_joint"]
+    assert targets == pytest.approx([-0.4, 2.0, 0.35])
+
+
+def test_action_record_persists_policy_joint_targets() -> None:
+    decision = M.policy_mod.StepDecision(
+        root_pose=(0.0, 0.0, 0.79),
+        yaw=0.0,
+        desired_root_position=(0.0, 0.0, 0.79),
+        route_segment_index=0,
+        policy_action="learned_policy_action",
+        collision_probe_candidate_count=0,
+        rejected_collision_probe_count=0,
+        joint_targets={"right_elbow_joint": 0.35},
+    )
+
+    record = M.policy_mod.action_record(
+        decision=decision,
+        step=0,
+        sim_time_s=0.0,
+        target=(0.0, 0.0, 0.79),
+    )
+
+    assert record["joint_targets"] == {"right_elbow_joint": 0.35}
+    assert record["joint_target_count"] == 1
+
+
+def test_groot_policy_command_infer_builds_payload_and_returns_action(tmp_path: Path) -> None:
+    frame = tmp_path / "robot_pov.png"
+    frame.write_bytes(b"not-a-real-png-for-this-subprocess-test")
+    fake_command = tmp_path / "fake_groot_policy_command.py"
+    fake_command.write_text(
+        "\n".join(
+            [
+                "import json, sys",
+                "payload = json.loads(sys.stdin.read())",
+                "obs = payload['observation']",
+                "assert obs['visual_observation']['camera_frame_path']",
+                "assert obs['unitree_g1_sonic_state']['projected_gravity'] == [0.0, 0.0, -1.0]",
+                "print(json.dumps({'status':'completed','action':{"
+                "'hand_targets':{'left_hand_joints':[0.11,0.22]},"
+                "'policy_action':'unit-test-policy-action'}}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    infer = M._make_groot_policy_command_infer(
+        command=f"{sys.executable} {fake_command}",
+        scenario={"scenario_id": "sink", "task_instruction": "turn on the faucet"},
+        call_dir=tmp_path / "calls",
+        timeout_seconds=5,
+    )
+
+    action = infer({"step": 3, "camera_rgb": str(frame)})
+
+    assert action["hand_targets"]["left_hand_joints"] == [0.11, 0.22]
+    call = json.loads((tmp_path / "calls" / "groot_policy_call_0003.json").read_text())
+    assert call["payload"]["observation"]["task_prompt"] == "turn on the faucet"
+    assert call["payload"]["observation"]["step"] == 3
+    assert call["command_value_redacted"] == "<configured>"
+
+
 def test_arm_reach_skeleton_can_pose_both_arms_for_first_frame() -> None:
     rest = [
         ("left_shoulder_link", (0.0, -0.2, 1.1)),

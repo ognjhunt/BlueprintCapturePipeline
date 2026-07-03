@@ -94,6 +94,64 @@ G1_GAIT_JOINTS = (
     "waist_yaw_joint", "left_shoulder_pitch_joint", "left_elbow_joint",
     "right_shoulder_pitch_joint", "right_elbow_joint",
 )
+GROOT_SONIC_ISAAC_BRIDGE_SCHEMA_VERSION = "groot_sonic_isaac_bridge_readiness.v1"
+GROOT_SONIC_ISAAC_CONTROL_FIELDS = ("joint_targets",)
+GROOT_SONIC_LATENT_ACTION_FIELDS = (
+    "action_chunk",
+    "actions",
+    "action_vector",
+    "sonic_latent_action",
+    "sonic_latents",
+    "latent_action_tokens",
+)
+GROOT_SONIC_CONTROL_TARGET_FIELDS = (
+    "arm_targets",
+    "hand_targets",
+    "gripper_targets",
+    "motion_token",
+    "left_hand_joints",
+    "right_hand_joints",
+)
+GROOT_SONIC_ARM_JOINT_NAMES = {
+    "left": (
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+    ),
+    "right": (
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
+    ),
+}
+GROOT_SONIC_HAND_JOINT_NAMES = {
+    "left": (
+        "left_hand_thumb_0_joint",
+        "left_hand_thumb_1_joint",
+        "left_hand_thumb_2_joint",
+        "left_hand_middle_0_joint",
+        "left_hand_middle_1_joint",
+        "left_hand_index_0_joint",
+        "left_hand_index_1_joint",
+    ),
+    "right": (
+        "right_hand_thumb_0_joint",
+        "right_hand_thumb_1_joint",
+        "right_hand_thumb_2_joint",
+        "right_hand_index_0_joint",
+        "right_hand_index_1_joint",
+        "right_hand_middle_0_joint",
+        "right_hand_middle_1_joint",
+    ),
+}
 
 
 def gait_joint_deltas(phase: float, moving: bool) -> dict[str, float]:
@@ -119,6 +177,202 @@ def gait_joint_deltas(phase: float, moving: bool) -> dict[str, float]:
 def gait_phase(alpha: float, route_distance_m: float) -> float:
     """MUJOCO PARITY: phase = alpha * max(1, route_distance) * 2*pi (mujoco loop)."""
     return alpha * max(1.0, route_distance_m) * math.pi * 2.0
+
+
+def _payload_action_mapping(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        return {}
+    action = payload.get("action") or payload.get("normalized_action")
+    if isinstance(action, Mapping):
+        return dict(action)
+    return dict(payload)
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _has_nonempty_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) and bool(value)
+
+
+def _has_nonempty_mapping(value: Any) -> bool:
+    return isinstance(value, Mapping) and bool(value)
+
+
+def _numeric_values(value: Any) -> list[float]:
+    if hasattr(value, "tolist"):
+        try:
+            value = value.tolist()
+        except Exception:  # noqa: BLE001
+            pass
+    out: list[float] = []
+
+    def visit(child: Any) -> None:
+        if hasattr(child, "tolist"):
+            try:
+                child = child.tolist()
+            except Exception:  # noqa: BLE001
+                pass
+        if isinstance(child, Mapping):
+            for item in child.values():
+                visit(item)
+        elif isinstance(child, Sequence) and not isinstance(child, (str, bytes, bytearray)):
+            for item in child:
+                visit(item)
+        elif isinstance(child, (int, float)) and not isinstance(child, bool):
+            number = float(child)
+            if math.isfinite(number):
+                out.append(number)
+
+    visit(value)
+    return out
+
+
+def _first_action_value(action: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in action and action[key] is not None:
+            return action[key]
+        dotted = f"action.{key}"
+        if dotted in action and action[dotted] is not None:
+            return action[dotted]
+    return None
+
+
+def _apply_named_values(
+    targets: dict[str, float],
+    *,
+    joint_names: Sequence[str],
+    values: Any,
+) -> bool:
+    numbers = _numeric_values(values)
+    if not numbers:
+        return False
+    for joint_name, value in zip(joint_names, numbers):
+        targets[str(joint_name)] = round(float(value), 6)
+    return True
+
+
+def groot_sonic_action_to_isaac_joint_targets(
+    payload: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Convert supported GR00T/SONIC action fields into named Isaac G1 joint targets.
+
+    Native ``joint_targets`` need no conversion. PolicyServer outputs with arm/hand vectors
+    are explicitly mapped to the Isaac G1 joint names. Raw latent chunks remain blocked because
+    they require a learned decoder or official WBC bridge, not a shape-only reinterpretation.
+    """
+
+    action = _payload_action_mapping(payload)
+    native = action.get("joint_targets")
+    if _has_nonempty_mapping(native):
+        return {
+            "schema_version": GROOT_SONIC_ISAAC_BRIDGE_SCHEMA_VERSION,
+            "status": "ready",
+            "ready": True,
+            "conversion": "native_named_isaac_joint_targets",
+            "joint_targets": {str(key): float(value) for key, value in dict(native).items()},
+            "joint_target_count": len(native),
+            "supported_isaac_control_fields": ["joint_targets"],
+            "source_fields": ["joint_targets"],
+            "blockers": [],
+            "claim_boundary": (
+                "Payload has explicit named Isaac joint targets. This only proves command-shape "
+                "compatibility; task success still requires simulator execution and semantic grading."
+            ),
+        }
+
+    targets: dict[str, float] = {}
+    source_fields: list[str] = []
+    arm_targets = _mapping(action.get("arm_targets"))
+    hand_targets = _mapping(action.get("hand_targets"))
+    for side in ("left", "right"):
+        arm_value = _first_action_value(
+            action,
+            f"{side}_arm_joints",
+            f"{side}_arm_targets",
+        )
+        if arm_value is None:
+            arm_value = arm_targets.get(f"{side}_arm_joints") or arm_targets.get(side)
+        if _apply_named_values(
+            targets,
+            joint_names=GROOT_SONIC_ARM_JOINT_NAMES[side],
+            values=arm_value,
+        ):
+            source_fields.append(f"{side}_arm_joints")
+        hand_value = _first_action_value(
+            action,
+            f"{side}_hand_joints",
+            f"{side}_hand_targets",
+        )
+        if hand_value is None:
+            hand_value = (
+                hand_targets.get(f"{side}_hand_joints")
+                or hand_targets.get(side)
+                or _mapping(action.get("gripper_targets")).get(side)
+            )
+        if _apply_named_values(
+            targets,
+            joint_names=GROOT_SONIC_HAND_JOINT_NAMES[side],
+            values=hand_value,
+        ):
+            source_fields.append(f"{side}_hand_joints")
+
+    if targets:
+        return {
+            "schema_version": GROOT_SONIC_ISAAC_BRIDGE_SCHEMA_VERSION,
+            "status": "ready",
+            "ready": True,
+            "conversion": "unitree_sonic_control_vectors_to_named_isaac_joint_targets",
+            "joint_targets": targets,
+            "joint_target_count": len(targets),
+            "supported_isaac_control_fields": ["joint_targets"],
+            "source_fields": sorted(set(source_fields)),
+            "blockers": [],
+            "claim_boundary": (
+                "Unitree SONIC arm/hand vectors were mapped to named Isaac G1 joints. This is a "
+                "simulator command bridge, not an official WBC/physical-robot controller and not "
+                "task-success proof by itself."
+            ),
+        }
+
+    blockers: list[str] = []
+    unsupported_fields: list[str] = []
+    action_type = str(action.get("action_type") or "")
+    if "latent_action_chunk" in action_type or "sonic_action_chunk" in action_type:
+        blockers.append("unsupported_sonic_latent_action_chunk_requires_explicit_isaac_converter")
+    for field_name in GROOT_SONIC_LATENT_ACTION_FIELDS:
+        if _has_nonempty_sequence(action.get(field_name)):
+            unsupported_fields.append(field_name)
+    if unsupported_fields:
+        blockers.append("unsupported_sonic_latent_action_fields_require_explicit_isaac_converter")
+    if not blockers:
+        blockers.append("missing_named_isaac_joint_targets_for_groot_sonic")
+    return {
+        "schema_version": GROOT_SONIC_ISAAC_BRIDGE_SCHEMA_VERSION,
+        "status": "blocked",
+        "ready": False,
+        "required_isaac_control_fields": list(GROOT_SONIC_ISAAC_CONTROL_FIELDS),
+        "unsupported_source_fields": sorted(set(unsupported_fields)),
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": (
+            "Provider/action-command artifacts are not replayable as Isaac manipulation proof unless "
+            "they contain named Isaac joint targets or explicit arm/hand control vectors that this "
+            "bridge can map to named Isaac G1 joints."
+        ),
+    }
+
+
+def groot_sonic_isaac_bridge_readiness(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return whether a GR00T/SONIC action payload can directly drive this Isaac policy slot.
+
+    Provider/action-command outputs often contain SONIC latent action chunks or hand-target
+    summaries. Those are useful evidence in their own lane, but they are not an Isaac
+    articulation command until an explicit converter or live endpoint produces named joint targets.
+    """
+
+    normalized = groot_sonic_action_to_isaac_joint_targets(payload)
+    return {key: value for key, value in normalized.items() if key != "joint_targets"}
 
 
 def candidate_pose_specs(
@@ -295,6 +549,10 @@ class Groot17SonicPolicy(G1Policy):
                 "step": ctx.step,
             }
             response = dict(self.infer(obs) or {})
+            bridge = groot_sonic_action_to_isaac_joint_targets(response)
+            if bridge.get("status") != "ready":
+                blockers = ",".join(str(item) for item in bridge.get("blockers") or [])
+                raise RuntimeError(f"groot_sonic_isaac_bridge_unready:{blockers}")
             raw_root = response.get("root_position") or response.get("root_pose") or (0.0, 0.0, 0.793)
             root = rounded_pose(raw_root)
             raw_desired = response.get("desired_root_position") or root
@@ -308,7 +566,7 @@ class Groot17SonicPolicy(G1Policy):
                 collision_probe_candidate_count=0,
                 rejected_collision_probe_count=0,
                 rejected_probes=[],
-                joint_targets=response.get("joint_targets"),
+                joint_targets=bridge.get("joint_targets"),
             )
         raise NotImplementedError("Groot17SonicPolicy.step runs only on the GPU worker")
 
@@ -451,7 +709,7 @@ def action_record(*, decision: StepDecision, step: int, sim_time_s: float, targe
     """Build the per-step action record in the MuJoCo trace schema (consumed by compute_task_outcome)."""
     x, y, z = decision.root_pose
     dp = decision.desired_root_position
-    return {
+    record = {
         "step": step,
         "sim_time_s": round(float(sim_time_s), 9),
         "root_position": [round(x, 6), round(y, 6), round(z, 6)],
@@ -466,3 +724,10 @@ def action_record(*, decision: StepDecision, step: int, sim_time_s: float, targe
         "policy_action": decision.policy_action,
         "scenario_eval_run_id": scenario_eval_run_id,
     }
+    if isinstance(decision.joint_targets, Mapping) and decision.joint_targets:
+        record["joint_targets"] = {
+            str(key): round(float(value), 6)
+            for key, value in dict(decision.joint_targets).items()
+        }
+        record["joint_target_count"] = len(record["joint_targets"])
+    return record

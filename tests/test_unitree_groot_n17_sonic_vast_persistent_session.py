@@ -36,6 +36,13 @@ def clean_launch_provenance(monkeypatch) -> None:
     )
 
 
+def _allow_runpod_runtime_bootstrap(monkeypatch) -> None:
+    monkeypatch.setenv(
+        session.RUNPOD_UNITREE_GROOT_SONIC_ALLOW_RUNTIME_BOOTSTRAP_ENV,
+        "true",
+    )
+
+
 def _persistent_runner_namespace() -> dict[str, object]:
     namespace: dict[str, object] = {
         "__name__": "_persistent_session_runner_under_test",
@@ -1048,6 +1055,35 @@ response_path.write_text(
     return path
 
 
+def _write_task_success_judge_fixture(path: Path) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "persistent_wam_task_success_judge.v1",
+                "generated_at": "now",
+                "status": "not_proven",
+                "answer": "not_proven",
+                "task_success_proven": False,
+                "true_manipulation_success_proven": False,
+                "blockers": ["true_manipulation_success_not_proven"],
+                "generated_video_semantic_success_label": {
+                    "status": "requires_review",
+                    "success_label_from_generated_video": False,
+                    "generated_video_semantic_success": False,
+                    "generated_video_semantic_failure": False,
+                },
+                "claim_boundary": {
+                    "visual_quality_is_not_task_success": True,
+                    "generated_video_semantic_label_is_support_only": True,
+                    "task_success_proof_requires_evaluator_or_physics_state": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _write_passed_short_sanity_manifest(root: Path, observation_path: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     source_qa = root / "source_policy_observation_visual_qa.json"
@@ -1055,6 +1091,7 @@ def _write_passed_short_sanity_manifest(root: Path, observation_path: Path) -> P
     contact_sheet = _write_reviewable_frame(root / "wam_rollout_contact_sheet.jpg")
     video_status = root / "video_review_status.json"
     review_video = root / "review.mp4"
+    task_success_judge = root / "task_success_judge.json"
     source_qa.write_text(
         json.dumps({"status": "passed_visual_quality_gate"}),
         encoding="utf-8",
@@ -1096,6 +1133,31 @@ def _write_passed_short_sanity_manifest(root: Path, observation_path: Path) -> P
         encoding="utf-8",
     )
     review_video.write_bytes(b"mp4")
+    task_success_judge.write_text(
+        json.dumps(
+            {
+                "schema_version": "persistent_wam_task_success_judge.v1",
+                "generated_at": "now",
+                "status": "not_proven",
+                "answer": "not_proven",
+                "task_success_proven": False,
+                "true_manipulation_success_proven": False,
+                "blockers": ["true_manipulation_success_not_proven"],
+                "generated_video_semantic_success_label": {
+                    "status": "requires_review",
+                    "success_label_from_generated_video": False,
+                    "generated_video_semantic_success": False,
+                    "generated_video_semantic_failure": False,
+                },
+                "claim_boundary": {
+                    "visual_quality_is_not_task_success": True,
+                    "generated_video_semantic_label_is_support_only": True,
+                    "task_success_proof_requires_evaluator_or_physics_state": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     manifest = root / "persistent_wam_short_visual_sanity_manifest.json"
     manifest.write_text(
         json.dumps(
@@ -1110,6 +1172,13 @@ def _write_passed_short_sanity_manifest(root: Path, observation_path: Path) -> P
                 "requested_loop_step_count": 3,
                 "generated_transition_count": 2,
                 "visual_profile": "review_quality",
+                "claim_boundary": {
+                    "short_visual_sanity_is_not_task_success_proof": True,
+                    "visual_sanity_passed_is_not_task_success": True,
+                    "visual_quality_is_not_task_success": True,
+                    "task_success_judge_required_for_task_success_claim": True,
+                    "generated_video_success_label_is_support_only": True,
+                },
                 "source_policy_observation_visual_qa_status": "passed_visual_quality_gate",
                 "source_policy_observation_visual_qa_path": str(source_qa),
                 "wam_rollout_visual_success": True,
@@ -1117,6 +1186,15 @@ def _write_passed_short_sanity_manifest(root: Path, observation_path: Path) -> P
                 "wam_rollout_contact_sheet_path": str(contact_sheet),
                 "video_review_status_path": str(video_status),
                 "review_video_path": str(review_video),
+                "task_success_judge_path": str(task_success_judge),
+                "task_success_judge_status": "not_proven",
+                "task_success_proven": False,
+                "true_manipulation_success_proven": False,
+                "generated_video_task_success_label_from_generated_video": False,
+                "generated_video_task_success_label_status": "requires_review",
+                "generated_video_semantic_success": False,
+                "generated_video_semantic_failure": False,
+                "task_success_blockers": ["true_manipulation_success_not_proven"],
                 "ffprobe_command_ran": True,
                 "ffprobe_returncode": 0,
                 "ffprobe_metadata": {
@@ -1766,6 +1844,42 @@ def test_runpod_persistent_session_blocks_dirty_paid_launch_before_staging(
     assert result["blockers"] == output["blockers"]
 
 
+def test_runpod_persistent_session_blocks_unsealed_wam_carrier_before_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"jpg")
+    observation_path = _policy_observation(tmp_path / "observation.json", frame)
+
+    def fail_if_called(**kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("unsealed WAM carrier should block before provider preparation")
+
+    monkeypatch.setattr(session, "build_persistent_session_provider_bundle", fail_if_called)
+    monkeypatch.setattr(session, "stage_wam_provider_bundle_object_store", fail_if_called)
+    monkeypatch.setattr(session, "create_runpod_wam_async_run", fail_if_called)
+    monkeypatch.setattr(session, "poll_runpod_wam_async_run", fail_if_called)
+
+    output, exit_code = session.run_persistent_session_runpod(
+        policy_observation_path=observation_path,
+        job_dir=tmp_path / "jobs",
+        loop_step_count=1,
+        use_live_wam=False,
+        allow_structural_wam_fallback=True,
+    )
+
+    assert exit_code == 2
+    assert output["status"] == "blocked"
+    assert "runpod_unitree_groot_sonic_wam_carrier_image_not_sealed" in output["blockers"]
+    assert "runpod_unitree_groot_sonic_runtime_bootstrap_disallowed" in output["blockers"]
+    image_policy = output["details"]["image_contract_policy"]
+    assert image_policy["status"] == "blocked"
+    assert image_policy["bootstrap_mode"] == "system_python_minimal"
+    assert image_policy["runtime_bootstrap_allowed"] is False
+    assert image_policy["sealed_image_confirmed"] is False
+    assert image_policy["runtime_dependency_install_disallowed_for_paid_launch"] is True
+
+
 def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: Path) -> None:
     job = tmp_path / "job"
     job.mkdir()
@@ -1840,6 +1954,7 @@ def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: P
 
     labels = json.loads((job / "failure_labels.json").read_text(encoding="utf-8"))
     assert "live_wam_success_not_task_success_proof" in labels["labels"]
+    assert "generated_video_task_success_judge_not_completed" in labels["labels"]
     assert "wam_generation_missing" not in labels["labels"]
     assert "structural_wam_fallback_only" not in labels["labels"]
 
@@ -1855,6 +1970,14 @@ def test_postprocess_live_wam_not_task_success_labels_are_consistent(tmp_path: P
     assert judge["structural_fallback_used"] is False
     assert "live learned WAM generations" in judge["reason"]
     assert "structural WAM fallback only" not in judge["reason"]
+    task_success = json.loads((job / "task_success_judge.json").read_text(encoding="utf-8"))
+    assert task_success["status"] == "not_proven"
+    assert task_success["task_success_proven"] is False
+    assert task_success["true_manipulation_success_proven"] is False
+    assert "true_manipulation_success_not_proven" in task_success["blockers"]
+    assert task_success["claim_boundary"]["visual_quality_is_not_task_success"] is True
+    success_labels = json.loads((job / "wam_success_labels.json").read_text(encoding="utf-8"))
+    assert success_labels["wam_success_label_from_generated_video"] is False
     materialization = json.loads(
         (job / "wam_materialization_summary.json").read_text(encoding="utf-8")
     )
@@ -2885,10 +3008,13 @@ def test_postprocess_episode_consistency_failure_is_reliability_label_only(
     assert judge["manipulation_success_proven"] is True
     labels = json.loads((job / "failure_labels.json").read_text(encoding="utf-8"))
     assert labels["labels"] == [
-        "wam_episode_consistency_early_termination_recommended",
         "forward_inverse_consistency_not_proven",
+        "generated_video_task_success_judge_not_completed",
+        "task_success_judge_not_proven",
+        "wam_episode_consistency_early_termination_recommended",
     ]
     assert labels["task_success_not_failed_by_consistency_label"] is True
+    assert labels["generated_video_success_label_is_support_only"] is True
     assert "task_success_not_proven" not in labels["labels"]
 
     claim_boundary = json.loads((job / "claim_boundary.json").read_text(encoding="utf-8"))
@@ -3141,6 +3267,44 @@ def test_runpod_persistent_session_resumes_completed_output_without_paid_relaunc
     assert judge["task_prompt"] == "open the refrigerator"
     assert judge["question"] == "Did the requested manipulation succeed?"
     assert "sink" not in json.dumps(judge).lower()
+    success_request = json.loads(
+        (job / "wam_success_label_request.json").read_text(encoding="utf-8")
+    )
+    assert success_request["task_prompts"][0]["task_prompt"] == "open the refrigerator"
+
+
+def test_postprocess_policy_observation_falls_back_to_provider_bundle_task_context(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    runtime = job / "provider_bundle" / "provider_runtime"
+    runtime.mkdir(parents=True)
+    primary = tmp_path / "policy_observation.json"
+    primary.write_text(
+        json.dumps({"observation": {"schema_version": "observation.v1"}}),
+        encoding="utf-8",
+    )
+    (runtime / "persistent_session_input.json").write_text(
+        json.dumps(
+            {
+                "initial_observation": {
+                    "task_prompt": "Stand at the kitchen sink and turn on the faucet.",
+                    "task_id": "sink_faucet",
+                    "target_object_id": "sink",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    observation = session._load_postprocess_policy_observation(
+        job=job,
+        policy_observation_path=primary,
+    )
+
+    assert observation["task_prompt"] == "Stand at the kitchen sink and turn on the faucet."
+    assert observation["task_id"] == "sink_faucet"
+    assert observation["target_object_id"] == "sink"
 
 
 def test_runpod_finalizer_surfaces_visual_quality_and_keepalive_status(
@@ -3406,6 +3570,7 @@ def test_runpod_persistent_session_defaults_to_review_quality_wam_carrier_and_wa
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _allow_runpod_runtime_bootstrap(monkeypatch)
     frame = _write_reviewable_frame(tmp_path / "frame.jpg")
     observation_path = _policy_observation(tmp_path / "observation.json", frame)
     monkeypatch.delenv(
@@ -3544,6 +3709,7 @@ def test_runpod_persistent_session_review_quality_profile_uses_higher_fidelity_d
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _allow_runpod_runtime_bootstrap(monkeypatch)
     frame = _write_reviewable_frame(tmp_path / "frame.jpg")
     observation_path = _policy_observation(tmp_path / "observation.json", frame)
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE", "review_quality")
@@ -4559,6 +4725,7 @@ def test_short_visual_sanity_pass_manifest_records_review_artifacts_and_teardown
         frame_stats = job / "wam_rollout_frame_stats.jsonl"
         video_status = job / "video_review_status.json"
         review_video = job / "review_video" / "persistent_policy_wam_live_rollout_review.mp4"
+        task_success_judge = job / "task_success_judge.json"
         review_video.parent.mkdir()
         source_qa.write_text(
             json.dumps({"status": "passed_visual_quality_gate"}),
@@ -4602,6 +4769,7 @@ def test_short_visual_sanity_pass_manifest_records_review_artifacts_and_teardown
             encoding="utf-8",
         )
         review_video.write_bytes(b"mp4")
+        _write_task_success_judge_fixture(task_success_judge)
         result = {
             "status": "completed",
             "job_dir": str(job),
@@ -4622,12 +4790,14 @@ def test_short_visual_sanity_pass_manifest_records_review_artifacts_and_teardown
                 "wam_rollout_frame_stats": str(frame_stats),
                 "video_review_status": str(video_status),
                 "review_video_path": str(review_video),
+                "task_success_judge": str(task_success_judge),
             },
             "review_video_path": str(review_video),
             "video_review_status_path": str(video_status),
             "source_policy_observation_visual_qa_path": str(source_qa),
             "wam_rollout_visual_quality_report_path": str(report),
             "wam_rollout_contact_sheet_path": str(contact_sheet),
+            "task_success_judge_path": str(task_success_judge),
             "wam_rollout_visual_success": True,
         }
         (job / "unitree_groot_n17_sonic_vast_persistent_session_result.json").write_text(
@@ -4659,8 +4829,15 @@ def test_short_visual_sanity_pass_manifest_records_review_artifacts_and_teardown
     assert manifest["ffprobe_metadata"]["streams"][0]["width"] == 640
     assert manifest["provider_success"] is True
     assert manifest["visually_useful_rollout"] is True
+    assert manifest["task_success_judge_status"] == "not_proven"
+    assert manifest["task_success_proven"] is False
+    assert manifest["true_manipulation_success_proven"] is False
+    assert manifest["generated_video_task_success_label_from_generated_video"] is False
+    assert Path(manifest["task_success_judge_path"]).is_file()
     assert manifest["claim_boundary"]["provider_success"] is True
     assert manifest["claim_boundary"]["visually_useful_rollout"] is True
+    assert manifest["claim_boundary"]["visual_sanity_passed_is_not_task_success"] is True
+    assert manifest["claim_boundary"]["task_success_judge_required_for_task_success_claim"] is True
     assert manifest["claim_boundary"]["capture_truth"] is False
     assert manifest["claim_boundary"]["geometry_truth"] is False
     assert Path(manifest["wam_rollout_contact_sheet_path"]).is_file()
@@ -4959,6 +5136,7 @@ def test_runpod_persistent_session_clamps_tiny_oscar_frame_count(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _allow_runpod_runtime_bootstrap(monkeypatch)
     frame = tmp_path / "frame.jpg"
     frame.write_bytes(b"jpg")
     observation_path = _policy_observation(tmp_path / "observation.json", frame)
@@ -5034,6 +5212,7 @@ def test_runpod_persistent_session_launches_full_loop_without_override(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _allow_runpod_runtime_bootstrap(monkeypatch)
     frame = tmp_path / "frame.jpg"
     frame.write_bytes(b"jpg")
     observation_path = _policy_observation(tmp_path / "observation.json", frame)

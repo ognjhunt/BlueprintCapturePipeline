@@ -66,8 +66,13 @@ from .oscar_cosmos_wam_evaluator import (
     WAM_CONSISTENCY_COMMAND_ENV,
     WAM_CONSISTENCY_COMMAND_OUTPUT,
     WAM_CONSISTENCY_GATE_ENV,
+    WAM_SUCCESS_LABEL_COMMAND_ENV,
+    WAM_SUCCESS_LABEL_COMMAND_OUTPUT,
+    WAM_SUCCESS_LABEL_GATE_ENV,
     _env_truthy as _wam_consistency_env_truthy,
+    _normalize_wam_success_labels,
     _normalize_wam_episode_consistency,
+    _run_wam_success_label_command,
     _run_wam_consistency_command,
     _unscored_wam_episode_consistency,
     _wam_consistency_blockers,
@@ -105,6 +110,15 @@ PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV = (
 )
 ALLOW_DIRTY_PAID_LAUNCH_ENV = "BLUEPRINT_ALLOW_DIRTY_PAID_LAUNCH"
 RUNPOD_FULL_LOOP_OVERRIDE_ENV = "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
+RUNPOD_UNITREE_GROOT_SONIC_ALLOW_RUNTIME_BOOTSTRAP_ENV = (
+    "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ALLOW_RUNTIME_BOOTSTRAP"
+)
+RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV = (
+    "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_SEALED_IMAGE_CONFIRMED"
+)
+RUNPOD_UNITREE_GROOT_SONIC_REQUIRE_SEALED_IMAGE_ENV = (
+    "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_REQUIRE_SEALED_IMAGE"
+)
 OSCAR_WAM_VISUAL_PROFILE_ENV = "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE"
 DEFAULT_WAM_VISUAL_PROFILE = "review_quality"
 PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_ENV = "BLUEPRINT_ALLOW_PERSISTENT_WAM_LONG_REVIEW_ROLLOUT"
@@ -435,6 +449,11 @@ def validate_persistent_wam_short_visual_sanity_manifest(
             blockers.append("short_visual_sanity_learned_wam_transition_count_not_passed")
         if payload.get("structural_fallback_used") is True:
             blockers.append("short_visual_sanity_structural_fallback_cannot_unlock_long_rollout")
+        claim_boundary = _mapping(payload.get("claim_boundary"))
+        if claim_boundary.get("visual_sanity_passed_is_not_task_success") is not True:
+            blockers.append("short_visual_sanity_claim_boundary_not_task_success_missing")
+        if claim_boundary.get("task_success_judge_required_for_task_success_claim") is not True:
+            blockers.append("short_visual_sanity_task_success_judge_boundary_missing")
         if (
             payload.get("source_policy_observation_visual_qa_status")
             != "passed_visual_quality_gate"
@@ -488,6 +507,11 @@ def validate_persistent_wam_short_visual_sanity_manifest(
                 "short_visual_sanity_review_video_missing",
                 "short_visual_sanity_review_video_empty",
             ),
+            (
+                "task_success_judge_path",
+                "short_visual_sanity_task_success_judge_missing",
+                "short_visual_sanity_task_success_judge_empty",
+            ),
         ):
             artifact_blocker = _existing_artifact_path_blocker(
                 payload,
@@ -538,6 +562,32 @@ def validate_persistent_wam_short_visual_sanity_manifest(
                 )
             if visual_report_artifact.get("structural_fallback_used") is True:
                 blockers.append("short_visual_sanity_quality_report_structural_fallback_used")
+        task_success_judge_artifact, task_success_judge_artifact_blockers = (
+            _read_manifest_artifact_json(
+                payload,
+                "task_success_judge_path",
+                "short_visual_sanity_task_success_judge_unreadable",
+            )
+        )
+        blockers.extend(task_success_judge_artifact_blockers)
+        if task_success_judge_artifact:
+            task_claim_boundary = _mapping(task_success_judge_artifact.get("claim_boundary"))
+            if task_claim_boundary.get("visual_quality_is_not_task_success") is not True:
+                blockers.append("short_visual_sanity_task_success_judge_boundary_missing")
+            if (
+                task_success_judge_artifact.get("task_success_proven") is True
+                and task_success_judge_artifact.get("true_manipulation_success_proven")
+                is not True
+            ):
+                blockers.append("short_visual_sanity_task_success_judge_overclaims_success")
+            if payload.get("task_success_proven") is not bool(
+                task_success_judge_artifact.get("task_success_proven")
+            ):
+                blockers.append("short_visual_sanity_task_success_judge_manifest_mismatch")
+            if _string(payload.get("task_success_judge_status")) != _string(
+                task_success_judge_artifact.get("status")
+            ):
+                blockers.append("short_visual_sanity_task_success_judge_status_mismatch")
         video_status_artifact, video_status_artifact_blockers = _read_manifest_artifact_json(
             payload,
             "video_review_status_path",
@@ -1117,6 +1167,69 @@ def _load_policy_observation(path: str | Path) -> dict[str, Any]:
     if not isinstance(observation, Mapping):
         raise ValueError("policy_observation_json_must_contain_object")
     return dict(observation)
+
+
+def _policy_observation_has_task_context(observation: Mapping[str, Any]) -> bool:
+    return any(
+        _string(observation.get(key))
+        for key in ("task_prompt", "prompt", "task_description", "task_instruction", "task_id")
+    )
+
+
+def _policy_observation_has_task_prompt(observation: Mapping[str, Any]) -> bool:
+    return any(
+        _string(observation.get(key))
+        for key in ("task_prompt", "prompt", "task_description", "task_instruction")
+    )
+
+
+def _load_postprocess_policy_observation(
+    *,
+    job: Path,
+    policy_observation_path: str | Path,
+) -> dict[str, Any]:
+    candidates: list[tuple[str, Path, tuple[str, ...]]] = [
+        ("policy_observation_path", Path(policy_observation_path).expanduser(), ()),
+        (
+            "provider_bundle_persistent_session_input",
+            job / "provider_bundle" / "provider_runtime" / "persistent_session_input.json",
+            ("initial_observation",),
+        ),
+        (
+            "provider_bundle_policy_input",
+            job / "provider_bundle" / "provider_runtime" / "policy_input.json",
+            ("observation",),
+        ),
+    ]
+    first_observation: dict[str, Any] = {}
+    for _source, path, nested_keys in candidates:
+        if not path.is_file():
+            continue
+        try:
+            payload = _read_json(path)
+        except Exception:
+            continue
+        if nested_keys:
+            value: Any = payload
+            for key in nested_keys:
+                value = _mapping(value).get(key)
+        else:
+            value = (
+                payload.get("observation")
+                if isinstance(payload.get("observation"), Mapping)
+                else payload
+            )
+        observation = dict(value) if isinstance(value, Mapping) else {}
+        if not observation:
+            continue
+        if not first_observation or (
+            _policy_observation_has_task_context(observation)
+            and not _policy_observation_has_task_context(first_observation)
+        ):
+            first_observation = observation
+        if _policy_observation_has_task_prompt(observation):
+            return observation
+    return first_observation
 
 
 def _camera_frame_path(observation: Mapping[str, Any]) -> Path | None:
@@ -5270,6 +5383,76 @@ def _blocked_payload(
     }
 
 
+def _runpod_unitree_groot_sonic_image_contract_policy(
+    *,
+    provider_bundle_kind: str,
+    image_name: str,
+    bootstrap_mode: str | None,
+) -> dict[str, Any]:
+    is_wam_carrier = _string(provider_bundle_kind).lower() == "wam"
+    runtime_bootstrap_allowed = _truthy(
+        os.getenv(RUNPOD_UNITREE_GROOT_SONIC_ALLOW_RUNTIME_BOOTSTRAP_ENV)
+    )
+    sealed_image_confirmed = _truthy(
+        os.getenv(RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV)
+    )
+    require_sealed_image = not runtime_bootstrap_allowed
+    explicit_require = _string(os.getenv(RUNPOD_UNITREE_GROOT_SONIC_REQUIRE_SEALED_IMAGE_ENV))
+    if explicit_require:
+        require_sealed_image = _truthy(explicit_require)
+    bootstrap = _string(bootstrap_mode)
+    runtime_bootstrap_mode = bootstrap in {
+        "system_python_minimal",
+        "system_python",
+        "uv_sync",
+        "runtime_clone",
+    }
+    blockers: list[str] = []
+    if is_wam_carrier and require_sealed_image and not sealed_image_confirmed:
+        blockers.append("runpod_unitree_groot_sonic_wam_carrier_image_not_sealed")
+    if (
+        is_wam_carrier
+        and require_sealed_image
+        and runtime_bootstrap_mode
+        and not runtime_bootstrap_allowed
+    ):
+        blockers.append("runpod_unitree_groot_sonic_runtime_bootstrap_disallowed")
+    return {
+        "schema_version": "runpod_unitree_groot_sonic_image_contract_policy.v1",
+        "status": "blocked" if blockers else "allowed",
+        "provider_bundle_kind": _string(provider_bundle_kind),
+        "image_name": _string(image_name),
+        "wam_carrier": is_wam_carrier,
+        "bootstrap_mode": bootstrap or None,
+        "runtime_bootstrap_mode": runtime_bootstrap_mode,
+        "runtime_bootstrap_allowed": runtime_bootstrap_allowed,
+        "runtime_bootstrap_override_env": (
+            RUNPOD_UNITREE_GROOT_SONIC_ALLOW_RUNTIME_BOOTSTRAP_ENV
+        ),
+        "require_sealed_image": require_sealed_image,
+        "require_sealed_image_env": RUNPOD_UNITREE_GROOT_SONIC_REQUIRE_SEALED_IMAGE_ENV,
+        "sealed_image_confirmed": sealed_image_confirmed,
+        "sealed_image_confirmed_env": RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV,
+        "runtime_dependency_install_disallowed_for_paid_launch": bool(
+            is_wam_carrier and require_sealed_image and not runtime_bootstrap_allowed
+        ),
+        "blockers": blockers,
+        "blocker": blockers[0] if blockers else None,
+        "safe_next_path": (
+            "Use a sealed GR00T/SONIC WAM carrier image with sources, compatible Python deps, "
+            "server runtime, and checkpoint cache already present; then set "
+            f"{RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV}=true. For an explicit "
+            f"debug run that may install/clone/download in-pod, set "
+            f"{RUNPOD_UNITREE_GROOT_SONIC_ALLOW_RUNTIME_BOOTSTRAP_ENV}=true."
+        ),
+        "claim_boundary": (
+            "This is a paid-provider image contract gate. It does not prove policy inference, "
+            "WAM rollout quality, semantic task success, or physical robot readiness."
+        ),
+        "raw_secret_values_recorded": False,
+    }
+
+
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -6791,6 +6974,366 @@ def _write_persistent_episode_consistency_artifacts(
     }
 
 
+def _persistent_rollout_review_context(
+    *,
+    job: Path,
+    imported: Mapping[str, Any],
+    policy_observation: Mapping[str, Any],
+    visual_quality_report: Mapping[str, Any],
+    video_status: Mapping[str, Any],
+    wam_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    review_video_path = _string(
+        video_status.get("review_video_path")
+        or visual_quality_report.get("review_video_path")
+    )
+    visual_rollout_useful = bool(visual_quality_report.get("visual_success"))
+    has_review_video = bool(review_video_path and Path(review_video_path).expanduser().is_file())
+    rollout_id = "persistent_g1_wam_rollout_0001"
+    scenario_eval_run_id = "persistent_g1_wam_episode"
+    task_prompt = _string(policy_observation.get("task_prompt"))
+    task_id = _string(policy_observation.get("task_id")) or "unitree_groot_n17_sonic_persistent_session"
+    rollouts = (
+        [
+            {
+                "rollout_id": rollout_id,
+                "scenario_eval_run_id": scenario_eval_run_id,
+                "policy_id": POLICY_ID,
+                "task_id": task_id,
+                "model_candidate": "oscar_wam",
+                "generated_video_path": review_video_path,
+                "live_wam_generation_success_count": int(
+                    imported.get("live_wam_generation_success_count") or 0
+                ),
+                "learned_wam_model_success_count": int(
+                    imported.get("learned_wam_model_success_count") or 0
+                ),
+                "structural_fallback_used": any(
+                    bool(row.get("structural_fallback_used")) for row in wam_rows
+                ),
+            }
+        ]
+        if has_review_video
+        else []
+    )
+    return {
+        "review_video_path": review_video_path,
+        "visual_rollout_useful": visual_rollout_useful,
+        "visual_smoke_path": str(job / "wam_rollout_visual_quality_report.json"),
+        "visual_smoke_status": _persistent_episode_consistency_visual_status(
+            visual_quality_report
+        ),
+        "rollout_id": rollout_id,
+        "scenario_eval_run_id": scenario_eval_run_id,
+        "task_prompt": task_prompt,
+        "task_id": task_id,
+        "rollouts": rollouts,
+    }
+
+
+def _task_success_metadata_from_policy_observation(
+    policy_observation: Mapping[str, Any],
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key in (
+        "target_object_id",
+        "target_label",
+        "target_object_label",
+        "target_state",
+        "target_state_change",
+        "expected_state_change",
+        "success_check_plan",
+        "task_success_criteria",
+        "success_criteria",
+        "failure_modes",
+    ):
+        value = policy_observation.get(key)
+        if value not in (None, "", [], {}):
+            metadata[key] = value
+    eval_ready_grounding = _mapping(policy_observation.get("eval_ready_task_grounding"))
+    if eval_ready_grounding:
+        metadata["eval_ready_task_grounding"] = {
+            key: value
+            for key, value in eval_ready_grounding.items()
+            if key
+            in {
+                "selected_task_target",
+                "success_check_plan",
+                "handle_proxy_state_check",
+                "camera_calibration_quality_gate",
+                "target_object_id",
+                "target_label",
+            }
+            and value not in (None, "", [], {})
+        }
+    return metadata
+
+
+def _write_persistent_task_success_judge_artifacts(
+    *,
+    job: Path,
+    extraction_dir: Path,
+    imported: Mapping[str, Any],
+    generated_at: str,
+    policy_observation: Mapping[str, Any],
+    visual_quality_report: Mapping[str, Any],
+    video_status: Mapping[str, Any],
+    manipulation_judge: Mapping[str, Any],
+    wam_rows: Sequence[Mapping[str, Any]],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    context = _persistent_rollout_review_context(
+        job=job,
+        imported=imported,
+        policy_observation=policy_observation,
+        visual_quality_report=visual_quality_report,
+        video_status=video_status,
+        wam_rows=wam_rows,
+    )
+    request_path = job / "wam_success_label_request.json"
+    output_path = job / WAM_SUCCESS_LABEL_COMMAND_OUTPUT
+    success_labels_path = job / "wam_success_labels.json"
+    task_success_judge_path = job / "task_success_judge.json"
+    rollouts = [
+        dict(row)
+        for row in context.get("rollouts", [])
+        if isinstance(row, Mapping)
+    ]
+    visual_rollout_useful = bool(context.get("visual_rollout_useful"))
+    visual_smoke_status = _string(context.get("visual_smoke_status"))
+    task_prompt = _string(context.get("task_prompt"))
+    task_id = _string(context.get("task_id"))
+    task_metadata = _task_success_metadata_from_policy_observation(policy_observation)
+    task_prompt_entry = {
+        "scenario_eval_run_id": context.get("scenario_eval_run_id"),
+        "task_prompt": task_prompt,
+        "task_id": task_id,
+        **task_metadata,
+    }
+    request_status = (
+        "ready_for_generated_video_task_success_judge"
+        if rollouts and visual_rollout_useful
+        else "blocked_generated_rollout_visual_quality"
+        if rollouts
+        else "blocked_missing_generated_rollout"
+    )
+    request = {
+        "schema_version": "wam_success_label_request.v1",
+        "generated_at": generated_at,
+        "status": request_status,
+        "source_persistent_session_output_dir": str(extraction_dir),
+        "generated_rollout_results": str(job / "wam_generated_rollout_results.json"),
+        "generated_rollout_visual_smoke": context.get("visual_smoke_path"),
+        "generated_rollout_visual_smoke_status": visual_smoke_status,
+        "generated_rollout_visually_useful_for_success_review": visual_rollout_useful,
+        "rollouts": rollouts,
+        "task_prompts": [task_prompt_entry],
+        "eval_ready_task_grounding": task_metadata.get("eval_ready_task_grounding"),
+        "expected_output_path": str(output_path),
+        "success_label_contract": {
+            "required_top_level_keys": ["labels"],
+            "label_required_keys": [
+                "rollout_id",
+                "success",
+                "confidence",
+                "rationale",
+            ],
+            "strict_task_success_requirements": [
+                "visible_robot_end_effector_reaches_task_target",
+                "target_state_change_is_visible",
+                "target_motion_is_visibly_robot_caused",
+                "ambiguous_or_occluded_target_evidence_fails_closed",
+            ],
+        },
+        "claim_boundary": {
+            "judge_input_is_generated_video_not_raw_robot_evidence": True,
+            "judge_success_label_does_not_prove_physical_robot_success": True,
+            "judge_success_label_does_not_prove_forward_inverse_consistency": True,
+            "judge_success_label_does_not_prove_generated_world_rank_fidelity": True,
+            "raw_credentials_written_to_artifacts": False,
+        },
+    }
+    write_json(request_path, request)
+
+    command = _string(os.getenv(WAM_SUCCESS_LABEL_COMMAND_ENV))
+    allow_labeling = _wam_consistency_env_truthy(WAM_SUCCESS_LABEL_GATE_ENV)
+    success_label_blockers: list[str] = []
+    command_result: dict[str, Any] | None = None
+    command_payload: dict[str, Any] = {}
+    if not rollouts:
+        success_label_blockers = ["missing_review_video_for_generated_video_task_success_judge"]
+    elif not visual_rollout_useful:
+        success_label_blockers = _string_list(visual_quality_report.get("blockers")) or [
+            "generated_rollout_not_visually_useful_for_task_success_review"
+        ]
+    elif allow_labeling or command:
+        if not allow_labeling:
+            success_label_blockers.append(f"missing_env_{WAM_SUCCESS_LABEL_GATE_ENV}")
+        if not command:
+            success_label_blockers.append("missing_wam_success_label_command")
+        if not success_label_blockers:
+            command_payload, command_result = _run_wam_success_label_command(
+                command=command,
+                input_path=request_path,
+                output_path=output_path,
+                timeout_seconds=timeout_seconds,
+            )
+            if command_result.get("status") != "completed":
+                success_label_blockers.extend(
+                    _string_list(command_result.get("blockers"))
+                    or ["wam_success_label_command_blocked"]
+                )
+    else:
+        success_label_blockers = ["requires_generated_video_task_success_judge"]
+
+    if command_payload and not success_label_blockers:
+        success_labels = _normalize_wam_success_labels(
+            command_payload=command_payload,
+            rollouts=rollouts,
+            generated_at=generated_at,
+            visual_smoke_status=visual_smoke_status,
+            visual_rollout_useful=visual_rollout_useful,
+        )
+        success_label_blockers = _string_list(success_labels.get("blockers"))
+    else:
+        success_labels = {
+            "schema_version": "wam_success_labels.v1",
+            "generated_at": generated_at,
+            "status": "blocked" if not rollouts or not visual_rollout_useful else "requires_review",
+            "wam_success_label_from_generated_video": False,
+            "visual_smoke_status": visual_smoke_status,
+            "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+            "review_grade_visual_evidence_available": visual_rollout_useful,
+            "review_grade_success_labels": False,
+            "label_count": 0,
+            "labels": [],
+            "blockers": success_label_blockers,
+            "command_result": command_result,
+            "human_review_required": bool(rollouts and visual_rollout_useful),
+            "claim_boundary": {
+                "success_label_is_from_generated_video_not_physical_robot": True,
+                "success_label_requires_passed_visual_smoke": True,
+                "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+                "success_label_does_not_prove_forward_inverse_consistency": True,
+                "raw_credentials_written_to_artifacts": False,
+                "secret_hashes_written_to_artifacts": False,
+            },
+        }
+    if command_result is not None:
+        success_labels["command_result"] = command_result
+    write_json(success_labels_path, success_labels)
+
+    labels = [
+        dict(row)
+        for row in success_labels.get("labels", []) or []
+        if isinstance(row, Mapping)
+    ]
+    success_label_generated = bool(success_labels.get("wam_success_label_from_generated_video"))
+    generated_video_semantic_success = bool(
+        success_label_generated
+        and labels
+        and all(row.get("success") is True for row in labels)
+    )
+    generated_video_semantic_failure = any(row.get("success") is False for row in labels)
+    true_manipulation_success = bool(manipulation_judge.get("manipulation_success_proven"))
+    task_success_blockers: list[str] = []
+    if not true_manipulation_success:
+        task_success_blockers.append("true_manipulation_success_not_proven")
+    if not success_label_generated:
+        task_success_blockers.extend(
+            success_label_blockers or ["requires_generated_video_task_success_judge"]
+        )
+    if generated_video_semantic_failure:
+        task_success_blockers.append("generated_video_semantic_task_success_failed")
+    if rollouts and not visual_rollout_useful:
+        task_success_blockers.append(
+            "generated_rollout_not_visually_useful_for_task_success_review"
+        )
+    task_success_blockers = sorted(set(task_success_blockers))
+    task_success_proven = bool(
+        true_manipulation_success and generated_video_semantic_success and not task_success_blockers
+    )
+    judge = {
+        "schema_version": "persistent_wam_task_success_judge.v1",
+        "generated_at": generated_at,
+        "status": "success_proven" if task_success_proven else "not_proven",
+        "question": "Did the generated rollout realistically show the requested task succeed?",
+        "answer": "yes" if task_success_proven else "not_proven",
+        "task_prompt": task_prompt or None,
+        "task_id": task_id or None,
+        "task_success_proven": task_success_proven,
+        "true_manipulation_success_proven": true_manipulation_success,
+        "blockers": task_success_blockers,
+        "media_video_validity": {
+            "review_video_path": context.get("review_video_path") or None,
+            "video_status_path": str(job / "video_review_status.json"),
+            "status": _string(video_status.get("status")) or None,
+            "valid_review_video": _string(video_status.get("status")) == "completed",
+        },
+        "visual_review_usefulness": {
+            "visual_quality_report_path": str(job / "wam_rollout_visual_quality_report.json"),
+            "status": _string(visual_quality_report.get("status")) or None,
+            "visually_useful_rollout": visual_rollout_useful,
+            "blockers": _string_list(visual_quality_report.get("blockers")),
+        },
+        "generated_video_semantic_success_label": {
+            "status": _string(success_labels.get("status")) or None,
+            "success_label_from_generated_video": success_label_generated,
+            "generated_video_semantic_success": generated_video_semantic_success,
+            "generated_video_semantic_failure": generated_video_semantic_failure,
+            "labels_path": str(success_labels_path),
+            "request_path": str(request_path),
+            "label_count": len(labels),
+            "blockers": success_label_blockers,
+            "command_result": command_result,
+            "support_only": True,
+        },
+        "true_manipulation_success_proof": {
+            "status": "success_proven" if true_manipulation_success else "not_proven",
+            "source_path": str(job / "manipulation_success_evaluator_results.json"),
+            "manipulation_success_proven": true_manipulation_success,
+            "did_target_manipulation_succeed": bool(
+                manipulation_judge.get("did_target_manipulation_succeed")
+            ),
+            "reason": _string(manipulation_judge.get("reason")) or None,
+        },
+        "claim_boundary": {
+            "visual_quality_is_not_task_success": True,
+            "generated_review_video_is_not_task_success_proof": True,
+            "generated_video_semantic_label_is_support_only": True,
+            "generated_video_semantic_label_is_not_physical_robot_proof": True,
+            "task_success_proof_requires_evaluator_or_physics_state": True,
+            "physical_robot_success_proven": False,
+            "safety_or_contact_validation_proven": False,
+            "raw_credentials_written_to_artifacts": False,
+            "secret_hashes_written_to_artifacts": False,
+        },
+    }
+    write_json(task_success_judge_path, judge)
+    return {
+        "schema_version": "persistent_wam_task_success_judge_summary.v1",
+        "generated_at": generated_at,
+        "status": judge["status"],
+        "task_success_judge": str(task_success_judge_path),
+        "wam_success_label_request": str(request_path),
+        "wam_success_label_command": str(output_path) if output_path.is_file() else None,
+        "wam_success_labels": str(success_labels_path),
+        "task_success_proven": task_success_proven,
+        "true_manipulation_success_proven": true_manipulation_success,
+        "generated_video_task_success_label_from_generated_video": success_label_generated,
+        "generated_video_semantic_success": generated_video_semantic_success,
+        "generated_video_semantic_failure": generated_video_semantic_failure,
+        "generated_video_task_success_label_status": success_labels.get("status"),
+        "generated_video_task_success_label_blockers": success_label_blockers,
+        "blockers": task_success_blockers,
+        "claim_boundary": {
+            "visual_quality_is_not_task_success": True,
+            "generated_video_success_label_is_support_only": True,
+            "task_success_judge_required_for_task_success_claim": True,
+        },
+    }
+
+
 def _rank_fidelity_bool(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
@@ -7889,10 +8432,10 @@ def _postprocess_imported_persistent_session_artifacts(
             "raw_credentials_written_to_artifacts": False,
         },
     )
-    try:
-        policy_observation = _load_policy_observation(policy_observation_path)
-    except Exception:
-        policy_observation = {}
+    policy_observation = _load_postprocess_policy_observation(
+        job=job,
+        policy_observation_path=policy_observation_path,
+    )
     postprocess_visual_evidence = (
         _policy_observation_semantic_visual_evidence(
             policy_observation,
@@ -8038,6 +8581,18 @@ def _postprocess_imported_persistent_session_artifacts(
         side_rows=side_rows,
         timeout_seconds=_float_env("BLUEPRINT_WAM_EPISODE_CONSISTENCY_TIMEOUT_SECONDS", 60.0),
     )
+    task_success_summary = _write_persistent_task_success_judge_artifacts(
+        job=job,
+        extraction_dir=extraction_dir,
+        imported=imported,
+        generated_at=generated_at,
+        policy_observation=policy_observation,
+        visual_quality_report=visual_quality_report,
+        video_status=video_status,
+        manipulation_judge=judge,
+        wam_rows=wam_rows,
+        timeout_seconds=_float_env("BLUEPRINT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS", 120.0),
+    )
     rank_fidelity_calibration_requirement = _write_rank_fidelity_calibration_requirement(
         job=job,
         generated_at=generated_at,
@@ -8059,6 +8614,17 @@ def _postprocess_imported_persistent_session_artifacts(
         "collision_truth": False,
         "structural_loop_proof_completed": imported.get("status") == "completed",
         "success_proof_completed": success_proven,
+        "task_success_judge": task_success_summary.get("task_success_judge"),
+        "task_success_proven": bool(task_success_summary.get("task_success_proven")),
+        "true_manipulation_success_proven": bool(
+            task_success_summary.get("true_manipulation_success_proven")
+        ),
+        "generated_video_task_success_label_from_generated_video": bool(
+            task_success_summary.get("generated_video_task_success_label_from_generated_video")
+        ),
+        "generated_video_success_label_is_support_only": True,
+        "task_success_judge_required_for_task_success_claim": True,
+        "visual_quality_is_not_task_success": True,
         "provider_success": imported.get("status") == "completed",
         "provider_success_separate_from_visually_useful_rollout": True,
         "live_wam_generation_success": live_wam_count > 0,
@@ -8157,6 +8723,10 @@ def _postprocess_imported_persistent_session_artifacts(
         if consistency_summary.get("early_termination_recommended"):
             labels.append("wam_episode_consistency_early_termination_recommended")
             labels.append("forward_inverse_consistency_not_proven")
+        if not task_success_summary.get("generated_video_task_success_label_from_generated_video"):
+            labels.append("generated_video_task_success_judge_not_completed")
+        if task_success_summary.get("generated_video_semantic_failure"):
+            labels.append("generated_video_task_success_judge_failed")
         write_json(
             job / "failure_labels.json",
             {
@@ -8164,6 +8734,33 @@ def _postprocess_imported_persistent_session_artifacts(
                 "generated_at": generated_at,
                 "status": "completed",
                 "labels": sorted(set(labels)),
+                "raw_credentials_written_to_artifacts": False,
+            },
+        )
+    elif not task_success_summary.get("task_success_proven"):
+        labels = ["task_success_judge_not_proven"]
+        if not task_success_summary.get("generated_video_task_success_label_from_generated_video"):
+            labels.append("generated_video_task_success_judge_not_completed")
+        if task_success_summary.get("generated_video_semantic_failure"):
+            labels.append("generated_video_task_success_judge_failed")
+        if consistency_summary.get("early_termination_recommended"):
+            labels.append("wam_episode_consistency_early_termination_recommended")
+            labels.append("forward_inverse_consistency_not_proven")
+        write_json(
+            job / "failure_labels.json",
+            {
+                "schema_version": "persistent_policy_wam_failure_labels.v1",
+                "generated_at": generated_at,
+                "status": "completed",
+                "labels": sorted(set(labels)),
+                "task_success_not_failed_by_consistency_label": bool(
+                    consistency_summary.get("early_termination_recommended")
+                ),
+                "consistency_label_is_reliability_abstention_only": bool(
+                    consistency_summary.get("early_termination_recommended")
+                ),
+                "manipulation_success_not_failed_by_generated_video_label": True,
+                "generated_video_success_label_is_support_only": True,
                 "raw_credentials_written_to_artifacts": False,
             },
         )
@@ -8226,6 +8823,25 @@ def _postprocess_imported_persistent_session_artifacts(
         "manipulation_success_evaluator_results": str(
             job / "manipulation_success_evaluator_results.json"
         ),
+        "task_success_judge": task_success_summary.get("task_success_judge"),
+        "wam_success_label_request": task_success_summary.get("wam_success_label_request"),
+        "wam_success_label_command": task_success_summary.get("wam_success_label_command"),
+        "wam_success_labels": task_success_summary.get("wam_success_labels"),
+        "task_success_judge_status": task_success_summary.get("status"),
+        "task_success_proven": bool(task_success_summary.get("task_success_proven")),
+        "true_manipulation_success_proven": bool(
+            task_success_summary.get("true_manipulation_success_proven")
+        ),
+        "generated_video_task_success_label_from_generated_video": bool(
+            task_success_summary.get("generated_video_task_success_label_from_generated_video")
+        ),
+        "generated_video_task_success_label_status": task_success_summary.get(
+            "generated_video_task_success_label_status"
+        ),
+        "generated_video_task_success_label_blockers": _string_list(
+            task_success_summary.get("generated_video_task_success_label_blockers")
+        ),
+        "task_success_blockers": _string_list(task_success_summary.get("blockers")),
         "video_review_status": str(job / "video_review_status.json"),
         "review_video_path": _mapping(video_status).get("review_video_path"),
         "source_policy_observation_visual_qa": str(
@@ -8572,6 +9188,24 @@ def _finalize_runpod_persistent_session_output(
         "manipulation_success_evaluator_results_path": postprocess.get(
             "manipulation_success_evaluator_results"
         ),
+        "task_success_judge_path": postprocess.get("task_success_judge"),
+        "task_success_judge_status": postprocess.get("task_success_judge_status"),
+        "task_success_proven": bool(postprocess.get("task_success_proven")),
+        "true_manipulation_success_proven": bool(
+            postprocess.get("true_manipulation_success_proven")
+        ),
+        "wam_success_label_request_path": postprocess.get("wam_success_label_request"),
+        "wam_success_labels_path": postprocess.get("wam_success_labels"),
+        "generated_video_task_success_label_from_generated_video": bool(
+            postprocess.get("generated_video_task_success_label_from_generated_video")
+        ),
+        "generated_video_task_success_label_status": postprocess.get(
+            "generated_video_task_success_label_status"
+        ),
+        "generated_video_task_success_label_blockers": _string_list(
+            postprocess.get("generated_video_task_success_label_blockers")
+        ),
+        "task_success_blockers": _string_list(postprocess.get("task_success_blockers")),
         "claim_boundary_path": postprocess.get("claim_boundary"),
         "claim_boundary": {
             "simulator_generated_world_proof_only": True,
@@ -8582,6 +9216,17 @@ def _finalize_runpod_persistent_session_output(
             "valid_mp4_or_provider_completed_is_not_visual_success": True,
             "provider_success": completed,
             "provider_success_separate_from_visually_useful_rollout": True,
+            "visual_quality_is_not_task_success": True,
+            "task_success_judge": postprocess.get("task_success_judge"),
+            "task_success_judge_required_for_task_success_claim": True,
+            "task_success_proven": bool(postprocess.get("task_success_proven")),
+            "true_manipulation_success_proven": bool(
+                postprocess.get("true_manipulation_success_proven")
+            ),
+            "generated_video_success_label_is_support_only": True,
+            "generated_video_task_success_label_from_generated_video": bool(
+                postprocess.get("generated_video_task_success_label_from_generated_video")
+            ),
             "periodic_clean_frame_reanchoring_used": bool(
                 imported.get("periodic_clean_frame_reanchoring_used")
             ),
@@ -9142,6 +9787,37 @@ def run_persistent_session_runpod(
                 )
             )
     try:
+        default_runpod_image = (
+            DEFAULT_RUNPOD_UNITREE_GROOT_SONIC_WAM_PUBLIC_IMAGE
+            if runpod_provider_bundle_kind == "wam"
+            else DEFAULT_WAM_PUBLIC_IMAGE
+        )
+        runpod_image_name = (
+            _string(os.getenv("BLUEPRINT_RUNPOD_WAM_PUBLIC_IMAGE"))
+            or _string(os.getenv(PERSISTENT_SESSION_PUBLIC_IMAGE_ENV))
+            or _string(os.getenv("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_PUBLIC_IMAGE"))
+            or _string(os.getenv("BLUEPRINT_VAST_WAM_PUBLIC_IMAGE"))
+            or default_runpod_image
+        )
+        image_contract_policy = _runpod_unitree_groot_sonic_image_contract_policy(
+            provider_bundle_kind=runpod_provider_bundle_kind,
+            image_name=runpod_image_name,
+            bootstrap_mode=os.environ.get("BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE"),
+        )
+        if image_contract_policy.get("status") == "blocked":
+            output = _blocked_payload(
+                generated_at=generated_at,
+                job_dir=job,
+                blockers=image_contract_policy.get("blockers")
+                or ["runpod_unitree_groot_sonic_image_contract_blocked"],
+                details={
+                    "provider": "runpod",
+                    "git_evidence": git_evidence,
+                    "image_contract_policy": image_contract_policy,
+                },
+            )
+            write_json(job / "unitree_groot_n17_sonic_vast_persistent_session_result.json", output)
+            return output, 2
         bundle = build_persistent_session_provider_bundle(
             job_dir=job / "provider_bundle",
             policy_observation_path=policy_observation_path,
@@ -9203,11 +9879,6 @@ def run_persistent_session_runpod(
         staging_dir = job / "object_store_staging"
         runpod_dir = job / "runpod_persistent_session_run"
         output_zip = runpod_dir / "runpod_provider_runtime_output.zip"
-        default_runpod_image = (
-            DEFAULT_RUNPOD_UNITREE_GROOT_SONIC_WAM_PUBLIC_IMAGE
-            if runpod_provider_bundle_kind == "wam"
-            else DEFAULT_WAM_PUBLIC_IMAGE
-        )
         create_manifest = create_runpod_wam_async_run(
             job_dir=runpod_dir,
             bundle_path=bundle_path,
@@ -9217,13 +9888,7 @@ def run_persistent_session_runpod(
             output_path=output_zip,
             allow_paid_runpod_launch=True,
             skip_public_staging_verification=True,
-            image_name=(
-                _string(os.getenv("BLUEPRINT_RUNPOD_WAM_PUBLIC_IMAGE"))
-                or _string(os.getenv(PERSISTENT_SESSION_PUBLIC_IMAGE_ENV))
-                or _string(os.getenv("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_PUBLIC_IMAGE"))
-                or _string(os.getenv("BLUEPRINT_VAST_WAM_PUBLIC_IMAGE"))
-                or default_runpod_image
-            ),
+            image_name=runpod_image_name,
             provider_bundle_kind=runpod_provider_bundle_kind,
             container_disk_gb=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_DISK_GB", 240),
             volume_gb=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_VOLUME_GB", 120),

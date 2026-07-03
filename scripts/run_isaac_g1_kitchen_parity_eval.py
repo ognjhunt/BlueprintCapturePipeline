@@ -22,6 +22,7 @@ import argparse
 import io
 import json
 import math
+import shlex
 import os
 import subprocess
 import sys
@@ -177,6 +178,19 @@ MANIPULATION_READY_ARM_JOINT_DELTAS = {
     },
 }
 ACTIVE_ROBOT_PROFILE = None  # set by apply_robot_profile(); None = built-in G1 defaults
+GROOT_POLICY_COMMAND_ENV = "PARITY_GROOT_POLICY_COMMAND"
+GROOT_POLICY_COMMAND_TIMEOUT_ENV = "PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"
+GROOT_POLICY_INITIAL_FRAME_ENV = "PARITY_GROOT_POLICY_INITIAL_FRAME"
+UNITREE_G1_SONIC_NEUTRAL_STATE = {
+    "left_leg": [0.0] * 6,
+    "right_leg": [0.0] * 6,
+    "waist": [0.0] * 3,
+    "left_arm": [0.0] * 7,
+    "right_arm": [0.0] * 7,
+    "left_hand": [0.0] * 7,
+    "right_hand": [0.0] * 7,
+    "projected_gravity": [0.0, 0.0, -1.0],
+}
 
 
 def _robot_profile_module():
@@ -3872,6 +3886,22 @@ def _apply_joint_deltas(targets, default, dof_index, deltas: Mapping[str, float]
     return applied
 
 
+def _apply_named_joint_targets(targets, dof_index, named_targets: Mapping[str, Any] | None) -> list[str]:
+    applied: list[str] = []
+    if not isinstance(named_targets, Mapping):
+        return applied
+    for name, value in named_targets.items():
+        idx = dof_index.get(str(name))
+        if idx is None or idx >= len(targets):
+            continue
+        try:
+            targets[idx] = float(value)
+        except (TypeError, ValueError):
+            continue
+        applied.append(str(name))
+    return applied
+
+
 def _joint_targets_for_pose(
     default,
     dof_index,
@@ -3948,6 +3978,7 @@ def _drive_g1_walk(
     moving,
     manipulation_ready: bool = False,
     manipulation_reach_arm: str = "both",
+    policy_joint_targets: Mapping[str, Any] | None = None,
 ):
     """Set the G1 root world pose + joint positions = standing + gait deltas (kinematic pose)."""
     import numpy as np  # type: ignore
@@ -3962,6 +3993,7 @@ def _drive_g1_walk(
         manipulation_ready=manipulation_ready,
         manipulation_reach_arm=manipulation_reach_arm,
     )
+    _apply_named_joint_targets(targets, dof_index, policy_joint_targets)
     art.set_joint_positions(targets)
     return targets
 
@@ -7520,11 +7552,184 @@ def _set_camera_fov(stage, cam_path: str, vfov_deg: float, width: int, height: i
         pass
 
 
+ROBOT_REVIEW_MATERIAL_SPECS = {
+    "neutral_matte": {
+        "label": "neutral_matte_light_gray",
+        "diffuse_color": (0.82, 0.84, 0.86),
+        "roughness": 0.72,
+    },
+    "non_white_matte": {
+        "label": "non_white_matte_blue_gray",
+        "diffuse_color": (0.32, 0.42, 0.50),
+        "roughness": 0.78,
+    },
+}
+
+
+def _robot_review_material_spec(mode: str | None) -> dict[str, Any]:
+    normalized = str(mode or "neutral_matte").strip().lower().replace("-", "_")
+    return dict(
+        ROBOT_REVIEW_MATERIAL_SPECS.get(
+            normalized,
+            ROBOT_REVIEW_MATERIAL_SPECS["neutral_matte"],
+        )
+    )
+
+
+def _scenario_instruction(sc: Mapping[str, Any]) -> str:
+    for key in (
+        "task_instruction",
+        "task_prompt",
+        "task_description",
+        "instruction",
+        "task",
+        "description",
+    ):
+        value = sc.get(key)
+        if value:
+            return str(value)
+    return "Execute the simulated kitchen manipulation task."
+
+
+def _build_groot_policy_command_payload(
+    *,
+    scenario: Mapping[str, Any],
+    frame_path: str | Path,
+    step: int,
+) -> dict[str, Any]:
+    frame = Path(frame_path).expanduser()
+    instruction = _scenario_instruction(scenario)
+    observation = {
+        "schema_version": "isaac_g1_kitchen_groot_policy_observation.v1",
+        "task_id": scenario.get("task_id") or scenario.get("scenario_id") or scenario.get("id"),
+        "scenario_id": scenario.get("scenario_id") or scenario.get("id"),
+        "step": int(step),
+        "camera_frame_path": str(frame),
+        "visual_observation": {"camera_frame_path": str(frame)},
+        "task_prompt": instruction,
+        "task_description": instruction,
+        "task_instruction": instruction,
+        "unitree_g1_sonic_state": dict(UNITREE_G1_SONIC_NEUTRAL_STATE),
+        "unitree_g1_sonic_state_source": "isaac_parity_neutral_unitree_g1_sonic_contract_state",
+        "unitree_g1_sonic_state_metadata": {
+            "schema_version": "unitree_g1_sonic_state_metadata.v1",
+            "complete": True,
+            "source": "isaac_parity_neutral_contract_probe",
+            "physical_proprioception": False,
+            "simulator_state_capture": False,
+            "claim_boundary": (
+                "Neutral contract state is only an interface probe for simulator policy action "
+                "generation. It is not measured physical robot proprioception."
+            ),
+        },
+    }
+    return {"observation": observation}
+
+
+def _policy_command_result_action(result: Mapping[str, Any]) -> dict[str, Any]:
+    action = result.get("action") or result.get("normalized_action")
+    if isinstance(action, Mapping):
+        return dict(action)
+    return dict(result)
+
+
+def _run_groot_policy_command(
+    *,
+    command: str,
+    payload: Mapping[str, Any],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    parts = shlex.split(str(command))
+    if not parts:
+        raise RuntimeError("groot_policy_command_empty")
+    completed = subprocess.run(
+        parts,
+        input=json.dumps(dict(payload)),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=float(timeout_seconds),
+        env={**os.environ},
+    )
+    output = (completed.stdout or "").strip()
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "groot_policy_command_nonzero_exit:"
+            f"returncode={completed.returncode}:stderr_bytes={len(completed.stderr or '')}"
+        )
+    if not output:
+        raise RuntimeError("groot_policy_command_stdout_empty")
+    try:
+        value = json.loads(output.splitlines()[-1])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("groot_policy_command_stdout_not_json") from exc
+    if not isinstance(value, Mapping):
+        raise RuntimeError("groot_policy_command_stdout_not_json_object")
+    result = dict(value)
+    if result.get("status") == "blocked" or result.get("blockers"):
+        blockers = ",".join(str(item) for item in result.get("blockers") or [])
+        raise RuntimeError(f"groot_policy_command_blocked:{blockers}")
+    return result
+
+
+def _make_groot_policy_command_infer(
+    *,
+    command: str,
+    scenario: Mapping[str, Any],
+    call_dir: Path,
+    timeout_seconds: float,
+):
+    call_dir.mkdir(parents=True, exist_ok=True)
+
+    def _infer(obs: Mapping[str, Any]) -> dict[str, Any]:
+        step = int(obs.get("step") or 0)
+        frame = str(obs.get("camera_rgb") or "").strip()
+        if not frame or not Path(frame).expanduser().is_file():
+            raise RuntimeError("groot_policy_observation_frame_missing")
+        payload = _build_groot_policy_command_payload(
+            scenario=scenario,
+            frame_path=frame,
+            step=step,
+        )
+        call_path = call_dir / f"groot_policy_call_{step:04d}.json"
+        result = _run_groot_policy_command(
+            command=command,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+        )
+        call_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "isaac_g1_groot_policy_command_call.v1",
+                    "status": result.get("status"),
+                    "step": step,
+                    "command_configured": True,
+                    "command_value_redacted": "<configured>",
+                    "payload": payload,
+                    "result": result,
+                    "raw_credentials_written_to_artifacts": False,
+                    "secret_hashes_written_to_artifacts": False,
+                    "claim_boundary": (
+                        "This records the simulator policy-command request/response shape. It is "
+                        "not task-success proof until the returned action drives an episode that "
+                        "passes semantic grading."
+                    ),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return _policy_command_result_action(result)
+
+    return _infer
+
+
 def _apply_robot_review_material(
     stage,
     robot_prim_path: str,
     *,
     override_authored_materials: bool = True,
+    material_mode: str = "neutral_matte",
 ) -> int:
     """Bind a neutral matte material to robot geometry so review renders can see G1 against dark targets.
 
@@ -7540,12 +7745,16 @@ def _apply_robot_review_material(
     material = None
     bound = 0
     if override_authored_materials:
+        material_spec = _robot_review_material_spec(material_mode)
+        color = tuple(float(v) for v in material_spec["diffuse_color"])
         mat_path = "/World/Materials/RobotReviewVisible"
         material = UsdShade.Material.Define(stage, mat_path)
         shader = UsdShade.Shader.Define(stage, f"{mat_path}/PreviewSurface")
         shader.CreateIdAttr("UsdPreviewSurface")
-        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.82, 0.84, 0.86))
-        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.72)
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(
+            float(material_spec["roughness"])
+        )
         shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
         material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
 
@@ -8427,6 +8636,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   dynamic_standing_contact_steps: int = 0,
                   neutral_environment: bool = False,
                   robot_review_material_override: bool = False,
+                  robot_review_material_mode: str = "neutral_matte",
                   kinematic_arm_pose: bool = False,
                   collision_approximation: str = "boundingCube",
                   verify_cam: bool = False,
@@ -8437,6 +8647,9 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   effort_drive: bool = False,
                   torque_drive: bool = False,
                   author_target_contact_material: bool = False,
+                  groot_policy_command: str = "",
+                  groot_policy_command_timeout_seconds: float = 120.0,
+                  groot_policy_initial_frame: str = "",
                   serve: bool = False, serve_dir: "Path | None" = None,
                   serve_idle_timeout_s: float = 600.0,
                   serve_max_jobs: "int | None" = None) -> dict:
@@ -8727,11 +8940,18 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     bool(robot_review_material_override)
                     or os.getenv("PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE", "") == "1"
                 )
+                material_mode = (
+                    os.getenv("PARITY_ROBOT_REVIEW_MATERIAL_MODE", "").strip()
+                    or robot_review_material_mode
+                    or "neutral_matte"
+                )
+                material_spec = _robot_review_material_spec(material_mode)
                 override_robot_material = bool(robot_visual_missing or force_review_material)
                 n_robot_mat = _apply_robot_review_material(
                     stage,
                     binding["prim_path"],
                     override_authored_materials=override_robot_material,
+                    material_mode=material_mode,
                 )
                 if override_robot_material:
                     _log(f"robot review material bound to {n_robot_mat} G1 geometry prim(s)")
@@ -8741,6 +8961,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 robot_render_diag["review_material_bound_count"] = int(n_robot_mat)
                 robot_render_diag["review_material_override_applied"] = bool(override_robot_material)
                 robot_render_diag["authored_robot_materials_preserved"] = not bool(override_robot_material)
+                robot_render_diag["review_material_mode"] = str(material_mode)
+                robot_render_diag["review_material_label"] = str(material_spec["label"])
+                robot_render_diag["review_material_diffuse_color"] = [
+                    round(float(v), 6) for v in material_spec["diffuse_color"]
+                ]
+                robot_render_diag["review_material_non_white"] = bool(
+                    override_robot_material
+                    and max(float(v) for v in material_spec["diffuse_color"]) < 0.75
+                )
                 robot_render_diag["visual_binding_status"] = binding.get("visual_binding_status")
                 robot_render_diag["visual_candidate_attempts"] = binding.get(
                     "visual_candidate_attempts", []
@@ -9028,7 +9257,37 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 _log(f"scenario {sid}: missing start/target/route after task resolution")
                 return None
             _settle_after_task_probe_if_needed(sid)
-            pol = policy_mod.make_policy(policy_id)
+            effective_groot_policy_command = (
+                str(groot_policy_command or "").strip()
+                or os.getenv(GROOT_POLICY_COMMAND_ENV, "").strip()
+            )
+            groot_policy_enabled = (
+                str(policy_id).strip()
+                in {"groot_sonic", "groot", "groot_n17_sonic", "unitree_groot_n17_sonic_policy"}
+                and bool(effective_groot_policy_command)
+            )
+            seed_pol = None
+            last_groot_policy_frame_path = (
+                Path(groot_policy_initial_frame).expanduser()
+                if str(groot_policy_initial_frame or "").strip()
+                else None
+            )
+            if groot_policy_enabled:
+                seed_pol = policy_mod.make_policy(
+                    "blueprint_default_walk_to_target_smoke_policy"
+                )
+                seed_pol.reset(sc)
+                pol = policy_mod.make_policy(
+                    policy_id,
+                    infer=_make_groot_policy_command_infer(
+                        command=effective_groot_policy_command,
+                        scenario=sc,
+                        call_dir=sdir / "groot_policy_calls",
+                        timeout_seconds=float(groot_policy_command_timeout_seconds),
+                    ),
+                )
+            else:
+                pol = policy_mod.make_policy(policy_id)
             pol.reset(sc)
             t_sc = time.time()
             actions: list[dict] = []
@@ -9047,8 +9306,31 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     _log(f"scenario {sid}: per-scenario cap {per_scenario_seconds}s hit at step {step}; truncating")
                     truncated = True
                     break
-                ctx = policy_mod.StepContext(step=step, num_steps=steps, probe_collision=probe)
-                decision = pol.step(ctx)
+                ctx = policy_mod.StepContext(
+                    step=step,
+                    num_steps=steps,
+                    probe_collision=probe,
+                    camera_rgb=(
+                        str(last_groot_policy_frame_path)
+                        if last_groot_policy_frame_path is not None
+                        and last_groot_policy_frame_path.is_file()
+                        else None
+                    ),
+                    joint_state=dict(UNITREE_G1_SONIC_NEUTRAL_STATE),
+                    instruction=_scenario_instruction(sc),
+                )
+                if (
+                    groot_policy_enabled
+                    and seed_pol is not None
+                    and (
+                        last_groot_policy_frame_path is None
+                        or not last_groot_policy_frame_path.is_file()
+                    )
+                ):
+                    decision = seed_pol.step(ctx)
+                    decision.policy_action = "seed_frame_collection_before_groot_policy_requery"
+                else:
+                    decision = pol.step(ctx)
                 if manipulation_stand and stand_root is not None:
                     # Manipulation task: place the robot at the probed clear-floor task stance,
                     # facing the target. The target is what the robot faces, not the pelvis position.
@@ -9113,6 +9395,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             moving=moving,
                             manipulation_ready=bool(manipulation_reach),
                             manipulation_reach_arm=manipulation_reach_arm,
+                            policy_joint_targets=decision.joint_targets,
                         )
                 else:
                     if robot_neutral_xforms:
@@ -9525,6 +9808,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             pov_frame_path,
                             cap,
                         )
+                        if groot_policy_enabled:
+                            last_groot_policy_frame_path = pov_frame_path
                     if pov_ok and segmentation and pov_seg_annots is not None:
                         seg_save = _save_segmentation(
                             pov_seg_annots,
@@ -11224,6 +11509,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--policy", default="blueprint_default_walk_to_target_smoke_policy")
+    ap.add_argument(
+        "--groot-policy-command",
+        default=os.getenv(GROOT_POLICY_COMMAND_ENV, ""),
+        help=(
+            "command that reads a Blueprint policy observation JSON on stdin and returns "
+            "GR00T/SONIC action JSON; required for --policy groot_sonic to drive Isaac"
+        ),
+    )
+    ap.add_argument(
+        "--groot-policy-command-timeout-seconds",
+        type=float,
+        default=float(os.getenv(GROOT_POLICY_COMMAND_TIMEOUT_ENV, "120") or 120),
+        help="timeout for each GR00T/SONIC policy command call",
+    )
+    ap.add_argument(
+        "--groot-policy-initial-frame",
+        default=os.getenv(GROOT_POLICY_INITIAL_FRAME_ENV, ""),
+        help="optional seed robot-POV frame path for the first GR00T/SONIC policy call",
+    )
     ap.add_argument("--steps", type=int, default=64)
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=960)
@@ -11286,6 +11590,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--robot-review-material-override", action="store_true",
                     help="bind a neutral matte material over authored G1 materials/textures for a "
                          "clearer untextured manipulation seed image")
+    ap.add_argument(
+        "--robot-review-material-mode",
+        default="neutral_matte",
+        choices=["neutral_matte", "non_white_matte"],
+        help="review material to bind when --robot-review-material-override is active",
+    )
     ap.add_argument("--kinematic-arm-pose", action="store_true",
                     help="pose the RENDERED arm(s) into a forward manipulation-ready seed via pure-USD "
                          "shoulder rotation (no physics tensor -> crash-safe); needs --manipulation-reach")
@@ -11451,9 +11761,13 @@ def main(argv=None) -> int:
         physics_articulation_drive=args.physics_articulation_drive,
         effort_drive=args.effort_drive,
         author_target_contact_material=args.author_target_contact_material,
+        groot_policy_command=args.groot_policy_command,
+        groot_policy_command_timeout_seconds=args.groot_policy_command_timeout_seconds,
+        groot_policy_initial_frame=args.groot_policy_initial_frame,
         dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
         neutral_environment=args.neutral_environment,
         robot_review_material_override=args.robot_review_material_override,
+        robot_review_material_mode=args.robot_review_material_mode,
         kinematic_arm_pose=args.kinematic_arm_pose,
         collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
         manipulation_stand=args.manipulation_stand,

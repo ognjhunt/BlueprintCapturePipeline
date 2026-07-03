@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
+from .isaac_g1_policy import groot_sonic_isaac_bridge_readiness
 from .isaac_particlefield_render_job import (
     DEFAULT_WARM_CANDIDATES, stage_bundle, watch_and_collect,
 )
@@ -59,12 +60,26 @@ DEFAULT_PARITY_IMAGE_REF = "docker.io/nijelhunt/blueprint-isaac-eval-worker:2026
 ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV = "BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC"
 DEFAULT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC = "output/isaac_worker_image_manifest_diagnostic.json"
 ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV = "BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START"
+ISAAC_G1_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_ISAAC_G1_GROOT_POLICY_COMMAND"
+UNITREE_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"
+UNITREE_GROOT_POLICY_SERVER_URL_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL"
+ISAAC_G1_GROOT_POLICY_RUNTIME_MODE_ENV = "BLUEPRINT_ISAAC_G1_GROOT_POLICY_RUNTIME_MODE"
+ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED_ENV = (
+    "BLUEPRINT_ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED"
+)
+ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_ENV = (
+    "BLUEPRINT_ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"
+)
 PARITY_BUNDLE_REQUIRED_FILES = (
     "run_isaac_g1_kitchen_parity_eval.py",
     "isaac_g1_policy.py",
     "render_visual_qc.py",
     "warm_render_server.py",
     "g1_render_noise_audit.py",
+    "blueprint_pipeline/__init__.py",
+    "blueprint_pipeline/common.py",
+    "blueprint_pipeline/unitree_groot_n17_sonic_policy_runtime.py",
+    "blueprint_pipeline/unitree_groot_n17_sonic_policy_server_command.py",
     "request.json",
     "scene_placement/__init__.py",
     "scene_placement/types.py",
@@ -428,6 +443,9 @@ cmd=["/isaac-sim/python.sh", BUNDLE+"/run_isaac_g1_kitchen_parity_eval.py",
      "--per-scenario-seconds", os.environ.get("PARITY_PER_SCENARIO_SECONDS","420"),
      "--focus-radius", os.environ.get("PARITY_FOCUS_RADIUS","0"),
      "--settle-seconds", os.environ.get("PARITY_SETTLE_SECONDS","0")]
+if os.environ.get("PARITY_GROOT_POLICY_COMMAND",""): cmd += ["--groot-policy-command", os.environ["PARITY_GROOT_POLICY_COMMAND"]]
+if os.environ.get("PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS",""): cmd += ["--groot-policy-command-timeout-seconds", os.environ["PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"]]
+if os.environ.get("PARITY_GROOT_POLICY_INITIAL_FRAME",""): cmd += ["--groot-policy-initial-frame", os.environ["PARITY_GROOT_POLICY_INITIAL_FRAME"]]
 if os.environ.get("PARITY_KEEP_OBJECTS",""): cmd += ["--keep-objects", os.environ["PARITY_KEEP_OBJECTS"]]
 if os.environ.get("PARITY_NO_PROBE","")=="1": cmd.append("--no-collision-probe")
 if os.environ.get("PARITY_CHEAP_COLLISION","")=="1": cmd.append("--cheap-collision")
@@ -443,6 +461,7 @@ if os.environ.get("PARITY_MANIPULATION_REACH_ARM",""): cmd += ["--manipulation-r
 if os.environ.get("PARITY_FILL_LIGHT_INTENSITY",""): cmd += ["--fill-light-intensity", os.environ["PARITY_FILL_LIGHT_INTENSITY"]]
 if os.environ.get("PARITY_NEUTRAL_ENVIRONMENT","")=="1": cmd.append("--neutral-environment")
 if os.environ.get("PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE","")=="1": cmd.append("--robot-review-material-override")
+if os.environ.get("PARITY_ROBOT_REVIEW_MATERIAL_MODE",""): cmd += ["--robot-review-material-mode", os.environ["PARITY_ROBOT_REVIEW_MATERIAL_MODE"]]
 if os.environ.get("PARITY_COLLISION_APPROXIMATION",""): cmd += ["--collision-approximation", os.environ["PARITY_COLLISION_APPROXIMATION"]]
 if os.environ.get("PARITY_VERIFY_CAM","")=="1": cmd.append("--verify-cam")
 if os.environ.get("PARITY_MANIPULATION_STAND","")=="1": cmd.append("--manipulation-stand")
@@ -605,6 +624,16 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     (bundle / "render_visual_qc.py").write_bytes(visual_qc.read_bytes())
     (bundle / "warm_render_server.py").write_bytes(warm_server.read_bytes())
     (bundle / "g1_render_noise_audit.py").write_bytes(noise_audit.read_bytes())
+    package_dst = bundle / "blueprint_pipeline"
+    package_dst.mkdir(parents=True, exist_ok=True)
+    (package_dst / "__init__.py").write_text("", encoding="utf-8")
+    for module_name in (
+        "common.py",
+        "unitree_groot_n17_sonic_policy_runtime.py",
+        "unitree_groot_n17_sonic_policy_server_command.py",
+    ):
+        src_module = _repo_root() / "src" / "blueprint_pipeline" / module_name
+        (package_dst / module_name).write_bytes(src_module.read_bytes())
     # Ship the scene_placement package alongside the runner so its dynamic task->object resolution
     # works on the worker (the runner imports `scene_placement` from the bundle dir; it falls back to
     # the repo's `blueprint_pipeline.scene_placement` in tests). Without this the worker has no
@@ -668,6 +697,7 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       fill_light_intensity: float = 0.0,
                       neutral_environment: bool = False,
                       robot_review_material_override: bool = False,
+                      robot_review_material_mode: str = "",
                       kinematic_arm_pose: bool = False,
                       collision_approximation: str = "",
                       verify_cam: bool = False,
@@ -677,6 +707,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       audit_warmup_frames: int = 0,
                       audit_boost_light_intensity: float = 0.0,
                       gemini_api_key: str | None = None,
+                      groot_policy_command: str = "",
+                      groot_policy_command_timeout_seconds: float = 120.0,
                       serve: bool = False, inbox_get_url: str = "",
                       serve_idle_timeout_s: float = 1800.0,
                       serve_max_jobs: int | None = None,
@@ -733,6 +765,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_NEUTRAL_ENVIRONMENT"] = "1"
     if robot_review_material_override:
         env["PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE"] = "1"
+    if robot_review_material_mode:
+        env["PARITY_ROBOT_REVIEW_MATERIAL_MODE"] = str(robot_review_material_mode)
     if kinematic_arm_pose:
         env["PARITY_KINEMATIC_ARM_POSE"] = "1"
     if collision_approximation:
@@ -754,6 +788,11 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
     if gemini_api_key:
         env["GOOGLE_GENAI_API_KEY"] = gemini_api_key
         env["GEMINI_API_KEY"] = gemini_api_key
+    if groot_policy_command:
+        env["PARITY_GROOT_POLICY_COMMAND"] = str(groot_policy_command)
+        env["PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"] = str(
+            float(groot_policy_command_timeout_seconds)
+        )
     if serve:
         env["PARITY_SERVE"] = "1"
         env["PARITY_SERVE_IDLE_TIMEOUT"] = str(int(serve_idle_timeout_s))
@@ -930,6 +969,138 @@ def _paid_worker_image_policy(
         ),
     }
     return selected_image, policy
+
+
+def _groot_sonic_policy_runtime_policy(
+    *,
+    policy_id: str,
+    selected_image: str,
+    allow_paid: bool,
+    image_startup_canary: bool,
+    effective_groot_policy_command: str,
+    effective_groot_policy_command_timeout_seconds: float,
+) -> dict:
+    requested = str(policy_id).strip() in {
+        "groot_sonic",
+        "groot",
+        "groot_n17_sonic",
+        "unitree_groot_n17_sonic_policy",
+    }
+    command_configured = bool(_string(effective_groot_policy_command))
+    server_url_configured = bool(_string(os.getenv(UNITREE_GROOT_POLICY_SERVER_URL_ENV)))
+    runtime_mode = _string(os.getenv(ISAAC_G1_GROOT_POLICY_RUNTIME_MODE_ENV)).lower()
+    prebaked_image_confirmed = _env_truthy(ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED_ENV)
+    selected_image_text = _string(selected_image).lower()
+    image_looks_like_plain_isaac_worker = (
+        "isaac-eval-worker" in selected_image_text
+        and "groot" not in selected_image_text
+        and "sonic" not in selected_image_text
+    )
+
+    if image_startup_canary or not requested:
+        return {
+            "status": "not_applicable",
+            "policy_id": policy_id,
+            "groot_sonic_policy_requested": requested,
+            "image_startup_canary": bool(image_startup_canary),
+            "blockers": [],
+            "raw_secret_values_recorded": False,
+        }
+
+    required_contract = groot_sonic_isaac_bridge_readiness(
+        {
+            "action": {
+                "hand_targets": {
+                    "left_hand_joints": [0.0],
+                    "right_hand_joints": [0.0],
+                }
+            }
+        }
+    )
+    base = {
+        "policy_id": policy_id,
+        "groot_sonic_policy_requested": True,
+        "policy_command_configured": command_configured,
+        "policy_command_value_redacted": "<configured>" if command_configured else None,
+        "policy_command_env_candidates": [
+            ISAAC_G1_GROOT_POLICY_COMMAND_ENV,
+            UNITREE_GROOT_POLICY_COMMAND_ENV,
+        ],
+        "policy_command_timeout_seconds": effective_groot_policy_command_timeout_seconds,
+        "selected_image_ref": selected_image,
+        "selected_image_looks_like_plain_isaac_worker": image_looks_like_plain_isaac_worker,
+        "policy_server_url_configured": server_url_configured,
+        "policy_server_url_env": UNITREE_GROOT_POLICY_SERVER_URL_ENV,
+        "runtime_mode_env": ISAAC_G1_GROOT_POLICY_RUNTIME_MODE_ENV,
+        "runtime_mode": runtime_mode or None,
+        "prebaked_image_confirmed_env": (
+            ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED_ENV
+        ),
+        "prebaked_image_confirmed": prebaked_image_confirmed,
+        "runtime_dependency_install_disallowed_for_paid_launch": bool(allow_paid),
+        "required_isaac_control_contract": required_contract,
+        "raw_secret_values_recorded": False,
+        "claim_boundary": (
+            "This is a spend/readiness gate for locating the GR00T/SONIC policy runtime "
+            "from an Isaac worker. It does not prove policy quality, simulator task success, "
+            "physical robot readiness, or prior Unitree GR00T/SONIC provider action-command "
+            "evidence."
+        ),
+    }
+    blockers: list[str] = []
+    if not command_configured:
+        blockers.append("groot_sonic_policy_not_connected_to_isaac_parity_runner")
+    runtime_location_proven = False
+    runtime_location_source = None
+    if server_url_configured:
+        runtime_location_proven = True
+        runtime_location_source = "external_policy_server_url"
+    elif runtime_mode in {"prebaked_worker_image", "prebaked_image", "sealed_worker_image"}:
+        if prebaked_image_confirmed:
+            runtime_location_proven = True
+            runtime_location_source = "prebaked_worker_image_contract"
+        else:
+            blockers.append("groot_sonic_prebaked_image_contract_not_confirmed")
+    else:
+        blockers.append("groot_sonic_policy_runtime_presence_not_proven_for_selected_image")
+
+    if allow_paid and blockers:
+        return {
+            **base,
+            "status": "blocked",
+            "runtime_location_proven": runtime_location_proven,
+            "runtime_location_source": runtime_location_source,
+            "blockers": blockers,
+            "blocker": blockers[0],
+            "reason": (
+                "A paid Isaac GR00T/SONIC run needs proof that the worker can reach a live "
+                "PolicyServer or that the selected image already contains the GR00T runtime, "
+                "server dependencies, and checkpoints. A command string alone is not enough."
+            ),
+            "safe_next_path": (
+                "Set BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL for an external "
+                "policy server, or run a sealed combined Isaac+GR00T image and set "
+                "BLUEPRINT_ISAAC_G1_GROOT_POLICY_RUNTIME_MODE=prebaked_worker_image plus "
+                "BLUEPRINT_ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED=true."
+            ),
+        }
+
+    status = "configured" if command_configured else "blocked"
+    if blockers and not allow_paid:
+        status = "configured_unproven_no_spend_plan" if command_configured else "blocked"
+    return {
+        **base,
+        "status": status,
+        "runtime_location_proven": runtime_location_proven,
+        "runtime_location_source": runtime_location_source,
+        "blockers": blockers,
+        "blocker": blockers[0] if blockers else None,
+        "reason": (
+            "No-spend plan only; runtime location is recorded but not paid-launched."
+            if blockers and not allow_paid
+            else None
+        ),
+    }
 
 
 def _provider_startup_pre_runtime(snapshot: dict) -> bool:
@@ -1184,6 +1355,7 @@ def run_isaac_g1_kitchen_parity_job(
     fill_light_intensity: float = 0.0,
     neutral_environment: bool = False,
     robot_review_material_override: bool = False,
+    robot_review_material_mode: str = "",
     kinematic_arm_pose: bool = False,
     collision_approximation: str = "",
     verify_cam: bool = False,
@@ -1198,6 +1370,8 @@ def run_isaac_g1_kitchen_parity_job(
     serve: bool = False, serve_idle_timeout_s: float = 1800.0,
     serve_max_jobs: int | None = None, serve_ready_timeout: int = 1800,
     image_startup_canary: bool = False,
+    groot_policy_command: str = "",
+    groot_policy_command_timeout_seconds: float | None = None,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan.
 
@@ -1283,6 +1457,38 @@ def run_isaac_g1_kitchen_parity_job(
             f"{ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV}=true only for deliberate debug runs."
         )
         return manifest
+    effective_groot_policy_command = (
+        _string(groot_policy_command)
+        or _string(os.getenv(ISAAC_G1_GROOT_POLICY_COMMAND_ENV))
+        or _string(os.getenv(UNITREE_GROOT_POLICY_COMMAND_ENV))
+    )
+    effective_groot_policy_command_timeout_seconds = (
+        float(groot_policy_command_timeout_seconds)
+        if groot_policy_command_timeout_seconds is not None
+        and groot_policy_command_timeout_seconds > 0
+        else float(os.getenv(ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_ENV, "120") or 120)
+    )
+    groot_policy_requested = str(policy_id).strip() in {
+        "groot_sonic",
+        "groot",
+        "groot_n17_sonic",
+        "unitree_groot_n17_sonic_policy",
+    }
+    if not image_startup_canary and groot_policy_requested:
+        manifest["policy_runtime_policy"] = _groot_sonic_policy_runtime_policy(
+            policy_id=policy_id,
+            selected_image=selected_image,
+            allow_paid=allow_paid,
+            image_startup_canary=image_startup_canary,
+            effective_groot_policy_command=effective_groot_policy_command,
+            effective_groot_policy_command_timeout_seconds=(
+                effective_groot_policy_command_timeout_seconds
+            ),
+        )
+        if manifest["policy_runtime_policy"].get("status") == "blocked":
+            manifest["blockers"].extend(manifest["policy_runtime_policy"].get("blockers") or [])
+            manifest["blockers"] = sorted(set(manifest["blockers"]))
+            return manifest
     if effective_provider_names != provider_names:
         provider_names = effective_provider_names
         manifest["provider"] = ",".join(provider_names)
@@ -1380,6 +1586,7 @@ def run_isaac_g1_kitchen_parity_job(
                              fill_light_intensity=fill_light_intensity,
                              neutral_environment=neutral_environment,
                              robot_review_material_override=robot_review_material_override,
+                             robot_review_material_mode=robot_review_material_mode,
                              kinematic_arm_pose=kinematic_arm_pose,
                              collision_approximation=collision_approximation, verify_cam=verify_cam,
                              manipulation_stand=manipulation_stand,
@@ -1389,6 +1596,10 @@ def run_isaac_g1_kitchen_parity_job(
                              audit_boost_light_intensity=audit_boost_light_intensity,
                              vast_max_hourly_rate_usd=vast_max_hourly_rate_usd,
                              gemini_api_key=_gemini_api_key_from_env(),
+                             groot_policy_command=effective_groot_policy_command,
+                             groot_policy_command_timeout_seconds=(
+                                 effective_groot_policy_command_timeout_seconds
+                             ),
                              image_startup_canary=image_startup_canary)
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
@@ -1405,6 +1616,12 @@ def run_isaac_g1_kitchen_parity_job(
                                         ),
                                         "robot_review_material_override": bool(
                                             robot_review_material_override
+                                        ),
+                                        "robot_review_material_mode": (
+                                            str(robot_review_material_mode) or None
+                                        ),
+                                        "groot_policy_command_configured": bool(
+                                            effective_groot_policy_command
                                         ),
                                         "image_startup_canary": bool(image_startup_canary)}
     if not allow_paid:
@@ -1628,6 +1845,23 @@ def main(argv=None) -> int:
     ap.add_argument("--g1-usd", default=DEFAULT_G1_USD_RELATIVE)
     ap.add_argument("--policy", default="blueprint_default_walk_to_target_smoke_policy",
                     choices=["blueprint_default_walk_to_target_smoke_policy", "groot_sonic"])
+    ap.add_argument(
+        "--groot-policy-command",
+        default=(
+            os.getenv(ISAAC_G1_GROOT_POLICY_COMMAND_ENV, "")
+            or os.getenv(UNITREE_GROOT_POLICY_COMMAND_ENV, "")
+        ),
+        help=(
+            "command the Isaac worker runs for GR00T/SONIC policy actions; required "
+            "for --policy groot_sonic to pass paid preflight"
+        ),
+    )
+    ap.add_argument(
+        "--groot-policy-command-timeout-seconds",
+        type=float,
+        default=float(os.getenv(ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_ENV, "120") or 120),
+        help="timeout for each GR00T/SONIC policy command call inside the Isaac worker",
+    )
     ap.add_argument("--steps", type=int, default=64)
     ap.add_argument("--provider", default="runpod",
                     help=(
@@ -1742,6 +1976,15 @@ def main(argv=None) -> int:
     ap.add_argument("--robot-review-material-override", action="store_true",
                     help="bind neutral matte material over authored G1 materials/textures for a "
                          "clearer untextured manipulation seed image")
+    ap.add_argument(
+        "--robot-review-material-mode",
+        default="",
+        choices=["", "neutral_matte", "non_white_matte"],
+        help=(
+            "material mode forwarded to the Isaac worker when robot review material "
+            "override is active"
+        ),
+    )
     ap.add_argument("--kinematic-arm-pose", action="store_true",
                     help="pose the rendered arm reaching the workspace (pure-USD, crash-safe)")
     ap.add_argument("--collision-approximation", default="",
@@ -1769,6 +2012,8 @@ def main(argv=None) -> int:
         scenarios=scenarios, out_dir=args.out_dir, kitchen_asset_dir=args.kitchen_asset_dir,
         kitchen_url=args.kitchen_url,
         g1_usd=args.g1_usd, policy_id=args.policy, steps=args.steps, provider=args.provider,
+        groot_policy_command=args.groot_policy_command,
+        groot_policy_command_timeout_seconds=args.groot_policy_command_timeout_seconds,
         allow_paid=args.allow_paid, allow_dirty_paid_launch=args.allow_dirty_paid_launch,
         cold=args.cold, image=args.image, max_seconds=args.max_seconds,
         container_disk_gb=args.container_disk_gb, volume_gb=args.volume_gb,
@@ -1793,6 +2038,7 @@ def main(argv=None) -> int:
         fill_light_intensity=args.fill_light_intensity,
         neutral_environment=args.neutral_environment,
         robot_review_material_override=args.robot_review_material_override,
+        robot_review_material_mode=args.robot_review_material_mode,
         kinematic_arm_pose=args.kinematic_arm_pose,
         collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
         manipulation_stand=args.manipulation_stand,

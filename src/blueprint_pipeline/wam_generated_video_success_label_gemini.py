@@ -31,6 +31,10 @@ def _string(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
 def _truthy(value: Any) -> bool:
     return _string(value).lower() in {"1", "true", "yes", "y", "on"}
 
@@ -82,13 +86,174 @@ def _api_key() -> tuple[str, str | None]:
 
 
 def _rollout_task_prompt(request: Mapping[str, Any], rollout: Mapping[str, Any]) -> str:
+    return _string(_rollout_task_prompt_record(request, rollout).get("task_prompt"))
+
+
+def _rollout_task_prompt_record(
+    request: Mapping[str, Any],
+    rollout: Mapping[str, Any],
+) -> dict[str, Any]:
     scenario_id = _string(rollout.get("scenario_eval_run_id"))
     for prompt in request.get("task_prompts", []) or []:
         if not isinstance(prompt, Mapping):
             continue
         if _string(prompt.get("scenario_eval_run_id")) == scenario_id:
-            return _string(prompt.get("task_prompt"))
-    return ""
+            return dict(prompt)
+    return {}
+
+
+def _append_text_values(target: list[str], value: Any) -> None:
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            target.append(text)
+        return
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _append_text_values(target, item)
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+        for item in value:
+            _append_text_values(target, item)
+
+
+def _metadata_list(payload: Mapping[str, Any], keys: Sequence[str]) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        _append_text_values(values, payload.get(key))
+    return values
+
+
+def _metadata_success_requirements(payload: Mapping[str, Any]) -> list[str]:
+    values = _metadata_list(
+        payload,
+        (
+            "success_requires",
+            "success_conditions",
+            "strict_task_success_requirements",
+            "target_state_change",
+            "expected_state_change",
+        ),
+    )
+    for key in ("task_success_criteria", "success_criteria", "success_check_plan"):
+        container = _mapping(payload.get(key))
+        if not container:
+            continue
+        values.extend(
+            _metadata_list(
+                container,
+                (
+                    "success_requires",
+                    "criteria",
+                    "checks",
+                    "success_conditions",
+                    "strict_task_success_requirements",
+                    "target_state_change",
+                    "expected_state_change",
+                ),
+            )
+        )
+    return values
+
+
+def _metadata_failure_modes(payload: Mapping[str, Any]) -> list[str]:
+    values = _metadata_list(
+        payload,
+        (
+            "failure_modes",
+            "common_failure_modes",
+            "negative_criteria",
+            "failure_conditions",
+        ),
+    )
+    for key in ("task_success_criteria", "success_criteria", "success_check_plan"):
+        container = _mapping(payload.get(key))
+        if not container:
+            continue
+        values.extend(
+            _metadata_list(
+                container,
+                (
+                    "failure_modes",
+                    "common_failure_modes",
+                    "negative_criteria",
+                    "failure_conditions",
+                ),
+            )
+        )
+    return values
+
+
+def _task_success_criteria(
+    *,
+    request: Mapping[str, Any],
+    rollout: Mapping[str, Any],
+    task_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    generic_criteria: list[str] = [
+        "The visible robot end effector must reach the task-relevant target, not merely move near the scene.",
+        "The target object or control must visibly change into the requested state.",
+        "The state change must be causally plausible from the robot motion; object motion without visible robot contact/reach is failure or uncertain.",
+        "If the relevant target is occluded, too small, or outside the frame, mark success null or false with a failure mode.",
+    ]
+    generic_failure_modes: list[str] = [
+        "end_effector_does_not_reach_target",
+        "target_state_change_not_visible",
+        "target_motion_not_robot_caused",
+        "target_occluded_or_out_of_frame",
+    ]
+    metadata_sources: dict[str, list[str]] = {}
+    metadata_criteria: list[str] = []
+    metadata_failure_modes: list[str] = []
+    for source_name, payload in (
+        ("request", request),
+        ("request.success_label_contract", _mapping(request.get("success_label_contract"))),
+        ("request.eval_ready_task_grounding", _mapping(request.get("eval_ready_task_grounding"))),
+        ("task_prompt", task_record),
+        (
+            "task_prompt.eval_ready_task_grounding",
+            _mapping(task_record.get("eval_ready_task_grounding")),
+        ),
+        ("rollout", rollout),
+        ("rollout.eval_ready_task_grounding", _mapping(rollout.get("eval_ready_task_grounding"))),
+    ):
+        source_criteria = _metadata_success_requirements(payload)
+        source_failure_modes = _metadata_failure_modes(payload)
+        if source_criteria:
+            metadata_sources.setdefault(source_name, []).extend(source_criteria)
+            metadata_criteria.extend(source_criteria)
+        if source_failure_modes:
+            metadata_sources.setdefault(source_name, []).extend(source_failure_modes)
+            metadata_failure_modes.extend(source_failure_modes)
+    return {
+        "success_requires": list(dict.fromkeys([*generic_criteria, *metadata_criteria])),
+        "common_failure_modes": sorted(set([*generic_failure_modes, *metadata_failure_modes])),
+        "metadata_sources": metadata_sources,
+        "task_specific_rules_source": "request_or_rollout_metadata"
+        if metadata_criteria or metadata_failure_modes
+        else "generic_manipulation_evidence_only",
+        "hardcoded_task_family_rules_used": False,
+        "fail_closed_when_evidence_is_ambiguous": True,
+    }
+
+
+def _has_task_success_context(
+    *,
+    request: Mapping[str, Any],
+    rollout: Mapping[str, Any],
+    task_record: Mapping[str, Any],
+) -> bool:
+    criteria = _task_success_criteria(
+        request=request,
+        rollout=rollout,
+        task_record=task_record,
+    )
+    metadata_sources = set(_mapping(criteria.get("metadata_sources")).keys())
+    task_specific_metadata_sources = metadata_sources - {"request.success_label_contract"}
+    return bool(
+        _string(task_record.get("task_prompt"))
+        or task_specific_metadata_sources
+    )
 
 
 def _bool_or_none(value: Any) -> bool | None:
@@ -170,13 +335,22 @@ def _gemini_label_one(
     keyframe_path: Path | None = None,
 ) -> dict[str, Any]:
     mime_type = mimetypes.guess_type(video_path.name)[0] or "video/mp4"
-    task_prompt = _rollout_task_prompt(request, rollout)
+    task_record = _rollout_task_prompt_record(request, rollout)
+    task_prompt = _string(task_record.get("task_prompt"))
+    success_criteria = _task_success_criteria(
+        request=request,
+        rollout=rollout,
+        task_record=task_record,
+    )
     prompt = {
         "instruction": (
-            "You are judging a generated world-model rollout video for a robot task. "
+            "You are judging a generated world-model rollout video for a robot manipulation task. "
             "The inputs include the MP4 and, when available, a still keyframe image extracted from that MP4. "
             "Use the visible robot, scene objects, and target evidence in either input. "
-            "Return compact JSON only. Judge whether the generated video shows task success."
+            "Return compact JSON only. Judge whether the generated video shows realistic task success. "
+            "Be strict: do not infer success from provider completion, scene motion, camera motion, or a valid video. "
+            "If the robot does not visibly reach/contact the correct target, or if the target state change is not "
+            "visibly caused by the robot, mark success false or null."
         ),
         "required_json": {
             "scene_description": "one short sentence describing visible content",
@@ -185,8 +359,12 @@ def _gemini_label_one(
             "rationale": "one short sentence",
             "task_completion_evidence": ["short visual evidence"],
             "failure_modes": ["short failure evidence or empty list"],
+            "end_effector_reaches_target": "boolean or null",
+            "target_state_change_visible": "boolean or null",
+            "robot_caused_target_motion": "boolean or null",
         },
         "task_prompt": task_prompt,
+        "task_success_criteria": success_criteria,
         "rollout": {
             "rollout_id": rollout.get("rollout_id"),
             "scenario_eval_run_id": rollout.get("scenario_eval_run_id"),
@@ -242,6 +420,16 @@ def _gemini_label_one(
         "failure_modes": label_payload.get("failure_modes")
         if isinstance(label_payload.get("failure_modes"), list)
         else [],
+        "end_effector_reaches_target": _bool_or_none(
+            label_payload.get("end_effector_reaches_target")
+        ),
+        "target_state_change_visible": _bool_or_none(
+            label_payload.get("target_state_change_visible")
+        ),
+        "robot_caused_target_motion": _bool_or_none(
+            label_payload.get("robot_caused_target_motion")
+        ),
+        "task_success_criteria": success_criteria,
         "evidence_refs": [
             str(path.resolve())
             for path in (video_path, keyframe_path)
@@ -310,6 +498,16 @@ def build_gemini_wam_success_labels(
         else:
             client = genai.Client(api_key=api_key)
             for rollout in rollouts:
+                task_record = _rollout_task_prompt_record(request, rollout)
+                if not _has_task_success_context(
+                    request=request,
+                    rollout=rollout,
+                    task_record=task_record,
+                ):
+                    blockers.append(
+                        "missing_task_prompt_or_task_success_metadata_for_generated_video_success_label"
+                    )
+                    continue
                 video_text = _string(rollout.get("generated_video_path"))
                 video_path = Path(video_text).expanduser()
                 if not video_path.is_absolute():

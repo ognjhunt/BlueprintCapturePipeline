@@ -83,6 +83,46 @@ Provider launch artifacts also carry `idle_timeout_seconds`,
 must exceed the hard timeout so an external launcher can terminate a stuck worker
 even if the finalizer never runs.
 
+## Unitree GR00T/SONIC WAM Carrier
+
+The GR00T/SONIC WAM carrier is the combined runtime image for the policy server
+plus the OSCAR/WAM carrier surface. It is separate from the generic Isaac worker:
+the point is to prove the GR00T source, compatible Python dependency set, server
+entrypoint, and checkpoint cache are already inside the image before a paid
+RunPod/Vast/DO attempt starts.
+
+```bash
+BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_WAM_IMAGE_REF="registry.example/blueprint/unitree-groot-sonic-wam:2026-07-03-sealed" \
+BLUEPRINT_ALLOW_RUNPOD_UNITREE_GROOT_SONIC_WAM_IMAGE_PUSH=true \
+./scripts/build_push_unitree_groot_sonic_wam_image.sh
+```
+
+The build extends the pinned OSCAR WAM base image, checks out a pinned
+Isaac-GR00T ref, installs the known-working system-Python pins, and optionally
+prefetches `LucaFrat/groot-bs16` using the BuildKit secret at
+`BLUEPRINT_UNITREE_GROOT_N17_SONIC_HF_TOKEN_FILE`, `HF_TOKEN_FILE`, or
+`~/.blueprint-secrets/hf_token`. The helper refuses missing, unversioned, or
+unstable tags and writes
+`unitree_groot_sonic_wam_image_build_manifest.v1`.
+
+Local builds intentionally require free disk headroom, defaulting to 80 GiB via
+`BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_MIN_FREE_GIB`. If the disk check blocks,
+the manifest records the required and available free GiB. Do not bypass this for
+a paid provider retry unless the build is happening on a remote builder with
+separate storage.
+
+Paid RunPod WAM carrier launches now require a sealed-image confirmation by
+default:
+
+- `BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_SEALED_IMAGE_CONFIRMED=true`
+- no runtime clone/download/install dependency path for normal paid runs
+- `BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ALLOW_RUNTIME_BOOTSTRAP=true` only
+  for an explicit debug run where in-pod installation churn is acceptable
+
+The sealed image manifest only proves build/package readiness. It does not prove
+provider startup, GR00T policy inference, WAM rollout quality, semantic task
+success, or physical robot readiness.
+
 ## MuJoCo Worker
 
 ```bash
