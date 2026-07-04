@@ -330,6 +330,16 @@ def _policy_autoresearch_summary(
     }
 
 
+def _success_claim_ledger_from_sources(*sources: Mapping[str, Any]) -> dict[str, Any]:
+    for source in sources:
+        if source.get("schema_version") == "success_claim_ledger.v1":
+            return dict(source)
+        ledger = _mapping(source.get("success_claim_ledger"))
+        if ledger:
+            return ledger
+    return {}
+
+
 def _private_hardware_integration_plan(
     *,
     job_request: Mapping[str, Any],
@@ -864,6 +874,8 @@ def build_policy_improvement_run_offer(
         "policy_package_manifest": "policy_package_manifest.json",
         "policy_execution_manifest": "policy_execution_manifest.json",
         "policy_execution_trace": "policy_execution_trace.json",
+        "task_eval_run_report": "task_eval_run_report.json",
+        "success_claim_ledger": "success_claim_ledger.json",
         "training_request": "training_request.json",
         "training_result": "training_result.json",
         "evaluation_result": "evaluation_result.json",
@@ -934,6 +946,12 @@ def build_policy_improvement_run_offer(
     heldout_result = _read_optional_mapping(
         resolved_job_dir / "policy_autoresearch" / "heldout_eval_result.json"
     )
+    task_eval_run_report = _read_optional_mapping(
+        resolved_job_dir / "task_eval_run_report.json"
+    )
+    direct_success_claim_ledger = _read_optional_mapping(
+        resolved_job_dir / "success_claim_ledger.json"
+    )
     wam_scorecard = _read_optional_mapping(resolved_job_dir / "policy_ranking_scorecard.json")
     wam_claim_boundary = _read_optional_mapping(resolved_job_dir / "wam_eval_claim_boundary.json")
     candidate_selection_report = _read_optional_mapping(
@@ -945,6 +963,12 @@ def build_policy_improvement_run_offer(
     safety_events = _read_optional_mapping(resolved_job_dir / "intervention_safety_ledger.json")
     if not safety_events:
         safety_events = _read_optional_mapping(resolved_job_dir / "safety_events_ledger.json")
+    success_claim_ledger = _success_claim_ledger_from_sources(
+        direct_success_claim_ledger,
+        task_eval_run_report,
+        candidate_package,
+        heldout_result,
+    )
 
     customer_input_summary = _customer_inputs(
         job_request=job_request,
@@ -1039,6 +1063,36 @@ def build_policy_improvement_run_offer(
     )
     boundary["rl_post_training_handoff_included"] = True
 
+    # An "improvement candidate ready for customer review" status is itself an
+    # improvement claim, so it must not survive a missing/non-positive heldout delta
+    # or an unsupported concurrent-A/B comparison.
+    improvement_claim_blockers: list[str] = []
+    heldout_delta = policy_summary.get("heldout_success_rate_delta")
+    if heldout_delta is None:
+        improvement_claim_blockers.append("heldout_success_rate_delta_missing")
+    elif float(heldout_delta) <= 0:
+        improvement_claim_blockers.append(
+            f"heldout_success_rate_delta_not_positive:{heldout_delta}"
+        )
+    if not boundary["candidate_improvement_claim_allowed"]:
+        improvement_claim_blockers.append("concurrent_ab_candidate_claim_not_allowed")
+    if not success_claim_ledger:
+        improvement_claim_blockers.append(
+            "success_claim_ledger_missing_for_candidate_improvement_claim"
+        )
+    elif success_claim_ledger.get("schema_version") != "success_claim_ledger.v1":
+        improvement_claim_blockers.append(
+            "success_claim_ledger_schema_unrecognized_for_candidate_improvement_claim"
+        )
+    boundary["success_claim_ledger_included"] = bool(success_claim_ledger)
+    boundary["success_claim_ledger_highest_truthful_claim"] = success_claim_ledger.get(
+        "highest_truthful_claim"
+    )
+    boundary["improvement_claim_blockers"] = improvement_claim_blockers
+    if status == "improvement_candidate_ready_for_customer_review" and improvement_claim_blockers:
+        status = "blocked_improvement_claim_unsupported"
+        blockers = [*blockers, *improvement_claim_blockers]
+
     manifest: dict[str, Any] = {
         "schema_version": POLICY_IMPROVEMENT_RUN_SCHEMA_VERSION,
         "generated_at": generated,
@@ -1109,6 +1163,12 @@ def build_policy_improvement_run_offer(
             "manifest_counts": post_training_package.get("manifest_counts") or {},
         },
         "policy_autoresearch_summary": policy_summary,
+        "success_claim_summary": {
+            "success_claim_ledger_included": bool(success_claim_ledger),
+            "highest_truthful_claim": success_claim_ledger.get("highest_truthful_claim"),
+            "ledger_path": included_artifacts.get("success_claim_ledger")
+            or included_artifacts.get("task_eval_run_report"),
+        },
         "rl_post_training_handoff": rl_handoff,
         "wam_evaluation_summary": {
             "status": wam_scorecard.get("status") or "missing",

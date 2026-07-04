@@ -267,6 +267,36 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
     assert "RUNPOD_API_KEY" not in json.dumps(persisted)
 
 
+def test_runpod_adapter_blocks_when_prelaunch_spend_guard_is_false(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(RUNPOD_API_KEY_ENV, raising=False)
+    monkeypatch.delenv(RUNPOD_API_KEY_FILE_ENV, raising=False)
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    request["prelaunch_spend_guard"] = {
+        "schema_version": "robot_eval_provider_prelaunch_spend_guard.v1",
+        "required_before_provider_launch": True,
+        "status": "blocked",
+        "can_launch": False,
+        "blockers": ["prelaunch_local_sim_only_prerequisite_not_passed"],
+    }
+    _write_json(request_path, request)
+
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="dry-run",
+        endpoint_id="endpoint-123",
+    )
+
+    assert result["status"] == "blocked"
+    assert "provider_prelaunch_spend_guard_not_passed" in result["blockers"]
+    assert "prelaunch_local_sim_only_prerequisite_not_passed" in result["blockers"]
+    readiness = _read_json(tmp_path / "runpod_provider_readiness_manifest.json")
+    assert readiness["status"] == "blocked_before_paid_provider_attempt"
+
+
 def test_runpod_adapter_forwards_docker_entrypoint_to_pod_payload(tmp_path: Path) -> None:
     request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
     request = _read_json(request_path)

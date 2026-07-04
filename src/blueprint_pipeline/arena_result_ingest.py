@@ -622,6 +622,9 @@ def _normalize_attempts(
                     record.get("artifact_manifest_path") or record.get("artifactManifestPath"),
                 ),
                 "source_json": _string(record.get("_source_json")) or None,
+                "clip_curation": _mapping(
+                    record.get("clip_curation") or record.get("clipCuration")
+                ),
                 "review_required": not bool(success),
             }
         )
@@ -772,9 +775,15 @@ def _build_clips_manifest(
         clip_path = clips_dir / clip_name
         copied = _copy_clip_source(source, clip_path) if video_text else False
         status = "degraded_full_source_copy" if copied else "blocked_missing_video"
+        curation_evidence = _mapping(attempt.get("clip_curation"))
         clips.append(
             {
                 "clip_id": f"clip_{_string(attempt.get('attempt_id'))}",
+                "curation": dict(curation_evidence),
+                "semantic_dedup_key": _string(
+                    curation_evidence.get("semantic_dedup_key")
+                )
+                or None,
                 "attempt_id": attempt.get("attempt_id"),
                 "scenario_id": attempt.get("scenario_id"),
                 "source_video_path": video_text or None,
@@ -1912,6 +1921,28 @@ def build_arena_result_ingest(
         rerun_plan=rerun_plan,
         generated_at=generated_at,
     )
+    from .task_eval_run_report import build_task_eval_run_report
+
+    task_eval_run_report = build_task_eval_run_report(
+        job_id=_string(request.get("job_id")) or None,
+        scene_id=_string(context.scene_id) or None,
+        capture_id=_string(context.capture_id) or None,
+        attempt_trace=attempt_trace,
+        # Arena ingest consumes local result files; no media/simulator/policy
+        # layer contracts exist here, so the ledger truthfully reports
+        # no_claim until an evaluator supplies layer contracts.
+        success_claim_layers={},
+        provider_execution={
+            "backend": "isaac_lab_arena",
+            "ingest_status": attempt_trace.get("status"),
+            "result_source": "local_result_files_ingested_not_executed",
+        },
+        policy_binding=_mapping(request.get("policy_package")) or None,
+        rights_privacy_gate=_mapping(request.get("rights_privacy_scope")) or None,
+        generated_at=generated_at,
+    )
+    write_json(resolved_output_dir / "task_eval_run_report.json", task_eval_run_report)
+
     from .post_training_data_package import build_post_training_data_package_export
 
     package_export = build_post_training_data_package_export(
@@ -1950,6 +1981,10 @@ def build_arena_result_ingest(
         "ingest_ledger_status": ingest_ledger.get("status"),
         "post_training_data_package_export_status": package_export.get("status"),
         "customer_handoff_status": handoff_report.get("status"),
+        "task_eval_run_report_status": task_eval_run_report.get("status"),
+        "task_eval_run_report_evidence_level": task_eval_run_report.get(
+            "evidence_level"
+        ),
         "delivery_status": delivery.get("status"),
         "operator_status": operators.get("status"),
         "deterministic_fingerprint": _sha_payload(

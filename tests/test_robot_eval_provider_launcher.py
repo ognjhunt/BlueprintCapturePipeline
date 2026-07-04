@@ -149,6 +149,44 @@ def test_provider_launcher_blocks_without_second_gate_or_command(
     assert result["simulator_execution_proven"] is False
 
 
+def test_provider_launcher_blocks_when_prelaunch_spend_guard_is_false(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    payload = _read_json(request_path)
+    payload["prelaunch_spend_guard"] = {
+        "schema_version": "robot_eval_provider_prelaunch_spend_guard.v1",
+        "required_before_provider_launch": True,
+        "can_launch": False,
+        "blockers": ["prelaunch_local_sim_only_prerequisite_not_passed"],
+        "provider_race": {
+            "schema_version": "robot_eval_provider_race_contract.v1",
+            "race_module": "blueprint_pipeline.provider_race",
+            "candidate_count": 2,
+        },
+    }
+    _write_json(request_path, payload)
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        provider_launch_command=_python_command("print('should not run')"),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["execution_performed"] is False
+    assert "provider_prelaunch_spend_guard_not_passed" in result["blockers"]
+    assert "prelaunch_local_sim_only_prerequisite_not_passed" in result["blockers"]
+    assert result["prelaunch_spend_guard"]["can_launch"] is False
+    assert result["provider_context"]["prelaunch_spend_guard_can_launch"] is False
+    assert result["provider_race"]["race_module"] == "blueprint_pipeline.provider_race"
+    assert not (tmp_path / "gpu_provider_launcher.stdout.log").exists()
+
+
 def test_provider_launcher_executes_operator_command_with_redacted_artifact(
     tmp_path: Path,
     monkeypatch,

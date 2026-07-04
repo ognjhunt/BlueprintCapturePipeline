@@ -698,6 +698,7 @@ def test_world_model_payout_and_fidelity_adjustment_edges() -> None:
                 "derived_scene_generation_allowed": True,
                 "capture_contributor_payout_eligible": True,
                 "consent_status": "documented",
+                "permission_document_uri": "gs://local-blueprint/rights/consent-packet.pdf",
             }
         },
     )

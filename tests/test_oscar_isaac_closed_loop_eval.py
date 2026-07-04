@@ -294,6 +294,32 @@ def _write_passed_short_visual_sanity_manifest(
         encoding="utf-8",
     )
     review_video.write_bytes(b"mp4")
+    task_success_judge = root / "persistent_wam_task_success_judge.json"
+    task_success_judge.write_text(
+        json.dumps(
+            {
+                "schema_version": "persistent_wam_task_success_judge.v1",
+                "generated_at": "now",
+                "status": "not_proven",
+                "answer": "not_proven",
+                "task_success_proven": False,
+                "true_manipulation_success_proven": False,
+                "blockers": ["true_manipulation_success_not_proven"],
+                "generated_video_semantic_success_label": {
+                    "status": "requires_review",
+                    "success_label_from_generated_video": False,
+                    "generated_video_semantic_success": False,
+                    "generated_video_semantic_failure": False,
+                },
+                "claim_boundary": {
+                    "visual_quality_is_not_task_success": True,
+                    "generated_video_semantic_label_is_support_only": True,
+                    "task_success_proof_requires_evaluator_or_physics_state": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     manifest = root / "persistent_wam_short_visual_sanity_manifest.json"
     manifest.write_text(
         json.dumps(
@@ -308,6 +334,22 @@ def _write_passed_short_visual_sanity_manifest(
                 "requested_loop_step_count": 3,
                 "generated_transition_count": 2,
                 "visual_profile": "review_quality",
+                "claim_boundary": {
+                    "short_visual_sanity_is_not_task_success_proof": True,
+                    "visual_sanity_passed_is_not_task_success": True,
+                    "visual_quality_is_not_task_success": True,
+                    "task_success_judge_required_for_task_success_claim": True,
+                    "generated_video_success_label_is_support_only": True,
+                },
+                "task_success_judge_path": str(task_success_judge),
+                "task_success_judge_status": "not_proven",
+                "task_success_proven": False,
+                "true_manipulation_success_proven": False,
+                "generated_video_task_success_label_from_generated_video": False,
+                "generated_video_task_success_label_status": "requires_review",
+                "generated_video_semantic_success": False,
+                "generated_video_semantic_failure": False,
+                "task_success_blockers": ["true_manipulation_success_not_proven"],
                 "source_policy_observation_visual_qa_status": (
                     "passed_visual_quality_gate"
                 ),

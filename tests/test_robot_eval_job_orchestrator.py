@@ -397,7 +397,9 @@ def test_post_training_export_includes_simulator_batch_trace_streams(tmp_path: P
 
     assert package["status"] == "blocked_package_quality_gates"
     assert "curation:clips_manifest_missing_or_empty" in package["blockers"]
-    assert "curation:sc3_action_normalization_blocked" in package["blockers"]
+    # Absent (vs malformed) SC3 action data must not hard-block curation;
+    # the export still fails closed on the empty clips manifest above.
+    assert "curation:sc3_action_normalization_blocked" not in package["blockers"]
     assert package["included_artifacts"]["visual_review_ledger"] == "visual_review_ledger.json"
     assert package["included_artifacts"]["simulator_command_batch_visual_review_ledger"] == (
         "simulator_command_batch_visual_review_ledger.json"
@@ -620,6 +622,8 @@ def test_robot_eval_job_writes_simulator_policy_ranking_scorecard(
     scorecard = _read_json(job_dir / "policy_ranking_scorecard.json")
     candidate_report = _read_json(job_dir / "candidate_selection_report.json")
     claim_boundary = _read_json(job_dir / "wam_eval_claim_boundary.json")
+    task_eval_report = _read_json(job_dir / "task_eval_run_report.json")
+    webapp_projection = _read_json(job_dir / "webapp_robot_eval_status_projection.json")
     closure = _read_json(job_dir / "robot_team_grade_eval_closure_manifest.json")
     run_manifest = _read_json(job_dir / "job_run_manifest.json")
 
@@ -652,10 +656,22 @@ def test_robot_eval_job_writes_simulator_policy_ranking_scorecard(
     assert closure["policy_comparison_summary"]["explicit_evaluator_only"] is True
     assert closure["policy_comparison_summary"]["review_grade_policy_ranking"] is False
     assert closure["evaluator_bounded_policy_comparison_complete"] is True
+    assert task_eval_report["schema_version"] == "task_eval_run_buyer_report.v1"
+    assert task_eval_report["claim_boundary"]["bare_success_booleans_forbidden"] is True
+    assert (
+        task_eval_report["claim_boundary"]["provider_runtime_success_is_not_task_success"]
+        is True
+    )
+    assert webapp_projection["task_eval_run_report"]["report_path"] == (
+        "task_eval_run_report.json"
+    )
+    assert closure["artifact_paths"]["task_eval_run_report"] == "task_eval_run_report.json"
     assert run_manifest["policy_ranking_scorecard_path"] == "policy_ranking_scorecard.json"
+    assert run_manifest["task_eval_run_report_path"] == "task_eval_run_report.json"
     assert run_manifest["artifacts"]["policy_ranking_scorecard"] == (
         "policy_ranking_scorecard.json"
     )
+    assert run_manifest["artifacts"]["task_eval_run_report"] == "task_eval_run_report.json"
 
 
 def test_minimal_webapp_request_gets_beta_enrichment_without_overwriting_source(
@@ -1448,7 +1464,12 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert proof_boundary["fixture_only_proof"] is True
     assert data_package_export["status"] == "blocked_package_quality_gates"
     assert "curation:clips_manifest_missing_or_empty" in data_package_export["blockers"]
-    assert "curation:sc3_action_normalization_blocked" in data_package_export["blockers"]
+    # Absent (vs malformed) SC3 action data must not hard-block curation;
+    # the export still fails closed on the empty clips manifest.
+    assert (
+        "curation:sc3_action_normalization_blocked"
+        not in data_package_export["blockers"]
+    )
     assert data_package_export["package_type"] == "post_training_data_package"
     assert data_package_export["included_artifacts"]["normalized_attempt_trace"] == (
         "normalized_attempt_trace.json"
@@ -10039,15 +10060,27 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     ]
     assert local_prereq["status"] == "not_evaluated_yet"
     assert local_prereq["local_sim_only_evidence_clean"] is False
+    prelaunch_guard = provider_launch["prelaunch_spend_guard"]
+    assert prelaunch_guard["schema_version"] == "robot_eval_provider_prelaunch_spend_guard.v1"
+    assert prelaunch_guard["status"] == "blocked"
+    assert prelaunch_guard["can_launch"] is False
+    assert "prelaunch_local_sim_only_prerequisite_not_passed" in prelaunch_guard["blockers"]
+    assert prelaunch_guard["provider_race"]["race_module"] == (
+        "blueprint_pipeline.provider_race"
+    )
+    assert prelaunch_guard["provider_race"]["candidate_count"] >= 1
     assert provider_launch["provider_request_shape"]["runtime_preflight"][  # type: ignore[index]
         "vulkan_required"
     ] is True
     assert "rtx_renderer_available" in provider_launch["provider_request_shape"]["runtime_preflight"]["required_checks"]  # type: ignore[index]
     assert provider_launch["live_provider_calls_performed"] is False
-    assert provisioning["status"] == "request_manifest_ready"
+    assert provisioning["status"] == "blocked"
+    assert provisioning["reason"] == "prelaunch_spend_guard_blocked"
+    assert "prelaunch_spend_guard_not_passed" in provisioning["blockers"]
     assert provisioning["live_provider_calls_performed"] is False
-    assert cost_ledger["status"] == "ready_for_explicit_provider_launcher"
-    assert cost_ledger["gpu_time"]["estimated_gpu_seconds"] == 120  # type: ignore[index]
+    assert cost_ledger["status"] == "blocked_before_allocation"
+    assert cost_ledger["prelaunch_spend_guard"]["can_launch"] is False
+    assert cost_ledger["gpu_time"]["estimated_gpu_seconds"] == 0  # type: ignore[index]
     assert cost_ledger["gpu_time"]["actual_gpu_seconds"] is None  # type: ignore[index]
     assert remote_closure["status"] == "blocked_before_remote_execution"
     assert remote_closure["contract_ready_for_remote_runtime"] is False
@@ -10057,7 +10090,11 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     assert remote_closure["checks"]["worker_manifest_uri_fetchable"] is True
     assert remote_closure["checks"]["capture_root_bundle_uri_fetchable"] is True
     assert remote_closure["checks"]["artifact_output_uri_configured"] is True
+    assert remote_closure["checks"]["prelaunch_spend_guard_can_launch"] is False
     assert remote_closure["checks"]["local_sim_only_prerequisite_ready"] is False
+    assert "remote_prelaunch_spend_guard_not_passed" in remote_closure[
+        "contract_blockers"
+    ]
     assert "remote_local_sim_only_prerequisite_not_passed" in remote_closure[
         "contract_blockers"
     ]

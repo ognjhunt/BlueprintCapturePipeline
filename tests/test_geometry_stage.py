@@ -59,6 +59,7 @@ def _build_staged_capture(
         "capture_rights": {
             "derived_scene_generation_allowed": True,
             "consent_status": "documented",
+            "permission_document_uri": "gs://local-blueprint/rights/consent-packet.pdf",
         },
     }
     if manifest_overrides:

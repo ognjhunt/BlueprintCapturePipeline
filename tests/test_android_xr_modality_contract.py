@@ -47,6 +47,7 @@ def _android_xr_descriptor_payload() -> dict:
             "derived_scene_generation_allowed": True,
             "capture_contributor_payout_eligible": True,
             "consent_status": "documented",
+            "permission_document_uri": "gs://local-blueprint/rights/consent-packet.pdf",
         },
         "capture_mode": {
             "requested_mode": "site_world_candidate",

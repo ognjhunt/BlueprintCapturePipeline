@@ -109,6 +109,18 @@ def _read_optional_mapping(path: Path) -> Dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+def _strict_proven_flag(
+    primary: Mapping[str, Any], fallback: Mapping[str, Any], key: str
+) -> bool:
+    """Fail-closed proof flag: a strict boolean in ``primary`` (the proof boundary /
+    validation manifest) is authoritative either way; otherwise only a strict True in
+    ``fallback`` counts. Truthy non-booleans ("true", 1.0, {...}) never read as proof."""
+    value = primary.get(key)
+    if isinstance(value, bool):
+        return value
+    return fallback.get(key) is True
+
+
 def _cosmos_runtime_backend_variants(
     *,
     context,
@@ -1122,17 +1134,14 @@ def palatial_physready_evaluation_prep_surface(
         "remote_asset_downloads_performed": bool(
             run_manifest.get("remote_asset_downloads_performed")
         ),
-        "simulator_execution_proven": bool(
-            validation.get("simulator_execution_proven")
-            or run_manifest.get("simulator_execution_proven")
+        "simulator_execution_proven": _strict_proven_flag(
+            validation, run_manifest, "simulator_execution_proven"
         ),
-        "rank_fidelity_result_proven": bool(
-            validation.get("rank_fidelity_result_proven")
-            or run_manifest.get("rank_fidelity_result_proven")
+        "rank_fidelity_result_proven": _strict_proven_flag(
+            validation, run_manifest, "rank_fidelity_result_proven"
         ),
-        "public_claim_upgrade_allowed": bool(
-            validation.get("public_claim_upgrade_allowed")
-            or run_manifest.get("public_claim_upgrade_allowed")
+        "public_claim_upgrade_allowed": _strict_proven_flag(
+            validation, run_manifest, "public_claim_upgrade_allowed"
         ),
     }
 
@@ -1216,17 +1225,14 @@ def site_eval_director_evaluation_prep_surface(
         ),
         "artifacts": artifacts,
         "artifact_uris": artifact_uris,
-        "simulator_execution_proven": bool(
-            proof_boundary.get("simulator_execution_proven")
-            or run_manifest.get("simulator_execution_proven")
+        "simulator_execution_proven": _strict_proven_flag(
+            proof_boundary, run_manifest, "simulator_execution_proven"
         ),
-        "rank_fidelity_result_proven": bool(
-            proof_boundary.get("rank_fidelity_result_proven")
-            or run_manifest.get("rank_fidelity_result_proven")
+        "rank_fidelity_result_proven": _strict_proven_flag(
+            proof_boundary, run_manifest, "rank_fidelity_result_proven"
         ),
-        "public_claim_upgrade_allowed": bool(
-            proof_boundary.get("public_claim_upgrade_allowed")
-            or run_manifest.get("public_claim_upgrade_allowed")
+        "public_claim_upgrade_allowed": _strict_proven_flag(
+            proof_boundary, run_manifest, "public_claim_upgrade_allowed"
         ),
     }
 
@@ -1339,23 +1345,19 @@ def robot_eval_job_evaluation_prep_surface(
                     "state": str(run_manifest.get("state") or "missing"),
                     "artifacts": job_artifacts,
                     "artifact_uris": job_artifact_uris,
-                    "simulator_execution_proven": bool(
-                        proof_boundary.get("simulator_execution_proven")
-                        or run_manifest.get("simulator_execution_proven")
+                    "simulator_execution_proven": _strict_proven_flag(
+                        proof_boundary, run_manifest, "simulator_execution_proven"
                     ),
-                    "rank_fidelity_result_proven": bool(
-                        proof_boundary.get("rank_fidelity_result_proven")
-                        or run_manifest.get("rank_fidelity_result_proven")
+                    "rank_fidelity_result_proven": _strict_proven_flag(
+                        proof_boundary, run_manifest, "rank_fidelity_result_proven"
                     ),
-                    "live_end_to_end_verified": bool(
-                        proof_boundary.get("live_end_to_end_verified")
-                        or run_manifest.get("live_end_to_end_verified")
+                    "live_end_to_end_verified": _strict_proven_flag(
+                        proof_boundary, run_manifest, "live_end_to_end_verified"
                     ),
                     "live_eval_closure_status": run_manifest.get("live_eval_closure_status")
                     or proof_boundary.get("live_eval_closure_status"),
-                    "public_claim_upgrade_allowed": bool(
-                        proof_boundary.get("public_claim_upgrade_allowed")
-                        or run_manifest.get("public_claim_upgrade_allowed")
+                    "public_claim_upgrade_allowed": _strict_proven_flag(
+                        proof_boundary, run_manifest, "public_claim_upgrade_allowed"
                     ),
                 }
             )

@@ -33,6 +33,7 @@ def _build_staged_glasses_capture(tmp_path: Path, *, with_privacy_video: bool = 
                 "capture_rights": {
                     "derived_scene_generation_allowed": True,
                     "consent_status": "documented",
+                    "permission_document_uri": "gs://local-blueprint/rights/consent-packet.pdf",
                 },
                 "site_identity": {
                     "site_id": "site-1",

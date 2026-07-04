@@ -135,6 +135,104 @@ def test_process_handoff_stages_capture_and_runs_e2e(tmp_path: Path) -> None:
     assert (capture_root / "pipeline_handoff.json").is_file()
 
 
+def test_redelivered_completed_handoff_is_idempotent(tmp_path: Path) -> None:
+    prefix = "scenes/scene-1/captures/capture-1"
+    client = FakeStorageClient(
+        [
+            FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+            FakeBlob(f"{prefix}/pipeline_handoff.json", b"{}"),
+        ]
+    )
+    payload = {
+        "bucket": "capture-bucket",
+        "scene_id": "scene-1",
+        "capture_id": "capture-1",
+        "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+    }
+    calls: list[dict] = []
+
+    def fake_run_e2e(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok"}
+
+    first = process_handoff_payload(
+        payload,
+        storage_root=tmp_path,
+        provider="openai",
+        run_e2e=fake_run_e2e,
+        storage_client=client,  # type: ignore[arg-type]
+    )
+    second = process_handoff_payload(
+        payload,
+        storage_root=tmp_path,
+        provider="openai",
+        run_e2e=fake_run_e2e,
+        storage_client=client,  # type: ignore[arg-type]
+    )
+
+    assert first["status"] == "processed"
+    assert second["status"] == "skipped_already_processed"
+    assert len(calls) == 1
+    capture_root = tmp_path / "capture-bucket" / prefix
+    ledger = json.loads(
+        (capture_root / "pipeline_job_ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger["status"] == "completed"
+    assert ledger["attempt_count"] == 1
+
+
+def test_crashed_processing_run_is_retried_not_skipped(tmp_path: Path) -> None:
+    prefix = "scenes/scene-1/captures/capture-1"
+    client = FakeStorageClient(
+        [
+            FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+            FakeBlob(f"{prefix}/pipeline_handoff.json", b"{}"),
+        ]
+    )
+    payload = {
+        "bucket": "capture-bucket",
+        "scene_id": "scene-1",
+        "capture_id": "capture-1",
+        "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+    }
+    boom_calls: list[dict] = []
+
+    def crashing_run_e2e(**kwargs):
+        boom_calls.append(kwargs)
+        raise RuntimeError("pod died mid-run")
+
+    with pytest.raises(RuntimeError):
+        process_handoff_payload(
+            payload,
+            storage_root=tmp_path,
+            provider="openai",
+            run_e2e=crashing_run_e2e,
+            storage_client=client,  # type: ignore[arg-type]
+        )
+    capture_root = tmp_path / "capture-bucket" / prefix
+    ledger = json.loads(
+        (capture_root / "pipeline_job_ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger["status"] == "processing"
+
+    def ok_run_e2e(**kwargs):
+        return {"status": "ok"}
+
+    retried = process_handoff_payload(
+        payload,
+        storage_root=tmp_path,
+        provider="openai",
+        run_e2e=ok_run_e2e,
+        storage_client=client,  # type: ignore[arg-type]
+    )
+    assert retried["status"] == "processed"
+    ledger = json.loads(
+        (capture_root / "pipeline_job_ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger["status"] == "completed"
+    assert ledger["attempt_count"] == 2
+
+
 def test_stage_handoff_synthesizes_missing_pipeline_handoff(tmp_path: Path) -> None:
     """XR-03: a real iOS bundle (no hand-authored pipeline_handoff.json) stages without error."""
 

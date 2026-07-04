@@ -43,6 +43,9 @@ def _site_labeling(
     }
 
 
+CONSENT_REVOKED_STATUSES = frozenset({"revoked", "withdrawn", "rescinded"})
+
+
 def build_rights_provenance_review(
     *,
     rights_summary: Mapping[str, Any] | None,
@@ -51,6 +54,7 @@ def build_rights_provenance_review(
     site_identity: Mapping[str, Any] | None,
     adjacent_systems: Sequence[str] | None,
     artifact_uris: Mapping[str, Any] | None = None,
+    required_use_classes: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
     rights = dict(rights_summary or {})
     privacy = dict(privacy_processing or {})
@@ -61,14 +65,42 @@ def build_rights_provenance_review(
     privacy_status = str(privacy.get("status") or "not_run").strip().lower()
     provenance_status = str(provenance.get("status") or "missing").strip().lower()
 
+    # Revoked consent is an absolute stop: no downstream artifact may clear,
+    # regardless of what the packet allowed before revocation.
+    consent_revoked = (
+        consent_status in CONSENT_REVOKED_STATUSES
+        or bool(rights.get("consent_revoked"))
+        or bool(str(rights.get("consent_revoked_at") or "").strip())
+    )
+
     # A "documented" consent claim without the document itself is an incomplete
     # rights packet, not documented consent — it must not clear.
     consent_evidence_complete = consent_status == "policy_only" or (
         consent_status == "documented" and bool(permission_document_uri)
     )
+
+    # Use-class scope enforcement: when the caller declares what the artifact
+    # is for (e.g. "robot_evaluation", "model_training", "derived_generation"),
+    # an explicit consent_scope that omits that class is a "no" and blocks; an
+    # unspecified scope cannot silently grant it and requires review.
+    consent_scope = [item.lower() for item in _string_list(rights.get("consent_scope"))]
+    required_classes = [
+        item.lower() for item in _string_list(required_use_classes)
+    ]
+    scope_blocked_classes: list[str] = []
+    scope_unspecified = bool(required_classes) and not consent_scope
+    if required_classes and consent_scope:
+        scope_blocked_classes = [
+            use_class
+            for use_class in required_classes
+            if use_class not in consent_scope
+        ]
+
     rights_state = (
-        "cleared"
-        if derived_generation_allowed and consent_evidence_complete
+        "blocked"
+        if consent_revoked or scope_blocked_classes
+        else "cleared"
+        if derived_generation_allowed and consent_evidence_complete and not scope_unspecified
         else "blocked"
         if not derived_generation_allowed
         else "needs_review"
@@ -94,7 +126,16 @@ def build_rights_provenance_review(
     )
 
     blockers: list[str] = []
-    if rights_state == "blocked":
+    if consent_revoked:
+        blockers.append("consent_revoked_takedown_required")
+    for use_class in scope_blocked_classes:
+        blockers.append(f"consent_scope_excludes_use_class:{use_class}")
+    if scope_unspecified:
+        blockers.append(
+            "consent_scope_unspecified_for_required_use_classes:"
+            + ",".join(required_classes)
+        )
+    if rights_state == "blocked" and not consent_revoked and not scope_blocked_classes:
         blockers.append("rights_not_sufficient_for_derived_generation")
     elif rights_state == "needs_review":
         blockers.append("rights_or_consent_requires_review")
@@ -112,7 +153,13 @@ def build_rights_provenance_review(
         if not blockers
         else "blocked"
         if any(
-            blocker in {"rights_not_sufficient_for_derived_generation", "privacy_processing_failed_closed"}
+            blocker
+            in {
+                "rights_not_sufficient_for_derived_generation",
+                "privacy_processing_failed_closed",
+                "consent_revoked_takedown_required",
+            }
+            or blocker.startswith("consent_scope_excludes_use_class:")
             for blocker in blockers
         )
         else "needs_review"
@@ -129,8 +176,12 @@ def build_rights_provenance_review(
         "rights": {
             "status": rights_state,
             "consent_status": rights.get("consent_status"),
+            "consent_revoked": consent_revoked,
+            "consent_revoked_at": rights.get("consent_revoked_at"),
             "permission_document_uri": rights.get("permission_document_uri"),
             "consent_scope": _string_list(rights.get("consent_scope")),
+            "required_use_classes": required_classes,
+            "scope_excluded_use_classes": scope_blocked_classes,
             "derived_scene_generation_allowed": derived_generation_allowed,
             "data_licensing_allowed": rights.get("data_licensing_allowed"),
         },
@@ -140,6 +191,13 @@ def build_rights_provenance_review(
             "mode": privacy.get("mode"),
             "fail_closed": bool(privacy.get("fail_closed")),
             "raw_retained": bool(privacy.get("raw_retained")),
+            # Fallback redactions cleared the gate mechanically but were not
+            # verified removals; surface that so review UIs can require a
+            # human look before external delivery.
+            "fallback_redaction_used": privacy_status
+            in {"face_anonymized_fallback", "full_frame_redacted_local_proof"},
+            "manual_review_recommended": privacy_status
+            in {"face_anonymized_fallback", "full_frame_redacted_local_proof"},
         },
         "provenance": {
             "status": provenance_state,

@@ -1,5 +1,189 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-04
+
+### User-Facing
+
+- Added the buyer package readout
+  (`src/blueprint_pipeline/buyer_package_readout.py`, schema
+  `buyer_package_readout.v1`): every Post-Training Data Package export now
+  writes `buyer_package_readout.json` + `buyer_package_summary.md`, a
+  fail-closed summary across nine buyer-critical sections (cards,
+  rights/privacy/provenance, robot POV evidence, failure evidence, task
+  success criteria, calibration, media provenance, export integrity,
+  replay/review instructions). Missing sections block the readout even when
+  the pipeline export itself is ready; the claim boundary echoes the
+  success-claim ledger and can never invent a higher claim. Exports also ship
+  `replay_review_instructions.md` (verify → review → replay protocol), and
+  `docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md` documents the deliverable for
+  robot-team buyers.
+- Overclaim fixes across sellable surfaces: `post_training_data_package`
+  export_policy RL flags (`rl_sparse_reward_signal_included`, concurrent A/B,
+  bottleneck, speed curriculum, action-chunk QA, safety ledger) are now derived
+  from actual handoff content instead of hardcoded `True`;
+  `policy_improvement_run` downgrades
+  `improvement_candidate_ready_for_customer_review` to
+  `blocked_improvement_claim_unsupported` when the heldout delta is missing or
+  non-positive or the concurrent-A/B claim is not allowed;
+  `evaluation_prep_stage` proven flags now require strict booleans (proof
+  boundary authoritative both directions, truthy strings never count);
+  WebApp sync projections label every task success rate with its evaluation
+  substrate, list evidence manifests behind each proven flag, carry
+  fail-closed rights/privacy status, mark `evaluation_readiness` advisory
+  only, and expose optional `product_handoff` (SKU/entitlement/review URL)
+  wiring without gating evidence. Robot POV evidence requirements now include
+  a camera metadata contract (intrinsics, extrinsics, calibration status;
+  uncalibrated footage supports review-grade labels only).
+
+- Added the provider reliability manifest
+  (`src/blueprint_pipeline/provider_reliability_manifest.py`,
+  `docs/PROVIDER_RELIABILITY_MANIFEST.md`): one fail-closed
+  `provider_reliability_manifest.v1` JSON per paid GPU run recording the exact
+  failed phase and blocker across pre-spend preflight, provider launch,
+  container startup, runtime execution, artifact collection, artifact quality,
+  task evaluation, and teardown — with pre-spend preflight (capacity, pinned
+  image, marker/timeout runtime contract, credentials, spend gate), a
+  post-marker stall policy, teardown proof that requires a provider-reported
+  terminal state (RunPod STOPPED is not terminal), and stale-artifact-rejecting
+  collection contracts. Infrastructure phases never imply artifact quality or
+  task success.
+- `isaac_particlefield_render_job` paid runs now write
+  `provider_reliability_manifest.json` on every attempt (including
+  fail-before-spend capacity/credential blocks), enable the post-marker
+  no-progress watchdog by default
+  (`BLUEPRINT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS`, 900s), and record
+  keep-alive teardowns as open billing risk instead of silence.
+- Local MP4 repair in the Isaac G1 kitchen parity job now checks the run's
+  expected frame count: a repair over a partial provider upload is labeled
+  `repaired_truncated` with blocker `mp4_repair_truncated_frames:*` instead of
+  `repaired`, so locally assembled review videos can no longer mask truncated
+  provider renders.
+- `scripts/gpu_spend_guard.py` gained `--json-report <path>`: a persisted
+  `gpu_spend_guard.v1` snapshot of live allocations, burn rate, protected ids,
+  reap candidates, and reap results, giving ops durable teardown evidence
+  instead of stdout-only reports.
+
+- Added layered, fail-closed success-claim contracts
+  (`src/blueprint_pipeline/success_claim_contracts.py`) separating media
+  validity, review task success, the task success contract, simulator/runtime
+  execution, policy/action execution, contact/state-change proof, and
+  physical/deployment readiness into independent fields with their own
+  blockers. A composed ledger reports the highest truthful claim; a higher
+  claim can never be asserted while a lower layer is unproven.
+- Closed audited false-positive success paths: provider runtime success no
+  longer reads as task success, media validity no longer makes a
+  generated-video success label authoritative, status strings and stringly
+  typed verdicts no longer coerce to task success, visible arm presence no
+  longer satisfies reach-required tasks, and stale artifacts no longer count
+  as current-run truth without freshness evidence.
+
+### Employee-Facing
+
+- Isaac/G1 kitchen parity runner and job now attach a per-scenario
+  `success_claim_ledger` plus a result-level `success_claim_summary`; the
+  Stage A kinematic lane fails the policy-execution layer closed
+  (`action_source_not_policy:kinematic_preview_controller`) and a scenario
+  that declares `success_state_change` metadata withholds simulator-level
+  task claims until a measured state change exists.
+- `oscar_cosmos_wam_evaluator._normalize_wam_success_labels` requires strict
+  boolean reviewer verdicts (`wam_success_label_verdict_not_strict_boolean`
+  blocker otherwise) and computes `authoritative_task_success_label` from
+  media validity AND verdict, never media validity alone.
+- `wam_fixture_evaluator` re-derives `review_grade_success_label` from its
+  gates instead of passing the upstream field through, and rejects
+  non-boolean `task_success` label values.
+- `runpod_wam_async_runner` splits `provider_runtime_operational` from
+  `runtime_task_success` (strict boolean from the runtime result only) in the
+  poll manifest.
+- `robot_eval_execution` and `isaac_g1_site_3dgs_realistic_eval` fail closed
+  with `task_success_not_reported_failing_closed` when an episode completes
+  without an explicit boolean verdict.
+- `proof_contracts.build_site_package_manifest` blocks on
+  `launchable_export_not_ready` / `site_world_runtime_not_launchable`;
+  `evaluation_prep_stage` proven-flags treat `proof_boundary.json` as
+  authoritative over the run manifest; `live_robot_eval_closure` requires
+  evidence refs behind `robot_policy_execution_proven`
+  (`policy_execution_proof_flag_without_evidence_refs`).
+- Regression tests in `tests/test_success_claim_contracts.py` (98 tests)
+  parametrize over the real faucet/stovetop/microwave/sink task artifacts
+  under `output/kitchen_task_scaling_preflight_*` when present and skip
+  hermetically when absent. Requirements are derived from task contract
+  metadata (affordance ids, declared `success_state_change`), never task-id
+  string matching.
+
+### Future-Agent-Facing
+
+- When adding a new success-claiming surface, emit the layer fields from
+  `success_claim_contracts` (or the runner's bundle-safe mirror) instead of a
+  bare `success`/`ready` boolean. `physical_deployment_ready` can only come
+  from real-robot evidence plus a named approval — no combination of WAM,
+  generated-video, review, or simulator evidence upgrades it.
+- Tasks that change object state must declare
+  `success_state_change: {object, property}` in their task metadata; the
+  ledger then withholds simulator/policy task claims until a measured
+  before/after change of that property exists.
+
+## 2026-07-03
+
+### User-Facing
+
+- Added a cross-repo beta-launch blocker audit under
+  `docs/beta-launch-audit-2026-07-03/`, covering capture app wiring,
+  capture-to-pipeline handoff, WebApp money/security issues, and Pipeline
+  rights/privacy gates. The audit says the external beta path is not ready; it
+  is a blocker map, not readiness proof.
+- Added shared `VISION.md` strategy framing for the robot-eval wedge, with
+  OSCAR and SC3-Eval cited as the scientific backbone for generated-world
+  policy-ranking correlation. The document keeps rank fidelity and calibrated
+  prediction separate from guaranteed field outcomes, deployment proof, or live
+  robot execution.
+- Committed Isaac/G1 kitchen-parity, GPU render-provider, GR00T/SONIC provider
+  smoke/persistent-session, and WAM generated-video review hardening from the
+  in-progress local tree. These improve review/runtime support paths, but they
+  remain downstream simulator/provider artifacts unless matching run, artifact,
+  cost, teardown, and closure evidence exists.
+- Uncommitted July 3 work began closing beta audit findings for capture handoff
+  wiring, rights/privacy fail-closed behavior, and WorldLabs preview gating.
+  Those changes are not committed yet and should not be treated as shipped.
+
+### Employee-Facing
+
+- Added `docs/beta-launch-audit-2026-07-03/INDEX.md` plus repo-specific specs
+  for BlueprintCapturePipeline, BlueprintCapture, Blueprint-WebApp, and
+  cross-repo blockers. Stable IDs include `PIPE-01` through `PIPE-06` and
+  `XR-01` through `XR-05`.
+- Added and then refined `VISION.md` as a shared cross-repo doctrine document,
+  including the SC3-Eval `0.929` headline correlation attribution, OSCAR
+  RoboArena correlation caveats, and explicit swappable-model proof boundaries.
+- Updated committed runtime/review code in
+  `scripts/run_isaac_g1_kitchen_parity_eval.py`,
+  `src/blueprint_pipeline/gpu_render_providers.py`,
+  `src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`,
+  `src/blueprint_pipeline/isaac_particlefield_render_job.py`,
+  `src/blueprint_pipeline/unitree_groot_n17_sonic_provider_smoke.py`,
+  `src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py`,
+  `src/blueprint_pipeline/wam_generated_video_review.py`, and
+  `src/blueprint_pipeline/wam_generated_video_success_label_gemini.py`, with
+  focused tests across those surfaces.
+- Uncommitted July 3 edits add a dedicated capture-bridge Pub/Sub handoff topic,
+  raw-upload-complete handoff publishing, synthesized `pipeline_handoff.json`
+  from iOS raw sidecars, rights/privacy launch blockers in evaluation prep and
+  proof contracts, delivery-run privacy gating in qualification, and dynamic
+  visible-reach episode termination for Isaac/G1 review clips.
+
+### Future-Agent-Facing
+
+- Keep the July 3 beta audit as a decision and blocker artifact. It does not
+  certify beta readiness, public readiness, production forwarding, paid-provider
+  closure, physical-robot readiness, or buyer delivery.
+- Keep `VISION.md` subordinate to `PLATFORM_CONTEXT.md` and
+  `WORLD_MODEL_STRATEGY_CONTEXT.md`: OSCAR/SC3-Eval support the evaluation
+  strategy, but generated-world correlation is not deployment approval,
+  universal grading proof, or guaranteed real-world task success.
+- Evidence boundary: this entry covers three commits dated 2026-07-03
+  (`b96e85bca`, `cd26ca2c3`, and `ba7968bc4`) plus explicitly labeled
+  uncommitted local changes whose file mtimes were also on 2026-07-03.
+
 ## 2026-07-02
 
 ### User-Facing

@@ -425,3 +425,50 @@ def test_parse_digitalocean_droplet_counts_as_live_spend() -> None:
 
     listed = collect_instances(now=1_800_000_000.0, do_droplets=[droplet])
     assert [i.provider for i in listed] == ["digitalocean"]
+
+
+def test_main_json_report_persists_snapshot_on_dry_run(patched_guard, capsys) -> None:
+    import json as _json
+
+    tmp_path, terminated = patched_guard
+    report_path = tmp_path / "ops" / "spend_snapshot.json"
+    rc = guard.main([
+        "--output-root", str(tmp_path),
+        "--max-boot-seconds", "480",
+        "--json-report", str(report_path),
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert terminated == []
+    snapshot = _json.loads(report_path.read_text())
+    assert snapshot["schema_version"] == guard.SCHEMA_VERSION
+    assert snapshot["reap_mode"] is False
+    assert snapshot["reap_results"] == []
+    ids = {i["id"]: i for i in snapshot["instances"]}
+    assert ids["pod-dud"]["reap_candidate"] is True
+    assert ids["pod-healthy"]["reap_candidate"] is False
+    assert ids["pod-owned"]["protected"] is True
+    assert snapshot["total_burn_per_hour_usd"] > 0
+    # File-based secrets never leak into the persisted snapshot.
+    assert "rp-super-secret" not in report_path.read_text()
+    assert "va-super-secret" not in out
+
+
+def test_main_json_report_records_reap_results(patched_guard) -> None:
+    import json as _json
+
+    tmp_path, terminated = patched_guard
+    report_path = tmp_path / "spend_snapshot.json"
+    rc = guard.main([
+        "--reap",
+        "--output-root", str(tmp_path),
+        "--max-boot-seconds", "480",
+        "--json-report", str(report_path),
+    ])
+    assert rc == 0
+    assert len(terminated) == 1
+    snapshot = _json.loads(report_path.read_text())
+    assert snapshot["reap_mode"] is True
+    assert snapshot["reap_results"] == [
+        {"provider": "runpod", "id": "pod-dud", "status": "terminated", "http": 200}
+    ]

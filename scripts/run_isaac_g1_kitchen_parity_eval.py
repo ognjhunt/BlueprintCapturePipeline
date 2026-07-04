@@ -143,6 +143,7 @@ TASK_STANCE_CLOSE_REACH_ACTION_TOKENS = (
     "latch",
 )
 TASK_STANCE_CLOSE_REACH_GAP_RANGE_M = (0.08, 0.72)
+MANIPULATION_REACH_ARM_SELECTIONS = ("right", "left", "both", "auto")
 MANIPULATION_READY_ARM_SELECTIONS = ("right", "left", "both")
 G1_APPROX_ARM_SPAN_M = 0.45
 G1_APPROX_SHOULDER_FORWARD_OFFSET_M = 0.0
@@ -156,8 +157,16 @@ MANIPULATION_RENDERED_SEED_SHOULDER_MARGIN_M = 0.10
 MANIPULATION_RENDERED_SEED_EFFECTOR_MARGIN_M = 0.05
 MANIPULATION_STANCE_APPROX_SHOULDER_MARGIN_M = 0.10
 MANIPULATION_STANCE_APPROX_EFFECTOR_MARGIN_M = 0.10
-VISIBLE_REACH_FINAL_MAX_EFFECTOR_TO_AFFORDANCE_M = 0.12
+MANIPULATION_DERIVED_FINGERTIP_EXTENSION_M = 0.06
+VISIBLE_REACH_FINAL_MAX_EFFECTOR_TO_AFFORDANCE_M = 0.08
+VISIBLE_REACH_DYNAMIC_SUCCESS_HOLD_FRAMES = 6
+VISIBLE_REACH_DYNAMIC_NO_PROGRESS_PATIENCE_FRAMES = 24
+VISIBLE_REACH_DYNAMIC_NO_PROGRESS_EPS_M = 0.002
+VISIBLE_REACH_DYNAMIC_MAX_STEP_MULTIPLIER = 1.5
 MANIPULATION_ENDPOINT_AFFORDANCE_AIM_START_FRACTION = 0.82
+MANIPULATION_BOTH_ARM_CONVERGENCE_MAX_INTER_EFFECTOR_M = 0.18
+MANIPULATION_BOTH_ARM_CONVERGENCE_MAX_EACH_TO_AFFORDANCE_M = 0.18
+MANIPULATION_BOTH_ARM_CROSSING_LATERAL_EPS_M = 0.02
 MANIPULATION_HIGH_REACH_MIN_AFFORDANCE_ABOVE_SHOULDER_M = 0.22
 MANIPULATION_HIGH_REACH_MAX_SEED_Z_ABOVE_SHOULDER_M = 0.38
 MANIPULATION_HIGH_REACH_SEED_HEIGHT_FRACTION = 0.75
@@ -1770,6 +1779,187 @@ def _pov_geometry_reach_feasibility_evidence(
     }
 
 
+def _visible_reach_frame_terminal_sample(frame: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Classify one captured visible-reach frame as terminal-success evidence or not."""
+    reach = (
+        frame.get("reach_feasibility")
+        if isinstance(frame, Mapping) and isinstance(frame.get("reach_feasibility"), Mapping)
+        else None
+    )
+    nearest_effector_m = _nearest_effector_distance_to_affordance_m(frame or {})
+    close_enough = (
+        nearest_effector_m is not None
+        and nearest_effector_m <= float(VISIBLE_REACH_FINAL_MAX_EFFECTOR_TO_AFFORDANCE_M)
+    )
+    frame_passed = _status_passed(frame) if isinstance(frame, Mapping) else False
+    reach_passed = _reach_feasibility_passed(reach)
+    success = bool(frame_passed and reach_passed and close_enough)
+    blockers: list[str] = []
+    if not frame_passed:
+        blockers.append("visible_reach_terminal_frame_not_review_ready")
+        if isinstance(frame, Mapping):
+            blockers.extend(str(b) for b in (frame.get("blockers") or []))
+    if not reach_passed:
+        blockers.append("visible_reach_terminal_frame_reach_feasibility_not_passed")
+        blockers.extend(_reach_feasibility_blockers(reach))
+    if nearest_effector_m is None:
+        blockers.append("visible_reach_terminal_frame_effector_distance_missing")
+    elif not close_enough:
+        blockers.append("visible_reach_terminal_frame_effector_not_close_enough")
+    return {
+        "schema_version": "visible_reach_terminal_frame_sample.v1",
+        "status": "PASS" if success else "FAIL",
+        "terminal_success": success,
+        "blockers": sorted({str(b) for b in blockers if b}),
+        "nearest_effector_to_affordance_m": (
+            round(float(nearest_effector_m), 4)
+            if nearest_effector_m is not None
+            else None
+        ),
+        "max_effector_to_affordance_m": round(
+            float(VISIBLE_REACH_FINAL_MAX_EFFECTOR_TO_AFFORDANCE_M),
+            4,
+        ),
+        "frame_review_ready": frame_passed,
+        "reach_feasibility_passed": reach_passed,
+        "effector_close_enough": close_enough,
+    }
+
+
+def _initial_dynamic_episode_state() -> dict[str, Any]:
+    return {
+        "best_effector_to_affordance_m": None,
+        "best_frame_index": None,
+        "consecutive_success_frames": 0,
+        "no_progress_frames": 0,
+        "terminal_reason": None,
+        "terminal_sample": None,
+    }
+
+
+def _update_visible_reach_dynamic_episode_state(
+    state: Mapping[str, Any],
+    frame: Mapping[str, Any] | None,
+    *,
+    captured_frames: int,
+    min_frames: int,
+    max_frames: int,
+    success_hold_frames: int = VISIBLE_REACH_DYNAMIC_SUCCESS_HOLD_FRAMES,
+    no_progress_patience_frames: int = VISIBLE_REACH_DYNAMIC_NO_PROGRESS_PATIENCE_FRAMES,
+    no_progress_eps_m: float = VISIBLE_REACH_DYNAMIC_NO_PROGRESS_EPS_M,
+) -> dict[str, Any]:
+    """Update visible-reach episode termination state after a captured frame.
+
+    The episode may continue beyond its requested horizon until success is held, progress plateaus,
+    or the bounded maximum is reached. This keeps a clipped reach attempt from being mislabeled as
+    a clean task completion.
+    """
+    next_state = dict(state)
+    sample = _visible_reach_frame_terminal_sample(frame)
+    nearest = sample.get("nearest_effector_to_affordance_m")
+    best = next_state.get("best_effector_to_affordance_m")
+    improved = False
+    if nearest is not None:
+        nearest_f = float(nearest)
+        if best is None or nearest_f < float(best) - float(no_progress_eps_m):
+            next_state["best_effector_to_affordance_m"] = nearest_f
+            next_state["best_frame_index"] = captured_frames - 1
+            next_state["no_progress_frames"] = 0
+            improved = True
+    if not improved and captured_frames >= int(min_frames):
+        next_state["no_progress_frames"] = int(next_state.get("no_progress_frames") or 0) + 1
+
+    if sample.get("terminal_success") is True:
+        next_state["consecutive_success_frames"] = (
+            int(next_state.get("consecutive_success_frames") or 0) + 1
+        )
+    else:
+        next_state["consecutive_success_frames"] = 0
+
+    terminal_reason = None
+    if captured_frames >= int(min_frames):
+        if int(next_state["consecutive_success_frames"]) >= int(success_hold_frames):
+            terminal_reason = "success_held"
+        elif captured_frames >= int(max_frames):
+            terminal_reason = "max_steps"
+        elif int(next_state["no_progress_frames"]) >= int(no_progress_patience_frames):
+            terminal_reason = "no_progress"
+    next_state["terminal_reason"] = terminal_reason
+    next_state["terminal_sample"] = sample
+    return next_state
+
+
+def _dynamic_episode_required_for_task_contract(task_success_contract: str) -> bool:
+    return str(task_success_contract or "").strip().lower() == "visible_reach_to_affordance"
+
+
+def _dynamic_episode_termination_report(
+    *,
+    enabled: bool,
+    task_success_contract: str,
+    requested_steps: int,
+    min_steps: int,
+    max_steps: int,
+    frames_captured: int,
+    state: Mapping[str, Any] | None = None,
+    wall_clock_truncated: bool = False,
+) -> dict[str, Any]:
+    if not enabled:
+        required = _dynamic_episode_required_for_task_contract(task_success_contract)
+        blockers = ["dynamic_episode_termination_required"] if required else []
+        return {
+            "schema_version": "dynamic_episode_termination.v1",
+            "enabled": False,
+            "mode": "fixed_steps",
+            "status": "FAIL" if required else "PASS",
+            "blockers": blockers,
+            "terminal_reason": "dynamic_episode_disabled" if required else "fixed_step_count",
+            "task_success_contract": task_success_contract,
+            "requested_steps": int(requested_steps),
+            "frames_captured": int(frames_captured),
+        }
+    terminal_reason = str((state or {}).get("terminal_reason") or "").strip()
+    if wall_clock_truncated:
+        terminal_reason = "wall_clock_cap"
+    if not terminal_reason:
+        terminal_reason = "loop_exhausted"
+    status = "PASS" if terminal_reason == "success_held" else "FAIL"
+    blockers: list[str] = []
+    if status != "PASS":
+        blockers.append(f"dynamic_episode_terminal_reason:{terminal_reason}")
+    return {
+        "schema_version": "dynamic_episode_termination.v1",
+        "enabled": True,
+        "mode": "task_contract",
+        "status": status,
+        "blockers": blockers,
+        "terminal_reason": terminal_reason,
+        "task_success_contract": task_success_contract,
+        "requested_steps": int(requested_steps),
+        "min_steps_before_terminal": int(min_steps),
+        "max_steps": int(max_steps),
+        "frames_captured": int(frames_captured),
+        "success_hold_frames_required": int(VISIBLE_REACH_DYNAMIC_SUCCESS_HOLD_FRAMES),
+        "no_progress_patience_frames": int(VISIBLE_REACH_DYNAMIC_NO_PROGRESS_PATIENCE_FRAMES),
+        "no_progress_epsilon_m": round(float(VISIBLE_REACH_DYNAMIC_NO_PROGRESS_EPS_M), 4),
+        "best_effector_to_affordance_m": (
+            round(float((state or {}).get("best_effector_to_affordance_m")), 4)
+            if (state or {}).get("best_effector_to_affordance_m") is not None
+            else None
+        ),
+        "best_frame_index": (state or {}).get("best_frame_index"),
+        "evaluation_steps": int((state or {}).get("evaluation_steps") or frames_captured),
+        "media_frames_captured": int((state or {}).get("media_frames_captured") or frames_captured),
+        "consecutive_success_frames": int((state or {}).get("consecutive_success_frames") or 0),
+        "no_progress_frames": int((state or {}).get("no_progress_frames") or 0),
+        "terminal_sample": (state or {}).get("terminal_sample"),
+        "claim_boundary": (
+            "Dynamic episode termination is a review-run control signal. It proves why the clip stopped; "
+            "task success still comes from the task-specific success contract."
+        ),
+    }
+
+
 def _review_grade_task_success_evidence(outcome: Mapping[str, Any]) -> dict[str, Any]:
     """Separate trace success from review-grade visible robot task success."""
     blockers: list[str] = []
@@ -1839,6 +2029,125 @@ def _review_grade_task_success_evidence(outcome: Mapping[str, Any]) -> dict[str,
     }
 
 
+SUCCESS_CLAIM_LEDGER_SCHEMA_VERSION = "success_claim_ledger.v1"
+
+
+def _scenario_success_claim_ledger(
+    scenario: Mapping[str, Any],
+    outcome: Mapping[str, Any],
+    review_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Self-contained per-scenario success-claim ledger (bundle-safe: no repo imports).
+
+    Mirrors blueprint_pipeline.success_claim_contracts: each layer fails closed and a
+    higher claim is never reported while its supporting layers are unproven.
+    """
+    frames_captured = int(outcome.get("frames_captured") or 0)
+    media_valid = frames_captured > 0
+    media_blockers = [] if media_valid else ["media_no_frames_captured"]
+
+    review_ok = bool(review_evidence.get("review_task_success")) and media_valid
+
+    contract_name = str(outcome.get("task_success_contract") or "").strip().lower()
+    trace_verdict = outcome.get("task_success")
+    contract_blockers: list[str] = []
+    if not contract_name:
+        contract_blockers.append("task_success_contract_missing_from_task_metadata")
+    if not isinstance(trace_verdict, bool):
+        contract_blockers.append("trace_task_success_not_strict_boolean")
+    elif trace_verdict is False:
+        contract_blockers.append("trace_task_success_false")
+    contract_ok = not contract_blockers
+
+    # This runner executes the simulator in-process, so execution proof is the
+    # outcome itself plus captured frames — never a provider runtime status.
+    simulator_ok = media_valid and bool(outcome.get("task_status"))
+
+    # Stage A is a deterministic kinematic preview controller. A learned-policy stage
+    # must set outcome["action_source"] to a policy source explicitly; the default
+    # fails closed as non-policy execution.
+    action_source = (
+        str(outcome.get("action_source") or "kinematic_preview_controller")
+        .strip()
+        .lower()
+    )
+    policy_ok = simulator_ok and contract_ok and action_source in {
+        "learned_policy",
+        "policy_endpoint",
+        "vla_policy",
+    }
+
+    declared_state_change = (
+        scenario.get("success_state_change")
+        if isinstance(scenario.get("success_state_change"), Mapping)
+        else None
+    )
+    contact_required = bool(declared_state_change)
+    state_change = (
+        outcome.get("state_change_measurement")
+        if isinstance(outcome.get("state_change_measurement"), Mapping)
+        else {}
+    )
+    measured_state_change = bool(
+        state_change
+        and state_change.get("before") is not None
+        and state_change.get("after") is not None
+        and state_change.get("before") != state_change.get("after")
+    )
+    contact_proven = simulator_ok and contract_ok and measured_state_change
+
+    highest = "no_claim"
+    if media_valid:
+        highest = "media_valid"
+    if review_ok:
+        highest = "review_task_success"
+    if simulator_ok and contract_ok and not (contact_required and not contact_proven):
+        highest = "simulator_task_success"
+    if policy_ok and not (contact_required and not contact_proven):
+        highest = "policy_task_success"
+    if contact_proven and policy_ok:
+        highest = "contact_state_change_proven"
+
+    ledger_blockers = list(media_blockers)
+    ledger_blockers.extend(f"task_success_contract:{b}" for b in contract_blockers)
+    if not review_ok:
+        ledger_blockers.extend(
+            f"review_task_success:{b}" for b in (review_evidence.get("blockers") or [])
+        )
+    if action_source not in {"learned_policy", "policy_endpoint", "vla_policy"}:
+        ledger_blockers.append(f"policy_action_execution:action_source_not_policy:{action_source}")
+    if contact_required and not contact_proven:
+        ledger_blockers.append(
+            "task_declares_state_change_but_contact_state_change_not_proven"
+        )
+
+    return {
+        "schema_version": SUCCESS_CLAIM_LEDGER_SCHEMA_VERSION,
+        "highest_truthful_claim": highest,
+        "claims": {
+            "media_valid": media_valid,
+            "review_task_success": review_ok,
+            "simulator_task_success": bool(
+                simulator_ok and contract_ok and not (contact_required and not contact_proven)
+            ),
+            "policy_task_success": bool(
+                policy_ok and not (contact_required and not contact_proven)
+            ),
+            "contact_state_change_proven": contact_proven,
+            "physical_deployment_ready": False,
+        },
+        "task_success_contract": contract_name or None,
+        "action_source": action_source,
+        "contact_or_state_change_required": contact_required,
+        "blockers": sorted({str(b) for b in ledger_blockers if b}),
+        "claim_boundary": (
+            "Each claim is scoped to its evidence layer. Review success on rendered media is "
+            "never contact, real-world, or deployment proof; this lane never claims "
+            "physical_deployment_ready."
+        ),
+    }
+
+
 def _scenario_task_success_contract(scenario: Mapping[str, Any]) -> str:
     return (
         str(
@@ -1862,6 +2171,16 @@ def _apply_visible_reach_to_affordance_success_contract(
 ) -> dict[str, Any]:
     blockers: list[str] = []
     reach_feasibility_evidence = _pov_geometry_reach_feasibility_evidence(pov_geometry)
+    episode_termination = (
+        outcome.get("episode_termination")
+        if isinstance(outcome.get("episode_termination"), Mapping)
+        else None
+    )
+    episode_terminal_reason = (
+        str(episode_termination.get("terminal_reason") or "").strip()
+        if isinstance(episode_termination, Mapping)
+        else ""
+    )
     if not _status_passed(placement_validation):
         blockers.append("visible_reach_placement_validation_not_passed")
         if isinstance(placement_validation, Mapping):
@@ -1879,6 +2198,18 @@ def _apply_visible_reach_to_affordance_success_contract(
     if not _status_passed(reach_feasibility_evidence):
         blockers.append("visible_reach_reach_feasibility_not_passed")
         blockers.extend(str(b) for b in (reach_feasibility_evidence.get("blockers") or []))
+    if not isinstance(episode_termination, Mapping):
+        blockers.append("visible_reach_episode_not_successfully_terminated")
+        blockers.append("dynamic_episode_termination_missing")
+    elif (
+        episode_termination.get("enabled") is not True
+        or episode_terminal_reason != "success_held"
+        or not _status_passed(episode_termination)
+    ):
+        blockers.append("visible_reach_episode_not_successfully_terminated")
+        blockers.extend(str(b) for b in (episode_termination.get("blockers") or []))
+        if episode_terminal_reason:
+            blockers.append(f"dynamic_episode_terminal_reason:{episode_terminal_reason}")
     blockers = sorted({str(b) for b in blockers if b})
     passed = not blockers
     contract_result = {
@@ -1892,8 +2223,15 @@ def _apply_visible_reach_to_affordance_success_contract(
             "robot_visual_geometry_review_ready": bool(robot_visual_ready),
             "temporal_reach_conditioning_passed": _status_passed(temporal_conditioning),
             "reach_feasibility_passed": _status_passed(reach_feasibility_evidence),
+            "episode_termination_passed": (
+                isinstance(episode_termination, Mapping)
+                and episode_termination.get("enabled") is True
+                and episode_terminal_reason == "success_held"
+                and _status_passed(episode_termination)
+            ),
         },
         "reach_feasibility_evidence": reach_feasibility_evidence,
+        "episode_termination": dict(episode_termination) if episode_termination else None,
         "claim_boundary": (
             "This contract proves a visible reach-toward-affordance review task only. It does not "
             "prove faucet state change, contact force, water flow, physical reach, learned policy "
@@ -1931,11 +2269,13 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
         review_evidence = _review_grade_task_success_evidence(o)
         if review_evidence["review_task_success"]:
             review_grade_passed += 1
+        ledger = _scenario_success_claim_ledger(s, o, review_evidence)
         scenario_rows.append({
             "scenario_id": s.get("scenario_id"),
             **dict(o),
             "review_task_success": review_evidence["review_task_success"],
             "review_task_success_evidence": review_evidence,
+            "success_claim_ledger": ledger,
         })
     result_blockers = list(blockers)
     if scenarios and not outcomes and not result_blockers:
@@ -2005,6 +2345,24 @@ def build_result(*, scenarios: Sequence[Mapping[str, Any]], outcomes: Sequence[M
         "scenarios_executed": len(outcomes),
         "scenarios_passed": passed,
         "review_grade_scenarios_passed": review_grade_passed,
+        "success_claim_summary": {
+            "schema_version": SUCCESS_CLAIM_LEDGER_SCHEMA_VERSION,
+            "highest_truthful_claims": {
+                row["success_claim_ledger"]["highest_truthful_claim"]: sum(
+                    1
+                    for r in scenario_rows
+                    if r["success_claim_ledger"]["highest_truthful_claim"]
+                    == row["success_claim_ledger"]["highest_truthful_claim"]
+                )
+                for row in scenario_rows
+            },
+            "contact_state_change_proven_count": sum(
+                1
+                for r in scenario_rows
+                if r["success_claim_ledger"]["claims"]["contact_state_change_proven"]
+            ),
+            "physical_deployment_ready_count": 0,
+        },
         "review_grade_success_claim_boundary": (
             "Use review_grade_scenarios_passed/review_task_success for human-showable task success. "
             "scenarios_passed/task_success is the internal trace outcome and can be true even when "
@@ -2499,8 +2857,93 @@ def _projection_dict(px) -> dict[str, Any] | None:
 
 
 def _normalize_reach_arm_selection(arm: str) -> str:
-    selection = str(arm or "right").strip().lower()
-    return selection if selection in {"left", "right", "both"} else "right"
+    selection = str(arm or "auto").strip().lower()
+    return selection if selection in MANIPULATION_REACH_ARM_SELECTIONS else "auto"
+
+
+def _best_reach_arm_from_estimate(estimate: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(estimate, Mapping):
+        return None
+    best = str(estimate.get("best_reach_arm") or "").strip().lower()
+    if best in {"left", "right"}:
+        return best
+    by_arm = estimate.get("by_arm")
+    if not isinstance(by_arm, Mapping):
+        return None
+    passing_arms = [
+        str(side).strip().lower()
+        for side in (estimate.get("passing_arms") or [])
+        if str(side).strip().lower() in {"left", "right"}
+    ]
+    candidate_sides = passing_arms or [
+        side for side in ("left", "right") if isinstance(by_arm.get(side), Mapping)
+    ]
+    if not candidate_sides:
+        return None
+
+    def _finite_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("inf")
+
+    def _score(side: str) -> tuple[float, float, int]:
+        rec = by_arm.get(side) if isinstance(by_arm.get(side), Mapping) else {}
+        effector = _finite_float(rec.get("seed_effector_to_affordance_m"))
+        shoulder = _finite_float(rec.get("shoulder_to_affordance_m"))
+        status_penalty = 0 if str(rec.get("status") or "").upper() == "PASS" else 1
+        return (effector, shoulder, status_penalty)
+
+    return min(candidate_sides, key=_score)
+
+
+def _selected_stance_reachability_estimate(
+    stance_plan: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    if not isinstance(stance_plan, Mapping):
+        return None
+    top_level = stance_plan.get("reachability_estimate")
+    if isinstance(top_level, Mapping):
+        return top_level
+    candidates = stance_plan.get("candidates")
+    if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+        return None
+    try:
+        selected_index = int(stance_plan.get("selected_candidate_index") or 0)
+    except (TypeError, ValueError):
+        selected_index = 0
+    if selected_index < 0 or selected_index >= len(candidates):
+        return None
+    candidate = candidates[selected_index]
+    if not isinstance(candidate, Mapping):
+        return None
+    for key in ("reachability_estimate", "pre_placement_reachability_estimate"):
+        estimate = candidate.get(key)
+        if isinstance(estimate, Mapping):
+            return estimate
+    return None
+
+
+def _resolve_manipulation_reach_arm_selection(
+    requested: str,
+    *,
+    stance_plan: Mapping[str, Any] | None = None,
+    affordance: Sequence[float] | None = None,
+    root_pose: Sequence[float] | None = None,
+    yaw: float | None = None,
+) -> str:
+    selection = _normalize_reach_arm_selection(requested)
+    if selection in {"left", "right", "both"}:
+        return selection
+    if affordance is not None and root_pose is not None and yaw is not None:
+        estimate = _task_stance_reachability_estimate(root_pose, float(yaw), affordance)
+        best = _best_reach_arm_from_estimate(estimate)
+        if best in {"left", "right"}:
+            return best
+    best = _best_reach_arm_from_estimate(_selected_stance_reachability_estimate(stance_plan))
+    if best in {"left", "right"}:
+        return best
+    return "right"
 
 
 def _manipulation_seed_arm_visibility(
@@ -2545,6 +2988,8 @@ def _manipulation_seed_arm_visibility(
 
 def _required_manipulation_arms(arm: str) -> tuple[str, ...]:
     selection = _normalize_reach_arm_selection(arm)
+    if selection == "auto":
+        return ("right",)
     return ("left", "right") if selection == "both" else (selection,)
 
 
@@ -2643,6 +3088,26 @@ def _manipulation_pov_geometry_single(
             math.sqrt(sum((float(pt[i]) - aff[i]) ** 2 for i in range(3))),
             4,
         )
+    fingertip_proxy = _derived_fingertip_proxy_point(arm_points)
+    derived_end_effector_proxy: dict[str, Any] | None = None
+    if fingertip_proxy is not None:
+        fingertip_distance_m = math.sqrt(
+            sum((float(fingertip_proxy[i]) - aff[i]) ** 2 for i in range(3))
+        )
+        effector_distances["fingertip_proxy"] = round(float(fingertip_distance_m), 4)
+        derived_end_effector_proxy = {
+            "schema_version": "derived_visible_end_effector_proxy.v1",
+            "status": "available",
+            "source": "wrist_to_hand_axis_extension",
+            "fingertip_proxy_xyz": [round(float(v), 6) for v in fingertip_proxy],
+            "extension_m": round(float(MANIPULATION_DERIVED_FINGERTIP_EXTENSION_M), 4),
+            "distance_to_affordance_m": round(float(fingertip_distance_m), 4),
+            "claim_boundary": (
+                "Derived fingertip proxy estimates the visible hand endpoint from measured USD "
+                "wrist/hand link centers. It is review geometry only, not contact, force, physical "
+                "reach, or task-state proof."
+            ),
+        }
     reach_feasibility: dict[str, Any] = {
         "status": "unverified",
         "blockers": ["manipulation_pov_reach_feasibility_unverified"],
@@ -2765,6 +3230,7 @@ def _manipulation_pov_geometry_single(
         "seed_arm_visibility": seed_arm_visibility,
         "effector_distance_to_affordance_m": effector_distances,
         "effector_distance_is_metadata_only": False,
+        "derived_end_effector_proxy": derived_end_effector_proxy,
         "reach_feasibility": reach_feasibility,
         "arm_extension": arm_extension,
         "projected_landmarks": projected,
@@ -2772,6 +3238,155 @@ def _manipulation_pov_geometry_single(
             "This checks camera framing and posed USD robot-link geometry against the resolved task "
             "affordance. It is not contact proof, force-control proof, physical validation, or "
             "deployment readiness."
+        ),
+    }
+
+
+def _coordination_xyz(point: Sequence[float] | None) -> tuple[float, float, float] | None:
+    if point is None:
+        return None
+    try:
+        if len(point) < 3:
+            return None
+        return (float(point[0]), float(point[1]), float(point[2]))
+    except (TypeError, ValueError):
+        return None
+
+
+def _distance_m(a: Sequence[float], b: Sequence[float]) -> float:
+    return math.sqrt(sum((float(a[i]) - float(b[i])) ** 2 for i in range(3)))
+
+
+def _coordination_effector_point(
+    arm_points: Mapping[str, Sequence[float]] | None,
+) -> tuple[str, tuple[float, float, float]] | None:
+    for role in ("hand", "wrist"):
+        pt = _coordination_xyz((arm_points or {}).get(role))
+        if pt is not None:
+            return role, pt
+    return None
+
+
+def _derived_fingertip_proxy_point(
+    arm_points: Mapping[str, Sequence[float]] | None,
+) -> tuple[float, float, float] | None:
+    """Estimate the visible hand endpoint from wrist->hand link centers.
+
+    Some G1 USD variants expose wrist/hand link origins but not separate fingertip link origins. The
+    review geometry therefore records a derived endpoint proxy past the hand link center along the
+    measured wrist-to-hand axis. This is visual endpoint geometry only, not contact or force proof.
+    """
+    wrist = _coordination_xyz((arm_points or {}).get("wrist"))
+    hand = _coordination_xyz((arm_points or {}).get("hand"))
+    if wrist is None or hand is None:
+        return None
+    axis = (
+        hand[0] - wrist[0],
+        hand[1] - wrist[1],
+        hand[2] - wrist[2],
+    )
+    length = math.sqrt(sum(v * v for v in axis))
+    if length < 1e-6:
+        return None
+    extension = float(MANIPULATION_DERIVED_FINGERTIP_EXTENSION_M)
+    return tuple(hand[i] + axis[i] / length * extension for i in range(3))
+
+
+def _two_arm_coordination_evidence(
+    arm_points_by_arm: Mapping[str, Mapping[str, Sequence[float]]] | None,
+    affordance: Sequence[float],
+) -> dict[str, Any]:
+    """Detect the bad review-pose class where both hands collapse onto one affordance."""
+    blockers: list[str] = []
+    aff = _coordination_xyz(affordance)
+    left = (arm_points_by_arm or {}).get("left") or {}
+    right = (arm_points_by_arm or {}).get("right") or {}
+    left_effector = _coordination_effector_point(left)
+    right_effector = _coordination_effector_point(right)
+    if aff is None or left_effector is None or right_effector is None:
+        blockers.append("manipulation_pov_both_arm_coordination_unverified")
+        return {
+            "status": "FAIL",
+            "blockers": blockers,
+            "left_effector_role": left_effector[0] if left_effector else None,
+            "right_effector_role": right_effector[0] if right_effector else None,
+            "claim_boundary": (
+                "Both-arm coordination requires measured left and right hand/wrist positions. "
+                "This is review-geometry screening, not contact or task-completion proof."
+            ),
+        }
+    left_role, left_pt = left_effector
+    right_role, right_pt = right_effector
+    inter_effector_m = _distance_m(left_pt, right_pt)
+    left_to_affordance_m = _distance_m(left_pt, aff)
+    right_to_affordance_m = _distance_m(right_pt, aff)
+    converged_on_single_affordance = (
+        inter_effector_m
+        <= float(MANIPULATION_BOTH_ARM_CONVERGENCE_MAX_INTER_EFFECTOR_M)
+        and max(left_to_affordance_m, right_to_affordance_m)
+        <= float(MANIPULATION_BOTH_ARM_CONVERGENCE_MAX_EACH_TO_AFFORDANCE_M)
+    )
+    if converged_on_single_affordance:
+        blockers.append("manipulation_pov_both_arms_converge_at_single_affordance")
+
+    lateral_order: dict[str, Any] = {"checked": False}
+    left_shoulder = _coordination_xyz(left.get("shoulder"))
+    right_shoulder = _coordination_xyz(right.get("shoulder"))
+    if left_shoulder is not None and right_shoulder is not None:
+        axis = (
+            right_shoulder[0] - left_shoulder[0],
+            right_shoulder[1] - left_shoulder[1],
+            right_shoulder[2] - left_shoulder[2],
+        )
+        axis_len = math.sqrt(sum(v * v for v in axis))
+        if axis_len > 1e-6:
+            unit = tuple(v / axis_len for v in axis)
+
+            def _axis_coord(pt: Sequence[float]) -> float:
+                return sum((float(pt[i]) - left_shoulder[i]) * unit[i] for i in range(3))
+
+            left_coord = _axis_coord(left_pt)
+            right_coord = _axis_coord(right_pt)
+            crossed_midline = (
+                left_coord
+                > right_coord + float(MANIPULATION_BOTH_ARM_CROSSING_LATERAL_EPS_M)
+            )
+            if crossed_midline:
+                blockers.append("manipulation_pov_both_arms_cross_midline")
+            lateral_order = {
+                "checked": True,
+                "left_effector_axis_coord_m": round(float(left_coord), 4),
+                "right_effector_axis_coord_m": round(float(right_coord), 4),
+                "shoulder_axis_distance_m": round(float(axis_len), 4),
+                "crossed_midline": bool(crossed_midline),
+                "crossing_lateral_epsilon_m": round(
+                    float(MANIPULATION_BOTH_ARM_CROSSING_LATERAL_EPS_M),
+                    4,
+                ),
+            }
+
+    return {
+        "status": "PASS" if not blockers else "FAIL",
+        "blockers": blockers,
+        "left_effector_role": left_role,
+        "right_effector_role": right_role,
+        "inter_effector_distance_m": round(float(inter_effector_m), 4),
+        "left_effector_to_affordance_m": round(float(left_to_affordance_m), 4),
+        "right_effector_to_affordance_m": round(float(right_to_affordance_m), 4),
+        "max_inter_effector_distance_m": round(
+            float(MANIPULATION_BOTH_ARM_CONVERGENCE_MAX_INTER_EFFECTOR_M),
+            4,
+        ),
+        "max_each_effector_to_affordance_m": round(
+            float(MANIPULATION_BOTH_ARM_CONVERGENCE_MAX_EACH_TO_AFFORDANCE_M),
+            4,
+        ),
+        "converged_on_single_affordance": bool(converged_on_single_affordance),
+        "lateral_order": lateral_order,
+        "claim_boundary": (
+            "Both-arm coordination screens for physically implausible review poses where both hands "
+            "collapse onto one task affordance or cross through each other. It is not contact proof, "
+            "force-control proof, task completion, or physical robot validation."
         ),
     }
 
@@ -2900,6 +3515,12 @@ def _manipulation_pov_geometry(
         for blocker in (reach.get("blockers") or [])
     })
     reach_feasibility_blockers = [] if reach_passing_arms else all_reach_feasibility_blockers
+    two_arm_coordination = _two_arm_coordination_evidence(arm_points_by_arm, affordance)
+    if two_arm_coordination.get("status") != "PASS":
+        blockers = sorted(
+            set(blockers)
+            | {str(blocker) for blocker in (two_arm_coordination.get("blockers") or [])}
+        )
     return {
         "schema_version": "manipulation_pov_geometry.v1",
         "status": "PASS" if not blockers else "FAIL",
@@ -2976,6 +3597,7 @@ def _manipulation_pov_geometry(
                 "force-control behavior, task completion, or physical robot readiness."
             ),
         },
+        "two_arm_coordination": two_arm_coordination,
         "projected_landmarks": projected,
         "per_arm_geometry": per_arm,
         "claim_boundary": (
@@ -9060,7 +9682,9 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   cheap_collision: bool = False, articulated: bool = False,
                   camera_vfov_deg: float = 50.0, manipulation_cam: bool = False,
                   manipulation_look_at=None, render_subframes: int = 1,
-                  manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
+                  manipulation_reach: bool = False, manipulation_reach_arm: str = "auto",
+                  dynamic_episode_termination: bool = True, episode_max_steps: int = 0,
+                  dynamic_episode_check_every: int = 1,
                   fill_light_intensity: float = 0.0,
                   physics_articulation_drive: bool = False,
                   dynamic_standing_contact_steps: int = 0,
@@ -9071,6 +9695,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   collision_approximation: str = "boundingCube",
                   verify_cam: bool = False,
                   manipulation_stand: bool = False,
+                  placement_topdown_capture: bool = True,
                   software_denoise: bool = True,
                   depth_pass: bool = False,
                   segmentation: bool = False,
@@ -9452,7 +10077,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 pov_annot = _make_render_product(pov_cam, width, height)
         verify_annot = _make_render_product(verify_cam_path, width, height) if verify_cam else None
         topdown_annot = None
-        topdown_enabled = bool(manipulation_stand)
+        topdown_enabled = bool(manipulation_stand and placement_topdown_capture)
         if software_denoise:
             _log("software PNG denoise enabled for saved render frames")
         center, radius = scene_framing(scenarios)
@@ -9523,11 +10148,37 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             placement_validation_blocker_recorded = False
             placement_topdown_frame_path: Path | None = None
             placement_topdown_layout_frame_path: Path | None = None
-            pov_reach_arm = _normalize_reach_arm_selection(manipulation_reach_arm)
+            requested_reach_arm = _normalize_reach_arm_selection(manipulation_reach_arm)
+            pov_reach_arm = "right" if requested_reach_arm == "auto" else requested_reach_arm
             rendered_reach_arm = pov_reach_arm
             pov_geometry_path = sdir / "manipulation_pov_geometry.json"
             pov_geometry_records: list[dict[str, Any]] = []
             pov_geometry_report: dict[str, Any] | None = None
+            task_success_contract = _scenario_task_success_contract(sc)
+            dynamic_episode_enabled = bool(
+                dynamic_episode_termination
+                and manipulation_cam
+                and manipulation_reach
+                and task_success_contract == "visible_reach_to_affordance"
+            )
+            dynamic_episode_min_steps = max(1, int(steps))
+            dynamic_episode_max_steps = max(
+                dynamic_episode_min_steps,
+                int(
+                    episode_max_steps
+                    if episode_max_steps and episode_max_steps > 0
+                    else math.ceil(
+                        float(dynamic_episode_min_steps)
+                        * float(VISIBLE_REACH_DYNAMIC_MAX_STEP_MULTIPLIER)
+                    )
+                ),
+            )
+            dynamic_episode_state: dict[str, Any] = _initial_dynamic_episode_state()
+            dynamic_episode_report: dict[str, Any] | None = None
+            dynamic_episode_check_every_effective = max(
+                1,
+                int(dynamic_episode_check_every or 1),
+            )
             pov_geometry_blocker_recorded = False
             last_root_diagnostics: dict[str, Any] | None = None
             stance_plan_path = sdir / "task_stance_plan.json"
@@ -9558,6 +10209,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         "render camera. It is not manipulation success or physical robot validation."
                     ),
                 }
+                if dynamic_episode_report is not None:
+                    report["dynamic_episode_termination"] = dynamic_episode_report
                 pov_geometry_path.write_text(json.dumps(report, indent=2))
                 return report
 
@@ -9581,6 +10234,122 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 if extra:
                     row.update(dict(extra))
                 camera_contract_rows.append(row)
+
+            def _build_manipulation_pov_geometry_record(
+                *,
+                step_index: int,
+                frame_index: int | None,
+                cam_meta: Mapping[str, Any],
+                eye: Any,
+                target: Any,
+                reach_fraction: float | None,
+                render_frame_saved: bool,
+                dynamic_episode_check: bool,
+            ) -> dict[str, Any]:
+                pov_geom = _manipulation_pov_geometry(
+                    arm_points=cam_meta.get("arm_link_points_xyz") or {},
+                    arm_points_by_arm=cam_meta.get("arm_link_points_by_arm_xyz") or {},
+                    affordance=effective_look_at,
+                    eye=eye,
+                    target=target,
+                    vfov_deg=pov_vfov_deg,
+                    width=width,
+                    height=height,
+                    arm=pov_reach_arm,
+                )
+                pov_geom = {
+                    **pov_geom,
+                    "step": int(step_index),
+                    "frame_index": frame_index,
+                    "render_frame_saved": bool(render_frame_saved),
+                    "dynamic_episode_check": bool(dynamic_episode_check),
+                    "manipulation_reach_fraction": (
+                        round(float(reach_fraction), 6)
+                        if reach_fraction is not None
+                        else None
+                    ),
+                    "camera_meta": dict(cam_meta),
+                    "robot_visual_geometry": {
+                        "status": (
+                            "FAIL" if robot_visual_missing
+                            else str((scenario_robot_render_diag or {}).get("status") or "PASS")
+                        ),
+                        "blockers": (
+                            [ROBOT_VISUAL_MESH_MISSING_BLOCKER]
+                            if robot_visual_missing
+                            else list((scenario_robot_render_diag or {}).get("blockers") or [])
+                        ),
+                        "gprim_count": (scenario_robot_render_diag or {}).get("gprim_count"),
+                        "mesh_count": (scenario_robot_render_diag or {}).get("mesh_count"),
+                        "visual_binding_status": binding.get("visual_binding_status"),
+                        "claim_boundary": (
+                            "USD arm-link projections are not visual proof unless the robot "
+                            "subtree also has renderable Gprim/Mesh surfaces."
+                        ),
+                    },
+                }
+                if robot_visual_missing:
+                    geom_blockers = list(pov_geom.get("blockers") or [])
+                    geom_blockers.append(ROBOT_VISUAL_MESH_MISSING_BLOCKER)
+                    if (
+                        isinstance(scenario_robot_render_diag, dict)
+                        and (
+                            scenario_robot_render_diag.get("review_visual_proxy") or {}
+                        ).get("status") == "PASS"
+                    ):
+                        geom_blockers.append(ROBOT_REVIEW_VISUAL_PROXY_USED_BLOCKER)
+                        pov_geom["review_visual_proxy"] = scenario_robot_render_diag[
+                            "review_visual_proxy"
+                        ]
+                    pov_geom["blockers"] = sorted(set(str(b) for b in geom_blockers))
+                    pov_geom["status"] = "FAIL"
+                return pov_geom
+
+            def _record_pov_geometry(geom: dict[str, Any]) -> dict[str, Any] | None:
+                nonlocal pov_geometry_report, pov_geometry_blocker_recorded
+                pov_geometry_records.append(geom)
+                pov_geometry_report = _write_pov_geometry_report()
+                if geom.get("status") != "PASS" and not pov_geometry_blocker_recorded:
+                    blockers.append("manipulation_pov_geometry_failed")
+                    pov_geometry_blocker_recorded = True
+                return pov_geometry_report
+
+            def _update_dynamic_episode_from_geometry(
+                geom: Mapping[str, Any],
+                *,
+                step_index: int,
+                media_frames_captured: int,
+            ) -> dict[str, Any]:
+                nonlocal dynamic_episode_state, dynamic_episode_report, pov_geometry_report
+                dynamic_episode_state = _update_visible_reach_dynamic_episode_state(
+                    dynamic_episode_state,
+                    geom,
+                    captured_frames=int(step_index) + 1,
+                    min_frames=dynamic_episode_min_steps,
+                    max_frames=dynamic_episode_max_steps,
+                )
+                dynamic_episode_state["evaluation_steps"] = int(step_index) + 1
+                dynamic_episode_state["media_frames_captured"] = int(media_frames_captured)
+                dynamic_episode_state["terminal_check_every_steps"] = int(
+                    dynamic_episode_check_every_effective
+                )
+                dynamic_episode_report = _dynamic_episode_termination_report(
+                    enabled=True,
+                    task_success_contract=task_success_contract,
+                    requested_steps=int(steps),
+                    min_steps=dynamic_episode_min_steps,
+                    max_steps=dynamic_episode_max_steps,
+                    frames_captured=int(media_frames_captured),
+                    state=dynamic_episode_state,
+                )
+                dynamic_episode_report["terminal_check_every_steps"] = int(
+                    dynamic_episode_check_every_effective
+                )
+                dynamic_episode_report["terminal_check_source"] = (
+                    "usd_manipulation_geometry_per_policy_step"
+                )
+                pov_geometry_report = _write_pov_geometry_report()
+                return dynamic_episode_state
 
             if manipulation_stand:
                 stance_plan = preplanned_task_stance_plans.get(sid)
@@ -9700,6 +10469,44 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 blockers.append("scenario_route_missing_after_task_resolution")
                 _log(f"scenario {sid}: missing start/target/route after task resolution")
                 return None
+            if manipulation_reach:
+                resolved_reach_arm = _resolve_manipulation_reach_arm_selection(
+                    manipulation_reach_arm,
+                    stance_plan=stance_plan,
+                    affordance=effective_look_at,
+                    root_pose=stand_root,
+                    yaw=stand_yaw,
+                )
+                pov_reach_arm = resolved_reach_arm
+                rendered_reach_arm = resolved_reach_arm
+                arm_resolution = {
+                    "schema_version": "manipulation_reach_arm_resolution.v1",
+                    "requested_arm": manipulation_reach_arm,
+                    "normalized_requested_arm": requested_reach_arm,
+                    "resolved_arm": resolved_reach_arm,
+                    "resolution_source": (
+                        "accepted_stance_and_resolved_affordance"
+                        if requested_reach_arm == "auto"
+                        and effective_look_at is not None
+                        and stand_root is not None
+                        and stand_yaw is not None
+                        else "explicit_requested_arm"
+                        if requested_reach_arm != "auto"
+                        else "auto_fallback"
+                    ),
+                    "claim_boundary": (
+                        "Arm selection chooses which simulated G1 arm is posed for review media. "
+                        "It does not prove contact, force control, task success, or physical readiness."
+                    ),
+                }
+                (sdir / "manipulation_reach_arm_resolution.json").write_text(
+                    json.dumps(arm_resolution, indent=2)
+                )
+                if requested_reach_arm == "auto":
+                    _log(
+                        f"scenario {sid}: manipulation reach arm auto-resolved -> "
+                        f"{resolved_reach_arm}"
+                    )
             _settle_after_task_probe_if_needed(sid)
             effective_groot_policy_command = (
                 str(groot_policy_command or "").strip()
@@ -9741,8 +10548,15 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             rejected_total = response_total = 0
             cap = 0
             truncated = False
-            _log(f"scenario {sid}: stepping {steps}")
-            for step in range(steps):
+            loop_steps = dynamic_episode_max_steps if dynamic_episode_enabled else int(steps)
+            if dynamic_episode_enabled:
+                _log(
+                    f"scenario {sid}: stepping dynamic visible-reach episode "
+                    f"min={dynamic_episode_min_steps} max={dynamic_episode_max_steps}"
+                )
+            else:
+                _log(f"scenario {sid}: stepping {steps}")
+            for step in range(loop_steps):
                 if manipulation_stand and stand_root is None:
                     truncated = True
                     break
@@ -9752,7 +10566,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     break
                 ctx = policy_mod.StepContext(
                     step=step,
-                    num_steps=steps,
+                    num_steps=loop_steps,
                     probe_collision=probe,
                     camera_rgb=(
                         str(last_groot_policy_frame_path)
@@ -9796,7 +10610,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 if decision.policy_action != "accepted_direct_collision_checked_motion":
                     response_total += 1
                 route_distance_m = policy_mod.route_distance(sc["route_points"])
-                alpha = 0.0 if steps <= 1 else step / float(steps - 1)
+                alpha = 0.0 if steps <= 1 else min(1.0, step / float(steps - 1))
                 manipulation_reach_frac = None
                 if manipulation_reach and effective_look_at is not None:
                     manipulation_reach_frac = manipulation_reach_fraction_for_frame(
@@ -9819,7 +10633,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             settle_steps=dynamic_standing_contact_steps,
                             scenario_id=sid,
                             manipulation_ready=bool(manipulation_reach),
-                            manipulation_reach_arm=manipulation_reach_arm,
+                            manipulation_reach_arm=rendered_reach_arm,
                             root_pose_seeded_before_tensor_view=sid in dynamic_seed_decisions,
                             effort_drive=effective_effort_drive,
                         )
@@ -9838,7 +10652,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             phase=phase,
                             moving=moving,
                             manipulation_ready=bool(manipulation_reach),
-                            manipulation_reach_arm=manipulation_reach_arm,
+                            manipulation_reach_arm=rendered_reach_arm,
                             policy_joint_targets=decision.joint_targets,
                         )
                 else:
@@ -9966,7 +10780,48 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     manipulation_reach_fractions.append(float(manipulation_reach_frac))
                 actions.append(rec)
                 trace.write(json.dumps(rec) + "\n")
-                if step % max(1, capture_every) == 0:
+                should_capture_step = step % max(1, capture_every) == 0
+                dynamic_checked_this_step = False
+                dynamic_terminal_reason = None
+                if (
+                    dynamic_episode_enabled
+                    and step % dynamic_episode_check_every_effective == 0
+                    and manipulation_cam
+                    and manipulation_reach
+                    and effective_look_at is not None
+                ):
+                    eval_eye, eval_tgt, eval_cam_meta = _robot_mounted_manipulation_cam_pose(
+                        stage,
+                        binding["prim_path"],
+                        decision.root_pose,
+                        decision.yaw,
+                        look_at=effective_look_at,
+                        reach_arm=pov_reach_arm,
+                        vfov_deg=pov_vfov_deg,
+                        width=width,
+                        height=height,
+                    )
+                    eval_geom = _build_manipulation_pov_geometry_record(
+                        step_index=step,
+                        frame_index=cap if should_capture_step else None,
+                        cam_meta=eval_cam_meta,
+                        eye=eval_eye,
+                        target=eval_tgt,
+                        reach_fraction=manipulation_reach_frac,
+                        render_frame_saved=should_capture_step,
+                        dynamic_episode_check=True,
+                    )
+                    _record_pov_geometry(eval_geom)
+                    _update_dynamic_episode_from_geometry(
+                        eval_geom,
+                        step_index=step,
+                        media_frames_captured=cap,
+                    )
+                    dynamic_checked_this_step = True
+                    dynamic_terminal_reason = dynamic_episode_state.get("terminal_reason")
+                    if dynamic_terminal_reason:
+                        should_capture_step = True
+                if should_capture_step:
                     cam_meta: dict[str, Any] | None = None
                     if manipulation_cam:
                         eye, tgt, cam_meta = _robot_mounted_manipulation_cam_pose(
@@ -9996,78 +10851,23 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         and effective_look_at is not None
                         and cam_meta is not None
                     ):
-                        pov_geom = _manipulation_pov_geometry(
-                            arm_points=cam_meta.get("arm_link_points_xyz") or {},
-                            arm_points_by_arm=cam_meta.get("arm_link_points_by_arm_xyz") or {},
-                            affordance=effective_look_at,
+                        pov_geom = _build_manipulation_pov_geometry_record(
+                            step_index=step,
+                            frame_index=cap,
+                            cam_meta=cam_meta,
                             eye=eye,
                             target=tgt,
-                            vfov_deg=pov_vfov_deg,
-                            width=width,
-                            height=height,
-                            arm=pov_reach_arm,
+                            reach_fraction=manipulation_reach_frac,
+                            render_frame_saved=True,
+                            dynamic_episode_check=dynamic_episode_enabled,
                         )
-                        pov_geom = {
-                            **pov_geom,
-                            "step": step,
-                            "frame_index": cap,
-                            "manipulation_reach_fraction": (
-                                round(float(manipulation_reach_frac), 6)
-                                if manipulation_reach_frac is not None
-                                else None
-                            ),
-                            "camera_meta": cam_meta,
-                            "robot_visual_geometry": {
-                                "status": (
-                                    "FAIL" if robot_visual_missing
-                                    else str(
-                                        (scenario_robot_render_diag or {}).get("status") or "PASS"
-                                    )
-                                ),
-                                "blockers": (
-                                    [ROBOT_VISUAL_MESH_MISSING_BLOCKER]
-                                    if robot_visual_missing
-                                    else list(
-                                        (scenario_robot_render_diag or {}).get("blockers") or []
-                                    )
-                                ),
-                                "gprim_count": (scenario_robot_render_diag or {}).get(
-                                    "gprim_count"
-                                ),
-                                "mesh_count": (scenario_robot_render_diag or {}).get("mesh_count"),
-                                "visual_binding_status": binding.get("visual_binding_status"),
-                                "claim_boundary": (
-                                    "USD arm-link projections are not visual proof unless the robot "
-                                    "subtree also has renderable Gprim/Mesh surfaces."
-                                ),
-                            },
-                        }
-                        if robot_visual_missing:
-                            geom_blockers = list(pov_geom.get("blockers") or [])
-                            geom_blockers.append(ROBOT_VISUAL_MESH_MISSING_BLOCKER)
-                            if (
-                                isinstance(scenario_robot_render_diag, dict)
-                                and (
-                                    scenario_robot_render_diag.get("review_visual_proxy") or {}
-                                ).get("status") == "PASS"
-                            ):
-                                geom_blockers.append(ROBOT_REVIEW_VISUAL_PROXY_USED_BLOCKER)
-                                pov_geom["review_visual_proxy"] = scenario_robot_render_diag[
-                                    "review_visual_proxy"
-                                ]
-                            pov_geom["blockers"] = sorted(set(str(b) for b in geom_blockers))
-                            pov_geom["status"] = "FAIL"
-                        pov_geometry_records.append(pov_geom)
-                        pov_geometry_report = _write_pov_geometry_report()
+                        _record_pov_geometry(pov_geom)
                         if cap == 0:
                             _log(
                                 f"scenario {sid}: manipulation POV geometry "
                                 f"{pov_geom.get('status')} roles={pov_geom.get('arm_roles_in_frame')} "
                                 f"target_in_frame={pov_geom.get('target_in_frame')}"
                             )
-                        if pov_geom.get("status") != "PASS" and not pov_geometry_blocker_recorded:
-                            blockers.append("manipulation_pov_geometry_failed")
-                            pov_geometry_blocker_recorded = True
                     _place_camera(stage, pov_cam, eye, tgt)  # POV camera (manipulation egocentric or follow)
                     if manipulation_cam and manipulation_reach and effective_look_at is not None:
                         # Front-light the reaching arm+gripper from the camera side (the workspace fill
@@ -10405,7 +11205,48 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     if cap == 0 or rdt > 5:
                         _log(f"scenario {sid}: frame {cap} captured (render {rdt:.1f}s, overview_ok={over_ok})")
                     cap += 1
+                    if dynamic_checked_this_step and dynamic_terminal_reason:
+                        _log(
+                            f"scenario {sid}: dynamic episode terminal_reason="
+                            f"{dynamic_terminal_reason} at step {step} media_frame {cap}"
+                        )
+                        break
+                    if dynamic_episode_enabled and pov_geometry_records and not dynamic_checked_this_step:
+                        _update_dynamic_episode_from_geometry(
+                            pov_geometry_records[-1],
+                            step_index=step,
+                            media_frames_captured=cap,
+                        )
+                        terminal_reason = dynamic_episode_state.get("terminal_reason")
+                        if terminal_reason:
+                            _log(
+                                f"scenario {sid}: dynamic episode terminal_reason="
+                                f"{terminal_reason} at step {step} media_frame {cap}"
+                            )
+                            break
             trace.close()
+            if dynamic_episode_enabled:
+                dynamic_episode_report = _dynamic_episode_termination_report(
+                    enabled=True,
+                    task_success_contract=task_success_contract,
+                    requested_steps=int(steps),
+                    min_steps=dynamic_episode_min_steps,
+                    max_steps=dynamic_episode_max_steps,
+                    frames_captured=cap,
+                    state=dynamic_episode_state,
+                    wall_clock_truncated=bool(truncated),
+                )
+                if pov_geometry_records:
+                    pov_geometry_report = _write_pov_geometry_report()
+            else:
+                dynamic_episode_report = _dynamic_episode_termination_report(
+                    enabled=False,
+                    task_success_contract=task_success_contract,
+                    requested_steps=int(steps),
+                    min_steps=int(steps),
+                    max_steps=int(steps),
+                    frames_captured=cap,
+                )
             if articulated and skel_rows:
                 with (sdir / "g1_projected_skeleton_trace.jsonl").open("w") as sf:
                     for r in skel_rows:
@@ -10528,6 +11369,7 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                 collision_summary=summary, bounded_steps=len(actions), model_timestep_s=1.0 / float(fps))
             outcome["frames_captured"] = cap
             outcome["truncated"] = truncated
+            outcome["episode_termination"] = dict(dynamic_episode_report or {})
             outcome["per_frame_camera_contract_emitted"] = bool(camera_contract_rows)
             outcome["per_frame_camera_contract_frames"] = len(camera_contract_rows)
             outcome["per_frame_camera_contract_available_intrinsics_frames"] = sum(
@@ -11221,7 +12063,7 @@ def render_local_preview(
     stage,
     scenario,
     out_dir,
-    manipulation_reach_arm: str = "right",
+    manipulation_reach_arm: str = "auto",
     camera_vfov_deg: float = 50.0,
     width: int = 1280,
     height: int = 960,
@@ -11240,6 +12082,7 @@ def render_local_preview(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     sid = str(scenario.get("scenario_id") or scenario.get("episode_id") or "scenario")
+    requested_reach_arm = _normalize_reach_arm_selection(manipulation_reach_arm)
 
     stance_plan = _plan_task_stance_for_stage(
         stage=stage,
@@ -11254,7 +12097,8 @@ def render_local_preview(
     summary: dict[str, Any] = {
         "scenario_id": sid,
         "task": scenario.get("description") or scenario.get("instruction") or scenario.get("task"),
-        "manipulation_reach_arm": manipulation_reach_arm,
+        "requested_manipulation_reach_arm": manipulation_reach_arm,
+        "manipulation_reach_arm": requested_reach_arm,
         "render_source": DRY_RENDER_SOURCE_MARKER,
         "render_source_headers": {
             DRY_RENDER_SOURCE_HEADER: DRY_RENDER_SOURCE_MARKER,
@@ -11331,6 +12175,25 @@ def render_local_preview(
     if look_at is None:
         look_at = _surface_affordance_point_for_stance(stance_plan, root) or stance_plan.get("task_target_xyz")
     look_at = tuple(float(v) for v in look_at) if look_at is not None else None
+    resolved_reach_arm = _resolve_manipulation_reach_arm_selection(
+        manipulation_reach_arm,
+        stance_plan=stance_plan,
+        affordance=look_at,
+        root_pose=root,
+        yaw=yaw,
+    )
+    summary["manipulation_reach_arm"] = resolved_reach_arm
+    summary["manipulation_reach_arm_resolution"] = {
+        "schema_version": "manipulation_reach_arm_resolution.v1",
+        "requested_arm": manipulation_reach_arm,
+        "normalized_requested_arm": requested_reach_arm,
+        "resolved_arm": resolved_reach_arm,
+        "resolution_source": (
+            "accepted_stance_and_resolved_affordance"
+            if requested_reach_arm == "auto" and look_at is not None
+            else "explicit_requested_arm"
+        ),
+    }
 
     pov_vfov_deg = max(
         float(camera_vfov_deg),
@@ -11368,7 +12231,7 @@ def render_local_preview(
             root,
             yaw,
             look_at=look_at,
-            reach_arm=manipulation_reach_arm,
+            reach_arm=resolved_reach_arm,
             vfov_deg=pov_vfov_deg,
             width=width,
             height=height,
@@ -11378,7 +12241,7 @@ def render_local_preview(
             root,
             yaw,
             look_at=look_at,
-            reach_arm=manipulation_reach_arm,
+            reach_arm=resolved_reach_arm,
         )
     if look_at is not None:
         capped_tgt = _target_raised_to_max_pitch_down(
@@ -11401,13 +12264,13 @@ def render_local_preview(
             skeleton_world,
             look_at,
             1.0,
-            arm=manipulation_reach_arm,
+            arm=resolved_reach_arm,
             forward_yaw=yaw,
         )
     pov_lms = _project_skeleton(skeleton_world, eye=eye, target=tgt, up=(0.0, 0.0, 1.0),
                                 vfov_deg=pov_vfov_deg, width=width, height=height)
 
-    active = ("right", "left") if str(manipulation_reach_arm) == "both" else (str(manipulation_reach_arm),)
+    active = ("right", "left") if resolved_reach_arm == "both" else (resolved_reach_arm,)
     arm_in_frame = sum(
         1 for lm in pov_lms
         if any(lm["landmark_id"].startswith(f"{s}_") and any(k in lm["landmark_id"] for k in ("hand", "wrist", "elbow"))
@@ -11445,7 +12308,7 @@ def render_local_preview(
         .get("standoff_from_target_surface_m"),
     }
     if robot_binding is not None and visual_prim_path and look_at is not None:
-        reach_selection = _normalize_reach_arm_selection(manipulation_reach_arm)
+        reach_selection = _normalize_reach_arm_selection(resolved_reach_arm)
         arm_points_by_arm = _robot_arm_link_points_by_arm(
             stage,
             visual_prim_path,
@@ -11480,7 +12343,7 @@ def render_local_preview(
             )
         )
     if not isinstance(summary.get("manipulation_pov_geometry"), Mapping):
-        reach_selection = _normalize_reach_arm_selection(manipulation_reach_arm)
+        reach_selection = _normalize_reach_arm_selection(resolved_reach_arm)
         nominal_arm_points_by_arm = _arm_link_points_by_arm_from_skeleton(
             skeleton_world,
             arm=reach_selection,
@@ -11527,7 +12390,7 @@ def render_local_preview(
         out_dir / "dry_render_preview.png",
         scenario=scenario, stance_plan=stance_plan, root_pose=root, yaw=yaw, look_at=look_at,
         eye=eye, target=tgt, pov_vfov_deg=pov_vfov_deg, width=width, height=height,
-        skeleton_world=skeleton_world, scene_objects=scene_objects, arm=manipulation_reach_arm,
+        skeleton_world=skeleton_world, scene_objects=scene_objects, arm=resolved_reach_arm,
         summary=summary,
     )
     (out_dir / "dry_render_summary.json").write_text(json.dumps(summary, indent=2))
@@ -11666,13 +12529,31 @@ def run_render_noise_audit(*, kitchen_usd: str, g1_usd: str, scenario: Mapping[s
             result["blockers"].append("task_affordance_or_target_unresolved")
             _write_result()
             return result
+        requested_reach_selection = _normalize_reach_arm_selection(reach_arm)
+        reach_selection = _resolve_manipulation_reach_arm_selection(
+            reach_arm,
+            stance_plan=stance_plan,
+            affordance=look_at,
+            root_pose=root,
+            yaw=yaw,
+        )
+        result["manipulation_reach_arm_resolution"] = {
+            "schema_version": "manipulation_reach_arm_resolution.v1",
+            "requested_arm": reach_arm,
+            "normalized_requested_arm": requested_reach_selection,
+            "resolved_arm": reach_selection,
+            "resolution_source": (
+                "accepted_stance_and_resolved_affordance"
+                if requested_reach_selection == "auto"
+                else "explicit_requested_arm"
+            ),
+        }
 
         robot_neutral_xforms = _capture_robot_neutral_descendant_xforms(stage, robot_prim_path)
         if robot_neutral_xforms:
             _restore_robot_neutral_descendant_xforms(stage, robot_neutral_xforms)
         root_diagnostics = _place_root(stage, robot_prim_path, root, yaw)
         _write_audit_json("place_root_diagnostics.json", root_diagnostics)
-        reach_selection = _normalize_reach_arm_selection(reach_arm)
         posed_count = 0
         try:
             posed_count = _pose_arm_kinematic_usd(
@@ -12044,11 +12925,47 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="optional seed robot-POV frame path for the first GR00T/SONIC policy call",
     )
     ap.add_argument("--steps", type=int, default=64)
+    ap.add_argument(
+        "--dynamic-episode-termination",
+        action="store_true",
+        default=None,
+        help=(
+            "enable review-grade manipulation contract stop/extend behavior; this is the default "
+            "for contracts that require it"
+        ),
+    )
+    ap.add_argument(
+        "--no-dynamic-episode-termination",
+        dest="dynamic_episode_termination",
+        action="store_false",
+        help=(
+            "disable dynamic stop/extend behavior. Manipulation task-success contracts will then "
+            "fail closed because terminal success-held evidence is absent."
+        ),
+    )
+    ap.add_argument(
+        "--episode-max-steps",
+        type=int,
+        default=0,
+        help=(
+            "max captured steps when --dynamic-episode-termination is active; default is a "
+            "bounded multiplier of --steps"
+        ),
+    )
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=960)
     ap.add_argument("--fps", type=int, default=20)
     ap.add_argument("--warmup-frames", type=int, default=6)
     ap.add_argument("--capture-every", type=int, default=1)
+    ap.add_argument(
+        "--dynamic-episode-check-every",
+        type=int,
+        default=1,
+        help=(
+            "policy-step cadence for dynamic terminal reach checks; review frames may be "
+            "captured less often with --capture-every"
+        ),
+    )
     ap.add_argument("--no-collision-probe", action="store_true",
                     help="skip the PhysX overlap probe (policy goes direct) — decouples render from physics")
     ap.add_argument("--per-scenario-seconds", type=int, default=480,
@@ -12079,8 +12996,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--manipulation-reach", action="store_true",
                     help="pose the visible G1 arms into the workspace for manipulation POV review; "
                          "this is posed simulator media, not manipulation-success proof")
-    ap.add_argument("--manipulation-reach-arm", default="both", choices=["right", "left", "both"],
-                    help="which arm is posed for the task")
+    ap.add_argument("--manipulation-reach-arm", default="auto", choices=["auto", "right", "left", "both"],
+                    help="which arm is posed for the task; auto picks one arm from the resolved stance/affordance")
     ap.add_argument("--fill-light-intensity", type=float, default=0.0,
                     help="add a sphere fill light over the manipulation workspace at this intensity; "
                          "0 disables")
@@ -12130,6 +13047,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--manipulation-stand", action="store_true",
                     help="place the robot AT the scenario target facing --manipulation-look-at every "
                          "step (task start pose; no navigation/redirect) — for manipulation, not locomotion")
+    ap.add_argument(
+        "--no-placement-topdown-capture",
+        action="store_true",
+        help=(
+            "skip per-frame placement_topdown review capture; placement validation JSON and "
+            "dynamic POV success checks still run"
+        ),
+    )
     ap.add_argument("--render-noise-audit", action="store_true",
                     help="RENDER-QUALITY AUDIT: one dynamic scene/stance/camera setup from the request's "
                          "first scenario, then one RAW PNG per material/render variant (white proxy, "
@@ -12260,6 +13185,11 @@ def main(argv=None) -> int:
         upload_zip(out_dir, put_url)
         print(json.dumps(res))
         return 1
+    dynamic_episode_termination = (
+        True
+        if args.dynamic_episode_termination is None
+        else bool(args.dynamic_episode_termination)
+    )
     result = run_scenarios(
         kitchen_usd=kitchen_usd, g1_usd=g1_usd, scenarios=scenarios, out_dir=out_dir,
         policy_id=args.policy, steps=args.steps, width=args.width, height=args.height,
@@ -12272,6 +13202,9 @@ def main(argv=None) -> int:
         camera_vfov_deg=args.camera_vfov, manipulation_cam=args.manipulation_cam,
         manipulation_look_at=manip_look_at, render_subframes=args.render_subframes,
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
+        dynamic_episode_termination=dynamic_episode_termination,
+        episode_max_steps=args.episode_max_steps,
+        dynamic_episode_check_every=args.dynamic_episode_check_every,
         fill_light_intensity=args.fill_light_intensity,
         physics_articulation_drive=args.physics_articulation_drive,
         effort_drive=args.effort_drive,
@@ -12286,6 +13219,7 @@ def main(argv=None) -> int:
         kinematic_arm_pose=args.kinematic_arm_pose,
         collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
         manipulation_stand=args.manipulation_stand,
+        placement_topdown_capture=not args.no_placement_topdown_capture,
         software_denoise=not args.no_software_denoise,
         depth_pass=args.depth_pass,
         segmentation=args.segmentation,

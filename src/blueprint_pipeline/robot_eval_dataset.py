@@ -1675,7 +1675,19 @@ def _robot_pov_requirements(*, generated_at: str) -> Dict[str, Any]:
             "operator_intervention_log_uri",
             "safety_event_log_uri",
             "rights_privacy_scope",
+            "camera_intrinsics",
+            "camera_extrinsics_or_mount_pose",
+            "camera_calibration_status",
         ],
+        "camera_metadata_contract": {
+            "intrinsics": "fx, fy, cx, cy (+ distortion model when available)",
+            "extrinsics": "camera-to-robot-base transform or fixed mount pose",
+            "calibration_status": "one_of: verified, factory_default, uncalibrated",
+            "uncalibrated_footage_downgrade": (
+                "POV evidence without verified calibration supports review-grade "
+                "labels only, never metric geometry claims"
+            ),
+        },
         "accepted_media": [
             "onboard_rgb_video",
             "onboard_depth_or_range_when_available",
@@ -3458,6 +3470,20 @@ def _rights_privacy_status(
     consent_status = _string(
         capture_rights.get("consent_status") or capture_rights.get("consentStatus")
     ).lower()
+    consent_revoked = (
+        consent_status in {"revoked", "withdrawn", "rescinded"}
+        or _bool(capture_rights.get("consent_revoked"))
+        or _bool(capture_rights.get("consentRevoked"))
+        or bool(
+            _string(
+                capture_rights.get("consent_revoked_at")
+                or capture_rights.get("consentRevokedAt")
+            )
+        )
+    )
+    consent_revoked_at = _string(
+        capture_rights.get("consent_revoked_at") or capture_rights.get("consentRevokedAt")
+    )
     sim_eval_scope_allowed = (
         "mujoco_g1_simulator_evaluation_for_this_staged_capture" in consent_scope
         or _bool(capture_rights.get("external_use_allowed"))
@@ -3499,7 +3525,11 @@ def _rights_privacy_status(
         "not_allowed",
         "permission_required",
         "failed",
+        "revoked",
+        "withdrawn",
+        "rescinded",
     }
+    rights_blocked = rights_blocked or consent_revoked
     privacy_blocked = privacy_status in {"blocked", "failed", "unsafe", "not_allowed"}
     return {
         "rights_status": rights_status,
@@ -3515,6 +3545,9 @@ def _rights_privacy_status(
             or capture_rights.get("evidence_uri")
         )
         or None,
+        "consent_revoked": consent_revoked,
+        "consent_revoked_at": consent_revoked_at or None,
+        "revocation_takedown_required": consent_revoked,
     }
 
 
@@ -3620,7 +3653,12 @@ def _rights_records(
                     "rights_status": rights_privacy.get("rights_status"),
                     "privacy_status": rights_privacy.get("privacy_status"),
                     "privacy_processing_status": privacy_manifest.get("status"),
+                    "consent_revoked": rights_privacy.get("consent_revoked"),
                 },
+                "revocation_takedown_required": rights_privacy.get(
+                    "revocation_takedown_required"
+                )
+                is True,
                 "claim_boundary": "rights_record_is_review_packet_not_blanket_clearance",
             }
         )
@@ -3650,6 +3688,30 @@ def _rights_packet(
         "record_count": len(records),
         "records": records,
         "source_artifacts": dict(source_artifacts),
+        "consent_revoked": rights_privacy.get("consent_revoked") is True,
+        "consent_revoked_at": rights_privacy.get("consent_revoked_at"),
+        "revocation_takedown": {
+            "schema_version": "real_site_robot_eval_revocation_takedown.v1",
+            "status": "takedown_required"
+            if rights_privacy.get("revocation_takedown_required")
+            else "not_required",
+            "consent_revoked": rights_privacy.get("consent_revoked") is True,
+            "consent_revoked_at": rights_privacy.get("consent_revoked_at"),
+            "affected_surfaces": [
+                "robot_eval_dataset",
+                "post_training_data_package",
+                "hosted_review_assets",
+                "webapp_projection",
+            ],
+        },
+        "revenue_share_review": {
+            "schema_version": "real_site_robot_eval_revenue_share_review.v1",
+            "status": "review_required",
+            "required_before_paid_reuse_or_resale": True,
+            "owner_revenue_share_record_present": False,
+            "revenue_share_commitment_made": False,
+            "payout_commitment_allowed": False,
+        },
         "commercial_use_claim_allowed": False,
         "external_licensing_claim_allowed": False,
         "blocker_status": "blocked_rights_privacy"

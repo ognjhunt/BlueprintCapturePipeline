@@ -138,6 +138,7 @@ def _provider_context(request: Mapping[str, Any]) -> dict[str, Any]:
     image = _mapping(provider_shape.get("image"))
     inputs = _mapping(provider_shape.get("inputs"))
     limits = _mapping(provider_shape.get("limits"))
+    prelaunch_spend_guard = _mapping(request.get("prelaunch_spend_guard"))
     return {
         "worker_image_ref_present": bool(_string(image.get("configured_image_ref"))),
         "worker_image_ref_is_versioned": image.get("configured_image_ref_is_versioned")
@@ -150,6 +151,12 @@ def _provider_context(request: Mapping[str, Any]) -> dict[str, Any]:
         "idle_timeout_seconds": limits.get("idle_timeout_seconds"),
         "external_watchdog_ttl_seconds": limits.get("external_watchdog_ttl_seconds"),
         "max_active_workers": limits.get("max_active_workers"),
+        "prelaunch_spend_guard_required": prelaunch_spend_guard.get(
+            "required_before_provider_launch"
+        )
+        is True,
+        "prelaunch_spend_guard_can_launch": prelaunch_spend_guard.get("can_launch")
+        is True,
     }
 
 
@@ -215,6 +222,10 @@ def _base_result(
     request: Mapping[str, Any],
     generated_at: str,
 ) -> dict[str, Any]:
+    prelaunch_spend_guard = _mapping(request.get("prelaunch_spend_guard"))
+    provider_race = _mapping(
+        prelaunch_spend_guard.get("provider_race") or request.get("provider_race")
+    )
     return {
         "schema_version": GPU_PROVIDER_LAUNCHER_RESULT_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -236,6 +247,8 @@ def _base_result(
         "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
         "provider_context": _provider_context(request),
+        "prelaunch_spend_guard": prelaunch_spend_guard,
+        "provider_race": provider_race,
     }
 
 
@@ -285,10 +298,17 @@ def _request_blockers(
     image = _mapping(provider_shape.get("image"))
     inputs = _mapping(provider_shape.get("inputs"))
     environment = _mapping(provider_shape.get("environment"))
+    prelaunch_spend_guard = _mapping(request.get("prelaunch_spend_guard"))
     external_provider = provider != "fixture_local"
     if request.get("status") != "request_manifest_ready":
         blockers.append("provider_launch_request_not_ready")
     if external_provider:
+        if (
+            prelaunch_spend_guard.get("required_before_provider_launch") is True
+            and prelaunch_spend_guard.get("can_launch") is not True
+        ):
+            blockers.append("provider_prelaunch_spend_guard_not_passed")
+            blockers.extend(_string_list(prelaunch_spend_guard.get("blockers")))
         if not _env_truthy(ALLOW_PROVIDER_LAUNCH_ENV):
             blockers.append(f"missing_env_{ALLOW_PROVIDER_LAUNCH_ENV}")
         if not allow_provider_launch:

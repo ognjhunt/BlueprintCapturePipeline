@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from google.cloud import storage
 
-from .common import PipelineError
+from .common import PipelineError, utc_now_iso
 from .run_e2e import run_end_to_end
 
 logger = logging.getLogger(__name__)
@@ -183,6 +183,27 @@ def _synthesize_pipeline_handoff(handoff: HandoffMessage, *, capture_root: Path)
     return destination
 
 
+JOB_LEDGER_FILENAME = "pipeline_job_ledger.json"
+JOB_LEDGER_SCHEMA_VERSION = "pipeline_job_ledger.v1"
+
+
+def _read_job_ledger(capture_root: Path) -> dict[str, Any]:
+    ledger_path = capture_root / JOB_LEDGER_FILENAME
+    if not ledger_path.is_file():
+        return {}
+    try:
+        loaded = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _write_job_ledger(capture_root: Path, ledger: Mapping[str, Any]) -> None:
+    (capture_root / JOB_LEDGER_FILENAME).write_text(
+        json.dumps(dict(ledger), indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+
 def process_handoff_payload(
     payload: bytes | str | Mapping[str, Any],
     *,
@@ -198,10 +219,58 @@ def process_handoff_payload(
         storage_root=storage_root,
         storage_client=storage_client,
     )
+
+    # Idempotency: Pub/Sub is at-least-once, so a redelivered message for a
+    # capture that already completed must not re-run (and re-bill) the
+    # pipeline. A "processing" marker from a crashed run is retried.
+    ledger = _read_job_ledger(capture_root)
+    if ledger.get("status") == "completed":
+        logger.info(
+            "pubsub_handoff.skipped_already_processed",
+            extra={
+                "scene_id": handoff.scene_id,
+                "capture_id": handoff.capture_id,
+            },
+        )
+        return {
+            "schema_version": "v1",
+            "status": "skipped_already_processed",
+            "bucket": handoff.bucket,
+            "scene_id": handoff.scene_id,
+            "capture_id": handoff.capture_id,
+            "capture_root": str(capture_root),
+            "job_ledger": ledger,
+        }
+
+    attempt_count = int(ledger.get("attempt_count") or 0) + 1
+    _write_job_ledger(
+        capture_root,
+        {
+            "schema_version": JOB_LEDGER_SCHEMA_VERSION,
+            "status": "processing",
+            "scene_id": handoff.scene_id,
+            "capture_id": handoff.capture_id,
+            "attempt_count": attempt_count,
+            "started_at": utc_now_iso(),
+        },
+    )
     result = run_e2e(
         capture_root=str(capture_root),
         provider=provider,
         run_evaluation_prep=run_evaluation_prep,
+    )
+    _write_job_ledger(
+        capture_root,
+        {
+            "schema_version": JOB_LEDGER_SCHEMA_VERSION,
+            "status": "completed",
+            "scene_id": handoff.scene_id,
+            "capture_id": handoff.capture_id,
+            "attempt_count": attempt_count,
+            "started_at": utc_now_iso(),
+            "completed_at": utc_now_iso(),
+            "run_e2e_status": str(result.get("status") or "") or None,
+        },
     )
     return {
         "schema_version": "v1",
@@ -242,12 +311,23 @@ def pull_and_process(
                 "attributes": dict(message.attributes),
             },
         )
-        process_handoff_payload(
-            message.data,
-            storage_root=storage_root,
-            provider=provider,
-            run_evaluation_prep=run_evaluation_prep,
-        )
+        # One poison message must not block the batch: successes still ack;
+        # the failed message stays un-acked so the subscription's retry /
+        # dead-letter policy owns redelivery. The job ledger written by
+        # process_handoff_payload makes redelivered completions no-ops.
+        try:
+            process_handoff_payload(
+                message.data,
+                storage_root=storage_root,
+                provider=provider,
+                run_evaluation_prep=run_evaluation_prep,
+            )
+        except Exception:
+            logger.exception(
+                "pubsub_handoff.processing_failed",
+                extra={"message_id": message.message_id},
+            )
+            continue
         ack_ids.append(received.ack_id)
 
     if ack_ids:

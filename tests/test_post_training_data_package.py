@@ -292,6 +292,78 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
     assert "sc3_action_normalization_report.json" in archive_members["included_files"]
 
 
+def test_post_training_data_package_materializes_lerobot_v3_and_gr00t_exports(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    (job_dir / "clip-1.mp4").write_bytes(b"fake-mp4")
+    output_dir = tmp_path / "package"
+
+    def _write_fake_structured_parquet(path: Path, rows: object) -> bool:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"row_count": len(list(rows))}), encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(
+        package_module,
+        "_write_structured_parquet",
+        _write_fake_structured_parquet,
+    )
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=output_dir,
+    )
+
+    optional = manifest["optional_exports"]
+    video_bundle = optional["formats"]["video_bundle"]
+    assert video_bundle["status"] == "written_materialized"
+    assert video_bundle["materialized_clip_count"] == 1
+    assert video_bundle["missing_clip_file_count"] == 0
+    assert video_bundle["all_declared_clips_materialized"] is True
+
+    lerobot_v3 = optional["formats"]["lerobot_v3"]
+    assert lerobot_v3["status"] == "written_native"
+    assert lerobot_v3["native_parquet_written"] is True
+    assert lerobot_v3["consumer_layout_complete"] is True
+    assert (output_dir / "exports" / "lerobot_v3" / "meta" / "info.json").is_file()
+    assert (
+        output_dir
+        / "exports"
+        / "lerobot_v3"
+        / "videos"
+        / "observation.images.ego_view"
+        / "chunk-000"
+        / "file-000.mp4"
+    ).is_file()
+
+    gr00t = optional["formats"]["gr00t_lerobot"]
+    assert gr00t["status"] == "written_native"
+    assert gr00t["consumer_layout_complete"] is True
+    modality = json.loads(
+        (
+            output_dir / "exports" / "gr00t_lerobot" / "meta" / "modality.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert modality["video"]["ego_view"]["original_key"] == "observation.images.ego_view"
+
+    package_index = json.loads((output_dir / "package_index.json").read_text(encoding="utf-8"))
+    indexed_paths = set(package_index["files"].values())
+    assert any(path.startswith("exports/video_bundle/clips/") for path in indexed_paths)
+    assert "exports/gr00t_lerobot/meta/modality.json" in indexed_paths
+
+    readout = json.loads((output_dir / "buyer_package_readout.json").read_text(encoding="utf-8"))
+    pov = readout["sections"]["robot_pov_evidence"]
+    assert pov["status"] == "present"
+    assert pov["materialized_clip_count"] == 1
+    assert pov["gr00t_lerobot_consumer_layout_complete"] is True
+
+
 def test_post_training_data_package_blocks_invalid_sc3_actions_and_source_filters(
     tmp_path: Path,
 ) -> None:
@@ -352,6 +424,52 @@ def test_post_training_data_package_blocks_invalid_sc3_actions_and_source_filter
     assert manifest["claim_boundary"]["post_training_package_export_ready"] is False
     assert manifest["claim_boundary"]["oscar_style_curation_filters_proven"] is False
     assert manifest["claim_boundary"]["sc3_7d_action_contract_proven"] is False
+
+
+def test_post_training_data_package_rejects_boolean_only_curation_pass(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    _write_json(
+        job_dir / "clips_manifest.json",
+        {
+            "clip_count": 1,
+            "clips": [
+                {
+                    "clip_id": "clip-1",
+                    "clip_path": "clip-1.mp4",
+                    "attempt_id": "attempt-1",
+                    "min_frame_filter_passed": True,
+                    "static_camera_filter_passed": True,
+                    "visible_skeleton_filter_passed": True,
+                    "blur_filter_passed": True,
+                    "semantic_dedup_key": "scene-1|task-1|attempt-1",
+                }
+            ],
+        },
+    )
+    output_dir = tmp_path / "package"
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=output_dir,
+    )
+
+    assert manifest["status"] == "blocked_package_quality_gates"
+    assert "curation:clip-1:min_frame_count_missing" in manifest["blockers"]
+    assert any(
+        blocker.startswith("curation:clip-1:min_frame_count_missing:")
+        for blocker in manifest["blockers"]
+    )
+    curation = json.loads((output_dir / "curation_report.json").read_text(encoding="utf-8"))
+    assert curation["status"] == "blocked"
+    frame_evidence = curation["clips"][0]["gates"]["min_frame"]
+    assert frame_evidence["explicit"] is True
+    assert frame_evidence["explicit_boolean_is_not_measured_evidence"] is True
 
 
 def test_post_training_data_package_blocks_semantic_duplicate_clips(
@@ -761,3 +879,289 @@ def test_dataset_card_surfaces_clip_curation_state(tmp_path: Path) -> None:
     assert curation["embedding_provider"]["name"] == "downsampled-pixel"
     assert "clip_curation_manifest" in manifest["included_artifacts"]
     assert "semantic_dedup_manifest" in manifest["included_artifacts"]
+
+
+def test_post_training_data_package_writes_buyer_readout_and_replay_instructions(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    output_dir = tmp_path / "package"
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=output_dir,
+    )
+
+    assert manifest["status"] == "export_ready_review_required"
+    assert manifest["replay_review_instructions_path"] == "replay_review_instructions.md"
+    assert manifest["buyer_package_readout_path"] == "buyer_package_readout.json"
+    assert manifest["buyer_package_summary_path"] == "buyer_package_summary.md"
+
+    instructions = (output_dir / "replay_review_instructions.md").read_text(encoding="utf-8")
+    assert "checksums.json" in instructions
+    assert "deployment approval" in instructions
+    package_index = json.loads((output_dir / "package_index.json").read_text(encoding="utf-8"))
+    assert package_index["files"]["replay_review_instructions"] == (
+        "replay_review_instructions.md"
+    )
+
+    readout = json.loads((output_dir / "buyer_package_readout.json").read_text(encoding="utf-8"))
+    assert readout["schema_version"] == "buyer_package_readout.v1"
+    assert readout["status"] == manifest["buyer_readout_status"]
+    # This fixture ships no robot POV evidence, so the buyer readout must fail closed
+    # even though the pipeline export itself is ready for review.
+    assert readout["status"] == "blocked_incomplete_package"
+    assert "robot_pov_evidence:robot_pov_evidence_missing" in readout["blockers"]
+    assert readout["claim_boundary"]["highest_truthful_claim"] == "no_claim"
+
+    summary = (output_dir / "buyer_package_summary.md").read_text(encoding="utf-8")
+    assert "Highest truthful claim: no_claim" in summary
+    assert "not deployment approval" in summary
+
+
+def test_post_training_data_package_wires_consent_handoff_and_success_ledger(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    _write_json(
+        capture_root / "raw" / "rights_consent.json",
+        {
+            "consent_status": "documented",
+            "consent_scope": ["robot_evaluation", "model_training"],
+            "permission_document_uri": "s3://blueprint-consent/site-a.pdf",
+        },
+    )
+    _write_json(
+        capture_root / "pipeline" / "robot_eval_dataset" / "rights_packet.json",
+        {
+            "status": "review_required",
+            "record_count": 1,
+            "records": [
+                {
+                    "rights_scope": "model_training",
+                    "evidence_uri": "s3://blueprint-consent/site-a.pdf",
+                }
+            ],
+        },
+    )
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    _write_json(
+        job_dir / "success_claim_ledger.json",
+        {
+            "schema_version": "success_claim_ledger.v1",
+            "highest_truthful_claim": "simulator_task_success",
+            "claims": {"simulator_task_success": True},
+            "blockers": [],
+        },
+    )
+    _write_json(
+        job_dir / "webapp_robot_eval_status_projection.json",
+        {
+            "product_handoff": {
+                "product_type": "post_training_data_package_v1",
+                "product_sku": "PTDP-001",
+                "entitlement_id": "ent-42",
+                "buyer_review_url": "https://webapp.example/review/ent-42",
+            }
+        },
+    )
+    output_dir = tmp_path / "package"
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=output_dir,
+    )
+
+    assert manifest["included_artifacts"]["consent_evidence"] == "consent_evidence.json"
+    assert manifest["consent_evidence"]["consent_evidence_present"] is True
+    assert manifest["success_claim_ledger_path"] == "success_claim_ledger.json"
+    assert manifest["product_handoff"]["entitlement_id"] == "ent-42"
+
+    package_index = json.loads((output_dir / "package_index.json").read_text(encoding="utf-8"))
+    assert package_index["files"]["consent_evidence"] == "consent_evidence.json"
+    assert package_index["files"]["success_claim_ledger"] == "success_claim_ledger.json"
+    archive_members = json.loads((output_dir / "archive_manifest.json").read_text(encoding="utf-8"))
+    assert "consent_evidence.json" in archive_members["included_files"]
+    assert "success_claim_ledger.json" in archive_members["included_files"]
+
+    readout = json.loads((output_dir / "buyer_package_readout.json").read_text(encoding="utf-8"))
+    assert (
+        readout["claim_boundary"]["highest_truthful_claim"]
+        == "simulator_task_success"
+    )
+    assert (
+        readout["sections"]["rights_privacy_provenance"][
+            "consent_evidence_present"
+        ]
+        is True
+    )
+    assert (
+        readout["sections"]["product_handoff"]["entitlement_wiring_present"]
+        is True
+    )
+
+
+def test_post_training_data_package_blocks_revoked_consent_and_writes_revenue_review(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    _write_json(
+        capture_root / "raw" / "rights_consent.json",
+        {
+            "consent_status": "revoked",
+            "consent_revoked_at": "2026-07-04T12:00:00Z",
+            "consent_scope": ["robot_evaluation", "model_training"],
+            "permission_document_uri": "s3://blueprint-consent/site-a.pdf",
+        },
+    )
+    _write_json(
+        capture_root / "pipeline" / "robot_eval_dataset" / "rights_packet.json",
+        {
+            "status": "blocked",
+            "consent_revoked": True,
+            "consent_revoked_at": "2026-07-04T12:00:00Z",
+            "record_count": 1,
+            "records": [
+                {
+                    "rights_scope": "model_training",
+                    "evidence_uri": "s3://blueprint-consent/site-a.pdf",
+                }
+            ],
+        },
+    )
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    output_dir = tmp_path / "package"
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=output_dir,
+    )
+
+    assert manifest["status"] == "blocked_consent_revoked_takedown_required"
+    assert "consent:consent_revoked_takedown_required" in manifest["blockers"]
+    assert manifest["consent_evidence"]["consent_revoked"] is True
+    assert manifest["revocation_takedown"]["status"] == "takedown_required"
+    assert manifest["revenue_share_review"]["status"] == "review_required"
+    assert manifest["revenue_share_review"]["revenue_share_commitment_made"] is False
+
+    package_index = json.loads((output_dir / "package_index.json").read_text(encoding="utf-8"))
+    assert package_index["files"]["revocation_takedown_manifest"] == (
+        "revocation_takedown_manifest.json"
+    )
+    assert package_index["files"]["revenue_share_review"] == "revenue_share_review.json"
+    archive_members = json.loads((output_dir / "archive_manifest.json").read_text(encoding="utf-8"))
+    assert "revocation_takedown_manifest.json" in archive_members["included_files"]
+    assert "revenue_share_review.json" in archive_members["included_files"]
+
+
+def test_export_policy_rl_flags_track_actual_handoff_content(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+
+    # An empty RL handoff packet must surface as *not included* in export_policy
+    # instead of the flags being hardcoded True.
+    monkeypatch.setattr(
+        package_module,
+        "build_rl_post_training_handoff_packet",
+        lambda **_kwargs: {},
+    )
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=tmp_path / "package",
+    )
+
+    export_policy = manifest["export_policy"]
+    assert export_policy["rl_post_training_handoff_included"] is False
+    assert export_policy["rl_sparse_reward_signal_included"] is False
+    assert export_policy["concurrent_baseline_ab_plan_included"] is False
+    assert export_policy["bottleneck_stage_detection_included"] is False
+    assert export_policy["speed_curriculum_plan_included"] is False
+    assert export_policy["action_chunk_continuity_qa_included"] is False
+    assert export_policy["intervention_safety_ledger_included"] is False
+
+
+def test_lerobot_episode_export_wired_into_package_export(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    control_rows = [
+        {
+            "stream_type": "control_action",
+            "attempt_id": "attempt-1",
+            "action_index": 0,
+            "task_id": "task-1",
+            "scenario_id": "scenario-1",
+            "action": {
+                "delta_position_m": [0.05, 0.0, 0.01],
+                "delta_rotation_axis_angle": [0.0, 0.0, 0.1],
+                "gripper": 0.0,
+            },
+        }
+    ]
+    (job_dir / "simulator_command_batch_control_stream.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in control_rows) + "\n",
+        encoding="utf-8",
+    )
+    (job_dir / "simulator_command_batch_attempt_trace.jsonl").write_text(
+        json.dumps(
+            {
+                "attempt_id": "attempt-1",
+                "episode_id": "episode-1",
+                "scenario_eval_run_id": "run-1",
+                "task_id": "task-1",
+                "scenario_id": "scenario-1",
+                "success": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "package"
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=output_dir,
+    )
+
+    export_policy = manifest["export_policy"]
+    assert export_policy["lerobot_episode_export_included"] is True
+    assert export_policy["lerobot_episode_export_status"] == "completed_review_required"
+    assert export_policy["lerobot_episode_export_episode_count"] == 1
+    # nothing carries video yet, so no episode may claim GR00T readiness
+    assert export_policy["lerobot_gr00t_ready_episode_count"] == 0
+    assert manifest["included_artifacts"]["lerobot_episode_export_manifest"] == (
+        "lerobot_episode_export/lerobot_episode_export_manifest.json"
+    )
+    lerobot_manifest = json.loads(
+        (
+            output_dir
+            / "lerobot_episode_export"
+            / "lerobot_episode_export_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert lerobot_manifest["status"] == "completed_review_required"
+    assert (
+        output_dir / "lerobot_episode_export" / "meta" / "modality.json"
+    ).is_file()
+    assert (
+        output_dir / "lerobot_episode_export" / "data" / "episode_000000.jsonl"
+    ).is_file()

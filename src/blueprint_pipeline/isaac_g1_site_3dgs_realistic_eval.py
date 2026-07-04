@@ -3433,20 +3433,20 @@ def _attempts_for_matrix(
         if observed:
             status = _string(observed.get("status") or observed.get("result") or "completed").lower()
             success_raw = observed.get("success")
-            success = (
-                bool(success_raw)
-                if isinstance(success_raw, bool)
-                else str(success_raw).strip().lower() in {"1", "true", "yes", "passed", "success"}
-                if success_raw is not None
-                else status in {"completed", "success", "succeeded", "passed"}
-            )
+            # Strict boolean only: a string "1"/"true" is a schema error, not a verdict,
+            # and a missing verdict fails closed instead of inheriting episode status.
+            success = success_raw is True
             failure_ids = _string_list(
                 observed.get("failure_mode_ids")
                 or observed.get("failure_label_ids")
                 or observed.get("blockers")
             )
             if not success and not failure_ids:
-                failure_ids = ["isaac_runtime_attempt_failed"]
+                failure_ids = (
+                    ["isaac_runtime_attempt_failed"]
+                    if isinstance(success_raw, bool)
+                    else ["task_success_not_reported_failing_closed"]
+                )
             attempt = {
                 "attempt_id": _string(observed.get("attempt_id")) or attempt_id,
                 "scenario_eval_run_id": run.get("scenario_eval_run_id"),

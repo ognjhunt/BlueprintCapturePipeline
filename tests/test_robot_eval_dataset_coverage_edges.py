@@ -574,6 +574,45 @@ def test_rights_field_and_main_cover_cli_success_failure_and_module_guard(
     assert red.main(["--capture-root", "/tmp/capture"]) == 0
     assert "manifest=/tmp/capture/manifest.json" in capsys.readouterr().out
 
+
+def test_rights_packet_carries_revocation_and_revenue_share_review(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rights_privacy = red._rights_privacy_status(
+        rights_summary={},
+        rights_review={},
+        privacy_manifest={"status": "no_people_detected"},
+        descriptor={
+            "metadata": {
+                "capture_rights": {
+                    "consent_status": "revoked",
+                    "consent_revoked_at": "2026-07-04T12:00:00Z",
+                    "consent_scope": [
+                        "mujoco_g1_simulator_evaluation_for_this_staged_capture"
+                    ],
+                    "permission_document_uri": "owner://consent",
+                }
+            }
+        },
+        raw_manifest={},
+    )
+    rights_packet = red._rights_packet(
+        rights_summary={},
+        rights_review={},
+        privacy_manifest={"status": "no_people_detected"},
+        rights_privacy=rights_privacy,
+        source_artifacts={},
+        generated_at="2026-07-04T12:00:00Z",
+    )
+
+    assert rights_privacy["blocked"] is True
+    assert rights_privacy["consent_revoked"] is True
+    assert rights_packet["status"] == "blocked"
+    assert rights_packet["revocation_takedown"]["status"] == "takedown_required"
+    assert rights_packet["revenue_share_review"]["required_before_paid_reuse_or_resale"] is True
+    assert rights_packet["revenue_share_review"]["revenue_share_commitment_made"] is False
+
     def _raise_failure(*, capture_root: str) -> dict[str, object]:
         raise RuntimeError(f"bad capture: {capture_root}")
 
@@ -587,3 +626,19 @@ def test_rights_field_and_main_cover_cli_success_failure_and_module_guard(
     with pytest.raises(SystemExit) as exc:
         exec(guard, {"main": lambda: 5})
     assert exc.value.code == 5
+
+
+def test_robot_pov_requirements_require_camera_calibration_metadata() -> None:
+    from blueprint_pipeline.robot_eval_dataset import _robot_pov_requirements
+
+    requirements = _robot_pov_requirements(generated_at="2026-07-04T00:00:00+00:00")
+
+    for field in (
+        "camera_intrinsics",
+        "camera_extrinsics_or_mount_pose",
+        "camera_calibration_status",
+    ):
+        assert field in requirements["required_fields"]
+    contract = requirements["camera_metadata_contract"]
+    assert "uncalibrated" in contract["calibration_status"]
+    assert "never metric geometry claims" in contract["uncalibrated_footage_downgrade"]

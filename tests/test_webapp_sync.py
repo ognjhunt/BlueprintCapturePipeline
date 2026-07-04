@@ -605,3 +605,167 @@ def test_production_sync_is_required_and_disables_placeholder_fallback(monkeypat
 
     with pytest.raises(WebappSyncError, match="sync_not_configured"):
         sync_webapp_pipeline_attachment(**_minimal_payload())
+
+
+def test_projection_labels_success_rate_substrate_from_proof_boundary() -> None:
+    from blueprint_pipeline.webapp_sync import _safe_robot_eval_status_projection
+
+    unproven = _safe_robot_eval_status_projection(
+        {"task_metrics": {"task_success_rate": 0.8}}
+    )
+    assert unproven["task_metrics"]["success_rate_evaluation_substrate"] == (
+        "unproven_pipeline_output"
+    )
+    assert unproven["task_metrics"]["success_rate_is_real_world_proof"] is False
+    assert unproven["task_metrics"]["success_rate_is_simulator_only"] is False
+
+    sim_only = _safe_robot_eval_status_projection(
+        {
+            "task_metrics": {"task_success_rate": 0.8},
+            "proof_boundary": {"simulator_execution_proven": True},
+        }
+    )
+    assert sim_only["task_metrics"]["success_rate_evaluation_substrate"] == (
+        "simulator_execution"
+    )
+    assert sim_only["task_metrics"]["success_rate_is_simulator_only"] is True
+
+    real = _safe_robot_eval_status_projection(
+        {
+            "task_metrics": {"task_success_rate": 0.8},
+            "proof_boundary": {
+                "simulator_execution_proven": True,
+                "real_world_outcome_proven": True,
+            },
+        }
+    )
+    assert real["task_metrics"]["success_rate_evaluation_substrate"] == (
+        "real_robot_outcome"
+    )
+    assert real["task_metrics"]["success_rate_is_real_world_proof"] is True
+    assert real["task_metrics"]["success_rate_is_simulator_only"] is False
+
+    # A truthy-but-non-boolean flag must not upgrade the substrate.
+    stringly = _safe_robot_eval_status_projection(
+        {
+            "task_metrics": {"task_success_rate": 0.8},
+            "proof_boundary": {"simulator_execution_proven": "true"},
+        }
+    )
+    assert stringly["task_metrics"]["success_rate_evaluation_substrate"] == (
+        "unproven_pipeline_output"
+    )
+
+
+def test_projection_rights_privacy_defaults_fail_closed() -> None:
+    from blueprint_pipeline.webapp_sync import _safe_robot_eval_status_projection
+
+    missing = _safe_robot_eval_status_projection({"job_id": "j1"})
+    assert missing["rights_privacy"]["rights_status"] == "missing"
+    assert missing["rights_privacy"]["privacy_status"] == "missing"
+    assert missing["rights_privacy"]["consent_scope_present"] is False
+    assert missing["rights_privacy"]["consent_revoked"] is False
+    assert missing["rights_privacy"]["rights_privacy_blocking"] is True
+
+    cleared = _safe_robot_eval_status_projection(
+        {
+            "rights_privacy": {
+                "rights_status": "approved",
+                "privacy_status": "cleared",
+                "consent_scope": ["internal_evaluation"],
+            }
+        }
+    )
+    assert cleared["rights_privacy"]["rights_privacy_blocking"] is False
+    assert cleared["rights_privacy"]["consent_scope_present"] is True
+
+    revoked = _safe_robot_eval_status_projection(
+        {
+            "rights_privacy": {
+                "rights_status": "approved",
+                "privacy_status": "cleared",
+                "consent_scope": ["internal_evaluation"],
+                "consent_revoked": True,
+            },
+            "revocation_takedown": {"status": "takedown_required"},
+        }
+    )
+    assert revoked["rights_privacy"]["consent_revoked"] is True
+    assert revoked["rights_privacy"]["revocation_takedown_required"] is True
+    assert revoked["rights_privacy"]["rights_privacy_blocking"] is True
+
+
+def test_projection_product_handoff_passthrough_and_wiring_flag() -> None:
+    from blueprint_pipeline.webapp_sync import _safe_robot_eval_status_projection
+
+    absent = _safe_robot_eval_status_projection({"job_id": "j1"})
+    assert absent["product_handoff"]["entitlement_wiring_present"] is False
+    assert absent["product_handoff"]["pricing_is_out_of_band"] is True
+    assert absent["product_handoff"]["product_sku"] is None
+
+    wired = _safe_robot_eval_status_projection(
+        {
+            "product_handoff": {
+                "product_type": "task_evaluation_run_v1",
+                "product_sku": "TER-001",
+                "entitlement_id": "ent-9",
+                "buyer_review_url": "https://webapp.example/review/ent-9",
+                "revenue_share_review": {
+                    "status": "review_required",
+                    "required_before_paid_reuse_or_resale": True,
+                    "owner_revenue_share_record_present": False,
+                    "revenue_share_commitment_made": False,
+                },
+            }
+        }
+    )
+    assert wired["product_handoff"]["revenue_share_review"]["status"] == (
+        "review_required"
+    )
+    assert wired["product_handoff"]["revenue_share_review"][
+        "required_before_paid_reuse_or_resale"
+    ] is True
+    assert wired["product_handoff"]["revenue_share_review"][
+        "revenue_share_commitment_made"
+    ] is False
+    assert wired["product_handoff"]["entitlement_wiring_present"] is True
+    assert wired["product_handoff"]["product_sku"] == "TER-001"
+
+
+def test_projection_proof_boundary_lists_evidence_manifests() -> None:
+    from blueprint_pipeline.webapp_sync import _safe_robot_eval_status_projection
+
+    projection = _safe_robot_eval_status_projection(
+        {
+            "proof_boundary": {"simulator_execution_proven": True},
+            "artifact_paths": {
+                "simulator_command_batch_closure_manifest": "closure.json",
+                "policy_execution_manifest": "policy_execution_manifest.json",
+            },
+        }
+    )
+    evidence = projection["proof_boundary"]["evidence_manifest_paths"]
+    assert evidence["simulator_execution_proven"] == ["closure.json"]
+    assert evidence["robot_policy_execution_proven"] == [
+        "policy_execution_manifest.json"
+    ]
+    assert evidence["real_world_outcome_proven"] == []
+
+    empty = _safe_robot_eval_status_projection({"proof_boundary": {}})
+    assert empty["proof_boundary"]["evidence_manifest_paths"][
+        "simulator_execution_proven"
+    ] == []
+
+
+def test_attachment_payload_marks_evaluation_readiness_advisory_only() -> None:
+    payload = build_webapp_pipeline_attachment_payload(
+        site_submission_id="sub-1",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        pipeline_prefix="gs://bucket/prefix",
+        qualification_state="qualified_ready",
+        opportunity_state="handoff_ready",
+        artifacts={"manifest": "gs://bucket/manifest.json"},
+        evaluation_readiness={"readiness_state": "ready"},
+    )
+    assert payload["evaluation_readiness_is_advisory_only"] is True

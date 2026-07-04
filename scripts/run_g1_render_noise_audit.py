@@ -40,6 +40,7 @@ from blueprint_pipeline.g1_render_noise_audit import (  # noqa: E402
 )
 from blueprint_pipeline.isaac_g1_kitchen_parity_job import (  # noqa: E402
     DEFAULT_G1_USD_RELATIVE,
+    DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS,
     run_isaac_g1_kitchen_parity_job,
 )
 
@@ -78,6 +79,8 @@ def _cmd_launch(args: argparse.Namespace) -> int:
         height=args.height,
         warm_candidates=tuple(args.warm_candidate or ()),
         warm_only=args.warm_only,
+        startup_no_runtime_timeout=args.startup_no_runtime_timeout,
+        cold_race_contenders=args.cold_race_contenders,
         render_subframes=args.render_subframes,
         render_noise_audit=True,
         audit_high_spp=args.audit_high_spp,
@@ -142,6 +145,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     launch.add_argument("--warm-candidate", action="append", default=[],
                         help="RunPod stopped pod id to warm-restart before cold create (repeatable)")
     launch.add_argument("--warm-only", action="store_true")
+    launch.add_argument("--startup-no-runtime-timeout", type=int,
+                        default=DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS,
+                        help="terminate a pod with no container runtime/public IP after this many seconds "
+                             "instead of waiting out the full marker timeout (0 disables)")
+    launch.add_argument("--cold-race-contenders", type=int, default=None,
+                        help="race N simultaneous cold creates and keep the first boot marker "
+                             "(default 2 via the parity job; 1 disables)")
     launch.add_argument("--image", default=None)
     launch.add_argument("--max-seconds", type=int, default=2400)
     launch.add_argument("--marker-timeout", type=int, default=900)

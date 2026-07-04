@@ -7,6 +7,7 @@ import importlib.util
 import json
 import math
 import os
+import shutil
 import tarfile
 from hashlib import sha256
 from pathlib import Path
@@ -14,6 +15,10 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
+from .buyer_package_readout import (
+    build_buyer_package_readout,
+    render_buyer_package_readout_markdown,
+)
 from .rl_post_training_handoff import build_rl_post_training_handoff_packet
 
 
@@ -25,6 +30,14 @@ HANDOFF_SUMMARY_SCHEMA_VERSION = "post_training_data_package_handoff_summary.v1"
 CURATION_REPORT_SCHEMA_VERSION = "post_training_curation_report.v1"
 SEMANTIC_DEDUP_REPORT_SCHEMA_VERSION = "post_training_semantic_dedup_report.v1"
 SC3_ACTION_REPORT_SCHEMA_VERSION = "post_training_sc3_action_normalization_report.v1"
+# Attempt-trace producers that never claimed to capture SC3 7D action vectors
+# (e.g. isaac_lab_arena result ingestion) legitimately have no action data at
+# all; that absence is surfaced in sc3_action_report / sc3_action_contract_status
+# but must not hard-block curation or export. Malformed action data (present but
+# invalid shape/values) still blocks.
+SC3_NO_ACTION_DATA_BLOCKERS = frozenset(
+    {"sc3_attempt_trace_missing", "sc3_action_trace_missing"}
+)
 OSCAR_MIN_FRAME_COUNT = 16
 OSCAR_MAX_STATIC_CAMERA_MOTION_M = 0.05
 OSCAR_MIN_ACTION_MOTION_SCORE = 1e-4
@@ -120,6 +133,13 @@ def _clip_rows(clips: Mapping[str, Any]) -> List[Dict[str, Any]]:
 
 def _clip_id(row: Mapping[str, Any], index: int) -> str:
     return str(row.get("clip_id") or row.get("id") or row.get("clip_path") or row.get("path") or f"clip_{index}").strip()
+
+
+def _safe_path_component(value: Any, fallback: str) -> str:
+    text = str(value or "").strip() or fallback
+    safe = "".join(char if char.isalnum() or char in ("-", "_", ".") else "_" for char in text)
+    safe = safe.strip("._")
+    return safe[:96] or fallback
 
 
 def _attempt_actions(attempt: Mapping[str, Any]) -> List[Any]:
@@ -278,16 +298,200 @@ def _evidence_gate(
     op: str,
     missing_blocker: str,
 ) -> tuple[bool, List[str], Dict[str, Any]]:
+    evidence: Dict[str, Any] = {"threshold": threshold, "operator": op}
     if isinstance(explicit, bool):
-        return explicit, [] if explicit else [missing_blocker.replace("_missing", "_failed")], {"explicit": explicit}
+        evidence["explicit"] = explicit
     if measured is None:
-        return False, [missing_blocker], {"value": None, "threshold": threshold, "operator": op}
+        evidence["value"] = None
+        evidence["explicit_boolean_is_not_measured_evidence"] = isinstance(explicit, bool)
+        blockers = [missing_blocker]
+        if explicit is True:
+            blockers.append(f"{missing_blocker}:explicit_true_without_measured_evidence")
+        elif explicit is False:
+            blockers.append(missing_blocker.replace("_missing", "_failed"))
+        return False, blockers, evidence
     passed = measured >= threshold if op == ">=" else measured <= threshold
-    return passed, [] if passed else [missing_blocker.replace("_missing", "_failed")], {
-        "value": measured,
-        "threshold": threshold,
-        "operator": op,
+    blockers = [] if passed else [missing_blocker.replace("_missing", "_failed")]
+    if explicit is False:
+        passed = False
+        blockers.append("explicit_source_filter_failed")
+    evidence["value"] = measured
+    return passed, blockers, evidence
+
+
+def _first_string(*values: Any) -> str | None:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _success_claim_ledger_from_sources(*sources: Mapping[str, Any]) -> Dict[str, Any]:
+    for source in sources:
+        if source.get("schema_version") == "success_claim_ledger.v1":
+            return dict(source)
+        direct = _mapping(source.get("success_claim_ledger"))
+        if direct:
+            return direct
+        report = _mapping(source.get("task_eval_run_report"))
+        nested = _mapping(report.get("success_claim_ledger"))
+        if nested:
+            return nested
+    return {}
+
+
+def _extract_product_handoff(*sources: Mapping[str, Any]) -> Dict[str, Any]:
+    for source in sources:
+        handoff = _mapping(source.get("product_handoff"))
+        if handoff:
+            return handoff
+    direct_keys = ("product_type", "product_sku", "entitlement_id", "buyer_review_url")
+    for source in sources:
+        handoff = {key: source.get(key) for key in direct_keys if source.get(key)}
+        if handoff:
+            return handoff
+    return {}
+
+
+def _consent_source_payload(capture_root: Path) -> Dict[str, Any]:
+    for relative in (
+        "raw/rights_consent.json",
+        "rights_consent.json",
+        "raw/manifest.json",
+        "capture_descriptor.json",
+    ):
+        payload = _read_optional_mapping(capture_root / relative)
+        if payload:
+            nested = _mapping(
+                payload.get("capture_rights")
+                or payload.get("rights_consent")
+                or payload.get("rights")
+            )
+            return nested or payload
+    return {}
+
+
+def _build_consent_evidence_record(
+    *,
+    capture_root: Path,
+    output_dir: Path,
+    rights_packet: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    source = _consent_source_payload(capture_root)
+    records = [
+        dict(record)
+        for record in rights_packet.get("records") or []
+        if isinstance(record, Mapping)
+    ]
+    evidence_uris = _string_list(
+        [
+            *[
+                record.get("evidence_uri")
+                or record.get("permission_document_uri")
+                or record.get("source_uri")
+                for record in records
+            ],
+            source.get("permission_document_uri"),
+            source.get("permissionDocumentUri"),
+            source.get("evidence_uri"),
+        ]
+    )
+    consent_status = _first_string(
+        source.get("consent_status"),
+        source.get("consentStatus"),
+        rights_packet.get("consent_status"),
+    )
+    consent_status_normalized = consent_status.lower() if consent_status else ""
+    consent_revoked = (
+        consent_status_normalized in {"revoked", "withdrawn", "rescinded"}
+        or bool(source.get("consent_revoked"))
+        or bool(source.get("consentRevoked"))
+        or bool(source.get("consent_revoked_at") or source.get("consentRevokedAt"))
+        or bool(rights_packet.get("consent_revoked"))
+    )
+    consent_revoked_at = _first_string(
+        source.get("consent_revoked_at"),
+        source.get("consentRevokedAt"),
+        rights_packet.get("consent_revoked_at"),
+    )
+    consent_scope = _string_list(
+        source.get("consent_scope") or source.get("consentScope")
+    )
+    if not consent_scope:
+        for record in records:
+            consent_scope.extend(_string_list(record.get("rights_scope")))
+    consent_scope = _string_list(consent_scope)
+
+    blockers: List[str] = []
+    if not consent_status:
+        blockers.append("consent_status_missing")
+    if consent_status_normalized == "documented" and not evidence_uris:
+        blockers.append("permission_document_uri_missing_for_documented_consent")
+    if not consent_scope:
+        blockers.append("consent_scope_missing")
+    if consent_revoked:
+        blockers.append("consent_revoked_takedown_required")
+    consent_evidence_present = bool(consent_status and consent_scope and not blockers)
+    status = "consent_evidence_present" if consent_evidence_present else "blocked_missing_consent_evidence"
+    if consent_revoked:
+        status = "blocked_consent_revoked_takedown_required"
+    revocation_takedown = {
+        "schema_version": "post_training_revocation_takedown_manifest.v1",
+        "generated_at": generated_at,
+        "status": "takedown_required" if consent_revoked else "not_required",
+        "consent_revoked": consent_revoked,
+        "consent_revoked_at": consent_revoked_at or None,
+        "affected_surfaces": [
+            "post_training_data_package",
+            "optional_training_exports",
+            "hosted_review_assets",
+            "signed_delivery_access",
+            "webapp_projection",
+            "buyer_package_readout",
+        ],
+        "required_actions": [
+            "block_new_package_exports",
+            "disable_signed_delivery_access",
+            "remove_hosted_review_assets",
+            "mark_webapp_rights_privacy_blocking",
+            "stop_downstream_training_or_finetuning_use",
+            "notify_buyer_and_owner",
+        ]
+        if consent_revoked
+        else [],
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "revocation_blocks_delivery_and_training_use": consent_revoked,
+            "takedown_manifest_is_not_legal_advice": True,
+        },
     }
+    record = {
+        "schema_version": "post_training_consent_evidence.v1",
+        "generated_at": generated_at,
+        "status": status,
+        "consent_evidence_present": consent_evidence_present,
+        "consent_status": consent_status,
+        "consent_revoked": consent_revoked,
+        "consent_revoked_at": consent_revoked_at or None,
+        "consent_scope": consent_scope,
+        "evidence_uris": evidence_uris,
+        "rights_packet_status": rights_packet.get("status"),
+        "rights_packet_record_count": int(rights_packet.get("record_count") or len(records)),
+        "blockers": blockers,
+        "revocation_takedown_manifest_path": "revocation_takedown_manifest.json",
+        "revocation_takedown": revocation_takedown,
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "consent_record_documents_source_evidence_only": True,
+            "consent_record_is_not_external_use_approval": True,
+            "consent_revocation_blocks_downstream_use": consent_revoked,
+        },
+    }
+    write_json(output_dir / "consent_evidence.json", record)
+    write_json(output_dir / "revocation_takedown_manifest.json", revocation_takedown)
+    return record
 
 
 def _build_curation_report(
@@ -424,7 +628,12 @@ def _build_curation_report(
         )
     if not rows:
         blockers.append("clips_manifest_missing_or_empty")
-    if sc3_action_report.get("status") != "passed":
+    sc3_hard_blockers = [
+        blocker
+        for blocker in _string_list(sc3_action_report.get("blockers"))
+        if blocker.rsplit(":", 1)[-1] not in SC3_NO_ACTION_DATA_BLOCKERS
+    ]
+    if sc3_action_report.get("status") != "passed" and sc3_hard_blockers:
         blockers.append("sc3_action_normalization_blocked")
     status = "passed" if rows and not blockers else "blocked"
     return {
@@ -576,6 +785,8 @@ def _optional_export_formats() -> Dict[str, Dict[str, Any]]:
     dependencies = {
         "rlds": ("rlds",),
         "lerobot": ("lerobot",),
+        "lerobot_v3": ("pyarrow", "pandas"),
+        "gr00t_lerobot": ("pyarrow", "pandas"),
         "hdf5": ("h5py",),
         "parquet": ("pyarrow", "pandas"),
     }
@@ -1147,6 +1358,527 @@ def _write_native_parquet(path: Path, rows: Sequence[Mapping[str, Any]]) -> bool
     return True
 
 
+def _write_structured_parquet(path: Path, rows: Sequence[Mapping[str, Any]]) -> bool:
+    if importlib.util.find_spec("pyarrow") is None or importlib.util.find_spec("pandas") is None:
+        return False
+    import pandas as pd  # type: ignore[import-not-found]
+
+    ensure_dir(path.parent)
+    pd.DataFrame([dict(row) for row in rows]).to_parquet(path, index=False)
+    return True
+
+
+def _clip_reference_values(row: Mapping[str, Any]) -> List[str]:
+    refs: List[str] = []
+    for key in (
+        "materialized_path",
+        "local_path",
+        "clip_path",
+        "video_path",
+        "source_video_path",
+        "source_path",
+        "path",
+        "uri",
+        "url",
+    ):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip() and value.strip() not in refs:
+            refs.append(value.strip())
+    return refs
+
+
+def _resolve_clip_source_path(
+    row: Mapping[str, Any],
+    source_roots: Sequence[Path],
+) -> tuple[Path | None, str | None]:
+    refs = _clip_reference_values(row)
+    for reference in refs:
+        candidate = Path(reference)
+        if candidate.is_absolute() and candidate.is_file():
+            return candidate, reference
+        if not candidate.is_absolute():
+            for root in source_roots:
+                rooted = root / candidate
+                if rooted.is_file():
+                    return rooted, reference
+    return None, refs[0] if refs else None
+
+
+def _materialize_video_bundle(
+    *,
+    output_dir: Path,
+    clips: Mapping[str, Any],
+    generated_at: str,
+    source_roots: Sequence[Path],
+) -> Dict[str, Any]:
+    bundle_dir = output_dir / "exports" / "video_bundle"
+    videos_dir = bundle_dir / "clips"
+    clip_rows = _clip_rows(clips)
+    materialized_clips: List[Dict[str, Any]] = []
+    missing_clip_ids: List[str] = []
+    for index, clip in enumerate(clip_rows):
+        clip_id = _clip_id(clip, index)
+        safe_id = _safe_path_component(clip_id, f"clip_{index:06d}")
+        source_path, source_reference = _resolve_clip_source_path(clip, source_roots)
+        row = dict(clip)
+        row["clip_id"] = clip_id
+        row["source_reference"] = source_reference
+        if source_path is None:
+            row.update(
+                {
+                    "materialized": False,
+                    "missing_reason": "clip_file_not_found",
+                    "materialized_path": None,
+                    "sha256": None,
+                    "size_bytes": 0,
+                }
+            )
+            missing_clip_ids.append(clip_id)
+            materialized_clips.append(row)
+            continue
+        suffix = source_path.suffix.lower() if source_path.suffix else ".mp4"
+        destination = videos_dir / f"{index:06d}_{safe_id}{suffix}"
+        ensure_dir(destination.parent)
+        if source_path.resolve() != destination.resolve():
+            shutil.copy2(source_path, destination)
+        artifact = _artifact(output_dir, destination)
+        row.update(
+            {
+                "materialized": True,
+                "materialized_path": artifact["path"],
+                "sha256": artifact["sha256"],
+                "size_bytes": artifact["size_bytes"],
+                "video_format": suffix.lstrip("."),
+            }
+        )
+        materialized_clips.append(row)
+    materialized_count = sum(1 for row in materialized_clips if row.get("materialized"))
+    if not clip_rows:
+        status = "written_manifest_no_clips"
+    elif missing_clip_ids:
+        status = "written_manifest_missing_clip_files"
+    else:
+        status = "written_materialized"
+    manifest = {
+        "schema_version": "post_training_video_bundle_manifest.v2",
+        "generated_at": generated_at,
+        "status": status,
+        "source_clips": dict(clips),
+        "clips": materialized_clips,
+        "clip_count": len(clip_rows),
+        "materialized_clip_count": materialized_count,
+        "missing_clip_file_count": len(missing_clip_ids),
+        "missing_clip_ids": missing_clip_ids,
+        "all_declared_clips_materialized": bool(clip_rows) and not missing_clip_ids,
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "materialized_video_is_training_media": materialized_count > 0,
+            "clip_manifest_reference_alone_is_not_delivery": True,
+        },
+    }
+    manifest_path = bundle_dir / "clips_manifest.json"
+    write_json(manifest_path, manifest)
+    return {
+        "path": _relative_to(output_dir, manifest_path),
+        "manifest": manifest,
+        "materialized_clips": materialized_clips,
+    }
+
+
+def _numeric_vector(value: Any) -> List[float] | None:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        vector = [_finite_float(item) for item in value]
+        if all(item is not None for item in vector):
+            return [float(item) for item in vector if item is not None]
+    return None
+
+
+def _action_vectors_for_attempt(row: Mapping[str, Any]) -> List[List[float]]:
+    vectors: List[List[float]] = []
+    for candidate in row.get("sc3_7d_delta_end_effector_actions") or []:
+        vector = _numeric_vector(candidate)
+        if vector:
+            vectors.append(vector)
+    if vectors:
+        return vectors
+    for action in row.get("actions") or []:
+        vector = _numeric_vector(action)
+        if vector:
+            vectors.append(vector)
+            continue
+        if isinstance(action, Mapping):
+            mapped = _action_vector_from_mapping(action)
+            if mapped:
+                vectors.append(mapped)
+    return vectors
+
+
+def _state_vector_for_attempt(row: Mapping[str, Any], fallback_width: int) -> tuple[List[float], bool]:
+    for key in ("observation.state", "observation_state", "state", "robot_state"):
+        vector = _numeric_vector(row.get(key))
+        if vector:
+            return vector, False
+    for observation in row.get("observations") or []:
+        if isinstance(observation, Mapping):
+            for key in ("observation.state", "state", "robot_state"):
+                vector = _numeric_vector(observation.get(key))
+                if vector:
+                    return vector, False
+        else:
+            vector = _numeric_vector(observation)
+            if vector:
+                return vector, False
+    width = max(1, fallback_width)
+    return [0.0] * width, True
+
+
+def _training_export_rows(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    materialized_clips: Sequence[Mapping[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
+    clips_by_attempt: Dict[str, Mapping[str, Any]] = {
+        str(clip.get("attempt_id")): clip
+        for clip in materialized_clips
+        if str(clip.get("attempt_id") or "").strip()
+    }
+    task_indexes: Dict[str, int] = {}
+    tasks: List[Dict[str, Any]] = []
+    episodes: List[Dict[str, Any]] = []
+    frame_rows: List[Dict[str, Any]] = []
+    state_width = 0
+    action_width = 0
+    synthesized_state_rows = 0
+    global_index = 0
+    for episode_index, row in enumerate(rows):
+        task_id = str(row.get("task_id") or "task").strip() or "task"
+        if task_id not in task_indexes:
+            task_indexes[task_id] = len(task_indexes)
+            tasks.append({"task_index": task_indexes[task_id], "task": task_id})
+        actions = _action_vectors_for_attempt(row)
+        if not actions:
+            actions = [[1.0 if row.get("success") else 0.0]]
+        state, state_synthesized = _state_vector_for_attempt(row, len(actions[0]))
+        if state_synthesized:
+            synthesized_state_rows += len(actions)
+        state_width = max(state_width, len(state))
+        action_width = max(action_width, len(actions[0]))
+        clip = clips_by_attempt.get(str(row.get("attempt_id") or ""))
+        video_path = clip.get("materialized_path") if clip else None
+        episode_start = global_index
+        for frame_index, action in enumerate(actions):
+            frame_rows.append(
+                {
+                    "observation.state": state,
+                    "action": action,
+                    "timestamp": float(frame_index),
+                    "annotation.human.action.task_description": task_indexes[task_id],
+                    "task_index": task_indexes[task_id],
+                    "episode_index": episode_index,
+                    "index": global_index,
+                    "next.reward": 1.0 if row.get("success") and frame_index == len(actions) - 1 else 0.0,
+                    "next.done": frame_index == len(actions) - 1,
+                    "attempt_id": row.get("attempt_id"),
+                    "policy_id": row.get("policy_id"),
+                    "scenario_id": row.get("scenario_id"),
+                    "video_path": video_path,
+                    "state_synthesized_zero_fill": state_synthesized,
+                }
+            )
+            global_index += 1
+        episodes.append(
+            {
+                "episode_index": episode_index,
+                "tasks": [task_indexes[task_id]],
+                "length": len(actions),
+                "start_index": episode_start,
+                "end_index": global_index,
+                "attempt_id": row.get("attempt_id"),
+                "clip_id": clip.get("clip_id") if clip else None,
+                "video_path": video_path,
+            }
+        )
+    return frame_rows, episodes, tasks, {
+        "state_width": state_width,
+        "action_width": action_width,
+        "synthesized_state_rows": synthesized_state_rows,
+    }
+
+
+def _write_lerobot_v3_export(
+    *,
+    output_dir: Path,
+    rows: Sequence[Mapping[str, Any]],
+    materialized_clips: Sequence[Mapping[str, Any]],
+    generated_at: str,
+    scene_id: str,
+    capture_id: str,
+) -> Dict[str, Any]:
+    root = output_dir / "exports" / "lerobot_v3"
+    frame_rows, episodes, tasks, shape = _training_export_rows(
+        rows=rows,
+        materialized_clips=materialized_clips,
+    )
+    data_parquet = root / "data" / "chunk-000" / "file-000.parquet"
+    native_data = _write_structured_parquet(data_parquet, frame_rows)
+    if native_data:
+        data_path = "data/chunk-000/file-000.parquet"
+    else:
+        data_fallback = root / "data" / "chunk-000" / "file-000.parquet.jsonl"
+        _write_jsonl(data_fallback, frame_rows)
+        data_path = "data/chunk-000/file-000.parquet.jsonl"
+
+    episodes_parquet = root / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
+    native_episodes = _write_structured_parquet(episodes_parquet, episodes)
+    if native_episodes:
+        episodes_path = "meta/episodes/chunk-000/file-000.parquet"
+    else:
+        episodes_fallback = root / "meta" / "episodes" / "chunk-000" / "file-000.parquet.jsonl"
+        _write_jsonl(episodes_fallback, episodes)
+        episodes_path = "meta/episodes/chunk-000/file-000.parquet.jsonl"
+
+    tasks_parquet = root / "meta" / "tasks.parquet"
+    native_tasks = _write_structured_parquet(tasks_parquet, tasks)
+    tasks_path = "meta/tasks.parquet"
+    if not native_tasks:
+        tasks_fallback = root / "meta" / "tasks.parquet.jsonl"
+        _write_jsonl(tasks_fallback, tasks)
+        tasks_path = "meta/tasks.parquet.jsonl"
+    _write_jsonl(root / "meta" / "tasks.jsonl", tasks)
+
+    video_files: List[Dict[str, Any]] = []
+    for index, clip in enumerate(materialized_clips):
+        source_rel = str(clip.get("materialized_path") or "")
+        source_path = output_dir / source_rel
+        if not clip.get("materialized") or not source_path.is_file():
+            continue
+        dest = root / "videos" / "observation.images.ego_view" / "chunk-000" / f"file-{index:03d}.mp4"
+        ensure_dir(dest.parent)
+        shutil.copy2(source_path, dest)
+        video_files.append(
+            {
+                "clip_id": clip.get("clip_id"),
+                "path": _relative_to(root, dest),
+                "sha256": _sha_file(dest),
+                "episode_index": index,
+            }
+        )
+
+    stats = {
+        "schema_version": "lerobot_v3_stats.v1",
+        "frame_count": len(frame_rows),
+        "episode_count": len(episodes),
+        "task_count": len(tasks),
+        "state_width": shape["state_width"],
+        "action_width": shape["action_width"],
+        "synthesized_state_rows": shape["synthesized_state_rows"],
+    }
+    info = {
+        "schema_version": "lerobot_v3_info.v1",
+        "source": "blueprint_post_training_data_package",
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "generated_at": generated_at,
+        "codebase_version": "blueprint-capture-pipeline",
+        "data_path_template": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+        "video_path_template": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+        "features": {
+            "observation.state": {"dtype": "float32", "shape": [shape["state_width"]]},
+            "action": {"dtype": "float32", "shape": [shape["action_width"]]},
+            "observation.images.ego_view": {"dtype": "video", "shape": None},
+            "timestamp": {"dtype": "float32", "shape": [1]},
+            "task_index": {"dtype": "int64", "shape": [1]},
+        },
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    write_json(root / "meta" / "info.json", info)
+    write_json(root / "meta" / "stats.json", stats)
+    native_parquet = native_data and native_episodes and native_tasks
+    complete = bool(frame_rows and video_files and native_parquet)
+    manifest = {
+        "schema_version": "blueprint_lerobot_v3_export_manifest.v1",
+        "generated_at": generated_at,
+        "status": "written_native" if complete else "written_degraded",
+        "data_path": data_path,
+        "episodes_path": episodes_path,
+        "tasks_path": tasks_path,
+        "info_path": "meta/info.json",
+        "stats_path": "meta/stats.json",
+        "video_files": video_files,
+        "episode_count": len(episodes),
+        "frame_count": len(frame_rows),
+        "native_parquet_written": bool(native_parquet),
+        "materialized_video_count": len(video_files),
+        "consumer_layout_complete": complete,
+        "blockers": [
+            *(["lerobot_v3_native_parquet_not_written"] if not native_parquet else []),
+            *(["lerobot_v3_video_files_missing"] if not video_files else []),
+            *(["lerobot_v3_no_frame_rows"] if not frame_rows else []),
+        ],
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "lerobot_layout_is_training_format_adapter": True,
+            "synthesized_zero_state_rows": shape["synthesized_state_rows"],
+            "synthesized_zero_state_is_not_robot_state_evidence": shape["synthesized_state_rows"] > 0,
+        },
+    }
+    write_json(root / "lerobot_v3_export_manifest.json", manifest)
+    return manifest
+
+
+def _write_gr00t_lerobot_export(
+    *,
+    output_dir: Path,
+    rows: Sequence[Mapping[str, Any]],
+    materialized_clips: Sequence[Mapping[str, Any]],
+    generated_at: str,
+    scene_id: str,
+    capture_id: str,
+) -> Dict[str, Any]:
+    root = output_dir / "exports" / "gr00t_lerobot"
+    frame_rows, episodes, tasks, shape = _training_export_rows(
+        rows=rows,
+        materialized_clips=materialized_clips,
+    )
+    episode_data_files: List[Dict[str, Any]] = []
+    for episode in episodes:
+        episode_index = int(episode.get("episode_index") or 0)
+        start = int(episode.get("start_index") or 0)
+        end = int(episode.get("end_index") or start)
+        rows_for_episode = frame_rows[start:end]
+        dest = root / "data" / "chunk-000" / f"episode_{episode_index:06d}.parquet"
+        native = _write_structured_parquet(dest, rows_for_episode)
+        if native:
+            path = _relative_to(root, dest)
+        else:
+            fallback = root / "data" / "chunk-000" / f"episode_{episode_index:06d}.parquet.jsonl"
+            _write_jsonl(fallback, rows_for_episode)
+            path = _relative_to(root, fallback)
+        episode_data_files.append(
+            {
+                "episode_index": episode_index,
+                "path": path,
+                "native_parquet_written": native,
+            }
+        )
+
+    video_files: List[Dict[str, Any]] = []
+    for index, clip in enumerate(materialized_clips):
+        source_rel = str(clip.get("materialized_path") or "")
+        source_path = output_dir / source_rel
+        if not clip.get("materialized") or not source_path.is_file():
+            continue
+        dest = (
+            root
+            / "videos"
+            / "chunk-000"
+            / "observation.images.ego_view"
+            / f"episode_{index:06d}.mp4"
+        )
+        ensure_dir(dest.parent)
+        shutil.copy2(source_path, dest)
+        video_files.append(
+            {
+                "clip_id": clip.get("clip_id"),
+                "path": _relative_to(root, dest),
+                "sha256": _sha_file(dest),
+                "episode_index": index,
+            }
+        )
+
+    _write_jsonl(root / "meta" / "episodes.jsonl", episodes)
+    _write_jsonl(root / "meta" / "tasks.jsonl", tasks)
+    modality = {
+        "state": {
+            "blueprint_observation_state": {
+                "start": 0,
+                "end": shape["state_width"],
+            }
+        },
+        "action": {
+            "sc3_7d_delta_end_effector_action": {
+                "start": 0,
+                "end": shape["action_width"],
+            }
+        },
+        "video": {
+            "ego_view": {
+                "original_key": "observation.images.ego_view",
+            }
+        },
+        "annotation": {
+            "human.action.task_description": {},
+        },
+    }
+    info = {
+        "schema_version": "gr00t_lerobot_info.v1",
+        "source": "blueprint_post_training_data_package",
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "generated_at": generated_at,
+        "episode_count": len(episodes),
+        "frame_count": len(frame_rows),
+        "features": {
+            "observation.state": {"dtype": "float32", "shape": [shape["state_width"]]},
+            "action": {"dtype": "float32", "shape": [shape["action_width"]]},
+            "timestamp": {"dtype": "float32", "shape": [1]},
+            "annotation.human.action.task_description": {"dtype": "int64", "shape": [1]},
+        },
+        "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+    stats = {
+        "schema_version": "gr00t_lerobot_stats.v1",
+        "frame_count": len(frame_rows),
+        "episode_count": len(episodes),
+        "task_count": len(tasks),
+        "state_width": shape["state_width"],
+        "action_width": shape["action_width"],
+        "synthesized_state_rows": shape["synthesized_state_rows"],
+    }
+    write_json(root / "meta" / "info.json", info)
+    write_json(root / "meta" / "modality.json", modality)
+    write_json(root / "meta" / "stats.json", stats)
+    write_json(root / "meta" / "relative_stats.json", stats)
+    native_parquet = bool(episode_data_files) and all(
+        item.get("native_parquet_written") for item in episode_data_files
+    )
+    complete = bool(frame_rows and video_files and native_parquet)
+    manifest = {
+        "schema_version": "blueprint_gr00t_lerobot_export_manifest.v1",
+        "generated_at": generated_at,
+        "status": "written_native" if complete else "written_degraded",
+        "meta_paths": {
+            "info": "meta/info.json",
+            "episodes": "meta/episodes.jsonl",
+            "tasks": "meta/tasks.jsonl",
+            "modality": "meta/modality.json",
+            "stats": "meta/stats.json",
+            "relative_stats": "meta/relative_stats.json",
+        },
+        "data_files": episode_data_files,
+        "video_files": video_files,
+        "episode_count": len(episodes),
+        "frame_count": len(frame_rows),
+        "native_parquet_written": native_parquet,
+        "materialized_video_count": len(video_files),
+        "consumer_layout_complete": complete,
+        "blockers": [
+            *(["gr00t_lerobot_native_parquet_not_written"] if not native_parquet else []),
+            *(["gr00t_lerobot_video_files_missing"] if not video_files else []),
+            *(["gr00t_lerobot_no_frame_rows"] if not frame_rows else []),
+        ],
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "gr00t_layout_is_training_format_adapter": True,
+            "modality_json_written": True,
+            "synthesized_zero_state_rows": shape["synthesized_state_rows"],
+            "synthesized_zero_state_is_not_robot_state_evidence": shape["synthesized_state_rows"] > 0,
+        },
+    }
+    write_json(root / "gr00t_lerobot_export_manifest.json", manifest)
+    return manifest
+
+
 def _write_optional_exports(
     *,
     output_dir: Path,
@@ -1157,6 +1889,7 @@ def _write_optional_exports(
     generated_at: str,
     scene_id: str,
     capture_id: str,
+    clip_source_roots: Sequence[Path] = (),
 ) -> Dict[str, Any]:
     rows = _rows_for_optional_exports(
         attempts=attempts,
@@ -1258,25 +1991,74 @@ def _write_optional_exports(
             "fallback_reason": "optional_dependency_pyarrow_or_pandas_missing",
         }
 
-    video_bundle_path = output_dir / "exports" / "video_bundle" / "clips_manifest.json"
-    write_json(
-        video_bundle_path,
-        {
-            "schema_version": "post_training_video_bundle_manifest.v1",
-            "generated_at": generated_at,
-            "status": "written_manifest",
-            "source_clips": dict(clips),
-            "clip_count": int(clips.get("clip_count") or 0) if clips else 0,
-            "claim_boundary": dict(CLAIM_BOUNDARY),
-        },
+    video_bundle = _materialize_video_bundle(
+        output_dir=output_dir,
+        clips=clips,
+        generated_at=generated_at,
+        source_roots=clip_source_roots,
     )
-    files["video_bundle_manifest"] = _relative_to(output_dir, video_bundle_path)
+    video_bundle_manifest = _mapping(video_bundle.get("manifest"))
+    files["video_bundle_manifest"] = str(video_bundle.get("path") or "")
     formats["video_bundle"] = {
         **formats["video_bundle"],
-        "status": "written_manifest",
+        "status": video_bundle_manifest.get("status"),
         "format_written": True,
         "path": files["video_bundle_manifest"],
-        "clip_count": int(clips.get("clip_count") or 0) if clips else 0,
+        "clip_count": int(video_bundle_manifest.get("clip_count") or 0),
+        "materialized_clip_count": int(video_bundle_manifest.get("materialized_clip_count") or 0),
+        "missing_clip_file_count": int(video_bundle_manifest.get("missing_clip_file_count") or 0),
+        "all_declared_clips_materialized": bool(
+            video_bundle_manifest.get("all_declared_clips_materialized")
+        ),
+    }
+    materialized_clips = [
+        dict(item)
+        for item in video_bundle.get("materialized_clips") or []
+        if isinstance(item, Mapping)
+    ]
+    lerobot_v3 = _write_lerobot_v3_export(
+        output_dir=output_dir,
+        rows=rows,
+        materialized_clips=materialized_clips,
+        generated_at=generated_at,
+        scene_id=scene_id,
+        capture_id=capture_id,
+    )
+    files["lerobot_v3_manifest"] = "exports/lerobot_v3/lerobot_v3_export_manifest.json"
+    formats["lerobot_v3"] = {
+        **formats["lerobot_v3"],
+        "status": lerobot_v3.get("status"),
+        "format_written": True,
+        "path": files["lerobot_v3_manifest"],
+        "episode_count": lerobot_v3.get("episode_count"),
+        "frame_count": lerobot_v3.get("frame_count"),
+        "native_parquet_written": bool(lerobot_v3.get("native_parquet_written")),
+        "materialized_video_count": int(lerobot_v3.get("materialized_video_count") or 0),
+        "consumer_layout_complete": bool(lerobot_v3.get("consumer_layout_complete")),
+        "blockers": _string_list(lerobot_v3.get("blockers")),
+    }
+    gr00t_lerobot = _write_gr00t_lerobot_export(
+        output_dir=output_dir,
+        rows=rows,
+        materialized_clips=materialized_clips,
+        generated_at=generated_at,
+        scene_id=scene_id,
+        capture_id=capture_id,
+    )
+    files["gr00t_lerobot_manifest"] = "exports/gr00t_lerobot/gr00t_lerobot_export_manifest.json"
+    files["gr00t_modality_json"] = "exports/gr00t_lerobot/meta/modality.json"
+    formats["gr00t_lerobot"] = {
+        **formats["gr00t_lerobot"],
+        "status": gr00t_lerobot.get("status"),
+        "format_written": True,
+        "path": files["gr00t_lerobot_manifest"],
+        "modality_json_path": files["gr00t_modality_json"],
+        "episode_count": gr00t_lerobot.get("episode_count"),
+        "frame_count": gr00t_lerobot.get("frame_count"),
+        "native_parquet_written": bool(gr00t_lerobot.get("native_parquet_written")),
+        "materialized_video_count": int(gr00t_lerobot.get("materialized_video_count") or 0),
+        "consumer_layout_complete": bool(gr00t_lerobot.get("consumer_layout_complete")),
+        "blockers": _string_list(gr00t_lerobot.get("blockers")),
     }
 
     return {
@@ -1324,6 +2106,43 @@ def _clip_curation_summary(capture_root: Path) -> Dict[str, Any]:
     }
 
 
+def _replay_review_instructions_markdown(*, scene_id: str, capture_id: str) -> str:
+    return "\n".join(
+        [
+            "# Replay & Review Instructions",
+            "",
+            f"- Scene: {scene_id}",
+            f"- Capture: {capture_id}",
+            "",
+            "## Verify integrity",
+            "",
+            "1. Read `package_index.json` for the full file inventory.",
+            "2. Recompute SHA256 for every file and compare against `checksums.json`.",
+            "",
+            "## Review evidence",
+            "",
+            "3. Start with `dataset_card.json` for counts and the proof boundary.",
+            "4. Read `data/attempts.jsonl` (one attempt per line) alongside",
+            "   `data/failure_labels.jsonl`; failures are preserved, not filtered.",
+            "5. Cross-check curation decisions in `curation_report.json` and",
+            "   `semantic_dedup_report.json` before training on any clip.",
+            "",
+            "## Replay",
+            "",
+            "6. Replay attempts against the scenario definitions referenced by the",
+            "   export manifest's `included_artifacts` (scenario_eval_matrix, task",
+            "   cards). Attempt rows carry scenario/run ids for alignment.",
+            "",
+            "## Claim boundary",
+            "",
+            "- Nothing in this package is deployment approval, physical-robot proof,",
+            "  or safety validation. Generated/model-derived media is labeled as such",
+            "  and is never raw capture evidence.",
+            "",
+        ]
+    )
+
+
 def _write_package_files(
     *,
     output_dir: Path,
@@ -1341,6 +2160,7 @@ def _write_package_files(
     visual_augmentation_packet: Mapping[str, Any] | None = None,
     rl_post_training_handoff: Mapping[str, Any] | None = None,
     clip_curation: Mapping[str, Any] | None = None,
+    clip_source_roots: Sequence[Path] = (),
 ) -> Dict[str, Any]:
     data_dir = output_dir / "data"
     attempts = _rows(trace, "attempts")
@@ -1391,15 +2211,44 @@ def _write_package_files(
         "source_artifacts": dict(included_artifacts),
         "proof_boundary": dict(CLAIM_BOUNDARY),
     }
+    consent_evidence_record = _read_optional_mapping(output_dir / "consent_evidence.json")
+    revocation_takedown = _mapping(
+        consent_evidence_record.get("revocation_takedown")
+    ) or _read_optional_mapping(output_dir / "revocation_takedown_manifest.json")
+    revenue_share_review = {
+        "schema_version": "post_training_revenue_share_review.v1",
+        "generated_at": generated_at,
+        "status": "review_required",
+        "required_before_paid_reuse_or_resale": True,
+        "owner_revenue_share_record_present": False,
+        "revenue_share_commitment_made": False,
+        "payout_commitment_allowed": False,
+        "blockers": ["owner_revenue_share_record_missing"],
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "package_delivery_is_not_revenue_share_commitment": True,
+            "paid_reuse_requires_separate_owner_record": True,
+        },
+    }
     license_manifest = {
         "schema_version": "post_training_data_package_license_manifest.v1",
         "generated_at": generated_at,
-        "status": "review_required",
+        "status": "blocked_revocation_takedown_required"
+        if revocation_takedown.get("status") == "takedown_required"
+        else "review_required",
         "rights_privacy_review_required": True,
         "commercial_use_requires_package_scope_clearance": True,
+        "revocation_takedown": revocation_takedown
+        or {
+            "schema_version": "post_training_revocation_takedown_manifest.v1",
+            "status": "not_available",
+            "consent_revoked": False,
+        },
+        "revenue_share_review": revenue_share_review,
         "included_artifacts": dict(included_artifacts),
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
+    write_json(output_dir / "revenue_share_review.json", revenue_share_review)
     optional_exports = _write_optional_exports(
         output_dir=output_dir,
         attempts=attempts,
@@ -1409,6 +2258,7 @@ def _write_package_files(
         generated_at=generated_at,
         scene_id=scene_id,
         capture_id=capture_id,
+        clip_source_roots=clip_source_roots,
     )
     visual_augmentation_support: Dict[str, Any] | None = None
     if visual_augmentation_packet:
@@ -1450,6 +2300,10 @@ def _write_package_files(
     rl_handoff_payload = dict(rl_post_training_handoff or {})
     if rl_handoff_payload:
         write_json(output_dir / "rl_post_training_handoff_packet.json", rl_handoff_payload)
+    (output_dir / "replay_review_instructions.md").write_text(
+        _replay_review_instructions_markdown(scene_id=scene_id, capture_id=capture_id),
+        encoding="utf-8",
+    )
     write_json(output_dir / "dataset_card.json", dataset_card)
     write_json(output_dir / "license_manifest.json", license_manifest)
     write_json(output_dir / "optional_export_manifest.json", optional_exports)
@@ -1464,6 +2318,7 @@ def _write_package_files(
         "dataset_card": "dataset_card.json",
         "license_manifest": "license_manifest.json",
         "optional_export_manifest": "optional_export_manifest.json",
+        "replay_review_instructions": "replay_review_instructions.md",
         **dict(optional_exports.get("files") or {}),
     }
     if visual_augmentation_support:
@@ -1474,6 +2329,28 @@ def _write_package_files(
         package_file_index["rl_post_training_handoff_packet"] = (
             "rl_post_training_handoff_packet.json"
         )
+    if (output_dir / "consent_evidence.json").is_file():
+        package_file_index["consent_evidence"] = "consent_evidence.json"
+    if (output_dir / "revocation_takedown_manifest.json").is_file():
+        package_file_index["revocation_takedown_manifest"] = (
+            "revocation_takedown_manifest.json"
+        )
+    if (output_dir / "revenue_share_review.json").is_file():
+        package_file_index["revenue_share_review"] = "revenue_share_review.json"
+    if (output_dir / "success_claim_ledger.json").is_file():
+        package_file_index["success_claim_ledger"] = "success_claim_ledger.json"
+    existing_export_paths = set(package_file_index.values())
+    exports_dir = output_dir / "exports"
+    if exports_dir.is_dir():
+        for index, export_file in enumerate(sorted(exports_dir.rglob("*"))):
+            if not export_file.is_file():
+                continue
+            relative = _relative_to(output_dir, export_file)
+            if relative in existing_export_paths:
+                continue
+            key = f"export_file_{index:04d}_{_safe_path_component(export_file.stem, 'artifact')}"
+            package_file_index[key] = relative
+            existing_export_paths.add(relative)
     package_index = {
         "schema_version": "post_training_data_package_index.v1",
         "generated_at": generated_at,
@@ -1500,6 +2377,7 @@ def _write_package_files(
         "package_index": package_index,
         "checksums": checksums,
         "package_files": package_files,
+        "optional_exports": optional_exports,
     }
 
 
@@ -1522,6 +2400,11 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
         output_dir / "dataset_card.json",
         output_dir / "license_manifest.json",
         output_dir / "optional_export_manifest.json",
+        output_dir / "replay_review_instructions.md",
+        output_dir / "consent_evidence.json",
+        output_dir / "revocation_takedown_manifest.json",
+        output_dir / "revenue_share_review.json",
+        output_dir / "success_claim_ledger.json",
         output_dir / "visual_augmentation_support_manifest.json",
         output_dir / "rl_post_training_handoff_packet.json",
         output_dir / "package_index.json",
@@ -1650,6 +2533,8 @@ def build_post_training_data_package_export(
             ("robot_pov_render_storyboard", "robot_pov_render_storyboard.json"),
             ("policy_execution_manifest", "policy_execution_manifest.json"),
             ("policy_execution_trace", "policy_execution_trace.json"),
+            ("task_eval_run_report", "task_eval_run_report.json"),
+            ("success_claim_ledger", "success_claim_ledger.json"),
             ("intervention_safety_ledger", "intervention_safety_ledger.json"),
             ("safety_events_ledger", "safety_events_ledger.json"),
             ("clips_manifest", "clips_manifest.json"),
@@ -1820,6 +2705,32 @@ def build_post_training_data_package_export(
     included_artifacts["curation_report"] = "curation_report.json"
     included_artifacts["semantic_dedup_report"] = "semantic_dedup_report.json"
     included_artifacts["sc3_action_normalization_report"] = "sc3_action_normalization_report.json"
+
+    # LeRobot/GR00T-style per-episode export from the simulator batch streams.
+    # Fail-closed inside its own manifest: missing streams block it without
+    # blocking the wider package, and its status is surfaced in export_policy.
+    lerobot_export: Dict[str, Any] = {}
+    if resolved_job_dir and (
+        resolved_job_dir / "simulator_command_batch_control_stream.jsonl"
+    ).is_file():
+        from .lerobot_episode_export import build_lerobot_episode_export
+
+        job_request_for_export = _read_optional_mapping(
+            resolved_job_dir / "job_request.json"
+        )
+        lerobot_export = build_lerobot_episode_export(
+            job_dir=resolved_job_dir,
+            output_dir=resolved_output_dir,
+            robot_id=str(
+                job_request_for_export.get("robot_id")
+                or job_request_for_export.get("embodiment_id")
+                or "unitree_g1"
+            ),
+            generated_at=generated_at,
+        )
+        included_artifacts["lerobot_episode_export_manifest"] = (
+            "lerobot_episode_export/lerobot_episode_export_manifest.json"
+        )
     required = (
         "normalized_attempt_trace",
         "failure_labels",
@@ -1833,16 +2744,10 @@ def build_post_training_data_package_export(
         "proof_boundaries",
     )
     missing = [key for key in required if key not in included_artifacts]
-    # Attempt-trace producers that never claimed to capture SC3 7D action
-    # vectors (e.g. isaac_lab_arena result ingestion) legitimately have no
-    # action data at all; that absence is surfaced in sc3_action_report /
-    # sc3_action_contract_status but must not hard-block export. Malformed
-    # action data (present but invalid shape/values) still blocks.
-    _SC3_NO_ACTION_DATA_BLOCKERS = {"sc3_attempt_trace_missing", "sc3_action_trace_missing"}
     sc3_action_export_blockers = [
         blocker
         for blocker in _string_list(sc3_action_report.get("blockers"))
-        if blocker.rsplit(":", 1)[-1] not in _SC3_NO_ACTION_DATA_BLOCKERS
+        if blocker.rsplit(":", 1)[-1] not in SC3_NO_ACTION_DATA_BLOCKERS
     ]
     quality_gate_blockers = [
         *[f"curation:{blocker}" for blocker in _string_list(curation_report.get("blockers"))],
@@ -1861,6 +2766,16 @@ def build_post_training_data_package_export(
     )
     job_request = (
         _read_optional_mapping(resolved_job_dir / "job_request.json")
+        if resolved_job_dir
+        else {}
+    )
+    webapp_projection = (
+        _read_optional_mapping(resolved_job_dir / "webapp_robot_eval_status_projection.json")
+        if resolved_job_dir
+        else {}
+    )
+    task_eval_run_report = (
+        _read_optional_mapping(resolved_job_dir / "task_eval_run_report.json")
         if resolved_job_dir
         else {}
     )
@@ -1898,6 +2813,11 @@ def build_post_training_data_package_export(
         if resolved_job_dir
         else {}
     )
+    direct_success_claim_ledger = (
+        _read_optional_mapping(resolved_job_dir / "success_claim_ledger.json")
+        if resolved_job_dir
+        else {}
+    )
     policy_execution_trace = (
         _read_optional_mapping(resolved_job_dir / "policy_execution_trace.json")
         if resolved_job_dir
@@ -1910,6 +2830,37 @@ def build_post_training_data_package_export(
     )
     if not safety_events and resolved_job_dir:
         safety_events = _read_optional_mapping(resolved_job_dir / "safety_events_ledger.json")
+    success_claim_ledger = _success_claim_ledger_from_sources(
+        direct_success_claim_ledger,
+        task_eval_run_report,
+        candidate_package,
+        heldout_result,
+    )
+    if success_claim_ledger:
+        write_json(resolved_output_dir / "success_claim_ledger.json", success_claim_ledger)
+        included_artifacts["success_claim_ledger"] = "success_claim_ledger.json"
+    product_handoff = _extract_product_handoff(webapp_projection, job_request)
+    rights_packet = _read_optional_mapping(pipeline_dir / "robot_eval_dataset" / "rights_packet.json")
+    consent_evidence = _build_consent_evidence_record(
+        capture_root=context.capture_root,
+        output_dir=resolved_output_dir,
+        rights_packet=rights_packet,
+        generated_at=generated_at,
+    )
+    included_artifacts["consent_evidence"] = "consent_evidence.json"
+    consent_gate_blockers = [
+        f"consent:{blocker}" for blocker in _string_list(consent_evidence.get("blockers"))
+    ]
+    quality_gate_blockers = [*quality_gate_blockers, *consent_gate_blockers]
+    status = (
+        "blocked_missing_inputs"
+        if missing
+        else "blocked_consent_revoked_takedown_required"
+        if "consent:consent_revoked_takedown_required" in consent_gate_blockers
+        else "blocked_package_quality_gates"
+        if quality_gate_blockers
+        else "export_ready_review_required"
+    )
     visual_augmentation_packet = (
         _read_optional_mapping(
             resolved_job_dir
@@ -1953,7 +2904,14 @@ def build_post_training_data_package_export(
         visual_augmentation_packet=visual_augmentation_packet,
         rl_post_training_handoff=rl_post_training_handoff,
         clip_curation=_clip_curation_summary(context.capture_root),
+        clip_source_roots=[
+            *([resolved_job_dir] if resolved_job_dir else []),
+            context.capture_root,
+            context.pipeline_root,
+            context.capture_root / "raw",
+        ],
     )
+    included_artifacts["replay_review_instructions"] = "replay_review_instructions.md"
     live_gate_references = {
         gate_id: _live_closure_gate_reference(live_closure, gate_id)
         for gate_id in (
@@ -2041,7 +2999,17 @@ def build_post_training_data_package_export(
         "physical_robot_readiness_proven": False,
         "field_readiness_proven": False,
         "safety_validation_proven": False,
+        "consent_revocation_blocks_downstream_use": bool(
+            consent_evidence.get("consent_revoked")
+        ),
+        "package_delivery_is_not_revenue_share_commitment": True,
     }
+
+    optional_exports = _mapping(package_files.get("optional_exports"))
+    optional_formats = _mapping(optional_exports.get("formats"))
+    video_bundle_format = _mapping(optional_formats.get("video_bundle"))
+    lerobot_v3_format = _mapping(optional_formats.get("lerobot_v3"))
+    gr00t_lerobot_format = _mapping(optional_formats.get("gr00t_lerobot"))
 
     manifest = {
         "schema_version": POST_TRAINING_DATA_PACKAGE_EXPORT_SCHEMA_VERSION,
@@ -2053,10 +3021,41 @@ def build_post_training_data_package_export(
         "blockers": [f"missing_{key}" for key in missing] + quality_gate_blockers,
         "included_artifacts": included_artifacts,
         "handoff_records": handoff_records,
+        "product_handoff": product_handoff,
+        "consent_evidence": {
+            "path": "consent_evidence.json",
+            "status": consent_evidence.get("status"),
+            "consent_evidence_present": consent_evidence.get(
+                "consent_evidence_present"
+            )
+            is True,
+            "consent_revoked": consent_evidence.get("consent_revoked") is True,
+            "consent_revoked_at": consent_evidence.get("consent_revoked_at"),
+            "blockers": _string_list(consent_evidence.get("blockers")),
+        },
+        "revocation_takedown": {
+            **_mapping(consent_evidence.get("revocation_takedown")),
+            "path": "revocation_takedown_manifest.json",
+        },
+        "revenue_share_review": _mapping(
+            _mapping(package_files.get("license_manifest")).get(
+                "revenue_share_review"
+            )
+        )
+        or _read_optional_mapping(resolved_output_dir / "revenue_share_review.json"),
+        "success_claim_ledger_path": (
+            "success_claim_ledger.json" if success_claim_ledger else None
+        ),
         "manifest_counts": {
             "attempt_count": int(trace.get("attempt_count") or 0),
             "failure_label_count": int(labels.get("label_count") or 0),
             "clip_count": int(clips.get("clip_count") or 0),
+            "materialized_clip_count": int(
+                video_bundle_format.get("materialized_clip_count") or 0
+            ),
+            "missing_clip_file_count": int(
+                video_bundle_format.get("missing_clip_file_count") or 0
+            ),
             "curated_clip_count": int(curation_report.get("accepted_clip_count") or 0),
             "rejected_clip_count": int(curation_report.get("rejected_clip_count") or 0),
             "semantic_duplicate_group_count": int(
@@ -2096,6 +3095,18 @@ def build_post_training_data_package_export(
             or "simulator_command_batch_visual_review_ledger" in included_artifacts,
             "arena_metrics_included": bool(metrics),
             "clips_manifest_included": bool(clips),
+            "consent_evidence_record_included": "consent_evidence" in included_artifacts,
+            "consent_evidence_present": consent_evidence.get(
+                "consent_evidence_present"
+            )
+            is True,
+            "consent_revoked": consent_evidence.get("consent_revoked") is True,
+            "revocation_takedown_manifest_included": (
+                "revocation_takedown_manifest" in _mapping(package_files.get("package_index")).get("files", {})
+            ),
+            "revenue_share_review_included": (
+                "revenue_share_review" in _mapping(package_files.get("package_index")).get("files", {})
+            ),
             "oscar_style_curation_filters_passed": curation_report.get("status") == "passed",
             "semantic_dedup_passed": semantic_dedup_report.get("status") == "passed",
             "sc3_7d_action_contract_passed": sc3_action_report.get("status") == "passed",
@@ -2110,6 +3121,32 @@ def build_post_training_data_package_export(
                     "simulator_command_batch_planner_state",
                     "simulator_command_batch_control_stream",
                 )
+            ),
+            "lerobot_episode_export_included": bool(lerobot_export),
+            "lerobot_episode_export_status": lerobot_export.get("status"),
+            "lerobot_episode_export_episode_count": lerobot_export.get(
+                "episode_count"
+            ),
+            "lerobot_gr00t_ready_episode_count": lerobot_export.get(
+                "gr00t_ready_episode_count"
+            ),
+            "materialized_video_bundle_included": int(
+                video_bundle_format.get("materialized_clip_count") or 0
+            )
+            > 0,
+            "all_declared_clips_materialized": bool(
+                video_bundle_format.get("all_declared_clips_materialized")
+            ),
+            "lerobot_v3_export_included": bool(lerobot_v3_format),
+            "lerobot_v3_consumer_layout_complete": bool(
+                lerobot_v3_format.get("consumer_layout_complete")
+            ),
+            "gr00t_lerobot_export_included": bool(gr00t_lerobot_format),
+            "gr00t_lerobot_consumer_layout_complete": bool(
+                gr00t_lerobot_format.get("consumer_layout_complete")
+            ),
+            "gr00t_modality_json_included": bool(
+                gr00t_lerobot_format.get("modality_json_path")
             ),
             "sim_vs_real_calibration_included": "sim_vs_real_calibration_report"
             in included_artifacts,
@@ -2131,14 +3168,27 @@ def build_post_training_data_package_export(
                 visual_augmentation_packet
             ),
             "visual_augmentation_generated_videos_are_raw_capture_evidence": False,
-            "rl_post_training_handoff_included": True,
-            "rl_sparse_reward_signal_included": True,
-            "concurrent_baseline_ab_plan_included": True,
-            "bottleneck_stage_detection_included": True,
-            "speed_curriculum_plan_included": True,
-            "action_chunk_continuity_qa_included": True,
-            "intervention_safety_ledger_included": True,
+            "rl_post_training_handoff_included": bool(rl_post_training_handoff),
+            "rl_sparse_reward_signal_included": bool(
+                _mapping(rl_post_training_handoff.get("sparse_reward_signal"))
+            ),
+            "concurrent_baseline_ab_plan_included": bool(
+                _mapping(rl_post_training_handoff.get("concurrent_baseline_ab"))
+            ),
+            "bottleneck_stage_detection_included": bool(
+                _mapping(rl_post_training_handoff.get("bottleneck_stage_detection"))
+            ),
+            "speed_curriculum_plan_included": bool(
+                _mapping(rl_post_training_handoff.get("speed_curriculum_plan"))
+            ),
+            "action_chunk_continuity_qa_included": bool(
+                _mapping(rl_post_training_handoff.get("action_chunk_continuity_qa"))
+            ),
+            "intervention_safety_ledger_included": bool(
+                _mapping(rl_post_training_handoff.get("intervention_safety_ledger"))
+            ),
         },
+        "optional_exports": optional_exports,
         "package_files": package_files["package_files"],
         "dataset_card_path": "dataset_card.json",
         "license_manifest_path": "license_manifest.json",
@@ -2147,6 +3197,7 @@ def build_post_training_data_package_export(
         "archive_manifest_path": "archive_manifest.json",
         "archive": archive_manifest["archive"],
         "curation_report_path": "curation_report.json",
+        "replay_review_instructions_path": "replay_review_instructions.md",
         "semantic_dedup_report_path": "semantic_dedup_report.json",
         "sc3_action_normalization_report_path": "sc3_action_normalization_report.json",
         "optional_export_manifest_path": "optional_export_manifest.json",
@@ -2173,6 +3224,18 @@ def build_post_training_data_package_export(
         },
         "claim_boundary": manifest_claim_boundary,
     }
+    buyer_readout = build_buyer_package_readout(
+        export_manifest=manifest,
+        success_claim_ledger=success_claim_ledger,
+        product_handoff=product_handoff,
+    )
+    write_json(resolved_output_dir / "buyer_package_readout.json", buyer_readout)
+    (resolved_output_dir / "buyer_package_summary.md").write_text(
+        render_buyer_package_readout_markdown(buyer_readout), encoding="utf-8"
+    )
+    manifest["buyer_package_readout_path"] = "buyer_package_readout.json"
+    manifest["buyer_package_summary_path"] = "buyer_package_summary.md"
+    manifest["buyer_readout_status"] = buyer_readout["status"]
     write_json(resolved_output_dir / "post_training_data_package_export_manifest.json", manifest)
     _annotate_live_closure_with_handoff(
         job_dir=resolved_job_dir,

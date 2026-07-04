@@ -26,9 +26,13 @@ def build_buyer_trust_score(
     reasons: list[str] = []
 
     completeness_status = str(scorecard.get("completeness_status") or "").strip().lower()
-    if completeness_status and completeness_status != "sufficient":
+    if completeness_status != "sufficient":
         score -= 30
-        reasons.append("capture completeness is below launch threshold")
+        reasons.append(
+            "capture completeness is below launch threshold"
+            if completeness_status
+            else "capture completeness evidence is missing"
+        )
 
     confidence = float(qualification_record.get("confidence") or 0.0)
     if confidence < 0.75:

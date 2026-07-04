@@ -1595,6 +1595,12 @@ def assess_source_policy_observation_visual_qa(
         "generated_at": generated_at,
         "status": "passed_visual_quality_gate" if passed else "failed_visual_quality_gate",
         "visual_success": passed,
+        # Layer marker: this gate is the media-validity layer only. Consumers must not
+        # promote it to review_task_success or task_success.
+        "success_claim_layer": "media_validity",
+        "media_validity_passed": passed,
+        "review_task_success": None,
+        "task_success": None,
         "visual_profile": visual_profile,
         "review_quality_required": review_quality_required,
         "source_frame_path": str(Path(frame_path).expanduser()) if frame_path else None,

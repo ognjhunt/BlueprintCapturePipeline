@@ -236,6 +236,8 @@ def test_runpod_wam_direct_url_files_block_on_launch_gates_without_leaking_urls(
     assert "paid_runpod_launch_not_authorized_by_runner_flag" in manifest["blockers"]
     assert f"missing_env_{RUNPOD_API_GATE_ENV}" in manifest["blockers"]
     assert f"missing_env_{runner.RUNPOD_POD_LAUNCH_GATE_ENV}" in manifest["blockers"]
+    assert "runpod_wam_max_spend_usd_missing" in manifest["blockers"]
+    assert manifest["prelaunch_spend_guard"]["can_launch"] is False
     assert manifest["provider_bundle_url_file"]["mode_is_0600"] is True
     assert manifest["provider_output_put_url_file"]["mode_is_0600"] is True
     assert manifest["provider_output_get_url_file"]["mode_is_0600"] is True
@@ -296,6 +298,7 @@ def test_runpod_create_allows_unitree_groot_sonic_full_loop_bundle_without_overr
     monkeypatch.delenv(runner.RUNPOD_UNITREE_GROOT_SONIC_FULL_LOOP_OVERRIDE_ENV, raising=False)
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
     monkeypatch.setenv(runner.RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV, "true")
     monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
     monkeypatch.setattr(
@@ -319,6 +322,8 @@ def test_runpod_create_allows_unitree_groot_sonic_full_loop_bundle_without_overr
 
     assert manifest["status"] == "pod_created"
     assert manifest["pod_id"] == "pod-123"
+    assert manifest["prelaunch_spend_guard"]["can_launch"] is True
+    assert manifest["prelaunch_spend_guard"]["requested_budget_usd"] == 0.75
     assert [call["path"] for call in calls] == ["/pods"]
     create_call = calls[0]
     assert create_call["payload"]["env"]["BLUEPRINT_RUNPOD_PROVIDER_BUNDLE_KIND"] == "wam"
@@ -357,6 +362,7 @@ def test_runpod_create_reuses_dynamic_existing_pod_candidate(
 
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
     monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
     monkeypatch.setattr(
         runner,
@@ -433,6 +439,7 @@ def test_runpod_create_reuses_recorded_warm_candidate(
 
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
     monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
     monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
     monkeypatch.setattr(
@@ -514,6 +521,7 @@ def test_runpod_create_falls_back_when_stopped_warm_candidate_cannot_start(
 
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
     monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
     monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
     monkeypatch.setattr(
@@ -594,6 +602,7 @@ def test_runpod_create_retires_missing_stopped_warm_candidate_before_fallback(
 
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
     monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
     monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
     monkeypatch.setattr(
@@ -669,6 +678,7 @@ def test_runpod_create_labels_running_hot_candidate_reuse_boundary(
 
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
     monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
     monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
     monkeypatch.setattr(
@@ -754,6 +764,7 @@ def test_runpod_create_rejects_stale_running_hot_candidate_without_runtime(
 
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
     monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
     monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
     monkeypatch.setattr(
@@ -824,6 +835,7 @@ def test_runpod_create_ignores_incompatible_warm_candidate(
 
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
     monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
     monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
     monkeypatch.setattr(
@@ -874,6 +886,7 @@ def test_runpod_create_clears_stale_output_from_prior_run(
 
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
     monkeypatch.setattr(runner, "_runpod_request", lambda **kwargs: (200, {"id": "pod-xyz"}))
     monkeypatch.setattr(
         runner,
@@ -1655,6 +1668,7 @@ def test_runpod_unitree_unifolm_create_uses_provider_kind_without_leaking_urls(
         path.chmod(0o600)
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
     monkeypatch.setattr(
         runner,
         "_read_runpod_api_key",
@@ -2442,3 +2456,154 @@ def test_runpod_poll_preserves_active_pod_before_first_heartbeat(
     assert manifest["continuing_spend_from_this_run"] is True
     assert manifest["teardown_performed"] is False
     assert delete_called["value"] is False
+
+
+def test_runpod_poll_deletes_active_pod_after_startup_heartbeat_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-startup-stalled",
+                "output_path": str(output_zip),
+                "created_at_epoch": runner.time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests: list[dict[str, object]] = []
+    monotonic_values = iter([0.0, 0.0, 2.0])
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-startup-stalled":
+            return 202, {}
+        if kwargs["path"] == "/pods/pod-startup-stalled":
+            return 200, {"desiredStatus": "RUNNING"}
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(monotonic_values, 2.0))
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=100,
+        retry_interval_seconds=10,
+        teardown=True,
+        post_marker_no_progress_timeout_seconds=1,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["runtime_stall_observed"] is True
+    assert manifest["stall_teardown_requested"] is True
+    assert manifest["stall_evaluation"]["stall_mode"] == "container_startup"
+    assert manifest["teardown_performed"] is True
+    assert manifest["continuing_spend_from_this_run"] is False
+    assert [request["path"] for request in requests] == [
+        "/pods/pod-startup-stalled",
+        "/pods/pod-startup-stalled",
+    ]
+    reliability = json.loads((job_dir / "provider_reliability_manifest.json").read_text())
+    assert reliability["failed_phase"] == "container_startup"
+    assert reliability["open_billing_risk"] is False
+    assert (job_dir / "runpod_wam_async_delete_manifest.json").is_file()
+
+
+def test_runpod_poll_deletes_pod_after_nonterminal_heartbeat_stalls(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_get_url_file = tmp_path / "provider_output_get_url.txt"
+    output_get_url_file.write_text(
+        "https://spaces.example/persistent-output.zip?X-Amz-Signature=download-secret\n",
+        encoding="utf-8",
+    )
+    output_get_url_file.chmod(0o600)
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    running_zip = tmp_path / "running.zip"
+    with zipfile.ZipFile(running_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("wam_provider_output.json", json.dumps({"status": "running"}))
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-runtime-stalled",
+                "output_path": str(output_zip),
+                "provider_output_get_url_file": {
+                    "path": str(output_get_url_file),
+                    "raw_secret_values_recorded": False,
+                },
+                "created_at_epoch": runner.time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests: list[dict[str, object]] = []
+    monotonic_values = iter([0.0, 0.0, 0.0, 0.0, 2.0])
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return running_zip.read_bytes()
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["path"] == "/pods/pod-runtime-stalled":
+            return 200, {"desiredStatus": "RUNNING"}
+        if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-runtime-stalled":
+            return 202, {}
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(runner.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(monotonic_values, 2.0))
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=100,
+        retry_interval_seconds=10,
+        teardown=True,
+        post_marker_no_progress_timeout_seconds=1,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["runtime_stall_observed"] is True
+    assert manifest["stall_evaluation"]["stall_mode"] == "runtime_execution"
+    assert manifest["last_nonterminal_output"]["runtime_result_status"] == "running"
+    assert manifest["teardown_performed"] is True
+    assert manifest["continuing_spend_from_this_run"] is False
+    assert [request["path"] for request in requests] == [
+        "/pods/pod-runtime-stalled",
+        "/pods/pod-runtime-stalled",
+    ]
+    reliability = json.loads((job_dir / "provider_reliability_manifest.json").read_text())
+    assert reliability["failed_phase"] == "runtime_execution"
+    assert any(
+        blocker.startswith("post_marker_no_progress:")
+        for blocker in reliability["failure_blockers"]
+    )
+    assert reliability["open_billing_risk"] is False

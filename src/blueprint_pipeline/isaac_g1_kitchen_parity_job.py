@@ -9,8 +9,9 @@ Chain:
   scenarios + kitchen asset dir + G1 USD ref
     -> bundle (runner + policy module + request.json + kitchen assets)
     -> stage to object store (signed GET/PUT)        [reused from the splat job]
-    -> provider GPU pod runs run_isaac_g1_kitchen_parity_eval.py via a hardened bootstrap
-       (RunPod by default; Vast paid launch requires an explicit unstable override)
+    -> provider GPU VM/pod runs run_isaac_g1_kitchen_parity_eval.py via a hardened bootstrap
+       (DigitalOcean by default for this high-reliability Isaac review lane; RunPod remains
+       explicit compatibility; Vast paid launch requires an explicit unstable override)
     -> RTX MP4s + traces + parity outcome JSON uploaded
     -> collect -> assemble the WAM-ready harness package with an honest claim boundary.
 
@@ -54,6 +55,7 @@ PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS = frozenset({
 })
 DEFAULT_G1_USD_RELATIVE = "Isaac/Robots/Unitree/G1/g1.usd"
 DEFAULT_KITCHEN_MAIN_USD = "Collected_KitchenRoom/KitchenRoom.usd"
+DEFAULT_ISAAC_REVIEW_PROVIDER = "digitalocean"
 DEFAULT_VAST_MAX_HOURLY_RATE_USD = 5.0
 ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV = "BLUEPRINT_ALLOW_UNSTABLE_VAST_ISAAC_RENDER"
 ISAAC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF"
@@ -65,6 +67,9 @@ DEFAULT_PARITY_IMAGE_REF = "docker.io/nijelhunt/blueprint-isaac-eval-worker:2026
 ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV = "BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC"
 DEFAULT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC = "output/isaac_worker_image_manifest_diagnostic.json"
 ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV = "BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START"
+COLD_RACE_CONTENDERS_ENV = "BLUEPRINT_COLD_RACE_CONTENDERS"
+DEFAULT_COLD_RACE_CONTENDERS = 2
+DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS = 600
 ISAAC_G1_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_ISAAC_G1_GROOT_POLICY_COMMAND"
 UNITREE_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"
 UNITREE_GROOT_POLICY_SERVER_URL_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL"
@@ -363,6 +368,136 @@ def _probe_video_file(path: str | Path) -> dict:
     }
 
 
+REVIEW_MP4_FRAME_PATTERNS = {
+    "overview": "overview_[0-9][0-9][0-9][0-9].png",
+    "robot_pov": "robot_pov_[0-9][0-9][0-9][0-9].png",
+    "placement_topdown": "placement_topdown_[0-9][0-9][0-9][0-9].png",
+}
+
+REVIEW_MP4_FRAME_SEQUENCES = {
+    "overview": "overview_%04d.png",
+    "robot_pov": "robot_pov_%04d.png",
+    "placement_topdown": "placement_topdown_%04d.png",
+}
+
+
+def _ffmpeg_mp4_command(
+    *,
+    ffmpeg: str,
+    frames_sequence: str,
+    fps: int,
+    out_path: str,
+) -> list[str]:
+    return [
+        ffmpeg,
+        "-y",
+        "-framerate",
+        str(int(fps)),
+        "-start_number",
+        "0",
+        "-i",
+        frames_sequence,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        out_path,
+    ]
+
+
+def _repair_collected_review_mp4s(
+    *,
+    render_out_dir: Path,
+    result: dict,
+    fps: int,
+    optional_videos: Sequence[str] = (),
+    expected_frame_count: int | None = None,
+) -> dict:
+    """Assemble missing collected MP4s locally when the provider image lacked ffmpeg.
+
+    When ``expected_frame_count`` is known, a repair over fewer frames is labeled
+    ``repaired_truncated`` with a blocker instead of ``repaired`` — a locally
+    assembled MP4 must never make a partially-uploaded provider render read as a
+    complete one. The truncated video is still written for human review.
+    """
+    scenarios = result.get("scenarios", []) if isinstance(result, dict) else []
+    ffmpeg = shutil.which("ffmpeg")
+    repairs: list[dict] = []
+    optional_video_set = {str(name) for name in optional_videos}
+    expected = int(expected_frame_count) if expected_frame_count else None
+    for sc in scenarios:
+        sid = sc.get("scenario_id")
+        sdir = render_out_dir / str(sid)
+        frames_dir = sdir / "frames"
+        for name, pattern in REVIEW_MP4_FRAME_PATTERNS.items():
+            out_path = sdir / f"{name}.mp4"
+            frame_paths = sorted(frames_dir.glob(pattern))
+            rec: dict = {
+                "scenario_id": sid,
+                "video": name,
+                "path": str(out_path),
+                "frame_pattern": pattern,
+                "frame_count": len(frame_paths),
+                "expected_frame_count": expected,
+            }
+            truncated = expected is not None and 0 < len(frame_paths) < expected
+            if out_path.is_file():
+                rec["status"] = "already_present"
+            elif not frame_paths:
+                if name in optional_video_set:
+                    rec["status"] = "skipped_optional"
+                    rec["optional"] = True
+                else:
+                    rec["status"] = "missing_frames"
+                    rec["blockers"] = ["video_frames_missing"]
+            elif not ffmpeg:
+                rec["status"] = "unavailable"
+                rec["blockers"] = ["local_ffmpeg_not_found"]
+            else:
+                cmd = _ffmpeg_mp4_command(
+                    ffmpeg=ffmpeg,
+                    frames_sequence=str(frames_dir / REVIEW_MP4_FRAME_SEQUENCES[name]),
+                    fps=int(fps),
+                    out_path=str(out_path),
+                )
+                proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                rec["tool"] = ffmpeg
+                rec["exit_code"] = proc.returncode
+                if proc.returncode == 0 and out_path.is_file():
+                    if truncated:
+                        rec["status"] = "repaired_truncated"
+                        rec["blockers"] = [
+                            "mp4_repair_truncated_frames:"
+                            f"{name}:{len(frame_paths)}<{expected}"
+                        ]
+                    else:
+                        rec["status"] = "repaired"
+                else:
+                    rec["status"] = "failed"
+                    rec["blockers"] = ["local_ffmpeg_mp4_repair_failed"]
+                    rec["stderr_tail"] = proc.stderr[-500:]
+            repairs.append(rec)
+    blockers = sorted({
+        str(blocker)
+        for rec in repairs
+        for blocker in (rec.get("blockers") or [])
+    })
+    return {
+        "schema_version": "isaac_collected_review_mp4_repair.v1",
+        "status": "PASS" if not blockers else "FAIL",
+        "blockers": blockers,
+        "ffmpeg": ffmpeg,
+        "fps": int(fps),
+        "repairs": repairs,
+        "claim_boundary": (
+            "Local MP4 repair assembles already-collected provider PNG frames. It does not alter "
+            "rendered frames, task outcomes, or evaluator success labels."
+        ),
+    }
+
+
 def parity_image() -> str:
     """Isaac worker image for the parity eval (defaults to the same Isaac eval worker)."""
     image_config = _configured_isaac_worker_image_ref()
@@ -524,24 +659,43 @@ def mark(ph, **k):
 def hb():
     while True:
         time.sleep(25); putout()
+def fetch_bytes(url, *, phase, timeout=1800, progress_step=67108864):
+    chunks=[]; total=0; next_mark=progress_step
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        content_length=resp.headers.get("Content-Length") or resp.headers.get("content-length")
+        mark(phase+"_connected", content_length_bytes=content_length)
+        while True:
+            chunk=resp.read(4194304)
+            if not chunk: break
+            chunks.append(chunk); total += len(chunk)
+            if total >= next_mark:
+                mark(phase+"_progress", bytes_read=total, content_length_bytes=content_length)
+                next_mark = total + progress_step
+    mark(phase+"_fetched", bytes_read=total)
+    return b"".join(chunks)
 def runner_timeout_seconds():
     raw=os.environ.get("PARITY_RUNNER_TIMEOUT_SECONDS","")
     if not raw: return 0
     try: return max(1, int(float(raw)))
     except Exception: return 0
-mark("bootstrap_fetching")
-data=urllib.request.urlopen(GETB, timeout=600).read()
-zipfile.ZipFile(io.BytesIO(data)).extractall(BUNDLE)
-mark("bootstrap_extracted", files=sorted(os.listdir(BUNDLE)))
-# kitchen assets are staged separately (large, reused across iterations) and fetched into BUNDLE/kitchen
-KURL=os.environ.get("KITCHEN_BUNDLE_URL","")
-if KURL:
-    mark("kitchen_fetching")
-    kdir=BUNDLE+"/kitchen"; pathlib.Path(kdir).mkdir(parents=True, exist_ok=True)
-    kdata=urllib.request.urlopen(KURL, timeout=1800).read()
-    zipfile.ZipFile(io.BytesIO(kdata)).extractall(kdir)
-    mark("kitchen_extracted", kitchen_files=len(list(pathlib.Path(kdir).rglob("*"))))
 threading.Thread(target=hb, daemon=True).start()
+try:
+    mark("bootstrap_fetching")
+    data=fetch_bytes(GETB, phase="bootstrap_fetch", timeout=600, progress_step=16777216)
+    zipfile.ZipFile(io.BytesIO(data)).extractall(BUNDLE)
+    mark("bootstrap_extracted", files=sorted(os.listdir(BUNDLE)))
+    # kitchen assets are staged separately (large, reused across iterations) and fetched into BUNDLE/kitchen
+    KURL=os.environ.get("KITCHEN_BUNDLE_URL","")
+    if KURL:
+        mark("kitchen_fetching")
+        kdir=BUNDLE+"/kitchen"; pathlib.Path(kdir).mkdir(parents=True, exist_ok=True)
+        kdata=fetch_bytes(KURL, phase="kitchen_fetch", timeout=1800)
+        mark("kitchen_extracting", bytes_read=len(kdata))
+        zipfile.ZipFile(io.BytesIO(kdata)).extractall(kdir)
+        mark("kitchen_extracted", kitchen_files=len(list(pathlib.Path(kdir).rglob("*"))))
+except Exception as exc:
+    mark("bootstrap_failed", error=repr(exc))
+    raise
 try: subprocess.call(["/isaac-sim/python.sh","-m","pip","install","-q","pillow","google-genai"])  # frame save + Gemini QC deps (best-effort)
 except Exception: pass
 try: subprocess.call(["bash","-c","command -v ffmpeg >/dev/null 2>&1 || (apt-get update -y >/dev/null 2>&1 && apt-get install -y ffmpeg >/dev/null 2>&1)"])  # mp4 assembly (best-effort)
@@ -559,6 +713,11 @@ cmd=["/isaac-sim/python.sh", BUNDLE+"/run_isaac_g1_kitchen_parity_eval.py",
 if os.environ.get("PARITY_GROOT_POLICY_COMMAND",""): cmd += ["--groot-policy-command", os.environ["PARITY_GROOT_POLICY_COMMAND"]]
 if os.environ.get("PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS",""): cmd += ["--groot-policy-command-timeout-seconds", os.environ["PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"]]
 if os.environ.get("PARITY_GROOT_POLICY_INITIAL_FRAME",""): cmd += ["--groot-policy-initial-frame", os.environ["PARITY_GROOT_POLICY_INITIAL_FRAME"]]
+if os.environ.get("PARITY_DYNAMIC_EPISODE_TERMINATION","")=="1": cmd.append("--dynamic-episode-termination")
+elif os.environ.get("PARITY_DYNAMIC_EPISODE_TERMINATION","")=="0": cmd.append("--no-dynamic-episode-termination")
+if os.environ.get("PARITY_EPISODE_MAX_STEPS",""): cmd += ["--episode-max-steps", os.environ["PARITY_EPISODE_MAX_STEPS"]]
+if os.environ.get("PARITY_DYNAMIC_EPISODE_CHECK_EVERY",""): cmd += ["--dynamic-episode-check-every", os.environ["PARITY_DYNAMIC_EPISODE_CHECK_EVERY"]]
+if os.environ.get("PARITY_CAPTURE_EVERY",""): cmd += ["--capture-every", os.environ["PARITY_CAPTURE_EVERY"]]
 if os.environ.get("PARITY_KEEP_OBJECTS",""): cmd += ["--keep-objects", os.environ["PARITY_KEEP_OBJECTS"]]
 if os.environ.get("PARITY_NO_PROBE","")=="1": cmd.append("--no-collision-probe")
 if os.environ.get("PARITY_CHEAP_COLLISION","")=="1": cmd.append("--cheap-collision")
@@ -578,6 +737,7 @@ if os.environ.get("PARITY_ROBOT_REVIEW_MATERIAL_MODE",""): cmd += ["--robot-revi
 if os.environ.get("PARITY_COLLISION_APPROXIMATION",""): cmd += ["--collision-approximation", os.environ["PARITY_COLLISION_APPROXIMATION"]]
 if os.environ.get("PARITY_VERIFY_CAM","")=="1": cmd.append("--verify-cam")
 if os.environ.get("PARITY_MANIPULATION_STAND","")=="1": cmd.append("--manipulation-stand")
+if os.environ.get("PARITY_NO_PLACEMENT_TOPDOWN_CAPTURE","")=="1": cmd.append("--no-placement-topdown-capture")
 if os.environ.get("PARITY_KINEMATIC_ARM_POSE","")=="1": cmd.append("--kinematic-arm-pose")
 if os.environ.get("PARITY_RENDER_NOISE_AUDIT","")=="1":
     cmd.append("--render-noise-audit")  # variant-matrix render-quality audit instead of the scenario eval
@@ -823,7 +983,11 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       dynamic_standing_contact_steps: int = 0,
                       manipulation_cam: bool = False, manipulation_look_at: str = "",
                       render_subframes: int = 0, manipulation_reach: bool = False,
-                      manipulation_reach_arm: str = "both",
+                      manipulation_reach_arm: str = "auto",
+                      dynamic_episode_termination: bool = True,
+                      episode_max_steps: int = 0,
+                      dynamic_episode_check_every: int = 1,
+                      capture_every: int = 1,
                       fill_light_intensity: float = 0.0,
                       neutral_environment: bool = False,
                       robot_review_material_override: bool = False,
@@ -832,6 +996,7 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       collision_approximation: str = "",
                       verify_cam: bool = False,
                       manipulation_stand: bool = False,
+                      placement_topdown_capture: bool = True,
                       render_noise_audit: bool = False,
                       audit_high_spp: int = 0,
                       audit_warmup_frames: int = 0,
@@ -892,6 +1057,13 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_MANIPULATION_REACH"] = "1"
     if manipulation_reach and manipulation_reach_arm:
         env["PARITY_MANIPULATION_REACH_ARM"] = str(manipulation_reach_arm)
+    env["PARITY_DYNAMIC_EPISODE_TERMINATION"] = "1" if dynamic_episode_termination else "0"
+    if episode_max_steps and episode_max_steps > 0:
+        env["PARITY_EPISODE_MAX_STEPS"] = str(int(episode_max_steps))
+    if dynamic_episode_check_every and dynamic_episode_check_every > 1:
+        env["PARITY_DYNAMIC_EPISODE_CHECK_EVERY"] = str(int(dynamic_episode_check_every))
+    if capture_every and capture_every > 1:
+        env["PARITY_CAPTURE_EVERY"] = str(int(capture_every))
     if fill_light_intensity and fill_light_intensity > 0:
         env["PARITY_FILL_LIGHT_INTENSITY"] = str(fill_light_intensity)
     if neutral_environment:
@@ -908,6 +1080,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["PARITY_VERIFY_CAM"] = "1"
     if manipulation_stand:
         env["PARITY_MANIPULATION_STAND"] = "1"
+    if not placement_topdown_capture:
+        env["PARITY_NO_PLACEMENT_TOPDOWN_CAPTURE"] = "1"
     if render_noise_audit:
         env["PARITY_RENDER_NOISE_AUDIT"] = "1"
         if audit_high_spp and audit_high_spp > 0:
@@ -969,6 +1143,9 @@ def build_harness_package(
         items.append({
             "scenario_id": sid,
             "task_success": sc.get("task_success"),
+            "task_success_contract": sc.get("task_success_contract"),
+            "review_task_success": sc.get("review_task_success"),
+            "success_claim_ledger": sc.get("success_claim_ledger"),
             "trace_jsonl": str(sdir / "trace.jsonl"),
             "overview_mp4": str(overview_mp4),
             "robot_pov_mp4": str(robot_pov_mp4),
@@ -994,7 +1171,11 @@ def build_harness_package(
         "claim_boundary": (
             "Isaac RTX kinematic walk-to-target preview parity with the MuJoCo lane. The WAM "
             "evaluator judges generated-rollout video fidelity, not task success or readiness. "
-            "Task success is the deterministic outcome contract in the result."
+            "task_success here means only that the scenario's declared task_success_contract "
+            "(e.g. root navigation within tolerance, or visible reach) passed in the trace — "
+            "not that the described manipulation happened, not contact, not object state "
+            "change, and not physical readiness. scenarios_passed counts those contract "
+            "passes, nothing stronger."
         ),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1023,8 +1204,12 @@ def _request_with_launch_session_nonce(request: dict, launch_session_id: str) ->
 
 
 def _provider_names(provider: str | None) -> list[str]:
-    names = [p.strip().lower() for p in str(provider or "runpod").split(",") if p.strip()]
-    return names or ["runpod"]
+    names = [
+        p.strip().lower()
+        for p in str(provider or DEFAULT_ISAAC_REVIEW_PROVIDER).split(",")
+        if p.strip()
+    ]
+    return names or [DEFAULT_ISAAC_REVIEW_PROVIDER]
 
 
 def _env_truthy(name: str) -> bool:
@@ -1302,6 +1487,33 @@ def _launch_failure_blockers(attempts: Sequence[dict]) -> list[str]:
     return final_blockers
 
 
+class _ColdCreateContender:
+    """Provider proxy for same-provider cold-create racing."""
+
+    def __init__(self, provider) -> None:
+        self._provider = provider
+
+    @property
+    def name(self) -> str:
+        return self._provider.name
+
+    def launch(self, job_dir, request, *, cold: bool = False, **kwargs):
+        return self._provider.launch(job_dir, request, cold=True, **kwargs)
+
+    def __getattr__(self, attr):
+        return getattr(self._provider, attr)
+
+
+def resolve_cold_race_contenders(value: int | None = None) -> int:
+    """How many same-provider cold creates to race. CLI/param wins over env."""
+    raw = value if value is not None else os.getenv(COLD_RACE_CONTENDERS_ENV, "")
+    try:
+        count = int(str(raw).strip() or DEFAULT_COLD_RACE_CONTENDERS)
+    except (TypeError, ValueError):
+        count = DEFAULT_COLD_RACE_CONTENDERS
+    return max(1, min(4, count))
+
+
 def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts: int = 3,
                              marker_timeout: int = 150, poll: int = 15,
                              cold: bool = True,
@@ -1529,11 +1741,13 @@ def run_isaac_g1_kitchen_parity_job(
     *, scenarios: Sequence[dict], out_dir: str | Path, kitchen_asset_dir: str | Path | None = None,
     kitchen_url: str | None = None,
     g1_usd: str = DEFAULT_G1_USD_RELATIVE, policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
-    steps: int = 64, provider: str = "runpod", allow_paid: bool = False,
+    steps: int = 64, provider: str = DEFAULT_ISAAC_REVIEW_PROVIDER, allow_paid: bool = False,
     allow_dirty_paid_launch: bool = False, cold: bool = False,
     image: str | None = None, key_prefix: str = "blueprint/isaac-g1-parity", max_seconds: int = 1500,
     marker_timeout: int = 900, max_attempts: int = 3,
-    startup_no_runtime_timeout: int = 0,
+    post_marker_progress_timeout: int = 360,
+    startup_no_runtime_timeout: int = DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS,
+    cold_race_contenders: int | None = None,
     width: int = 1280, height: int = 960, fps: int = 20,
     warmup: int = 6, per_scenario_seconds: int = 420,
     container_disk_gb: int = 140, volume_gb: int = 80,
@@ -1542,7 +1756,9 @@ def run_isaac_g1_kitchen_parity_job(
     physics_articulation_drive: bool = False,
     dynamic_standing_contact_steps: int = 0,
     manipulation_cam: bool = False, manipulation_look_at: str = "", render_subframes: int = 0,
-    manipulation_reach: bool = False, manipulation_reach_arm: str = "both",
+    manipulation_reach: bool = False, manipulation_reach_arm: str = "auto",
+    dynamic_episode_termination: bool = True, episode_max_steps: int = 0,
+    dynamic_episode_check_every: int = 1, capture_every: int = 1,
     fill_light_intensity: float = 0.0,
     neutral_environment: bool = False,
     robot_review_material_override: bool = False,
@@ -1551,6 +1767,7 @@ def run_isaac_g1_kitchen_parity_job(
     collision_approximation: str = "",
     verify_cam: bool = False,
     manipulation_stand: bool = False,
+    placement_topdown_capture: bool = True,
     render_noise_audit: bool = False,
     audit_high_spp: int = 0,
     audit_warmup_frames: int = 0,
@@ -1697,6 +1914,17 @@ def run_isaac_g1_kitchen_parity_job(
         providers = [p for p in providers if p.name in set(provider_names)]
     prov = providers[0]
     multi_provider_race = len(providers) > 1 and not serve
+    race_contender_count = resolve_cold_race_contenders(cold_race_contenders)
+    single_provider_cold_race = (
+        not multi_provider_race
+        and not serve
+        and not warm_only
+        and prov.name == "runpod"
+        and race_contender_count > 1
+    )
+    manifest["cold_race_contenders"] = (
+        race_contender_count if single_provider_cold_race else 1
+    )
     if multi_provider_race:
         manifest["providers"] = [p.name for p in providers]
         manifest["provider_available"] = [p.available() for p in providers]
@@ -1792,6 +2020,10 @@ def run_isaac_g1_kitchen_parity_job(
                              manipulation_cam=manipulation_cam, manipulation_look_at=manipulation_look_at,
                              render_subframes=render_subframes, manipulation_reach=manipulation_reach,
                              manipulation_reach_arm=manipulation_reach_arm,
+                             dynamic_episode_termination=dynamic_episode_termination,
+                             episode_max_steps=episode_max_steps,
+                             dynamic_episode_check_every=dynamic_episode_check_every,
+                             capture_every=capture_every,
                              fill_light_intensity=fill_light_intensity,
                              neutral_environment=neutral_environment,
                              robot_review_material_override=robot_review_material_override,
@@ -1799,6 +2031,7 @@ def run_isaac_g1_kitchen_parity_job(
                              kinematic_arm_pose=kinematic_arm_pose,
                              collision_approximation=collision_approximation, verify_cam=verify_cam,
                              manipulation_stand=manipulation_stand,
+                             placement_topdown_capture=placement_topdown_capture,
                              render_noise_audit=render_noise_audit,
                              audit_high_spp=audit_high_spp,
                              audit_warmup_frames=audit_warmup_frames,
@@ -1817,6 +2050,9 @@ def run_isaac_g1_kitchen_parity_job(
                                         "width": int(width), "height": int(height),
                                         "fps": int(fps),
                                         "runner_timeout_seconds": int(runner_timeout_seconds),
+                                        "post_marker_progress_timeout": int(
+                                            post_marker_progress_timeout or 0
+                                        ),
                                         "container_disk_gb": int(container_disk_gb),
                                         "volume_gb": int(volume_gb),
                                         "vast_max_hourly_rate_usd": spec.max_hourly_rate_usd,
@@ -1826,6 +2062,17 @@ def run_isaac_g1_kitchen_parity_job(
                                         ),
                                         "dynamic_standing_contact_steps": int(
                                             dynamic_standing_contact_steps
+                                        ),
+                                        "dynamic_episode_termination": bool(
+                                            dynamic_episode_termination
+                                        ),
+                                        "episode_max_steps": int(episode_max_steps or 0),
+                                        "dynamic_episode_check_every": int(
+                                            dynamic_episode_check_every or 1
+                                        ),
+                                        "capture_every": int(capture_every or 1),
+                                        "placement_topdown_capture": bool(
+                                            placement_topdown_capture
                                         ),
                                         "robot_review_material_override": bool(
                                             robot_review_material_override
@@ -1861,7 +2108,13 @@ def run_isaac_g1_kitchen_parity_job(
     # stop reaping nodes mid-pull (the 420s default lost every <~200 Mbps node). Configurable.
     collect_job_dir = job_dir
     collect_provider = prov
-    if multi_provider_race:
+    if multi_provider_race or single_provider_cold_race:
+        if multi_provider_race:
+            race_contender_providers = list(runnable_providers)
+        else:
+            race_contender_providers = [prov] + [
+                _ColdCreateContender(prov) for _ in range(race_contender_count - 1)
+            ]
         race_stage_records: list[dict] = []
 
         def _race_request(provider_obj, contender_job_dir):
@@ -1902,16 +2155,23 @@ def run_isaac_g1_kitchen_parity_job(
                 urlopen=urllib.request.urlopen,
             )
 
-        race = race_launch(
-            runnable_providers,
-            _race_request,
-            marker_check=_race_marker_check,
-            marker_timeout=marker_timeout,
-            job_dir=job_dir,
-            cold=cold,
-            poll_interval=max(1.0, min(15.0, float(marker_timeout))),
-            launch_kwargs=lambda _p: {"allow_cold_fallback": not warm_only},
-        )
+        race: dict = {}
+        race_rounds = 0
+        for _race_round in range(max(1, int(max_attempts))):
+            race_rounds += 1
+            race = race_launch(
+                race_contender_providers,
+                _race_request,
+                marker_check=_race_marker_check,
+                marker_timeout=marker_timeout,
+                job_dir=job_dir,
+                cold=cold,
+                poll_interval=max(1.0, min(15.0, float(marker_timeout))),
+                launch_kwargs=lambda _p: {"allow_cold_fallback": not warm_only},
+            )
+            if race.get("status") == "launched":
+                break
+        manifest["race_rounds"] = race_rounds
         manifest["race_staging"] = race_stage_records
         manifest["launch"] = {k: v for k, v in race.items() if k != "winner_provider"}
         if race.get("status") == "launched":
@@ -1980,7 +2240,8 @@ def run_isaac_g1_kitchen_parity_job(
         return manifest
     render_out = out_dir / "render_output"
     result = watch_and_collect(collect_job_dir, render_out, launch["instance_id"], provider=collect_provider,
-                               max_seconds=max_seconds, preserve_instance=True)
+                               max_seconds=max_seconds, preserve_instance=True,
+                               progress_timeout_seconds=post_marker_progress_timeout)
     manifest["render"] = {
         "status": result.get("status"),
         "elapsed_seconds": result.get("elapsed_seconds"),
@@ -1989,6 +2250,10 @@ def run_isaac_g1_kitchen_parity_job(
         "last_bootstrap": result.get("last_bootstrap"),
         "runner_console_tail": result.get("runner_console_tail"),
         "runner_timeout_observed": result.get("runner_timeout_observed"),
+        "post_marker_progress_timeout_observed": result.get(
+            "post_marker_progress_timeout_observed"
+        ),
+        "post_marker_progress_timeout": result.get("post_marker_progress_timeout"),
     }
     if render_noise_audit:
         audit_worker_result: dict = {}
@@ -2041,6 +2306,19 @@ def run_isaac_g1_kitchen_parity_job(
     manifest["runner_completed"] = runner_completed
     manifest["runner_timeout_observed"] = runner_timeout_observed
     manifest["parity_result_status"] = parity_status or None
+    if parity_result:
+        manifest["local_mp4_repair"] = _repair_collected_review_mp4s(
+            render_out_dir=render_out,
+            result=parity_result,
+            fps=int(requested_render_settings.get("fps") or fps),
+            optional_videos=(
+                ("placement_topdown",) if not placement_topdown_capture else ()
+            ),
+            expected_frame_count=int(
+                requested_render_settings.get("expected_frame_count_per_scenario") or 0
+            )
+            or None,
+        )
     if parity_status == "completed" and image_startup_canary:
         manifest["image_startup_canary_result"] = parity_result
         manifest["status"] = "completed"
@@ -2098,13 +2376,32 @@ def main(argv=None) -> int:
         help="timeout for each GR00T/SONIC policy command call inside the Isaac worker",
     )
     ap.add_argument("--steps", type=int, default=64)
+    ap.add_argument(
+        "--no-dynamic-episode-termination",
+        action="store_true",
+        help=(
+            "disable task-contract dynamic stop/extend behavior for manipulation review jobs; "
+            "the default is enabled but inert for non-manipulation contracts"
+        ),
+    )
+    ap.add_argument(
+        "--episode-max-steps",
+        type=int,
+        default=0,
+        help="max worker steps when dynamic episode termination is active; 0 uses the runner default",
+    )
+    ap.add_argument("--dynamic-episode-check-every", type=int, default=1)
+    ap.add_argument("--capture-every", type=int, default=1)
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=960)
     ap.add_argument("--fps", type=int, default=20)
-    ap.add_argument("--provider", default="runpod",
+    ap.add_argument("--warmup", type=int, default=6)
+    ap.add_argument("--provider", default=DEFAULT_ISAAC_REVIEW_PROVIDER,
                     help=(
-                        "provider name. RunPod is the paid default; Vast is disabled for paid "
-                        f"Isaac review renders unless {ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV}=1"
+                        "provider name. DigitalOcean is the paid default for this high-reliability "
+                        "Isaac review lane; pass runpod explicitly for cheaper compatibility runs. "
+                        f"Vast is disabled for paid Isaac review renders unless "
+                        f"{ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV}=1"
                     ))
     ap.add_argument("--allow-paid", action="store_true")
     ap.add_argument(
@@ -2174,12 +2471,31 @@ def main(argv=None) -> int:
                     help="seconds to wait for a pod's boot marker before reaping it as a dud "
                          "(must exceed the worker image pull time on a slow node)")
     ap.add_argument(
+        "--post-marker-progress-timeout",
+        type=int,
+        default=360,
+        help=(
+            "seconds to allow an early bootstrap phase to repeat without progress after the boot "
+            "marker is visible before terminating the paid pod"
+        ),
+    )
+    ap.add_argument(
         "--startup-no-runtime-timeout",
         type=int,
-        default=0,
+        default=DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS,
         help=(
-            "optional earlier RunPod guard: if provider inspection still shows no runtime/public IP "
-            "and no bootstrap marker after this many seconds, terminate the pod before marker-timeout"
+            "earlier RunPod dud guard: if provider inspection still shows no runtime/public IP "
+            "and no bootstrap marker after this many seconds, terminate the pod before marker-timeout; "
+            "0 disables"
+        ),
+    )
+    ap.add_argument(
+        "--cold-race-contenders",
+        type=int,
+        default=None,
+        help=(
+            "race N simultaneous cold creates on a single provider and keep the first boot marker "
+            f"(default {DEFAULT_COLD_RACE_CONTENDERS}; 1 disables)"
         ),
     )
     ap.add_argument("--max-attempts", type=int, default=3,
@@ -2205,7 +2521,7 @@ def main(argv=None) -> int:
                     help="RTX subframes accumulated per captured frame to denoise grain (e.g. 16)")
     ap.add_argument("--manipulation-reach", action="store_true",
                     help="animate the arm reaching the faucet so the skeleton-video encodes the task")
-    ap.add_argument("--manipulation-reach-arm", default="both", choices=["right", "left", "both"])
+    ap.add_argument("--manipulation-reach-arm", default="auto", choices=["auto", "right", "left", "both"])
     ap.add_argument("--fill-light-intensity", type=float, default=0.0,
                     help="sphere fill light over the faucet workspace to lift the dark basin (0=off)")
     ap.add_argument("--neutral-environment", action="store_true",
@@ -2232,6 +2548,7 @@ def main(argv=None) -> int:
                     help="render a 3rd-person verify_*.png that frames the whole robot at the workspace")
     ap.add_argument("--manipulation-stand", action="store_true",
                     help="place the robot AT the target facing the look-at (task start pose, no navigation)")
+    ap.add_argument("--no-placement-topdown-capture", action="store_true")
     ap.add_argument("--render-noise-audit", action="store_true",
                     help="run the textured-robot render-noise audit variant matrix (A-G) instead of "
                          "the scenario eval: one raw PNG per material/render variant + material/"
@@ -2264,8 +2581,11 @@ def main(argv=None) -> int:
         serve_ready_timeout=args.serve_ready_timeout,
         image_startup_canary=args.image_startup_canary,
         marker_timeout=args.marker_timeout, max_attempts=args.max_attempts,
+        post_marker_progress_timeout=args.post_marker_progress_timeout,
         startup_no_runtime_timeout=args.startup_no_runtime_timeout,
+        cold_race_contenders=args.cold_race_contenders,
         vast_max_hourly_rate_usd=args.vast_max_hourly_rate,
+        warmup=args.warmup,
         articulated=args.articulated, cheap_collision=args.cheap_collision,
         physics_articulation_drive=args.physics_articulation_drive,
         dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
@@ -2274,6 +2594,10 @@ def main(argv=None) -> int:
         manipulation_cam=args.manipulation_cam,
         manipulation_look_at=args.manipulation_look_at, render_subframes=args.render_subframes,
         manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
+        dynamic_episode_termination=not args.no_dynamic_episode_termination,
+        episode_max_steps=args.episode_max_steps,
+        dynamic_episode_check_every=args.dynamic_episode_check_every,
+        capture_every=args.capture_every,
         fill_light_intensity=args.fill_light_intensity,
         neutral_environment=args.neutral_environment,
         robot_review_material_override=args.robot_review_material_override,
@@ -2281,6 +2605,7 @@ def main(argv=None) -> int:
         kinematic_arm_pose=args.kinematic_arm_pose,
         collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
         manipulation_stand=args.manipulation_stand,
+        placement_topdown_capture=not args.no_placement_topdown_capture,
         render_noise_audit=args.render_noise_audit,
         audit_high_spp=args.audit_high_spp,
         audit_warmup_frames=args.audit_warmup_frames,

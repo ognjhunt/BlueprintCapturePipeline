@@ -13,6 +13,12 @@ AI and engineer orientation maps live under [`docs/architecture/`](/Users/nijelh
 - [`command-safety-matrix.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/command-safety-matrix.md)
 - [`refactor-hotspots.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/refactor-hotspots.md)
 
+Robot-team buyers: what a Task Evaluation Run / Post-Training Data Package
+contains, how to verify it, and its claim boundaries are documented in
+[`docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md).
+Every package export writes a fail-closed `buyer_package_readout.json` +
+`buyer_package_summary.md` and `replay_review_instructions.md`.
+
 ## Scope
 
 Primary product path:

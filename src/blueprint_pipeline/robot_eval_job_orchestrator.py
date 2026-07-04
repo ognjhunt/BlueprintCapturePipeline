@@ -19,6 +19,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
@@ -67,6 +68,19 @@ from .robot_eval_dataset import build_real_site_robot_eval_dataset
 from .scene_asset_preflight import build_scene_asset_preflight
 from .simulation_automation import build_simulation_automation
 from .site_eval_director import build_site_eval_director
+from .success_claim_contracts import (
+    build_artifact_freshness_evidence,
+    build_contact_state_change_proof,
+    build_media_validity,
+    build_physical_readiness,
+    build_policy_action_execution,
+    build_review_task_success,
+    build_simulator_execution,
+    build_task_success_contract_result,
+    coerce_strict_success,
+    derive_task_proof_requirements,
+)
+from .task_eval_run_report import build_task_eval_run_report
 from .wam_eval_substrate import (
     WAM_EVALUATION_SUBSTRATES,
     requested_evaluation_substrate,
@@ -85,6 +99,7 @@ GPU_PROVISIONING_RESULT_SCHEMA_VERSION = "robot_eval_gpu_provisioning_result.v1"
 SCHEDULER_DECISION_SCHEMA_VERSION = "robot_eval_execution_scheduler_decision.v1"
 WORKER_LAUNCH_PLAN_SCHEMA_VERSION = "robot_eval_worker_launch_plan.v1"
 GPU_PROVIDER_LAUNCH_REQUEST_SCHEMA_VERSION = "robot_eval_gpu_provider_launch_request.v1"
+PROVIDER_PRELAUNCH_SPEND_GUARD_SCHEMA_VERSION = "robot_eval_provider_prelaunch_spend_guard.v1"
 GPU_COST_CONTROL_LEDGER_SCHEMA_VERSION = "robot_eval_gpu_cost_control_ledger.v1"
 REMOTE_CLOUD_EXECUTION_CLOSURE_SCHEMA_VERSION = "robot_eval_remote_cloud_execution_closure.v1"
 SIMULATOR_SERVICE_REQUEST_SCHEMA_VERSION = "robot_eval_simulator_service_request.v1"
@@ -2051,6 +2066,167 @@ def _provider_launch_operation(provisioner: str) -> str:
     return "no_provider_launch_required"
 
 
+def _provider_race_contract(
+    *,
+    selected_provider: str,
+    gpu_selection: Mapping[str, Any],
+    startup_pipeline: Mapping[str, Any],
+) -> Dict[str, Any]:
+    priority = _string_list(gpu_selection.get("provider_gpu_priority_fallback_list"))
+    if not priority:
+        priority = _string_list(gpu_selection.get("provider_gpu_priority"))
+    if selected_provider and selected_provider not in priority:
+        priority.insert(0, selected_provider)
+    candidates = [
+        {
+            "provider": provider,
+            "operation": _provider_launch_operation(provider),
+            "race_candidate": provider in LIVE_GPU_PROVISIONERS,
+            "selected": provider == selected_provider,
+        }
+        for provider in priority
+    ]
+    selected_tier = _string(startup_pipeline.get("selected_provider_tier"))
+    return {
+        "schema_version": "robot_eval_provider_race_contract.v1",
+        "status": "configured" if candidates else "single_provider_only",
+        "customer_path_provider_failover_wired": len(candidates) > 1,
+        "selected_provider": selected_provider or None,
+        "selected_provider_tier": selected_tier or None,
+        "provider_selection_owner": startup_pipeline.get("provider_selection_owner"),
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "race_module": "blueprint_pipeline.provider_race",
+        "launcher_contract": {
+            "launch_every_candidate_requires_prelaunch_can_launch_true": True,
+            "terminate_losers_required": True,
+            "circuit_breaker_state_required": True,
+            "boot_marker_required_before_winner": True,
+        },
+    }
+
+
+def _provider_prelaunch_spend_guard(
+    *,
+    provider: str,
+    request_manifest: Mapping[str, Any],
+    scheduler_decision: Mapping[str, Any],
+    worker_launch_plan: Mapping[str, Any],
+    startup_pipeline: Mapping[str, Any],
+    local_sim_only_prerequisite: Mapping[str, Any],
+    approval_blockers: Sequence[str],
+    request_blockers: Sequence[str],
+    env_allowed: bool,
+    allow_gpu_provisioning: bool,
+) -> Dict[str, Any]:
+    external_provider = provider != "fixture_local"
+    gpu_allocation = _mapping(scheduler_decision.get("gpu_allocation"))
+    launch_mode = _mapping(worker_launch_plan.get("launch_mode"))
+    cost_controls = _mapping(worker_launch_plan.get("cost_controls"))
+    gpu_selection = _mapping(worker_launch_plan.get("gpu_selection"))
+    artifact_upload = _mapping(worker_launch_plan.get("artifact_upload_contract"))
+    requested_budget = (
+        _number(request_manifest.get("requested_budget_usd"))
+        if request_manifest.get("requested_budget_usd") is not None
+        else _number(cost_controls.get("requested_budget_usd"))
+        if cost_controls.get("requested_budget_usd") is not None
+        else _number(gpu_allocation.get("requested_budget_usd"))
+    )
+    hard_timeout_seconds = int(
+        _number(
+            launch_mode.get("hard_timeout_seconds")
+            or request_manifest.get("timeout_seconds")
+            or gpu_allocation.get("hard_timeout_seconds"),
+            0,
+        )
+        or 0
+    )
+    max_active_workers = int(_number(launch_mode.get("max_active_workers"), 0) or 0)
+    idle_shutdown_required = bool(launch_mode.get("idle_shutdown_required"))
+    watchdog_required = bool(launch_mode.get("external_watchdog_ttl_required"))
+    watchdog_ttl_seconds = int(
+        _number(launch_mode.get("external_watchdog_ttl_seconds"), 0) or 0
+    )
+    upload_before_shutdown_required = bool(
+        artifact_upload.get("upload_before_shutdown_required")
+        or cost_controls.get("finalizer_must_upload_artifacts_before_shutdown")
+    )
+    local_sim_required = bool(
+        local_sim_only_prerequisite.get("required_before_provider_spend")
+    )
+    local_sim_ready = bool(
+        not external_provider
+        or not local_sim_required
+        or (
+            local_sim_only_prerequisite.get("status") == "passed"
+            and local_sim_only_prerequisite.get("local_sim_only_evidence_clean") is True
+        )
+    )
+    blockers: List[str] = []
+    if external_provider:
+        if requested_budget is None:
+            blockers.append("prelaunch_missing_requested_budget_usd")
+        elif requested_budget <= 0:
+            blockers.append("prelaunch_requested_budget_must_be_positive")
+        if hard_timeout_seconds <= 0:
+            blockers.append("prelaunch_missing_hard_timeout_seconds")
+        if max_active_workers != 1:
+            blockers.append("prelaunch_max_active_workers_must_equal_one")
+        if not idle_shutdown_required:
+            blockers.append("prelaunch_idle_shutdown_required")
+        if not watchdog_required or watchdog_ttl_seconds <= hard_timeout_seconds:
+            blockers.append("prelaunch_external_watchdog_ttl_must_exceed_hard_timeout")
+        if not upload_before_shutdown_required:
+            blockers.append("prelaunch_artifact_upload_before_shutdown_required")
+        if not local_sim_ready:
+            blockers.append("prelaunch_local_sim_only_prerequisite_not_passed")
+            blockers.extend(
+                f"local_sim_only_prerequisite:{blocker}"
+                for blocker in _string_list(local_sim_only_prerequisite.get("blockers"))
+            )
+        if approval_blockers:
+            blockers.extend(f"approval:{blocker}" for blocker in approval_blockers)
+        if request_blockers:
+            blockers.extend(f"launch_request:{blocker}" for blocker in request_blockers)
+    can_launch = bool(external_provider and not blockers)
+    return {
+        "schema_version": PROVIDER_PRELAUNCH_SPEND_GUARD_SCHEMA_VERSION,
+        "status": "passed" if can_launch else ("not_required" if not external_provider else "blocked"),
+        "required_before_provider_launch": bool(external_provider),
+        "can_launch": can_launch,
+        "provider": provider,
+        "requested_budget_usd": requested_budget,
+        "max_billable_gpu_seconds": hard_timeout_seconds,
+        "max_active_workers": max_active_workers,
+        "checks": {
+            "env_BLUEPRINT_ALLOW_GPU_PROVISIONING_present": env_allowed,
+            "cli_allow_gpu_provisioning_present": bool(allow_gpu_provisioning),
+            "requested_budget_declared": requested_budget is not None,
+            "requested_budget_positive": requested_budget is not None and requested_budget > 0,
+            "hard_timeout_declared": hard_timeout_seconds > 0,
+            "max_active_workers_one": max_active_workers == 1,
+            "idle_shutdown_required": idle_shutdown_required,
+            "external_watchdog_ttl_exceeds_hard_timeout": bool(
+                watchdog_required and watchdog_ttl_seconds > hard_timeout_seconds
+            ),
+            "artifact_upload_before_shutdown_required": upload_before_shutdown_required,
+            "local_sim_only_prerequisite_ready": local_sim_ready,
+        },
+        "blockers": _dedupe(blockers),
+        "provider_race": _provider_race_contract(
+            selected_provider=provider,
+            gpu_selection=gpu_selection,
+            startup_pipeline=startup_pipeline,
+        ),
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "can_launch_is_spend_gate_only": True,
+            "can_launch_is_not_runtime_success": True,
+            "can_launch_is_not_task_success": True,
+        },
+    }
+
+
 def _worker_image_ref_env_var(simulator: str) -> str:
     return WORKER_IMAGE_REF_ENV_BY_SIMULATOR.get(
         simulator,
@@ -3029,6 +3205,18 @@ def _build_gpu_provider_launch_request(
         "BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL",
         "AWS_ENDPOINT_URL",
     ]
+    prelaunch_spend_guard = _provider_prelaunch_spend_guard(
+        provider=provider,
+        request_manifest=request_manifest,
+        scheduler_decision=scheduler_decision,
+        worker_launch_plan=worker_launch_plan,
+        startup_pipeline=startup_pipeline,
+        local_sim_only_prerequisite=local_sim_only_prerequisite,
+        approval_blockers=approval_blockers,
+        request_blockers=blockers,
+        env_allowed=env_allowed,
+        allow_gpu_provisioning=allow_gpu_provisioning,
+    )
     return {
         "schema_version": GPU_PROVIDER_LAUNCH_REQUEST_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -3053,6 +3241,7 @@ def _build_gpu_provider_launch_request(
         "operation": _provider_launch_operation(provider),
         "live_provider_calls_allowed_by_default": False,
         "live_provider_calls_performed": False,
+        "prelaunch_spend_guard": prelaunch_spend_guard,
         "scheduler_decision_path": "scheduler_decision.json",
         "scheduler_decision_status": scheduler_decision.get("status"),
         "worker_launch_plan_path": "worker_launch_plan.json",
@@ -3438,6 +3627,32 @@ def _gpu_provisioning_result(
             "cost_usd": 0.0,
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
+    prelaunch_spend_guard = _mapping(provider_launch_request.get("prelaunch_spend_guard"))
+    if prelaunch_spend_guard and prelaunch_spend_guard.get("can_launch") is not True:
+        blockers = _dedupe(
+            [
+                "prelaunch_spend_guard_not_passed",
+                *_string_list(prelaunch_spend_guard.get("blockers")),
+                *approval_blockers,
+            ]
+        )
+        return {
+            "schema_version": GPU_PROVISIONING_RESULT_SCHEMA_VERSION,
+            "generated_at": generated_at,
+            "provider": provider,
+            "status": "blocked",
+            "reason": "prelaunch_spend_guard_blocked",
+            "blockers": blockers,
+            "prelaunch_spend_guard": prelaunch_spend_guard,
+            "scheduler_decision_path": "scheduler_decision.json",
+            "worker_launch_plan_path": "worker_launch_plan.json",
+            "worker_launch_plan_status": worker_launch_plan.get("status"),
+            "gpu_provider_launch_request_path": "gpu_provider_launch_request.json",
+            "gpu_provider_launch_request_status": provider_launch_request.get("status"),
+            "execution_performed": False,
+            "live_provider_calls_performed": False,
+            "claim_boundary": dict(CLAIM_BOUNDARY),
+        }
     blockers = approval_blockers
     return {
         "schema_version": GPU_PROVISIONING_RESULT_SCHEMA_VERSION,
@@ -3475,6 +3690,7 @@ def _gpu_cost_control_ledger(
     launch_mode = _mapping(worker_launch_plan.get("launch_mode"))
     cost_controls = _mapping(worker_launch_plan.get("cost_controls"))
     provider_shape = _mapping(provider_launch_request.get("provider_request_shape"))
+    prelaunch_spend_guard = _mapping(provider_launch_request.get("prelaunch_spend_guard"))
     provider_limits = _mapping(provider_shape.get("limits"))
     artifact_finalizer = _mapping(provider_shape.get("artifact_finalizer"))
     gate_requirements = _mapping(provider_launch_request.get("gate_requirements"))
@@ -3506,6 +3722,11 @@ def _gpu_cost_control_ledger(
         or 0
     )
     provider_blockers = _string_list(provider_launch_request.get("blockers"))
+    prelaunch_blockers: List[str] = []
+    external_provider = provider != "fixture_local"
+    if prelaunch_spend_guard and prelaunch_spend_guard.get("can_launch") is not True:
+        prelaunch_blockers.append("prelaunch_spend_guard_not_passed")
+        prelaunch_blockers.extend(_string_list(prelaunch_spend_guard.get("blockers")))
     provisioning_blockers = _string_list(gpu_result.get("blockers"))
     scheduler_blockers = _string_list(scheduler_decision.get("blockers"))
     live_provider_calls = bool(
@@ -3513,7 +3734,6 @@ def _gpu_cost_control_ledger(
         or gpu_result.get("live_provider_calls_performed")
         or sim_result.get("live_provider_calls_performed")
     )
-    external_provider = provider != "fixture_local"
     provider_shutdown_evidence = _mapping(
         gpu_result.get("provider_shutdown")
         or gpu_result.get("provider_shutdown_proof")
@@ -3537,7 +3757,12 @@ def _gpu_cost_control_ledger(
     elif live_provider_calls and gpu_result.get("actual_gpu_seconds") is not None:
         actual_gpu_seconds = _number(gpu_result.get("actual_gpu_seconds"), 0.0)
         actual_gpu_time_source = "gpu_provisioning_result"
-    blockers = _dedupe([*scheduler_blockers, *provider_blockers, *provisioning_blockers])
+    blockers = _dedupe([
+        *scheduler_blockers,
+        *provider_blockers,
+        *prelaunch_blockers,
+        *provisioning_blockers,
+    ])
     status = (
         "blocked_before_allocation"
         if blockers
@@ -3588,6 +3813,7 @@ def _gpu_cost_control_ledger(
         "simulator_service_result_path": "simulator_service_result.json",
         "live_provider_calls_performed": live_provider_calls,
         "execution_performed": bool(gpu_result.get("execution_performed")),
+        "prelaunch_spend_guard": prelaunch_spend_guard or None,
         "budget": {
             "requested_budget_usd": requested_budget_usd,
             "budget_required_before_live_allocation": bool(
@@ -3725,6 +3951,10 @@ def _remote_cloud_execution_closure_manifest(
     provider_inputs = _mapping(provider_shape.get("inputs"))
     provider_limits = _mapping(provider_shape.get("limits"))
     cost_budget = _mapping(gpu_cost_ledger.get("budget"))
+    prelaunch_spend_guard = _mapping(
+        gpu_cost_ledger.get("prelaunch_spend_guard")
+        or provider_launch_request.get("prelaunch_spend_guard")
+    )
     worker_limits = _mapping(gpu_cost_ledger.get("worker_limits"))
     gpu_time = _mapping(gpu_cost_ledger.get("gpu_time"))
     artifact_finalizer = _mapping(gpu_cost_ledger.get("artifact_finalizer"))
@@ -3894,6 +4124,12 @@ def _remote_cloud_execution_closure_manifest(
         contract_blockers.append("remote_artifact_upload_before_shutdown_not_required")
     if not provider_request_ready:
         contract_blockers.append("remote_provider_launch_request_not_ready")
+    if prelaunch_spend_guard and prelaunch_spend_guard.get("can_launch") is not True:
+        contract_blockers.append("remote_prelaunch_spend_guard_not_passed")
+        contract_blockers.extend(
+            f"prelaunch_spend_guard:{blocker}"
+            for blocker in _string_list(prelaunch_spend_guard.get("blockers"))
+        )
     if not local_sim_only_prereq_ready:
         contract_blockers.append("remote_local_sim_only_prerequisite_not_passed")
     contract_blockers.extend(
@@ -4085,6 +4321,7 @@ def _remote_cloud_execution_closure_manifest(
             ),
         },
         "local_sim_only_prerequisite": local_sim_only_prerequisite,
+        "prelaunch_spend_guard": prelaunch_spend_guard or None,
         "provider_package_validation": provider_package_validation,
         "checks": {
             "versioned_worker_image_ref_pinned": image_ready,
@@ -4098,6 +4335,9 @@ def _remote_cloud_execution_closure_manifest(
             "idle_shutdown_required": shutdown_required,
             "artifact_upload_before_shutdown_required": upload_before_shutdown_required,
             "provider_launch_request_ready": provider_request_ready,
+            "prelaunch_spend_guard_can_launch": bool(
+                prelaunch_spend_guard.get("can_launch")
+            ) if prelaunch_spend_guard else None,
             "local_sim_only_prerequisite_ready": local_sim_only_prereq_ready,
             "provider_package_validated_without_spend": package_validated_without_spend,
             "actual_gpu_time_record_present": actual_gpu_time_present,
@@ -6156,6 +6396,7 @@ def _write_robot_eval_report(
         "artifact_paths": {
             "scenario_eval_matrix": "scenario_eval_matrix.json",
             "evaluation_result": "evaluation_result.json",
+            "task_eval_run_report": "task_eval_run_report.json",
             "policy_execution_manifest": "policy_execution_manifest.json",
             "policy_execution_trace": "policy_execution_trace.json",
             "deployment_outcome_ledger": "deployment_outcome_ledger.json",
@@ -6199,6 +6440,332 @@ def _write_robot_eval_report(
     }
     _write_job_json(job_dir, "robot_eval_report.json", report)
     write_text(job_dir / "robot_eval_report.md", _robot_eval_report_markdown(report))
+    return report
+
+
+def _epoch_from_iso(value: Any) -> float | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _freshness_for_artifact(
+    *,
+    path: Path,
+    generated_at: str,
+) -> Dict[str, Any]:
+    run_started_epoch = _epoch_from_iso(generated_at)
+    artifact_mtime_epoch = path.stat().st_mtime if path.is_file() else None
+    return build_artifact_freshness_evidence(
+        artifact_mtime_epoch=artifact_mtime_epoch,
+        run_started_epoch=run_started_epoch,
+    )
+
+
+def _attempts_for_task_eval_report(trace: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    attempts: List[Dict[str, Any]] = []
+    for index, attempt in enumerate(trace.get("attempts") or []):
+        if not isinstance(attempt, Mapping):
+            continue
+        row = dict(attempt)
+        strict_success = coerce_strict_success(
+            row.get("success")
+            if "success" in row
+            else row.get("task_success")
+            if "task_success" in row
+            else _mapping(row.get("task_outcome")).get("task_success")
+        )
+        if strict_success is not None:
+            row["success"] = strict_success
+        row.setdefault("attempt_id", f"attempt_{index + 1:04d}")
+        attempts.append(row)
+    return attempts
+
+
+def _trace_task_success_for_ledger(attempts: Sequence[Mapping[str, Any]]) -> bool | None:
+    if not attempts:
+        return None
+    verdicts: List[bool] = []
+    for attempt in attempts:
+        strict_success = coerce_strict_success(attempt.get("success"))
+        if strict_success is None:
+            return None
+        verdicts.append(strict_success)
+    return all(verdicts)
+
+
+def _task_eval_task_metadata(
+    *,
+    request: Mapping[str, Any],
+    scenario_eval_matrix: Mapping[str, Any],
+) -> Dict[str, Any]:
+    for task in request.get("requested_tasks") or request.get("requestedTasks") or []:
+        if isinstance(task, Mapping):
+            return dict(task)
+    for run in _scenario_eval_matrix_runs(scenario_eval_matrix):
+        row = _mapping(run)
+        if row:
+            return {
+                key: value
+                for key, value in row.items()
+                if key
+                in {
+                    "task_id",
+                    "task_name",
+                    "scenario_id",
+                    "task_success_contract",
+                    "success_contract",
+                    "affordance_object_ids",
+                    "target_object_ids",
+                    "success_state_change",
+                }
+            }
+    return {}
+
+
+def _first_policy_id(
+    *,
+    request: Mapping[str, Any],
+    policy_manifest: Mapping[str, Any],
+    attempts: Sequence[Mapping[str, Any]],
+) -> str | None:
+    for source in (
+        attempts,
+        request.get("policy_candidates") or request.get("policyCandidates") or [],
+        policy_manifest.get("policy_candidates") or policy_manifest.get("policies") or [],
+    ):
+        if not isinstance(source, Sequence) or isinstance(source, (str, bytes, bytearray)):
+            continue
+        for row in source:
+            if isinstance(row, Mapping):
+                policy_id = _string(row.get("policy_id") or row.get("policyId"))
+                if policy_id:
+                    return policy_id
+    return _string(policy_manifest.get("policy_id") or policy_manifest.get("policyId")) or None
+
+
+def _task_eval_review_verdicts(job_dir: Path) -> List[Dict[str, Any]]:
+    verdicts: List[Dict[str, Any]] = []
+    for source_name in (
+        "vision_success_labels",
+        "rollout_vision_labels",
+        "accepted_failure_labels",
+        "review_resolution_ledger",
+    ):
+        payload = _read_optional_mapping(job_dir / f"{source_name}.json")
+        if not payload:
+            continue
+        rows = payload.get("labels") or payload.get("accepted_labels") or payload.get("reviews")
+        if isinstance(rows, Mapping):
+            rows = rows.values()
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
+            rows = [payload]
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            success = coerce_strict_success(
+                row.get("task_success")
+                if "task_success" in row
+                else row.get("success")
+                if "success" in row
+                else row.get("review_task_success")
+            )
+            if success is None:
+                continue
+            verdicts.append(
+                {
+                    "success": success,
+                    "reviewer": _string(
+                        row.get("reviewer")
+                        or row.get("reviewer_id")
+                        or row.get("source")
+                        or source_name
+                    )
+                    or source_name,
+                    "source_artifact": f"{source_name}.json",
+                }
+            )
+    return verdicts
+
+
+def _write_task_eval_run_buyer_report(
+    *,
+    job_dir: Path,
+    job_id: str,
+    scene_id: str,
+    capture_id: str,
+    request: Mapping[str, Any],
+    scenario_eval_matrix: Mapping[str, Any],
+    simulator_result: Mapping[str, Any],
+    copied_artifacts: Mapping[str, Mapping[str, Any]],
+    robot_pov_manifest: Mapping[str, Any],
+    policy_manifest: Mapping[str, Any],
+    policy_execution_manifest: Mapping[str, Any],
+    evaluation_result: Mapping[str, Any],
+    proof_boundary: Mapping[str, Any],
+    live_closure: Mapping[str, Any],
+    gpu_result: Mapping[str, Any],
+    gpu_cost_ledger: Mapping[str, Any],
+    remote_cloud_closure: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    trace = _mapping(copied_artifacts.get("normalized_attempt_trace")) or _read_optional_mapping(
+        job_dir / "normalized_attempt_trace.json"
+    )
+    attempts = _attempts_for_task_eval_report(trace)
+    task_metadata = _task_eval_task_metadata(
+        request=request,
+        scenario_eval_matrix=scenario_eval_matrix,
+    )
+    visual_coverage = _read_optional_mapping(
+        job_dir / "simulator_command_batch_visual_media_coverage.json"
+    )
+    visual_media_present = bool(
+        visual_coverage.get("all_required_runs_have_visual_recording")
+        or visual_coverage.get("all_required_runs_have_robot_pov_video")
+        or visual_coverage.get("all_required_runs_have_third_person_video")
+    )
+    media_decodable = coerce_strict_success(
+        visual_coverage.get("all_required_videos_decodable")
+        if "all_required_videos_decodable" in visual_coverage
+        else visual_coverage.get("all_videos_decodable")
+    )
+    media_validity = build_media_validity(
+        media_present=visual_media_present,
+        decodable=media_decodable,
+        visual_stats={
+            "blockers": _string_list(visual_coverage.get("blockers")),
+        },
+        freshness=_freshness_for_artifact(
+            path=job_dir / "simulator_command_batch_visual_media_coverage.json",
+            generated_at=generated_at,
+        )
+        if visual_media_present
+        else None,
+    )
+    review_task_success = build_review_task_success(
+        media_validity=media_validity,
+        reviewer_verdicts=_task_eval_review_verdicts(job_dir),
+        camera_evidence={
+            "robot_pov_camera_mode": _string(
+                robot_pov_manifest.get("robot_pov_camera_mode")
+                or robot_pov_manifest.get("camera_mode")
+            ),
+            "visible_embodied_robot_action_evidence": coerce_strict_success(
+                robot_pov_manifest.get("visible_embodied_robot_action_evidence")
+                if "visible_embodied_robot_action_evidence" in robot_pov_manifest
+                else robot_pov_manifest.get("robot_pov_evidence_proven")
+            ),
+        },
+    )
+    task_success_contract = build_task_success_contract_result(
+        task_metadata=task_metadata,
+        trace_task_success=_trace_task_success_for_ledger(attempts),
+        contract_evidence=None,
+        reach_evidence=None,
+    )
+    normalized_trace_path = job_dir / "normalized_attempt_trace.json"
+    simulator_execution = build_simulator_execution(
+        provider_runtime_status=_string(simulator_result.get("status"))
+        or _string(evaluation_result.get("status")),
+        output_artifacts_present=bool(attempts),
+        artifact_freshness=_freshness_for_artifact(
+            path=normalized_trace_path,
+            generated_at=generated_at,
+        )
+        if normalized_trace_path.is_file()
+        else None,
+        frames_rendered=int(_number(visual_coverage.get("frame_count")) or 0)
+        if "frame_count" in visual_coverage
+        else None,
+        execution_log_present=None,
+    )
+    policy_id = _first_policy_id(
+        request=request,
+        policy_manifest=policy_manifest,
+        attempts=attempts,
+    )
+    policy_action_execution = build_policy_action_execution(
+        action_source="learned_policy"
+        if policy_execution_manifest.get("robot_policy_execution_proven") is True
+        else _string(policy_execution_manifest.get("action_source")),
+        policy_id=policy_id,
+        action_trace_present=(job_dir / "policy_execution_trace.json").is_file()
+        or (job_dir / "policy_execution_trace.jsonl").is_file(),
+        actions_executed_in_simulator=policy_execution_manifest.get(
+            "robot_policy_execution_proven"
+        ),
+    )
+    contact_state_change = build_contact_state_change_proof(
+        proof_requirements=derive_task_proof_requirements(task_metadata),
+        contact_reports=[],
+        state_change_measurement=None,
+    )
+    physical_readiness = build_physical_readiness(
+        real_robot_execution_evidence={
+            "physical_robot_executed": proof_boundary.get(
+                "physical_robot_readiness_proven"
+            )
+            or proof_boundary.get("real_world_outcome_proven"),
+            "run_manifest_uri": proof_boundary.get("physical_run_manifest_uri"),
+        },
+        deployment_approval={
+            "approved": proof_boundary.get("deployment_approval_proven"),
+            "approver": proof_boundary.get("deployment_approver"),
+        },
+    )
+    rights_privacy_gate = {
+        "status": "cleared"
+        if proof_boundary.get("rights_privacy_scope_proven") is True
+        else "not_cleared",
+        "cleared": proof_boundary.get("rights_privacy_scope_proven") is True,
+        "signed_delivery_access_proven": proof_boundary.get(
+            "signed_delivery_access_proven"
+        )
+        is True,
+        "live_closure_status": live_closure.get("status"),
+    }
+    report = build_task_eval_run_report(
+        job_id=job_id,
+        scene_id=scene_id,
+        capture_id=capture_id,
+        attempt_trace={**trace, "attempts": attempts},
+        task_metadata=task_metadata,
+        success_claim_layers={
+            "media_validity": media_validity,
+            "review_task_success": review_task_success,
+            "task_success_contract": task_success_contract,
+            "simulator_execution": simulator_execution,
+            "policy_action_execution": policy_action_execution,
+            "contact_state_change": contact_state_change,
+            "physical_readiness": physical_readiness,
+        },
+        provider_execution={
+            "gpu_provisioning_status": gpu_result.get("status"),
+            "gpu_cost_control_ledger_status": gpu_cost_ledger.get("status"),
+            "remote_cloud_execution_status": remote_cloud_closure.get("status"),
+            "simulator_service_status": simulator_result.get("status"),
+            "evaluation_status": evaluation_result.get("status"),
+            "live_eval_closure_status": live_closure.get("status"),
+        },
+        policy_binding={
+            "policy_package_status": policy_manifest.get("status"),
+            "policy_execution_status": policy_execution_manifest.get("status"),
+            "policy_id": policy_id,
+        },
+        rights_privacy_gate=rights_privacy_gate,
+        generated_at=generated_at,
+    )
+    _write_job_json(job_dir, "task_eval_run_report.json", report)
     return report
 
 
@@ -6502,6 +7069,7 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "training_result.json",
         "evaluation_request.json",
         "evaluation_result.json",
+        "task_eval_run_report.json",
         "robot_eval_report.json",
         "arena_eval_schedule.json",
         "arena_eval_retry_queue.json",
@@ -6639,6 +7207,7 @@ def _webapp_robot_eval_status_projection(
     generated_at: str,
 ) -> Dict[str, Any]:
     artifact_paths = _artifact_paths(job_dir)
+    task_eval_run_report = _read_optional_mapping(job_dir / "task_eval_run_report.json")
     trace = _mapping(copied_artifacts.get("normalized_attempt_trace")) or _read_optional_mapping(
         job_dir / "normalized_attempt_trace.json"
     )
@@ -6860,6 +7429,20 @@ def _webapp_robot_eval_status_projection(
                 failure_diagnosis_audit.get("blockers")
             ),
         },
+        "task_eval_run_report": {
+            "status": task_eval_run_report.get("status") or "not_available",
+            "evidence_level": task_eval_run_report.get("evidence_level"),
+            "highest_truthful_claim": _mapping(
+                task_eval_run_report.get("success_claim_ledger")
+            ).get("highest_truthful_claim"),
+            "blockers": _string_list(task_eval_run_report.get("blockers")),
+            "report_path": artifact_paths.get("task_eval_run_report"),
+            "bare_success_booleans_forbidden": bool(
+                _mapping(task_eval_run_report.get("claim_boundary")).get(
+                    "bare_success_booleans_forbidden"
+                )
+            ),
+        },
         "batch_closure": {
             "status": batch_closure.get("status") or "not_available",
             "batch_execution_status": batch_closure.get("batch_execution_status"),
@@ -6997,6 +7580,7 @@ def _webapp_robot_eval_status_projection(
                 "policy_package_manifest",
                 "policy_execution_manifest",
                 "evaluation_result",
+                "task_eval_run_report",
                 "proof_boundary",
                 "job_run_manifest",
                 "gpu_startup_pipeline_plan",
@@ -7050,6 +7634,7 @@ def _robot_team_grade_eval_closure_manifest(
     generated_at: str,
 ) -> Dict[str, Any]:
     artifact_paths = _artifact_paths(job_dir)
+    task_eval_run_report = _read_optional_mapping(job_dir / "task_eval_run_report.json")
     trace = _mapping(copied_artifacts.get("normalized_attempt_trace")) or _read_optional_mapping(
         job_dir / "normalized_attempt_trace.json"
     )
@@ -7313,6 +7898,7 @@ def _robot_team_grade_eval_closure_manifest(
         "proof_boundary": artifact_paths.get("proof_boundary"),
         "live_eval_closure_manifest": artifact_paths.get("live_eval_closure_manifest"),
         "customer_handoff_report": artifact_paths.get("customer_handoff_report"),
+        "task_eval_run_report": artifact_paths.get("task_eval_run_report"),
         "delivery_manifest": artifact_paths.get("delivery_manifest"),
         "signed_access_manifest": artifact_paths.get("signed_access_manifest"),
         "review_resolution_ledger": artifact_paths.get("review_resolution_ledger"),
@@ -7323,6 +7909,7 @@ def _robot_team_grade_eval_closure_manifest(
         "proof_boundary",
         "live_eval_closure_manifest",
         "customer_handoff_report",
+        "task_eval_run_report",
         "delivery_manifest",
     }
     missing_customer_handoff_artifacts = sorted(
@@ -8267,6 +8854,11 @@ def _robot_team_grade_eval_closure_manifest(
         "package_delivery_handoff_summary": {
             "sim_only_customer_handoff_complete": customer_handoff_ready,
             "post_training_data_package_export_ready": data_package_export_ready,
+            "task_eval_run_report_status": task_eval_run_report.get("status")
+            or "not_available",
+            "task_eval_run_report_evidence_level": task_eval_run_report.get(
+                "evidence_level"
+            ),
             "customer_handoff_artifacts": customer_handoff_artifacts,
             "missing_customer_handoff_artifacts": missing_customer_handoff_artifacts,
             "webapp_upstream_truth": {
@@ -8329,6 +8921,7 @@ def _robot_team_grade_eval_closure_manifest(
                 "proof_boundary",
                 "sim_vs_real_calibration_report",
                 "post_training_data_package_export_manifest",
+                "task_eval_run_report",
                 "customer_handoff_report",
                 "delivery_manifest",
                 "signed_access_manifest",
@@ -9148,7 +9741,31 @@ def build_robot_eval_job(
         live_closure=live_closure,
     )
     _write_job_json(job_dir, "proof_boundary.json", proof_boundary)
+    task_eval_run_report = _write_task_eval_run_buyer_report(
+        job_dir=job_dir,
+        job_id=job_id,
+        scene_id=context.scene_id,
+        capture_id=context.capture_id,
+        request=request,
+        scenario_eval_matrix=scenario_eval_matrix,
+        simulator_result=sim_result,
+        copied_artifacts=copied_artifacts,
+        robot_pov_manifest=robot_pov_manifest,
+        policy_manifest=policy_manifest,
+        policy_execution_manifest=_mapping(policy_execution.get("manifest")),
+        evaluation_result=eval_result,
+        proof_boundary=proof_boundary,
+        live_closure=live_closure,
+        gpu_result=gpu_result,
+        gpu_cost_ledger=gpu_cost_ledger,
+        remote_cloud_closure=remote_cloud_closure,
+        generated_at=generated_at,
+    )
     evidence["live_eval_closure_status"] = live_closure.get("status")
+    evidence["task_eval_run_report_status"] = task_eval_run_report.get("status")
+    evidence["task_eval_run_report_evidence_level"] = task_eval_run_report.get(
+        "evidence_level"
+    )
     robot_eval_report = _write_robot_eval_report(
         job_dir=job_dir,
         job_id=job_id,
@@ -9402,6 +10019,9 @@ def build_robot_eval_job(
         "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
         "training_status": training_res.get("status"),
         "evaluation_status": eval_result.get("status"),
+        "task_eval_run_report_status": task_eval_run_report.get("status"),
+        "task_eval_run_report_evidence_level": task_eval_run_report.get("evidence_level"),
+        "task_eval_run_report_path": "task_eval_run_report.json",
         "robot_eval_report_status": robot_eval_report.get("status"),
         "robot_eval_report_path": "robot_eval_report.json",
         "post_training_data_package_export_status": data_package_export.get("status"),
@@ -9471,6 +10091,7 @@ def build_robot_eval_job(
             "policy_execution_trace": "policy_execution_trace.json",
             "policy_execution_trace_jsonl": "policy_execution_trace.jsonl",
             "sc3_eval_protocol": SC3_EVAL_PROTOCOL_ARTIFACT,
+            "task_eval_run_report": "task_eval_run_report.json",
             "scheduler_decision": "scheduler_decision.json",
             "worker_launch_plan": "worker_launch_plan.json",
         "gpu_provider_launch_request": "gpu_provider_launch_request.json",
@@ -9605,6 +10226,7 @@ def build_robot_eval_job(
             ),
             "training_result": training_res,
             "evaluation_result": eval_result,
+            "task_eval_run_report": task_eval_run_report,
             "wam_eval_result": {
                 "status": wam_eval_result.get("status"),
                 "evaluation_substrate": wam_eval_result.get("evaluation_substrate"),

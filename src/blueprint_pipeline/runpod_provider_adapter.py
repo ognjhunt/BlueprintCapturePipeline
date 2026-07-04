@@ -1237,6 +1237,14 @@ def _request_blockers(
     inputs = _inputs(request)
     image = _image(request)
     provider_shape = _provider_shape(request)
+    prelaunch_spend_guard = _mapping(request.get("prelaunch_spend_guard"))
+    if (
+        prelaunch_spend_guard
+        and prelaunch_spend_guard.get("required_before_provider_launch") is True
+        and prelaunch_spend_guard.get("can_launch") is not True
+    ):
+        blockers.append("provider_prelaunch_spend_guard_not_passed")
+        blockers.extend(_string_list(prelaunch_spend_guard.get("blockers")))
     local_sim_only_prerequisite = _local_sim_only_prerequisite(request)
     artifact_finalizer = _mapping(provider_shape.get("artifact_finalizer"))
     artifact_output_uri = _string(inputs.get("artifact_output_uri"))

@@ -29,15 +29,39 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .common import utc_now_iso
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider, list_render_providers
+from .provider_reliability_manifest import (
+    build_provider_reliability_manifest,
+    build_teardown_proof,
+)
 
 SCHEMA_VERSION = "isaac_particlefield_render_job.v1"
+RELIABILITY_MANIFEST_NAME = "provider_reliability_manifest.json"
+POST_MARKER_NO_PROGRESS_TIMEOUT_ENV = "BLUEPRINT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS"
+# A booted worker that stops changing bootstrap phase for this long is a stall,
+# not patience — it gets terminated instead of billing until max_seconds.
+DEFAULT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS = 900
 SECRETS = Path.home() / ".blueprint-secrets"
 DEFAULT_WARM_CANDIDATES = (
     "pwbu7wxsvxpr0x", "9zxerj0nm3ow76", "qzgtsh4t27hi7f", "v4bd9u2qhwivb8",
     "y3n5n7t6wvaawe", "1gx9uri0mkrxg9", "ajxbj2ysyow3n9", "usjvua1bwlwhyj",
 )
 _SPLAT_SUFFIXES = {".ply", ".spz", ".usdc", ".usd", ".usda", ".usdz"}
+DEFAULT_POST_MARKER_STALL_PHASES = (
+    "container_bash_started",
+    "bootstrap_fetching",
+    "bootstrap_fetch_connected",
+    "bootstrap_fetch_progress",
+    "bootstrap_fetch_fetched",
+    "bootstrap_extracted",
+    "kitchen_fetching",
+    "kitchen_fetch_connected",
+    "kitchen_fetch_progress",
+    "kitchen_fetch_fetched",
+    "kitchen_extracting",
+    "kitchen_extracted",
+)
 
 # Diagnostics-streaming pod bootstrap: fetch bundle -> heartbeat-upload output every 25s ->
 # run the Isaac runner -> final upload. Runs under Isaac's python (guaranteed on the image).
@@ -359,7 +383,9 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
                       max_seconds: int = 1200, poll: int = 25,
                       stop_on_success: bool = True,
                       preserve_instance: bool = False,
-                      keep_running: bool = False) -> dict:
+                      keep_running: bool = False,
+                      progress_timeout_seconds: int = 0,
+                      progress_stall_phases: Sequence[str] | None = None) -> dict:
     """Poll the heartbeat-uploaded output (provider-neutral signed GET url), then stop the
     instance via the provider. A worker that reached bootstrap/runner output is preserved with
     stop() even when validation blocks, so it can be warm-restarted. True no-output launch duds are
@@ -375,6 +401,12 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
     last_console_tail = ""
     done = False
     done_from_final_result_without_runner_done = False
+    progress_timeout_seconds = max(0, int(progress_timeout_seconds or 0))
+    progress_phase_set = set(progress_stall_phases or DEFAULT_POST_MARKER_STALL_PHASES)
+    last_progress_phase = ""
+    last_progress_at = t0
+    progress_timeout_observed = False
+    progress_timeout_detail: dict[str, Any] = {}
     expected_launch_session_id = ""
     nonce_path = job_dir / "launch_session_nonce.txt"
     if nonce_path.is_file():
@@ -393,12 +425,29 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         boot = _read_json_file(out_dir / "bootstrap.json")
         if boot:
             last_boot = boot
+            phase = str(boot.get("phase") or "")
+            if phase and phase != last_progress_phase:
+                last_progress_phase = phase
+                last_progress_at = time.time()
         console = out_dir / "runner_console.log"
         if console.is_file():
             try:
                 last_console_tail = console.read_text(encoding="utf-8", errors="replace")[-4000:]
             except Exception:  # noqa: BLE001
                 pass
+        if (
+            progress_timeout_seconds > 0
+            and last_progress_phase in progress_phase_set
+            and time.time() - last_progress_at >= progress_timeout_seconds
+        ):
+            progress_timeout_observed = True
+            progress_timeout_detail = {
+                "phase": last_progress_phase,
+                "timeout_seconds": progress_timeout_seconds,
+                "elapsed_since_phase_seconds": round(time.time() - last_progress_at, 1),
+            }
+            done = False
+            break
         if boot.get("phase") in {"runner_done", "runner_timeout"}:
             done = True
             break
@@ -470,6 +519,9 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             "final_result_without_runner_done_terminated"
             if done_from_final_result_without_runner_done
             else
+            "post_marker_progress_timeout_terminated"
+            if progress_timeout_observed
+            else
             "timeout_without_runner_done_terminated"
             if timed_out_without_runner_done
             else
@@ -482,6 +534,8 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             "last_bootstrap": last_boot, "runner_console_tail": last_console_tail,
             "teardown": teardown, "teardown_reason": teardown_reason,
             "timed_out_without_runner_done": timed_out_without_runner_done,
+            "post_marker_progress_timeout_observed": progress_timeout_observed,
+            "post_marker_progress_timeout": progress_timeout_detail,
             "runner_done_observed": runner_done_observed,
             "runner_timeout_observed": runner_timeout_observed,
             "final_result_without_runner_done": done_from_final_result_without_runner_done,
@@ -501,6 +555,147 @@ def _launch_shape_summary(provider_name: str, request: dict) -> dict:
             "volumeInGb": request.get("volumeInGb")}
 
 
+def _default_post_marker_timeout() -> int:
+    raw = os.getenv(POST_MARKER_NO_PROGRESS_TIMEOUT_ENV, "")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS
+    return max(0, value)
+
+
+def _phase(passed: bool, blockers: Sequence[str] = (), **fields: Any) -> dict:
+    return {
+        "status": "PASS" if passed else "FAIL",
+        "blockers": [str(b) for b in blockers if str(b).strip()],
+        **fields,
+    }
+
+
+def _teardown_proof_from_watch(provider_name: str, instance_id: str, watch: Mapping[str, Any]) -> dict:
+    """Map a ``watch_and_collect`` teardown record onto a fail-closed teardown proof."""
+    teardown = dict(watch.get("teardown") or {})
+    reason = str(watch.get("teardown_reason") or "").strip()
+    status = str(teardown.get("status") or "").strip().lower()
+    kept_alive = status in {"stopped", "preserved", "skipped"} or reason in {
+        "left_running_by_request",
+        "runner_done_preserved_for_warm_reuse",
+    }
+    if kept_alive:
+        return build_teardown_proof(
+            provider=provider_name,
+            allocation_id=instance_id,
+            terminate_requested=False,
+            provider_terminal_status=None,
+            keep_alive_requested=True,
+            keep_alive_reason=reason or status or "kept_alive",
+        )
+    return build_teardown_proof(
+        provider=provider_name,
+        allocation_id=instance_id,
+        terminate_requested=True,
+        provider_terminal_status="terminated" if status == "terminated" else status or None,
+        verified_at=utc_now_iso() if status == "terminated" else None,
+    )
+
+
+def _write_reliability_manifest(out_dir: Path, manifest: dict) -> str:
+    path = Path(out_dir) / RELIABILITY_MANIFEST_NAME
+    path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    return str(path)
+
+
+def _build_render_run_reliability_manifest(
+    *,
+    provider_name: str,
+    run_id: str,
+    session_dir: str,
+    availability: Mapping[str, Any] | None,
+    launch: Mapping[str, Any] | None,
+    watch: Mapping[str, Any] | None,
+    instance_id: str = "",
+) -> dict:
+    """Compose the ops-facing reliability manifest for one render-lane run.
+
+    The render lane performs no task evaluation and no artifact-quality judgment
+    beyond collection, so those phases are declared not applicable rather than
+    faked as PASS.
+    """
+    availability = dict(availability or {})
+    available = bool(availability.get("available"))
+    preflight = _phase(
+        available,
+        [] if available else [
+            f"capacity_unavailable:{availability.get('reason') or 'provider_credentials_missing'}"
+        ],
+        availability=availability,
+    )
+
+    launch_phase = None
+    startup_phase = None
+    runtime_phase = None
+    collection_phase = None
+    teardown_phase = None
+    if launch is not None:
+        launched = str(launch.get("status") or "") == "launched"
+        launch_phase = _phase(
+            launched,
+            [] if launched else ["provider_launch_failed"],
+            mode=launch.get("mode"),
+            instance_id=launch.get("instance_id"),
+        )
+    if watch is not None:
+        boot = dict(watch.get("last_bootstrap") or {})
+        marker_seen = bool(boot)
+        startup_phase = _phase(
+            marker_seen,
+            [] if marker_seen else ["startup_marker_timeout:no_bootstrap_marker_observed"],
+            last_bootstrap_phase=str(boot.get("phase") or "") or None,
+        )
+        runtime_blockers: list[str] = []
+        if watch.get("post_marker_progress_timeout_observed"):
+            detail = dict(watch.get("post_marker_progress_timeout") or {})
+            runtime_blockers.append(
+                "post_marker_no_progress:"
+                f"phase_{detail.get('phase') or 'unknown'}"
+                f":timeout_{detail.get('timeout_seconds') or 'unknown'}s"
+            )
+        if watch.get("runner_timeout_observed"):
+            runtime_blockers.append("runner_failed:runner_timeout")
+        if watch.get("timed_out_without_runner_done"):
+            runtime_blockers.append("runner_failed:collection_window_expired_without_runner_done")
+        runner_result = dict(watch.get("runner_result") or {})
+        runner_status = str(runner_result.get("status") or "").strip().lower()
+        if runner_status == "blocked":
+            runtime_blockers.append("runner_failed:runner_result_blocked")
+        runtime_phase = _phase(
+            marker_seen and not runtime_blockers,
+            runtime_blockers if marker_seen else ["container_startup_failed_first"],
+            runner_result_status=runner_status or None,
+        )
+        collected = bool(runner_result) and bool(watch.get("runner_result_source"))
+        collection_phase = _phase(
+            collected,
+            [] if collected else ["artifact_collection_failed:no_runner_result_collected"],
+            runner_result_source=watch.get("runner_result_source"),
+        )
+        teardown_phase = _teardown_proof_from_watch(provider_name, instance_id, watch)
+
+    return build_provider_reliability_manifest(
+        run_id=run_id,
+        provider=provider_name,
+        session_dir=session_dir,
+        launched_at=utc_now_iso() if launch is not None else None,
+        pre_spend_preflight=preflight,
+        provider_launch=launch_phase,
+        container_startup=startup_phase,
+        runtime_execution=runtime_phase,
+        artifact_collection=collection_phase,
+        teardown=teardown_phase,
+        not_applicable_phases=("artifact_quality", "task_evaluation"),
+    )
+
+
 def run_isaac_particlefield_render_job(
     *, source: str | Path, out_dir: str | Path, cameras: Sequence[dict] | None = None,
     cameras_file: str = "cameras.json", allow_paid: bool = False, cold: bool = False,
@@ -509,6 +704,7 @@ def run_isaac_particlefield_render_job(
     render_options: Mapping[str, Any] | None = None,
     warm_candidates: Sequence[str] | None = None,
     preserve_instance: bool = False,
+    post_marker_progress_timeout_seconds: int | None = None,
 ) -> dict:
     """Full job, provider-agnostic. Without ``allow_paid`` it prepares + stages and returns a
     launchable plan. ``provider`` selects the GPU backend (``runpod`` or ``vast``); the
@@ -577,17 +773,65 @@ def run_isaac_particlefield_render_job(
     avail = prov.available()
     if not avail.get("available"):
         manifest["blockers"].append(avail.get("reason") or "provider_credentials_missing")
+        manifest["provider_reliability_manifest"] = _write_reliability_manifest(
+            out_dir,
+            _build_render_run_reliability_manifest(
+                provider_name=prov.name,
+                run_id=f"prelaunch-{utc_now_iso()}",
+                session_dir=str(out_dir),
+                availability=avail,
+                launch=None,
+                watch=None,
+            ),
+        )
         return manifest
     launch = prov.launch(job_dir, request, cold=cold)
     manifest["launch"] = launch
+    nonce_path = job_dir / "launch_session_nonce.txt"
+    run_id = ""
+    if nonce_path.is_file():
+        try:
+            run_id = nonce_path.read_text(encoding="utf-8").strip()
+        except Exception:  # noqa: BLE001
+            run_id = ""
+    run_id = run_id or str(launch.get("instance_id") or f"launch-{utc_now_iso()}")
     if launch.get("status") != "launched":
         manifest["blockers"].append("launch_failed")
+        manifest["provider_reliability_manifest"] = _write_reliability_manifest(
+            out_dir,
+            _build_render_run_reliability_manifest(
+                provider_name=prov.name,
+                run_id=run_id,
+                session_dir=str(out_dir),
+                availability=avail,
+                launch=launch,
+                watch=None,
+            ),
+        )
         return manifest
+    progress_timeout = (
+        _default_post_marker_timeout()
+        if post_marker_progress_timeout_seconds is None
+        else max(0, int(post_marker_progress_timeout_seconds))
+    )
     result = watch_and_collect(job_dir, out_dir / "render_output", launch["instance_id"],
                                provider=prov, max_seconds=max_seconds,
                                preserve_instance=preserve_instance,
-                               keep_running=preserve_instance)
+                               keep_running=preserve_instance,
+                               progress_timeout_seconds=progress_timeout)
     manifest["render"] = result
+    manifest["provider_reliability_manifest"] = _write_reliability_manifest(
+        out_dir,
+        _build_render_run_reliability_manifest(
+            provider_name=prov.name,
+            run_id=run_id,
+            session_dir=str(out_dir),
+            availability=avail,
+            launch=launch,
+            watch=result,
+            instance_id=str(launch.get("instance_id") or ""),
+        ),
+    )
     manifest["status"] = "completed" if result.get("status") == "completed" else "blocked"
     return manifest
 

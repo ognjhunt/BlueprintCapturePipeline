@@ -51,6 +51,15 @@ def test_cli_forwards_reused_kitchen_url(monkeypatch, tmp_path: Path) -> None:
     assert rc == 0
     assert captured["kitchen_asset_dir"] is None
     assert captured["kitchen_url"] == "https://objects.example/kitchen.zip?sig=1"
+    assert captured["provider"] == J.DEFAULT_ISAAC_REVIEW_PROVIDER
+
+
+def test_default_provider_is_digitalocean_for_isaac_review_lane_only() -> None:
+    assert J.DEFAULT_ISAAC_REVIEW_PROVIDER == "digitalocean"
+    assert J._provider_names(None) == ["digitalocean"]
+    assert J._provider_names("") == ["digitalocean"]
+    assert J._provider_names("runpod") == ["runpod"]
+    assert J._provider_names("runpod,vast") == ["runpod", "vast"]
 
 
 def test_cli_persists_manifest_even_when_blocked(monkeypatch, tmp_path: Path) -> None:
@@ -548,8 +557,145 @@ def test_manipulation_cam_flag_threads_env_and_bootstrap(tmp_path: Path) -> None
         manipulation_reach=True,
     )
     assert reach.env["PARITY_MANIPULATION_REACH"] == "1"
-    assert reach.env["PARITY_MANIPULATION_REACH_ARM"] == "both"
+    assert reach.env["PARITY_MANIPULATION_REACH_ARM"] == "auto"
     assert 'PARITY_MANIPULATION_REACH_ARM' in body and '--manipulation-reach-arm' in body
+
+
+def test_dynamic_episode_termination_threads_env_and_bootstrap(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+
+    default = J.build_launch_spec(jd, image="img:tag", policy_id="p", steps=8)
+    assert default.env["PARITY_DYNAMIC_EPISODE_TERMINATION"] == "1"
+
+    off = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="p",
+        steps=8,
+        dynamic_episode_termination=False,
+    )
+    assert off.env["PARITY_DYNAMIC_EPISODE_TERMINATION"] == "0"
+    assert "PARITY_EPISODE_MAX_STEPS" not in off.env
+
+    on = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="p",
+        steps=8,
+        dynamic_episode_termination=True,
+        episode_max_steps=24,
+        dynamic_episode_check_every=1,
+        capture_every=4,
+        placement_topdown_capture=False,
+    )
+
+    assert on.env["PARITY_DYNAMIC_EPISODE_TERMINATION"] == "1"
+    assert on.env["PARITY_EPISODE_MAX_STEPS"] == "24"
+    assert "PARITY_DYNAMIC_EPISODE_CHECK_EVERY" not in on.env
+    assert on.env["PARITY_CAPTURE_EVERY"] == "4"
+    assert on.env["PARITY_NO_PLACEMENT_TOPDOWN_CAPTURE"] == "1"
+    body = J.docker_start_cmd()[1]
+    assert 'PARITY_DYNAMIC_EPISODE_TERMINATION' in body
+    assert "--dynamic-episode-termination" in body
+    assert "--no-dynamic-episode-termination" in body
+    assert 'PARITY_EPISODE_MAX_STEPS' in body
+    assert "--episode-max-steps" in body
+    assert 'PARITY_DYNAMIC_EPISODE_CHECK_EVERY' in body
+    assert "--dynamic-episode-check-every" in body
+    assert 'PARITY_CAPTURE_EVERY' in body
+    assert "--capture-every" in body
+    assert 'PARITY_NO_PLACEMENT_TOPDOWN_CAPTURE' in body
+    assert "--no-placement-topdown-capture" in body
+
+
+def test_worker_bootstrap_python_is_syntax_valid() -> None:
+    compile(J.BOOTSTRAP, "isaac_g1_kitchen_parity_bootstrap.py", "exec")
+
+
+def test_local_mp4_repair_assembles_missing_videos_without_topdown_layout_mix(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    render_out = tmp_path / "render_output"
+    scenario_dir = render_out / "microwave_reach"
+    frames_dir = scenario_dir / "frames"
+    frames_dir.mkdir(parents=True)
+    for prefix in ("overview", "robot_pov", "placement_topdown"):
+        for idx in range(2):
+            (frames_dir / f"{prefix}_{idx:04d}.png").write_bytes(b"fake-png")
+    (frames_dir / "placement_topdown_layout_0000.png").write_bytes(b"layout")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, capture_output, text, check):  # noqa: ANN001
+        calls.append(list(cmd))
+        Path(cmd[-1]).write_bytes(b"fake-mp4")
+
+        class Proc:
+            returncode = 0
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(J.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(J.subprocess, "run", fake_run)
+
+    repair = J._repair_collected_review_mp4s(
+        render_out_dir=render_out,
+        result={"scenarios": [{"scenario_id": "microwave_reach"}]},
+        fps=20,
+    )
+
+    assert repair["status"] == "PASS"
+    assert {rec["status"] for rec in repair["repairs"]} == {"repaired"}
+    assert (scenario_dir / "overview.mp4").is_file()
+    assert (scenario_dir / "robot_pov.mp4").is_file()
+    assert (scenario_dir / "placement_topdown.mp4").is_file()
+    placement_cmd = next(cmd for cmd in calls if cmd[-1].endswith("placement_topdown.mp4"))
+    placement_cmd_text = " ".join(placement_cmd)
+    assert "placement_topdown_%04d.png" in placement_cmd_text
+    assert "placement_topdown_layout" not in placement_cmd_text
+
+
+def test_local_mp4_repair_skips_optional_missing_topdown(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    render_out = tmp_path / "render_output"
+    scenario_dir = render_out / "microwave_reach"
+    frames_dir = scenario_dir / "frames"
+    frames_dir.mkdir(parents=True)
+    for prefix in ("overview", "robot_pov"):
+        for idx in range(2):
+            (frames_dir / f"{prefix}_{idx:04d}.png").write_bytes(b"fake-png")
+
+    def fake_run(cmd, capture_output, text, check):  # noqa: ANN001
+        Path(cmd[-1]).write_bytes(b"fake-mp4")
+
+        class Proc:
+            returncode = 0
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(J.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(J.subprocess, "run", fake_run)
+
+    repair = J._repair_collected_review_mp4s(
+        render_out_dir=render_out,
+        result={"scenarios": [{"scenario_id": "microwave_reach"}]},
+        fps=10,
+        optional_videos=("placement_topdown",),
+    )
+
+    topdown = next(rec for rec in repair["repairs"] if rec["video"] == "placement_topdown")
+    assert repair["status"] == "PASS"
+    assert repair["blockers"] == []
+    assert topdown["status"] == "skipped_optional"
+    assert topdown["optional"] is True
+    assert not (scenario_dir / "placement_topdown.mp4").exists()
 
 
 def test_dynamic_standing_contact_threads_physics_articulation_env_and_bootstrap(
@@ -856,10 +1002,11 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
         }
 
     def _fake_watch(job_dir, render_out, instance_id, *, provider=None, max_seconds=0,
-                    preserve_instance=False):
+                    preserve_instance=False, progress_timeout_seconds=0):
         captured["collect_job_dir"] = Path(job_dir)
         captured["collect_provider"] = provider.name
         captured["collect_instance_id"] = instance_id
+        captured["progress_timeout_seconds"] = progress_timeout_seconds
         return {
             "status": "completed",
             "elapsed_seconds": 1,
@@ -890,6 +1037,7 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
     assert captured["collect_provider"] == "vast"
     assert captured["collect_instance_id"] == "vast-iid"
     assert captured["collect_job_dir"].name == "contender-1-vast"
+    assert captured["progress_timeout_seconds"] == 360
 
 
 def test_paid_vast_launch_blocks_before_staging_without_override(
@@ -1288,6 +1436,7 @@ def test_paid_image_startup_canary_bypasses_large_image_block_without_harness(
         allow_paid=True,
         allow_dirty_paid_launch=True,
         image_startup_canary=True,
+        cold_race_contenders=1,
     )
 
     assert m["status"] == "completed"
@@ -1370,6 +1519,7 @@ def test_paid_multi_provider_drops_vast_without_override(
         provider="runpod,vast",
         allow_paid=True,
         allow_dirty_paid_launch=True,
+        cold_race_contenders=1,
     )
 
     assert m["status"] == "completed"
@@ -1448,6 +1598,7 @@ def test_paid_job_surfaces_blocked_parity_result_without_runtime_blocker(
         out_dir=tmp_path / "job",
         provider="runpod",
         allow_paid=True,
+        cold_race_contenders=1,
     )
 
     assert m["status"] == "blocked"
@@ -2244,3 +2395,87 @@ def test_await_warm_serve_ready_surfaces_expired_output_url(
     assert res["ready"] is False
     assert res["reason"] == "presigned_url_expired_or_forbidden"
     assert res["http_status"] == 403
+
+
+def test_local_mp4_repair_labels_truncated_frame_sequences(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A repair over fewer frames than the run's step budget must not read as complete.
+
+    Partial provider uploads (pod died mid-render) previously produced a clean
+    "repaired" MP4 that masked the truncation.
+    """
+    render_out = tmp_path / "render_output"
+    scenario_dir = render_out / "microwave_reach"
+    frames_dir = scenario_dir / "frames"
+    frames_dir.mkdir(parents=True)
+    # Only 2 of the expected 5 frames arrived before the provider died.
+    for prefix in ("overview", "robot_pov", "placement_topdown"):
+        for idx in range(2):
+            (frames_dir / f"{prefix}_{idx:04d}.png").write_bytes(b"fake-png")
+
+    def fake_run(cmd, capture_output, text, check):  # noqa: ANN001
+        Path(cmd[-1]).write_bytes(b"fake-mp4")
+
+        class Proc:
+            returncode = 0
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(J.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(J.subprocess, "run", fake_run)
+
+    repair = J._repair_collected_review_mp4s(
+        render_out_dir=render_out,
+        result={"scenarios": [{"scenario_id": "microwave_reach"}]},
+        fps=20,
+        expected_frame_count=5,
+    )
+
+    assert repair["status"] == "FAIL"
+    assert {rec["status"] for rec in repair["repairs"]} == {"repaired_truncated"}
+    assert any(
+        blocker.startswith("mp4_repair_truncated_frames:overview:2<5")
+        for blocker in repair["blockers"]
+    )
+    # Evidence is preserved for human review — the video still exists.
+    assert (scenario_dir / "overview.mp4").is_file()
+    for rec in repair["repairs"]:
+        assert rec["expected_frame_count"] == 5
+
+
+def test_local_mp4_repair_full_frame_count_still_reads_repaired(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    render_out = tmp_path / "render_output"
+    scenario_dir = render_out / "microwave_reach"
+    frames_dir = scenario_dir / "frames"
+    frames_dir.mkdir(parents=True)
+    for prefix in ("overview", "robot_pov", "placement_topdown"):
+        for idx in range(5):
+            (frames_dir / f"{prefix}_{idx:04d}.png").write_bytes(b"fake-png")
+
+    def fake_run(cmd, capture_output, text, check):  # noqa: ANN001
+        Path(cmd[-1]).write_bytes(b"fake-mp4")
+
+        class Proc:
+            returncode = 0
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(J.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(J.subprocess, "run", fake_run)
+
+    repair = J._repair_collected_review_mp4s(
+        render_out_dir=render_out,
+        result={"scenarios": [{"scenario_id": "microwave_reach"}]},
+        fps=20,
+        expected_frame_count=5,
+    )
+
+    assert repair["status"] == "PASS"
+    assert {rec["status"] for rec in repair["repairs"]} == {"repaired"}

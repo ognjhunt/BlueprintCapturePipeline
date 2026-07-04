@@ -402,6 +402,29 @@ def iter_started_pod_id_files(output_roots: Iterable[Path | str]) -> list[tuple[
     return _iter_owner_id_files(output_roots, "started_pod_id.txt")
 
 
+WARM_SERVE_MARKER_FILENAME = "warm_serve_pod.json"
+
+
+def find_expected_serve_pod_ids(output_roots: Iterable[Path | str]) -> set[str]:
+    """Pod ids recorded as live warm serve workers (marker status == 'serving')."""
+    expected: set[str] = set()
+    for root in output_roots:
+        base = Path(root).expanduser()
+        if not base.is_dir():
+            continue
+        for path in base.glob(f"**/{WARM_SERVE_MARKER_FILENAME}"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, Mapping):
+                continue
+            pod_id = str(payload.get("pod_id") or "").strip()
+            if pod_id and payload.get("status") == "serving":
+                expected.add(pod_id)
+    return expected
+
+
 def list_process_cmdlines() -> list[str]:
     """Return the command line of every running process (best-effort, injectable)."""
     try:
@@ -544,6 +567,7 @@ def build_report(
     *,
     protected_ids: set[str],
     max_boot_seconds: int,
+    serve_pod_ids: set[str] | frozenset[str] = frozenset(),
 ) -> str:
     live = [i for i in instances if i.live]
     lines: list[str] = []
@@ -553,7 +577,12 @@ def build_report(
             f"{'PROVIDER':8} {'ID':16} {'NAME':22} {'AGE':>7} {'STATE':9} {'$/HR':>7}"
         )
         for inst in live:
-            owned = " [owned]" if inst.id in protected_ids else ""
+            if inst.id in serve_pod_ids:
+                owned = " [warm-serve worker (expected)]"
+            elif inst.id in protected_ids:
+                owned = " [owned]"
+            else:
+                owned = ""
             lines.append(
                 f"{inst.provider:8} {inst.id:16.16} {inst.name:22.22} "
                 f"{_fmt_age(inst.age_seconds):>7} {inst.state:9} "
@@ -580,6 +609,59 @@ def build_report(
     else:
         lines.append("Orphan reap candidates: none")
     return "\n".join(lines)
+
+
+def build_json_report(
+    instances: Sequence[GpuInstance],
+    *,
+    protected_ids: set[str],
+    max_boot_seconds: int,
+    reap_mode: bool = False,
+    reap_results: Sequence[Mapping[str, Any]] = (),
+) -> dict:
+    """Machine-readable spend snapshot so ops never re-derives state from stdout.
+
+    Persisted with ``--json-report``. Records every live allocation, the burn
+    estimate, which ids were protected/reapable, and — when reaping ran — the
+    per-instance termination result as teardown evidence.
+    """
+    live = [i for i in instances if i.live]
+    candidates = [
+        i
+        for i in instances
+        if is_reapable(i, max_boot_seconds=max_boot_seconds, protected_ids=protected_ids)
+    ]
+    candidate_ids = {i.id for i in candidates}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "live_instance_count": len(live),
+        "total_burn_per_hour_usd": round(total_burn_per_hour(instances), 4),
+        "max_boot_seconds": int(max_boot_seconds),
+        "reap_mode": bool(reap_mode),
+        "instances": [
+            {
+                "provider": inst.provider,
+                "id": inst.id,
+                "name": inst.name,
+                "state": inst.state,
+                "live": inst.live,
+                "booted": inst.booted,
+                "age_seconds": inst.age_seconds,
+                "cost_per_hr_usd": inst.cost_per_hr,
+                "protected": inst.id in protected_ids,
+                "reap_candidate": inst.id in candidate_ids,
+            }
+            for inst in instances
+        ],
+        "reap_candidate_ids": sorted(candidate_ids),
+        "reap_results": [dict(r) for r in reap_results],
+        "claim_boundary": (
+            "This snapshot is billing/allocation state at one moment. It is not run "
+            "success, artifact quality, or task evidence; booted-but-stalled pods are "
+            "reported live and are never auto-reaped by this tool."
+        ),
+    }
 
 
 def default_output_roots() -> list[Path]:
@@ -626,6 +708,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--timeout", type=int, default=30, help="per-request timeout seconds")
+    parser.add_argument(
+        "--json-report",
+        default=None,
+        metavar="PATH",
+        help=(
+            "also write a machine-readable gpu_spend_guard.v1 snapshot (instances, "
+            "burn, protections, reap candidates, and reap results) to this file"
+        ),
+    )
     args = parser.parse_args(argv)
 
     runpod_key = _read_secret("runpod_api_key")
@@ -651,30 +742,62 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     roots = [Path(p) for p in (args.output_root or default_output_roots())]
     protected = find_protected_pod_ids(roots, process_cmdlines=list_process_cmdlines())
+    serve_pods = find_expected_serve_pod_ids(roots)
+    protected = protected | serve_pods
 
-    print(build_report(instances, protected_ids=protected, max_boot_seconds=args.max_boot_seconds))
+    print(
+        build_report(
+            instances,
+            protected_ids=protected,
+            max_boot_seconds=args.max_boot_seconds,
+            serve_pod_ids=serve_pods,
+        )
+    )
 
     candidates = [
         i
         for i in instances
         if is_reapable(i, max_boot_seconds=args.max_boot_seconds, protected_ids=protected)
     ]
+    reap_results: list[dict] = []
+
+    def _write_json_report() -> None:
+        if not args.json_report:
+            return
+        report = build_json_report(
+            instances,
+            protected_ids=protected,
+            max_boot_seconds=args.max_boot_seconds,
+            reap_mode=bool(args.reap),
+            reap_results=reap_results,
+        )
+        path = Path(args.json_report)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"JSON snapshot written: {path}")
+
     if not candidates:
+        _write_json_report()
         return 0
     if not args.reap:
         print(
             f"\n(dry-run) {len(candidates)} orphan(s) would be reaped. "
             "Re-run with --reap to terminate."
         )
+        _write_json_report()
         return 0
 
     print(f"\nReaping {len(candidates)} orphan(s)...")
     for inst in candidates:
         result = terminate_instance(inst, runpod_key=runpod_key, vast_key=vast_key)
+        reap_results.append(
+            {"provider": inst.provider, "id": inst.id, **{k: result.get(k) for k in ("status", "http")}}
+        )
         print(
             f"  reap {inst.provider} {inst.id}: "
             f"{result.get('status')} (http={result.get('http')})"
         )
+    _write_json_report()
     return 0
 
 

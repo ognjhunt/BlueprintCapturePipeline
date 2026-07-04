@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 import urllib.error
@@ -15,6 +16,11 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .provider_reliability_manifest import (
+    build_provider_reliability_manifest,
+    build_teardown_proof,
+    evaluate_post_marker_stall,
+)
 from .runpod_provider_adapter import (
     RUNPOD_API_GATE_ENV,
     RUNPOD_EXISTING_POD_ID_ENV,
@@ -44,6 +50,12 @@ RUNPOD_WAM_POLL_SCHEMA_VERSION = "runpod_wam_async_poll_manifest.v1"
 RUNPOD_WAM_DELETE_SCHEMA_VERSION = "runpod_wam_async_delete_manifest.v1"
 RUNPOD_WAM_STOP_SCHEMA_VERSION = "runpod_wam_async_stop_manifest.v1"
 RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION = "runpod_wam_warm_candidate.v1"
+RUNPOD_WAM_PROVIDER_RELIABILITY_MANIFEST_NAME = "provider_reliability_manifest.json"
+RUNPOD_WAM_POST_MARKER_NO_PROGRESS_TIMEOUT_ENV = (
+    "BLUEPRINT_RUNPOD_WAM_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS"
+)
+GENERIC_POST_MARKER_NO_PROGRESS_TIMEOUT_ENV = "BLUEPRINT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS"
+DEFAULT_RUNPOD_WAM_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS = 900
 RUNPOD_WAM_TEARDOWN_ACTION_ENV = "BLUEPRINT_RUNPOD_WAM_TEARDOWN_ACTION"
 RUNPOD_WAM_EXISTING_POD_ID_ENV = "BLUEPRINT_RUNPOD_WAM_EXISTING_POD_ID"
 RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV = "BLUEPRINT_RUNPOD_WAM_WARM_CANDIDATE_FILE"
@@ -52,6 +64,7 @@ RUNPOD_WAM_RUNNING_CANDIDATE_RUNTIME_ABSENT_MAX_SECONDS_ENV = (
     "BLUEPRINT_RUNPOD_WAM_RUNNING_CANDIDATE_RUNTIME_ABSENT_MAX_SECONDS"
 )
 RUNPOD_POD_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH"
+RUNPOD_WAM_MAX_SPEND_USD_ENV = "BLUEPRINT_RUNPOD_WAM_MAX_SPEND_USD"
 RUNPOD_UNITREE_GROOT_SONIC_FULL_LOOP_OVERRIDE_ENV = (
     "BLUEPRINT_ALLOW_UNITREE_GROOT_N17_SONIC_RUNPOD_FULL_LOOP"
 )
@@ -184,8 +197,34 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _env_truthy(name: str) -> bool:
     return _string(os.getenv(name)).lower() in {"1", "true", "yes", "on"}
+
+
+def _runpod_wam_post_marker_timeout_seconds(explicit: int | None = None) -> int:
+    if explicit is not None:
+        return max(0, int(explicit))
+    for env_name in (
+        RUNPOD_WAM_POST_MARKER_NO_PROGRESS_TIMEOUT_ENV,
+        GENERIC_POST_MARKER_NO_PROGRESS_TIMEOUT_ENV,
+    ):
+        raw = _string(os.getenv(env_name))
+        if raw:
+            try:
+                return max(0, int(raw))
+            except ValueError:
+                return DEFAULT_RUNPOD_WAM_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS
+    return DEFAULT_RUNPOD_WAM_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS
 
 
 def _redact_provider_url(value: str) -> str:
@@ -239,6 +278,69 @@ def _unitree_groot_sonic_full_loop_create_guard(
         "bundle_input_schema_version": schema_version,
         "full_loop_launch_is_default": True,
         "raw_secret_values_recorded": False,
+    }
+
+
+def _runpod_wam_prelaunch_spend_guard(
+    *,
+    max_spend_usd: float | None,
+    allow_paid_runpod_launch: bool,
+    gpu_type_ids: Sequence[str],
+    container_disk_gb: int,
+    volume_gb: int,
+) -> dict[str, Any]:
+    env_budget = _float_or_none(os.getenv(RUNPOD_WAM_MAX_SPEND_USD_ENV))
+    requested_budget = max_spend_usd if max_spend_usd is not None else env_budget
+    api_gate_present = _env_truthy(RUNPOD_API_GATE_ENV)
+    pod_gate_present = _env_truthy(RUNPOD_POD_LAUNCH_GATE_ENV)
+    blockers: list[str] = []
+    if not allow_paid_runpod_launch:
+        blockers.append("paid_runpod_launch_not_authorized_by_runner_flag")
+    if not api_gate_present:
+        blockers.append(f"missing_env_{RUNPOD_API_GATE_ENV}")
+    if not pod_gate_present:
+        blockers.append(f"missing_env_{RUNPOD_POD_LAUNCH_GATE_ENV}")
+    if requested_budget is None:
+        blockers.append("runpod_wam_max_spend_usd_missing")
+    elif requested_budget <= 0:
+        blockers.append("runpod_wam_max_spend_usd_must_be_positive")
+    if not gpu_type_ids:
+        blockers.append("runpod_wam_gpu_type_ids_missing")
+    if container_disk_gb <= 0:
+        blockers.append("runpod_wam_container_disk_gb_invalid")
+    if volume_gb < 0:
+        blockers.append("runpod_wam_volume_gb_invalid")
+    can_launch = not blockers
+    return {
+        "schema_version": "runpod_wam_prelaunch_spend_guard.v1",
+        "status": "passed" if can_launch else "blocked",
+        "required_before_provider_launch": True,
+        "can_launch": can_launch,
+        "requested_budget_usd": requested_budget,
+        "budget_source": "argument"
+        if max_spend_usd is not None
+        else ("env" if env_budget is not None else "missing"),
+        "single_pod_launch": True,
+        "max_active_workers": 1,
+        "gpu_type_ids": list(gpu_type_ids),
+        "container_disk_gb": container_disk_gb,
+        "volume_gb": volume_gb,
+        "checks": {
+            "allow_paid_runpod_launch_flag_present": allow_paid_runpod_launch,
+            f"env_{RUNPOD_API_GATE_ENV}_present": api_gate_present,
+            f"env_{RUNPOD_POD_LAUNCH_GATE_ENV}_present": pod_gate_present,
+            "requested_budget_declared": requested_budget is not None,
+            "requested_budget_positive": requested_budget is not None and requested_budget > 0,
+            "single_pod_launch": True,
+            "teardown_command_written_after_create": True,
+        },
+        "blockers": sorted(set(blockers)),
+        "claim_boundary": {
+            "can_launch_is_spend_gate_only": True,
+            "can_launch_is_not_provider_runtime_success": True,
+            "can_launch_is_not_task_success": True,
+            "no_runpod_api_call_before_can_launch": True,
+        },
     }
 
 
@@ -1456,6 +1558,7 @@ def create_runpod_wam_async_run(
     token_file: str | Path | None = None,
     secret_env_file: str | Path | None = None,
     output_path: str | Path | None = None,
+    max_spend_usd: float | None = None,
     allow_paid_runpod_launch: bool = False,
     skip_public_staging_verification: bool = False,
     verify_output_put_url: bool = False,
@@ -1631,6 +1734,13 @@ def create_runpod_wam_async_run(
     provider_runtime_config_env, provider_runtime_config_env_status = (
         _read_provider_runtime_config_env(provider_bundle_kind)
     )
+    prelaunch_spend_guard = _runpod_wam_prelaunch_spend_guard(
+        max_spend_usd=max_spend_usd,
+        allow_paid_runpod_launch=allow_paid_runpod_launch,
+        gpu_type_ids=gpu_type_ids,
+        container_disk_gb=container_disk_gb,
+        volume_gb=volume_gb,
+    )
     blockers: list[str] = []
     if staging_manifest.get("status") != "ready":
         blockers.extend(staging_manifest.get("blockers") or ["runpod_wam_staging_not_ready"])
@@ -1649,6 +1759,9 @@ def create_runpod_wam_async_run(
             blockers.append("runpod_provider_output_put_url_scheme_not_http")
     elif not _string(public_base_url):
         blockers.append("runpod_public_base_url_or_explicit_provider_urls_required")
+    if prelaunch_spend_guard.get("can_launch") is not True:
+        blockers.append("runpod_wam_prelaunch_spend_guard_not_passed")
+        blockers.extend(prelaunch_spend_guard.get("blockers") or [])
     if not allow_paid_runpod_launch:
         blockers.append("paid_runpod_launch_not_authorized_by_runner_flag")
     if os.getenv(RUNPOD_API_GATE_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
@@ -1684,6 +1797,7 @@ def create_runpod_wam_async_run(
             "provider_output_get_url_file": output_get_url_file_meta,
             "model_secret_env_status": model_secret_env_status,
             "provider_runtime_config_env_status": provider_runtime_config_env_status,
+            "prelaunch_spend_guard": prelaunch_spend_guard,
             "api_key_status": api_key_meta,
             "raw_secret_values_recorded": False,
         }
@@ -1960,6 +2074,7 @@ def create_runpod_wam_async_run(
         "provider_output_get_url_file": output_get_url_file_meta,
         "bundle_path": str(resolved_bundle),
         "full_loop_guard": full_loop_guard,
+        "prelaunch_spend_guard": prelaunch_spend_guard,
         "token_file": str(resolved_token_file),
         "secret_env_file": str(resolved_secret_env_file),
         "image_name": image_name,
@@ -1996,6 +2111,7 @@ def create_runpod_wam_async_run(
         "provider_output_put_url_file": output_url_file_meta,
         "provider_output_get_url_file": output_get_url_file_meta,
         "full_loop_guard": full_loop_guard,
+        "prelaunch_spend_guard": prelaunch_spend_guard,
         "model_secret_env_status": model_secret_env_status,
         "provider_runtime_config_env_status": provider_runtime_config_env_status,
         "runpod_response_keys": sorted(response.keys()),
@@ -2200,6 +2316,149 @@ def _teardown_action() -> str:
     return "delete"
 
 
+def _reliability_phase(passed: bool, blockers: Sequence[str] = (), **fields: Any) -> dict[str, Any]:
+    return {
+        "status": "PASS" if passed else "FAIL",
+        "blockers": sorted({str(blocker) for blocker in blockers if str(blocker).strip()}),
+        **fields,
+    }
+
+
+def _teardown_proof_from_runpod_poll(
+    *,
+    pod_id: str,
+    teardown_requested: bool,
+    teardown_manifest: Mapping[str, Any] | None,
+    teardown_action: str,
+    pod_status: str,
+    keep_running_on_success: bool,
+    generated_at: str,
+) -> dict[str, Any]:
+    terminal_status = ""
+    terminate_requested = bool(teardown_requested)
+    teardown = _mapping(teardown_manifest)
+    if keep_running_on_success:
+        return build_teardown_proof(
+            provider="runpod",
+            allocation_id=pod_id,
+            terminate_requested=False,
+            provider_terminal_status=None,
+            keep_alive_requested=True,
+            keep_alive_reason="keep_on_success",
+        )
+    if teardown.get("status") == "completed":
+        terminate_requested = True
+        terminal_status = "deleted" if teardown_action == "delete" else "stopped"
+    elif pod_status in RUNPOD_TERMINAL_POD_STATUSES or pod_status.upper() in RUNPOD_TERMINAL_POD_STATUSES:
+        terminal_status = "not_found" if pod_status == "not_found" else pod_status.lower()
+        terminate_requested = True
+    return build_teardown_proof(
+        provider="runpod",
+        allocation_id=pod_id,
+        terminate_requested=terminate_requested,
+        provider_terminal_status=terminal_status or None,
+        verified_at=generated_at if terminal_status else None,
+    )
+
+
+def _write_wam_provider_reliability_manifest(
+    *,
+    job_dir: Path,
+    state: Mapping[str, Any],
+    poll_manifest: Mapping[str, Any],
+    teardown_manifest: Mapping[str, Any] | None,
+    generated_at: str,
+) -> str:
+    output_present = poll_manifest.get("output_zip_present") is True
+    pod_id = _string(poll_manifest.get("pod_id"))
+    pod_status = _string(poll_manifest.get("pod_status"))
+    provider_bundle_kind = _string(poll_manifest.get("provider_bundle_kind")) or "wam"
+    stall_evaluation = _mapping(poll_manifest.get("stall_evaluation"))
+    stall_blockers = [str(b) for b in stall_evaluation.get("blockers") or []]
+    runtime_result_status = _string(poll_manifest.get("runtime_result_status")).lower()
+    runtime_result_blockers = [
+        str(blocker) for blocker in poll_manifest.get("runtime_result_blockers") or []
+    ]
+    active_without_terminal_output = bool(
+        poll_manifest.get("remote_runtime_running_without_terminal_output")
+        or poll_manifest.get("nonterminal_running_output")
+    )
+
+    preflight = _reliability_phase(
+        bool(pod_id),
+        [] if pod_id else ["runpod_wam_state_missing_pod_id"],
+        state_schema=state.get("schema_version"),
+    )
+    launch = _reliability_phase(
+        bool(pod_id),
+        [] if pod_id else ["provider_launch_failed:pod_id_missing"],
+        pod_launch_mode=state.get("pod_launch_mode"),
+        pod_id=pod_id or None,
+    )
+    startup_seen = bool(output_present or poll_manifest.get("last_nonterminal_output"))
+    startup_blockers = []
+    if not startup_seen and not active_without_terminal_output:
+        startup_blockers.append("startup_marker_timeout:no_runtime_or_heartbeat_observed")
+    if stall_evaluation.get("stall_mode") == "container_startup":
+        startup_blockers.extend(stall_blockers)
+    startup = _reliability_phase(
+        not startup_blockers,
+        startup_blockers,
+        startup_marker_seen=startup_seen,
+        pod_status=pod_status or None,
+    )
+
+    runtime_blockers: list[str] = []
+    if stall_evaluation.get("stall_mode") == "runtime_execution":
+        runtime_blockers.extend(stall_blockers)
+    if runtime_result_status in {"blocked", "failed", "error", "timeout", "timed_out"}:
+        runtime_blockers.append(f"runner_failed:{runtime_result_status}")
+        runtime_blockers.extend(f"runner_failed:{blocker}" for blocker in runtime_result_blockers)
+    runtime = _reliability_phase(
+        not runtime_blockers and (output_present or active_without_terminal_output),
+        runtime_blockers or ([] if output_present or active_without_terminal_output else ["runtime_not_observed"]),
+        provider_command_status=poll_manifest.get("provider_command_status"),
+        runtime_result_status=runtime_result_status or None,
+    )
+    collection = _reliability_phase(
+        output_present,
+        [] if output_present else ["artifact_collection_failed:runtime_output_zip_not_received"],
+        output_zip_path=poll_manifest.get("provider_runtime_output_zip_path"),
+    )
+    teardown = _teardown_proof_from_runpod_poll(
+        pod_id=pod_id,
+        teardown_requested=bool(poll_manifest.get("teardown_requested")),
+        teardown_manifest=teardown_manifest,
+        teardown_action=_string(poll_manifest.get("teardown_action")) or "not_requested",
+        pod_status=pod_status,
+        keep_running_on_success=bool(poll_manifest.get("keep_running_on_success")),
+        generated_at=generated_at,
+    )
+    manifest = build_provider_reliability_manifest(
+        run_id=pod_id or _string(state.get("generated_at")) or generated_at,
+        provider="runpod",
+        session_dir=str(job_dir),
+        launched_at=_string(state.get("generated_at")) or None,
+        pre_spend_preflight=preflight,
+        provider_launch=launch,
+        container_startup=startup,
+        runtime_execution=runtime,
+        artifact_collection=collection,
+        teardown=teardown,
+        not_applicable_phases=("artifact_quality", "task_evaluation"),
+        spend={
+            "provider_bundle_kind": provider_bundle_kind,
+            "continuing_spend_from_this_run": bool(
+                poll_manifest.get("continuing_spend_from_this_run")
+            ),
+            "teardown_action": poll_manifest.get("teardown_action"),
+        },
+    )
+    path = job_dir / RUNPOD_WAM_PROVIDER_RELIABILITY_MANIFEST_NAME
+    write_json(path, manifest)
+    return str(path)
+
+
 def _download_provider_output_zip(
     *,
     job_dir: Path,
@@ -2288,6 +2547,7 @@ def poll_runpod_wam_async_run(
     max_wait_seconds: int = 60,
     retry_interval_seconds: int = 5,
     teardown: bool = False,
+    post_marker_no_progress_timeout_seconds: int | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
@@ -2323,6 +2583,12 @@ def poll_runpod_wam_async_run(
     pod_status = "unknown"
     started_monotonic = time.monotonic()
     deadline = time.monotonic() + max(0, max_wait_seconds)
+    post_marker_timeout_seconds = _runpod_wam_post_marker_timeout_seconds(
+        post_marker_no_progress_timeout_seconds
+    )
+    last_progress_monotonic: float | None = None
+    stall_evaluation: dict[str, Any] = {}
+    stall_teardown_requested = False
     output_present = output_path.is_file()
     last_nonterminal_output: dict[str, Any] | None = None
     transient_not_found_count = 0
@@ -2354,6 +2620,7 @@ def poll_runpod_wam_async_run(
                 if not heartbeat_status:
                     heartbeat_status = _zip_wam_provider_output_status(output_path)
                 if heartbeat_status in nonterminal_statuses:
+                    last_progress_monotonic = time.monotonic()
                     nonterminal_path = output_path.with_name(
                         f"{output_path.stem}_nonterminal{output_path.suffix}"
                     )
@@ -2445,6 +2712,28 @@ def poll_runpod_wam_async_run(
             continue
         if output_present:
             break
+        pod_status_is_active_now = (
+            pod_status in RUNPOD_ACTIVE_POD_STATUSES
+            or pod_status.upper() in RUNPOD_ACTIVE_POD_STATUSES
+        )
+        if post_marker_timeout_seconds > 0 and pod_status_is_active_now:
+            now_monotonic = time.monotonic()
+            startup_elapsed_seconds = max(0.0, now_monotonic - started_monotonic)
+            last_progress_age_seconds = (
+                max(0.0, now_monotonic - last_progress_monotonic)
+                if last_progress_monotonic is not None
+                else None
+            )
+            stall_evaluation = evaluate_post_marker_stall(
+                startup_marker_seen=last_progress_monotonic is not None,
+                startup_elapsed_seconds=startup_elapsed_seconds,
+                startup_timeout_seconds=post_marker_timeout_seconds,
+                last_progress_age_seconds=last_progress_age_seconds,
+                no_progress_timeout_seconds=post_marker_timeout_seconds,
+            )
+            if stall_evaluation.get("should_terminate"):
+                stall_teardown_requested = True
+                break
         if time.monotonic() + retry_interval_seconds > deadline:
             break
         time.sleep(max(1, retry_interval_seconds))
@@ -2455,7 +2744,9 @@ def poll_runpod_wam_async_run(
     )
     output_present = output_inspection.get("zip_present") is True
     runtime_result_status = _string(output_inspection.get("runtime_result_status"))
-    runtime_output_success = bool(
+    # Provider-runtime layer only: the pod stayed alive and the output zip arrived
+    # without an explicitly terminal runtime status. This is infrastructure health.
+    provider_runtime_operational = bool(
         output_present
         and (
             not runtime_result_status
@@ -2463,6 +2754,16 @@ def poll_runpod_wam_async_run(
             not in {"blocked", "failed", "error", "timeout", "timed_out"}
         )
     )
+    # Task layer: only an explicit boolean task_success in the runtime result counts.
+    # Absent or non-boolean stays None — provider runtime success never promotes to it.
+    runtime_result_payload = output_inspection.get("runtime_result")
+    runtime_task_success = (
+        runtime_result_payload.get("task_success")
+        if isinstance(runtime_result_payload, Mapping)
+        and isinstance(runtime_result_payload.get("task_success"), bool)
+        else None
+    )
+    runtime_output_success = provider_runtime_operational
     elapsed_wait_seconds = max(0.0, time.monotonic() - started_monotonic)
     wait_deadline_expired = elapsed_wait_seconds >= max(0, max_wait_seconds)
     pod_status_is_active = (
@@ -2547,6 +2848,7 @@ def poll_runpod_wam_async_run(
         not output_present
         and pod_status_is_active
     )
+    runtime_stall_observed = bool(stall_evaluation.get("should_terminate"))
     nonterminal_running_output = bool(
         last_nonterminal_output
         and not output_present
@@ -2561,7 +2863,7 @@ def poll_runpod_wam_async_run(
     )
     should_teardown = bool(
         teardown
-        and (output_present or pod_status_is_terminal)
+        and (output_present or pod_status_is_terminal or runtime_stall_observed)
         and not keep_running_on_success
     )
     teardown_pending = bool(
@@ -2587,9 +2889,17 @@ def poll_runpod_wam_async_run(
     provider_status = (
         "completed"
         if output_present
-        else ("running" if remote_runtime_running_without_terminal_output else "blocked")
+        else (
+            "blocked"
+            if runtime_stall_observed
+            else ("running" if remote_runtime_running_without_terminal_output else "blocked")
+        )
     )
     provider_blockers: list[str] = []
+    if runtime_stall_observed:
+        provider_blockers.extend(
+            str(blocker) for blocker in stall_evaluation.get("blockers") or []
+        )
     if not output_present and not remote_runtime_running_without_terminal_output:
         provider_blockers.append("runpod_provider_runtime_output_zip_not_received_locally")
     if blockers:
@@ -2613,10 +2923,18 @@ def poll_runpod_wam_async_run(
         "provider_command_blockers": provider_blockers,
         "output_zip_present": output_present,
         "runtime_output_success": runtime_output_success,
+        "provider_runtime_operational": provider_runtime_operational,
+        "runtime_task_success": runtime_task_success,
+        "runtime_output_success_is_provider_runtime_only": True,
+        "provider_runtime_success_is_not_task_success": True,
         "nonterminal_running_output": nonterminal_running_output,
         "remote_runtime_running_without_terminal_output": (
             remote_runtime_running_without_terminal_output
         ),
+        "post_marker_no_progress_timeout_seconds": post_marker_timeout_seconds,
+        "stall_evaluation": stall_evaluation,
+        "runtime_stall_observed": runtime_stall_observed,
+        "stall_teardown_requested": stall_teardown_requested,
         "elapsed_wait_seconds": round(elapsed_wait_seconds, 6),
         "max_wait_seconds": max_wait_seconds,
         "wait_deadline_expired": wait_deadline_expired,
@@ -2644,7 +2962,8 @@ def poll_runpod_wam_async_run(
             manifest,
         )
         stop_instead_of_delete = bool(
-            teardown_action == "stop" or keepalive_runtime_unhealthy_on_success
+            not runtime_stall_observed
+            and (teardown_action == "stop" or keepalive_runtime_unhealthy_on_success)
         )
         if stop_instead_of_delete:
             teardown_manifest = _stop_pod(
@@ -2661,8 +2980,10 @@ def poll_runpod_wam_async_run(
                 api_key=api_key,
                 generated_at=generated,
             )
+        teardown_completed = (teardown_manifest or {}).get("status") == "completed"
         continuing_spend = bool(
             pod_id
+            and not teardown_completed
             and not output_present
             and (
                 nonterminal_running_output
@@ -2673,9 +2994,14 @@ def poll_runpod_wam_async_run(
             and not pod_status_is_terminal
         )
         manifest["teardown_performed"] = bool(
-            teardown_manifest and teardown_manifest.get("status") == "completed"
+            teardown_manifest and teardown_completed
         )
         manifest["continuing_spend_from_this_run"] = continuing_spend
+        manifest["status"] = (
+            "completed"
+            if output_present
+            else ("running" if continuing_spend and not runtime_stall_observed else "blocked")
+        )
         manifest["teardown_manifest_path"] = str(
             resolved_job_dir
             / (
@@ -2712,6 +3038,13 @@ def poll_runpod_wam_async_run(
         manifest["keepalive_manifest_path"] = str(
             resolved_job_dir / "runpod_wam_async_keepalive_manifest.json"
         )
+    manifest["provider_reliability_manifest"] = _write_wam_provider_reliability_manifest(
+        job_dir=resolved_job_dir,
+        state=state,
+        poll_manifest=manifest,
+        teardown_manifest=teardown_manifest,
+        generated_at=generated,
+    )
     write_json(resolved_job_dir / "runpod_wam_async_poll_manifest.json", manifest)
     state_update = {
         **state,
@@ -2790,6 +3123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--token-file")
     create.add_argument("--secret-env-file")
     create.add_argument("--output-path")
+    create.add_argument("--max-spend-usd", type=float)
     create.add_argument("--allow-paid-runpod-launch", action="store_true")
     create.add_argument("--skip-public-staging-verification", action="store_true")
     create.add_argument("--verify-output-put-url", action="store_true")
@@ -2806,6 +3140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     poll.add_argument("--job-dir", required=True)
     poll.add_argument("--max-wait-seconds", type=int, default=60)
     poll.add_argument("--retry-interval-seconds", type=int, default=5)
+    poll.add_argument("--post-marker-no-progress-timeout-seconds", type=int, default=None)
     poll.add_argument("--teardown", action="store_true")
     stop = subparsers.add_parser("stop")
     stop.add_argument("--job-dir", required=True)
@@ -2824,6 +3159,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             token_file=args.token_file,
             secret_env_file=args.secret_env_file,
             output_path=args.output_path,
+            max_spend_usd=args.max_spend_usd,
             allow_paid_runpod_launch=args.allow_paid_runpod_launch,
             skip_public_staging_verification=args.skip_public_staging_verification,
             verify_output_put_url=args.verify_output_put_url,
@@ -2842,6 +3178,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             job_dir=args.job_dir,
             max_wait_seconds=args.max_wait_seconds,
             retry_interval_seconds=args.retry_interval_seconds,
+            post_marker_no_progress_timeout_seconds=(
+                args.post_marker_no_progress_timeout_seconds
+            ),
             teardown=args.teardown,
         )
     else:

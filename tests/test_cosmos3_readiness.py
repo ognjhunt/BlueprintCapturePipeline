@@ -50,6 +50,7 @@ def _write_base_capture(tmp_path: Path, *, include_held_out: bool = True) -> Pat
         "capture_rights": {
             "derived_scene_generation_allowed": True,
             "consent_status": "documented",
+            "permission_document_uri": "gs://local-blueprint/rights/consent-packet.pdf",
         },
         "world_model_candidate": True,
     }

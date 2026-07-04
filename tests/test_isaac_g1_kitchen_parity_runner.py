@@ -845,14 +845,67 @@ def test_manipulation_ready_arm_pose_defaults_to_both_arms() -> None:
 
 def test_manipulation_pov_render_and_validation_use_same_arm_selection() -> None:
     source = _RUNNER.read_text()
-    assert "pov_reach_arm = _normalize_reach_arm_selection(manipulation_reach_arm)" in source
+    assert "requested_reach_arm = _normalize_reach_arm_selection(manipulation_reach_arm)" in source
+    assert "_resolve_manipulation_reach_arm_selection(" in source
+    assert "pov_reach_arm = resolved_reach_arm" in source
     assert "rendered_reach_arm = pov_reach_arm" in source
+    assert "rendered_reach_arm = resolved_reach_arm" in source
     assert "arm=rendered_reach_arm" in source
+    assert "manipulation_reach_arm=rendered_reach_arm" in source
     assert "forward_yaw=decision.yaw" in source
     assert "arm=pov_reach_arm" in source
     assert 'arm_points_by_arm=cam_meta.get("arm_link_points_by_arm_xyz") or {}' in source
     assert "reach_arm = args.manipulation_reach_arm" in source
+    assert 'default="auto", choices=["auto", "right", "left", "both"]' in source
     assert 'if args.manipulation_reach_arm != "both" else "right"' not in source
+
+
+def test_auto_manipulation_reach_arm_resolves_from_final_stance_and_affordance() -> None:
+    stale_candidate_plan = {
+        "status": "accepted",
+        "selected_candidate_index": 0,
+        "candidates": [
+            {
+                "reachability_estimate": {
+                    "status": "PASS",
+                    "best_reach_arm": "right",
+                    "passing_arms": ["right"],
+                    "by_arm": {
+                        "right": {
+                            "status": "PASS",
+                            "seed_effector_to_affordance_m": 0.20,
+                            "shoulder_to_affordance_m": 0.45,
+                        },
+                        "left": {
+                            "status": "FAIL",
+                            "seed_effector_to_affordance_m": 0.40,
+                            "shoulder_to_affordance_m": 0.65,
+                        },
+                    },
+                }
+            }
+        ],
+    }
+    # This mirrors the microwave run: the accepted stance plus final resolved
+    # affordance makes the left arm the better single-arm review pose even if an
+    # earlier coarse candidate record preferred the right arm.
+    resolved = M._resolve_manipulation_reach_arm_selection(
+        "auto",
+        stance_plan=stale_candidate_plan,
+        affordance=(-1.591312, 1.471274, 1.241574),
+        root_pose=(-1.313504, 1.518814, 0.84),
+        yaw=-2.972108,
+    )
+
+    assert resolved == "left"
+    assert (
+        M._resolve_manipulation_reach_arm_selection("both", stance_plan=stale_candidate_plan)
+        == "both"
+    )
+    assert (
+        M._resolve_manipulation_reach_arm_selection("right", stance_plan=stale_candidate_plan)
+        == "right"
+    )
 
 
 def test_apply_joint_deltas_updates_only_available_joint_targets() -> None:
@@ -3179,6 +3232,12 @@ def test_visible_reach_success_contract_passes_only_with_required_evidence() -> 
         "task_success": False,
         "task_status": "failed_task_criteria",
         "failure_mode_ids": ["failure_target_not_reached"],
+        "episode_termination": {
+            "enabled": True,
+            "status": "PASS",
+            "terminal_reason": "success_held",
+            "blockers": [],
+        },
     }
 
     contract = M._apply_visible_reach_to_affordance_success_contract(
@@ -3199,6 +3258,69 @@ def test_visible_reach_success_contract_passes_only_with_required_evidence() -> 
     assert outcome["task_status"] == "passed"
     assert outcome["failure_mode_ids"] == []
     assert "faucet state change" in contract["claim_boundary"]
+
+
+def test_visible_reach_success_contract_requires_dynamic_success_held() -> None:
+    outcome = {
+        "task_success": False,
+        "episode_termination": {
+            "enabled": False,
+            "status": "FAIL",
+            "terminal_reason": "dynamic_episode_disabled",
+            "blockers": ["dynamic_episode_termination_required"],
+        },
+    }
+
+    contract = M._apply_visible_reach_to_affordance_success_contract(
+        outcome,
+        placement_validation={"status": "PASS", "blockers": []},
+        pov_geometry={
+            "status": "PASS",
+            "blockers": [],
+            "frames": [
+                {
+                    "status": "PASS",
+                    "reach_feasibility": {"status": "PASS", "blockers": []},
+                    "effector_distance_to_affordance_m": {"hand": 0.07},
+                }
+            ],
+        },
+        robot_visual_ready=True,
+        temporal_conditioning={"status": "PASS", "blockers": []},
+    )
+
+    assert contract["status"] == "FAIL"
+    assert contract["required_evidence"]["episode_termination_passed"] is False
+    assert outcome["task_success"] is False
+    assert "visible_reach_episode_not_successfully_terminated" in outcome["failure_mode_ids"]
+    assert "dynamic_episode_termination_required" in outcome["failure_mode_ids"]
+    assert "dynamic_episode_terminal_reason:dynamic_episode_disabled" in outcome["failure_mode_ids"]
+
+
+def test_visible_reach_success_contract_fails_when_dynamic_report_missing() -> None:
+    outcome = {"task_success": False}
+
+    contract = M._apply_visible_reach_to_affordance_success_contract(
+        outcome,
+        placement_validation={"status": "PASS", "blockers": []},
+        pov_geometry={
+            "status": "PASS",
+            "blockers": [],
+            "frames": [
+                {
+                    "status": "PASS",
+                    "reach_feasibility": {"status": "PASS", "blockers": []},
+                    "effector_distance_to_affordance_m": {"hand": 0.07},
+                }
+            ],
+        },
+        robot_visual_ready=True,
+        temporal_conditioning={"status": "PASS", "blockers": []},
+    )
+
+    assert contract["status"] == "FAIL"
+    assert outcome["task_success"] is False
+    assert "dynamic_episode_termination_missing" in outcome["failure_mode_ids"]
 
 
 def test_visible_reach_success_contract_fails_without_pov_geometry() -> None:
@@ -3285,7 +3407,245 @@ def test_visible_reach_success_contract_fails_when_final_frame_effector_is_not_c
     assert evidence["final_frame_reach_feasibility_passed"] is True
     assert evidence["final_frame_effector_close_enough"] is False
     assert evidence["final_frame_nearest_effector_to_affordance_m"] == 0.2195
-    assert evidence["max_final_effector_to_affordance_m"] == 0.12
+    assert evidence["max_final_effector_to_affordance_m"] == 0.08
+
+
+def test_visible_reach_success_contract_fails_when_final_frame_is_only_a_near_miss() -> None:
+    outcome = {"task_success": False}
+
+    contract = M._apply_visible_reach_to_affordance_success_contract(
+        outcome,
+        placement_validation={"status": "PASS", "blockers": []},
+        pov_geometry={
+            "status": "PASS",
+            "blockers": [],
+            "frames": [
+                {
+                    "status": "PASS",
+                    "reach_feasibility": {"status": "PASS", "blockers": []},
+                    "effector_distance_to_affordance_m": {"hand": 0.1095},
+                }
+            ],
+        },
+        robot_visual_ready=True,
+        temporal_conditioning={"status": "PASS", "blockers": []},
+    )
+
+    assert contract["status"] == "FAIL"
+    assert outcome["task_success"] is False
+    assert "visible_reach_final_frame_effector_not_close_enough" in outcome["failure_mode_ids"]
+    evidence = contract["reach_feasibility_evidence"]
+    assert evidence["final_frame_nearest_effector_to_affordance_m"] == 0.1095
+    assert evidence["max_final_effector_to_affordance_m"] == 0.08
+
+
+def test_visible_reach_success_contract_can_use_derived_fingertip_proxy() -> None:
+    outcome = {
+        "task_success": False,
+        "episode_termination": {
+            "enabled": True,
+            "status": "PASS",
+            "terminal_reason": "success_held",
+            "blockers": [],
+        },
+    }
+
+    contract = M._apply_visible_reach_to_affordance_success_contract(
+        outcome,
+        placement_validation={"status": "PASS", "blockers": []},
+        pov_geometry={
+            "status": "PASS",
+            "blockers": [],
+            "frames": [
+                {
+                    "status": "PASS",
+                    "reach_feasibility": {"status": "PASS", "blockers": []},
+                    "effector_distance_to_affordance_m": {
+                        "hand": 0.1095,
+                        "fingertip_proxy": 0.0704,
+                    },
+                }
+            ],
+        },
+        robot_visual_ready=True,
+        temporal_conditioning={"status": "PASS", "blockers": []},
+    )
+
+    assert contract["status"] == "PASS"
+    assert outcome["task_success"] is True
+    evidence = contract["reach_feasibility_evidence"]
+    assert evidence["final_frame_nearest_effector_to_affordance_m"] == 0.0704
+
+
+def test_derived_fingertip_proxy_extends_from_measured_wrist_hand_axis() -> None:
+    target = (-1.591312, 1.471274, 1.241574)
+    arm_points = {
+        "wrist": (-1.3527, 1.4331, 1.063),
+        "hand": (-1.485, 1.4643, 1.2163),
+    }
+
+    proxy = M._derived_fingertip_proxy_point(arm_points)
+
+    assert proxy is not None
+    assert math.dist(proxy, target) == pytest.approx(0.0704, abs=0.001)
+
+
+def test_visible_reach_dynamic_episode_terminal_success_requires_hold() -> None:
+    state = M._initial_dynamic_episode_state()
+    frame = {
+        "status": "PASS",
+        "reach_feasibility": {"status": "PASS", "blockers": []},
+        "effector_distance_to_affordance_m": {"hand": 0.07},
+    }
+
+    state = M._update_visible_reach_dynamic_episode_state(
+        state,
+        frame,
+        captured_frames=1,
+        min_frames=1,
+        max_frames=10,
+        success_hold_frames=2,
+        no_progress_patience_frames=5,
+    )
+    assert state["terminal_reason"] is None
+
+    state = M._update_visible_reach_dynamic_episode_state(
+        state,
+        frame,
+        captured_frames=2,
+        min_frames=1,
+        max_frames=10,
+        success_hold_frames=2,
+        no_progress_patience_frames=5,
+    )
+
+    assert state["terminal_reason"] == "success_held"
+    report = M._dynamic_episode_termination_report(
+        enabled=True,
+        task_success_contract="visible_reach_to_affordance",
+        requested_steps=2,
+        min_steps=1,
+        max_steps=10,
+        frames_captured=2,
+        state=state,
+    )
+    assert report["status"] == "PASS"
+    assert report["terminal_reason"] == "success_held"
+
+
+def test_visible_reach_dynamic_episode_terminal_no_progress_after_min_steps() -> None:
+    state = M._initial_dynamic_episode_state()
+    frame = {
+        "status": "PASS",
+        "reach_feasibility": {"status": "PASS", "blockers": []},
+        "effector_distance_to_affordance_m": {"hand": 0.1095},
+    }
+
+    for captured in range(1, 5):
+        state = M._update_visible_reach_dynamic_episode_state(
+            state,
+            frame,
+            captured_frames=captured,
+            min_frames=2,
+            max_frames=20,
+            success_hold_frames=2,
+            no_progress_patience_frames=3,
+        )
+
+    assert state["terminal_reason"] == "no_progress"
+    assert state["best_effector_to_affordance_m"] == 0.1095
+    assert state["terminal_sample"]["terminal_success"] is False
+    assert "visible_reach_terminal_frame_effector_not_close_enough" in (
+        state["terminal_sample"]["blockers"]
+    )
+
+
+def test_visible_reach_dynamic_episode_terminal_max_steps_when_cap_hit() -> None:
+    state = M._initial_dynamic_episode_state()
+    frame = {
+        "status": "PASS",
+        "reach_feasibility": {"status": "PASS", "blockers": []},
+        "effector_distance_to_affordance_m": {"hand": 0.1095},
+    }
+
+    for captured in range(1, 4):
+        state = M._update_visible_reach_dynamic_episode_state(
+            state,
+            frame,
+            captured_frames=captured,
+            min_frames=1,
+            max_frames=3,
+            success_hold_frames=2,
+            no_progress_patience_frames=99,
+        )
+
+    assert state["terminal_reason"] == "max_steps"
+    report = M._dynamic_episode_termination_report(
+        enabled=True,
+        task_success_contract="visible_reach_to_affordance",
+        requested_steps=2,
+        min_steps=1,
+        max_steps=3,
+        frames_captured=3,
+        state=state,
+    )
+    assert report["status"] == "FAIL"
+    assert report["terminal_reason"] == "max_steps"
+    assert report["blockers"] == ["dynamic_episode_terminal_reason:max_steps"]
+
+
+def test_visible_reach_dynamic_episode_terminal_wall_clock_cap() -> None:
+    state = M._initial_dynamic_episode_state()
+
+    report = M._dynamic_episode_termination_report(
+        enabled=True,
+        task_success_contract="visible_reach_to_affordance",
+        requested_steps=8,
+        min_steps=8,
+        max_steps=12,
+        frames_captured=9,
+        state=state,
+        wall_clock_truncated=True,
+    )
+
+    assert report["status"] == "FAIL"
+    assert report["terminal_reason"] == "wall_clock_cap"
+    assert report["blockers"] == ["dynamic_episode_terminal_reason:wall_clock_cap"]
+
+
+def test_visible_reach_success_contract_fails_when_dynamic_episode_no_progress() -> None:
+    outcome = {
+        "task_success": False,
+        "episode_termination": {
+            "enabled": True,
+            "status": "FAIL",
+            "terminal_reason": "no_progress",
+            "blockers": ["dynamic_episode_terminal_reason:no_progress"],
+        },
+    }
+
+    contract = M._apply_visible_reach_to_affordance_success_contract(
+        outcome,
+        placement_validation={"status": "PASS", "blockers": []},
+        pov_geometry={
+            "status": "PASS",
+            "blockers": [],
+            "frames": [
+                {
+                    "status": "PASS",
+                    "reach_feasibility": {"status": "PASS", "blockers": []},
+                    "effector_distance_to_affordance_m": {"hand": 0.07},
+                }
+            ],
+        },
+        robot_visual_ready=True,
+        temporal_conditioning={"status": "PASS", "blockers": []},
+    )
+
+    assert contract["status"] == "FAIL"
+    assert outcome["task_success"] is False
+    assert "visible_reach_episode_not_successfully_terminated" in outcome["failure_mode_ids"]
+    assert "dynamic_episode_terminal_reason:no_progress" in outcome["failure_mode_ids"]
 
 
 def test_visible_reach_review_grade_rejects_failed_reach_contract() -> None:
@@ -3352,6 +3712,36 @@ def test_runner_labels_legacy_robot_pov_as_root_follow_when_not_manipulation() -
     assert 'pov_camera_mode = "robot_mounted_manipulation" if manipulation_cam else "root_follow"' in source
     assert "camera_mode=pov_camera_mode" in source
     assert '"true_robot_head_pov": bool(manipulation_cam)' in source
+
+
+def test_runner_cli_dynamic_episode_termination_defaults_to_contract_driven() -> None:
+    default_args = M.build_arg_parser().parse_args(["--out-dir", "/tmp/review"])
+    assert default_args.dynamic_episode_termination is None
+    assert default_args.dynamic_episode_check_every == 1
+    assert default_args.capture_every == 1
+    assert default_args.no_placement_topdown_capture is False
+
+    enabled_args = M.build_arg_parser().parse_args([
+        "--out-dir",
+        "/tmp/review",
+        "--dynamic-episode-termination",
+        "--dynamic-episode-check-every",
+        "2",
+        "--capture-every",
+        "4",
+        "--no-placement-topdown-capture",
+    ])
+    assert enabled_args.dynamic_episode_termination is True
+    assert enabled_args.dynamic_episode_check_every == 2
+    assert enabled_args.capture_every == 4
+    assert enabled_args.no_placement_topdown_capture is True
+
+    disabled_args = M.build_arg_parser().parse_args([
+        "--out-dir",
+        "/tmp/review",
+        "--no-dynamic-episode-termination",
+    ])
+    assert disabled_args.dynamic_episode_termination is False
 
 
 def test_parse_scenarios_preserves_explicit_task_success_contract() -> None:
@@ -3967,16 +4357,16 @@ def test_manipulation_pov_geometry_requires_seed_arm_chain_and_effector_in_frame
         arm_points={},
         arm_points_by_arm={
             "left": {
-                "shoulder": (0.55, 0.05, 1.02),
-                "elbow": (0.66, 0.05, 1.02),
-                "wrist": (0.78, 0.03, 1.01),
-                "hand": (0.86, 0.02, 1.0),
+                "shoulder": (0.55, 0.18, 1.02),
+                "elbow": (0.66, 0.16, 1.02),
+                "wrist": (0.78, 0.14, 1.01),
+                "hand": (0.86, 0.12, 1.0),
             },
             "right": {
-                "shoulder": (0.55, -0.05, 1.02),
-                "elbow": (0.66, -0.05, 1.02),
-                "wrist": (0.78, -0.03, 1.01),
-                "hand": (0.86, -0.02, 1.0),
+                "shoulder": (0.55, -0.18, 1.02),
+                "elbow": (0.66, -0.16, 1.02),
+                "wrist": (0.78, -0.14, 1.01),
+                "hand": (0.86, -0.12, 1.0),
             },
         },
         affordance=affordance,
@@ -3993,6 +4383,66 @@ def test_manipulation_pov_geometry_requires_seed_arm_chain_and_effector_in_frame
     assert both_visible["arm_extension"]["status"] == "PASS"
     assert both_visible["reach_feasibility"]["status"] == "PASS"
     assert both_visible["reach_feasibility"]["passing_arms"] == ["left", "right"]
+    assert both_visible["two_arm_coordination"]["status"] == "PASS"
+
+    both_converged = M._manipulation_pov_geometry(
+        arm_points={},
+        arm_points_by_arm={
+            "left": {
+                "shoulder": (0.55, 0.18, 1.02),
+                "elbow": (0.66, 0.08, 1.02),
+                "wrist": (0.80, 0.04, 1.01),
+                "hand": (0.90, 0.02, 1.0),
+            },
+            "right": {
+                "shoulder": (0.55, -0.18, 1.02),
+                "elbow": (0.66, -0.08, 1.02),
+                "wrist": (0.80, -0.04, 1.01),
+                "hand": (0.90, -0.02, 1.0),
+            },
+        },
+        affordance=affordance,
+        eye=eye,
+        target=target,
+        vfov_deg=68.0,
+        width=640,
+        height=480,
+        arm="both",
+    )
+    assert both_converged["status"] == "FAIL"
+    assert both_converged["two_arm_coordination"]["status"] == "FAIL"
+    assert (
+        "manipulation_pov_both_arms_converge_at_single_affordance"
+        in both_converged["blockers"]
+    )
+
+    both_crossed = M._manipulation_pov_geometry(
+        arm_points={},
+        arm_points_by_arm={
+            "left": {
+                "shoulder": (0.55, 0.18, 1.02),
+                "elbow": (0.66, 0.08, 1.02),
+                "wrist": (0.78, -0.10, 1.01),
+                "hand": (0.86, -0.16, 1.0),
+            },
+            "right": {
+                "shoulder": (0.55, -0.18, 1.02),
+                "elbow": (0.66, -0.08, 1.02),
+                "wrist": (0.78, 0.10, 1.01),
+                "hand": (0.86, 0.16, 1.0),
+            },
+        },
+        affordance=affordance,
+        eye=eye,
+        target=target,
+        vfov_deg=68.0,
+        width=640,
+        height=480,
+        arm="both",
+    )
+    assert both_crossed["status"] == "FAIL"
+    assert both_crossed["two_arm_coordination"]["status"] == "FAIL"
+    assert "manipulation_pov_both_arms_cross_midline" in both_crossed["blockers"]
 
     one_arm_reachable = M._manipulation_pov_geometry(
         arm_points={},
@@ -4236,7 +4686,7 @@ def test_topdown_debug_overlay_is_added_only_after_verify_and_pov_are_saved() ->
 
 def test_first_frame_warmup_runs_after_pov_camera_placement() -> None:
     source = _RUNNER.read_text()
-    capture_start = source.index("if step % max(1, capture_every) == 0:")
+    capture_start = source.index("if should_capture_step:")
     pov_place = source.index("_place_camera(stage, pov_cam, eye, tgt)", capture_start)
     warmup_log = source.index("first-frame warmup", pov_place)
     warmup_step = source.index('label=f"{sid}:frame:{cap}:warmup:{wi}"', warmup_log)

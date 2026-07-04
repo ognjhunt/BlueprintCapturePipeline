@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from .common import ensure_dir, read_json, relative_scene_path, utc_now_iso, write_json
+from .launch_proof_policy import production_launch_mode
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -145,21 +146,27 @@ def _world_labs_readiness(
     audit = _as_dict(worldlabs_input.get("audit_payload"))
     labeling = _as_dict(worldlabs_input.get("input_labeling"))
     raw_bypass_used = bool(audit.get("raw_video_bypass_used") or labeling.get("raw_video_bypass_used"))
+    # Raw-bypass exemptions exist only for labeled non-production previews. In
+    # production launch mode the bypass itself is a blocker and never exempts
+    # privacy/rights failures, so unredacted media can't reach a ready package.
+    bypass_exempts = raw_bypass_used and not production_launch_mode()
     if not output_video_uri:
         blockers.append("missing_privacy_safe_world_model_input")
     if status and status != "ready":
         blockers.append(f"worldlabs_input_status:{status}")
-    if not bool(audit.get("privacy_safe_input") or labeling.get("privacy_safe_input")) and not raw_bypass_used:
+    if not bool(audit.get("privacy_safe_input") or labeling.get("privacy_safe_input")) and not bypass_exempts:
         blockers.append("privacy_safe_world_model_input_not_verified")
-    if raw_bypass_used:
+    if raw_bypass_used and production_launch_mode():
+        blockers.append("raw_video_bypass_used_in_production")
+    elif raw_bypass_used:
         warnings.append("raw_video_bypass_input_non_production")
     privacy_status = _string(privacy_processing.get("status")).lower()
-    if privacy_status == "failed_closed" and not raw_bypass_used:
+    if privacy_status == "failed_closed" and not bypass_exempts:
         blockers.append("privacy_processing_failed_closed")
     elif privacy_status == "failed_closed":
         warnings.append("privacy_processing_failed_closed_raw_bypass")
     rights_status = _string(rights_review.get("status")).lower()
-    if rights_status == "blocked" and not raw_bypass_used:
+    if rights_status == "blocked" and not bypass_exempts:
         blockers.append("rights_provenance_review_blocked")
     elif rights_status == "blocked":
         warnings.append("rights_provenance_review_blocked_raw_bypass")

@@ -2765,9 +2765,13 @@ def _simulator_attempts_from_payload(
     attempts: List[Dict[str, Any]] = []
     for index, record in enumerate(records, start=1):
         status = _string(record.get("status") or record.get("result") or "completed").lower()
+        explicit_success = record.get("success")
+        # `success` may fall back to the episode status (runtime completion), but
+        # `task_success` must never: an episode that merely finished without an explicit
+        # task verdict fails closed instead of inheriting "completed" as task success.
         success = (
-            _boolish(record.get("success"))
-            if record.get("success") is not None
+            _boolish(explicit_success)
+            if explicit_success is not None
             else status in {"completed", "success", "succeeded", "passed"}
         )
         task_outcome = _mapping(record.get("task_outcome") or record.get("taskOutcome"))
@@ -2776,14 +2780,26 @@ def _simulator_attempts_from_payload(
             if record.get("task_success") is not None
             else task_outcome.get("task_success")
         )
+        task_success_explicit = task_success_raw is not None or explicit_success is not None
         task_success = (
-            _boolish(task_success_raw) if task_success_raw is not None else bool(success)
+            _boolish(task_success_raw)
+            if task_success_raw is not None
+            else _boolish(explicit_success)
+            if explicit_success is not None
+            else False
         )
         failure_ids = _failure_ids(record, "failure_mode_ids", "failure_modes", "failures")
         if not failure_ids:
             failure_ids = _failure_ids(task_outcome, "failure_mode_ids", "failure_modes", "failures")
         if (not success or not task_success) and not failure_ids:
-            failure_ids = [_string(record.get("failure_reason")) or "simulator_failure"]
+            failure_ids = [
+                _string(record.get("failure_reason"))
+                or (
+                    "task_success_not_reported_failing_closed"
+                    if not task_success_explicit
+                    else "simulator_failure"
+                )
+            ]
         attempts.append(
             {
                 "attempt_id": _string(record.get("attempt_id") or record.get("attemptId"))
@@ -2813,6 +2829,7 @@ def _simulator_attempts_from_payload(
                 "status": status,
                 "success": bool(success and task_success),
                 "task_success": bool(task_success),
+                "task_success_explicit": bool(task_success_explicit),
                 "task_status": _string(
                     record.get("task_status")
                     or record.get("taskStatus")

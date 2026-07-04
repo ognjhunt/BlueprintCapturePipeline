@@ -349,6 +349,12 @@ def _build_staged_capture(
         "width": 1920,
         "height": 1080,
         "requested_outputs": ["qualification", "preview_simulation", "deeper_evaluation"],
+        "capture_rights": {
+            "derived_scene_generation_allowed": True,
+            "consent_status": "documented",
+            "permission_document_uri": "gs://local-blueprint/rights/consent-packet.pdf",
+            "consent_scope": ["cabinet zone"],
+        },
         **_PACKAGING_UPSTREAM_IDS,
         "upstream_handoff": dict(_PACKAGING_UPSTREAM_IDS),
     }

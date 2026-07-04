@@ -179,6 +179,7 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
         "wam_rollout_results.json",
         "vision_success_labels.json",
         "normalized_attempt_trace.json",
+        "task_eval_run_report.json",
         "failure_labels.json",
         "policy_ranking_scorecard.json",
         "wam_eval_claim_boundary.json",
@@ -195,6 +196,7 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     rollouts = _read_json(job_dir / "wam_rollout_results.json")
     labels = _read_json(job_dir / "vision_success_labels.json")
     trace = _read_json(job_dir / "normalized_attempt_trace.json")
+    task_eval_report = _read_json(job_dir / "task_eval_run_report.json")
     failure_labels = _read_json(job_dir / "failure_labels.json")
     scorecard = _read_json(job_dir / "policy_ranking_scorecard.json")
     candidate_report = _read_json(job_dir / "candidate_selection_report.json")
@@ -213,6 +215,16 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
         "fixture_evaluator_only_no_visual_smoke"
     )
     assert labels["labels"][0]["fixture_evaluator_only"] is True
+    assert task_eval_report["schema_version"] == "task_eval_run_buyer_report.v1"
+    assert task_eval_report["success_claim_ledger"]["highest_truthful_claim"] in {
+        "no_claim",
+        "media_valid",
+        "review_task_success",
+    }
+    assert (
+        task_eval_report["claim_boundary"]["provider_runtime_success_is_not_task_success"]
+        is True
+    )
     assert trace["attempt_count"] == 4
     assert scorecard["status"] == "completed_visual_review_required"
     assert scorecard["top_policy_id"] is None
@@ -925,9 +937,12 @@ def test_fixture_wam_cli_and_live_provider_blocked_manifest(tmp_path: Path) -> N
     assert "cosmos3_wam_provider_adapter_not_configured_for_local_run" in blocked["blockers"]
     blocked_request = _read_json(job_dir / "wam_evaluation_request.json")
     blocked_boundary = _read_json(job_dir / "wam_eval_claim_boundary.json")
+    blocked_task_eval_report = _read_json(job_dir / "task_eval_run_report.json")
     assert blocked_request["status"] == "blocked"
     assert blocked_request["evaluation_substrate"] == "cosmos3_wam"
     assert blocked_boundary["live_provider_calls_performed"] is False
+    assert blocked_task_eval_report["schema_version"] == "task_eval_run_buyer_report.v1"
+    assert blocked_task_eval_report["evidence_level"] == "no_claim"
 
     assert (
         main(

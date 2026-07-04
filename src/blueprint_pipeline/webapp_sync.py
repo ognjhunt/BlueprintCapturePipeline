@@ -101,6 +101,8 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
     robot_team_grade_eval_closure = _mapping(value.get("robot_team_grade_eval_closure"))
     proof_boundary = _mapping(value.get("proof_boundary"))
     artifact_paths = _mapping(value.get("artifact_paths"))
+    rights_privacy = _mapping(value.get("rights_privacy"))
+    product_handoff = _mapping(value.get("product_handoff"))
     buyer_display_guardrails = _mapping(value.get("buyer_display_guardrails"))
     must_not_display_as = _string_list(buyer_display_guardrails.get("must_not_display_as"))
     if not must_not_display_as:
@@ -109,6 +111,34 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "evaluation_readiness",
             "policy_quality_certification",
         ]
+    # Success metrics are only as strong as the proven evaluation substrate. A bare
+    # success rate with no substrate context reads as physical proof to a buyer, so the
+    # substrate label is derived strictly from the proof boundary and defaults to the
+    # weakest truthful description.
+    real_world_proven = proof_boundary.get("real_world_outcome_proven") is True
+    simulator_proven = proof_boundary.get("simulator_execution_proven") is True
+    if real_world_proven:
+        success_rate_substrate = "real_robot_outcome"
+    elif simulator_proven:
+        success_rate_substrate = "simulator_execution"
+    else:
+        success_rate_substrate = "unproven_pipeline_output"
+    rights_status = str(rights_privacy.get("rights_status") or "").strip().lower() or "missing"
+    privacy_status = str(rights_privacy.get("privacy_status") or "").strip().lower() or "missing"
+    _CLEARED_RIGHTS_STATUSES = {"approved", "verified", "cleared"}
+    revocation_takedown = _mapping(
+        value.get("revocation_takedown") or rights_privacy.get("revocation_takedown")
+    )
+    consent_revoked = (
+        rights_privacy.get("consent_revoked") is True
+        or revocation_takedown.get("consent_revoked") is True
+        or revocation_takedown.get("status") == "takedown_required"
+    )
+    product_sku = str(product_handoff.get("product_sku") or "").strip() or None
+    entitlement_id = str(product_handoff.get("entitlement_id") or "").strip() or None
+    revenue_share_review = _mapping(
+        product_handoff.get("revenue_share_review") or value.get("revenue_share_review")
+    )
     return {
         "schema_version": ROBOT_EVAL_WEBAPP_STATUS_PROJECTION_SCHEMA_VERSION,
         "generated_at": str(value.get("generated_at") or "").strip() or None,
@@ -176,6 +206,9 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "failure_label_coverage_complete": bool(
                 task_metrics.get("failure_label_coverage_complete")
             ),
+            "success_rate_evaluation_substrate": success_rate_substrate,
+            "success_rate_is_real_world_proof": real_world_proven,
+            "success_rate_is_simulator_only": simulator_proven and not real_world_proven,
         },
         "batch_closure": {
             "status": batch_closure.get("status"),
@@ -300,6 +333,69 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "public_claim_upgrade_allowed": bool(
                 proof_boundary.get("public_claim_upgrade_allowed")
             ),
+            # Each proven flag lists the whitelisted manifests a buyer can audit it
+            # against. An empty list means no synced artifact backs the flag.
+            "evidence_manifest_paths": {
+                "simulator_execution_proven": [
+                    path
+                    for path in (
+                        artifact_paths.get("simulator_command_batch_closure_manifest"),
+                        artifact_paths.get(
+                            "simulator_command_batch_trace_package_manifest"
+                        ),
+                    )
+                    if path
+                ],
+                "robot_policy_execution_proven": [
+                    path
+                    for path in (artifact_paths.get("policy_execution_manifest"),)
+                    if path
+                ],
+                "real_world_outcome_proven": [],
+            },
+        },
+        "rights_privacy": {
+            "rights_status": rights_status,
+            "privacy_status": privacy_status,
+            "consent_scope_present": bool(_string_list(rights_privacy.get("consent_scope"))),
+            "consent_revoked": consent_revoked,
+            "revocation_takedown_status": str(
+                revocation_takedown.get("status") or "not_available"
+            ).strip(),
+            "revocation_takedown_required": consent_revoked,
+            "rights_privacy_blocking": not (
+                rights_status in _CLEARED_RIGHTS_STATUSES
+                and privacy_status in _CLEARED_RIGHTS_STATUSES
+            )
+            or consent_revoked,
+        },
+        "product_handoff": {
+            "product_type": str(product_handoff.get("product_type") or "").strip() or None,
+            "product_sku": product_sku,
+            "entitlement_id": entitlement_id,
+            "buyer_review_url": str(product_handoff.get("buyer_review_url") or "").strip()
+            or None,
+            "entitlement_wiring_present": bool(product_sku and entitlement_id),
+            "pricing_is_out_of_band": True,
+            "revenue_share_review": {
+                "status": str(revenue_share_review.get("status") or "not_available").strip(),
+                "required_before_paid_reuse_or_resale": revenue_share_review.get(
+                    "required_before_paid_reuse_or_resale"
+                )
+                is True,
+                "owner_revenue_share_record_present": revenue_share_review.get(
+                    "owner_revenue_share_record_present"
+                )
+                is True,
+                "revenue_share_commitment_made": revenue_share_review.get(
+                    "revenue_share_commitment_made"
+                )
+                is True,
+                "payout_commitment_allowed": revenue_share_review.get(
+                    "payout_commitment_allowed"
+                )
+                is True,
+            },
         },
         "artifact_paths": {
             str(key): item
@@ -356,6 +452,12 @@ def _is_generated_capture_id(value: str, payload: Mapping[str, Any]) -> bool:
             }
         )
     return bool(value.strip() and value.strip() in generated_values)
+
+
+def upstream_link_id_failures(payload: Mapping[str, Any]) -> dict[str, str]:
+    """Public fail-closed check: missing, placeholder, or capture-derived
+    upstream WebApp ids keyed by field name. Empty dict means all ids are real."""
+    return _upstream_link_failures(payload)
 
 
 def _upstream_link_failures(payload: Mapping[str, Any]) -> dict[str, str]:
@@ -541,6 +643,9 @@ def build_webapp_pipeline_attachment_payload(
             if isinstance(evaluation_readiness, Mapping)
             else None
         ),
+        # evaluation_readiness is already in must_not_display_as; this sibling flag makes
+        # the advisory scope explicit for consumers that only read the payload.
+        "evaluation_readiness_is_advisory_only": True,
         "robot_eval_status_projection": safe_robot_eval_projection or None,
     }
     if not payload["site_submission_id"] and not payload["request_id"]:

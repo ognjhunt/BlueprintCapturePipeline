@@ -127,6 +127,7 @@ def test_site_reference_backfill_reports_geometry_required_for_meta_capture(tmp_
                 "capture_rights": {
                     "derived_scene_generation_allowed": True,
                     "consent_status": "documented",
+                    "permission_document_uri": "gs://local-blueprint/rights/consent-packet.pdf",
                 },
                 "capture_mode": {
                     "requested_mode": "site_world_candidate",

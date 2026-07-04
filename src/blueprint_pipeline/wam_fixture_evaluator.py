@@ -16,6 +16,19 @@ from .failure_diagnosis_contract import (
     remediation_candidate as _failure_remediation_candidate,
     review_status_for_failure_label as _failure_review_status,
 )
+from .success_claim_contracts import (
+    build_artifact_freshness_evidence,
+    build_contact_state_change_proof,
+    build_media_validity,
+    build_physical_readiness,
+    build_policy_action_execution,
+    build_review_task_success,
+    build_simulator_execution,
+    build_task_success_contract_result,
+    coerce_strict_success,
+    derive_task_proof_requirements,
+)
+from .task_eval_run_report import build_task_eval_run_report
 from .wam_eval_substrate import (
     WAM_EVALUATION_SUBSTRATES,
     build_wam_eval_claim_boundary,
@@ -143,6 +156,7 @@ WAM_ARTIFACT_PATHS = {
     "wam_rollout_results": "wam_rollout_results.json",
     "vision_success_labels": "vision_success_labels.json",
     "normalized_attempt_trace": "normalized_attempt_trace.json",
+    "task_eval_run_report": "task_eval_run_report.json",
     "failure_labels": "failure_labels.json",
     "prediction_outcome_ledger": "prediction_outcome_ledger.json",
     "calibration_report": "calibration_report.json",
@@ -787,6 +801,8 @@ def _rollout_for_run(
         "claim_boundary": {
             "model_derived_support_artifact": True,
             "raw_capture_evidence": False,
+            "predicted_success_is_capability_prediction_not_task_success_proof": True,
+            "task_success_proven": False,
             "simulator_execution_proven": False,
             "robot_policy_execution_proven": False,
             "real_world_outcome_proven": False,
@@ -860,7 +876,11 @@ def _normalized_attempt_trace(
     shared_provenance_refs = _string_list(short_visual_sanity_gate.get("provenance_refs"))
     attempts: list[Dict[str, Any]] = []
     for label in label_rows:
-        success = bool(label.get("task_success"))
+        success_verdict = label.get("task_success")
+        # Strict boolean only: a string like "true"/"1" or a missing field is a review
+        # gap and must fail closed, never coerce to success.
+        strict_boolean_verdict = isinstance(success_verdict, bool)
+        success = success_verdict is True
         review_label_refs = _dedupe([*shared_review_refs, *_review_label_refs(label)])
         frame_or_clip_refs = _dedupe_refs(
             [
@@ -878,7 +898,21 @@ def _normalized_attempt_trace(
                     if not review_label_refs
                     else []
                 ),
+                *(
+                    ["task_success_label_not_strict_boolean"]
+                    if not strict_boolean_verdict
+                    else []
+                ),
             ]
+        )
+        # The upstream label field is a claim; review-grade standing must be re-derived
+        # from the gates it depends on, not passed through.
+        review_grade_success_label = bool(
+            label.get("review_grade_success_label")
+            and label.get("review_grade_visual_evidence_available")
+            and review_label_refs
+            and strict_boolean_verdict
+            and not visual_review_blockers
         )
         attempts.append(
             {
@@ -895,6 +929,7 @@ def _normalized_attempt_trace(
                 "status": "completed" if success else "failed",
                 "success": success,
                 "task_success": success,
+                "task_success_verdict_strict_boolean": strict_boolean_verdict,
                 "failure_mode_ids": _string_list(label.get("failure_mode_ids")),
                 "confidence": label.get("confidence"),
                 "evidence_refs": _failure_evidence_refs(
@@ -920,7 +955,7 @@ def _normalized_attempt_trace(
                 "review_grade_visual_evidence_available": bool(
                     label.get("review_grade_visual_evidence_available")
                 ),
-                "review_grade_success_label": bool(label.get("review_grade_success_label")),
+                "review_grade_success_label": review_grade_success_label,
                 "review_status": label.get("review_status") or label.get("review_label_status"),
                 "review_label_refs": review_label_refs,
                 "short_visual_sanity_gate": short_visual_sanity_gate,
@@ -944,9 +979,7 @@ def _normalized_attempt_trace(
                         label.get("visual_rollout_useful_for_task_success_review")
                     ),
                     "fixture_evaluator_only": bool(label.get("fixture_evaluator_only")),
-                    "review_grade_success_label": bool(
-                        label.get("review_grade_success_label")
-                    ),
+                    "review_grade_success_label": review_grade_success_label,
                     "simulator_execution_proven": False,
                     "robot_policy_execution_proven": False,
                     "rank_fidelity_result_proven": False,
@@ -1382,6 +1415,200 @@ def _prediction_ledgers(
         "claim_boundary": _claim_boundary(substrate=substrate, generated_at=generated_at),
     }
     return prediction, calibration, breakage
+
+
+def _wam_report_attempts(trace: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    attempts: list[Dict[str, Any]] = []
+    for index, attempt in enumerate(trace.get("attempts") or []):
+        if not isinstance(attempt, Mapping):
+            continue
+        row = dict(attempt)
+        strict_success = coerce_strict_success(
+            row.get("success")
+            if "success" in row
+            else row.get("task_success")
+            if "task_success" in row
+            else _mapping(row.get("task_outcome")).get("task_success")
+        )
+        if strict_success is not None:
+            row["success"] = strict_success
+        row.setdefault("attempt_id", f"attempt_{index + 1:04d}")
+        attempts.append(row)
+    return attempts
+
+
+def _wam_trace_task_success(attempts: Sequence[Mapping[str, Any]]) -> bool | None:
+    if not attempts:
+        return None
+    verdicts: list[bool] = []
+    for attempt in attempts:
+        strict_success = coerce_strict_success(attempt.get("success"))
+        if strict_success is None:
+            return None
+        verdicts.append(strict_success)
+    return all(verdicts)
+
+
+def _wam_task_metadata(
+    *,
+    request: Mapping[str, Any],
+    matrix: Mapping[str, Any],
+) -> Dict[str, Any]:
+    for task in request.get("requested_tasks") or request.get("requestedTasks") or []:
+        if isinstance(task, Mapping):
+            return dict(task)
+    for run in _matrix_runs(matrix):
+        row = _mapping(run)
+        if row:
+            return {
+                key: value
+                for key, value in row.items()
+                if key
+                in {
+                    "task_id",
+                    "task_name",
+                    "scenario_id",
+                    "task_success_contract",
+                    "success_contract",
+                    "affordance_object_ids",
+                    "target_object_ids",
+                    "success_state_change",
+                }
+            }
+    return {}
+
+
+def _wam_review_verdicts(labels: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    verdicts: list[Dict[str, Any]] = []
+    for row in labels.get("labels") or []:
+        if not isinstance(row, Mapping):
+            continue
+        success = coerce_strict_success(row.get("task_success"))
+        if success is None:
+            continue
+        verdicts.append(
+            {
+                "success": success,
+                "reviewer": _string(row.get("reviewer") or row.get("source"))
+                or "wam_vision_success_labels",
+                "source_artifact": "vision_success_labels.json",
+            }
+        )
+    return verdicts
+
+
+def _wam_policy_id(
+    *,
+    policies: Sequence[Mapping[str, Any]],
+    attempts: Sequence[Mapping[str, Any]],
+) -> str | None:
+    for row in [*attempts, *policies]:
+        if isinstance(row, Mapping):
+            policy_id = _string(row.get("policy_id") or row.get("policyId"))
+            if policy_id:
+                return policy_id
+    return None
+
+
+def _wam_task_eval_run_report(
+    *,
+    job_id: str,
+    request: Mapping[str, Any],
+    matrix: Mapping[str, Any],
+    policies: Sequence[Mapping[str, Any]],
+    substrate: str,
+    labels: Mapping[str, Any],
+    trace: Mapping[str, Any],
+    scorecard: Mapping[str, Any],
+    provider_execution: Mapping[str, Any],
+    policy_binding: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    attempts = _wam_report_attempts(trace)
+    task_metadata = _wam_task_metadata(request=request, matrix=matrix)
+    visual_review_ready = bool(
+        scorecard.get("visual_rollout_useful_for_task_success_review")
+        and not _string_list(scorecard.get("visual_review_blockers"))
+    )
+    freshness = build_artifact_freshness_evidence(
+        artifact_run_id=job_id,
+        current_run_id=job_id,
+    )
+    media_validity = build_media_validity(
+        media_present=visual_review_ready,
+        decodable=visual_review_ready,
+        visual_stats={
+            "blockers": _string_list(scorecard.get("visual_review_blockers")),
+        },
+        freshness=freshness if visual_review_ready else None,
+    )
+    review_task_success = build_review_task_success(
+        media_validity=media_validity,
+        reviewer_verdicts=_wam_review_verdicts(labels),
+        camera_evidence={
+            "robot_pov_camera_mode": "model_derived_wam_rollout",
+            "visible_embodied_robot_action_evidence": visual_review_ready,
+        },
+    )
+    task_success_contract = build_task_success_contract_result(
+        task_metadata=task_metadata,
+        trace_task_success=_wam_trace_task_success(attempts),
+    )
+    policy_id = _wam_policy_id(policies=policies, attempts=attempts)
+    layers = {
+        "media_validity": media_validity,
+        "review_task_success": review_task_success,
+        "task_success_contract": task_success_contract,
+        "simulator_execution": build_simulator_execution(
+            provider_runtime_status="blocked",
+            output_artifacts_present=False,
+            artifact_freshness=None,
+            execution_log_present=False,
+        ),
+        "policy_action_execution": build_policy_action_execution(
+            action_source="model_derived_wam_rollout",
+            policy_id=policy_id,
+            action_trace_present=False,
+            actions_executed_in_simulator=False,
+        ),
+        "contact_state_change": build_contact_state_change_proof(
+            proof_requirements=derive_task_proof_requirements(task_metadata),
+            contact_reports=[],
+            state_change_measurement=None,
+        ),
+        "physical_readiness": build_physical_readiness(
+            real_robot_execution_evidence={"physical_robot_executed": False},
+            deployment_approval={"approved": False},
+        ),
+    }
+    rights_scope = _mapping(
+        request.get("rights_privacy_scope") or request.get("rightsPrivacyScope")
+    )
+    rights_cleared = rights_scope.get("cleared") is True or _string(
+        rights_scope.get("status")
+    ).lower() in {"cleared", "pass", "passed"}
+    return build_task_eval_run_report(
+        job_id=job_id,
+        scene_id=_string(matrix.get("scene_id") or request.get("scene_id")) or None,
+        capture_id=_string(request.get("capture_id") or request.get("captureId")) or None,
+        attempt_trace={**dict(trace), "attempts": attempts},
+        task_metadata=task_metadata,
+        success_claim_layers=layers,
+        provider_execution={
+            "wam_provider_execution_status": provider_execution.get("status"),
+            "evaluation_substrate": substrate,
+            "provider_runtime_success_is_not_task_success": True,
+        },
+        policy_binding={
+            **_mapping(policy_binding),
+            "policy_id": policy_id,
+        },
+        rights_privacy_gate={
+            "status": "cleared" if rights_cleared else "not_cleared",
+            "cleared": rights_cleared,
+        },
+        generated_at=generated_at,
+    )
 
 
 def _write_wam_artifacts(job_dir: Path, payloads: Mapping[str, Mapping[str, Any]]) -> None:
@@ -2953,6 +3180,19 @@ def _blocked_wam_artifacts(
         candidate_selection_report=candidate_report,
         generated_at=generated_at,
     )
+    task_eval_run_report = _wam_task_eval_run_report(
+        job_id=job_id,
+        request=request_payload,
+        matrix=matrix,
+        policies=policies,
+        substrate=substrate,
+        labels=labels,
+        trace=trace,
+        scorecard=scorecard,
+        provider_execution=provider_execution,
+        policy_binding=policy_binding,
+        generated_at=generated_at,
+    )
     visual_blocker_summary = _visual_review_blocker_summary(
         job_id=job_id,
         substrate=substrate,
@@ -2973,6 +3213,7 @@ def _blocked_wam_artifacts(
         "wam_rollout_results": empty_results,
         "vision_success_labels": labels,
         "normalized_attempt_trace": trace,
+        "task_eval_run_report": task_eval_run_report,
         "failure_labels": failure_labels,
         "policy_ranking_scorecard": scorecard,
         "wam_eval_claim_boundary": claim_boundary,
@@ -3285,6 +3526,19 @@ def run_wam_eval_job(
         candidate_selection_report=candidate_report,
         generated_at=generated,
     )
+    task_eval_run_report = _wam_task_eval_run_report(
+        job_id=job_id,
+        request=request_payload,
+        matrix=matrix,
+        policies=policies,
+        substrate=substrate,
+        labels=labels,
+        trace=trace,
+        scorecard=scorecard,
+        provider_execution=provider_execution,
+        policy_binding=policy_binding,
+        generated_at=generated,
+    )
     visual_blocker_summary = _visual_review_blocker_summary(
         job_id=job_id,
         substrate=substrate,
@@ -3305,6 +3559,7 @@ def run_wam_eval_job(
         "wam_rollout_results": rollout_results,
         "vision_success_labels": labels,
         "normalized_attempt_trace": trace,
+        "task_eval_run_report": task_eval_run_report,
         "failure_labels": failure_labels,
         "prediction_outcome_ledger": prediction,
         "calibration_report": calibration,

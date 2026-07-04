@@ -74,6 +74,15 @@ def _arena_results(tmp_path: Path) -> Path:
                     "failure_reason": "occlusion_threshold_miss",
                     "metrics": {"cycle_time_seconds": 42.0},
                     "video_path": "videos/episode.mp4",
+                    "clip_curation": {
+                        "evidence_source": "synthetic_fixture_declared",
+                        "frame_count": 32,
+                        "camera_motion_m": 0.01,
+                        "action_motion_score": 0.5,
+                        "visible_skeleton_fraction": 0.9,
+                        "sharpness_score": 40.0,
+                        "semantic_dedup_key": "scenario-1|move-tote|episode-1",
+                    },
                 }
             ]
         },
@@ -125,6 +134,16 @@ def test_arena_result_ingest_writes_package_and_blocks_live_gates(tmp_path: Path
     assert "missing_env_BLUEPRINT_ALLOW_LIVE_CODEX_SDK_OPERATORS" in operators["blockers"]
     assert "missing_openai_api_key" in operators["blockers"]
     assert package["status"] == "export_ready_review_required"
+    buyer_report = _read_json(output_dir / "task_eval_run_report.json")
+    assert buyer_report["schema_version"] == "task_eval_run_buyer_report.v1"
+    # local file ingest carries no layer contracts, so the ledger must
+    # truthfully report no_claim and never a bare success boolean
+    assert buyer_report["evidence_level"] == "no_claim"
+    assert "success" not in buyer_report
+    assert buyer_report["success_claim_ledger"]["highest_truthful_claim"] == "no_claim"
+    condition = buyer_report["scorecard"]["conditions"][0]
+    assert condition["trials"] == 1
+    assert condition["success_rate"]["point"] == 0.0
     assert (output_dir / "dataset_card.json").is_file()
     assert (output_dir / "archives" / "post_training_data_package.tar.gz").is_file()
 

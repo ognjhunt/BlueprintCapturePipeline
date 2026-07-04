@@ -1126,21 +1126,44 @@ def _policy_execution_result_audit(manifest: Mapping[str, Any]) -> Dict[str, Any
     proven_executed_modalities: List[str] = []
     reference_only_modalities: List[str] = []
     unproven_executed_modalities: List[str] = []
+    evidence_free_proof_modalities: List[str] = []
     for modality in selected_modalities:
         result = _mapping(modality_results.get(modality))
         if not result:
             continue
         execution_performed = bool(result.get("execution_performed"))
         reference_replayed = bool(result.get("reference_replayed"))
-        result_proven = bool(result.get("robot_policy_execution_proven"))
+        # The manifest flag is a claim, not proof: it must be a strict boolean and be
+        # backed by execution evidence — an artifact reference or the executed attempt
+        # trace the modality runner emits — to count as proven.
+        result_proven = result.get("robot_policy_execution_proven") is True
+        attempt_count = _number(result.get("attempt_count"))
+        evidence_backed = bool(
+            _string_list(result.get("evidence_refs"))
+            or _string(result.get("run_manifest_uri"))
+            or _string(result.get("trace_path"))
+            or _mapping(result.get("artifact_paths"))
+            or result.get("policy_submission_trace_available") is True
+            or (attempt_count is not None and attempt_count > 0)
+        )
         completed = _string(result.get("status")) == "completed"
         if reference_replayed and not execution_performed:
             reference_only_modalities.append(modality)
-        if execution_performed and completed and result_proven and not reference_replayed:
+        if result_proven and not evidence_backed:
+            evidence_free_proof_modalities.append(modality)
+        if (
+            execution_performed
+            and completed
+            and result_proven
+            and evidence_backed
+            and not reference_replayed
+        ):
             proven_executed_modalities.append(modality)
         elif execution_performed or result_proven:
             unproven_executed_modalities.append(modality)
     blockers: List[str] = []
+    if evidence_free_proof_modalities:
+        blockers.append("policy_execution_proof_flag_without_evidence_refs")
     if not selected_modalities:
         blockers.append("policy_execution_missing_selected_modalities")
     if missing_result_modalities:

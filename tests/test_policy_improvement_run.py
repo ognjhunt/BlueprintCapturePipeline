@@ -80,6 +80,13 @@ def _complete_job_dir(capture_root: Path) -> Path:
                     "scenario_eval_run_id": "val-1",
                     "split": "validation",
                     "task_id": "tote-transfer",
+                    "policy_role": "baseline",
+                },
+                {
+                    "scenario_eval_run_id": "val-2",
+                    "split": "validation",
+                    "task_id": "tote-transfer",
+                    "policy_role": "candidate",
                 },
                 {
                     "scenario_eval_run_id": "heldout-1",
@@ -174,6 +181,15 @@ def _complete_job_dir(capture_root: Path) -> Path:
             "task_success_summary": {"task_success_rate": 0.96},
         },
     )
+    _write_json(
+        job_dir / "success_claim_ledger.json",
+        {
+            "schema_version": "success_claim_ledger.v1",
+            "highest_truthful_claim": "policy_task_success",
+            "claims": {"policy_task_success": True},
+            "blockers": [],
+        },
+    )
     _write_json(autoresearch / "agent_idea_tree.json", {"ideas": []})
     _write_json(autoresearch / "followup_real_world_validation_request.json", {"status": "queued"})
     return job_dir
@@ -242,6 +258,11 @@ def test_policy_improvement_run_offer_binds_eval_post_training_and_candidate_art
     assert result["claim_boundary"]["simulator_execution_proven"] is True
     assert result["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert result["claim_boundary"]["public_claim_upgrade_allowed"] is False
+    assert result["claim_boundary"]["success_claim_ledger_included"] is True
+    assert (
+        result["success_claim_summary"]["highest_truthful_claim"]
+        == "policy_task_success"
+    )
     assert result["claim_boundary"][
         "blueprint_full_scoring_harness_exported_to_customer_by_default"
     ] is False
@@ -788,3 +809,94 @@ def test_policy_improvement_run_main_returns_success_and_blocked_status(
     blocked_job = capture_root / "pipeline" / "robot_eval_jobs" / "blocked"
     assert main(["--capture-root", str(capture_root), "--job-dir", str(blocked_job)]) == 1
     assert "status=blocked_missing_policy_improvement_inputs" in capsys.readouterr().out
+
+
+def test_policy_improvement_run_blocks_improvement_claim_without_concurrent_ab(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    job_dir = _complete_job_dir(capture_root)
+    # Strip the baseline/candidate policy roles: without matched-condition concurrent
+    # A/B evidence, an improvement claim is unsupported and must fail closed.
+    _write_json(
+        job_dir / "scenario_eval_matrix.json",
+        {
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "runs": [
+                {"scenario_eval_run_id": "dev-1", "split": "train", "task_id": "tote-transfer"},
+                {
+                    "scenario_eval_run_id": "heldout-1",
+                    "split": "heldout",
+                    "task_id": "tote-transfer",
+                },
+            ],
+        },
+    )
+
+    result = build_policy_improvement_run_offer(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        access_level="config_adapter",
+        improvement_targets=("adapter",),
+        generated_at="2026-06-18T00:00:00+00:00",
+    )
+
+    assert result["status"] == "blocked_improvement_claim_unsupported"
+    assert "concurrent_ab_candidate_claim_not_allowed" in result["blockers"]
+    assert result["claim_boundary"]["candidate_improvement_claim_allowed"] is False
+    assert result["claim_boundary"]["improvement_claim_blockers"] == [
+        "concurrent_ab_candidate_claim_not_allowed"
+    ]
+
+
+def test_policy_improvement_run_blocks_improvement_claim_without_success_ledger(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    job_dir = _complete_job_dir(capture_root)
+    (job_dir / "success_claim_ledger.json").unlink()
+
+    result = build_policy_improvement_run_offer(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        access_level="config_adapter",
+        improvement_targets=("adapter",),
+        generated_at="2026-06-18T00:00:00+00:00",
+    )
+
+    assert result["status"] == "blocked_improvement_claim_unsupported"
+    assert (
+        "success_claim_ledger_missing_for_candidate_improvement_claim"
+        in result["blockers"]
+    )
+    assert result["claim_boundary"]["success_claim_ledger_included"] is False
+
+
+def test_policy_improvement_run_blocks_non_positive_heldout_delta(tmp_path: Path) -> None:
+    capture_root = _capture_root(tmp_path)
+    job_dir = _complete_job_dir(capture_root)
+    _write_json(
+        job_dir / "policy_autoresearch" / "policy_autoresearch_report.json",
+        {
+            "schema_version": "policy_autoresearch_report.v1",
+            "status": "promoted",
+            "target_success_reached": False,
+            "baseline_heldout_success_rate": 0.82,
+            "best_heldout_success_rate": 0.80,
+            "frozen_verifier_sha256": "abc123",
+        },
+    )
+
+    result = build_policy_improvement_run_offer(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        access_level="config_adapter",
+        improvement_targets=("adapter",),
+        generated_at="2026-06-18T00:00:00+00:00",
+    )
+
+    assert result["status"] == "blocked_improvement_claim_unsupported"
+    assert any(
+        blocker.startswith("heldout_success_rate_delta_not_positive")
+        for blocker in result["blockers"]
+    )

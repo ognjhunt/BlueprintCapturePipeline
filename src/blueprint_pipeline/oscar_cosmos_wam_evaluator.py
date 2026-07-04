@@ -2700,6 +2700,9 @@ def _normalize_wam_success_labels(
         success_value = item.get("success")
         if not isinstance(success_value, bool):
             success_value = None
+        # A non-boolean verdict is a review gap, not a quiet "uncertain" pass-through:
+        # it must keep the label set below review grade.
+        strict_boolean_verdict = success_value is not None
         confidence_value = item.get("confidence")
         confidence = (
             float(confidence_value)
@@ -2743,7 +2746,16 @@ def _normalize_wam_success_labels(
                 "visual_smoke_status": visual_smoke_status,
                 "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
                 "review_grade_visual_evidence_available": visual_rollout_useful,
-                "authoritative_task_success_label": visual_rollout_useful,
+                # Media validity alone never makes a label authoritative: the reviewer
+                # must also have returned a strict boolean verdict.
+                "media_validity_passed": visual_rollout_useful,
+                "reviewer_verdict_strict_boolean": strict_boolean_verdict,
+                "authoritative_task_success_label": bool(
+                    visual_rollout_useful and strict_boolean_verdict
+                ),
+                "review_task_success": bool(
+                    visual_rollout_useful and success_value is True
+                ),
                 "failure_diagnosis_blocked_by_visual_quality": (
                     success_value is False and not visual_rollout_useful
                 ),
@@ -2758,16 +2770,29 @@ def _normalize_wam_success_labels(
                 "public_claim_upgrade_allowed": False,
             }
         )
+    strict_boolean_label_count = sum(
+        1 for row in labels if row.get("reviewer_verdict_strict_boolean")
+    )
+    if labels and strict_boolean_label_count < len(labels):
+        blockers.append("wam_success_label_verdict_not_strict_boolean")
     status = "completed" if labels and not blockers else "blocked"
     return {
         "schema_version": "wam_success_labels.v1",
         "generated_at": generated_at,
         "status": status,
-        "wam_success_label_from_generated_video": bool(labels and not blockers),
+        "wam_success_label_from_generated_video": bool(
+            labels and not blockers and strict_boolean_label_count == len(labels)
+        ),
         "visual_smoke_status": visual_smoke_status,
         "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
         "review_grade_visual_evidence_available": visual_rollout_useful,
-        "review_grade_success_labels": bool(labels and not blockers and visual_rollout_useful),
+        "strict_boolean_label_count": strict_boolean_label_count,
+        "review_grade_success_labels": bool(
+            labels
+            and not blockers
+            and visual_rollout_useful
+            and strict_boolean_label_count == len(labels)
+        ),
         "label_count": len(labels),
         "labels": labels,
         "provider": _string(command_payload.get("provider")) or None,

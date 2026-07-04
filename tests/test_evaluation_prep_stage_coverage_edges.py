@@ -731,3 +731,28 @@ def test_main_success_failure_and_module_entrypoint(monkeypatch: pytest.MonkeyPa
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("blueprint_pipeline.evaluation_prep_stage", run_name="__main__")
     assert exc.value.code == 1
+
+
+def test_strict_proven_flag_rejects_truthy_non_booleans_and_respects_boundary() -> None:
+    from blueprint_pipeline.evaluation_prep_stage import _strict_proven_flag
+
+    # Truthy non-booleans are never proof.
+    assert _strict_proven_flag({}, {"simulator_execution_proven": "true"}, "simulator_execution_proven") is False
+    assert _strict_proven_flag({"simulator_execution_proven": 1.0}, {}, "simulator_execution_proven") is False
+
+    # The proof boundary is authoritative in both directions.
+    assert _strict_proven_flag(
+        {"simulator_execution_proven": False},
+        {"simulator_execution_proven": True},
+        "simulator_execution_proven",
+    ) is False
+    assert _strict_proven_flag(
+        {"simulator_execution_proven": True}, {}, "simulator_execution_proven"
+    ) is True
+
+    # Absent everywhere fails closed; strict True in the run manifest counts only
+    # when the boundary is silent.
+    assert _strict_proven_flag({}, {}, "simulator_execution_proven") is False
+    assert _strict_proven_flag(
+        {}, {"simulator_execution_proven": True}, "simulator_execution_proven"
+    ) is True
