@@ -36,6 +36,9 @@ VIP_IMAGE_NAME="${VIP_IMAGE_NAME:-vip-privacy}"
 DEEPPRIVACY2_IMAGE_NAME="${DEEPPRIVACY2_IMAGE_NAME:-deepprivacy2-privacy}"
 VIDEO_TO_WORLD_IMAGE_NAME="${VIDEO_TO_WORLD_IMAGE_NAME:-video-to-world}"
 SWAP_TOPIC="${SWAP_TOPIC:-blueprint-capture-pipeline-handoff}"
+# Dedicated capture-bridge handoff topic (XR-04): pull listener consumes ONLY canonical handoff
+# payloads here, distinct from the descriptor topic consumed by on_swap_dispatch.
+HANDOFF_TOPIC="${HANDOFF_TOPIC:-blueprint-capture-bridge-handoff}"
 BLUEPRINT_PREVIEW_PROVIDER="${BLUEPRINT_PREVIEW_PROVIDER:-world_labs}"
 WORLDLABS_DEFAULT_MODEL="${WORLDLABS_DEFAULT_MODEL:-Marble 0.1-mini}"
 PRIVACY_PIPELINE_ENABLED="${PRIVACY_PIPELINE_ENABLED:-true}"
@@ -321,7 +324,7 @@ deploy_cloud_function() {
         --trigger-location us \
         --memory 512M \
         --timeout 60s \
-        --set-env-vars "^~^PIPELINE_PROJECT_ID=${PROJECT_ID}~PIPELINE_REGION=${PRIMARY_REGION}~REGIONS=${SECONDARY_REGIONS}~SWAP_TRIGGER_DISPATCH_MODE=pubsub~SWAP_TRIGGER_PUBSUB_TOPIC=${SWAP_TOPIC}~SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF=true"
+        --set-env-vars "^~^PIPELINE_PROJECT_ID=${PROJECT_ID}~PIPELINE_REGION=${PRIMARY_REGION}~REGIONS=${SECONDARY_REGIONS}~SWAP_TRIGGER_DISPATCH_MODE=pubsub~SWAP_TRIGGER_PUBSUB_TOPIC=${SWAP_TOPIC}~SWAP_TRIGGER_HANDOFF_PUBSUB_TOPIC=${HANDOFF_TOPIC}~SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF=true"
 
     gcloud functions deploy swap-dispatch-worker \
         --gen2 \
@@ -441,7 +444,7 @@ create_cloud_tasks_queues() {
 create_pubsub_topics() {
     log_info "Creating Pub/Sub topics..."
 
-    TOPICS=("$SWAP_TOPIC" "pipeline-trigger-dlq")
+    TOPICS=("$SWAP_TOPIC" "$HANDOFF_TOPIC" "pipeline-trigger-dlq")
 
     for topic in "${TOPICS[@]}"; do
         if [[ "$DRY_RUN" == "true" ]]; then
@@ -463,7 +466,7 @@ create_pubsub_topics() {
         log_info "Subscription blueprint-pipeline-handoff-listener already exists"
     else
         gcloud pubsub subscriptions create blueprint-pipeline-handoff-listener \
-            --topic "$SWAP_TOPIC" \
+            --topic "$HANDOFF_TOPIC" \
             --ack-deadline 600 \
             --message-retention-duration 7d \
             --min-retry-delay 60s \
@@ -550,6 +553,7 @@ print_summary() {
     echo "  - Cloud Function: storage-trigger"
     echo "  - Cloud Tasks Queue: blueprint-pipeline-queue"
     echo "  - Pub/Sub Topic: ${SWAP_TOPIC}"
+    echo "  - Pub/Sub Topic (capture-bridge handoff): ${HANDOFF_TOPIC}"
     echo "  - Pub/Sub Subscription: blueprint-pipeline-handoff-listener"
     echo ""
     echo "Service Accounts:"

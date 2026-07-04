@@ -438,9 +438,21 @@ resource "google_project_iam_member" "storage_trigger_logging" {
 # Pub/Sub Topics
 # =============================================================================
 
-# Main pipeline trigger topic
+# Main pipeline trigger topic — carries the DESCRIPTOR dispatch payload consumed by the
+# on_swap_dispatch worker (event-triggered on this topic). Do NOT attach the pull-based capture
+# bridge listener here: its schema differs (XR-04). The listener has its own topic below.
 resource "google_pubsub_topic" "pipeline_trigger" {
   name   = "blueprint-capture-pipeline-handoff"
+  labels = local.common_labels
+
+  message_retention_duration = "86400s" # 24 hours
+}
+
+# Dedicated capture-bridge handoff topic (XR-04) — carries ONLY the canonical handoff schema
+# (bucket, scene_id, capture_id, raw_prefix_uri, pipeline_handoff_uri) emitted by the
+# storage-trigger raw-upload-complete branch and consumed by the pull listener subscription.
+resource "google_pubsub_topic" "capture_bridge_handoff" {
+  name   = "blueprint-capture-bridge-handoff"
   labels = local.common_labels
 
   message_retention_duration = "86400s" # 24 hours
@@ -454,7 +466,7 @@ resource "google_pubsub_topic" "pipeline_dlq" {
 
 resource "google_pubsub_subscription" "pipeline_handoff_listener" {
   name  = "blueprint-pipeline-handoff-listener"
-  topic = google_pubsub_topic.pipeline_trigger.id
+  topic = google_pubsub_topic.capture_bridge_handoff.id
 
   ack_deadline_seconds       = 600
   message_retention_duration = "604800s"
@@ -1077,6 +1089,7 @@ resource "google_cloudfunctions2_function" "storage_trigger" {
       REGIONS                                 = join(",", local.all_regions)
       SWAP_TRIGGER_DISPATCH_MODE              = "pubsub"
       SWAP_TRIGGER_PUBSUB_TOPIC               = google_pubsub_topic.pipeline_trigger.name
+      SWAP_TRIGGER_HANDOFF_PUBSUB_TOPIC       = google_pubsub_topic.capture_bridge_handoff.name
       SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF = "true"
     }
   }

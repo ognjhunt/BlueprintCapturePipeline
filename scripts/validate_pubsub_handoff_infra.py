@@ -64,12 +64,15 @@ def main() -> None:
         require_contains(listener_text, needle, description)
 
     for needle, description in [
-        ('resource "google_pubsub_topic" "pipeline_trigger"', "handoff topic resource"),
-        ('name = "blueprint-capture-pipeline-handoff"', "canonical handoff topic name"),
+        ('resource "google_pubsub_topic" "pipeline_trigger"', "descriptor topic resource"),
+        ('name = "blueprint-capture-pipeline-handoff"', "descriptor topic name"),
+        ('resource "google_pubsub_topic" "capture_bridge_handoff"', "dedicated handoff topic resource (XR-04)"),
+        ('name = "blueprint-capture-bridge-handoff"', "dedicated handoff topic name (XR-04)"),
         ('resource "google_pubsub_topic" "pipeline_dlq"', "dead-letter topic resource"),
         ('resource "google_pubsub_subscription" "pipeline_handoff_listener"', "handoff subscription resource"),
         ('name = "blueprint-pipeline-handoff-listener"', "handoff subscription name"),
-        ("topic = google_pubsub_topic.pipeline_trigger.id", "subscription topic binding"),
+        # XR-04: listener must bind to the dedicated handoff topic, NOT the descriptor topic.
+        ("topic = google_pubsub_topic.capture_bridge_handoff.id", "subscription bound to dedicated handoff topic"),
         ("ack_deadline_seconds = 600", "long ack deadline"),
         ('message_retention_duration = "604800s"', "seven-day retention"),
         ('maximum_backoff = "600s"', "valid retry maximum backoff"),
@@ -77,15 +80,26 @@ def main() -> None:
         ("max_delivery_attempts = 5", "dead-letter delivery cap"),
         ('role = "roles/pubsub.subscriber"', "subscriber IAM role"),
         ("google_service_account.pipeline_runner.email", "pipeline runner subscriber principal"),
+        ("SWAP_TRIGGER_HANDOFF_PUBSUB_TOPIC = google_pubsub_topic.capture_bridge_handoff.name", "storage-trigger handoff topic env var"),
         ('output "pubsub_handoff_listener_subscription"', "subscription output"),
     ]:
         require_contains(terraform_text, needle, description)
 
+    # XR-04: listener subscription must NOT be bound to the descriptor topic.
+    if "topic = google_pubsub_topic.pipeline_trigger.id" in terraform_text and (
+        'resource "google_pubsub_subscription" "pipeline_handoff_listener" { name'
+        ' = "blueprint-pipeline-handoff-listener" topic ='
+        " google_pubsub_topic.pipeline_trigger.id" in terraform_text
+    ):
+        fail("handoff listener subscription is still bound to the descriptor topic (XR-04 regression)")
+
     for needle, description in [
-        ('SWAP_TOPIC="${SWAP_TOPIC:-blueprint-capture-pipeline-handoff}"', "deploy default handoff topic"),
-        ('TOPICS=("$SWAP_TOPIC" "pipeline-trigger-dlq")', "deploy topic creation list"),
+        ('SWAP_TOPIC="${SWAP_TOPIC:-blueprint-capture-pipeline-handoff}"', "deploy default descriptor topic"),
+        ('HANDOFF_TOPIC="${HANDOFF_TOPIC:-blueprint-capture-bridge-handoff}"', "deploy default handoff topic (XR-04)"),
+        ('TOPICS=("$SWAP_TOPIC" "$HANDOFF_TOPIC" "pipeline-trigger-dlq")', "deploy topic creation list"),
+        ("SWAP_TRIGGER_HANDOFF_PUBSUB_TOPIC=${HANDOFF_TOPIC}", "deploy storage-trigger handoff topic env var"),
         ("gcloud pubsub subscriptions create blueprint-pipeline-handoff-listener", "deploy subscription creation"),
-        ('--topic "$SWAP_TOPIC"', "deploy subscription topic binding"),
+        ('--topic "$HANDOFF_TOPIC"', "deploy subscription bound to dedicated handoff topic"),
         ("--ack-deadline 600", "deploy subscription ack deadline"),
         ("--message-retention-duration 7d", "deploy subscription retention"),
         ("--max-retry-delay 600s", "deploy subscription retry maximum backoff"),

@@ -200,13 +200,25 @@ def test_on_storage_finalize_retries_when_capture_bundle_not_ready(monkeypatch) 
         raise AssertionError("Expected readiness failure to raise")
 
 
-def test_on_storage_finalize_ignores_bridge_primary_raw_completion(monkeypatch) -> None:
+def test_on_storage_finalize_publishes_handoff_for_bridge_primary_raw_completion(monkeypatch) -> None:
+    """XR-02: bridge-primary raw completion must emit exactly one canonical handoff (not a black hole)."""
+
     storage_trigger = _load_storage_trigger_module()
-    dispatched: list[dict[str, object]] = []
+    published: list[dict[str, object]] = []
 
     monkeypatch.setenv("SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF", "true")
     monkeypatch.setenv("SWAP_TRIGGER_DISPATCH_MODE", "pubsub")
-    monkeypatch.setattr(storage_trigger, "_dispatch_payload", lambda payload: dispatched.append(dict(payload)) or "ok")
+    # Descriptor-topic dispatch must NOT be used for the bridge handoff.
+    monkeypatch.setattr(
+        storage_trigger,
+        "_dispatch_payload",
+        lambda payload: (_ for _ in ()).throw(AssertionError("descriptor dispatch must not run for bridge handoff")),
+    )
+    monkeypatch.setattr(
+        storage_trigger,
+        "_publish_handoff_message",
+        lambda payload: published.append(dict(payload)) or "pubsub:handoff-1",
+    )
 
     event = {
         "bucket": "bucket",
@@ -215,15 +227,51 @@ def test_on_storage_finalize_ignores_bridge_primary_raw_completion(monkeypatch) 
 
     storage_trigger.on_storage_finalize(event, context=None)
 
-    assert dispatched == []
+    assert len(published) == 1
+    payload = published[0]
+    assert payload["bucket"] == "bucket"
+    assert payload["scene_id"] == "scene-1"
+    assert payload["capture_id"] == "capture-1"
+    assert payload["raw_prefix_uri"] == "gs://bucket/scenes/scene-1/captures/capture-1/raw"
+    assert payload["pipeline_handoff_uri"] == (
+        "gs://bucket/scenes/scene-1/captures/capture-1/pipeline_handoff.json"
+    )
+
+
+def test_build_handoff_payload_matches_listener_contract() -> None:
+    """XR-04 contract: the handoff publisher emits exactly what parse_handoff_payload accepts."""
+
+    from blueprint_pipeline.pubsub_handoff_listener import HandoffMessage, parse_handoff_payload
+
+    storage_trigger = _load_storage_trigger_module()
+    payload = storage_trigger._build_handoff_payload(
+        bucket="capture-bucket",
+        scene_id="scene-1",
+        capture_id="capture-1",
+    )
+
+    handoff = parse_handoff_payload(payload)
+    assert handoff == HandoffMessage(
+        bucket="capture-bucket",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        raw_prefix_uri="gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        pipeline_handoff_uri="gs://capture-bucket/scenes/scene-1/captures/capture-1/pipeline_handoff.json",
+    )
 
 
 def test_on_storage_finalize_ignores_bridge_primary_descriptor(monkeypatch) -> None:
     storage_trigger = _load_storage_trigger_module()
     dispatched: list[dict[str, object]] = []
+    published: list[dict[str, object]] = []
 
     monkeypatch.setenv("SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF", "true")
     monkeypatch.setattr(storage_trigger, "_dispatch_payload", lambda payload: dispatched.append(dict(payload)) or "ok")
+    monkeypatch.setattr(
+        storage_trigger,
+        "_publish_handoff_message",
+        lambda payload: published.append(dict(payload)) or "ok",
+    )
 
     event = {
         "bucket": "bucket",
@@ -232,4 +280,8 @@ def test_on_storage_finalize_ignores_bridge_primary_descriptor(monkeypatch) -> N
 
     storage_trigger.on_storage_finalize(event, context=None)
 
+    # iOS never uploads capture_descriptor.json; when the bridge is primary the raw-completion
+    # event is the ingest path, so a descriptor finalize stays a no-op (no descriptor dispatch,
+    # no duplicate handoff).
     assert dispatched == []
+    assert published == []

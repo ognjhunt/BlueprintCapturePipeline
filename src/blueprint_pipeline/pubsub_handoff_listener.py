@@ -72,7 +72,6 @@ def stage_handoff_capture(
     storage_client: storage.Client | None = None,
 ) -> Path:
     client = storage_client or storage.Client()
-    bucket = client.bucket(handoff.bucket)
     capture_root = storage_root / handoff.bucket / handoff.capture_prefix
     capture_root.mkdir(parents=True, exist_ok=True)
 
@@ -93,11 +92,95 @@ def stage_handoff_capture(
             f"capture_root={capture_root}"
         )
     if not (capture_root / "pipeline_handoff.json").is_file():
-        raise PipelineError(
-            "Staged handoff capture is missing pipeline_handoff.json; "
-            f"capture_root={capture_root}"
-        )
+        # Real iOS bundles never upload pipeline_handoff.json (XR-03); synthesize it from the
+        # provenance already carried by raw/manifest.json + raw/capture_context.json so the
+        # capture_job_id / site_submission_id / buyer_request_id data contract stays intact.
+        _synthesize_pipeline_handoff(handoff, capture_root=capture_root)
     return capture_root
+
+
+def _read_optional_json_object(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _first_non_empty(*sources: Mapping[str, Any], keys: Sequence[str]) -> str | None:
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _synthesize_pipeline_handoff(handoff: HandoffMessage, *, capture_root: Path) -> Path:
+    """Materialize pipeline_handoff.json from raw sidecars when the iOS bundle omits it.
+
+    We never invent provenance: values come only from raw/manifest.json and
+    raw/capture_context.json, both of which the iOS app already writes.
+    """
+
+    raw_root = capture_root / "raw"
+    manifest = _read_optional_json_object(raw_root / "manifest.json")
+    context = _read_optional_json_object(raw_root / "capture_context.json")
+
+    site_submission_id = _first_non_empty(
+        manifest, context, keys=("site_submission_id", "siteSubmissionId")
+    )
+    buyer_request_id = _first_non_empty(
+        manifest, context, keys=("buyer_request_id", "buyerRequestId")
+    )
+    capture_job_id = _first_non_empty(manifest, context, keys=("capture_job_id", "captureJobId"))
+    request_id = buyer_request_id or capture_job_id
+
+    requested_outputs: list[str] = []
+    for source in (manifest, context):
+        for key in ("requested_outputs", "requestedOutputs", "requested_lanes", "requestedLanes"):
+            value = source.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    text = str(item).strip()
+                    if text and text not in requested_outputs:
+                        requested_outputs.append(text)
+
+    payload: dict[str, Any] = {
+        "schema_version": "pipeline_handoff.v1",
+        "synthesized": True,
+        "synthesized_from": ["raw/manifest.json", "raw/capture_context.json"],
+        "scene_id": handoff.scene_id,
+        "capture_id": handoff.capture_id,
+        "bucket": handoff.bucket,
+        "raw_prefix_uri": handoff.raw_prefix_uri,
+        "site_submission_id": site_submission_id,
+        "buyer_request_id": buyer_request_id,
+        "capture_job_id": capture_job_id,
+        "owner_system": {
+            "owner_system": "blueprint_capture",
+            "request_id": request_id,
+            "site_submission_id": site_submission_id,
+            "buyer_request_id": buyer_request_id,
+            "capture_job_id": capture_job_id,
+        },
+    }
+    if requested_outputs:
+        payload["requested_outputs"] = requested_outputs
+
+    destination = capture_root / "pipeline_handoff.json"
+    destination.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    logger.info(
+        "pubsub_handoff.synthesized_pipeline_handoff",
+        extra={
+            "scene_id": handoff.scene_id,
+            "capture_id": handoff.capture_id,
+            "capture_job_id": capture_job_id,
+        },
+    )
+    return destination
 
 
 def process_handoff_payload(

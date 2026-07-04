@@ -102,6 +102,74 @@ def _build_dispatch_payload(
     }
 
 
+def _build_handoff_payload(
+    *,
+    bucket: str,
+    scene_id: str,
+    capture_id: str,
+) -> Dict[str, Any]:
+    """Canonical capture-bridge handoff payload (XR-04).
+
+    Emits exactly the schema ``pubsub_handoff_listener.parse_handoff_payload`` requires:
+    ``bucket``, ``scene_id``, ``capture_id``, ``raw_prefix_uri`` (identity-consistent), and
+    ``pipeline_handoff_uri``. This is distinct from the descriptor dispatch payload consumed by
+    ``on_swap_dispatch`` and must be published on the dedicated handoff topic.
+    """
+
+    capture_prefix = f"scenes/{scene_id}/captures/{capture_id}"
+    return {
+        "schema_version": "capture_bridge_handoff.v1",
+        "bucket": bucket,
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "raw_prefix_uri": f"gs://{bucket}/{capture_prefix}/raw",
+        "pipeline_handoff_uri": f"gs://{bucket}/{capture_prefix}/pipeline_handoff.json",
+        "triggered_at": _utc_now_iso(),
+        "source": "storage_finalize_raw_complete",
+    }
+
+
+def _handoff_topic_name() -> str:
+    """Dedicated handoff topic (XR-04) so the listener never shares the descriptor topic.
+
+    Falls back to the descriptor topic only if the dedicated topic is unconfigured, preserving
+    behavior in environments that have not yet split the topics.
+    """
+
+    return (
+        os.getenv("SWAP_TRIGGER_HANDOFF_PUBSUB_TOPIC")
+        or os.getenv("SWAP_TRIGGER_PUBSUB_TOPIC")
+        or ""
+    ).strip()
+
+
+def _publish_handoff_message(payload: Dict[str, Any]) -> str:
+    from google.cloud import pubsub_v1
+
+    topic_name = _handoff_topic_name()
+    if not topic_name:
+        raise RuntimeError(
+            "SWAP_TRIGGER_HANDOFF_PUBSUB_TOPIC (or SWAP_TRIGGER_PUBSUB_TOPIC) is required "
+            "to publish capture-bridge handoff messages"
+        )
+
+    publisher = pubsub_v1.PublisherClient()
+    if topic_name.startswith("projects/"):
+        topic_path = topic_name
+    else:
+        topic_path = publisher.topic_path(_project_id(), topic_name)
+
+    data = json.dumps(payload).encode("utf-8")
+    future = publisher.publish(
+        topic_path,
+        data,
+        scene_id=str(payload.get("scene_id", "")),
+        capture_id=str(payload.get("capture_id", "")),
+    )
+    message_id = future.result(timeout=30)
+    return f"pubsub:{message_id}"
+
+
 def _dispatch_pubsub(payload: Dict[str, Any]) -> str:
     from google.cloud import pubsub_v1
 
@@ -390,11 +458,23 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: A
         raw_complete["capture_id"],
     )
     if _capture_bridge_handoff_primary() and _dispatch_mode() != "direct":
+        # XR-02: the raw-upload-complete event is the canonical ingest signal a real iPhone
+        # capture emits (it never uploads capture_descriptor.json). When the capture bridge
+        # handoff is primary, publish a canonical handoff message (XR-04) for the pull listener
+        # instead of dropping the event on the floor.
+        handoff_payload = _build_handoff_payload(
+            bucket=bucket,
+            scene_id=raw_complete["scene_id"],
+            capture_id=raw_complete["capture_id"],
+        )
         logger.info(
-            "Ignoring raw upload completion for scene=%s capture=%s because capture bridge handoff is primary",
+            "Publishing capture bridge handoff for scene=%s capture=%s raw_prefix=%s",
             raw_complete["scene_id"],
             raw_complete["capture_id"],
+            handoff_payload["raw_prefix_uri"],
         )
+        publish_result = _publish_handoff_message(handoff_payload)
+        logger.info("Capture bridge handoff published: %s", publish_result)
         return
     readiness = capture_materialization_readiness(
         bucket=bucket,

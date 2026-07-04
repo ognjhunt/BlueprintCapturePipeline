@@ -8,7 +8,37 @@ from blueprint_pipeline.pubsub_handoff_listener import (
     HandoffMessage,
     parse_handoff_payload,
     process_handoff_payload,
+    stage_handoff_capture,
 )
+
+
+# Real iOS raw bundle namelist per CaptureRawContractV3Validator (no pipeline_handoff.json).
+_IOS_MANIFEST = {
+    "scene_id": "scene-1",
+    "capture_id": "capture-1",
+    "site_submission_id": "site-submission-scene-1",
+    "buyer_request_id": "req-scene-1",
+    "capture_job_id": "capture-job-scene-1",
+    "requested_outputs": ["robot_eval_dataset", "task_evaluation_run"],
+}
+_IOS_CONTEXT = {
+    "scene_id": "scene-1",
+    "capture_id": "capture-1",
+    "site_submission_id": "site-submission-scene-1",
+    "buyer_request_id": "req-scene-1",
+    "capture_job_id": "capture-job-scene-1",
+}
+
+
+def _ios_bundle_blobs(prefix: str) -> "list[FakeBlob]":
+    return [
+        FakeBlob(f"{prefix}/raw/manifest.json", json.dumps(_IOS_MANIFEST).encode("utf-8")),
+        FakeBlob(f"{prefix}/raw/capture_context.json", json.dumps(_IOS_CONTEXT).encode("utf-8")),
+        FakeBlob(f"{prefix}/raw/hashes.json", b"{}"),
+        FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+        FakeBlob(f"{prefix}/raw/arkit/frames.jsonl", b"{}\n"),
+        FakeBlob(f"{prefix}/raw/walkthrough.mov", b"\x00\x00"),
+    ]
 
 
 class FakeBlob:
@@ -103,3 +133,76 @@ def test_process_handoff_stages_capture_and_runs_e2e(tmp_path: Path) -> None:
     ]
     assert (capture_root / "raw" / "capture_upload_complete.json").is_file()
     assert (capture_root / "pipeline_handoff.json").is_file()
+
+
+def test_stage_handoff_synthesizes_missing_pipeline_handoff(tmp_path: Path) -> None:
+    """XR-03: a real iOS bundle (no hand-authored pipeline_handoff.json) stages without error."""
+
+    prefix = "scenes/scene-1/captures/capture-1"
+    handoff = HandoffMessage(
+        bucket="capture-bucket",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        raw_prefix_uri="gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        pipeline_handoff_uri=(
+            "gs://capture-bucket/scenes/scene-1/captures/capture-1/pipeline_handoff.json"
+        ),
+    )
+    client = FakeStorageClient(_ios_bundle_blobs(prefix))
+
+    capture_root = stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=client)  # type: ignore[arg-type]
+
+    synthesized = capture_root / "pipeline_handoff.json"
+    assert synthesized.is_file(), "stage must synthesize pipeline_handoff.json for real iOS bundles"
+    payload = json.loads(synthesized.read_text())
+    assert payload["scene_id"] == "scene-1"
+    assert payload["capture_id"] == "capture-1"
+    assert payload["site_submission_id"] == "site-submission-scene-1"
+    assert payload["buyer_request_id"] == "req-scene-1"
+    assert payload["capture_job_id"] == "capture-job-scene-1"
+    assert payload["owner_system"]["request_id"] == "req-scene-1"
+    assert payload["synthesized"] is True
+
+
+def test_stage_handoff_preserves_hand_authored_pipeline_handoff(tmp_path: Path) -> None:
+    """A bundle that already carries pipeline_handoff.json is never overwritten by synthesis."""
+
+    prefix = "scenes/scene-1/captures/capture-1"
+    handoff = HandoffMessage(
+        bucket="capture-bucket",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        raw_prefix_uri="gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        pipeline_handoff_uri=None,
+    )
+    hand_authored = {"owner_system": {"request_id": "hand-authored"}, "hand_authored": True}
+    blobs = _ios_bundle_blobs(prefix) + [
+        FakeBlob(f"{prefix}/pipeline_handoff.json", json.dumps(hand_authored).encode("utf-8")),
+    ]
+    client = FakeStorageClient(blobs)
+
+    capture_root = stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=client)  # type: ignore[arg-type]
+
+    payload = json.loads((capture_root / "pipeline_handoff.json").read_text())
+    assert payload == hand_authored
+
+
+def test_stage_handoff_missing_upload_complete_still_raises(tmp_path: Path) -> None:
+    """Synthesis must not paper over a genuinely broken bundle (no capture_upload_complete.json)."""
+
+    prefix = "scenes/scene-1/captures/capture-1"
+    handoff = HandoffMessage(
+        bucket="capture-bucket",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        raw_prefix_uri="gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        pipeline_handoff_uri=None,
+    )
+    blobs = [
+        FakeBlob(f"{prefix}/raw/manifest.json", json.dumps(_IOS_MANIFEST).encode("utf-8")),
+        FakeBlob(f"{prefix}/raw/capture_context.json", json.dumps(_IOS_CONTEXT).encode("utf-8")),
+    ]
+    client = FakeStorageClient(blobs)
+
+    with pytest.raises(PipelineError, match="capture_upload_complete.json"):
+        stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=client)  # type: ignore[arg-type]
