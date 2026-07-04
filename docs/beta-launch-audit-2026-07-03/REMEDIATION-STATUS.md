@@ -22,7 +22,7 @@ Implementation pass against the 35 specs. **33 fixed + verified in code** (every
 - **WEB-12** ✅ — verified the only public `download:` is a single demo USDZ; real deliverables use the gated hosted-session path. Annotated so no real artifact is added there.
 - **CAP-08** ✅ — Meta ClientToken moved out of committed `Info.plist` into the untracked local xcconfig (`$(BLUEPRINT_META_CLIENT_TOKEN)`) + template placeholder + rotate note; iOS build green.
 - **CAP-11** ✅ — real `StripeOnboardingView` wired into `BPEarningsView`, gated on `RuntimeConfig.payoutProviderReady`; onboarding appears when the backend flips the flag, honest "unavailable" card otherwise; iOS build green.
-- **PIPE-05** ✅ — added `scripts/pytest_fast.sh` critical-path lane (110 tests, 32s); markers were already registered.
+- **PIPE-05** ✅ — 2026-07-04: full marker sweep landed (68 heavy test files tagged `slow`/`integration`, default-deselected via addopts); bare `pytest` is now the fast lane (<90s green in a clean checkout) and `scripts/pytest_fast.sh` is the marker expression instead of a hardcoded file list; `scripts/pytest_full.sh` runs everything.
 - **CAP-05** ✅ (via existing tooling) — `scripts/archive_external_alpha.sh` **requires** the backend URLs (`require_xcconfig_value BLUEPRINT_DEMAND_BACKEND_BASE_URL`, line 143) and injects the local xcconfig at archive time, failing closed on empty config. The pbxproj `baseConfigurationReference` wiring the audit suggested would *weaken* the deliberate local-only-secret design, so the correct state is: use the archive script (not a naive `xcodebuild`) for releases.
 
 ## The 5 remaining (code-complete; human/ops/legal or test-harness)
@@ -81,7 +81,7 @@ Legend: ✅ fixed + verified · 🔧 code guardrail added, human/ops step remain
 | CAP-08 ⚙️ | Open | Move the committed Meta Wearables ClientToken out of `Info.plist` into the untracked release config (tied to CAP-05) and rotate; confirm the Firebase iOS API key is restricted in GCP. |
 | CAP-10 🔧 | Code side covered | Pipeline now enforces redaction/rights delivery gates (PIPE-01/03/04), so raw un-redacted media can't reach a buyer artifact. Remaining is **legal sign-off** + surfacing an explicit consent step in the (now-wired) capture flow instead of defaulting `consentStatus = .unknown`. |
 | CAP-11 📋 | Human decision | Decide whether capturer Stripe Connect payout is in beta scope; if yes, wire `StripeOnboardingView` into the redesign and flip the readiness flag only when the backend provider is live. |
-| PIPE-05 🧪 | Mechanism exists | `slow`/`gpu`/`integration` markers are already registered with `--strict-markers`. Remaining is the sweep to mark the heavy subprocess/render tests `@pytest.mark.slow` (many live in files another session is actively editing) and document the fast lane. |
+| PIPE-05 ✅ | Done 2026-07-04 | Marker sweep landed: 68 heavy subprocess/Isaac/render/module-entrypoint test files tagged `slow` (+`integration`), deselected by default via pyproject addopts. Bare `pytest` = fast lane (~2,100 tests, <90s, green in a clean checkout, success-claim contract tests executing hermetically via `tests/fixtures/kitchen_task_min/`); `scripts/pytest_full.sh` = full lane. |
 | XR-05 📋 | Human/live | Downstream of all code fixes: run the live Stripe payment/payout, make the KYC/background-check decisions, capture the real-device iPhone claim recording, name the finance owner. Cannot be produced in code. |
 
 ## Notes / newly-surfaced follow-ups
