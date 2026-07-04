@@ -21,6 +21,10 @@ from blueprint_pipeline.cross_repo_first_gpu_readiness import (
 )
 from blueprint_pipeline.first_gpu_run_packet import build_first_gpu_run_packet
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def _write(path: Path, text: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

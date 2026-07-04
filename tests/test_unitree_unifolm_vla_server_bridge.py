@@ -8,6 +8,10 @@ import numpy as np
 
 from blueprint_pipeline import unitree_unifolm_vla_server_bridge as bridge
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 PNG_1X1 = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"

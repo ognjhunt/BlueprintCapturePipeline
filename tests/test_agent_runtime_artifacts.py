@@ -5,6 +5,10 @@ from pathlib import Path
 
 from blueprint_pipeline.agent_runtime.artifacts import load_pipeline_review_artifacts
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def _write_json(path: Path, payload: dict[str, object] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

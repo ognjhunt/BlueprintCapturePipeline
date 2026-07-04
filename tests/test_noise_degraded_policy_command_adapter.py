@@ -8,6 +8,10 @@ from pathlib import Path
 
 from blueprint_pipeline import noise_degraded_policy_command_adapter as adapter
 
+import pytest
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 
 def _fake_inner_adapter(tmp_path: Path, *, chunk_length: int = 8) -> str:
     runner = tmp_path / "fake_inner_adapter.py"

@@ -6,6 +6,9 @@ from typing import Any
 
 import numpy as np
 import pytest
+
+
+pytestmark = pytest.mark.slow
 pytest.importorskip("PIL")
 from PIL import Image, ImageDraw, ImageFilter
 

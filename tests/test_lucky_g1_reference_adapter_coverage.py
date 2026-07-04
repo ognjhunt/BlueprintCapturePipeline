@@ -12,6 +12,9 @@ import pytest
 from blueprint_pipeline import lucky_g1_reference_adapter as lucky
 
 
+pytestmark = pytest.mark.slow
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")

@@ -13,6 +13,9 @@ import pytest
 
 from blueprint_pipeline.scene_placement import SceneObject
 
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 _RUNNER = Path(__file__).resolve().parents[1] / "scripts" / "run_isaac_g1_kitchen_parity_eval.py"
 
 

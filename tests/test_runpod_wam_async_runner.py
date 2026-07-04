@@ -8,6 +8,10 @@ from pathlib import Path
 from blueprint_pipeline import runpod_wam_async_runner as runner
 from blueprint_pipeline.runpod_provider_adapter import RUNPOD_API_GATE_ENV
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def _python_heredoc_chunks(script: str) -> list[str]:
     chunks: list[str] = []

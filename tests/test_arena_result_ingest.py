@@ -15,6 +15,9 @@ from blueprint_pipeline.arena_result_ingest import build_arena_result_ingest
 from blueprint_pipeline.rollout_vision_label_openai import build_openai_rollout_vision_labels
 
 
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

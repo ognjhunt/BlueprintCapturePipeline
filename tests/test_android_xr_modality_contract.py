@@ -7,6 +7,10 @@ from blueprint_pipeline.capture_bridge import CaptureDescriptor, build_capture_b
 from blueprint_pipeline.capture_orchestrator import resolve_requested_lanes
 from blueprint_pipeline.retrieval_index_stage import run_retrieval_index_stage
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def _android_xr_descriptor_payload() -> dict:
     return {

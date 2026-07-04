@@ -1,0 +1,54 @@
+{
+  "kitchen_usd": "tests/fixtures/kitchen_task_min/assets/KitchenRoom.usd",
+  "scenarios": [
+    {
+      "affordance_object_ids": [
+        "handle",
+        "lever",
+        "faucet",
+        "tap",
+        "spout"
+      ],
+      "description": "Stand at the kitchen sink and turn on the faucet.",
+      "floor_z_hint": 0.05,
+      "perception_target_prompts": [
+        "Stand at the kitchen sink and turn on the faucet.",
+        "faucet",
+        "sink",
+        "faucet lever",
+        "sink faucet handle"
+      ],
+      "preferred_stance_distance_m": 0.45,
+      "scenario_id": "fixture_kitchen_task_01_sink_faucet",
+      "stance_distance_candidates_m": [
+        0.3,
+        0.45,
+        0.65
+      ],
+      "target_object_ids": [
+        "sink",
+        "basin"
+      ],
+      "task": "Stand at the kitchen sink and turn on the faucet.",
+      "task_description": "Stand at the kitchen sink and turn on the faucet.",
+      "task_instruction": "Stand at the kitchen sink and turn on the faucet.",
+      "task_target_deferred": true
+    },
+    {
+      "description": "Stand at the stovetop and turn a front burner knob.",
+      "floor_z_hint": 0.05,
+      "preferred_stance_distance_m": 0.9,
+      "scenario_id": "fixture_kitchen_task_02_stovetop_knob",
+      "stance_distance_candidates_m": [
+        0.8,
+        0.9,
+        1.05
+      ],
+      "task": "Stand at the stovetop and turn a front burner knob.",
+      "task_description": "Stand at the stovetop and turn a front burner knob.",
+      "task_instruction": "Stand at the stovetop and turn a front burner knob.",
+      "task_target_deferred": true
+    }
+  ],
+  "schema_version": "kitchen_task_scaling_preflight_request.v1"
+}

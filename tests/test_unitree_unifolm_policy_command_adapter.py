@@ -9,6 +9,9 @@ import pytest
 from blueprint_pipeline import unitree_unifolm_policy_command_adapter as adapter
 
 
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+
 def test_unitree_unifolm_adapter_blocks_without_command_checkpoint_or_frame(
     tmp_path: Path,
 ) -> None:

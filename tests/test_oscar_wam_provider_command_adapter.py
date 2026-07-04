@@ -15,6 +15,9 @@ from blueprint_pipeline.oscar_official_release import (
 )
 
 
+pytestmark = pytest.mark.slow
+
+
 _PROVIDER_ENV_VARS = (
     "BLUEPRINT_WAM_ROLLOUT_INPUT",
     "BLUEPRINT_WAM_ROLLOUT_OUTPUT",

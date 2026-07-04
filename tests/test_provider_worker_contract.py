@@ -12,6 +12,10 @@ from blueprint_pipeline.provider_worker_contract import (
     write_provider_worker_contract,
 )
 
+import pytest
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 
 def test_provider_worker_contract_blocks_one_shot_vast_policy_launcher(monkeypatch) -> None:
     monkeypatch.delenv("BLUEPRINT_ALLOW_PROVIDER_LAUNCH_PER_POLICY_INFERENCE", raising=False)

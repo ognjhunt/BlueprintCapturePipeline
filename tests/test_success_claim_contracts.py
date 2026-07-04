@@ -8,15 +8,17 @@ Guards against the audited false-positive families:
 - stale output artifacts being treated as current truth,
 - status-string / stringly-typed verdicts coercing to success.
 
-Uses real kitchen task artifacts under output/kitchen_task_scaling_preflight_* when
-present (faucet / stovetop / microwave / sink); those tests skip when the artifacts are
-absent so the suite stays hermetic.
+The artifact-shaped truth gates always run against the committed hermetic fixture
+under tests/fixtures/kitchen_task_min. Real local kitchen task artifacts under
+output/kitchen_task_scaling_preflight_* (faucet / stovetop / microwave / sink) are an
+additional opt-in lane: set BLUEPRINT_TEST_LOCAL_ARTIFACTS=1 to sweep them too.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -728,17 +730,44 @@ def test_site_package_ready_with_launchable_runtime() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Real kitchen artifacts (faucet / stovetop / microwave / sink) when present
+# Kitchen task artifacts: hermetic committed fixture always runs; local output/
+# artifacts are an additional opt-in lane (BLUEPRINT_TEST_LOCAL_ARTIFACTS=1)
 # --------------------------------------------------------------------------------------
 
-_ARTIFACT_REQUESTS = sorted(
-    (REPO_ROOT / "output").glob(
-        "kitchen_task_scaling_preflight_*/kitchen_task_scaling_request.json"
+_FIXTURE_REQUESTS = sorted(
+    (REPO_ROOT / "tests" / "fixtures" / "kitchen_task_min").glob(
+        "kitchen_task_scaling_request.json"
     )
-) if (REPO_ROOT / "output").is_dir() else []
+)
+
+_LOCAL_ARTIFACT_REQUESTS = (
+    sorted(
+        (REPO_ROOT / "output").glob(
+            "kitchen_task_scaling_preflight_*/kitchen_task_scaling_request.json"
+        )
+    )
+    if os.environ.get("BLUEPRINT_TEST_LOCAL_ARTIFACTS") == "1"
+    and (REPO_ROOT / "output").is_dir()
+    else []
+)
+
+_ARTIFACT_REQUESTS = _FIXTURE_REQUESTS + _LOCAL_ARTIFACT_REQUESTS
 
 
-@pytest.mark.skipif(not _ARTIFACT_REQUESTS, reason="no local kitchen task artifacts")
+def test_hermetic_kitchen_fixture_present() -> None:
+    # The committed fixture is what keeps the artifact-shaped truth gates below
+    # executing in every checkout; if it disappears they would silently degrade
+    # to an empty parametrization.
+    assert _FIXTURE_REQUESTS, "tests/fixtures/kitchen_task_min fixture is missing"
+    fixture_manifest = (
+        _FIXTURE_REQUESTS[0].parent / "kitchen_task_scaling_preflight_manifest.json"
+    )
+    assert fixture_manifest.is_file()
+    assert (
+        json.loads(fixture_manifest.read_text())["local_preflight_status"] == "passed"
+    )
+
+
 @pytest.mark.parametrize(
     "request_path",
     _ARTIFACT_REQUESTS,
@@ -769,7 +798,6 @@ def test_real_kitchen_task_metadata_derives_generic_requirements(request_path) -
         assert "visible_arm_presence_is_not_reach_evidence" in contract["blockers"]
 
 
-@pytest.mark.skipif(not _ARTIFACT_REQUESTS, reason="no local kitchen task artifacts")
 def test_real_preflight_pass_never_reaches_task_success_claim() -> None:
     manifest_paths = [
         p.parent / "kitchen_task_scaling_preflight_manifest.json"
@@ -777,10 +805,12 @@ def test_real_preflight_pass_never_reaches_task_success_claim() -> None:
     ]
     manifest_paths = [p for p in manifest_paths if p.is_file()]
     assert manifest_paths, "request artifacts exist but no preflight manifests found"
+    passed_manifests = 0
     for manifest_path in manifest_paths:
         manifest = json.loads(manifest_path.read_text())
         if manifest.get("local_preflight_status") != "passed":
             continue
+        passed_manifests += 1
         # A passed local preflight provides no review/simulator/contact evidence, so
         # the ledger must stay at no_claim for every task it covers.
         for task in manifest.get("tasks") or []:
@@ -792,3 +822,4 @@ def test_real_preflight_pass_never_reaches_task_success_claim() -> None:
             )
             assert ledger["highest_truthful_claim"] == "no_claim"
             assert ledger["claims"]["simulator_task_success"] is False
+    assert passed_manifests, "no passed preflight manifest was exercised"

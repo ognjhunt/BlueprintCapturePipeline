@@ -29,6 +29,9 @@ import sys
 
 import pytest
 
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 # (module to import, friendly name, distribution/extra that provides it, why it matters)
 REQUIRED_MODULES = [
     (

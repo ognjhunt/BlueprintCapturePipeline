@@ -11,6 +11,10 @@ from blueprint_pipeline.policy_autoresearch_owner_gpu_evaluator import (
     run_owner_gpu_policy_evaluator,
 )
 
+import pytest
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

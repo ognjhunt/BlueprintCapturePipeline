@@ -9,6 +9,10 @@ from blueprint_pipeline.site_reference_database import (
 )
 from blueprint_pipeline.site_reference_fixture import build_site_reference_database_v1_fixture
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 _DENSE_TOKENS = (
     "depth_uri",

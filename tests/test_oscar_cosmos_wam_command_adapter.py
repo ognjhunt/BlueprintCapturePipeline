@@ -14,6 +14,9 @@ import pytest
 from blueprint_pipeline import oscar_cosmos_wam_command_adapter as adapter
 
 
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

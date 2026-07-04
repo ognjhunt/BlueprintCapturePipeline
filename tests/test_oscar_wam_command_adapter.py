@@ -11,6 +11,9 @@ from typing import Any
 import numpy as np
 import pytest
 
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 cv2 = pytest.importorskip("cv2")
 
 from blueprint_pipeline import oscar_wam_command_adapter as adapter  # noqa: E402

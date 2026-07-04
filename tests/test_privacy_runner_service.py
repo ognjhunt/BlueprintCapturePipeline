@@ -16,6 +16,9 @@ from blueprint_pipeline.privacy_service_runtime import execute_privacy_service_r
 from http.server import ThreadingHTTPServer
 
 
+pytestmark = pytest.mark.slow
+
+
 def _write_file(path: Path, payload: bytes = b"data") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)

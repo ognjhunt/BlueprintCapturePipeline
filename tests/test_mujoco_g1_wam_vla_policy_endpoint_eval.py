@@ -11,6 +11,9 @@ import pytest
 from blueprint_pipeline import mujoco_g1_wam_vla_policy_endpoint_eval as lane
 
 
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+
 _UNITREE_POLICY_ENV_VARS = (
     "BLUEPRINT_UNITREE_G1_POLICY_COMMAND",
     "BLUEPRINT_UNITREE_G1_POLICY_CHECKPOINT",

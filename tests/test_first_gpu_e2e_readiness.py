@@ -24,6 +24,10 @@ from blueprint_pipeline.first_gpu_e2e_readiness import (
     main,
 )
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

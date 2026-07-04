@@ -35,6 +35,9 @@ from blueprint_pipeline.robot_eval_provider_input_setup import (
 from blueprint_pipeline.robot_eval_worker import _build_parser, run_robot_eval_worker
 
 
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

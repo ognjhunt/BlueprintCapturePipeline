@@ -9,6 +9,10 @@ from pathlib import Path
 
 from blueprint_pipeline import isaac_g1_kitchen_parity_job as J
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 _SCENARIOS = [
     {"scenario_id": "entry_to_sink", "spawn_position_xyz": [-4.25, -3.35, 0.05],
      "target_position_xyz": [1.75, 1.25, 0.05], "description": "Navigate to the sink work area."},

@@ -3,6 +3,10 @@ from pathlib import Path
 
 from blueprint_pipeline import unitree_unifolm_runpod_server as server
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 class _FakeHTTPResponse:
     def __init__(self, payload: dict[str, object], status: int = 200) -> None:

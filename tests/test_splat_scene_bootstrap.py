@@ -30,6 +30,9 @@ from blueprint_pipeline.splat_scene_bootstrap import (
 )
 
 
+pytestmark = pytest.mark.slow
+
+
 # ----------------------------- synthetic scene -----------------------------
 
 # Two objects with known world AABBs inside a 6x6 room.

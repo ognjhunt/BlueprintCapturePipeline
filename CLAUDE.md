@@ -17,10 +17,17 @@ Key rules:
 Key commands:
 
 ```bash
-pytest
+pytest                    # fast lane (<90s): slow/gpu tests deselected via addopts
+scripts/pytest_full.sh    # full suite including slow/gpu tests (equivalent: pytest -m '')
 python -m blueprint_pipeline.run_e2e
 python scripts/run_external_alpha_launch_gate.py
 ```
+
+Test lanes (PIPE-05): heavy subprocess/Isaac/render/module-entrypoint tests are tagged
+`@pytest.mark.slow` (and `gpu`); bare `pytest` deselects them, so it is the hermetic
+pre-push gate. The success-claim contract truth tests always run against the committed
+fixture in `tests/fixtures/kitchen_task_min/`; set `BLUEPRINT_TEST_LOCAL_ARTIFACTS=1`
+to additionally sweep real `output/kitchen_task_scaling_preflight_*` artifacts.
 
 ## gstack
 

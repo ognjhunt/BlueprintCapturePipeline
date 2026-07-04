@@ -10,6 +10,9 @@ from blueprint_pipeline.synthesis import cosmos_training_export as export_module
 from blueprint_pipeline.synthesis.cosmos_training_export import export_cosmos_training_substrate
 
 
+pytestmark = pytest.mark.slow
+
+
 def test_export_cosmos_training_substrate_writes_real_artifacts(tmp_path: Path) -> None:
     capture_root = tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
     pipeline_root = capture_root / "pipeline"

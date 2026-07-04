@@ -21,6 +21,9 @@ from blueprint_pipeline.lucky_g1_reference_adapter import run_lucky_g1_reference
 from blueprint_pipeline.robot_eval_execution import build_policy_execution_bundle
 
 
+pytestmark = pytest.mark.slow
+
+
 def _read(path: str | Path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 

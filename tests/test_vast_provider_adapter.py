@@ -24,6 +24,9 @@ from blueprint_pipeline.vast_provider_adapter import (
 )
 
 
+pytestmark = pytest.mark.slow
+
+
 @pytest.fixture(autouse=True)
 def _isolate_vast_launch_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(vpa.VAST_LAUNCH_LOCK_FILE_ENV, str(tmp_path / "vast_paid_launch.lock"))

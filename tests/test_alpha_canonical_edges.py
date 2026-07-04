@@ -6,6 +6,10 @@ from pathlib import Path
 from blueprint_pipeline import alpha_readiness as alpha
 from blueprint_pipeline import canonical_site_package as canonical
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

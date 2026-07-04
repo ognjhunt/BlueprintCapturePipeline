@@ -13,6 +13,9 @@ from autoresearch.runner import (
 from autoresearch.score import compute_total_score, should_accept_candidate
 
 
+pytestmark = pytest.mark.slow
+
+
 def test_validate_target_manifest_rejects_paths_outside_skill_dir(tmp_path: Path) -> None:
     manifest = load_target_manifest(REPO_ROOT / "autoresearch" / "targets" / "intake_normalizer.json")
     manifest["mutable_paths"] = ["skillpacks/industrial_readiness/skills/intake_normalizer/SKILL.md"]

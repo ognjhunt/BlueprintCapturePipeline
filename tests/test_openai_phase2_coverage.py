@@ -8,6 +8,10 @@ from pathlib import Path
 
 from blueprint_pipeline.agent_runtime import openai_phase2
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def test_openai_phase2_env_schema_prompt_and_text_helpers(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_PHASE2_MODE", raising=False)

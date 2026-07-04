@@ -283,6 +283,11 @@ addopts = [
     "-v",
     "--tb=short",
     "--strict-markers",
+    # PIPE-05 fast lane: heavy subprocess/Isaac/render/module-entrypoint tests are
+    # tagged slow/gpu and deselected by default so bare `pytest` is the fast lane.
+    # Run everything with `pytest -m ''` (or scripts/pytest_full.sh).
+    "-m",
+    "not slow and not gpu",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

@@ -7,6 +7,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
 pytest.importorskip("PIL")
 from PIL import Image, ImageDraw
 

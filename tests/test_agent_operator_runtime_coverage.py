@@ -11,6 +11,9 @@ import pytest
 from blueprint_pipeline import agent_operator_runtime as runtime
 
 
+pytestmark = pytest.mark.slow
+
+
 def test_operator_runtime_env_paths_and_ledgers(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv(runtime.AGENT_EXTERNAL_ACTIONS_ENV, "yes")
     monkeypatch.setenv(runtime.AGENT_SPEND_ACTIONS_ENV, "off")

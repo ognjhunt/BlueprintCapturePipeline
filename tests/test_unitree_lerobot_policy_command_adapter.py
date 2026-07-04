@@ -6,6 +6,10 @@ from pathlib import Path
 
 from blueprint_pipeline import unitree_lerobot_policy_command_adapter as adapter
 
+import pytest
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 
 def test_unitree_lerobot_adapter_blocks_without_command_policy_or_frame(tmp_path: Path) -> None:
     response, exit_code = adapter.run_unitree_lerobot_policy(

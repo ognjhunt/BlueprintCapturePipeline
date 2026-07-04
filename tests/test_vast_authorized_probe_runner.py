@@ -9,6 +9,9 @@ import pytest
 from blueprint_pipeline import vast_authorized_probe_runner as runner
 
 
+pytestmark = pytest.mark.slow
+
+
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 

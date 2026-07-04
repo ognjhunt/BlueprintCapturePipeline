@@ -6,6 +6,10 @@ from pathlib import Path
 
 from blueprint_pipeline import unitree_lerobot_policy_runtime as runtime
 
+import pytest
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 
 def _clear_unitree_lerobot_env(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     for name in runtime.ENV_VAR_NAMES + (

@@ -13,6 +13,9 @@ from blueprint_pipeline import oscar_cosmos_wam_evaluator as evaluator
 from blueprint_pipeline import wam_backend_strategy as backend_strategy
 
 
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+
 _WAM_RUNTIME_ENV_VARS = (
     "BLUEPRINT_OSCAR_WAM_COMMAND",
     "BLUEPRINT_OSCAR_WAM_PROVIDER_COMMAND",

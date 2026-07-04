@@ -9,6 +9,9 @@ from autoresearch.common import REPO_ROOT, load_target_manifest
 from autoresearch.runner import snapshot_candidate_files
 
 
+pytestmark = pytest.mark.slow
+
+
 def _snapshot_candidate(manifest_path: Path, tmp_path: Path) -> Path:
     candidate_dir = tmp_path / "candidate"
     candidate_dir.mkdir()

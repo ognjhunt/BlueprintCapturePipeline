@@ -8,6 +8,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
+
+
+pytestmark = pytest.mark.slow
 pytest.importorskip("PIL")
 from PIL import Image
 from starlette.websockets import WebSocketDisconnect

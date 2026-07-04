@@ -26,6 +26,9 @@ from blueprint_pipeline.robot_eval_provider_launcher import run_gpu_provider_lau
 from blueprint_pipeline.runpod_provider_adapter import RUNPOD_API_GATE_ENV, RUNPOD_API_KEY_ENV
 
 
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+
 def _records(caplog: pytest.LogCaptureFixture, event: str) -> list[logging.LogRecord]:
     return [
         record

@@ -8,6 +8,10 @@ from pathlib import Path
 
 from blueprint_pipeline.arena_fixture_smoke import build_arena_fixture_smoke, main
 
+import pytest
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))

@@ -11,6 +11,9 @@ import zipfile
 from pathlib import Path
 
 import pytest
+
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
 pytest.importorskip("PIL")
 from PIL import Image
 

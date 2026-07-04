@@ -18,6 +18,9 @@ from blueprint_pipeline.first_gpu_sample_video_stage import (
 from blueprint_pipeline.preflight_capture import build_capture_preflight_report
 
 
+pytestmark = pytest.mark.slow
+
+
 def test_stage_first_gpu_sample_video_writes_preflightable_bundle(tmp_path: Path) -> None:
     source_video = tmp_path / "sample.mp4"
     source_video.write_bytes(b"fake-video")

@@ -10,6 +10,10 @@ from urllib.parse import urlsplit
 from blueprint_pipeline import provider_worker_policy_command_adapter as adapter
 from blueprint_pipeline import provider_worker_session_runner as session_runner
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 class _WorkerServer:
     def __init__(

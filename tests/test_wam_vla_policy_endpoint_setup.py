@@ -17,6 +17,9 @@ from blueprint_pipeline.wam_vla_policy_endpoint_server import create_app, run_po
 from blueprint_pipeline.wam_vla_policy_endpoint_setup import build_wam_vla_policy_endpoint_setup
 
 
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+
 def _write_openvla_provider_smoke_job(job_dir: Path) -> Path:
     (job_dir / "openvla_provider_output").mkdir(parents=True)
     action = {"action_type": "waypoint", "waypoint": [0.36, -0.65, 0.79]}

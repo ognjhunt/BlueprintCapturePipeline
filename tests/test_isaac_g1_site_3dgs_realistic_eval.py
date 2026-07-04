@@ -22,6 +22,9 @@ from blueprint_pipeline.isaac_g1_site_3dgs_realistic_eval import (
 )
 
 
+pytestmark = pytest.mark.slow
+
+
 PREBUILT_ISAAC_WORKER_IMAGE_REF = (
     "registry.example.com/blueprint/isaac-eval-worker:2026-06-26"
 )

@@ -11,6 +11,9 @@ import pytest
 from blueprint_pipeline import policy_ranking_ladder as ladder_mod
 
 
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+
 def _ladder(**overrides):
     kwargs = {
         "inner_policy_id": "unitree_groot_n17_sonic",

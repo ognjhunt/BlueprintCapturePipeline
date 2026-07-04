@@ -7,6 +7,10 @@ import stat
 import blueprint_pipeline.city_launch_autonomy_harness as harness
 from blueprint_pipeline.city_launch_autonomy_harness import run_harness
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def _args(tmp_path: Path, *, resume: bool = False) -> Namespace:
     return Namespace(

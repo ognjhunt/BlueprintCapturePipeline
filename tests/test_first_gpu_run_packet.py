@@ -39,6 +39,10 @@ from blueprint_pipeline.first_gpu_run_packet import (
     main,
 )
 
+import pytest
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

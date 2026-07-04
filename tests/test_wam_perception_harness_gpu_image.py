@@ -8,6 +8,10 @@ from pathlib import Path
 
 from blueprint_pipeline import wam_perception_harness_gpu_image as image_module
 
+import pytest
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))

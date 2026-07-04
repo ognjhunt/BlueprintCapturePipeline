@@ -10,6 +10,10 @@ from urllib import error as urllib_error
 
 from blueprint_pipeline import capture_enrichment_llm as enrichment
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 class _Response:
     def __init__(self, payload: object) -> None:
