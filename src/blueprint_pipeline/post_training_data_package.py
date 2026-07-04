@@ -2849,8 +2849,8 @@ def build_post_training_data_package_export(
     )
     included_artifacts["consent_evidence"] = "consent_evidence.json"
     consent_gate_blockers = [
-        f"consent:{blocker}" for blocker in _string_list(consent_evidence.get("blockers"))
-    ]
+        "consent:consent_revoked_takedown_required"
+    ] if consent_evidence.get("consent_revoked") is True else []
     quality_gate_blockers = [*quality_gate_blockers, *consent_gate_blockers]
     status = (
         "blocked_missing_inputs"
