@@ -175,11 +175,16 @@ def _set_alpha_env(monkeypatch, tmp_path: Path, *, include_runtime: bool, includ
 def _stub_sync(monkeypatch, sync_calls: list[dict[str, object]]) -> None:  # type: ignore[no-untyped-def]
     def _sync(**kwargs):  # type: ignore[no-untyped-def]
         sync_calls.append(kwargs)
+        # Mirror the fields the real sync always emits so the launch gate's
+        # sync-truth verification sees the same contract.
+        attachment_payload = dict(kwargs)
+        attachment_payload["upstream_links_verified"] = True
+        attachment_payload["placeholder_fallback_allowed"] = False
         return {
             "status": "succeeded",
             "attempts": 1,
             "response": {"ok": True},
-            "attachment_payload": kwargs,
+            "attachment_payload": attachment_payload,
             "evaluation_readiness": kwargs.get("evaluation_readiness"),
         }
 
@@ -354,6 +359,7 @@ def _build_capture(
             "data_licensing_allowed": False,
             "capture_contributor_payout_eligible": True,
             "consent_status": "documented",
+            "permission_document_uri": "gs://local-blueprint/rights/consent-packet.pdf",
             "consent_scope": ["zone-a"],
             "consent_notes": [],
         },
@@ -474,7 +480,7 @@ def test_launch_gate_does_not_treat_blocked_bundle_file_as_ready(tmp_path: Path)
     assert checks["buyer_fulfillment_bundle_ready"]["passed"] is False
 
 
-def test_launch_gate_keeps_legacy_statusless_bundle_file_fallback(tmp_path: Path) -> None:
+def test_launch_gate_rejects_legacy_statusless_bundle_file(tmp_path: Path) -> None:
     capture_root, _descriptor_uri = _build_capture(
         tmp_path,
         capture_source="iphone",
@@ -482,7 +488,8 @@ def test_launch_gate_keeps_legacy_statusless_bundle_file_fallback(tmp_path: Path
     )
     eval_root = capture_root / "pipeline" / "evaluation_prep"
     eval_root.mkdir(parents=True, exist_ok=True)
-    # Legacy bundles predate the status field; the fallback is intentionally limited to this case.
+    # Legacy bundles predate the status field. A bundle without an explicit
+    # ready status is missing evidence and must fail closed, not pass as ready.
     (eval_root / "launchable_export_bundle.json").write_text(
         json.dumps({"bundle_uri": "gs://bucket/legacy.zip"}),
         encoding="utf-8",
@@ -491,7 +498,8 @@ def test_launch_gate_keeps_legacy_statusless_bundle_file_fallback(tmp_path: Path
     summary = build_launch_gate_summary(capture_root=capture_root, env={})
     checks = {check["name"]: check for check in summary["stage_checks"]}
 
-    assert checks["buyer_fulfillment_bundle_ready"]["passed"] is True
+    assert summary["overall_status"] == "blocked"
+    assert checks["buyer_fulfillment_bundle_ready"]["passed"] is False
 
 
 def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(monkeypatch, tmp_path: Path) -> None:

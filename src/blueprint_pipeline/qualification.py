@@ -861,6 +861,18 @@ def _capture_rights(metadata: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _worldlabs_derived_rights_allowed(*, metadata: Mapping[str, Any]) -> bool:
+    """Whether the capture is rights-cleared for derived scene generation.
+
+    PIPE-04: the WorldLabs preview input video is a derived, reviewer-facing
+    transformation of the capture, so it must not be generated unless
+    ``derived_scene_generation_allowed`` is set — mirroring scene-memory readiness
+    (see the ``derived_scene_rights`` gate).
+    """
+    rights = _capture_rights(metadata if isinstance(metadata, Mapping) else {})
+    return bool(rights["derived_scene_generation_allowed"])
+
+
 def _scene_memory_capture_summary(
     descriptor: CaptureDescriptor,
     *,
@@ -2648,6 +2660,43 @@ def _requested_downstream_lanes(
     return lanes
 
 
+# Privacy pipeline statuses that mean people are provably absent or redacted. Mirrors
+# privacy_world_model_ready and build_rights_provenance_review's cleared set. ``not_run``
+# is intentionally EXCLUDED here — a run that never executed privacy post-processing has
+# not cleared privacy (PIPE-03).
+_PRIVACY_POSTPROCESS_CLEARED_STATUSES = frozenset(
+    {
+        "no_people_detected",
+        "person_removed",
+        "face_anonymized_fallback",
+        "full_frame_redacted_local_proof",
+    }
+)
+
+
+def _privacy_postprocess_gate(*, privacy_status: str, delivery_run: bool) -> QualificationGate:
+    """Build the privacy_postprocess_gate.
+
+    PIPE-03: for a *delivery* run (one that will build buyer/reviewer-facing
+    downstream artifacts), ``not_run`` is NON-passing — privacy must actually have
+    executed and cleared. For non-delivery / local flows, ``not_run`` remains
+    acceptable so existing test/local pipelines keep working. ``failed_closed`` never
+    passes.
+    """
+    status = str(privacy_status or "").strip().lower()
+    passing_statuses = set(_PRIVACY_POSTPROCESS_CLEARED_STATUSES)
+    if not delivery_run:
+        passing_statuses.add("not_run")
+    passed = status in passing_statuses
+    detail = f"privacy_status={privacy_status}"
+    if not passed and status == "not_run" and delivery_run:
+        detail = (
+            f"privacy_status={privacy_status}; delivery runs require privacy post-processing "
+            "to run and clear (enable PRIVACY_PIPELINE_ENABLED / production launch mode)"
+        )
+    return QualificationGate("privacy_postprocess_gate", passed, detail)
+
+
 def _present_artifacts(payload: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         str(key): value
@@ -3340,6 +3389,12 @@ def _build_capturer_payout_recommendation(
     return {
         "schema_version": "v1",
         "status": recommendation_status,
+        # Explicit eligibility decision: True only when rights metadata marks the
+        # contributor payout-eligible, consent is strong enough, and the quality
+        # review succeeded so a recommendation was actually computed. Downstream
+        # gates must read this field instead of inferring eligibility from the
+        # presence of a quote or recommended amount.
+        "eligible_for_payout": recommended_payout_cents is not None,
         "base_payout_cents": base_payout_cents,
         "recommended_payout_cents": recommended_payout_cents,
         "confidence": capture_fidelity_review.get("confidence"),
@@ -4527,18 +4582,15 @@ def run_qualification_pipeline(
             pipeline_dir=pipeline_dir,
             raw_video_path=raw_video_path,
         )
+        # PIPE-03: a "delivery run" builds buyer/reviewer-facing downstream artifacts
+        # (scene_memory / evaluation_prep lanes). For those, privacy post-processing
+        # must actually have run and cleared — ``not_run`` is NON-passing. Non-delivery
+        # / local flows keep passing on ``not_run``.
+        privacy_delivery_run = bool(downstream_requested_lanes) or production_launch_mode()
         gates.append(
-            QualificationGate(
-                "privacy_postprocess_gate",
-                str(privacy_processing.get("status") or "").strip().lower()
-                in {
-                    "not_run",
-                    "no_people_detected",
-                    "person_removed",
-                    "face_anonymized_fallback",
-                    "full_frame_redacted_local_proof",
-                },
-                f"privacy_status={privacy_processing.get('status')}",
+            _privacy_postprocess_gate(
+                privacy_status=str(privacy_processing.get("status") or ""),
+                delivery_run=privacy_delivery_run,
             )
         )
         descriptor_payload = descriptor.to_dict()
@@ -4558,22 +4610,34 @@ def run_qualification_pipeline(
             str(value or "").strip().lower() in {"preview_simulation", "preview"}
             for value in descriptor.requested_outputs
         )
+        # PIPE-04: the WorldLabs preview input video is a derived, reviewer-facing
+        # transformation of the capture. It must not be generated unless the capture is
+        # rights-cleared for derived scene generation — mirroring scene-memory readiness.
+        worldlabs_derived_rights_allowed = _worldlabs_derived_rights_allowed(
+            metadata=descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+        )
         privacy_descriptor = CaptureDescriptor.from_dict(descriptor_payload)
-        worldlabs_input = (
-            _prepare_worldlabs_input_video(
+        if preview_requested_for_worldlabs and worldlabs_derived_rights_allowed:
+            worldlabs_input = _prepare_worldlabs_input_video(
                 descriptor=privacy_descriptor,
                 privacy_processing=privacy_processing,
                 storage_root=storage_root,
                 pipeline_dir=pipeline_dir,
                 bucket=bucket,
             )
-            if preview_requested_for_worldlabs
-            else {
+        elif preview_requested_for_worldlabs and not worldlabs_derived_rights_allowed:
+            worldlabs_input = {
+                "status": "blocked",
+                "reason": "rights_not_cleared_for_derived_scene_generation",
+                "manifest_uri": None,
+                "output_video_uri": None,
+            }
+        else:
+            worldlabs_input = {
                 "status": "not_requested",
                 "manifest_uri": None,
                 "output_video_uri": None,
             }
-        )
         metadata_payload = dict(descriptor_payload.get("metadata") or {})
         metadata_payload["privacy_processing"] = {
             "status": privacy_processing.get("status"),

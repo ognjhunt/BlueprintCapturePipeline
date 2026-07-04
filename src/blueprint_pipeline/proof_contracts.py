@@ -57,12 +57,18 @@ def build_rights_provenance_review(
     provenance = dict(provenance_summary or {})
     consent_status = str(rights.get("consent_status") or "unknown").strip().lower()
     derived_generation_allowed = bool(rights.get("derived_scene_generation_allowed"))
+    permission_document_uri = str(rights.get("permission_document_uri") or "").strip()
     privacy_status = str(privacy.get("status") or "not_run").strip().lower()
     provenance_status = str(provenance.get("status") or "missing").strip().lower()
 
+    # A "documented" consent claim without the document itself is an incomplete
+    # rights packet, not documented consent — it must not clear.
+    consent_evidence_complete = consent_status == "policy_only" or (
+        consent_status == "documented" and bool(permission_document_uri)
+    )
     rights_state = (
         "cleared"
-        if derived_generation_allowed and consent_status in {"documented", "policy_only"}
+        if derived_generation_allowed and consent_evidence_complete
         else "blocked"
         if not derived_generation_allowed
         else "needs_review"
@@ -92,6 +98,8 @@ def build_rights_provenance_review(
         blockers.append("rights_not_sufficient_for_derived_generation")
     elif rights_state == "needs_review":
         blockers.append("rights_or_consent_requires_review")
+        if consent_status == "documented" and not permission_document_uri:
+            blockers.append("consent_documented_without_permission_document")
     if privacy_state == "blocked":
         blockers.append("privacy_processing_failed_closed")
     elif privacy_state == "needs_review":
@@ -167,15 +175,29 @@ def build_site_package_manifest(
     ).strip()
     launchable_status = str(launchable_export_bundle.get("status") or "missing").strip().lower()
     runtime_launchable = bool(site_world_health.get("launchable"))
-    blockers = [
-        f"rights_review:{rights_review.get('status')}"
-        for _ in [0]
-        if isinstance(rights_review, Mapping) and str(rights_review.get("status") or "") == "blocked"
-    ]
+    # Fail closed on rights/privacy. This manifest is synced to the WebApp as
+    # authoritative state, so it must only read "ready" when rights+privacy review is
+    # cleared. needs_review / blocked / missing must all block — matching
+    # build_proof_pack_manifest — so an unverified-consent capture never projects as
+    # ready. See beta-launch audit PIPE-02.
+    rights_status = (
+        str(rights_review.get("status") or "").strip()
+        if isinstance(rights_review, Mapping)
+        else ""
+    )
+    blockers: list[str] = []
+    if rights_status != "cleared":
+        blockers.append(f"rights_review:{rights_status or 'unavailable'}")
     if canonical_package_status == "registration_blocked":
         blockers.append("canonical_package_registration_blocked")
     if not site_world_spec:
         blockers.append("site_world_spec_missing")
+    # A spec pointer is not runtime proof: the launchable export bundle and runtime
+    # health must both back the claim before this manifest can read "ready".
+    if launchable_status not in {"ready", "partial"}:
+        blockers.append(f"launchable_export_not_ready:{launchable_status or 'missing'}")
+    if not runtime_launchable:
+        blockers.append("site_world_runtime_not_launchable")
 
     status = (
         "ready"
@@ -222,9 +244,20 @@ def build_hosted_review_readiness(
     demo_blockers: Sequence[str] | None,
     site_world_health: Mapping[str, Any],
     launchable_export_bundle: Mapping[str, Any],
+    rights_review: Mapping[str, Any] | None = None,
     artifact_uris: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     blockers = list(dict.fromkeys([str(item).strip() for item in (demo_blockers or []) if str(item).strip()]))
+    # Fail closed on rights/privacy. Hosted-review readiness is synced to the WebApp
+    # as authoritative buyer/reviewer state, so it must not read "ready" unless
+    # rights+privacy review is cleared. See beta-launch audit PIPE-02.
+    rights_status = (
+        str(rights_review.get("status") or "").strip()
+        if isinstance(rights_review, Mapping)
+        else ""
+    )
+    if rights_status != "cleared":
+        blockers.append(f"rights_review:{rights_status or 'unavailable'}")
     if not preview_manifest_uri:
         blockers.append("preview_manifest_missing")
     if not worldlabs_launch_url:
@@ -278,19 +311,26 @@ def build_proof_pack_manifest(
     site_submission_id: str | None,
     opportunity_id: str | None,
     site_package_manifest: Mapping[str, Any],
-    rights_review: Mapping[str, Any],
+    rights_review: Mapping[str, Any] | None,
     hosted_review_readiness: Mapping[str, Any],
     artifact_uris: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    # Fail closed on a missing or malformed rights review: no review means the
+    # rights packet is unavailable, never cleared.
+    rights_status = (
+        str(rights_review.get("status") or "").strip()
+        if isinstance(rights_review, Mapping)
+        else ""
+    )
     proof_pack_ready = (
         str(site_package_manifest.get("status") or "") == "ready"
-        and str(rights_review.get("status") or "") == "cleared"
+        and rights_status == "cleared"
     )
     blockers = []
     if str(site_package_manifest.get("status") or "") != "ready":
         blockers.append("site_package_not_ready")
-    if str(rights_review.get("status") or "") != "cleared":
-        blockers.append(f"rights_review:{rights_review.get('status')}")
+    if rights_status != "cleared":
+        blockers.append(f"rights_review:{rights_status or 'unavailable'}")
     status = "ready" if proof_pack_ready else "blocked"
 
     return {

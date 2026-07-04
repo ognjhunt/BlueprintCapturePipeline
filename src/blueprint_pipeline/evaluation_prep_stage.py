@@ -1048,23 +1048,24 @@ def simulation_automation_evaluation_prep_surface(
     }
     run_manifest = _read_optional_mapping(automation_dir / "simulation_automation_run_manifest.json")
     proof_boundary = _read_optional_mapping(automation_dir / "proof_boundary.json")
+
+    def _proven_flag(key: str) -> bool:
+        # Fail closed: the proof boundary is authoritative when it states the flag.
+        # A run manifest can only claim proof when the boundary doesn't contradict it,
+        # and only a strict boolean True counts as a claim.
+        boundary_value = proof_boundary.get(key)
+        if isinstance(boundary_value, bool):
+            return boundary_value
+        return run_manifest.get(key) is True
+
     return {
         "schema_version": "simulation_automation_evaluation_prep_surface.v1",
         "status": str(run_manifest.get("status") or "missing"),
         "artifacts": artifacts,
         "artifact_uris": artifact_uris,
-        "simulator_execution_proven": bool(
-            proof_boundary.get("simulator_execution_proven")
-            or run_manifest.get("simulator_execution_proven")
-        ),
-        "rank_fidelity_result_proven": bool(
-            proof_boundary.get("rank_fidelity_result_proven")
-            or run_manifest.get("rank_fidelity_result_proven")
-        ),
-        "public_claim_upgrade_allowed": bool(
-            proof_boundary.get("public_claim_upgrade_allowed")
-            or run_manifest.get("public_claim_upgrade_allowed")
-        ),
+        "simulator_execution_proven": _proven_flag("simulator_execution_proven"),
+        "rank_fidelity_result_proven": _proven_flag("rank_fidelity_result_proven"),
+        "public_claim_upgrade_allowed": _proven_flag("public_claim_upgrade_allowed"),
     }
 
 
@@ -1490,7 +1491,10 @@ def _real_path_from_eval_dir(eval_dir: Path, relative_path: str) -> Optional[Pat
 
 
 def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]) -> Dict[str, str]:
-    raw_video_path = context.raw_root / "walkthrough.mov"
+    # PIPE-01: the un-redacted raw walkthrough (raw_root/walkthrough.mov) is NEVER
+    # exported into the buyer-facing site_world_spec conditioning. Only the
+    # privacy-processed world-model video path is surfaced. Do not add raw_video_path
+    # back — it embeds the raw capture into the launchable artifact.
     world_model_video_path = context.capture_root / "privacy" / "final_walkthrough.mov"
     keyframe_candidates = [
         context.capture_root / "frames" / "keyframe.jpg",
@@ -1502,7 +1506,6 @@ def _conditioning_local_paths(*, context, conditioning_bundle: Mapping[str, Any]
     ]
     keyframe_path = next((path for path in keyframe_candidates if path.is_file()), None)
     local_paths: Dict[str, str] = {
-        "raw_video_path": str(raw_video_path) if raw_video_path.is_file() else "",
         "world_model_video_path": str(world_model_video_path) if world_model_video_path.is_file() else "",
         "keyframe_path": str(keyframe_path) if keyframe_path is not None else "",
         "arkit_poses_path": str(context.raw_root / "arkit" / "poses.jsonl"),
@@ -1604,12 +1607,17 @@ def _primary_runtime_render_descriptor(
             "fallback_mode": str(canonical_world_model.get("fallback_mode") or "none"),
         }
 
+    # PIPE-01: NEVER fall back to the raw un-redacted walkthrough as a runtime render
+    # source. Only privacy-safe world-model / privacy-processed URIs (or the local
+    # privacy-processed video path) are acceptable. conditioning_bundle.raw_video_uri is
+    # accepted only because the scene-memory conditioning writer upstream already gates
+    # it behind privacy_world_model_ready (qualification.py); local_paths never carries
+    # a raw_video_path anymore (see _conditioning_local_paths).
     raw_video_ref = str(
         conditioning_bundle.get("world_model_video_uri")
         or conditioning_bundle.get("privacy_processed_video_uri")
         or conditioning_bundle.get("raw_video_uri")
         or local_paths.get("world_model_video_path")
-        or local_paths.get("raw_video_path")
         or ""
     ).strip()
     arkit = dict(conditioning_bundle.get("arkit") or {}) if isinstance(conditioning_bundle.get("arkit"), Mapping) else {}
@@ -1820,6 +1828,54 @@ def _runtime_eligibility_payload(runtime_status: Mapping[str, Any]) -> Dict[str,
     }
 
 
+# Privacy pipeline statuses that mean people are provably not present or have been
+# redacted/anonymized. Mirrors qualification.privacy_world_model_ready and the
+# build_rights_provenance_review privacy_state cleared set. A capture whose raw
+# privacy pipeline status is not in this set has NOT been privacy-cleared and must
+# never reach a buyer-facing "launchable" artifact. See beta-launch audit PIPE-01.
+_PRIVACY_CLEARED_STATUSES = frozenset(
+    {
+        "no_people_detected",
+        "person_removed",
+        "face_anonymized_fallback",
+        "full_frame_redacted_local_proof",
+    }
+)
+
+
+def _privacy_processing_cleared(
+    *,
+    rights_review: Mapping[str, Any] | None,
+    privacy_processing: Mapping[str, Any] | None,
+) -> bool:
+    """Return True only when privacy post-processing is provably complete/redacted.
+
+    Reads the normalized rights-provenance review privacy verdict first (cleared /
+    needs_review / blocked) and falls back to the raw privacy pipeline status
+    cleared set. Fails closed when neither source proves clearance.
+    """
+    review = rights_review if isinstance(rights_review, Mapping) else {}
+    review_privacy = review.get("privacy") if isinstance(review.get("privacy"), Mapping) else {}
+    review_privacy_status = str(review_privacy.get("status") or "").strip().lower()
+    if review_privacy_status:
+        return review_privacy_status == "cleared"
+    raw_status = str(
+        (privacy_processing or {}).get("status") if isinstance(privacy_processing, Mapping) else ""
+    ).strip().lower()
+    return raw_status in _PRIVACY_CLEARED_STATUSES
+
+
+def _rights_review_cleared(rights_review: Mapping[str, Any] | None) -> bool:
+    """Return True only when the rights-provenance review clears derived rights."""
+    review = rights_review if isinstance(rights_review, Mapping) else {}
+    nested = review.get("rights") if isinstance(review.get("rights"), Mapping) else {}
+    nested_status = str(nested.get("status") or "").strip().lower()
+    if nested_status:
+        return nested_status == "cleared"
+    # Fall back to the overall review verdict when the nested rights block is absent.
+    return str(review.get("status") or "").strip().lower() == "cleared"
+
+
 def _canonical_site_world_runtime_status(
     *,
     qualification_state: object,
@@ -1829,6 +1885,8 @@ def _canonical_site_world_runtime_status(
     protected_regions_manifest: Mapping[str, Any],
     required_runtime_artifact_paths: Sequence[Path],
     runtime_service_url: str,
+    rights_review: Mapping[str, Any] | None = None,
+    privacy_processing: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     blockers: List[str] = []
     warnings: List[str] = []
@@ -1858,6 +1916,33 @@ def _canonical_site_world_runtime_status(
             warnings.append(blocker)
     if empty_index_cause:
         warnings.append(f"empty_index_cause:{empty_index_cause}")
+
+    # PIPE-01 (beta launch audit): privacy + rights are authoritative. Raw,
+    # un-redacted, or rights-unverified captures must NOT be marked launchable, since
+    # `launchable` flows into site_world_health -> launchable_export_bundle "ready"
+    # and satisfies the buyer_fulfillment_bundle_ready launch gate. These are HARD
+    # blockers, not warnings.
+    if not _privacy_processing_cleared(
+        rights_review=rights_review,
+        privacy_processing=privacy_processing,
+    ):
+        privacy_review = (
+            rights_review.get("privacy") if isinstance(rights_review, Mapping) else None
+        )
+        privacy_status_label = str(
+            (privacy_review or {}).get("status")
+            if isinstance(privacy_review, Mapping)
+            else ((privacy_processing or {}).get("status") if isinstance(privacy_processing, Mapping) else "")
+        ).strip() or "unavailable"
+        blockers.append(f"privacy_processing_not_cleared:{privacy_status_label}")
+    if not _rights_review_cleared(rights_review):
+        rights_status_label = ""
+        if isinstance(rights_review, Mapping):
+            nested = rights_review.get("rights") if isinstance(rights_review.get("rights"), Mapping) else {}
+            rights_status_label = str(
+                nested.get("status") or rights_review.get("status") or ""
+            ).strip()
+        blockers.append(f"rights_review_not_cleared:{rights_status_label or 'unavailable'}")
 
     launchable = len(blockers) == 0
     return {
@@ -3731,6 +3816,15 @@ def run_evaluation_prep_stage(
         raise PipelineError(f"Missing opportunity_handoff.json at {pipeline_dir}")
     qualification_record = optional_read_json(pipeline_dir / "qualification_record.json") or {}
     scope_record = optional_read_json(pipeline_dir / "task_scope_record.json") or {}
+    # PIPE-01: privacy/rights verdicts feed the canonical runtime "launchable" gate.
+    # Load the authoritative rights-provenance review + privacy processing manifest so a
+    # not-cleared capture is never marked launchable / embedded into the buyer-facing spec.
+    rights_provenance_review_gate = (
+        optional_read_json(pipeline_dir / "rights_provenance_review.json") or {}
+    )
+    privacy_processing_gate = (
+        optional_read_json(pipeline_dir / "privacy_processing_manifest.json") or {}
+    )
 
     object_geometry_manifest = _resolve_object_geometry_manifest(
         context=context,
@@ -3821,6 +3915,8 @@ def run_evaluation_prep_stage(
             presentation_variance_policy_path,
         ],
         runtime_service_url=runtime_service_url,
+        rights_review=rights_provenance_review_gate,
+        privacy_processing=privacy_processing_gate,
     )
 
     site_world_spec = _build_site_world_spec(
@@ -3909,6 +4005,8 @@ def run_evaluation_prep_stage(
             presentation_variance_policy_path,
         ],
         runtime_service_url=runtime_service_url,
+        rights_review=rights_provenance_review_gate,
+        privacy_processing=privacy_processing_gate,
     )
     site_world_spec = _build_site_world_spec(
         context=context,
@@ -4959,6 +5057,9 @@ def run_evaluation_prep_stage(
         demo_blockers=_string_list(demo_readiness.get("blockers")),
         site_world_health=site_world_health,
         launchable_export_bundle=launchable_export_bundle,
+        # Fail closed on rights/privacy so hosted-review readiness never projects
+        # "ready" for an unverified-consent capture (beta-launch audit PIPE-02).
+        rights_review=rights_provenance_review,
         artifact_uris=shared_artifact_uris,
     )
     proof_pack_manifest = build_proof_pack_manifest(

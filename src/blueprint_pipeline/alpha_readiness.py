@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -21,6 +22,7 @@ from .webapp_sync import (
     derive_webapp_opportunity_state,
     derive_webapp_qualification_state,
     sync_webapp_pipeline_attachment,
+    upstream_link_id_failures,
 )
 
 
@@ -61,6 +63,14 @@ def _check(name: str, passed: bool, detail: str, *, category: str) -> Dict[str, 
 
 def _check_file(path: Path, *, name: str, detail: str, category: str = "artifact") -> Dict[str, Any]:
     return _check(name, path.is_file(), detail if path.is_file() else f"{detail} missing", category=category)
+
+
+def _string_list_or_default(*values: object) -> List[str]:
+    out: List[str] = []
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            out.extend(str(item).strip() for item in value if str(item).strip())
+    return out or ["unspecified evidence gaps"]
 
 
 def _bool_env(env: Mapping[str, str], name: str, *, default: bool = False) -> bool:
@@ -113,6 +123,64 @@ def _latest_sync_payload(existing: Mapping[str, Any]) -> Dict[str, Any]:
         if isinstance(latest, Mapping):
             return dict(latest)
     return dict(existing)
+
+
+_DEFAULT_SYNC_MAX_AGE_HOURS = 24.0
+
+
+def _webapp_sync_verification(
+    webapp_sync: Mapping[str, Any],
+    *,
+    env: Mapping[str, str],
+) -> Dict[str, Any]:
+    """Fail-closed truth check on the recorded WebApp sync result.
+
+    A sync result only counts as verified launch evidence when it succeeded
+    against real upstream WebApp records (no placeholder fallback) and is
+    recent enough to still describe the WebApp's current state. Missing
+    timestamps, placeholder fallbacks, and unverified upstream links all fail.
+    """
+    latest = _latest_sync_payload(webapp_sync)
+    failures: list[str] = []
+    status = str(latest.get("status") or webapp_sync.get("status") or "").strip().lower()
+    if status != "succeeded":
+        failures.append(f"status:{status or 'missing'}")
+    attachment_payload = (
+        latest.get("attachment_payload")
+        if isinstance(latest.get("attachment_payload"), Mapping)
+        else {}
+    )
+    if attachment_payload.get("upstream_links_verified") is not True:
+        failures.append("upstream_links_not_verified")
+    if bool(attachment_payload.get("placeholder_fallback_allowed")):
+        failures.append("placeholder_fallback_enabled")
+    synced_at_raw = str(latest.get("synced_at") or webapp_sync.get("latest_synced_at") or "").strip()
+    max_age_hours = _DEFAULT_SYNC_MAX_AGE_HOURS
+    raw_max_age = str(env.get("PIPELINE_SYNC_MAX_AGE_HOURS") or "").strip()
+    if raw_max_age:
+        try:
+            max_age_hours = float(raw_max_age)
+        except ValueError:
+            pass
+    if not synced_at_raw:
+        failures.append("synced_at_missing")
+    else:
+        try:
+            synced_at = datetime.fromisoformat(synced_at_raw.replace("Z", "+00:00"))
+        except ValueError:
+            failures.append("synced_at_unparseable")
+        else:
+            if synced_at.tzinfo is None:
+                synced_at = synced_at.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - synced_at).total_seconds() / 3600.0
+            if age_hours > max_age_hours:
+                failures.append(f"stale_sync_result:{age_hours:.1f}h_old")
+    return {
+        "verified": not failures,
+        "failures": failures,
+        "synced_at": synced_at_raw or None,
+        "max_age_hours": max_age_hours,
+    }
 
 
 def _runtime_capability_payload(
@@ -200,10 +268,13 @@ def write_pipeline_sync_result(
     if existing and not merged_syncs:
         legacy_stage = str(existing.get("latest_stage") or existing.get("stage") or "qualification").strip() or "qualification"
         merged_syncs[legacy_stage] = _latest_sync_payload(existing)
-    merged_syncs[stage] = dict(result)
+    stage_result = dict(result)
+    stage_result.setdefault("synced_at", utc_now_iso())
+    merged_syncs[stage] = stage_result
     payload = {
-        "status": str(result.get("status") or "unknown"),
+        "status": str(stage_result.get("status") or "unknown"),
         "latest_stage": stage,
+        "latest_synced_at": stage_result["synced_at"],
         "syncs": merged_syncs,
     }
     write_json(path, payload)
@@ -730,6 +801,10 @@ def build_launch_gate_summary(
     payout_recommendation = _read_json_object(pipeline_root / "capturer_payout_recommendation.json")
     launchable_export_bundle = _read_json_object(eval_root / "launchable_export_bundle.json")
     webapp_sync = _read_json_object(pipeline_root / "webapp_sync_result.json")
+    rights_review = _read_json_object(pipeline_root / "rights_provenance_review.json")
+    provenance_summary = _read_json_object(pipeline_root / "provenance_summary.json")
+    recapture_requirements = _read_json_object(pipeline_root / "recapture_requirements.json")
+    worldlabs_input_audit = _read_json_object(pipeline_root / "worldlabs_input_audit.json")
     authoritative_qualification_state = derive_webapp_qualification_state(
         readiness_state=qualification_record.get("readiness_state"),
         completeness_status=scorecard.get("completeness_status"),
@@ -747,11 +822,58 @@ def build_launch_gate_summary(
         descriptor.capture_job_id
         or str(opportunity_handoff.get("capture_job_id") or "").strip()
     )
-    payout_eligible = bool(
-        payout_recommendation.get("eligible_for_payout")
-        if payout_recommendation.get("eligible_for_payout") is not None
-        else descriptor.quoted_payout_cents is not None
-        or payout_recommendation.get("recommended_payout_cents") is not None
+    # Payout readiness is a revenue-share hook: it must come from an explicit
+    # recommendation decision, never inferred from the mere presence of a quote
+    # or a recommended amount (that would fabricate payout readiness).
+    payout_eligible = payout_recommendation.get("eligible_for_payout") is True
+    upstream_id_failures = {
+        key: reason
+        for key, reason in upstream_link_id_failures(
+            {
+                "site_submission_id": site_submission_id,
+                "buyer_request_id": buyer_request_id,
+                "capture_job_id": capture_job_id,
+                "scene_id": descriptor.scene_id,
+                "capture_id": descriptor.capture_id,
+            }
+        ).items()
+        if key in {"site_submission_id", "buyer_request_id", "capture_job_id"}
+    }
+    sync_verification = _webapp_sync_verification(webapp_sync, env=resolved_env)
+
+    # Consent/rights, raw-bypass, provenance, and recapture evidence for the
+    # buyer-ready verdict. Absent artifacts fail these checks: missing evidence
+    # is never launch evidence.
+    rights_review_status = str(rights_review.get("status") or "").strip().lower()
+    rights_block = rights_review.get("rights") if isinstance(rights_review.get("rights"), Mapping) else {}
+    rights_consent_status = str(rights_block.get("consent_status") or "").strip().lower()
+    descriptor_metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    descriptor_labeling = (
+        descriptor_metadata.get("worldlabs_input_labeling")
+        if isinstance(descriptor_metadata.get("worldlabs_input_labeling"), Mapping)
+        else {}
+    )
+    audit_labeling = (
+        worldlabs_input_audit.get("input_labeling")
+        if isinstance(worldlabs_input_audit.get("input_labeling"), Mapping)
+        else {}
+    )
+    raw_worldlabs_bypass_used = bool(
+        worldlabs_input_audit.get("raw_video_bypass_used")
+        or audit_labeling.get("raw_video_bypass_used")
+        or descriptor_labeling.get("raw_video_bypass_used")
+    )
+    provenance_record = (
+        provenance_summary.get("record")
+        if isinstance(provenance_summary.get("record"), Mapping)
+        else {}
+    )
+    provenance_grounded = (
+        str(provenance_summary.get("status") or "").strip().lower() == "grounded"
+        and bool(provenance_record.get("canonical_truth"))
+    )
+    recapture_required = (
+        bool(recapture_requirements.get("required")) if recapture_requirements else True
     )
     profile = str(alpha_summary.get("profile") or "unsupported")
     external_alpha = alpha_summary.get("verdicts", {}).get("external_alpha", {})
@@ -760,41 +882,49 @@ def build_launch_gate_summary(
     runtime_capability = alpha_summary.get("runtime_capability", {})
     external_alpha_go = str(external_alpha.get("status") or "").strip().lower() == "go"
     internal_alpha_go = str(internal_alpha.get("status") or "").strip().lower() == "go"
+    # Fail closed: a bundle without an explicit ready status is unproven
+    # evidence, not a ready bundle. Legacy statusless bundle files must be
+    # re-exported before they can pass the buyer-fulfillment gate.
     launchable_bundle_ready = bool(
         launchable_export_bundle
         and str(launchable_export_bundle.get("status") or "").strip().lower() in {"ready", "launch_ready"}
     )
-    if (
-        not launchable_bundle_ready
-        and launchable_export_bundle
-        and "status" not in launchable_export_bundle
-        and (eval_root / "launchable_export_bundle.json").is_file()
-    ):
-        launchable_bundle_ready = True
 
     stage_checks = [
         _check(
             "inbound_request_linked",
-            bool(site_submission_id),
+            bool(site_submission_id) and "site_submission_id" not in upstream_id_failures,
             f"site_submission_id is {site_submission_id}"
-            if site_submission_id
-            else "site_submission_id is missing from the captured opportunity handoff",
+            if site_submission_id and "site_submission_id" not in upstream_id_failures
+            else (
+                f"site_submission_id is not a real WebApp record: {upstream_id_failures.get('site_submission_id')}"
+                if site_submission_id
+                else "site_submission_id is missing from the captured opportunity handoff"
+            ),
             category="launch_gate",
         ),
         _check(
             "approved_marketplace_capture_job_linked",
-            bool(capture_job_id),
+            bool(capture_job_id) and "capture_job_id" not in upstream_id_failures,
             f"capture_job_id is {capture_job_id}"
-            if capture_job_id
-            else "capture_job_id is missing from the captured job linkage",
+            if capture_job_id and "capture_job_id" not in upstream_id_failures
+            else (
+                f"capture_job_id is not a real WebApp record: {upstream_id_failures.get('capture_job_id')}"
+                if capture_job_id
+                else "capture_job_id is missing from the captured job linkage"
+            ),
             category="launch_gate",
         ),
         _check(
             "buyer_request_linked",
-            bool(buyer_request_id),
+            bool(buyer_request_id) and "buyer_request_id" not in upstream_id_failures,
             f"buyer_request_id is {buyer_request_id}"
-            if buyer_request_id
-            else "buyer_request_id is missing from the buyer request linkage",
+            if buyer_request_id and "buyer_request_id" not in upstream_id_failures
+            else (
+                f"buyer_request_id is not a real WebApp record: {upstream_id_failures.get('buyer_request_id')}"
+                if buyer_request_id
+                else "buyer_request_id is missing from the buyer request linkage"
+            ),
             category="launch_gate",
         ),
         _check(
@@ -837,10 +967,11 @@ def build_launch_gate_summary(
         ),
         _check(
             "webapp_sync_completed",
-            str(webapp_sync.get("status") or "").strip().lower() == "succeeded",
-            "webapp sync succeeded"
-            if str(webapp_sync.get("status") or "").strip().lower() == "succeeded"
-            else f"webapp sync status is {webapp_sync.get('status') or 'missing'}",
+            bool(sync_verification["verified"]),
+            f"webapp sync succeeded against verified upstream records at {sync_verification['synced_at']}"
+            if sync_verification["verified"]
+            else "webapp sync result is not verified launch evidence: "
+            + ", ".join(sync_verification["failures"]),
             category="launch_gate",
         ),
         _check(
@@ -862,9 +993,54 @@ def build_launch_gate_summary(
         _check(
             "capturer_payout_transition_ready",
             payout_eligible,
-            "capturer payout recommendation is present and payout-eligible"
+            "capturer payout recommendation explicitly marks this capture payout-eligible"
             if payout_eligible
-            else "capturer payout recommendation is missing or not payout-eligible",
+            else "capturer payout recommendation is missing or does not explicitly mark payout eligibility",
+            category="launch_gate",
+        ),
+        _check(
+            "rights_provenance_review_cleared",
+            rights_review_status == "cleared",
+            f"rights provenance review is cleared (consent_status={rights_consent_status or 'unknown'})"
+            if rights_review_status == "cleared"
+            else f"rights provenance review status is {rights_review_status or 'missing'}; "
+            "site rights and consent packet is not launch evidence",
+            category="launch_gate",
+        ),
+        _check(
+            "raw_worldlabs_bypass_not_used",
+            not raw_worldlabs_bypass_used,
+            "world-model input derives from privacy-safe media, not the raw walkthrough"
+            if not raw_worldlabs_bypass_used
+            else "raw World Labs bypass was used for this capture's world-model input; "
+            "raw-derived outputs are never buyer-ready",
+            category="launch_gate",
+        ),
+        _check(
+            "provenance_summary_grounded",
+            provenance_grounded,
+            "provenance summary is grounded in canonical capture truth"
+            if provenance_grounded
+            else f"provenance summary status is {provenance_summary.get('status') or 'missing'}; "
+            "package provenance is not grounded",
+            category="launch_gate",
+        ),
+        _check(
+            "recapture_not_required",
+            not recapture_required,
+            "recapture requirements are recorded and no recapture is required"
+            if not recapture_required
+            else (
+                "recapture is required: "
+                + ", ".join(
+                    _string_list_or_default(
+                        recapture_requirements.get("missing_evidence"),
+                        recapture_requirements.get("recommendations"),
+                    )
+                )
+                if recapture_requirements
+                else "recapture_requirements.json is missing; recapture state is unknown"
+            ),
             category="launch_gate",
         ),
     ]
@@ -1182,6 +1358,11 @@ def sync_webapp_evaluation_prep(
         "alpha_readiness": alpha_summary,
         "launch_gate_summary": launch_gate_summary,
         "rights_provenance_review": rights_provenance_review,
+        # PIPE-02: surface the rights/privacy VERDICT so the WebApp gates
+        # buyer/reviewer-facing progression on it rather than on artifact presence.
+        "rights_review_status": (
+            str(rights_provenance_review.get("status") or "").strip().lower() or None
+        ),
         "site_package_manifest": site_package_manifest,
         "proof_pack_manifest": proof_pack_manifest,
         "hosted_review_readiness": hosted_review_readiness,
@@ -1192,6 +1373,11 @@ def sync_webapp_evaluation_prep(
     try:
         result = sync_webapp_pipeline_attachment(
             site_submission_id=site_submission_id,
+            # PIPE-06: request_id == site_submission_id BY CONTRACT. The WebApp mints
+            # the inbound request with site_submission_id = requestId, so this is an
+            # intentional alias, not an independent fourth verification. The upstream-id
+            # guard is effectively three independent links (site_submission_id /
+            # buyer_request_id / capture_job_id) — treat it as such, not as four.
             request_id=site_submission_id,
             buyer_request_id=buyer_request_id,
             capture_job_id=capture_job_id,
