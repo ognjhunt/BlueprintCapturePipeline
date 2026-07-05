@@ -147,6 +147,10 @@ def test_export_writes_episode_rows_meta_and_stats(tmp_path: Path) -> None:
     assert rows[1]["frame_index"] == 1
     assert rows[1]["timestamp"] == 0.1
     assert rows[0]["task"] == "move-tote"
+    assert rows[0]["observation_source"] == "simulator_trace"
+    assert rows[0]["observation_source_is_simulator_trace"] is True
+    assert rows[0]["observation_source_is_model_derived"] is False
+    assert rows[0]["observation_source_is_raw_capture_evidence"] is False
 
     episodes = [
         json.loads(line)
@@ -157,6 +161,9 @@ def test_export_writes_episode_rows_meta_and_stats(tmp_path: Path) -> None:
     assert episodes[0]["length"] == 2
     assert episodes[0]["state_present"] is True
     assert episodes[0]["timestamps_present"] is True
+    assert episodes[0]["observation_source"] == "simulator_trace"
+    assert episodes[0]["simulator_trace_frame_count"] == 2
+    assert episodes[0]["model_derived_frame_count"] == 0
     # no video is materialized yet, so gr00t_ready must stay False
     assert episodes[0]["gr00t_ready"] is False
     assert episodes[0]["gr00t_ready_missing"] == ["materialized_video"]
@@ -169,6 +176,105 @@ def test_export_writes_episode_rows_meta_and_stats(tmp_path: Path) -> None:
     info = json.loads((export_root / "meta" / "info.json").read_text())
     assert info["total_episodes"] == 1
     assert info["features"]["action"]["shape"] == [SC3_ACTION_DIM]
+    assert info["features"]["observation_source"]["dtype"] == "string"
+    assert manifest["observation_source_columns_written"] is True
+    assert manifest["simulator_trace_frame_count"] == 2
+    assert manifest["model_derived_frame_count"] == 0
+
+
+def test_export_marks_episode_gr00t_ready_when_materialized_video_present(
+    tmp_path: Path,
+) -> None:
+    job_dir = _seed_job_dir(
+        tmp_path,
+        attempts=[_attempt("a1")],
+        control_rows=[
+            _control_row("a1", 0, with_state=True, with_timestamp=True),
+        ],
+    )
+    video_path = job_dir / "clip-a1.mp4"
+    video_path.write_bytes(b"fake-mp4")
+
+    manifest = build_lerobot_episode_export(
+        job_dir=job_dir,
+        output_dir=tmp_path / "out",
+        robot_id="unitree_g1",
+        materialized_video_by_attempt={"a1": {"path": str(video_path), "clip_id": "clip-a1"}},
+    )
+
+    assert manifest["status"] == "completed_review_required"
+    assert manifest["materialized_video_count"] == 1
+    assert manifest["gr00t_ready_episode_count"] == 1
+    export_root = tmp_path / "out" / "lerobot_episode_export"
+    episodes = [
+        json.loads(line)
+        for line in (export_root / "meta" / "episodes.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert episodes[0]["video_present"] is True
+    assert episodes[0]["gr00t_ready"] is True
+    assert episodes[0]["gr00t_ready_missing"] == []
+    assert episodes[0]["video_key"] == "observation.images.head_rgbd"
+    copied_video = export_root / episodes[0]["video_path"]
+    assert copied_video.is_file()
+    row = json.loads(
+        (export_root / "data" / "episode_000000.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    assert row["observation.images.head_rgbd"] == episodes[0]["video_path"]
+
+
+def test_export_labels_model_derived_materialized_video_source(
+    tmp_path: Path,
+) -> None:
+    job_dir = _seed_job_dir(
+        tmp_path,
+        attempts=[_attempt("a1")],
+        control_rows=[
+            _control_row("a1", 0, with_state=True, with_timestamp=True),
+        ],
+    )
+    video_path = job_dir / "generated-a1.mp4"
+    video_path.write_bytes(b"fake-generated-mp4")
+
+    manifest = build_lerobot_episode_export(
+        job_dir=job_dir,
+        output_dir=tmp_path / "out",
+        robot_id="unitree_g1",
+        materialized_video_by_attempt={
+            "a1": {
+                "path": str(video_path),
+                "clip_id": "generated-clip-a1",
+                "model_derived": True,
+                "observation_source": "model_derived",
+                "observation_source_detail": "world_model_generated_support_video",
+            }
+        },
+    )
+
+    assert manifest["status"] == "completed_review_required"
+    assert manifest["model_derived_frame_count"] == 1
+    assert manifest["raw_capture_frame_count"] == 0
+    export_root = tmp_path / "out" / "lerobot_episode_export"
+    row = json.loads(
+        (export_root / "data" / "episode_000000.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    assert row["observation_source"] == "model_derived"
+    assert row["observation_source_detail"] == "world_model_generated_support_video"
+    assert row["observation_source_is_model_derived"] is True
+    assert row["observation_source_is_raw_capture_evidence"] is False
+    episodes = [
+        json.loads(line)
+        for line in (export_root / "meta" / "episodes.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert episodes[0]["observation_source"] == "model_derived"
+    assert episodes[0]["model_derived_frame_count"] == 1
 
 
 def test_missing_control_stream_blocks_export(tmp_path: Path) -> None:
@@ -259,6 +365,50 @@ def test_missing_state_and_timestamps_are_omitted_never_zero_filled(
         "per_step_timestamps",
         "materialized_video",
     }
+
+
+def test_export_reads_state_and_timestamp_from_control_row_context(
+    tmp_path: Path,
+) -> None:
+    row = _control_row("a1", 0)
+    row["base_pose_7d"] = [0.25, -0.1, 0.79, 1.0, 0.0, 0.0, 0.0]
+    row["sim_time_s"] = 0.25
+    job_dir = _seed_job_dir(
+        tmp_path,
+        attempts=[_attempt("a1")],
+        control_rows=[row],
+    )
+
+    manifest = build_lerobot_episode_export(
+        job_dir=job_dir, output_dir=tmp_path / "out", robot_id="unitree_g1"
+    )
+
+    assert manifest["status"] == "completed_review_required"
+    export_root = tmp_path / "out" / "lerobot_episode_export"
+    exported_row = json.loads(
+        (export_root / "data" / "episode_000000.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    assert exported_row["observation.state"] == [
+        0.25,
+        -0.1,
+        0.79,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+    ]
+    assert exported_row["timestamp"] == 0.25
+    episodes = [
+        json.loads(line)
+        for line in (export_root / "meta" / "episodes.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert episodes[0]["state_present"] is True
+    assert episodes[0]["timestamps_present"] is True
+    assert episodes[0]["gr00t_ready_missing"] == ["materialized_video"]
 
 
 def test_parquet_status_is_honest_about_pyarrow_availability(

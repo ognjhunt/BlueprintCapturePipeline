@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 
@@ -23,3 +25,11 @@ for candidate in (REPO_ROOT, SRC_DIR, contract_src_dir):
         candidate_str = str(candidate)
         if candidate_str not in sys.path:
             sys.path.insert(0, candidate_str)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_pending_teardown_registry(tmp_path_factory, monkeypatch):
+    """Paid lanes persist pending_teardown.v1 records; keep tests out of ~/."""
+    registry = tmp_path_factory.mktemp("pending-teardowns")
+    monkeypatch.setenv("BLUEPRINT_PENDING_TEARDOWN_DIR", str(registry))
+    return registry

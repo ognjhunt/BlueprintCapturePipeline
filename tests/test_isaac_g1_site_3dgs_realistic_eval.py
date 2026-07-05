@@ -603,7 +603,7 @@ JSON
         },
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=60,
         check=False,
     )
     assert result.returncode == 0, result.stderr

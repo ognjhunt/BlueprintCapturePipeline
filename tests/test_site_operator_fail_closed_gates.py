@@ -22,6 +22,7 @@ from blueprint_pipeline.proof_contracts import (
     build_proof_pack_manifest,
     build_rights_provenance_review,
 )
+from blueprint_pipeline.qualification import _worldlabs_derived_rights_allowed
 
 
 def _launch_gate_capture(tmp_path: Path, *, descriptor_overrides: dict | None = None) -> Path:
@@ -114,6 +115,74 @@ def test_documented_consent_with_permission_document_clears() -> None:
     assert review["rights"]["status"] == "cleared"
 
 
+def test_string_false_rights_fields_do_not_clear_or_revoke() -> None:
+    review = build_rights_provenance_review(
+        rights_summary={
+            "derived_scene_generation_allowed": "false",
+            "data_licensing_allowed": "false",
+            "consent_revoked": "false",
+            "consent_status": "documented",
+            "permission_document_uri": "gs://bucket/rights/consent-packet.pdf",
+        },
+        privacy_processing={
+            "status": "person_removed",
+            "fail_closed": "false",
+            "raw_retained": "false",
+        },
+        provenance_summary={"status": "grounded", "record": {"canonical_truth": True}},
+        site_identity={"site_id": "site-1"},
+        adjacent_systems=None,
+    )
+
+    assert review["status"] == "blocked"
+    assert review["rights"]["status"] == "blocked"
+    assert review["rights"]["consent_revoked"] is False
+    assert review["rights"]["derived_scene_generation_allowed"] is False
+    assert review["rights"]["data_licensing_allowed"] is False
+    assert review["privacy"]["fail_closed"] is False
+    assert review["privacy"]["raw_retained"] is False
+    assert "rights_not_sufficient_for_derived_generation" in review["blockers"]
+    assert "consent_revoked_takedown_required" not in review["blockers"]
+
+
+def test_string_true_rights_fields_are_parsed_explicitly() -> None:
+    review = _review_with_rights(
+        _cleared_rights_summary(
+            derived_scene_generation_allowed="true",
+            data_licensing_allowed="true",
+            consent_revoked="false",
+        )
+    )
+
+    assert review["status"] == "cleared"
+    assert review["rights"]["derived_scene_generation_allowed"] is True
+    assert review["rights"]["data_licensing_allowed"] is True
+    assert review["rights"]["consent_revoked"] is False
+
+
+def test_string_false_capture_rights_do_not_allow_worldlabs_generation() -> None:
+    assert (
+        _worldlabs_derived_rights_allowed(
+            metadata={
+                "capture_rights": {
+                    "derived_scene_generation_allowed": "false",
+                }
+            }
+        )
+        is False
+    )
+    assert (
+        _worldlabs_derived_rights_allowed(
+            metadata={
+                "capture_rights": {
+                    "derived_scene_generation_allowed": "true",
+                }
+            }
+        )
+        is True
+    )
+
+
 def _cleared_rights_summary(**overrides: object) -> dict:
     summary: dict = {
         "derived_scene_generation_allowed": True,
@@ -173,6 +242,21 @@ def test_unspecified_consent_scope_cannot_silently_grant_use_class() -> None:
     )
 
 
+def test_location_only_consent_scope_is_not_product_use_grant() -> None:
+    review = _review_with_rights(
+        _cleared_rights_summary(consent_scope=["warehouse-a"]),
+        required_use_classes=["model_training"],
+    )
+    assert review["status"] == "needs_review"
+    assert review["rights"]["status"] == "needs_review"
+    assert review["rights"]["consent_scope"] == ["warehouse-a"]
+    assert review["rights"]["consent_use_classes"] == []
+    assert any(
+        blocker.startswith("consent_scope_unspecified_for_required_use_classes")
+        for blocker in review["blockers"]
+    )
+
+
 def test_consent_scope_covering_required_use_classes_clears() -> None:
     review = _review_with_rights(
         _cleared_rights_summary(
@@ -182,6 +266,32 @@ def test_consent_scope_covering_required_use_classes_clears() -> None:
     )
     assert review["status"] == "cleared"
     assert review["rights"]["status"] == "cleared"
+
+
+def test_rights_review_carries_operator_revenue_terms_without_payout_claim() -> None:
+    review = _review_with_rights(
+        _cleared_rights_summary(
+            consent_scope=["robot_evaluation"],
+            commercialization_terms={
+                "license_model": "request_scoped",
+                "revenue_share": {
+                    "terms_uri": "gs://bucket/rights/revenue-share.pdf",
+                    "operator_revenue_share_bps": 1500,
+                    "payee_entity_id": "operator-1",
+                },
+                "exclusivity": {"exclusive": False},
+            },
+        ),
+        required_use_classes=["robot_evaluation"],
+    )
+    assert review["status"] == "cleared"
+    assert review["rights"]["commercialization_terms"]["license_model"] == (
+        "request_scoped"
+    )
+    assert review["rights"]["operator_revenue_terms"]["operator_revenue_share_bps"] == 1500
+    assert review["rights"]["exclusivity_terms"]["exclusive"] is False
+    assert review["rights"]["revenue_share_commitment_made"] is False
+    assert review["rights"]["payout_commitment_allowed"] is False
 
 
 def test_fallback_redaction_is_flagged_for_manual_review() -> None:
@@ -196,8 +306,12 @@ def test_fallback_redaction_is_flagged_for_manual_review() -> None:
         site_identity={"site_id": "site-1"},
         adjacent_systems=None,
     )
+    assert fallback["status"] == "needs_review"
+    assert "privacy_fallback_redaction_requires_manual_review" in fallback["blockers"]
+    assert fallback["privacy"]["status"] == "needs_review"
     assert fallback["privacy"]["fallback_redaction_used"] is True
     assert fallback["privacy"]["manual_review_recommended"] is True
+    assert fallback["privacy"]["external_delivery_allowed"] is False
 
 
 def test_proof_pack_manifest_fails_closed_on_missing_rights_review() -> None:

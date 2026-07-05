@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 SCHEMA_VERSION = "gpu_render_providers.v1"
 SECRETS = Path.home() / ".blueprint-secrets"
@@ -157,6 +157,37 @@ def _runpod_call(method: str, path: str, body: dict | None, *, key: str, timeout
         return 0, {"error": repr(e)[:300]}
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _runpod_render_prelaunch_guard_blockers(request: Mapping[str, Any]) -> list[str]:
+    return _render_prelaunch_guard_blockers(request, provider_name="runpod")
+
+
+def _render_prelaunch_guard_blockers(
+    request: Mapping[str, Any], *, provider_name: str
+) -> list[str]:
+    prefix = f"{provider_name}_render_prelaunch_spend_guard"
+    guard = _mapping(request.get("prelaunch_spend_guard"))
+    if not guard:
+        return [f"{prefix}_missing"]
+    if guard.get("required_before_provider_launch") is not True:
+        return [f"{prefix}_not_required"]
+    if guard.get("can_launch") is not True:
+        return [
+            f"{prefix}_not_passed",
+            *_string_list(guard.get("blockers")),
+        ]
+    return []
+
+
 class RunPodRenderProvider(GpuRenderProvider):
     name = "runpod"
 
@@ -195,6 +226,14 @@ class RunPodRenderProvider(GpuRenderProvider):
         key = self._key()
         if not key:
             return {"status": "blocked", "blockers": ["runpod_api_key_missing"]}
+        prelaunch_blockers = _runpod_render_prelaunch_guard_blockers(request)
+        if prelaunch_blockers:
+            return {
+                "status": "blocked",
+                "blockers": prelaunch_blockers,
+                "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard"))
+                or None,
+            }
         attempts: list[dict] = []
         if not cold and self.warm_candidates:
             upd = {k: request[k] for k in (
@@ -352,6 +391,16 @@ class VastRenderProvider(GpuRenderProvider):
         key = self._key()
         if not key:
             return {"status": "blocked", "blockers": ["vast_api_key_missing"]}
+        prelaunch_blockers = _render_prelaunch_guard_blockers(
+            request, provider_name="vast"
+        )
+        if prelaunch_blockers:
+            return {
+                "status": "blocked",
+                "blockers": prelaunch_blockers,
+                "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard"))
+                or None,
+            }
         from .vast_provider_adapter import (
             _api_json, _offers_from_response, _select_offer,
         )
@@ -747,6 +796,16 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         token = self._token()
         if not token:
             return {"status": "blocked", "blockers": ["digitalocean_token_missing"]}
+        prelaunch_blockers = _render_prelaunch_guard_blockers(
+            request, provider_name="digitalocean"
+        )
+        if prelaunch_blockers:
+            return {
+                "status": "blocked",
+                "blockers": prelaunch_blockers,
+                "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard"))
+                or None,
+            }
         launch_request = dict(request)
         worker_env = launch_request.pop("env", None)
         worker_image = launch_request.pop("_blueprint_worker_image", None)

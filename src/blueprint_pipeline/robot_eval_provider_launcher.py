@@ -12,13 +12,23 @@ from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .logging_utils import log_event
+from .paid_lane_guard import (
+    PreSpendPreflightBlocked,
+    image_contract_from_ref,
+    require_pre_spend_preflight,
+)
 
 
 GPU_PROVIDER_LAUNCHER_RESULT_SCHEMA_VERSION = (
     "robot_eval_gpu_provider_launcher_result.v1"
 )
+PROVIDER_LAUNCHER_LANE = "robot_eval_provider_launcher"
 ALLOW_PROVIDER_LAUNCH_ENV = "BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH"
+ALLOW_SERIAL_PROVIDER_LAUNCH_ENV = "BLUEPRINT_ALLOW_SERIAL_GPU_PROVIDER_LAUNCH"
 PROVIDER_LAUNCH_COMMAND_ENV = "BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND"
+PROVIDER_RACE_RUNTIME_LAUNCHER_BLOCKER = (
+    "provider_race_runtime_launcher_not_implemented"
+)
 SENSITIVE_ENV_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 logger = logging.getLogger(__name__)
 
@@ -139,6 +149,7 @@ def _provider_context(request: Mapping[str, Any]) -> dict[str, Any]:
     inputs = _mapping(provider_shape.get("inputs"))
     limits = _mapping(provider_shape.get("limits"))
     prelaunch_spend_guard = _mapping(request.get("prelaunch_spend_guard"))
+    provider_race = _provider_race_contract(request)
     return {
         "worker_image_ref_present": bool(_string(image.get("configured_image_ref"))),
         "worker_image_ref_is_versioned": image.get("configured_image_ref_is_versioned")
@@ -157,7 +168,192 @@ def _provider_context(request: Mapping[str, Any]) -> dict[str, Any]:
         is True,
         "prelaunch_spend_guard_can_launch": prelaunch_spend_guard.get("can_launch")
         is True,
+        "provider_race_required_for_customer_path": _provider_race_required(
+            provider_race
+        ),
+        "customer_path_provider_failover_runtime_wired": bool(
+            provider_race.get("customer_path_provider_failover_runtime_wired")
+        ),
+        "customer_path_provider_failover_runtime_status": provider_race.get(
+            "customer_path_provider_failover_runtime_status"
+        )
+        or _mapping(provider_race.get("runtime_readiness")).get("status"),
+        "customer_path_provider_race_runtime_launcher_available": bool(
+            provider_race.get("provider_race_runtime_launcher_available")
+            or _mapping(provider_race.get("launcher_contract")).get(
+                "provider_race_launcher_available"
+            )
+        ),
+        "provider_race_candidate_count": int(
+            _number(provider_race.get("candidate_count")) or 0
+        ),
     }
+
+
+def _provider_race_contract(request: Mapping[str, Any]) -> dict[str, Any]:
+    prelaunch_spend_guard = _mapping(request.get("prelaunch_spend_guard"))
+    return _mapping(prelaunch_spend_guard.get("provider_race") or request.get("provider_race"))
+
+
+def _provider_race_handoff_path(
+    *,
+    request_path: Path,
+    request: Mapping[str, Any],
+    provider_race: Mapping[str, Any],
+) -> Path | None:
+    raw_path = (
+        _string(request.get("provider_race_handoff_path"))
+        or _string(provider_race.get("provider_race_handoff_path"))
+    )
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    return path if path.is_absolute() else request_path.parent / path
+
+
+def _provider_race_handoff_summary(
+    *,
+    request_path: Path,
+    request: Mapping[str, Any],
+    provider_race: Mapping[str, Any],
+) -> dict[str, Any]:
+    race_required = _provider_race_required(provider_race)
+    path = _provider_race_handoff_path(
+        request_path=request_path,
+        request=request,
+        provider_race=provider_race,
+    )
+    base: dict[str, Any] = {
+        "required": race_required,
+        "path": str(path) if path else None,
+        "present": False,
+        "status": "not_required" if not race_required else "missing",
+        "structural_blockers": [],
+        "runtime_blockers": [],
+        "blockers": [],
+    }
+    if not race_required:
+        return base
+    structural_blockers: list[str] = []
+    runtime_blockers: list[str] = []
+    if path is None:
+        structural_blockers.append("provider_race_handoff_path_missing")
+        base.update(
+            {
+                "status": "invalid",
+                "structural_blockers": structural_blockers,
+                "blockers": structural_blockers,
+            }
+        )
+        return base
+    if not path.is_file():
+        structural_blockers.append("provider_race_handoff_file_missing")
+        base.update(
+            {
+                "status": "missing",
+                "structural_blockers": structural_blockers,
+                "blockers": structural_blockers,
+            }
+        )
+        return base
+    try:
+        payload = read_json_any(path)
+    except Exception as exc:  # noqa: BLE001 - malformed handoff must fail closed
+        structural_blockers.append("provider_race_handoff_unreadable")
+        base.update(
+            {
+                "present": True,
+                "status": "invalid",
+                "read_error_type": type(exc).__name__,
+                "structural_blockers": structural_blockers,
+                "blockers": structural_blockers,
+            }
+        )
+        return base
+    if not isinstance(payload, Mapping):
+        structural_blockers.append("provider_race_handoff_not_mapping")
+        base.update(
+            {
+                "present": True,
+                "status": "invalid",
+                "structural_blockers": structural_blockers,
+                "blockers": structural_blockers,
+            }
+        )
+        return base
+    handoff = dict(payload)
+    if handoff.get("schema_version") != "robot_eval_gpu_provider_race_handoff.v1":
+        structural_blockers.append("provider_race_handoff_schema_invalid")
+    request_job_id = _string(request.get("job_id"))
+    handoff_job_id = _string(handoff.get("job_id"))
+    if request_job_id and handoff_job_id and handoff_job_id != request_job_id:
+        structural_blockers.append("provider_race_handoff_job_id_mismatch")
+    if handoff.get("provider_race_required_for_customer_path") is not True:
+        structural_blockers.append("provider_race_handoff_does_not_require_customer_race")
+    if int(_number(handoff.get("race_candidate_count")) or 0) < 2:
+        structural_blockers.append("provider_race_handoff_requires_two_race_candidates")
+    if int(_number(handoff.get("runnable_candidate_count")) or 0) < 2:
+        structural_blockers.append("provider_race_handoff_requires_two_runnable_candidates")
+    if handoff.get("live_provider_calls_performed") is True:
+        structural_blockers.append("provider_race_handoff_unexpected_live_provider_calls")
+
+    runtime_wired = (
+        handoff.get("customer_path_provider_failover_runtime_wired") is True
+    )
+    handoff_status = _string(handoff.get("status"))
+    if not runtime_wired:
+        runtime_blockers.append("provider_race_handoff_runtime_not_wired")
+    if handoff_status != "ready_for_customer_provider_race_runtime":
+        runtime_blockers.append("provider_race_handoff_not_ready")
+    runtime_blockers.extend(_string_list(handoff.get("blockers")))
+    runtime_blockers.extend(
+        _string_list(handoff.get("customer_path_provider_failover_runtime_blockers"))
+    )
+    runtime_blockers.extend(
+        _string_list(handoff.get("provider_race_runtime_launcher_blockers"))
+    )
+    all_blockers = _dedupe([*structural_blockers, *runtime_blockers])
+    base.update(
+        {
+            "present": True,
+            "status": "valid" if not all_blockers else "blocked",
+            "handoff_status": handoff_status or None,
+            "runtime_wired": runtime_wired,
+            "provider_race_runtime_launcher_available": bool(
+                handoff.get("provider_race_runtime_launcher_available")
+            ),
+            "launcher_command": handoff.get("launcher_command"),
+            "race_candidate_count": int(_number(handoff.get("race_candidate_count")) or 0),
+            "runnable_candidate_count": int(
+                _number(handoff.get("runnable_candidate_count")) or 0
+            ),
+            "structural_blockers": _dedupe(structural_blockers),
+            "runtime_blockers": _dedupe(runtime_blockers),
+            "blockers": all_blockers,
+            "claim_boundary": _mapping(handoff.get("claim_boundary")),
+        }
+    )
+    return base
+
+
+def _provider_race_required(provider_race: Mapping[str, Any]) -> bool:
+    if provider_race.get("race_required_for_customer_path") is True:
+        return True
+    candidates = [
+        _mapping(item)
+        for item in provider_race.get("candidates") or []
+        if isinstance(item, Mapping)
+    ]
+    race_candidates = [
+        item
+        for item in candidates
+        if item.get("race_candidate") is True and _string(item.get("provider"))
+    ]
+    if len(race_candidates) > 1:
+        return True
+    return int(_number(provider_race.get("candidate_count")) or 0) > 1 and bool(
+        provider_race.get("customer_path_provider_failover_wired")
+    )
 
 
 def _launcher_env(
@@ -223,9 +419,15 @@ def _base_result(
     generated_at: str,
 ) -> dict[str, Any]:
     prelaunch_spend_guard = _mapping(request.get("prelaunch_spend_guard"))
-    provider_race = _mapping(
-        prelaunch_spend_guard.get("provider_race") or request.get("provider_race")
+    provider_race = _provider_race_contract(request)
+    provider_race_handoff = _provider_race_handoff_summary(
+        request_path=request_path,
+        request=request,
+        provider_race=provider_race,
     )
+    provider_context = _provider_context(request)
+    if provider_race_handoff.get("provider_race_runtime_launcher_available") is True:
+        provider_context["customer_path_provider_race_runtime_launcher_available"] = True
     return {
         "schema_version": GPU_PROVIDER_LAUNCHER_RESULT_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -246,9 +448,18 @@ def _base_result(
         "simulator_execution_proven": False,
         "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
-        "provider_context": _provider_context(request),
+        "provider_context": provider_context,
         "prelaunch_spend_guard": prelaunch_spend_guard,
         "provider_race": provider_race,
+        "provider_race_handoff": provider_race_handoff,
+        "provider_race_handoff_path": (
+            _string(request.get("provider_race_handoff_path"))
+            or _string(provider_race.get("provider_race_handoff_path"))
+        )
+        or None,
+        "provider_race_required_for_customer_path": _provider_race_required(
+            provider_race
+        ),
     }
 
 
@@ -290,7 +501,9 @@ def _request_blockers(
     *,
     request: Mapping[str, Any],
     allow_provider_launch: bool,
+    allow_serial_provider_launch: bool,
     command_text: str,
+    provider_race_handoff: Mapping[str, Any],
 ) -> list[str]:
     blockers: list[str] = []
     provider = _string(request.get("provider")) or "fixture_local"
@@ -299,6 +512,25 @@ def _request_blockers(
     inputs = _mapping(provider_shape.get("inputs"))
     environment = _mapping(provider_shape.get("environment"))
     prelaunch_spend_guard = _mapping(request.get("prelaunch_spend_guard"))
+    provider_race = _provider_race_contract(request)
+    race_required = _provider_race_required(provider_race)
+    runtime_readiness = _mapping(provider_race.get("runtime_readiness"))
+    race_runtime_wired = (
+        provider_race.get("customer_path_provider_failover_runtime_wired") is True
+        or runtime_readiness.get("customer_path_provider_failover_runtime_wired") is True
+    )
+    race_runtime_blockers = _string_list(
+        provider_race.get("customer_path_provider_failover_runtime_blockers")
+    ) or _string_list(runtime_readiness.get("blockers"))
+    serial_override = bool(
+        allow_serial_provider_launch and _env_truthy(ALLOW_SERIAL_PROVIDER_LAUNCH_ENV)
+    )
+    race_handoff_structural_blockers = _string_list(
+        provider_race_handoff.get("structural_blockers")
+    )
+    race_handoff_runtime_blockers = _string_list(
+        provider_race_handoff.get("runtime_blockers")
+    )
     external_provider = provider != "fixture_local"
     if request.get("status") != "request_manifest_ready":
         blockers.append("provider_launch_request_not_ready")
@@ -313,6 +545,18 @@ def _request_blockers(
             blockers.append(f"missing_env_{ALLOW_PROVIDER_LAUNCH_ENV}")
         if not allow_provider_launch:
             blockers.append("missing_cli_allow_provider_launch")
+        if race_required and not serial_override:
+            blockers.append("provider_race_required_serial_launch_blocked")
+            if not race_runtime_wired:
+                blockers.append("customer_path_provider_failover_runtime_not_wired")
+                blockers.extend(race_runtime_blockers)
+            blockers.extend(race_handoff_runtime_blockers)
+            if not _env_truthy(ALLOW_SERIAL_PROVIDER_LAUNCH_ENV):
+                blockers.append(f"missing_env_{ALLOW_SERIAL_PROVIDER_LAUNCH_ENV}")
+            if not allow_serial_provider_launch:
+                blockers.append("missing_cli_allow_serial_provider_launch")
+        if race_required:
+            blockers.extend(race_handoff_structural_blockers)
         if provider != "vast" and not command_text:
             blockers.append("missing_gpu_provider_launch_command")
         if provider_shape.get("api_payload_is_provider_adapter_template") is not True:
@@ -336,6 +580,52 @@ def _request_blockers(
         ):
             blockers.append("missing_provider_artifact_output_uri")
     return _dedupe(blockers)
+
+
+def _launcher_pre_spend_preflight(
+    request: Mapping[str, Any],
+    *,
+    provider: str,
+    command_present: bool,
+    spend_gate_open: bool,
+    record_dir: Path,
+) -> Dict[str, Any]:
+    """Route the launcher lane through the shared pre-spend chokepoint.
+
+    Evidence is derived from what the launcher can actually verify: the prepared
+    request (image pinning, watchdog limits, manifest readiness) and its own
+    operator gates. Credentials live with the operator command (or the builtin
+    vast adapter); their presence is attested, not read.
+    """
+    shape = _mapping(request.get("provider_request_shape"))
+    image = _mapping(shape.get("image"))
+    limits = _mapping(shape.get("limits"))
+    hard_timeout = _number(limits.get("hard_timeout_seconds")) or 0
+    watchdog_timeout = (
+        _number(limits.get("external_watchdog_ttl_seconds"))
+        or _number(limits.get("idle_timeout_seconds"))
+        or 0
+    )
+    return require_pre_spend_preflight(
+        lane=PROVIDER_LAUNCHER_LANE,
+        provider=provider,
+        credential_present=bool(command_present or provider == "vast"),
+        capacity_evidence={
+            "available": request.get("status") == "request_manifest_ready",
+            "detail": "provider_launch_request_manifest_ready",
+        },
+        image_contract=image_contract_from_ref(
+            _string(image.get("configured_image_ref"))
+        ),
+        runtime_contract={
+            "startup_marker": "provider_launcher_result_artifact",
+            "progress_marker": "artifact_output_object",
+            "startup_timeout_seconds": hard_timeout,
+            "no_progress_timeout_seconds": watchdog_timeout,
+        },
+        spend_gate_open=spend_gate_open,
+        record_dir=record_dir,
+    )
 
 
 def _run_builtin_vast_provider_adapter(
@@ -417,6 +707,7 @@ def run_gpu_provider_launcher(
     provider_launch_request_path: str | Path,
     output_path: str | Path | None = None,
     allow_provider_launch: bool = False,
+    allow_serial_provider_launch: bool = False,
     provider_launch_command: str | None = None,
     timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
@@ -500,7 +791,9 @@ def run_gpu_provider_launcher(
     blockers = _request_blockers(
         request=request,
         allow_provider_launch=allow_provider_launch,
+        allow_serial_provider_launch=allow_serial_provider_launch,
         command_text=command_text,
+        provider_race_handoff=_mapping(result.get("provider_race_handoff")),
     )
     if blockers:
         result.update(
@@ -512,9 +805,45 @@ def run_gpu_provider_launcher(
                     "provided": bool(command_text),
                     "raw_command_stored": False,
                 },
+                "serial_provider_launch_override": {
+                    "env_required": ALLOW_SERIAL_PROVIDER_LAUNCH_ENV,
+                    "env_present": _env_truthy(ALLOW_SERIAL_PROVIDER_LAUNCH_ENV),
+                    "cli_allow_serial_provider_launch_present": bool(
+                        allow_serial_provider_launch
+                    ),
+                    "override_effective": bool(
+                        allow_serial_provider_launch
+                        and _env_truthy(ALLOW_SERIAL_PROVIDER_LAUNCH_ENV)
+                    ),
+                },
             }
         )
         return _write_result(resolved_output, result)
+
+    try:
+        pre_spend_preflight = _launcher_pre_spend_preflight(
+            request,
+            provider=provider,
+            command_present=bool(command_text),
+            spend_gate_open=bool(
+                allow_provider_launch and _env_truthy(ALLOW_PROVIDER_LAUNCH_ENV)
+            ),
+            record_dir=resolved_output.parent,
+        )
+    except PreSpendPreflightBlocked as blocked_preflight:
+        result.update(
+            {
+                "status": "blocked",
+                "reason": "pre_spend_preflight_blocked",
+                "blockers": _dedupe(
+                    blocked_preflight.preflight.get("blockers")
+                    or ["pre_spend_preflight_failed"]
+                ),
+                "pre_spend_preflight": blocked_preflight.preflight,
+            }
+        )
+        return _write_result(resolved_output, result)
+    result["pre_spend_preflight"] = pre_spend_preflight
 
     if provider == "vast" and not command_text:
         return _run_builtin_vast_provider_adapter(
@@ -644,6 +973,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Required with BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true for live providers.",
     )
+    parser.add_argument(
+        "--allow-serial-provider-launch",
+        action="store_true",
+        help=(
+            "Permit a deliberate single-provider launch when the request declares "
+            "provider-race failover. Also requires "
+            f"{ALLOW_SERIAL_PROVIDER_LAUNCH_ENV}=true."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -654,6 +992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         provider_launch_request_path=request_path,
         output_path=args.output_path,
         allow_provider_launch=args.allow_provider_launch,
+        allow_serial_provider_launch=args.allow_serial_provider_launch,
         provider_launch_command=args.provider_launch_command,
         timeout_seconds=args.timeout_seconds,
     )

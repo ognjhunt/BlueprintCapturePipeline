@@ -3688,6 +3688,7 @@ def test_runpod_persistent_session_defaults_to_review_quality_wam_carrier_and_wa
     monkeypatch.setenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_TIMEOUT_SECONDS", "120")
     monkeypatch.setenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WRAPPER_WATCHDOG_SECONDS", "180")
     monkeypatch.setenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WAIT_BUFFER_SECONDS", "30")
+    monkeypatch.setenv(session.RUNPOD_UNITREE_GROOT_N17_SONIC_HARD_CAP_USD_ENV, "1.4")
     captured: dict[str, object] = {}
 
     def fake_stage(**kwargs):
@@ -3703,6 +3704,7 @@ def test_runpod_persistent_session_defaults_to_review_quality_wam_carrier_and_wa
         captured["image_name"] = kwargs["image_name"]
         captured["container_disk_gb"] = kwargs["container_disk_gb"]
         captured["volume_gb"] = kwargs["volume_gb"]
+        captured["max_spend_usd"] = kwargs["max_spend_usd"]
         captured["wam_carrier_enabled"] = session.os.environ.get(
             "BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC"
         )
@@ -3795,6 +3797,7 @@ def test_runpod_persistent_session_defaults_to_review_quality_wam_carrier_and_wa
     assert captured["groot_sparse_checkout"] == "true"
     assert captured["container_disk_gb"] == 240
     assert captured["volume_gb"] == 120
+    assert captured["max_spend_usd"] == 1.4
     assert captured["max_wait_seconds"] == 210
 
 

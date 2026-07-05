@@ -32,6 +32,7 @@ from .success_claim_contracts import (
     coerce_strict_success,
 )
 from .common import utc_now_iso
+from .wam_score_claim_gate import summarize_wam_evaluation_for_report
 
 TASK_EVAL_RUN_REPORT_SCHEMA_VERSION = "task_eval_run_buyer_report.v1"
 SCORECARD_SCHEMA_VERSION = "task_eval_run_scorecard.v1"
@@ -56,6 +57,62 @@ _PROVIDER_OVERCLAIM_KEYS = frozenset(
         "safety_validated",
     }
 )
+_PROVIDER_OVERCLAIM_KEY_TOKENS = frozenset(
+    "".join(ch for ch in key.lower() if ch.isalnum())
+    for key in _PROVIDER_OVERCLAIM_KEYS
+) | {
+    "safetodeploy",
+    "safefordeployment",
+    "deploymentapproved",
+    "deploymentapproval",
+    "compliancevalidated",
+    "complianceapproved",
+    "safetycompliant",
+}
+_POLICY_BINDING_SECRET_KEY_TOKENS = frozenset(
+    {
+        "apikey",
+        "apitoken",
+        "authorization",
+        "bearertoken",
+        "clientsecret",
+        "credential",
+        "credentials",
+        "privatekey",
+        "refreshtoken",
+        "sessiontoken",
+        "secret",
+        "secretaccesskey",
+        "token",
+        "accesskey",
+        "accesskeyid",
+    }
+)
+_POLICY_BINDING_SECRET_KEY_MARKERS = frozenset(
+    {
+        "accesskey",
+        "accesskeyid",
+        "apikey",
+        "apitoken",
+        "authorization",
+        "bearertoken",
+        "clientsecret",
+        "privatekey",
+        "refreshtoken",
+        "secretaccesskey",
+        "sessiontoken",
+    }
+)
+_POLICY_BINDING_SECRET_KEY_SUFFIXES = frozenset(
+    {
+        "credential",
+        "credentials",
+        "password",
+        "secret",
+        "token",
+    }
+)
+_REDACTED_VALUES = frozenset({"", "<redacted>", "redacted", "***", "****"})
 
 SAFETY_CLAIM_BOUNDARY = {
     "results_are_evidence_inputs_only": True,
@@ -78,6 +135,130 @@ def _mapping(value: Any) -> Dict[str, Any]:
 
 def _string(value: Any) -> str:
     return str(value).strip() if isinstance(value, str) else ""
+
+
+def _string_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [text for text in (_string(item) for item in value) if text]
+    return []
+
+
+def _provider_key_token(key: Any) -> str:
+    return "".join(ch for ch in str(key).lower() if ch.isalnum())
+
+
+def _policy_binding_key_is_secret(key: Any) -> bool:
+    token = _provider_key_token(key)
+    if token in _POLICY_BINDING_SECRET_KEY_TOKENS:
+        return True
+    if any(marker in token for marker in _POLICY_BINDING_SECRET_KEY_MARKERS):
+        return True
+    return any(token.endswith(suffix) for suffix in _POLICY_BINDING_SECRET_KEY_SUFFIXES)
+
+
+def _explicit_true(value: Any) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "revoked",
+            "takedown_required",
+            "blocked_consent_revoked_takedown_required",
+        }
+    return False
+
+
+def _is_already_redacted(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().lower() in _REDACTED_VALUES
+
+
+def _sanitize_policy_binding(
+    policy_binding: Mapping[str, Any] | None,
+) -> tuple[Dict[str, Any] | None, List[str]]:
+    if not policy_binding:
+        return None, []
+
+    redacted_paths: List[str] = []
+    leaked_paths: List[str] = []
+
+    def _sanitize(value: Any, path: str) -> Any:
+        if isinstance(value, Mapping):
+            sanitized: Dict[str, Any] = {}
+            for key, child in value.items():
+                key_text = str(key)
+                child_path = f"{path}.{key_text}" if path else key_text
+                if _policy_binding_key_is_secret(key_text):
+                    redacted_paths.append(child_path)
+                    if child not in (None, "", []) and not _is_already_redacted(child):
+                        leaked_paths.append(child_path)
+                    sanitized[key_text] = "<redacted>"
+                    continue
+                sanitized[key_text] = _sanitize(child, child_path)
+            return sanitized
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return [
+                _sanitize(child, f"{path}[{index}]")
+                for index, child in enumerate(value)
+            ]
+        return value
+
+    sanitized = _sanitize(_mapping(policy_binding), "")
+    if redacted_paths:
+        sanitized["secret_values_redacted"] = True
+        sanitized["redacted_secret_paths"] = sorted(set(redacted_paths))
+        sanitized["reader_boundary"] = (
+            "Policy bindings may identify policy/checkpoint interfaces, but "
+            "customer-visible reports never carry provider tokens, API keys, "
+            "credentials, or bearer secrets."
+        )
+    blockers = [
+        f"policy_binding_secret_value_redacted:{path}"
+        for path in sorted(set(leaked_paths))
+    ]
+    return sanitized, blockers
+
+
+def _rights_privacy_gate_blockers(rights_gate: Mapping[str, Any]) -> List[str]:
+    gate_status = _string(rights_gate.get("status")).lower()
+    gate_cleared = rights_gate.get("cleared") is True or gate_status in {
+        "cleared",
+        "pass",
+        "passed",
+    }
+    blockers: List[str] = []
+    if not gate_cleared:
+        blockers.append("rights_privacy_gate_not_cleared")
+    gate_blockers = _string_list(rights_gate.get("blockers"))
+    gate_blockers.extend(_string_list(rights_gate.get("blocking_reasons")))
+    blockers.extend(
+        f"rights_privacy_gate_blocker:{blocker}" for blocker in gate_blockers
+    )
+
+    revocation_takedown = _mapping(rights_gate.get("revocation_takedown"))
+    if (
+        _explicit_true(rights_gate.get("consent_revoked"))
+        or _explicit_true(rights_gate.get("takedown_open"))
+        or _explicit_true(rights_gate.get("delivery_blocked"))
+        or _explicit_true(revocation_takedown.get("consent_revoked"))
+        or _explicit_true(revocation_takedown.get("takedown_open"))
+        or _string(revocation_takedown.get("status")).lower() == "takedown_required"
+        or gate_status
+        in {
+            "blocked_consent_revoked_takedown_required",
+            "blocked_open_consent_takedown",
+            "takedown_required",
+            "revoked",
+        }
+    ):
+        blockers.append("rights_privacy_gate_consent_revoked_takedown_required")
+    return sorted(set(blockers))
 
 
 def _wilson_interval(successes: int, trials: int) -> Dict[str, float] | None:
@@ -168,11 +349,35 @@ def build_task_eval_scorecard(
 def _sanitize_provider_execution(
     provider_execution: Mapping[str, Any] | None,
 ) -> tuple[Dict[str, Any], List[str]]:
-    payload = _mapping(provider_execution)
+    def _sanitize(value: Any, path: str) -> tuple[Any, List[str]]:
+        if isinstance(value, Mapping):
+            sanitized: Dict[str, Any] = {}
+            refused_paths: List[str] = []
+            for key, child in value.items():
+                key_text = str(key)
+                child_path = f"{path}.{key_text}" if path else key_text
+                if _provider_key_token(key_text) in _PROVIDER_OVERCLAIM_KEY_TOKENS:
+                    refused_paths.append(child_path)
+                    continue
+                sanitized_child, child_refused = _sanitize(child, child_path)
+                sanitized[key_text] = sanitized_child
+                refused_paths.extend(child_refused)
+            return sanitized, refused_paths
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            sanitized_items: List[Any] = []
+            refused_paths = []
+            for index, child in enumerate(value):
+                child_path = f"{path}[{index}]"
+                sanitized_child, child_refused = _sanitize(child, child_path)
+                sanitized_items.append(sanitized_child)
+                refused_paths.extend(child_refused)
+            return sanitized_items, refused_paths
+        return value, []
+
+    payload, refused = _sanitize(_mapping(provider_execution), "")
     blockers: List[str] = []
-    refused = sorted(key for key in payload if key in _PROVIDER_OVERCLAIM_KEYS)
+    refused = sorted(refused)
     for key in refused:
-        payload.pop(key, None)
         blockers.append(f"provider_payload_attempted_task_success_claim:{key}")
     payload["reader_boundary"] = (
         "Provider/runtime status (exit codes, GPU hours, cost) is "
@@ -195,6 +400,7 @@ def build_task_eval_run_report(
     provider_execution: Mapping[str, Any] | None = None,
     policy_binding: Mapping[str, Any] | None = None,
     rights_privacy_gate: Mapping[str, Any] | None = None,
+    wam_evaluation: Mapping[str, Any] | None = None,
     generated_at: str | None = None,
 ) -> Dict[str, Any]:
     """Compose the buyer deliverable for one Task Evaluation Run, fail-closed.
@@ -243,14 +449,12 @@ def build_task_eval_run_report(
     if not rights_gate:
         blockers.append("rights_privacy_gate_missing")
     else:
-        gate_status = _string(rights_gate.get("status")).lower()
-        gate_cleared = rights_gate.get("cleared") is True or gate_status in {
-            "cleared",
-            "pass",
-            "passed",
-        }
-        if not gate_cleared:
-            blockers.append("rights_privacy_gate_not_cleared")
+        blockers.extend(_rights_privacy_gate_blockers(rights_gate))
+
+    policy_binding_payload, policy_binding_blockers = _sanitize_policy_binding(
+        policy_binding
+    )
+    blockers.extend(policy_binding_blockers)
 
     provider_payload, provider_blockers = _sanitize_provider_execution(
         provider_execution
@@ -264,6 +468,9 @@ def build_task_eval_run_report(
         f"scorecard:{blocker}" for blocker in scorecard.get("blockers") or []
     )
 
+    wam_section, wam_blockers = summarize_wam_evaluation_for_report(wam_evaluation)
+    blockers.extend(wam_blockers)
+
     status = "ready_review_required" if not blockers else "blocked"
     return {
         "schema_version": TASK_EVAL_RUN_REPORT_SCHEMA_VERSION,
@@ -275,7 +482,8 @@ def build_task_eval_run_report(
         "success_claim_ledger": ledger or None,
         "evidence_level": evidence_level,
         "scorecard": scorecard,
-        "policy_binding": _mapping(policy_binding) or None,
+        "policy_binding": policy_binding_payload,
+        "wam_evaluation": wam_section,
         "provider_execution": provider_payload,
         "rights_privacy_gate": rights_gate or None,
         "blockers": sorted(set(blockers)),

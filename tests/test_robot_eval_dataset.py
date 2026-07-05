@@ -359,6 +359,16 @@ def test_robot_eval_dataset_accepts_descriptor_scoped_mujoco_sim_rights(
                         "isolated_owner_gpu_smoke",
                         "mujoco_g1_simulator_evaluation_for_this_staged_capture",
                     ],
+                    "commercialization_terms": {
+                        "license_model": "request_scoped",
+                        "commercial_use_classes": ["robot_evaluation"],
+                        "revenue_share": {
+                            "terms_uri": "owner://terms/revenue-share",
+                            "operator_revenue_share_bps": 1500,
+                            "payee_entity_id": "operator-1",
+                        },
+                        "exclusivity": {"exclusive": False},
+                    },
                 },
                 "worldlabs_input_audit": {
                     "privacy_safe_input": True,
@@ -382,7 +392,69 @@ def test_robot_eval_dataset_accepts_descriptor_scoped_mujoco_sim_rights(
     assert rights_packet["status"] == "review_required"
     assert rights_packet["commercial_use_claim_allowed"] is False
     assert rights_packet["external_licensing_claim_allowed"] is False
+    revenue_review = rights_packet["revenue_share_review"]
+    assert revenue_review["status"] == "recorded_review_required"
+    assert revenue_review["owner_revenue_share_record_present"] is True
+    assert revenue_review["operator_revenue_terms"]["operator_revenue_share_bps"] == 1500
+    assert revenue_review["operator_revenue_terms"]["payee_entity_id"] == "operator-1"
+    assert revenue_review["commercialization_terms"]["license_model"] == "request_scoped"
+    assert revenue_review["exclusivity_terms"]["exclusive"] is False
+    assert revenue_review["revenue_share_commitment_made"] is False
+    assert revenue_review["payout_commitment_allowed"] is False
+    records_by_scope = {record["rights_scope"]: record for record in rights_packet["records"]}
+    assert records_by_scope["commercial_licensing"]["terms_record_present"] is True
+    assert records_by_scope["revenue_share"]["terms_record_present"] is True
+    assert records_by_scope["exclusivity_limits"]["terms_record_present"] is True
     assert {record["evidence_uri"] for record in rights_packet["records"]} == {permission_uri}
+
+
+def test_robot_eval_dataset_blocks_string_true_consent_revocation(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_eval_inputs(capture_root)
+    _write_json(
+        capture_root / "capture_descriptor.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "privacy_status": "full_frame_redacted_local_proof",
+            "metadata": {
+                "site_identity": {"site_id": "site-1"},
+                "capture_rights": {
+                    "consent_status": "documented",
+                    "permission_document_uri": "owner://approval/revoked",
+                    "consent_scope": [
+                        "mujoco_g1_simulator_evaluation_for_this_staged_capture",
+                    ],
+                    "consent_revoked": "true",
+                    "consent_revoked_at": "2026-07-04T12:00:00Z",
+                },
+                "worldlabs_input_audit": {
+                    "privacy_safe_input": True,
+                    "raw_video_bypass_used": False,
+                },
+            },
+        },
+    )
+
+    result = build_real_site_robot_eval_dataset(capture_root=capture_root)
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    manifest = json.loads((robot_eval_root / "robot_eval_dataset_manifest.json").read_text())
+    rights_packet = json.loads((robot_eval_root / "rights_packet.json").read_text())
+
+    assert result["status"] == "blocked"
+    assert "blocked_rights_privacy" in manifest["dataset_statuses"]
+    assert manifest["rights_privacy"]["consent_revoked"] is True
+    assert manifest["rights_privacy"]["revocation_takedown_required"] is True
+    assert rights_packet["status"] == "blocked"
+    assert rights_packet["consent_revoked"] is True
+    assert rights_packet["revocation_takedown"]["status"] == "takedown_required"
+    assert rights_packet["revocation_takedown"]["consent_revoked"] is True
+    assert {
+        record["revocation_takedown_required"]
+        for record in rights_packet["records"]
+    } == {True}
 
 
 def _write_recorded_trace_fixture(capture_root: Path) -> None:

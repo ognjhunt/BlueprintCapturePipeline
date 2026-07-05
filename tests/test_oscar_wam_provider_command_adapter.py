@@ -100,6 +100,9 @@ def _write_provider_zip(
     flat_dark_video: bool = False,
     short_low_quality_video: bool = False,
     runtime_model_truth: bool = True,
+    include_runtime_result: bool = True,
+    runtime_status: str = "completed",
+    runtime_blockers: list[str] | None = None,
     include_rollout_context: bool = True,
     runtime_num_frames: int = 81,
 ) -> Path:
@@ -140,9 +143,10 @@ def _write_provider_zip(
             ),
         )
         runtime_result = {
-            "status": "completed",
+            "status": runtime_status,
             "runtime": "oscar_wam_provider_runtime",
             "model_candidate": "oscar_wam",
+            "blockers": list(runtime_blockers or []),
             "runtime_settings": {
                 "num_frames": runtime_num_frames,
                 "height": 480,
@@ -189,7 +193,8 @@ def _write_provider_zip(
                     },
                 }
             )
-        archive.writestr("wam_runtime_result.json", json.dumps(runtime_result))
+        if include_runtime_result:
+            archive.writestr("wam_runtime_result.json", json.dumps(runtime_result))
     return path
 
 
@@ -291,6 +296,91 @@ def test_provider_command_adapter_imports_completed_runpod_provider_output_zip(
     assert payload["provider_output_zip_name"] == "runpod_provider_runtime_output.zip"
     assert payload["provider_output_replayed"] is True
     assert payload["fresh_provider_launch_attempted"] is False
+
+
+def test_provider_command_adapter_blocks_replay_without_runtime_result_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    _write_json(rollout_input, {"schema_version": "wam_rollout_input_manifest.v1"})
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    provider_job = tmp_path / "provider-job"
+    _write_provider_zip(
+        provider_job / "runpod_provider_runtime_output.zip",
+        include_runtime_result=False,
+    )
+    output = tmp_path / "wam_provider_output.json"
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_INPUT", str(rollout_input))
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(output))
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT", str(checkpoint))
+
+    payload = adapter.run(
+        [
+            "--mode",
+            "replay-existing-provider-output",
+            "--completed-provider-job-dir",
+            str(provider_job),
+            "--work-dir",
+            str(tmp_path / "work"),
+        ]
+    )
+
+    assert payload["status"] == "blocked"
+    assert "provider_runtime_result_manifest_missing_after_completed_heartbeat" in payload[
+        "blockers"
+    ]
+    assert payload["fresh_model_run_claimed"] is False
+    assert payload["provider_output_replayed"] is False
+    validation = payload["details"]["provider_output_validation"]
+    assert validation["status"] == "blocked"
+    assert validation["provider_output_usable"] is False
+    assert "provider_runtime_result_manifest_missing_after_completed_heartbeat" in validation[
+        "blockers"
+    ]
+
+
+def test_provider_command_adapter_blocks_replay_with_blocked_runtime_result(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    _write_json(rollout_input, {"schema_version": "wam_rollout_input_manifest.v1"})
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    provider_job = tmp_path / "provider-job"
+    _write_provider_zip(
+        provider_job / "runpod_provider_runtime_output.zip",
+        runtime_status="blocked",
+        runtime_blockers=["provider_execution_failed"],
+    )
+    output = tmp_path / "wam_provider_output.json"
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_INPUT", str(rollout_input))
+    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(output))
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_CHECKPOINT", str(checkpoint))
+
+    payload = adapter.run(
+        [
+            "--mode",
+            "replay-existing-provider-output",
+            "--completed-provider-job-dir",
+            str(provider_job),
+            "--work-dir",
+            str(tmp_path / "work"),
+        ]
+    )
+
+    assert payload["status"] == "blocked"
+    assert "provider_execution_failed" in payload["blockers"]
+    assert payload["fresh_model_run_claimed"] is False
+    assert payload["provider_output_replayed"] is False
+    validation = payload["details"]["provider_output_validation"]
+    assert validation["status"] == "completed"
+    assert validation["terminal_output_present"] is True
+    assert validation["provider_output_usable"] is False
+    assert validation["runtime_result_status"] == "blocked"
+    assert validation["runtime_result_blockers"] == ["provider_execution_failed"]
 
 
 def test_provider_command_adapter_backfills_rollout_context_from_input_manifest(

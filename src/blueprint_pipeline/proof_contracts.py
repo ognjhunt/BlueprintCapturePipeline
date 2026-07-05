@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Sequence
 
-from .common import utc_now_iso
+from .common import parse_bool, utc_now_iso
 
 
 def _string_list(value: object) -> list[str]:
@@ -43,7 +43,20 @@ def _site_labeling(
     }
 
 
+def _mapping(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
 CONSENT_REVOKED_STATUSES = frozenset({"revoked", "withdrawn", "rescinded"})
+KNOWN_CONSENT_USE_CLASSES = frozenset(
+    {
+        "derived_generation",
+        "robot_evaluation",
+        "model_training",
+        "data_licensing",
+        "commercial_licensing",
+    }
+)
 
 
 def build_rights_provenance_review(
@@ -60,16 +73,40 @@ def build_rights_provenance_review(
     privacy = dict(privacy_processing or {})
     provenance = dict(provenance_summary or {})
     consent_status = str(rights.get("consent_status") or "unknown").strip().lower()
-    derived_generation_allowed = bool(rights.get("derived_scene_generation_allowed"))
+    derived_generation_allowed = parse_bool(
+        rights.get("derived_scene_generation_allowed"),
+        default=False,
+    )
     permission_document_uri = str(rights.get("permission_document_uri") or "").strip()
     privacy_status = str(privacy.get("status") or "not_run").strip().lower()
     provenance_status = str(provenance.get("status") or "missing").strip().lower()
+    commercialization_terms = _mapping(
+        rights.get("commercialization_terms")
+        or rights.get("commercializationTerms")
+        or rights.get("commercial_terms")
+        or rights.get("commercialTerms")
+    )
+    revenue_share_terms = _mapping(
+        rights.get("operator_revenue_terms")
+        or rights.get("operatorRevenueTerms")
+        or rights.get("revenue_share_terms")
+        or rights.get("revenueShareTerms")
+        or commercialization_terms.get("operator_revenue_terms")
+        or commercialization_terms.get("revenue_share_terms")
+        or commercialization_terms.get("revenue_share")
+    )
+    exclusivity_terms = _mapping(
+        rights.get("exclusivity_terms")
+        or rights.get("exclusivityTerms")
+        or commercialization_terms.get("exclusivity_terms")
+        or commercialization_terms.get("exclusivity")
+    )
 
     # Revoked consent is an absolute stop: no downstream artifact may clear,
     # regardless of what the packet allowed before revocation.
     consent_revoked = (
         consent_status in CONSENT_REVOKED_STATUSES
-        or bool(rights.get("consent_revoked"))
+        or parse_bool(rights.get("consent_revoked"), default=False)
         or bool(str(rights.get("consent_revoked_at") or "").strip())
     )
 
@@ -84,16 +121,19 @@ def build_rights_provenance_review(
     # an explicit consent_scope that omits that class is a "no" and blocks; an
     # unspecified scope cannot silently grant it and requires review.
     consent_scope = [item.lower() for item in _string_list(rights.get("consent_scope"))]
+    consent_use_classes = [
+        item for item in consent_scope if item in KNOWN_CONSENT_USE_CLASSES
+    ]
     required_classes = [
         item.lower() for item in _string_list(required_use_classes)
     ]
     scope_blocked_classes: list[str] = []
-    scope_unspecified = bool(required_classes) and not consent_scope
-    if required_classes and consent_scope:
+    scope_unspecified = bool(required_classes) and not consent_use_classes
+    if required_classes and consent_use_classes:
         scope_blocked_classes = [
             use_class
             for use_class in required_classes
-            if use_class not in consent_scope
+            if use_class not in consent_use_classes
         ]
 
     rights_state = (
@@ -105,17 +145,21 @@ def build_rights_provenance_review(
         if not derived_generation_allowed
         else "needs_review"
     )
+    fallback_redaction_used = privacy_status in {
+        "face_anonymized_fallback",
+        "full_frame_redacted_local_proof",
+    }
     privacy_state = (
         "cleared"
         if privacy_status
         in {
             "no_people_detected",
             "person_removed",
-            "face_anonymized_fallback",
-            "full_frame_redacted_local_proof",
         }
         else "blocked"
         if privacy_status == "failed_closed"
+        else "needs_review"
+        if fallback_redaction_used
         else "needs_review"
     )
     provenance_state = (
@@ -143,6 +187,8 @@ def build_rights_provenance_review(
             blockers.append("consent_documented_without_permission_document")
     if privacy_state == "blocked":
         blockers.append("privacy_processing_failed_closed")
+    elif fallback_redaction_used:
+        blockers.append("privacy_fallback_redaction_requires_manual_review")
     elif privacy_state == "needs_review":
         blockers.append("privacy_processing_incomplete")
     if provenance_state != "grounded":
@@ -180,24 +226,33 @@ def build_rights_provenance_review(
             "consent_revoked_at": rights.get("consent_revoked_at"),
             "permission_document_uri": rights.get("permission_document_uri"),
             "consent_scope": _string_list(rights.get("consent_scope")),
+            "consent_use_classes": consent_use_classes,
             "required_use_classes": required_classes,
             "scope_excluded_use_classes": scope_blocked_classes,
             "derived_scene_generation_allowed": derived_generation_allowed,
-            "data_licensing_allowed": rights.get("data_licensing_allowed"),
+            "data_licensing_allowed": parse_bool(
+                rights.get("data_licensing_allowed"),
+                default=False,
+            ),
+            "commercialization_terms": commercialization_terms,
+            "operator_revenue_terms": revenue_share_terms,
+            "exclusivity_terms": exclusivity_terms,
+            "revenue_share_commitment_made": False,
+            "payout_commitment_allowed": False,
         },
         "privacy": {
             "status": privacy_state,
             "pipeline_status": privacy.get("status"),
             "mode": privacy.get("mode"),
-            "fail_closed": bool(privacy.get("fail_closed")),
-            "raw_retained": bool(privacy.get("raw_retained")),
+            "fail_closed": parse_bool(privacy.get("fail_closed"), default=False),
+            "raw_retained": parse_bool(privacy.get("raw_retained"), default=False),
             # Fallback redactions cleared the gate mechanically but were not
-            # verified removals; surface that so review UIs can require a
-            # human look before external delivery.
-            "fallback_redaction_used": privacy_status
-            in {"face_anonymized_fallback", "full_frame_redacted_local_proof"},
-            "manual_review_recommended": privacy_status
-            in {"face_anonymized_fallback", "full_frame_redacted_local_proof"},
+            # verified removals; they require human review before external
+            # delivery or hosted review surfaces can clear.
+            "fallback_redaction_used": fallback_redaction_used,
+            "manual_review_recommended": fallback_redaction_used,
+            "external_delivery_allowed": not fallback_redaction_used
+            and privacy_state == "cleared",
         },
         "provenance": {
             "status": provenance_state,

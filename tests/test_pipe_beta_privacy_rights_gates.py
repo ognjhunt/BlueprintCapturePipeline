@@ -214,6 +214,19 @@ def test_pipe03_privacy_gate_passes_cleared_status_for_delivery_runs() -> None:
     assert gate.passed is True
 
 
+def test_pipe03_privacy_gate_blocks_fallback_redaction_for_delivery_runs() -> None:
+    for privacy_status in (
+        "face_anonymized_fallback",
+        "full_frame_redacted_local_proof",
+    ):
+        gate = qual._privacy_postprocess_gate(
+            privacy_status=privacy_status,
+            delivery_run=True,
+        )
+        assert gate.passed is False
+        assert "verified privacy removal" in gate.detail
+
+
 def test_pipe03_privacy_gate_blocks_failed_closed_always() -> None:
     for delivery_run in (False, True):
         gate = qual._privacy_postprocess_gate(

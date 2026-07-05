@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -74,6 +75,7 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "attempt_success_labels_are_simulator_criteria_labels_not_task_success_proof": True,
     "gr00t_ready_requires_state_timestamps_and_materialized_video": True,
     "absent_fields_are_omitted_never_zero_filled": True,
+    "observation_source_columns_are_metadata_not_rights_clearance": True,
 }
 
 
@@ -83,6 +85,14 @@ def _mapping(value: Any) -> Dict[str, Any]:
 
 def _string(value: Any) -> str:
     return str(value).strip() if isinstance(value, str) else ""
+
+
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "model_derived"}
+    return False
 
 
 def _finite_float(value: Any) -> float | None:
@@ -260,6 +270,133 @@ def _vector_stats(vectors: Sequence[Sequence[float]]) -> Dict[str, List[float]] 
     }
 
 
+def _video_source_from_mapping(
+    value: Any,
+    *,
+    job_dir: Path,
+) -> Dict[str, Any]:
+    payload = _mapping(value)
+    if not payload and isinstance(value, str):
+        payload = {"path": value}
+    source_text = _string(
+        payload.get("path")
+        or payload.get("source_path")
+        or payload.get("materialized_path")
+        or payload.get("video_path")
+    )
+    if not source_text:
+        return {}
+    source_path = Path(source_text).expanduser()
+    if not source_path.is_absolute():
+        source_path = job_dir / source_path
+    if not source_path.is_file():
+        return {
+            **payload,
+            "path": str(source_path),
+            "present": False,
+            "missing_reason": "materialized_video_file_not_found",
+        }
+    return {
+        **payload,
+        "path": str(source_path),
+        "present": True,
+    }
+
+
+def _observation_source_metadata(
+    *,
+    attempt: Mapping[str, Any],
+    control_row: Mapping[str, Any],
+    video_source: Mapping[str, Any],
+) -> Dict[str, Any]:
+    source_text = _string(
+        control_row.get("observation_source")
+        or control_row.get("source_kind")
+        or attempt.get("observation_source")
+        or attempt.get("source_kind")
+        or video_source.get("observation_source")
+        or video_source.get("source_kind")
+    )
+    detail = _string(
+        control_row.get("observation_source_detail")
+        or attempt.get("observation_source_detail")
+        or video_source.get("observation_source_detail")
+        or video_source.get("source_path")
+        or video_source.get("path")
+    )
+    source_lower = source_text.lower()
+    model_derived = (
+        _boolish(control_row.get("model_derived"))
+        or _boolish(attempt.get("model_derived"))
+        or _boolish(video_source.get("model_derived"))
+        or source_lower in {"generated", "model_derived", "synthetic"}
+    )
+    raw_capture = source_lower in {
+        "raw_capture",
+        "source_capture",
+        "physical_capture",
+        "physical_robot_capture",
+    }
+    if model_derived and not source_text:
+        source_text = "model_derived"
+    elif not source_text:
+        source_text = "simulator_trace"
+    simulator_trace = (
+        not model_derived
+        and not raw_capture
+        and source_text.lower() in {"simulator_trace", "simulator", "simulation"}
+    )
+    return {
+        "observation_source": source_text,
+        "observation_source_detail": detail or None,
+        "observation_source_is_model_derived": model_derived,
+        "observation_source_is_raw_capture_evidence": bool(
+            raw_capture and not model_derived
+        ),
+        "observation_source_is_simulator_trace": simulator_trace,
+    }
+
+
+def _episode_video_key(modality: Mapping[str, Any] | None) -> str:
+    video = _mapping(_mapping(modality).get("video"))
+    for camera_id in video:
+        text = _string(camera_id)
+        if text:
+            return f"observation.images.{text}"
+    return "observation.images.ego_view"
+
+
+def _copy_episode_video(
+    *,
+    source: Mapping[str, Any],
+    export_root: Path,
+    video_key: str,
+    episode_index: int,
+) -> Dict[str, Any]:
+    if source.get("present") is not True:
+        return {}
+    source_path = Path(str(source.get("path") or "")).expanduser()
+    if not source_path.is_file():
+        return {}
+    suffix = source_path.suffix.lower() or ".mp4"
+    destination = (
+        export_root
+        / "videos"
+        / video_key
+        / "chunk-000"
+        / f"file-{episode_index:06d}{suffix}"
+    )
+    ensure_dir(destination.parent)
+    if source_path.resolve() != destination.resolve():
+        shutil.copy2(source_path, destination)
+    return {
+        "video_key": video_key,
+        "path": destination.relative_to(export_root).as_posix(),
+        "source_path": str(source_path),
+        "clip_id": source.get("clip_id"),
+    }
+
+
 def _try_write_parquet(path: Path, rows: Sequence[Mapping[str, Any]]) -> str:
     try:
         import pyarrow as pa  # type: ignore[import-not-found]
@@ -286,6 +423,7 @@ def build_lerobot_episode_export(
     output_dir: str | Path,
     robot_id: str | None = None,
     robot_profile: RobotProfile | None = None,
+    materialized_video_by_attempt: Mapping[str, Any] | None = None,
     generated_at: str | None = None,
 ) -> Dict[str, Any]:
     """Map simulator batch streams into per-episode LeRobot-style rows.
@@ -303,6 +441,12 @@ def build_lerobot_episode_export(
         profile = get_robot_profile(robot_id)
     modality = build_modality_config(profile) if profile else None
     state_dim = int(modality["state_dim"]) if modality else 0
+    video_key = _episode_video_key(modality)
+    video_sources = {
+        _string(attempt_id): _video_source_from_mapping(value, job_dir=resolved_job_dir)
+        for attempt_id, value in _mapping(materialized_video_by_attempt).items()
+        if _string(attempt_id)
+    }
 
     blockers: List[str] = []
     control_path = resolved_job_dir / CONTROL_STREAM_FILENAME
@@ -357,6 +501,9 @@ def build_lerobot_episode_export(
     all_action_vectors: List[List[float]] = []
     all_state_vectors: List[List[float]] = []
     all_timestamps: List[float] = []
+    model_derived_frame_count = 0
+    raw_capture_frame_count = 0
+    simulator_trace_frame_count = 0
     episode_index = 0
     global_index = 0
 
@@ -379,9 +526,12 @@ def build_lerobot_episode_export(
         if task_text not in task_indices:
             task_indices[task_text] = len(tasks)
             tasks.append(task_text)
+        episode_video_source = video_sources.get(attempt_id, {})
 
         for frame_index, control_row in enumerate(control):
             payload = _mapping(control_row.get("action"))
+            stream_payload = dict(control_row)
+            stream_payload.update(payload)
             vector = _sc3_vector_from_action(
                 control_row.get("action") if not payload else payload
             )
@@ -390,6 +540,11 @@ def build_lerobot_episode_export(
                     f"sc3_7d_action_invalid_at_index:{control_row.get('action_index')}"
                 )
                 continue
+            source = _observation_source_metadata(
+                attempt=attempt,
+                control_row=control_row,
+                video_source=episode_video_source,
+            )
             row: Dict[str, Any] = {
                 "episode_index": episode_index,
                 "frame_index": frame_index,
@@ -401,13 +556,24 @@ def build_lerobot_episode_export(
                 "episode_id": attempt.get("episode_id"),
                 "scenario_id": attempt.get("scenario_id"),
                 "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+                "observation_source": source["observation_source"],
+                "observation_source_detail": source["observation_source_detail"],
+                "observation_source_is_model_derived": source[
+                    "observation_source_is_model_derived"
+                ],
+                "observation_source_is_raw_capture_evidence": source[
+                    "observation_source_is_raw_capture_evidence"
+                ],
+                "observation_source_is_simulator_trace": source[
+                    "observation_source_is_simulator_trace"
+                ],
             }
-            state = _state_from_payload(payload, state_dim)
+            state = _state_from_payload(stream_payload, state_dim)
             if state is not None:
                 row["observation.state"] = state
             else:
                 state_present = False
-            timestamp = _timestamp_from_payload(payload)
+            timestamp = _timestamp_from_payload(stream_payload)
             if timestamp is not None:
                 row["timestamp"] = timestamp
             else:
@@ -423,6 +589,18 @@ def build_lerobot_episode_export(
             )
             continue
 
+        video_info = _copy_episode_video(
+            source=episode_video_source,
+            export_root=export_root,
+            video_key=video_key,
+            episode_index=episode_index,
+        )
+        video_present = bool(video_info)
+        for row in rows:
+            if video_present:
+                row[video_key] = video_info["path"]
+                row["video_path"] = video_info["path"]
+
         episode_file = data_dir / f"episode_{episode_index:06d}.jsonl"
         episode_file.write_text(
             "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
@@ -436,6 +614,29 @@ def build_lerobot_episode_export(
             row["observation.state"] for row in rows if "observation.state" in row
         )
         all_timestamps.extend(row["timestamp"] for row in rows if "timestamp" in row)
+        episode_model_derived_frame_count = sum(
+            1 for row in rows if row.get("observation_source_is_model_derived") is True
+        )
+        episode_raw_capture_frame_count = sum(
+            1
+            for row in rows
+            if row.get("observation_source_is_raw_capture_evidence") is True
+        )
+        episode_simulator_trace_frame_count = sum(
+            1
+            for row in rows
+            if row.get("observation_source_is_simulator_trace") is True
+        )
+        model_derived_frame_count += episode_model_derived_frame_count
+        raw_capture_frame_count += episode_raw_capture_frame_count
+        simulator_trace_frame_count += episode_simulator_trace_frame_count
+        source_values = sorted(
+            {
+                _string(row.get("observation_source"))
+                for row in rows
+                if _string(row.get("observation_source"))
+            }
+        )
         episodes_meta.append(
             {
                 "episode_index": episode_index,
@@ -445,14 +646,25 @@ def build_lerobot_episode_export(
                 "task_index": task_indices[task_text],
                 "state_present": state_present,
                 "timestamps_present": timestamps_present,
-                "video_present": False,
-                "gr00t_ready": False,
+                "video_present": video_present,
+                "video_key": video_key if video_present else None,
+                "video_path": video_info.get("path") if video_present else None,
+                "source_video_path": video_info.get("source_path") if video_present else None,
+                "source_clip_id": video_info.get("clip_id") if video_present else None,
+                "observation_source": source_values[0]
+                if len(source_values) == 1
+                else "mixed",
+                "observation_source_values": source_values,
+                "model_derived_frame_count": episode_model_derived_frame_count,
+                "raw_capture_frame_count": episode_raw_capture_frame_count,
+                "simulator_trace_frame_count": episode_simulator_trace_frame_count,
+                "gr00t_ready": bool(state_present and timestamps_present and video_present),
                 "gr00t_ready_missing": [
                     item
                     for item, present in (
                         ("per_step_state", state_present),
                         ("per_step_timestamps", timestamps_present),
-                        ("materialized_video", False),
+                        ("materialized_video", video_present),
                     )
                     if not present
                 ],
@@ -475,6 +687,9 @@ def build_lerobot_episode_export(
         ]
         if deltas:
             fps = round(1.0 / (sum(deltas) / len(deltas)), 3)
+    materialized_video_count = sum(
+        1 for row in episodes_meta if row.get("video_present") is True
+    )
 
     meta_dir.mkdir(parents=True, exist_ok=True)
     (meta_dir / "episodes.jsonl").write_text(
@@ -512,6 +727,25 @@ def build_lerobot_episode_export(
                     if state_dim
                     else {}
                 ),
+                **(
+                    {video_key: {"dtype": "video", "shape": [0, 0, 3]}}
+                    if materialized_video_count
+                    else {}
+                ),
+                "observation_source": {"dtype": "string", "shape": [1]},
+                "observation_source_detail": {"dtype": "string", "shape": [1]},
+                "observation_source_is_model_derived": {
+                    "dtype": "bool",
+                    "shape": [1],
+                },
+                "observation_source_is_raw_capture_evidence": {
+                    "dtype": "bool",
+                    "shape": [1],
+                },
+                "observation_source_is_simulator_trace": {
+                    "dtype": "bool",
+                    "shape": [1],
+                },
             },
         },
     )
@@ -527,6 +761,11 @@ def build_lerobot_episode_export(
             "excluded_episode_count": len(excluded),
             "excluded_episodes": excluded,
             "fps": fps,
+            "materialized_video_count": materialized_video_count,
+            "observation_source_columns_written": True,
+            "model_derived_frame_count": model_derived_frame_count,
+            "raw_capture_frame_count": raw_capture_frame_count,
+            "simulator_trace_frame_count": simulator_trace_frame_count,
             "gr00t_ready_episode_count": sum(
                 1 for row in episodes_meta if row["gr00t_ready"]
             ),

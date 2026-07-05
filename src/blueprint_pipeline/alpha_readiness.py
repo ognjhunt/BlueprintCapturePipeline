@@ -40,6 +40,20 @@ _PRIVACY_ENV_VARS = (
     "PRIVACY_VIP_URL",
     "PRIVACY_DEEPPRIVACY2_URL",
 )
+_OPERATOR_LAUNCH_EVIDENCE_SCHEMA_VERSION = "operator_launch_evidence.v1"
+_OPERATOR_LAUNCH_EVIDENCE_RELATIVE_PATH = "pipeline/operator_launch_evidence.json"
+_OPERATOR_EVIDENCE_VERIFIED_STATUSES = {
+    "approved",
+    "completed",
+    "executed",
+    "passed",
+    "ready",
+    "recorded",
+    "rotated",
+    "settled",
+    "signed",
+    "verified",
+}
 
 
 def _read_json_object(path: Path) -> Dict[str, Any]:
@@ -180,6 +194,122 @@ def _webapp_sync_verification(
         "failures": failures,
         "synced_at": synced_at_raw or None,
         "max_age_hours": max_age_hours,
+    }
+
+
+def _operator_evidence_entry(
+    operator_evidence: Mapping[str, Any],
+    check_id: str,
+) -> Dict[str, Any]:
+    checks = operator_evidence.get("checks")
+    if isinstance(checks, Mapping):
+        candidate = checks.get(check_id)
+        if isinstance(candidate, Mapping):
+            return dict(candidate)
+    if isinstance(checks, list):
+        for item in checks:
+            if isinstance(item, Mapping) and str(item.get("id") or "") == check_id:
+                return dict(item)
+
+    required_checks = operator_evidence.get("operator_required_checks")
+    if isinstance(required_checks, Mapping):
+        candidate = required_checks.get(check_id)
+        if isinstance(candidate, Mapping):
+            return dict(candidate)
+    if isinstance(required_checks, list):
+        for item in required_checks:
+            if isinstance(item, Mapping) and str(item.get("id") or "") == check_id:
+                return dict(item)
+
+    candidate = operator_evidence.get(check_id)
+    return dict(candidate) if isinstance(candidate, Mapping) else {}
+
+
+def _operator_evidence_has_ref(entry: Mapping[str, Any]) -> bool:
+    if _present_value(
+        entry,
+        "evidence_uri",
+        "evidence_ref",
+        "proof_uri",
+        "proof_ref",
+        "document_uri",
+        "signed_record_uri",
+        "secret_version_ref",
+        "stripe_event_id",
+        "payment_intent_id",
+        "checkout_session_id",
+        "payout_id",
+        "transfer_id",
+        "provider_account_ref",
+        "review_queue_uri",
+        "buyer_session_ref",
+        "recording_uri",
+        "decision_record_uri",
+    ):
+        return True
+    for key in ("evidence", "artifacts", "refs", "metadata"):
+        value = entry.get(key)
+        if isinstance(value, Mapping) and value:
+            return True
+        if isinstance(value, list) and value:
+            return True
+    return False
+
+
+def _operator_evidence_verified(entry: Mapping[str, Any]) -> bool:
+    status = str(entry.get("status") or "").strip().lower()
+    if not status and entry.get("passed") is True:
+        status = "verified"
+    has_time = bool(
+        _present_value(
+            entry,
+            "verified_at",
+            "completed_at",
+            "signed_at",
+            "rotated_at",
+            "settled_at",
+            "decided_at",
+            "recorded_at",
+        )
+    )
+    has_actor = bool(
+        _present_value(
+            entry,
+            "verified_by",
+            "signed_by",
+            "operator_id",
+            "owner",
+            "finance_owner",
+            "legal_owner",
+            "security_owner",
+        )
+    )
+    return (
+        status in _OPERATOR_EVIDENCE_VERIFIED_STATUSES
+        and _operator_evidence_has_ref(entry)
+        and has_time
+        and has_actor
+    )
+
+
+def _operator_required_check(
+    *,
+    check_id: str,
+    scope: str,
+    required_evidence: str,
+    operator_evidence: Mapping[str, Any],
+) -> Dict[str, Any]:
+    entry = _operator_evidence_entry(operator_evidence, check_id)
+    verified = _operator_evidence_verified(entry)
+    status = str(entry.get("status") or "").strip().lower() if entry else "missing"
+    return {
+        "id": check_id,
+        "scope": scope,
+        "required_evidence": required_evidence,
+        "passed": verified,
+        "status": "verified" if verified else status or "unverified",
+        "blocker": None if verified else f"{check_id}_evidence_missing_or_unverified",
+        "evidence": entry,
     }
 
 
@@ -801,6 +931,7 @@ def build_launch_gate_summary(
     payout_recommendation = _read_json_object(pipeline_root / "capturer_payout_recommendation.json")
     launchable_export_bundle = _read_json_object(eval_root / "launchable_export_bundle.json")
     webapp_sync = _read_json_object(pipeline_root / "webapp_sync_result.json")
+    operator_evidence = _read_json_object(pipeline_root / "operator_launch_evidence.json")
     rights_review = _read_json_object(pipeline_root / "rights_provenance_review.json")
     provenance_summary = _read_json_object(pipeline_root / "provenance_summary.json")
     recapture_requirements = _read_json_object(pipeline_root / "recapture_requirements.json")
@@ -1048,11 +1179,158 @@ def build_launch_gate_summary(
     all_stage_checks_passed = all(item["passed"] for item in stage_checks)
 
     if all_stage_checks_passed and external_alpha_go:
-        source_status = "external_beta_contract_ready"
+        contract_status = "external_beta_contract_ready"
     elif all_stage_checks_passed and internal_alpha_go:
-        source_status = "internal_only_contract_ready"
+        contract_status = "internal_only_contract_ready"
     else:
-        source_status = "blocked"
+        contract_status = "blocked"
+
+    operator_required_checks = [
+        _operator_required_check(
+            check_id="legal_consent_posture_signoff",
+            scope="legal",
+            required_evidence=(
+                "Legal/EHS signature over the current capture consent, rights, "
+                "redaction, and delivery posture."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="operator_dpa_data_processing_terms",
+            scope="legal_privacy_ops",
+            required_evidence=(
+                "Operator DPA or equivalent data-processing terms covering "
+                "retention policy, subprocessor list, and access-audit terms "
+                "for delivered packages and hosted review access."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="paperclip_ops_relay_secret_rotation",
+            scope="ops_security",
+            required_evidence=(
+                "Cloud Secret Manager version or equivalent rotation record, "
+                "plus redeploy evidence for the Paperclip ops relay secret."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id=f"{descriptor.capture_source or 'unknown'}_real_device_claim_flow",
+            scope="device",
+            required_evidence=(
+                "Screenshot or screen recording showing discovery, claim, and "
+                "upload completion for the same capture_job_id."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="buyer_payment_settlement",
+            scope="payments",
+            required_evidence=(
+                "Stripe payment intent or checkout session proving a buyer "
+                "purchase completed for the launch SKU."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="capturer_payout_settlement",
+            scope="payouts",
+            required_evidence=(
+                "Live Stripe connected account state, live payout evidence, "
+                "webhook reconciliation, and matching creator capture ledger "
+                "entry for the approved capture."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="stripe_connected_account_live_readiness",
+            scope="payouts",
+            required_evidence=(
+                "Backend /v1/stripe/account response showing "
+                "provider_state_checked=true, provider_mode=live, "
+                "live_provider_ready=true, payouts_enabled=true, and no "
+                "blocking requirements."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="payout_exception_monitor_live",
+            scope="ops",
+            required_evidence=(
+                "Live monitor or query evidence for payout.failed, "
+                "payout.canceled, disbursement_failed, and overdue "
+                "finance_review records."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="identity_kyc_provider_decision",
+            scope="identity",
+            required_evidence=(
+                "Document whether Stripe Connect is the only near-term KYC "
+                "path or provide account/env proof for Persona, Stripe "
+                "Identity, or another identity provider."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="background_check_provider_decision",
+            scope="background_checks",
+            required_evidence=(
+                "Document that no Checkr/background-check provider is "
+                "integrated yet, or provide provider account/env proof before "
+                "making screening claims."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="human_finance_review_owner",
+            scope="ops",
+            required_evidence=(
+                "Named human finance owner and review queue/route for payout "
+                "exceptions before any live payout execution flag is enabled."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="buyer_artifact_access",
+            scope="buyer_access",
+            required_evidence=(
+                "Authenticated buyer session proving artifact or fulfillment "
+                "access resolves after purchase."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+    ]
+    operator_evidence_blockers = [
+        str(check["blocker"])
+        for check in operator_required_checks
+        if not check["passed"] and check.get("blocker")
+    ]
+    operator_evidence_verified = not operator_evidence_blockers
+    external_beta_operator_evidence_required = contract_status == "external_beta_contract_ready"
+    operator_evidence_status = {
+        "schema_version": _OPERATOR_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+        "status": "verified" if operator_evidence_verified else "blocked",
+        "required_for_external_beta": external_beta_operator_evidence_required,
+        "evidence_file": _OPERATOR_LAUNCH_EVIDENCE_RELATIVE_PATH,
+        "evidence_file_present": bool(operator_evidence),
+        "required_count": len(operator_required_checks),
+        "verified_count": sum(1 for check in operator_required_checks if check["passed"]),
+        "blockers": operator_evidence_blockers,
+        "claim_boundary": (
+            "operator_evidence_is_live_human_or_external_service_proof_not_automation"
+        ),
+    }
+
+    if external_beta_operator_evidence_required:
+        source_status = (
+            "external_beta_live_evidence_ready"
+            if operator_evidence_verified
+            else "automated_contracts_passed_manual_ops_required"
+        )
+    else:
+        source_status = contract_status
 
     justified_claims = [
         "Qualification and readiness remain enforced support gates; raw capture and package provenance remain authoritative.",
@@ -1066,11 +1344,11 @@ def build_launch_gate_summary(
                 "Capturer payout recommendation is contract-present; live Stripe/provider readiness remains an operator payment checklist item.",
             ]
         )
-    if source_status == "external_beta_contract_ready":
+    if contract_status == "external_beta_contract_ready":
         justified_claims.append(
             "This source path is externally marketable for the paid marketplace beta at contract level once operator checks pass."
         )
-    elif source_status == "internal_only_contract_ready":
+    elif contract_status == "internal_only_contract_ready":
         justified_claims.append(
             "This source path is suitable for internal beta operations, qualification, privacy-safe previews, and workflow orchestration."
         )
@@ -1086,54 +1364,6 @@ def build_launch_gate_summary(
         not_justified_claims.append(
             "Do not market this source as externally launch-ready while alpha readiness remains blocked."
         )
-
-    operator_required_checks = [
-        {
-            "id": f"{descriptor.capture_source or 'unknown'}_real_device_claim_flow",
-            "scope": "device",
-            "required_evidence": "Screenshot or screen recording showing discovery, claim, and upload completion for the same capture_job_id.",
-        },
-        {
-            "id": "buyer_payment_settlement",
-            "scope": "payments",
-            "required_evidence": "Stripe payment intent or checkout session proving a buyer purchase completed for the launch SKU.",
-        },
-        {
-            "id": "capturer_payout_settlement",
-            "scope": "payouts",
-            "required_evidence": "Live Stripe connected account state, live payout evidence, webhook reconciliation, and matching creator capture ledger entry for the approved capture.",
-        },
-        {
-            "id": "stripe_connected_account_live_readiness",
-            "scope": "payouts",
-            "required_evidence": "Backend /v1/stripe/account response showing provider_state_checked=true, provider_mode=live, live_provider_ready=true, payouts_enabled=true, and no blocking requirements.",
-        },
-        {
-            "id": "payout_exception_monitor_live",
-            "scope": "ops",
-            "required_evidence": "Live monitor or query evidence for payout.failed, payout.canceled, disbursement_failed, and overdue finance_review records.",
-        },
-        {
-            "id": "identity_kyc_provider_decision",
-            "scope": "identity",
-            "required_evidence": "Document whether Stripe Connect is the only near-term KYC path or provide account/env proof for Persona, Stripe Identity, or another identity provider.",
-        },
-        {
-            "id": "background_check_provider_decision",
-            "scope": "background_checks",
-            "required_evidence": "Document that no Checkr/background-check provider is integrated yet, or provide provider account/env proof before making screening claims.",
-        },
-        {
-            "id": "human_finance_review_owner",
-            "scope": "ops",
-            "required_evidence": "Named human finance owner and review queue/route for payout exceptions before any live payout execution flag is enabled.",
-        },
-        {
-            "id": "buyer_artifact_access",
-            "scope": "buyer_access",
-            "required_evidence": "Authenticated buyer session proving artifact or fulfillment access resolves after purchase.",
-        },
-    ]
 
     return {
         "schema_version": "v1",
@@ -1156,6 +1386,8 @@ def build_launch_gate_summary(
         "stage_checks": stage_checks,
         "source_acceptance": {
             "status": source_status,
+            "contract_status": contract_status,
+            "operator_evidence_status": operator_evidence_status["status"],
             "external_alpha_status": external_alpha.get("status"),
             "internal_alpha_status": internal_alpha.get("status"),
             "alpha_reason": external_alpha.get("reason") or internal_alpha.get("reason"),
@@ -1164,6 +1396,7 @@ def build_launch_gate_summary(
             "justified": justified_claims,
             "not_justified": not_justified_claims,
         },
+        "operator_evidence_status": operator_evidence_status,
         "operator_required_checks": operator_required_checks,
     }
 

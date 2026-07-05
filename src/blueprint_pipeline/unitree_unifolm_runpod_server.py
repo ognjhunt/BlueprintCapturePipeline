@@ -33,10 +33,18 @@ DEFAULT_VOLUME_GB = 80
 DEFAULT_VLA_REPO = "unitreerobotics/UnifoLM-VLA-Base"
 DEFAULT_VLM_REPO = "unitreerobotics/UnifoLM-VLM-Base"
 DEFAULT_UNNORM_KEY = "g1_stack_block"
+RUNPOD_UNIFOLM_MAX_SPEND_USD_ENV = "BLUEPRINT_RUNPOD_UNITREE_UNIFOLM_MAX_SPEND_USD"
 
 
 def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -84,6 +92,74 @@ def _redacted_payload_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "env_keys": sorted(env),
         "raw_secret_values_recorded": False,
         "secret_hashes_recorded": False,
+    }
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _unitree_unifolm_prelaunch_spend_guard(
+    *,
+    max_spend_usd: float | None,
+    allow_paid_runpod_launch: bool,
+    gpu_type_ids: Sequence[str],
+    container_disk_gb: int,
+    volume_gb: int,
+) -> dict[str, Any]:
+    env_budget = _float_or_none(os.getenv(RUNPOD_UNIFOLM_MAX_SPEND_USD_ENV))
+    requested_budget = max_spend_usd if max_spend_usd is not None else env_budget
+    api_gate_present = _env_truthy(RUNPOD_API_GATE_ENV)
+    pod_gate_present = _env_truthy(RUNPOD_POD_LAUNCH_GATE_ENV)
+    blockers: list[str] = []
+    if not allow_paid_runpod_launch:
+        blockers.append("paid_runpod_launch_not_authorized_by_runner_flag")
+    if not api_gate_present:
+        blockers.append(f"missing_env_{RUNPOD_API_GATE_ENV}")
+    if not pod_gate_present:
+        blockers.append(f"missing_env_{RUNPOD_POD_LAUNCH_GATE_ENV}")
+    if requested_budget is None:
+        blockers.append("unitree_unifolm_runpod_max_spend_usd_missing")
+    elif requested_budget <= 0:
+        blockers.append("unitree_unifolm_runpod_max_spend_usd_must_be_positive")
+    if not gpu_type_ids:
+        blockers.append("unitree_unifolm_runpod_gpu_type_ids_missing")
+    if container_disk_gb <= 0:
+        blockers.append("unitree_unifolm_runpod_container_disk_gb_invalid")
+    if volume_gb < 0:
+        blockers.append("unitree_unifolm_runpod_volume_gb_invalid")
+    can_launch = not blockers
+    return {
+        "schema_version": "unitree_unifolm_runpod_prelaunch_spend_guard.v1",
+        "status": "passed" if can_launch else "blocked",
+        "required_before_provider_launch": True,
+        "can_launch": can_launch,
+        "requested_budget_usd": requested_budget,
+        "budget_source": "argument"
+        if max_spend_usd is not None
+        else ("env" if env_budget is not None else "missing"),
+        "single_pod_launch": True,
+        "max_active_workers": 1,
+        "gpu_type_ids": list(gpu_type_ids),
+        "container_disk_gb": int(container_disk_gb),
+        "volume_gb": int(volume_gb),
+        "checks": {
+            "allow_paid_runpod_launch_flag_present": allow_paid_runpod_launch,
+            f"env_{RUNPOD_API_GATE_ENV}_present": api_gate_present,
+            f"env_{RUNPOD_POD_LAUNCH_GATE_ENV}_present": pod_gate_present,
+            "requested_budget_declared": requested_budget is not None,
+            "requested_budget_positive": (
+                requested_budget is not None and requested_budget > 0
+            ),
+            "single_pod_launch": True,
+            "teardown_command_written_after_create": True,
+        },
+        "blockers": sorted(set(blockers)),
+        "truth_boundary": {
+            "budget_declared_before_provider_launch": True,
+            "runpod_billing_cap_enforced_by_api": False,
+            "spend_ledger_still_required_after_launch": True,
+        },
     }
 
 
@@ -286,6 +362,7 @@ def launch_unitree_unifolm_runpod_server(
     attention_implementation: str = "sdpa",
     allow_hf_download: bool = True,
     model_cache_root: str = "/workspace/models",
+    max_spend_usd: float | None = None,
     allow_paid_runpod_launch: bool = False,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -320,17 +397,22 @@ def launch_unitree_unifolm_runpod_server(
         env=env,
         backend_port=backend_port,
     )
+    prelaunch_spend_guard = _unitree_unifolm_prelaunch_spend_guard(
+        max_spend_usd=max_spend_usd,
+        allow_paid_runpod_launch=allow_paid_runpod_launch,
+        gpu_type_ids=gpu_type_ids,
+        container_disk_gb=container_disk_gb,
+        volume_gb=volume_gb,
+    )
     blockers: list[str] = []
+    if prelaunch_spend_guard.get("can_launch") is not True:
+        blockers.append("unitree_unifolm_runpod_prelaunch_spend_guard_not_passed")
+        blockers.extend(prelaunch_spend_guard.get("blockers") or [])
     if not allow_paid_runpod_launch:
         blockers.append("paid_runpod_launch_not_authorized_by_runner_flag")
-    if os.getenv(RUNPOD_API_GATE_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
+    if not _env_truthy(RUNPOD_API_GATE_ENV):
         blockers.append(f"missing_env_{RUNPOD_API_GATE_ENV}")
-    if os.getenv(RUNPOD_POD_LAUNCH_GATE_ENV, "").strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
+    if not _env_truthy(RUNPOD_POD_LAUNCH_GATE_ENV):
         blockers.append(f"missing_env_{RUNPOD_POD_LAUNCH_GATE_ENV}")
     if not api_key:
         blockers.append("missing_runpod_api_key_or_file")
@@ -343,6 +425,7 @@ def launch_unitree_unifolm_runpod_server(
             "status": "blocked",
             "job_dir": str(output),
             "blockers": sorted(set(blockers)),
+            "prelaunch_spend_guard": prelaunch_spend_guard,
             "api_key_status": api_key_status,
             "model_secret_env_status": model_secret_env_status,
             "redacted_pod_payload": _redacted_payload_summary(payload),
@@ -407,6 +490,7 @@ def launch_unitree_unifolm_runpod_server(
         "backend_port": int(backend_port),
         "server_url": server_url,
         "image_name": image_name,
+        "max_spend_usd": prelaunch_spend_guard.get("requested_budget_usd"),
         "continuing_spend_from_this_run": True,
         "delete_command": (
             f"python -m blueprint_pipeline.unitree_unifolm_runpod_server delete "
@@ -427,6 +511,7 @@ def launch_unitree_unifolm_runpod_server(
         "api_key_status": api_key_status,
         "model_secret_env_status": model_secret_env_status,
         "redacted_pod_payload": _redacted_payload_summary(payload),
+        "prelaunch_spend_guard": prelaunch_spend_guard,
         "state_path": str(_state_path(output)),
         "local_bridge_command": (
             "python -m blueprint_pipeline.unitree_unifolm_vla_server_bridge "
@@ -639,6 +724,16 @@ def _arg_parser() -> argparse.ArgumentParser:
     launch.add_argument("--unnorm-key", default=DEFAULT_UNNORM_KEY)
     launch.add_argument("--attention-implementation", default="sdpa")
     launch.add_argument("--model-cache-root", default="/workspace/models")
+    launch.add_argument(
+        "--max-spend-usd",
+        type=float,
+        default=_float_or_none(os.getenv(RUNPOD_UNIFOLM_MAX_SPEND_USD_ENV)),
+        help=(
+            "Required positive prelaunch budget declaration before creating "
+            "a RunPod pod. Can also be set with "
+            f"{RUNPOD_UNIFOLM_MAX_SPEND_USD_ENV}."
+        ),
+    )
     launch.add_argument("--disable-hf-download", action="store_true")
     launch.add_argument("--allow-paid-runpod-launch", action="store_true")
     poll = subparsers.add_parser("poll")
@@ -670,6 +765,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             attention_implementation=args.attention_implementation,
             allow_hf_download=not args.disable_hf_download,
             model_cache_root=args.model_cache_root,
+            max_spend_usd=args.max_spend_usd,
             allow_paid_runpod_launch=args.allow_paid_runpod_launch,
         )
     elif args.command == "poll":

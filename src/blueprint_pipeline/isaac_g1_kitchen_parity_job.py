@@ -33,8 +33,9 @@ import uuid
 import zipfile
 from copy import deepcopy
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
+from .common import utc_now_iso
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
 from .isaac_g1_policy import groot_sonic_isaac_bridge_readiness
 from .isaac_particlefield_render_job import (
@@ -44,12 +45,24 @@ from .launch_provenance import (
     evaluate_dirty_tree_paid_launch_gate,
     git_worktree_evidence,
 )
+from .paid_lane_guard import (
+    bind_pending_teardown_instance,
+    cancel_pending_teardown,
+    close_pending_teardown,
+    open_pending_teardown,
+    provider_state_from_inspect,
+)
 from .provider_race import boot_marker_present, race_launch
+from .provider_reliability_manifest import (
+    TEARDOWN_STATUS_SOURCE_PROVIDER_API,
+    build_teardown_proof,
+)
 
 SCHEMA_VERSION = "isaac_g1_kitchen_parity_job.v1"
 JOB_MANIFEST_FILENAME = "isaac_g1_kitchen_parity_job_manifest.json"
 LAUNCH_ATTEMPT_TRACE_FILENAME = "isaac_g1_kitchen_parity_launch_attempts.json"
 WORKER_BUNDLE_DIR = "/workspace/bundle"
+ISAAC_G1_KITCHEN_PARITY_LANE = "isaac_g1_kitchen_parity"
 PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS = frozenset({
     "digitalocean_gpu_size_region_unavailable",
 })
@@ -70,6 +83,7 @@ ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV = "BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_F
 COLD_RACE_CONTENDERS_ENV = "BLUEPRINT_COLD_RACE_CONTENDERS"
 DEFAULT_COLD_RACE_CONTENDERS = 2
 DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS = 600
+ISAAC_G1_MAX_SPEND_USD_ENV = "BLUEPRINT_ISAAC_G1_MAX_SPEND_USD"
 ISAAC_G1_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_ISAAC_G1_GROOT_POLICY_COMMAND"
 UNITREE_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"
 UNITREE_GROOT_POLICY_SERVER_URL_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL"
@@ -506,6 +520,10 @@ def parity_image() -> str:
 
 def _string(value) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _configured_isaac_worker_image_ref() -> dict:
@@ -1240,6 +1258,59 @@ def _apply_paid_provider_policy(provider_names: Sequence[str], *, allow_paid: bo
     return filtered, policy
 
 
+def _isaac_g1_prelaunch_spend_guard(
+    *,
+    allow_paid: bool,
+    provider_name: str,
+    max_spend_usd: float | None,
+    max_seconds: int,
+    max_hourly_rate_usd: float | None,
+    contender_count: int = 1,
+) -> dict:
+    env_budget = _float_or_none(os.getenv(ISAAC_G1_MAX_SPEND_USD_ENV))
+    requested_budget = max_spend_usd if max_spend_usd is not None else env_budget
+    hourly_rate = (
+        float(max_hourly_rate_usd)
+        if max_hourly_rate_usd is not None and max_hourly_rate_usd > 0
+        else DEFAULT_VAST_MAX_HOURLY_RATE_USD
+    )
+    seconds = max(0, int(max_seconds or 0))
+    contenders = max(1, int(contender_count or 1))
+    estimated_max_spend_usd = round((hourly_rate * (seconds / 3600.0)) * contenders, 4)
+    blockers: list[str] = []
+    if not allow_paid:
+        blockers.append("paid_launch_not_requested")
+    if requested_budget is None:
+        blockers.append("isaac_g1_max_spend_usd_missing")
+    elif requested_budget <= 0:
+        blockers.append("isaac_g1_max_spend_usd_must_be_positive")
+    elif estimated_max_spend_usd > float(requested_budget):
+        blockers.append("isaac_g1_estimated_spend_exceeds_budget")
+    can_launch = bool(allow_paid and not blockers)
+    return {
+        "schema_version": "isaac_g1_kitchen_parity_prelaunch_spend_guard.v1",
+        "status": "passed" if can_launch else "blocked",
+        "provider": provider_name,
+        "allow_paid": bool(allow_paid),
+        "can_launch": can_launch,
+        "requested_budget_usd": requested_budget,
+        "budget_source": "argument"
+        if max_spend_usd is not None
+        else ("env" if env_budget is not None else "missing"),
+        "estimated_max_spend_usd": estimated_max_spend_usd,
+        "max_hourly_rate_usd": hourly_rate,
+        "max_seconds": seconds,
+        "contender_count": contenders,
+        "blockers": blockers,
+        "claim_boundary": {
+            "spend_guard_only": True,
+            "can_launch_is_not_provider_success": True,
+            "can_launch_is_not_task_success": True,
+            "no_provider_api_call_before_can_launch": True,
+        },
+    }
+
+
 def _paid_worker_image_policy(
     *,
     image: str | None,
@@ -1487,6 +1558,111 @@ def _launch_failure_blockers(attempts: Sequence[dict]) -> list[str]:
     return final_blockers
 
 
+def _paid_launch_pending_teardown_max_age(
+    *,
+    marker_timeout: int,
+    startup_no_runtime_timeout: int,
+    max_attempts: int,
+) -> int:
+    per_attempt = max(
+        int(marker_timeout or 0),
+        int(startup_no_runtime_timeout or 0),
+        60,
+    )
+    return max(300, per_attempt * max(1, int(max_attempts or 1)) + 1800)
+
+
+def _teardown_proof_from_attempt(
+    *,
+    provider: Any,
+    instance_id: str,
+    teardown: Mapping[str, Any],
+    action: str,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    provider_name = _string(getattr(provider, "name", "")) or "unknown"
+    status = _string(teardown.get("status")).lower()
+    action_text = _string(action).lower()
+    if action_text == "stop":
+        return build_teardown_proof(
+            provider=provider_name,
+            allocation_id=instance_id,
+            terminate_requested=False,
+            provider_terminal_status=None,
+            keep_alive_requested=True,
+            keep_alive_reason=status or "stopped_for_warm_reuse",
+        )
+    verification: dict[str, Any] = {}
+    if hasattr(provider, "inspect"):
+        try:
+            verification = provider_state_from_inspect(provider.inspect(instance_id))
+        except Exception as exc:  # noqa: BLE001 - failed verification is evidence, not a crash
+            verification = {
+                "api_confirmed": False,
+                "provider_status": "",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+    observed_status = _string(verification.get("provider_status")).lower()
+    if verification.get("api_confirmed") is True and observed_status:
+        return build_teardown_proof(
+            provider=provider_name,
+            allocation_id=instance_id,
+            terminate_requested=True,
+            provider_terminal_status=observed_status,
+            verified_at=generated_at or utc_now_iso(),
+            status_source=TEARDOWN_STATUS_SOURCE_PROVIDER_API,
+        )
+    return build_teardown_proof(
+        provider=provider_name,
+        allocation_id=instance_id,
+        terminate_requested=True,
+        provider_terminal_status="terminated" if status == "terminated" else status or None,
+        verified_at=generated_at or utc_now_iso() if status == "terminated" else None,
+    )
+
+
+def _teardown_proof_from_watch_result(
+    *,
+    provider_name: str,
+    instance_id: str,
+    watch: Mapping[str, Any],
+) -> dict[str, Any]:
+    teardown = _mapping(watch.get("teardown"))
+    reason = _string(watch.get("teardown_reason")).lower()
+    status = _string(teardown.get("status")).lower()
+    if status in {"stopped", "preserved", "skipped"} or reason in {
+        "left_running_by_request",
+        "runner_done_preserved_for_warm_reuse",
+    }:
+        return build_teardown_proof(
+            provider=provider_name,
+            allocation_id=instance_id,
+            terminate_requested=False,
+            provider_terminal_status=None,
+            keep_alive_requested=True,
+            keep_alive_reason=reason or status or "kept_alive",
+        )
+    verification = _mapping(teardown.get("verification"))
+    observed_status = _string(verification.get("provider_status")).lower()
+    if verification.get("api_confirmed") is True and observed_status:
+        return build_teardown_proof(
+            provider=provider_name,
+            allocation_id=instance_id,
+            terminate_requested=True,
+            provider_terminal_status=observed_status,
+            verified_at=utc_now_iso(),
+            status_source=TEARDOWN_STATUS_SOURCE_PROVIDER_API,
+        )
+    return build_teardown_proof(
+        provider=provider_name,
+        allocation_id=instance_id,
+        terminate_requested=True,
+        provider_terminal_status="terminated" if status == "terminated" else status or None,
+        verified_at=utc_now_iso() if status == "terminated" else None,
+    )
+
+
 class _ColdCreateContender:
     """Provider proxy for same-provider cold-create racing."""
 
@@ -1518,7 +1694,8 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                              marker_timeout: int = 150, poll: int = 15,
                              cold: bool = True,
                              allow_cold_fallback: bool = True,
-                             startup_no_runtime_timeout: int = 0) -> dict:
+                             startup_no_runtime_timeout: int = 0,
+                             prelaunch_guard: dict | None = None) -> dict:
     """Launch a pod, then wait for its container's early heartbeat (``bootstrap.json`` on the
     output URL). RunPod cold pods are ~50% flaky — created + billing but the container never runs.
     If no marker appears within ``marker_timeout``, terminate that pod and retry, so we never pay
@@ -1535,6 +1712,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
         "startup_no_runtime_timeout_seconds": int(startup_no_runtime_timeout),
         "cold": bool(cold),
         "allow_cold_fallback": bool(allow_cold_fallback),
+        "prelaunch_guard": prelaunch_guard,
         "attempts": attempts,
         "proof_boundary": (
             "Launch-attempt trace only. It proves provider API/result observation, "
@@ -1543,17 +1721,76 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
         ),
     }
     trace_path = _write_launch_attempt_trace(job_dir, trace)
+    if prelaunch_guard and prelaunch_guard.get("can_launch") is not True:
+        blockers = [
+            "isaac_g1_prelaunch_spend_guard_not_passed",
+            *[str(item) for item in prelaunch_guard.get("blockers") or []],
+        ]
+        attempts.append(
+            {
+                "attempt": 0,
+                "result": "prelaunch_blocked",
+                "prelaunch_guard": prelaunch_guard,
+                "blockers": blockers,
+            }
+        )
+        trace["status"] = "prelaunch_blocked"
+        trace["blockers"] = blockers
+        _write_launch_attempt_trace(job_dir, trace)
+        return {
+            "status": "blocked",
+            "blockers": blockers,
+            "attempts": attempts,
+            "attempt_trace_path": str(trace_path),
+            "prelaunch_guard": prelaunch_guard,
+        }
     for attempt in range(max_attempts):
         launch_session_id = uuid.uuid4().hex
         request_for_launch = _request_with_launch_session_nonce(request, launch_session_id)
+        if prelaunch_guard:
+            request_for_launch["prelaunch_spend_guard"] = prelaunch_guard
         (job_dir / "launch_session_nonce.txt").write_text(launch_session_id, encoding="utf-8")
-        launch = prov.launch(
-            job_dir,
-            request_for_launch,
-            cold=cold,
-            allow_cold_fallback=allow_cold_fallback,
-        )
+        pending_teardown: dict[str, Any] | None = None
+        if prelaunch_guard and prelaunch_guard.get("can_launch") is True:
+            pending_teardown = open_pending_teardown(
+                provider=getattr(prov, "name", "unknown"),
+                lane=ISAAC_G1_KITCHEN_PARITY_LANE,
+                run_id=launch_session_id,
+                job_dir=job_dir,
+                max_age_seconds=_paid_launch_pending_teardown_max_age(
+                    marker_timeout=int(marker_timeout),
+                    startup_no_runtime_timeout=int(startup_no_runtime_timeout),
+                    max_attempts=int(max_attempts),
+                ),
+            )
+            request_for_launch["pending_teardown_record"] = pending_teardown["path"]
+        try:
+            launch = prov.launch(
+                job_dir,
+                request_for_launch,
+                cold=cold,
+                allow_cold_fallback=allow_cold_fallback,
+            )
+        except Exception:
+            if pending_teardown:
+                cancel_pending_teardown(
+                    pending_teardown["path"],
+                    reason="provider_launch_raised_before_allocation",
+                )
+            raise
+        if pending_teardown:
+            launch["pending_teardown_record"] = pending_teardown["path"]
+            if launch.get("instance_id"):
+                bind_pending_teardown_instance(
+                    pending_teardown["path"], str(launch["instance_id"])
+                )
         if launch.get("status") != "launched":
+            if pending_teardown and not launch.get("instance_id"):
+                cancel_pending_teardown(
+                    pending_teardown["path"],
+                    reason="launch_returned_no_allocation",
+                    evidence=launch,
+                )
             attempts.append({"attempt": attempt, "result": "launch_call_failed", "detail": launch})
             trace["status"] = "launch_call_failed"
             _write_launch_attempt_trace(job_dir, trace)
@@ -1576,6 +1813,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
             "result": "waiting_for_marker",
             "marker_timeout_seconds": int(marker_timeout),
             "startup_no_runtime_timeout_seconds": int(startup_no_runtime_timeout),
+            "pending_teardown_record": launch.get("pending_teardown_record"),
         }
         attempts.append(attempt_record)
         trace["status"] = "waiting_for_marker"
@@ -1616,10 +1854,12 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
             _write_launch_attempt_trace(job_dir, trace)
             mode = launch.get("mode") or ("cold_create" if cold else "warm_or_cold")
             return {"status": "launched", "instance_id": iid, "mode": f"{mode}_marker_verified",
-                    "attempts": attempts, "attempt_trace_path": str(trace_path)}
+                    "attempts": attempts, "attempt_trace_path": str(trace_path),
+                    "pending_teardown_record": launch.get("pending_teardown_record")}
         if str(launch.get("mode") or "").startswith("warm"):
             teardown = prov.stop(iid)
             attempt_record["teardown"] = teardown
+            attempt_record["teardown_action"] = "stop"
             attempt_record["result"] = (
                 "startup_no_runtime_timeout_stopped"
                 if startup_no_runtime
@@ -1628,11 +1868,25 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
         else:
             teardown = prov.terminate(iid)  # flaky cold pod (billing but not running) -> kill and retry
             attempt_record["teardown"] = teardown
+            attempt_record["teardown_action"] = "terminate"
             attempt_record["result"] = (
                 "startup_no_runtime_timeout_terminated"
                 if startup_no_runtime
                 else "marker_timeout_terminated"
             )
+        if launch.get("pending_teardown_record"):
+            proof = _teardown_proof_from_attempt(
+                provider=prov,
+                instance_id=iid,
+                teardown=teardown if isinstance(teardown, Mapping) else {},
+                action=attempt_record["teardown_action"],
+            )
+            attempt_record["teardown_proof"] = proof
+            closure = close_pending_teardown(
+                launch["pending_teardown_record"],
+                proof,
+            )
+            attempt_record["pending_teardown_status"] = closure.get("status")
         trace["status"] = attempt_record["result"]
         _write_launch_attempt_trace(job_dir, trace)
     trace["status"] = "blocked"
@@ -1773,6 +2027,7 @@ def run_isaac_g1_kitchen_parity_job(
     audit_warmup_frames: int = 0,
     audit_boost_light_intensity: float = 0.0,
     vast_max_hourly_rate_usd: float | None = None,
+    max_spend_usd: float | None = None,
     warm_candidates: Sequence[str] | None = None,
     warm_only: bool = False,
     serve: bool = False, serve_idle_timeout_s: float = 1800.0,
@@ -2100,6 +2355,29 @@ def run_isaac_g1_kitchen_parity_job(
         if not avail.get("available"):
             manifest["blockers"].append(avail.get("reason") or "provider_credentials_missing")
             return manifest
+    prelaunch_contender_count = (
+        len(runnable_providers)
+        if multi_provider_race
+        else race_contender_count
+        if single_provider_cold_race
+        else 1
+    )
+    prelaunch_spend_guard = _isaac_g1_prelaunch_spend_guard(
+        allow_paid=allow_paid,
+        provider_name=",".join([p.name for p in providers])
+        if multi_provider_race
+        else prov.name,
+        max_spend_usd=max_spend_usd,
+        max_seconds=max_seconds,
+        max_hourly_rate_usd=spec.max_hourly_rate_usd,
+        contender_count=prelaunch_contender_count,
+    )
+    manifest["prelaunch_spend_guard"] = prelaunch_spend_guard
+    if prelaunch_spend_guard.get("can_launch") is not True:
+        manifest["blockers"].append("isaac_g1_prelaunch_spend_guard_not_passed")
+        manifest["blockers"].extend(prelaunch_spend_guard.get("blockers") or [])
+        manifest["blockers"] = sorted(set(manifest["blockers"]))
+        return manifest
     # cold ~10-15GB Isaac image pulls on congested nodes routinely exceed 150s before the container
     # starts bash; give the early marker a generous window (+ an extra attempt) so a slow pull is not
     # mistaken for a dead pod (which caused all-dud batches on both providers).
@@ -2139,7 +2417,9 @@ def run_isaac_g1_kitchen_parity_job(
                 encoding="utf-8",
             )
             body = provider_obj.build_request(spec, contender_job_dir)
-            return _request_with_launch_session_nonce(body, launch_session_id)
+            request_for_launch = _request_with_launch_session_nonce(body, launch_session_id)
+            request_for_launch["prelaunch_spend_guard"] = prelaunch_spend_guard
+            return request_for_launch
 
         def _race_marker_check(provider_obj, launch_result):
             contender_job_dir = Path(str(launch_result.get("job_dir") or job_dir))
@@ -2168,6 +2448,13 @@ def run_isaac_g1_kitchen_parity_job(
                 cold=cold,
                 poll_interval=max(1.0, min(15.0, float(marker_timeout))),
                 launch_kwargs=lambda _p: {"allow_cold_fallback": not warm_only},
+                prelaunch_guard=prelaunch_spend_guard,
+                pending_teardown_lane=ISAAC_G1_KITCHEN_PARITY_LANE,
+                pending_teardown_max_age_seconds=_paid_launch_pending_teardown_max_age(
+                    marker_timeout=int(marker_timeout),
+                    startup_no_runtime_timeout=int(startup_no_runtime_timeout),
+                    max_attempts=int(max_attempts),
+                ),
             )
             if race.get("status") == "launched":
                 break
@@ -2180,6 +2467,7 @@ def run_isaac_g1_kitchen_parity_job(
                 "instance_id": race.get("instance_id"),
                 "mode": race.get("mode"),
                 "winner_launch": race.get("winner_launch"),
+                "pending_teardown_record": race.get("pending_teardown_record"),
             }
             collect_provider = race["winner_provider"]
             collect_job_dir = Path(
@@ -2192,7 +2480,8 @@ def run_isaac_g1_kitchen_parity_job(
                                           marker_timeout=marker_timeout, max_attempts=max_attempts,
                                           cold=cold,
                                           allow_cold_fallback=not warm_only,
-                                          startup_no_runtime_timeout=startup_no_runtime_timeout)
+                                          startup_no_runtime_timeout=startup_no_runtime_timeout,
+                                          prelaunch_guard=prelaunch_spend_guard)
         manifest["launch"] = launch
     if launch.get("status") != "launched":
         for blocker in launch.get("blockers") or []:
@@ -2210,6 +2499,9 @@ def run_isaac_g1_kitchen_parity_job(
         if failed_launch_blocker not in manifest["blockers"]:
             manifest["blockers"].append(failed_launch_blocker)
         return manifest
+    pending_teardown_record = _string(launch.get("pending_teardown_record"))
+    if pending_teardown_record:
+        manifest["pending_teardown_record"] = pending_teardown_record
     if serve:
         # Warm pod: leave it RUNNING. Wait for the serve-ready marker, then hand the caller the inbox
         # PUT + output GET urls for its WarmPoolClient. NO watch_and_collect / teardown here — the warm
@@ -2223,6 +2515,8 @@ def run_isaac_g1_kitchen_parity_job(
             "output_get_url_file": str(job_dir / "provider_output_get_url.txt"),
             "ready_detail": ready,
         }
+        if pending_teardown_record:
+            manifest["warm_serve"]["pending_teardown_record"] = pending_teardown_record
         if ready.get("ready"):
             manifest["status"] = "serving"
         else:
@@ -2236,6 +2530,18 @@ def run_isaac_g1_kitchen_parity_job(
                     "error": str(exc),
                 }
             manifest["warm_serve"]["not_ready_teardown"] = teardown
+            if pending_teardown_record:
+                proof = _teardown_proof_from_attempt(
+                    provider=prov,
+                    instance_id=launch["instance_id"],
+                    teardown=teardown if isinstance(teardown, Mapping) else {},
+                    action="terminate",
+                )
+                manifest["warm_serve"]["not_ready_teardown_proof"] = proof
+                closure = close_pending_teardown(pending_teardown_record, proof)
+                manifest["warm_serve"]["pending_teardown_status"] = closure.get(
+                    "status"
+                )
             manifest["blockers"].append("warm_serve_not_ready")
         return manifest
     render_out = out_dir / "render_output"
@@ -2255,6 +2561,16 @@ def run_isaac_g1_kitchen_parity_job(
         ),
         "post_marker_progress_timeout": result.get("post_marker_progress_timeout"),
     }
+    if pending_teardown_record:
+        proof = _teardown_proof_from_watch_result(
+            provider_name=getattr(collect_provider, "name", "unknown"),
+            instance_id=launch["instance_id"],
+            watch=result,
+        )
+        closure = close_pending_teardown(pending_teardown_record, proof)
+        manifest["render"]["teardown_proof"] = proof
+        manifest["render"]["pending_teardown_record"] = pending_teardown_record
+        manifest["render"]["pending_teardown_status"] = closure.get("status")
     if render_noise_audit:
         audit_worker_result: dict = {}
         try:
@@ -2463,6 +2779,15 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--image", default=None)
     ap.add_argument("--max-seconds", type=int, default=1500)
+    ap.add_argument(
+        "--max-spend-usd",
+        type=float,
+        default=None,
+        help=(
+            "required positive spend cap for --allow-paid launches; may also be supplied "
+            f"via {ISAAC_G1_MAX_SPEND_USD_ENV}"
+        ),
+    )
     ap.add_argument("--container-disk-gb", type=int, default=140,
                     help="RunPod container disk size. Must be >= existing pod size for warm update.")
     ap.add_argument("--volume-gb", type=int, default=80,
@@ -2572,6 +2897,7 @@ def main(argv=None) -> int:
         groot_policy_command_timeout_seconds=args.groot_policy_command_timeout_seconds,
         allow_paid=args.allow_paid, allow_dirty_paid_launch=args.allow_dirty_paid_launch,
         cold=args.cold, image=args.image, max_seconds=args.max_seconds,
+        max_spend_usd=args.max_spend_usd,
         container_disk_gb=args.container_disk_gb, volume_gb=args.volume_gb,
         warm_candidates=tuple(args.warm_candidate or ()),
         warm_only=args.warm_only,

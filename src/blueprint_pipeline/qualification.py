@@ -749,6 +749,10 @@ def _metadata_scene_package_path(metadata: Mapping[str, Any], *, base_dir: Path)
     return None
 
 
+def _mapping(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
 def attach_handoff_package_paths(
     handoff_payload: Mapping[str, Any],
     *,
@@ -852,12 +856,36 @@ def attach_handoff_package_paths(
 def _capture_rights(metadata: Mapping[str, Any]) -> Dict[str, Any]:
     raw = metadata.get("capture_rights") if isinstance(metadata.get("capture_rights"), Mapping) else {}
     return {
-        "derived_scene_generation_allowed": bool(raw.get("derived_scene_generation_allowed", False)),
-        "data_licensing_allowed": bool(raw.get("data_licensing_allowed", False)),
-        "capture_contributor_payout_eligible": bool(raw.get("capture_contributor_payout_eligible", False)),
+        "derived_scene_generation_allowed": parse_bool(
+            raw.get("derived_scene_generation_allowed"),
+            default=False,
+        ),
+        "data_licensing_allowed": parse_bool(
+            raw.get("data_licensing_allowed"),
+            default=False,
+        ),
+        "capture_contributor_payout_eligible": parse_bool(
+            raw.get("capture_contributor_payout_eligible"),
+            default=False,
+        ),
         "consent_status": str(raw.get("consent_status") or "unknown"),
         "permission_document_uri": str(raw.get("permission_document_uri") or "").strip() or None,
         "consent_scope": _string_list(raw.get("consent_scope")),
+        "commercialization_terms": _mapping(
+            raw.get("commercialization_terms")
+            or raw.get("commercializationTerms")
+            or raw.get("commercial_terms")
+            or raw.get("commercialTerms")
+        ),
+        "operator_revenue_terms": _mapping(
+            raw.get("operator_revenue_terms")
+            or raw.get("operatorRevenueTerms")
+            or raw.get("revenue_share_terms")
+            or raw.get("revenueShareTerms")
+        ),
+        "exclusivity_terms": _mapping(
+            raw.get("exclusivity_terms") or raw.get("exclusivityTerms")
+        ),
     }
 
 
@@ -2660,10 +2688,61 @@ def _requested_downstream_lanes(
     return lanes
 
 
-# Privacy pipeline statuses that mean people are provably absent or redacted. Mirrors
-# privacy_world_model_ready and build_rights_provenance_review's cleared set. ``not_run``
-# is intentionally EXCLUDED here — a run that never executed privacy post-processing has
-# not cleared privacy (PIPE-03).
+def _rights_review_required_use_classes(
+    *,
+    descriptor: CaptureDescriptor,
+    requested_lanes: Optional[List[str]] = None,
+) -> List[str]:
+    """Map requested product lanes to consent use classes.
+
+    Plain qualification can clear from a documented rights packet. Downstream
+    generated, robot-eval, training, and licensing products need an explicit use
+    class; a location-only consent scope is not enough for those products.
+    """
+    explicit = {
+        str(value or "").strip().lower()
+        for value in (requested_lanes or [])
+        if str(value or "").strip()
+    }
+    outputs = {
+        str(value or "").strip().lower()
+        for value in descriptor.requested_outputs
+        if str(value or "").strip()
+    }
+    required: List[str] = []
+
+    def add(use_class: str) -> None:
+        if use_class not in required:
+            required.append(use_class)
+
+    if explicit.intersection({"scene_memory", "evaluation_prep"}) or outputs.intersection(
+        {
+            "preview",
+            "preview_simulation",
+            "scene_memory",
+            "evaluation_prep",
+            "managed_tuning",
+            "data_licensing",
+            "deeper_evaluation",
+        }
+    ):
+        add("derived_generation")
+    if explicit.intersection({"evaluation_prep"}) or outputs.intersection(
+        {"robot_eval_dataset", "task_evaluation_run", "deeper_evaluation"}
+    ):
+        add("robot_evaluation")
+    if outputs.intersection(
+        {"managed_tuning", "post_training_data_package", "training_dataset", "data_licensing"}
+    ):
+        add("model_training")
+    if outputs.intersection({"data_licensing"}):
+        add("data_licensing")
+    return required
+
+
+# Privacy pipeline statuses that completed some privacy processing. Delivery
+# gates remove fallback/local-proof statuses from this set because those are
+# review inputs, not verified removal.
 _PRIVACY_POSTPROCESS_CLEARED_STATUSES = frozenset(
     {
         "no_people_detected",
@@ -2685,6 +2764,12 @@ def _privacy_postprocess_gate(*, privacy_status: str, delivery_run: bool) -> Qua
     """
     status = str(privacy_status or "").strip().lower()
     passing_statuses = set(_PRIVACY_POSTPROCESS_CLEARED_STATUSES)
+    fallback_statuses = {
+        "face_anonymized_fallback",
+        "full_frame_redacted_local_proof",
+    }
+    if delivery_run:
+        passing_statuses.difference_update(fallback_statuses)
     if not delivery_run:
         passing_statuses.add("not_run")
     passed = status in passing_statuses
@@ -2693,6 +2778,11 @@ def _privacy_postprocess_gate(*, privacy_status: str, delivery_run: bool) -> Qua
         detail = (
             f"privacy_status={privacy_status}; delivery runs require privacy post-processing "
             "to run and clear (enable PRIVACY_PIPELINE_ENABLED / production launch mode)"
+        )
+    elif not passed and status in fallback_statuses and delivery_run:
+        detail = (
+            f"privacy_status={privacy_status}; delivery runs require verified privacy "
+            "removal, not fallback/local redaction proof"
         )
     return QualificationGate("privacy_postprocess_gate", passed, detail)
 
@@ -4287,6 +4377,10 @@ def run_qualification_pipeline(
             descriptor=descriptor,
             requested_lanes=requested_lanes,
         )
+        rights_required_use_classes = _rights_review_required_use_classes(
+            descriptor=descriptor,
+            requested_lanes=downstream_requested_lanes,
+        )
 
         qa_report_uri = descriptor.qa_report_uri or _default_qa_report_uri(descriptor_gcs_uri)
         qa_report_path = resolve_gs_uri_to_path(qa_report_uri, storage_root)
@@ -5014,6 +5108,7 @@ def run_qualification_pipeline(
                 "privacy_processing_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
                 "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
             },
+            required_use_classes=rights_required_use_classes,
         )
         write_json(pipeline_dir / "rights_provenance_review.json", rights_provenance_review)
         site_package_result = write_blueprint_canonical_site_package(
@@ -5185,6 +5280,7 @@ def run_qualification_pipeline(
                 "privacy_processing_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
                 "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
             },
+            required_use_classes=rights_required_use_classes,
         )
         write_json(pipeline_dir / "rights_provenance_review.json", rights_provenance_review)
 

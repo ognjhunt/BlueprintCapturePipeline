@@ -24,7 +24,7 @@ import subprocess
 from pathlib import Path
 from typing import Sequence
 
-from .gaussian_splat_decode import convert_to_standard_ply, find_splat_transform_cli, read_standard_3dgs_ply
+from .gaussian_splat_decode import find_splat_transform_cli, read_standard_3dgs_ply
 from .splat_scene_analysis import DEFAULT_CAMERA_IDS, analyze_scene, derive_eval_cameras
 
 RENDER_HARNESS_REL = "tools/splat_render/render_splat.mjs"

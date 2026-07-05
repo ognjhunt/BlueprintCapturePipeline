@@ -119,6 +119,47 @@ def test_runpod_no_paid_launch_blocks_without_calling_runner(
     assert "paid_wam_compute_launch_not_authorized:runpod" in result.blockers
 
 
+def test_runpod_paid_launch_passes_spec_hard_cap_to_prelaunch_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {
+            "schema_version": "runpod_wam_async_create.v1",
+            "generated_at": "now",
+            "status": "pod_created",
+            "pod_id": "pod-123",
+            "provider_runtime_output_zip_path": str(tmp_path / "output.zip"),
+            "prelaunch_spend_guard": {
+                "schema_version": "runpod_wam_prelaunch_spend_guard.v1",
+                "required_before_provider_launch": True,
+                "can_launch": True,
+                "requested_budget_usd": kwargs["max_spend_usd"],
+                "blockers": [],
+            },
+            "continuing_spend_from_this_run": True,
+            "blockers": [],
+            "raw_secret_values_recorded": False,
+        }
+
+    monkeypatch.setattr(providers, "create_runpod_wam_async_run", fake_create)
+    spec = _spec(_bundle(tmp_path / "bundle.zip"), hard_cap_usd=1.25)
+
+    result = providers.RunPodWamComputeProvider().create(
+        spec,
+        tmp_path / "runpod_provider_run",
+        allow_paid_launch=True,
+    )
+
+    assert result.status == "running"
+    assert captured["max_spend_usd"] == 1.25
+    assert captured["allow_paid_runpod_launch"] is True
+    assert result.continuing_spend_from_this_run is True
+
+
 def test_deepinfra_no_paid_launch_writes_redacted_request_and_cost_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -306,6 +347,50 @@ def test_inspect_output_rejects_zero_byte_zip(tmp_path: Path) -> None:
     assert "provider_runtime_output_zip_missing_or_empty" in inspection[
         "runtime_result_blockers"
     ]
+
+
+def test_runpod_poll_blocks_provider_output_json_parse_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_zip = tmp_path / "runpod_provider_runtime_output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("wam_runtime_result.json", "{not-json")
+
+    def fake_poll(**_kwargs: Any) -> dict[str, Any]:
+        return {
+            "schema_version": "runpod_wam_async_poll_manifest.v1",
+            "generated_at": "now",
+            "status": "completed",
+            "pod_id": "pod-123",
+            "pod_status": "EXITED",
+            "provider_command_status": "completed",
+            "provider_command_blockers": [],
+            "output_zip_present": True,
+            "provider_runtime_output_zip_path": str(output_zip),
+            "teardown_performed": True,
+            "continuing_spend_from_this_run": False,
+            "raw_secret_values_recorded": False,
+        }
+
+    monkeypatch.setattr(providers, "poll_runpod_wam_async_run", fake_poll)
+
+    result = providers.RunPodWamComputeProvider().poll(
+        tmp_path,
+        max_wait_seconds=1,
+        teardown=True,
+    )
+
+    assert result.status == "blocked"
+    assert result.runtime_result_status == "blocked"
+    assert (
+        "provider_runtime_result_json_parse_error:wam_runtime_result.json:JSONDecodeError"
+        in result.runtime_result_blockers
+    )
+    assert (
+        "provider_runtime_result_json_parse_error:wam_runtime_result.json:JSONDecodeError"
+        in result.blockers
+    )
 
 
 def test_run_wam_compute_job_normalizes_vast_result(

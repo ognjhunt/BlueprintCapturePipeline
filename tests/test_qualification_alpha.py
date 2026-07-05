@@ -11,7 +11,10 @@ from blueprint_pipeline.capture_orchestrator import PipelineConfig, resolve_requ
 from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
-from blueprint_pipeline.qualification import _requested_downstream_lanes
+from blueprint_pipeline.qualification import (
+    _requested_downstream_lanes,
+    _rights_review_required_use_classes,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -135,6 +138,31 @@ def test_requested_downstream_lanes_include_evaluation_prep_for_robot_eval_outpu
     )
 
     assert _requested_downstream_lanes(descriptor=descriptor) == ["evaluation_prep"]
+
+
+def test_rights_required_use_classes_follow_requested_product_lanes() -> None:
+    descriptor = CaptureDescriptor.from_dict(
+        {
+            "schema_version": "v1",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "capture_source": "iphone",
+            "capture_tier": "tier1_iphone",
+            "raw_prefix_uri": "gs://bucket/scenes/scene-1/captures/capture-1/raw",
+            "frames_index_uri": "gs://bucket/scenes/scene-1/captures/capture-1/frames/index.jsonl",
+            "requested_outputs": [
+                "qualification",
+                "robot_eval_dataset",
+                "task_evaluation_run",
+                "post_training_data_package",
+            ],
+        }
+    )
+
+    assert _rights_review_required_use_classes(
+        descriptor=descriptor,
+        requested_lanes=_requested_downstream_lanes(descriptor=descriptor),
+    ) == ["derived_generation", "robot_evaluation", "model_training"]
 
 
 def test_materialization_does_not_fabricate_missing_upstream_ids(tmp_path: Path) -> None:

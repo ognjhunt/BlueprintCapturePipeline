@@ -27,7 +27,10 @@ from .oscar_wam_command_adapter import (
 from .oscar_wam_provider_bundle import build_oscar_wam_provider_bundle
 from .oscar_wam_gpu_image import IMAGE_REF_ENV as OSCAR_WAM_GPU_IMAGE_REF_ENV
 from .runpod_provider_adapter import RUNPOD_API_GATE_ENV
-from .runpod_wam_async_runner import RUNPOD_POD_LAUNCH_GATE_ENV
+from .runpod_wam_async_runner import (
+    RUNPOD_POD_LAUNCH_GATE_ENV,
+    _validate_wam_provider_output_zip,
+)
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
 from .wam_generated_video_review import (
     validate_generated_mp4_for_review,
@@ -263,6 +266,29 @@ def _extract_provider_payload(
     source_provider_job_dir: Path | None = None,
 ) -> dict[str, Any]:
     ensure_dir(extraction_dir)
+    provider_output_validation = _validate_wam_provider_output_zip(
+        provider_output_zip,
+        provider_bundle_kind="wam",
+    )
+    if (
+        provider_output_validation.get("status") != "completed"
+        or provider_output_validation.get("provider_output_usable") is not True
+    ):
+        blockers = [
+            str(item)
+            for item in provider_output_validation.get("blockers", []) or []
+            if str(item)
+        ] or ["provider_output_zip_not_validated_as_usable"]
+        return _blocked_payload(
+            blockers=blockers,
+            mode=mode,
+            output_path=output_path,
+            details={
+                "provider_output_zip_name": provider_output_zip.name,
+                "provider_output_zip_path_omitted": True,
+                "provider_output_validation": provider_output_validation,
+            },
+        )
     with zipfile.ZipFile(provider_output_zip) as archive:
         names = set(archive.namelist())
         if "wam_provider_output.json" not in names:
@@ -273,9 +299,35 @@ def _extract_provider_payload(
                 details={
                     "provider_output_zip_name": provider_output_zip.name,
                     "provider_output_zip_path_omitted": True,
+                    "provider_output_validation": provider_output_validation,
                 },
             )
-        provider_payload = json.loads(archive.read("wam_provider_output.json").decode("utf-8"))
+        try:
+            provider_payload = json.loads(
+                archive.read("wam_provider_output.json").decode("utf-8")
+            )
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return _blocked_payload(
+                blockers=["provider_output_zip_malformed_wam_provider_output_json"],
+                mode=mode,
+                output_path=output_path,
+                details={
+                    "provider_output_zip_name": provider_output_zip.name,
+                    "provider_output_zip_path_omitted": True,
+                    "provider_output_validation": provider_output_validation,
+                },
+            )
+        if not isinstance(provider_payload, Mapping):
+            return _blocked_payload(
+                blockers=["provider_output_zip_wam_provider_output_json_not_object"],
+                mode=mode,
+                output_path=output_path,
+                details={
+                    "provider_output_zip_name": provider_output_zip.name,
+                    "provider_output_zip_path_omitted": True,
+                    "provider_output_validation": provider_output_validation,
+                },
+            )
         payload = dict(provider_payload) if isinstance(provider_payload, Mapping) else {}
         runtime_result_payload: dict[str, Any] = {}
         if "wam_runtime_result.json" in names:
@@ -383,6 +435,11 @@ def _extract_provider_payload(
         payload["provider_output_zip_name"] = provider_output_zip.name
         payload["provider_output_zip_path_omitted"] = True
         payload["provider_output_zip_imported"] = True
+        payload["provider_output_validation"] = provider_output_validation
+        payload["provider_output_validation_status"] = provider_output_validation.get("status")
+        payload["provider_output_usable"] = provider_output_validation.get(
+            "provider_output_usable"
+        )
         payload["provider_runtime_result_present"] = bool(runtime_result_payload)
         provider_runtime_proves_model_output = _provider_runtime_result_proves_model_output(
             runtime_result_payload

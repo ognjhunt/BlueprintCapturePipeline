@@ -1765,6 +1765,34 @@ def _yaw_quaternion(yaw: float) -> list[float]:
     return [math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)]
 
 
+def _base_pose_7d_from_pose_yaw(
+    pose: Sequence[float], yaw: float
+) -> list[float]:
+    x, y, z = float(pose[0]), float(pose[1]), float(pose[2])
+    return [
+        round(x, 9),
+        round(y, 9),
+        round(z, 9),
+        *[round(float(value), 9) for value in _yaw_quaternion(float(yaw))],
+    ]
+
+
+def _base_pose_7d_from_qpos(data: Any, root_qpos: int) -> list[float] | None:
+    values: list[float] = []
+    try:
+        root_values = data.qpos[root_qpos : root_qpos + 7]
+    except Exception:
+        return None
+    if len(root_values) < 7:
+        return None
+    for value in root_values[:7]:
+        number = _number(value)
+        if number is None or not math.isfinite(float(number)):
+            return None
+        values.append(round(float(number), 9))
+    return values
+
+
 def _g1_preview_joint_addresses(model: Any, mujoco_module: Any) -> dict[str, int]:
     names = [
         "left_hip_pitch_joint",
@@ -3787,22 +3815,39 @@ def _write_mujoco_batch_trace_package(
         )
         for index, action in enumerate(attempt.get("actions", []) or []):
             action_payload = dict(action) if isinstance(action, Mapping) else {"value": action}
-            control_records.append(
-                {
-                    "stream_type": "control_action",
-                    "attempt_id": attempt.get("attempt_id"),
-                    "episode_id": attempt.get("episode_id"),
-                    "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
-                    "scenario_variation_instance_id": attempt.get(
-                        "scenario_variation_instance_id"
-                    ),
-                    "task_id": attempt.get("task_id"),
-                    "scenario_id": attempt.get("scenario_id"),
-                    "action_index": index,
-                    "action": action_payload,
-                    "deterministic_seed": attempt.get("deterministic_seed"),
-                }
-            )
+            control_record = {
+                "stream_type": "control_action",
+                "attempt_id": attempt.get("attempt_id"),
+                "episode_id": attempt.get("episode_id"),
+                "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
+                "scenario_variation_instance_id": attempt.get(
+                    "scenario_variation_instance_id"
+                ),
+                "task_id": attempt.get("task_id"),
+                "scenario_id": attempt.get("scenario_id"),
+                "action_index": index,
+                "action": action_payload,
+                "deterministic_seed": attempt.get("deterministic_seed"),
+            }
+            sim_time_s = _number(action_payload.get("sim_time_s"))
+            if sim_time_s is not None:
+                control_record["sim_time_s"] = round(float(sim_time_s), 9)
+            base_pose_7d = action_payload.get("base_pose_7d")
+            if (
+                isinstance(base_pose_7d, Sequence)
+                and not isinstance(base_pose_7d, (str, bytes))
+                and len(base_pose_7d) == 7
+            ):
+                control_record["base_pose_7d"] = list(base_pose_7d)
+            if action_payload.get("timestamp_source"):
+                control_record["timestamp_source"] = action_payload.get(
+                    "timestamp_source"
+                )
+            if action_payload.get("robot_state_source"):
+                control_record["robot_state_source"] = action_payload.get(
+                    "robot_state_source"
+                )
+            control_records.append(control_record)
     metric_coverage = _metric_coverage(attempts)
     failed_attempts = [attempt for attempt in attempts if not bool(attempt.get("success"))]
     failure_labels = {
@@ -4550,6 +4595,9 @@ def run_mujoco_g1_simulator_command(
                     {
                         "step": step,
                         "sim_time_s": round(float(data.time), 9),
+                        "timestamp_source": "mujoco_data_time_s",
+                        "base_pose_7d": _base_pose_7d_from_pose_yaw(start, yaw),
+                        "robot_state_source": "route_preview_pose_when_blocked",
                         "root_position": [round(float(value), 6) for value in start],
                         "desired_root_position": [
                             round(float(desired_pose[0]), 6),
@@ -4643,10 +4691,16 @@ def run_mujoco_g1_simulator_command(
                 episode_contact_trace.append(enriched_contact)
                 full_contact_trace.append(enriched_contact)
             x, y, z = selected_pose
+            base_pose_7d = _base_pose_7d_from_qpos(
+                data, root_qpos
+            ) or _base_pose_7d_from_pose_yaw(selected_pose, selected_yaw)
             actions.append(
                 {
                     "step": step,
                     "sim_time_s": round(float(data.time), 9),
+                    "timestamp_source": "mujoco_data_time_s",
+                    "base_pose_7d": base_pose_7d,
+                    "robot_state_source": "mujoco_qpos_root_pose_after_mj_forward",
                     "root_position": [round(x, 6), round(y, 6), round(z, 6)],
                     "desired_root_position": [
                         round(float(desired_pose[0]), 6),

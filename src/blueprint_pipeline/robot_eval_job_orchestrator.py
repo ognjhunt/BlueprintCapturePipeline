@@ -87,6 +87,7 @@ from .wam_eval_substrate import (
 )
 from .wam_fixture_evaluator import run_wam_eval_job
 from .wam_provider_runtime import parse_wam_provider_commands
+from .wam_score_claim_gate import WAM_SCORE_CLAIM_GATE_SCHEMA_VERSION
 
 
 JOB_REQUEST_SCHEMA_VERSION = "robot_eval_job_request.v1"
@@ -99,6 +100,12 @@ GPU_PROVISIONING_RESULT_SCHEMA_VERSION = "robot_eval_gpu_provisioning_result.v1"
 SCHEDULER_DECISION_SCHEMA_VERSION = "robot_eval_execution_scheduler_decision.v1"
 WORKER_LAUNCH_PLAN_SCHEMA_VERSION = "robot_eval_worker_launch_plan.v1"
 GPU_PROVIDER_LAUNCH_REQUEST_SCHEMA_VERSION = "robot_eval_gpu_provider_launch_request.v1"
+GPU_PROVIDER_RACE_HANDOFF_SCHEMA_VERSION = "robot_eval_gpu_provider_race_handoff.v1"
+PROVIDER_RACE_RUNTIME_LAUNCHER_BLOCKER = (
+    "provider_race_runtime_launcher_not_implemented"
+)
+PROVIDER_RACE_LAUNCHER_COMMAND = "blueprint-run-robot-eval-provider-race"
+PROVIDER_RACE_LAUNCHER_RESULT_NAME = "gpu_provider_race_launcher_result.json"
 PROVIDER_PRELAUNCH_SPEND_GUARD_SCHEMA_VERSION = "robot_eval_provider_prelaunch_spend_guard.v1"
 GPU_COST_CONTROL_LEDGER_SCHEMA_VERSION = "robot_eval_gpu_cost_control_ledger.v1"
 REMOTE_CLOUD_EXECUTION_CLOSURE_SCHEMA_VERSION = "robot_eval_remote_cloud_execution_closure.v1"
@@ -779,6 +786,10 @@ def _boolish(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return _string(value).lower() in {"1", "true", "yes", "on", "allowed", "cleared"}
+
+
+def _strict_bool(value: Any) -> bool:
+    return value is True
 
 
 def _relative_to(base_dir: Path, target: Path) -> str:
@@ -2066,15 +2077,104 @@ def _provider_launch_operation(provisioner: str) -> str:
     return "no_provider_launch_required"
 
 
+def _provider_adapter_command(provisioner: str) -> str | None:
+    return {
+        "runpod": "blueprint-run-runpod-provider-adapter",
+        "vast": "blueprint-run-vast-provider-adapter",
+        "lambda_cloud": "blueprint-run-lambda-provider-adapter",
+    }.get(provisioner)
+
+
+def _provider_race_runtime_readiness(
+    candidates: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Describe whether the customer path can execute a live provider race safely.
+
+    The generic handoff packet is useful, but it is not enough to execute a live
+    customer race unless each contender has a launcher contract that both starts
+    the allocation and owns teardown for losers. RunPod's current robot-eval
+    adapter submits work but does not give this in-process race a teardown-owned
+    allocation contract, so the customer path must remain blocked rather than
+    silently falling back to serial launch.
+    """
+
+    race_candidates = [
+        _mapping(candidate)
+        for candidate in candidates
+        if candidate.get("race_candidate") is True
+        and _string(candidate.get("provider"))
+    ]
+    runtime_candidates: List[Dict[str, Any]] = []
+    runtime_blockers: List[str] = []
+    for candidate in race_candidates:
+        provider = _string(candidate.get("provider"))
+        adapter_command = _string(candidate.get("adapter_command"))
+        blockers: List[str] = []
+        if not adapter_command:
+            blockers.append(f"{provider}_provider_race_adapter_command_missing")
+        teardown_owned = provider == "vast"
+        if provider == "runpod":
+            blockers.append(
+                "runpod_provider_race_teardown_owned_allocation_contract_missing"
+            )
+        elif not teardown_owned:
+            blockers.append(
+                f"{provider}_provider_race_teardown_owned_allocation_contract_missing"
+            )
+        runtime_blockers.extend(blockers)
+        runtime_candidates.append(
+            {
+                "provider": provider,
+                "adapter_command_present": bool(adapter_command),
+                "teardown_owned_allocation_contract_present": teardown_owned,
+                "customer_path_race_runtime_eligible": not blockers,
+                "blockers": blockers,
+            }
+        )
+    eligible_count = sum(
+        1
+        for candidate in runtime_candidates
+        if candidate.get("customer_path_race_runtime_eligible") is True
+    )
+    ready = len(race_candidates) > 1 and eligible_count > 1 and not runtime_blockers
+    return {
+        "schema_version": "robot_eval_provider_race_runtime_readiness.v1",
+        "status": "runtime_ready"
+        if ready
+        else "blocked_pending_teardown_owned_race_launcher",
+        "customer_path_provider_failover_runtime_wired": ready,
+        "runtime_candidate_count": len(race_candidates),
+        "runtime_eligible_candidate_count": eligible_count,
+        "runtime_candidates": runtime_candidates,
+        "blockers": _dedupe(runtime_blockers)
+        if runtime_blockers
+        else ([] if ready else ["provider_race_requires_two_runtime_eligible_candidates"]),
+        "claim_boundary": {
+            "provider_race_handoff_is_not_live_runtime_failover": not ready,
+            "serial_provider_launch_must_remain_blocked_until_runtime_wired": not ready,
+            "teardown_owned_loser_cleanup_required_before_customer_runtime": True,
+        },
+    }
+
+
 def _provider_race_contract(
     *,
     selected_provider: str,
     gpu_selection: Mapping[str, Any],
     startup_pipeline: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    priority = _string_list(gpu_selection.get("provider_gpu_priority_fallback_list"))
-    if not priority:
-        priority = _string_list(gpu_selection.get("provider_gpu_priority"))
+    managed_provider_policy = _mapping(startup_pipeline.get("managed_provider_policy"))
+    marketplace_policy = _mapping(startup_pipeline.get("marketplace_policy"))
+    priority = _string_list(
+        startup_pipeline.get("provider_api_priority")
+        or managed_provider_policy.get("provider_api_priority")
+        or startup_pipeline.get("provider_priority")
+        or marketplace_policy.get("provider_api_priority")
+    )
+    gpu_priority = _string_list(
+        gpu_selection.get("provider_gpu_priority_fallback_list")
+        or gpu_selection.get("provider_gpu_priority")
+    )
     if selected_provider and selected_provider not in priority:
         priority.insert(0, selected_provider)
     candidates = [
@@ -2082,26 +2182,69 @@ def _provider_race_contract(
             "provider": provider,
             "operation": _provider_launch_operation(provider),
             "race_candidate": provider in LIVE_GPU_PROVISIONERS,
+            "adapter_command": _provider_adapter_command(provider),
             "selected": provider == selected_provider,
         }
         for provider in priority
     ]
+    race_candidates = [
+        candidate for candidate in candidates if candidate.get("race_candidate") is True
+    ]
+    race_required = len(race_candidates) > 1
+    runtime_readiness = _provider_race_runtime_readiness(race_candidates)
     selected_tier = _string(startup_pipeline.get("selected_provider_tier"))
     return {
         "schema_version": "robot_eval_provider_race_contract.v1",
         "status": "configured" if candidates else "single_provider_only",
-        "customer_path_provider_failover_wired": len(candidates) > 1,
+        "provider_race_contract_ready": race_required,
+        "race_required_for_customer_path": race_required,
+        "customer_path_provider_failover_wired": bool(
+            runtime_readiness.get("customer_path_provider_failover_runtime_wired")
+        ),
+        "customer_path_provider_failover_handoff_wired": race_required,
+        "customer_path_provider_failover_runtime_wired": bool(
+            runtime_readiness.get("customer_path_provider_failover_runtime_wired")
+        ),
+        "customer_path_provider_failover_runtime_status": runtime_readiness.get("status"),
+        "customer_path_provider_failover_runtime_blockers": _string_list(
+            runtime_readiness.get("blockers")
+        ),
+        "provider_race_handoff_path": "gpu_provider_race_handoff.json"
+        if race_required
+        else None,
+        "customer_path_serial_launch_blocked_unless_override": race_required,
         "selected_provider": selected_provider or None,
         "selected_provider_tier": selected_tier or None,
         "provider_selection_owner": startup_pipeline.get("provider_selection_owner"),
         "candidate_count": len(candidates),
+        "race_candidate_count": len(race_candidates),
+        "gpu_model_priority_count": len(gpu_priority),
         "candidates": candidates,
+        "runtime_readiness": runtime_readiness,
         "race_module": "blueprint_pipeline.provider_race",
         "launcher_contract": {
+            "provider_race_launcher_available": race_required,
+            "provider_race_launcher_command": PROVIDER_RACE_LAUNCHER_COMMAND
+            if race_required
+            else None,
+            "provider_race_launcher_result_path": PROVIDER_RACE_LAUNCHER_RESULT_NAME
+            if race_required
+            else None,
             "launch_every_candidate_requires_prelaunch_can_launch_true": True,
             "terminate_losers_required": True,
             "circuit_breaker_state_required": True,
             "boot_marker_required_before_winner": True,
+            "teardown_owned_loser_cleanup_required": True,
+            "handoff_packet_path": "gpu_provider_race_handoff.json"
+            if race_required
+            else None,
+            "serial_provider_launch_default_allowed": not race_required,
+            "serial_provider_launch_override_requires": [
+                "BLUEPRINT_ALLOW_SERIAL_GPU_PROVIDER_LAUNCH=true",
+                "--allow-serial-provider-launch",
+            ]
+            if race_required
+            else [],
         },
     }
 
@@ -3242,6 +3385,14 @@ def _build_gpu_provider_launch_request(
         "live_provider_calls_allowed_by_default": False,
         "live_provider_calls_performed": False,
         "prelaunch_spend_guard": prelaunch_spend_guard,
+        "provider_race_handoff_path": (
+            "gpu_provider_race_handoff.json"
+            if _mapping(prelaunch_spend_guard.get("provider_race")).get(
+                "race_required_for_customer_path"
+            )
+            is True
+            else None
+        ),
         "scheduler_decision_path": "scheduler_decision.json",
         "scheduler_decision_status": scheduler_decision.get("status"),
         "worker_launch_plan_path": "worker_launch_plan.json",
@@ -3492,6 +3643,145 @@ def _build_gpu_provider_launch_request(
         },
         "blockers": blockers,
         "claim_boundary": dict(CLAIM_BOUNDARY),
+    }
+
+
+def _build_gpu_provider_race_handoff(
+    *,
+    provider_launch_request: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    prelaunch_guard = _mapping(provider_launch_request.get("prelaunch_spend_guard"))
+    provider_race = _mapping(
+        prelaunch_guard.get("provider_race")
+        or provider_launch_request.get("provider_race")
+    )
+    candidates = [
+        _mapping(candidate)
+        for candidate in provider_race.get("candidates") or []
+        if isinstance(candidate, Mapping)
+    ]
+    race_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.get("race_candidate") is True
+        and _string(candidate.get("provider"))
+    ]
+    runnable_candidates = [
+        {
+            "provider": candidate.get("provider"),
+            "operation": candidate.get("operation"),
+            "adapter_command": candidate.get("adapter_command"),
+            "selected": bool(candidate.get("selected")),
+            "launch_request_path": "gpu_provider_launch_request.json",
+            "adapter_result_path": (
+                f"{_string(candidate.get('provider'))}_provider_adapter_result.json"
+            ),
+        }
+        for candidate in race_candidates
+        if _string(candidate.get("adapter_command"))
+    ]
+    race_required = bool(provider_race.get("race_required_for_customer_path"))
+    runtime_readiness = _mapping(
+        provider_race.get("runtime_readiness")
+    ) or _provider_race_runtime_readiness(race_candidates)
+    blockers: List[str] = []
+    if not race_required:
+        blockers.append("provider_race_not_required_for_customer_path")
+    if prelaunch_guard.get("required_before_provider_launch") is True and (
+        prelaunch_guard.get("can_launch") is not True
+    ):
+        blockers.append("prelaunch_spend_guard_not_passed")
+        blockers.extend(_string_list(prelaunch_guard.get("blockers")))
+    if race_required and len(runnable_candidates) < 2:
+        blockers.append("provider_race_requires_two_adapter_commands")
+    runtime_wired = bool(
+        runtime_readiness.get("customer_path_provider_failover_runtime_wired")
+    )
+    if race_required and not runtime_wired:
+        blockers.append("customer_path_provider_failover_runtime_not_wired")
+        blockers.extend(_string_list(runtime_readiness.get("blockers")))
+    runtime_launcher_available = bool(race_required and len(runnable_candidates) >= 2)
+    runtime_launcher_blockers = (
+        [] if runtime_launcher_available or not race_required else [
+            PROVIDER_RACE_RUNTIME_LAUNCHER_BLOCKER
+        ]
+    )
+    blockers.extend(runtime_launcher_blockers)
+    ready = (
+        race_required
+        and runtime_wired
+        and runtime_launcher_available
+        and not blockers
+    )
+    return {
+        "schema_version": GPU_PROVIDER_RACE_HANDOFF_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "job_id": provider_launch_request.get("job_id"),
+        "status": "ready_for_customer_provider_race_runtime"
+        if ready
+        else "blocked_before_provider_race_launcher",
+        "reason": "provider_race_handoff_ready"
+        if ready
+        else "provider_race_handoff_blocked",
+        "blockers": _dedupe(blockers),
+        "provider_launch_request_path": "gpu_provider_launch_request.json",
+        "prelaunch_spend_guard": prelaunch_guard or None,
+        "provider_race": provider_race or None,
+        "race_module": provider_race.get("race_module")
+        or "blueprint_pipeline.provider_race",
+        "provider_race_required_for_customer_path": race_required,
+        "customer_path_provider_failover_handoff_wired": race_required,
+        "customer_path_provider_failover_runtime_wired": runtime_wired,
+        "customer_path_provider_failover_runtime_status": runtime_readiness.get("status"),
+        "customer_path_provider_failover_runtime_blockers": _string_list(
+            runtime_readiness.get("blockers")
+        ),
+        "provider_race_runtime_readiness": runtime_readiness,
+        "provider_race_runtime_launcher_available": runtime_launcher_available,
+        "provider_race_runtime_launcher_blockers": runtime_launcher_blockers,
+        "provider_race_launcher_result_path": PROVIDER_RACE_LAUNCHER_RESULT_NAME
+        if runtime_launcher_available
+        else None,
+        "customer_path_provider_failover_wired": runtime_wired,
+        "live_provider_calls_performed": False,
+        "serial_provider_launch_default_allowed": not race_required,
+        "candidate_count": len(candidates),
+        "race_candidate_count": len(race_candidates),
+        "runnable_candidate_count": len(runnable_candidates),
+        "runnable_candidates": runnable_candidates,
+        "launcher_command": (
+            f"{PROVIDER_RACE_LAUNCHER_COMMAND} "
+            "--provider-launch-request gpu_provider_launch_request.json "
+            "--handoff gpu_provider_race_handoff.json"
+            if runtime_launcher_available
+            else None
+        ),
+        "execution_contract": {
+            "launch_every_candidate_requires_prelaunch_can_launch_true": True,
+            "terminate_losers_required": True,
+            "boot_marker_required_before_winner": True,
+            "circuit_breaker_state_required": True,
+            "teardown_owned_loser_cleanup_required": True,
+            "write_provider_launcher_result_required": True,
+            "provider_race_runtime_launcher_required": race_required,
+            "provider_race_runtime_launcher_available": runtime_launcher_available,
+            "provider_race_launcher_result_path": PROVIDER_RACE_LAUNCHER_RESULT_NAME
+            if runtime_launcher_available
+            else None,
+            "live_race_execution_proven": False,
+        },
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "race_handoff_is_not_provider_execution": True,
+            "provider_race_module_exists_but_live_race_not_executed": True,
+            "provider_race_handoff_is_not_customer_runtime_failover": not ready,
+            "provider_race_runtime_launcher_not_implemented": not runtime_launcher_available,
+            "provider_race_launcher_command_available": runtime_launcher_available,
+            "teardown_owned_loser_cleanup_not_proven": not runtime_wired,
+            "live_provider_calls_performed": False,
+            "remote_cloud_execution_proven": False,
+        },
     }
 
 
@@ -4039,13 +4329,13 @@ def _remote_cloud_execution_closure_manifest(
             and local_sim_only_prereq_ready
         )
     )
-    live_provider_calls = bool(
-        gpu_cost_ledger.get("live_provider_calls_performed")
-        or gpu_result.get("live_provider_calls_performed")
+    live_provider_calls = (
+        _strict_bool(gpu_cost_ledger.get("live_provider_calls_performed"))
+        or _strict_bool(gpu_result.get("live_provider_calls_performed"))
     )
-    actual_gpu_time_present = bool(gpu_time.get("actual_gpu_time_record_present"))
+    actual_gpu_time_present = _strict_bool(gpu_time.get("actual_gpu_time_record_present"))
     runtime_observed = _string(gpu_cost_ledger.get("status")) == "provider_runtime_observed"
-    simulator_execution_proven = bool(sim_result.get("simulator_execution_proven"))
+    simulator_execution_proven = _strict_bool(sim_result.get("simulator_execution_proven"))
     provider_shutdown_evidence = _mapping(artifact_finalizer.get("provider_shutdown_evidence"))
     artifact_upload_evidence = _mapping(artifact_finalizer.get("artifact_upload_evidence"))
     finalizer_refresh_upload_evidence = _mapping(
@@ -4061,9 +4351,9 @@ def _remote_cloud_execution_closure_manifest(
     package_validated_without_spend = bool(
         provider_package_validation_status.startswith("validated")
     )
-    worker_finalizer_proven = bool(
-        artifact_finalizer.get("worker_artifacts_finalized_before_shutdown")
-        or artifact_finalizer.get("worker_finalizer_completed_before_shutdown")
+    worker_finalizer_proven = (
+        _strict_bool(artifact_finalizer.get("worker_artifacts_finalized_before_shutdown"))
+        or _strict_bool(artifact_finalizer.get("worker_finalizer_completed_before_shutdown"))
     )
     artifact_upload_evidence_complete = bool(
         not (external_provider and live_provider_calls)
@@ -4073,13 +4363,13 @@ def _remote_cloud_execution_closure_manifest(
             and upload_evidence_complete(runtime_manifest_upload_evidence)
         )
     )
-    provider_shutdown_proven = bool(
-        artifact_finalizer.get("provider_shutdown_proven")
-        or provider_shutdown_evidence.get("provider_shutdown_proven")
-        or provider_shutdown_evidence.get("clean_shutdown_proven")
-        or provider_shutdown_evidence.get("zero_active_workers_after_run")
-        or provider_shutdown_evidence.get("pod_terminated")
-        or provider_shutdown_evidence.get("worker_terminated")
+    provider_shutdown_proven = (
+        _strict_bool(artifact_finalizer.get("provider_shutdown_proven"))
+        or _strict_bool(provider_shutdown_evidence.get("provider_shutdown_proven"))
+        or _strict_bool(provider_shutdown_evidence.get("clean_shutdown_proven"))
+        or _strict_bool(provider_shutdown_evidence.get("zero_active_workers_after_run"))
+        or _strict_bool(provider_shutdown_evidence.get("pod_terminated"))
+        or _strict_bool(provider_shutdown_evidence.get("worker_terminated"))
     )
     clean_shutdown_proven = bool(
         external_provider
@@ -4648,15 +4938,19 @@ def _run_command_simulator(
             simulator_output_payload = None
     output_mapping = _mapping(simulator_output_payload)
     output_declares_execution = output_mapping.get("simulator_execution_proven")
-    if status == "completed" and output_declares_execution is False:
+    invalid_execution_proof_claim = (
+        "simulator_execution_proven" in output_mapping
+        and output_declares_execution is not True
+    )
+    if status == "completed" and invalid_execution_proof_claim:
         status = "blocked"
-    isaac_sim_execution_proven = bool(output_mapping.get("isaac_sim_execution_proven"))
-    isaac_robot_asset_execution_proven = bool(
+    isaac_sim_execution_proven = _strict_bool(output_mapping.get("isaac_sim_execution_proven"))
+    isaac_robot_asset_execution_proven = _strict_bool(
         output_mapping.get("isaac_robot_asset_execution_proven")
     )
-    unitree_g1_asset_spawned = bool(
-        output_mapping.get("unitree_g1_asset_spawned")
-        or output_mapping.get("unitree_g1_robot_asset_spawned")
+    unitree_g1_asset_spawned = (
+        _strict_bool(output_mapping.get("unitree_g1_asset_spawned"))
+        or _strict_bool(output_mapping.get("unitree_g1_robot_asset_spawned"))
     )
     return {
         "schema_version": SIMULATOR_SERVICE_RESULT_SCHEMA_VERSION,
@@ -4666,12 +4960,12 @@ def _run_command_simulator(
         "reason": None
         if status == "completed"
         else "simulator_output_declared_execution_not_proven"
-        if output_declares_execution is False
+        if invalid_execution_proof_claim
         else f"simulator_exit_code:{completed.returncode}",
         "blockers": []
         if status == "completed"
         else ["simulator_output_declared_execution_not_proven"]
-        if output_declares_execution is False
+        if invalid_execution_proof_claim
         else [f"simulator_exit_code:{completed.returncode}"],
         "command": command,
         "raw_command": command_text,
@@ -4851,7 +5145,11 @@ def _expand_fixture_artifacts_to_scenario_eval_runs(
         }
         expanded_attempts.append(expanded)
 
-    failures = [attempt for attempt in expanded_attempts if not bool(attempt.get("success"))]
+    failures = [
+        attempt
+        for attempt in expanded_attempts
+        if coerce_strict_success(attempt.get("success")) is not True
+    ]
     expanded_trace = {
         **dict(trace),
         "schema_version": trace.get("schema_version") or NORMALIZED_ATTEMPT_TRACE_SCHEMA_VERSION,
@@ -4979,8 +5277,10 @@ def _expand_fixture_artifacts_to_scenario_eval_runs(
             "variation_name": attempt.get("variation_name"),
             "task_id": attempt.get("task_id"),
             "policy_id": attempt.get("policy_id"),
-            "predicted_status": "passed" if attempt.get("success") else "failed",
-            "predicted_success": bool(attempt.get("success")),
+            "predicted_status": "passed"
+            if coerce_strict_success(attempt.get("success")) is True
+            else "failed",
+            "predicted_success": coerce_strict_success(attempt.get("success")) is True,
             "predicted_cycle_time_seconds": _number(
                 _mapping(attempt.get("metrics")).get("cycle_time_seconds")
                 or attempt.get("predicted_cycle_time_seconds")
@@ -5577,7 +5877,9 @@ def _standard_policy_scorecard(attempts: Sequence[Mapping[str, Any]]) -> Dict[st
             },
             "sim_vs_real_calibration_score": None,
         }
-    successes = sum(1 for attempt in attempts if bool(attempt.get("success")))
+    successes = sum(
+        1 for attempt in attempts if coerce_strict_success(attempt.get("success")) is True
+    )
     cycle_times = [
         value
         for attempt in attempts
@@ -5685,7 +5987,9 @@ def _evaluation_result(
         if trace_status.startswith("blocked") or trace_status in {"not_available", "missing"}:
             status = "blocked"
             blockers = _string_list(trace.get("blockers")) or ["normalized_attempt_trace_missing"]
-        elif attempts and any(not bool(item.get("success")) for item in attempts):
+        elif attempts and any(
+            coerce_strict_success(item.get("success")) is not True for item in attempts
+        ):
             status = "completed_with_failures"
             blockers = []
         else:
@@ -5734,10 +6038,10 @@ def _ordered_unique_strings(values: Iterable[Any]) -> List[str]:
 
 def _attempt_task_success(attempt: Mapping[str, Any]) -> bool:
     if "task_success" in attempt:
-        return bool(attempt.get("task_success"))
+        return coerce_strict_success(attempt.get("task_success")) is True
     if "success" in attempt:
-        return bool(attempt.get("success"))
-    return bool(_mapping(attempt.get("task_outcome")).get("task_success"))
+        return coerce_strict_success(attempt.get("success")) is True
+    return coerce_strict_success(_mapping(attempt.get("task_outcome")).get("task_success")) is True
 
 
 def _matrix_policy_run_index(
@@ -6306,7 +6610,7 @@ def _write_robot_eval_report(
             "supported_modalities": _string_list(policy_manifest.get("supported_modalities"))
             or list(POLICY_MODALITY_ORDER),
             "policy_execution_status": policy_execution_manifest.get("status"),
-            "robot_policy_execution_proven": bool(
+            "robot_policy_execution_proven": _strict_bool(
                 policy_execution_manifest.get("robot_policy_execution_proven")
             ),
         },
@@ -6314,10 +6618,12 @@ def _write_robot_eval_report(
         "evaluator_scores": _mapping(evaluation_result.get("standard_policy_scorecard")),
         "real_world_validation": {
             "deployment_outcome_status": deployment_ledger.get("status"),
-            "real_world_outcome_records_present": bool(
+            "real_world_outcome_records_present": _strict_bool(
                 deployment_ledger.get("real_world_outcome_records_present")
             ),
-            "real_world_outcome_proven": bool(deployment_ledger.get("real_world_outcome_proven")),
+            "real_world_outcome_proven": _strict_bool(
+                deployment_ledger.get("real_world_outcome_proven")
+            ),
             "owner_evidence_record_count": int(
                 deployment_ledger.get("owner_evidence_record_count") or 0
             ),
@@ -6348,9 +6654,13 @@ def _write_robot_eval_report(
         },
         "live_eval_closure": {
             "status": live_closure.get("status"),
-            "repo_local_artifacts_ready": bool(live_closure.get("repo_local_artifacts_ready")),
-            "live_external_ready": bool(live_closure.get("live_external_ready")),
-            "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
+            "repo_local_artifacts_ready": _strict_bool(
+                live_closure.get("repo_local_artifacts_ready")
+            ),
+            "live_external_ready": _strict_bool(live_closure.get("live_external_ready")),
+            "live_end_to_end_verified": _strict_bool(
+                live_closure.get("live_end_to_end_verified")
+            ),
             "blockers": _string_list(live_closure.get("blockers")),
         },
         "requirement_coverage": {
@@ -6369,27 +6679,41 @@ def _write_robot_eval_report(
             ),
         },
         "proof_boundary": {
-            "review_acceptance_proven": bool(proof_boundary.get("review_acceptance_proven")),
-            "rights_privacy_scope_proven": bool(
+            "review_acceptance_proven": _strict_bool(
+                proof_boundary.get("review_acceptance_proven")
+            ),
+            "rights_privacy_scope_proven": _strict_bool(
                 proof_boundary.get("rights_privacy_scope_proven")
             ),
-            "signed_delivery_access_proven": bool(
+            "signed_delivery_access_proven": _strict_bool(
                 proof_boundary.get("signed_delivery_access_proven")
             ),
             "delivery_access_is_deployment_approval": False,
             "package_delivery_is_deployment_approval": False,
             "deployment_approval_proven": False,
             "physical_robot_readiness_proven": False,
-            "safety_validation_proven": bool(proof_boundary.get("safety_validation_proven")),
-            "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
-            "robot_policy_execution_proven": bool(
+            "safety_validation_proven": _strict_bool(
+                proof_boundary.get("safety_validation_proven")
+            ),
+            "simulator_execution_proven": _strict_bool(
+                proof_boundary.get("simulator_execution_proven")
+            ),
+            "robot_policy_execution_proven": _strict_bool(
                 proof_boundary.get("robot_policy_execution_proven")
             ),
-            "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
-            "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
-            "non_ranking_operational_claim_validated": bool(proof_boundary.get("non_ranking_operational_claim_validated")),
-            "rank_fidelity_result_proven": bool(proof_boundary.get("rank_fidelity_result_proven")),
-            "public_claim_upgrade_allowed": bool(
+            "real_world_outcome_proven": _strict_bool(
+                proof_boundary.get("real_world_outcome_proven")
+            ),
+            "physics_contact_validated": _strict_bool(
+                proof_boundary.get("physics_contact_validated")
+            ),
+            "non_ranking_operational_claim_validated": _strict_bool(
+                proof_boundary.get("non_ranking_operational_claim_validated")
+            ),
+            "rank_fidelity_result_proven": _strict_bool(
+                proof_boundary.get("rank_fidelity_result_proven")
+            ),
+            "public_claim_upgrade_allowed": _strict_bool(
                 proof_boundary.get("public_claim_upgrade_allowed")
             ),
         },
@@ -6597,6 +6921,60 @@ def _task_eval_review_verdicts(job_dir: Path) -> List[Dict[str, Any]]:
     return verdicts
 
 
+def _wam_score_claim_payload_for_buyer_report(
+    *,
+    wam_eval: Mapping[str, Any],
+    wam_scorecard: Mapping[str, Any],
+    generated_at: str,
+) -> Dict[str, Any] | None:
+    if not wam_eval:
+        return None
+    explicit = _mapping(
+        wam_scorecard.get("wam_score_claim")
+        or wam_scorecard.get("wam_score_claim_gate")
+        or wam_eval.get("wam_score_claim")
+        or wam_eval.get("wam_score_claim_gate")
+    )
+    if explicit:
+        return explicit
+
+    review_grade = wam_scorecard.get("review_grade_policy_ranking") is True
+    grade = "review_grade" if review_grade else "fixture_evaluator_only"
+    consistency_summary = _mapping(
+        wam_scorecard.get("forward_inverse_consistency_signal_summary")
+    )
+    return {
+        "schema_version": WAM_SCORE_CLAIM_GATE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "granted",
+        "requested_grade": grade,
+        "granted_grade": grade,
+        "max_allowed_grade": grade,
+        "fixture_evaluator_only": not review_grade,
+        "consistency_measured_and_passed": False,
+        "calibration_anchors_present_and_passed": False,
+        "consistency": {
+            "status": _string(consistency_summary.get("status")) or "missing",
+            "consistency_score": consistency_summary.get("consistency_score"),
+            "passed": False,
+            "blockers": _string_list(consistency_summary.get("blockers")),
+        },
+        "calibration_anchors": {
+            "anchors_present": False,
+            "anchors_passed": False,
+            "anchor_set": [],
+            "anchor_validation_status": "not_measured",
+        },
+        "blockers": _string_list(wam_scorecard.get("comparison_blockers"))
+        + _string_list(wam_scorecard.get("visual_review_blockers")),
+        "claim_boundary": {
+            "derived_from_policy_ranking_scorecard": True,
+            "grade_is_evaluator_bounded_not_rank_fidelity": True,
+            "rank_fidelity_result_proven": False,
+        },
+    }
+
+
 def _write_task_eval_run_buyer_report(
     *,
     job_dir: Path,
@@ -6616,6 +6994,7 @@ def _write_task_eval_run_buyer_report(
     gpu_result: Mapping[str, Any],
     gpu_cost_ledger: Mapping[str, Any],
     remote_cloud_closure: Mapping[str, Any],
+    wam_eval_result: Mapping[str, Any] | None = None,
     generated_at: str,
 ) -> Dict[str, Any]:
     trace = _mapping(copied_artifacts.get("normalized_attempt_trace")) or _read_optional_mapping(
@@ -6734,6 +7113,55 @@ def _write_task_eval_run_buyer_report(
         is True,
         "live_closure_status": live_closure.get("status"),
     }
+    wam_eval = _mapping(wam_eval_result)
+    wam_provider_execution = _mapping(wam_eval.get("wam_provider_execution_manifest"))
+    wam_policy_binding = _mapping(wam_eval.get("wam_policy_interface_binding"))
+    wam_scorecard = _mapping(wam_eval.get("policy_ranking_scorecard"))
+    wam_claim_boundary = _mapping(wam_eval.get("wam_eval_claim_boundary"))
+    wam_task_eval_report = _mapping(wam_eval.get("task_eval_run_report"))
+    wam_score_claim_payload = _wam_score_claim_payload_for_buyer_report(
+        wam_eval=wam_eval,
+        wam_scorecard=wam_scorecard,
+        generated_at=generated_at,
+    )
+    provider_execution: Dict[str, Any] = {
+        "gpu_provisioning_status": gpu_result.get("status"),
+        "gpu_cost_control_ledger_status": gpu_cost_ledger.get("status"),
+        "remote_cloud_execution_status": remote_cloud_closure.get("status"),
+        "simulator_service_status": simulator_result.get("status"),
+        "evaluation_status": evaluation_result.get("status"),
+        "live_eval_closure_status": live_closure.get("status"),
+    }
+    if wam_eval:
+        provider_execution.update(
+            {
+                "evaluation_substrate": wam_eval.get("evaluation_substrate"),
+                "wam_evaluation_status": wam_eval.get("status"),
+                "wam_provider_execution_status": wam_provider_execution.get("status"),
+                "wam_provider_command_used": bool(
+                    wam_provider_execution.get("provider_command_used")
+                ),
+                "wam_policy_ranking_scorecard_status": wam_scorecard.get("status"),
+                "wam_task_eval_run_report_status": wam_task_eval_report.get("status"),
+                "wam_task_eval_run_report_evidence_level": wam_task_eval_report.get(
+                    "evidence_level"
+                ),
+                "generated_wam_rollouts_are_model_derived_support_artifacts": True,
+                "wam_evaluator_bounded_policy_ranking_only": True,
+            }
+        )
+    policy_binding_payload: Dict[str, Any] = {
+        "policy_package_status": policy_manifest.get("status"),
+        "policy_execution_status": policy_execution_manifest.get("status"),
+        "policy_id": policy_id,
+    }
+    if wam_policy_binding:
+        policy_binding_payload["wam_policy_interface_binding_status"] = (
+            wam_policy_binding.get("status")
+        )
+        policy_binding_payload["wam_policy_interface_binding_path"] = (
+            "wam_policy_interface_binding.json"
+        )
     report = build_task_eval_run_report(
         job_id=job_id,
         scene_id=scene_id,
@@ -6749,22 +7177,44 @@ def _write_task_eval_run_buyer_report(
             "contact_state_change": contact_state_change,
             "physical_readiness": physical_readiness,
         },
-        provider_execution={
-            "gpu_provisioning_status": gpu_result.get("status"),
-            "gpu_cost_control_ledger_status": gpu_cost_ledger.get("status"),
-            "remote_cloud_execution_status": remote_cloud_closure.get("status"),
-            "simulator_service_status": simulator_result.get("status"),
-            "evaluation_status": evaluation_result.get("status"),
-            "live_eval_closure_status": live_closure.get("status"),
-        },
-        policy_binding={
-            "policy_package_status": policy_manifest.get("status"),
-            "policy_execution_status": policy_execution_manifest.get("status"),
-            "policy_id": policy_id,
-        },
+        provider_execution=provider_execution,
+        policy_binding=policy_binding_payload,
         rights_privacy_gate=rights_privacy_gate,
+        wam_evaluation=wam_score_claim_payload,
         generated_at=generated_at,
     )
+    if wam_eval:
+        composer_wam_section = _mapping(report.get("wam_evaluation"))
+        report = {
+            **dict(report),
+            "wam_evaluation": {
+                **composer_wam_section,
+                "status": wam_eval.get("status"),
+                "evaluation_substrate": wam_eval.get("evaluation_substrate"),
+                "provider_execution_status": wam_provider_execution.get("status"),
+                "provider_command_used": bool(
+                    wam_provider_execution.get("provider_command_used")
+                ),
+                "policy_ranking_scorecard_status": wam_scorecard.get("status"),
+                "claim_boundary_path": "wam_eval_claim_boundary.json"
+                if wam_claim_boundary
+                else None,
+                "task_eval_run_report_source_status": wam_task_eval_report.get(
+                    "status"
+                ),
+                "task_eval_run_report_source_evidence_level": wam_task_eval_report.get(
+                    "evidence_level"
+                ),
+                "artifacts_are_support_outputs_not_deployment_claims": True,
+            },
+            "claim_boundary": {
+                **_mapping(report.get("claim_boundary")),
+                "generated_wam_rollouts_are_model_derived_support_artifacts": True,
+                "wam_evaluator_bounded_policy_ranking_is_not_task_success": True,
+                "wam_policy_ranking_is_not_evaluation_readiness": True,
+                "wam_outputs_do_not_prove_physical_readiness": True,
+            },
+        }
     _write_job_json(job_dir, "task_eval_run_report.json", report)
     return report
 
@@ -6778,17 +7228,18 @@ def _proof_boundary(
     deployment_outcome_ledger: Mapping[str, Any] | None = None,
     generated_at: str,
 ) -> Dict[str, Any]:
-    training_completed = bool(training_result.get("training_completed"))
+    training_completed = _strict_bool(training_result.get("training_completed"))
     simulator_proven = (
-        bool(simulator_result.get("simulator_execution_proven")) and simulator != "fixture"
+        _strict_bool(simulator_result.get("simulator_execution_proven"))
+        and simulator != "fixture"
     )
-    policy_execution_proven = bool(
+    policy_execution_proven = _strict_bool(
         _mapping(policy_execution_manifest).get("robot_policy_execution_proven")
     )
-    real_world_outcome_proven = bool(
+    real_world_outcome_proven = _strict_bool(
         _mapping(deployment_outcome_ledger).get("real_world_outcome_proven")
     )
-    real_world_outcome_records_present = bool(
+    real_world_outcome_records_present = _strict_bool(
         _mapping(deployment_outcome_ledger).get("real_world_outcome_records_present")
     )
     owner_evidence_record_count = int(
@@ -6812,8 +7263,8 @@ def _proof_boundary(
         "status": "review_only",
         "fixture_only_proof": simulator == "fixture",
         "gpu_provisioning_performed": False,
-        "simulators_run": bool(simulator_result.get("simulators_run")),
-        "gpu_training_run": bool(training_result.get("gpu_training_run")),
+        "simulators_run": _strict_bool(simulator_result.get("simulators_run")),
+        "gpu_training_run": _strict_bool(training_result.get("gpu_training_run")),
         "review_acceptance_proven": False,
         "rights_privacy_scope_proven": False,
         "signed_delivery_access_proven": False,
@@ -6837,8 +7288,8 @@ def _proof_boundary(
         "remaining_required_evidence": remaining,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
-            "simulators_run": bool(simulator_result.get("simulators_run")),
-            "gpu_training_run": bool(training_result.get("gpu_training_run")),
+            "simulators_run": _strict_bool(simulator_result.get("simulators_run")),
+            "gpu_training_run": _strict_bool(training_result.get("gpu_training_run")),
             "review_acceptance_proven": False,
             "rights_privacy_scope_proven": False,
             "signed_delivery_access_proven": False,
@@ -6862,24 +7313,34 @@ def _apply_live_closure_to_proof_boundary(
     live_closure: Mapping[str, Any],
 ) -> Dict[str, Any]:
     closure_boundary = _mapping(live_closure.get("proof_boundary"))
+    live_end_to_end_verified = _strict_bool(live_closure.get("live_end_to_end_verified"))
+    closure_live_end_to_end_verified = _strict_bool(
+        closure_boundary.get("live_end_to_end_verified")
+    )
     updated = {
         **dict(proof_boundary),
         "live_eval_closure_status": live_closure.get("status"),
         "live_eval_closure_manifest_path": "live_eval_closure_manifest.json",
-        "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
+        "live_end_to_end_verified": live_end_to_end_verified,
         "live_eval_closure_blockers": _string_list(live_closure.get("blockers")),
-        "review_acceptance_proven": bool(closure_boundary.get("review_acceptance_proven")),
-        "rights_privacy_scope_proven": bool(closure_boundary.get("rights_privacy_scope_proven")),
-        "signed_delivery_access_proven": bool(
+        "review_acceptance_proven": _strict_bool(
+            closure_boundary.get("review_acceptance_proven")
+        ),
+        "rights_privacy_scope_proven": _strict_bool(
+            closure_boundary.get("rights_privacy_scope_proven")
+        ),
+        "signed_delivery_access_proven": _strict_bool(
             closure_boundary.get("signed_delivery_access_proven")
         ),
         "delivery_access_is_deployment_approval": False,
         "package_delivery_is_deployment_approval": False,
         "deployment_approval_proven": False,
         "physical_robot_readiness_proven": False,
-        "safety_validation_proven": bool(closure_boundary.get("safety_validation_proven")),
+        "safety_validation_proven": _strict_bool(
+            closure_boundary.get("safety_validation_proven")
+        ),
     }
-    if bool(closure_boundary.get("live_end_to_end_verified")):
+    if closure_live_end_to_end_verified:
         for field in (
             "simulator_execution_proven",
             "robot_policy_execution_proven",
@@ -6889,29 +7350,43 @@ def _apply_live_closure_to_proof_boundary(
             "rank_fidelity_result_proven",
             "public_claim_upgrade_allowed",
         ):
-            updated[field] = bool(closure_boundary.get(field))
+            updated[field] = _strict_bool(closure_boundary.get(field))
         updated["status"] = "live_end_to_end_verified"
         updated["remaining_required_evidence"] = []
     updated["claim_boundary"] = {
         **_mapping(updated.get("claim_boundary")),
         "live_eval_closure_manifest_path": "live_eval_closure_manifest.json",
-        "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
-        "review_acceptance_proven": bool(updated.get("review_acceptance_proven")),
-        "rights_privacy_scope_proven": bool(updated.get("rights_privacy_scope_proven")),
-        "signed_delivery_access_proven": bool(updated.get("signed_delivery_access_proven")),
-        "customer_handoff_ready": bool(updated.get("customer_handoff_ready")),
+        "live_end_to_end_verified": live_end_to_end_verified,
+        "review_acceptance_proven": _strict_bool(updated.get("review_acceptance_proven")),
+        "rights_privacy_scope_proven": _strict_bool(
+            updated.get("rights_privacy_scope_proven")
+        ),
+        "signed_delivery_access_proven": _strict_bool(
+            updated.get("signed_delivery_access_proven")
+        ),
+        "customer_handoff_ready": _strict_bool(updated.get("customer_handoff_ready")),
         "delivery_access_is_deployment_approval": False,
         "package_delivery_is_deployment_approval": False,
         "deployment_approval_proven": False,
         "physical_robot_readiness_proven": False,
-        "safety_validation_proven": bool(updated.get("safety_validation_proven")),
-        "simulator_execution_proven": bool(updated.get("simulator_execution_proven")),
-        "robot_policy_execution_proven": bool(updated.get("robot_policy_execution_proven")),
-        "real_world_outcome_proven": bool(updated.get("real_world_outcome_proven")),
-        "physics_contact_validated": bool(updated.get("physics_contact_validated")),
-        "non_ranking_operational_claim_validated": bool(updated.get("non_ranking_operational_claim_validated")),
-        "rank_fidelity_result_proven": bool(updated.get("rank_fidelity_result_proven")),
-        "public_claim_upgrade_allowed": bool(updated.get("public_claim_upgrade_allowed")),
+        "safety_validation_proven": _strict_bool(updated.get("safety_validation_proven")),
+        "simulator_execution_proven": _strict_bool(
+            updated.get("simulator_execution_proven")
+        ),
+        "robot_policy_execution_proven": _strict_bool(
+            updated.get("robot_policy_execution_proven")
+        ),
+        "real_world_outcome_proven": _strict_bool(updated.get("real_world_outcome_proven")),
+        "physics_contact_validated": _strict_bool(updated.get("physics_contact_validated")),
+        "non_ranking_operational_claim_validated": _strict_bool(
+            updated.get("non_ranking_operational_claim_validated")
+        ),
+        "rank_fidelity_result_proven": _strict_bool(
+            updated.get("rank_fidelity_result_proven")
+        ),
+        "public_claim_upgrade_allowed": _strict_bool(
+            updated.get("public_claim_upgrade_allowed")
+        ),
     }
     return updated
 
@@ -7100,6 +7575,9 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "customer_handoff_report.md",
         "delivery_manifest.json",
         "signed_access_manifest.json",
+        "revocation_takedown_manifest.json",
+        "webapp_rights_privacy_takedown_notice.json",
+        "hosted_session_takedown_request.json",
         "live_operator_ledger.json",
         "startup_architecture_audit.json",
         "worker_runtime_manifest.json",
@@ -7208,6 +7686,28 @@ def _webapp_robot_eval_status_projection(
 ) -> Dict[str, Any]:
     artifact_paths = _artifact_paths(job_dir)
     task_eval_run_report = _read_optional_mapping(job_dir / "task_eval_run_report.json")
+    data_package_consent_evidence = _mapping(data_package_export.get("consent_evidence"))
+    revocation_takedown = _mapping(data_package_export.get("revocation_takedown"))
+    data_package_blockers = _string_list(data_package_export.get("blockers"))
+    consent_revoked = bool(
+        _boolish(data_package_consent_evidence.get("consent_revoked"))
+        or _boolish(revocation_takedown.get("consent_revoked"))
+    )
+    revocation_required = bool(
+        consent_revoked
+        or revocation_takedown.get("status") == "takedown_required"
+        or data_package_export.get("status")
+        == "blocked_consent_revoked_takedown_required"
+        or "consent:consent_revoked_takedown_required" in data_package_blockers
+    )
+    webapp_takedown_executed = revocation_takedown.get("webapp_takedown_executed") is True
+    hosted_session_takedown_executed = (
+        revocation_takedown.get("hosted_session_takedown_executed") is True
+    )
+    downstream_takedown_artifacts = _mapping(
+        revocation_takedown.get("downstream_takedown_artifacts")
+        or data_package_export.get("downstream_takedown_artifacts")
+    )
     trace = _mapping(copied_artifacts.get("normalized_attempt_trace")) or _read_optional_mapping(
         job_dir / "normalized_attempt_trace.json"
     )
@@ -7318,8 +7818,18 @@ def _webapp_robot_eval_status_projection(
     )
     if not supported_modalities:
         supported_modalities = list(POLICY_MODALITY_ORDER)
-    proof_public_claim = bool(proof_boundary.get("public_claim_upgrade_allowed"))
-    rank_fidelity_result_proven = bool(proof_boundary.get("rank_fidelity_result_proven"))
+    simulator_execution_proven = proof_boundary.get("simulator_execution_proven") is True
+    robot_policy_execution_proven = (
+        policy_execution_manifest.get("robot_policy_execution_proven") is True
+        or proof_boundary.get("robot_policy_execution_proven") is True
+    )
+    real_world_outcome_proven = proof_boundary.get("real_world_outcome_proven") is True
+    physics_contact_validated = proof_boundary.get("physics_contact_validated") is True
+    non_ranking_operational_claim_validated = (
+        proof_boundary.get("non_ranking_operational_claim_validated") is True
+    )
+    proof_public_claim = proof_boundary.get("public_claim_upgrade_allowed") is True
+    rank_fidelity_result_proven = proof_boundary.get("rank_fidelity_result_proven") is True
     machine_trace_complete = bool(
         batch_closure.get("machine_trace_package_complete")
         or simulator_result.get("machine_trace_package_complete")
@@ -7328,11 +7838,13 @@ def _webapp_robot_eval_status_projection(
         batch_closure.get("robot_team_grade_package_complete")
         or simulator_result.get("robot_team_grade_package_complete")
     )
-    if blockers:
+    if revocation_required:
+        buyer_display_state = "blocked_consent_revoked_takedown_required"
+    elif blockers:
         buyer_display_state = "blocked"
     elif robot_team_package_complete:
         buyer_display_state = "robot_team_package_ready_for_review"
-    elif machine_trace_complete or bool(proof_boundary.get("simulator_execution_proven")):
+    elif machine_trace_complete or simulator_execution_proven:
         buyer_display_state = "simulator_results_ready_review_required"
     else:
         buyer_display_state = "awaiting_pipeline_evidence"
@@ -7343,7 +7855,7 @@ def _webapp_robot_eval_status_projection(
         "scene_id": scene_id,
         "capture_id": capture_id,
         "status": status,
-        "state": "blocked" if blockers else "completed",
+        "state": "blocked" if blockers or revocation_required else "completed",
         "buyer_display_state": buyer_display_state,
         "webapp_role": "display_status_and_proof_boundaries_only",
         "provider_complexity_hidden": True,
@@ -7481,10 +7993,7 @@ def _webapp_robot_eval_status_projection(
                 policy_interface.get("reproducible_replay_required")
                 or policy_interface.get("reproducible_replay_contract")
             ),
-            "robot_policy_execution_proven": bool(
-                policy_execution_manifest.get("robot_policy_execution_proven")
-                or proof_boundary.get("robot_policy_execution_proven")
-            ),
+            "robot_policy_execution_proven": robot_policy_execution_proven,
         },
         "closure_audit": {
             "live_eval_closure_status": live_closure.get("status"),
@@ -7494,6 +8003,52 @@ def _webapp_robot_eval_status_projection(
             "post_training_data_package_status": data_package_export.get("status"),
             "no_readiness_claim_upgrade_without_evidence": not proof_public_claim
             or rank_fidelity_result_proven,
+        },
+        "rights_privacy_takedown": {
+            "status": revocation_takedown.get("status")
+            or ("takedown_required" if revocation_required else "not_required"),
+            "consent_revoked": consent_revoked,
+            "consent_revoked_at": data_package_consent_evidence.get("consent_revoked_at")
+            or revocation_takedown.get("consent_revoked_at"),
+            "local_package_access_revoked": bool(
+                _boolish(revocation_takedown.get("local_package_access_revoked"))
+                or revocation_required
+            ),
+            "delivery_blocked_by_consent_revocation": bool(
+                _boolish(revocation_takedown.get("delivery_blocked"))
+                or revocation_required
+            ),
+            "signed_access_revoked_by_consent": bool(
+                _boolish(revocation_takedown.get("signed_access_revoked"))
+                or revocation_required
+            ),
+            "downstream_takedown_required": bool(
+                _boolish(revocation_takedown.get("downstream_takedown_required"))
+                or revocation_required
+            ),
+            "webapp_takedown_executed": webapp_takedown_executed,
+            "hosted_session_takedown_executed": hosted_session_takedown_executed,
+            "webapp_or_hosted_takedown_execution_proven": bool(
+                webapp_takedown_executed and hosted_session_takedown_executed
+            ),
+            "required_actions": _string_list(revocation_takedown.get("required_actions")),
+            "downstream_unexecuted_actions": _string_list(
+                revocation_takedown.get("downstream_unexecuted_actions")
+            ),
+            "revocation_takedown_manifest_path": artifact_paths.get(
+                "revocation_takedown_manifest"
+            )
+            or revocation_takedown.get("path"),
+            "webapp_rights_privacy_takedown_notice_path": artifact_paths.get(
+                "webapp_rights_privacy_takedown_notice"
+            )
+            or downstream_takedown_artifacts.get(
+                "webapp_rights_privacy_takedown_notice"
+            ),
+            "hosted_session_takedown_request_path": artifact_paths.get(
+                "hosted_session_takedown_request"
+            )
+            or downstream_takedown_artifacts.get("hosted_session_takedown_request"),
         },
         "remote_cloud_execution": {
             "status": remote_cloud_closure.get("status") or "not_available",
@@ -7553,13 +8108,13 @@ def _webapp_robot_eval_status_projection(
             ),
         },
         "proof_boundary": {
-            "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
-            "robot_policy_execution_proven": bool(
-                proof_boundary.get("robot_policy_execution_proven")
+            "simulator_execution_proven": simulator_execution_proven,
+            "robot_policy_execution_proven": robot_policy_execution_proven,
+            "real_world_outcome_proven": real_world_outcome_proven,
+            "physics_contact_validated": physics_contact_validated,
+            "non_ranking_operational_claim_validated": (
+                non_ranking_operational_claim_validated
             ),
-            "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
-            "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
-            "non_ranking_operational_claim_validated": bool(proof_boundary.get("non_ranking_operational_claim_validated")),
             "rank_fidelity_result_proven": rank_fidelity_result_proven,
             "public_claim_upgrade_allowed": proof_public_claim,
         },
@@ -7588,6 +8143,9 @@ def _webapp_robot_eval_status_projection(
                 "customer_handoff_report",
                 "delivery_manifest",
                 "signed_access_manifest",
+                "revocation_takedown_manifest",
+                "webapp_rights_privacy_takedown_notice",
+                "hosted_session_takedown_request",
                 "review_resolution_ledger",
                 "accepted_failure_labels",
                 "webapp_robot_eval_status_projection",
@@ -7607,6 +8165,10 @@ def _webapp_robot_eval_status_projection(
             "provider_credentials_exposed": False,
             "readiness_claim_upgrade_allowed": proof_public_claim,
             "signed_delivery_access_is_package_access_only": True,
+            "consent_revocation_blocks_downstream_use": revocation_required,
+            "webapp_or_hosted_takedown_execution_proven": bool(
+                webapp_takedown_executed and hosted_session_takedown_executed
+            ),
         },
     }
 
@@ -9239,6 +9801,11 @@ def build_robot_eval_job(
         gpu_startup_pipeline_plan=gpu_startup_pipeline_plan,
     )
     _write_job_json(job_dir, "gpu_provider_launch_request.json", provider_launch_request)
+    provider_race_handoff = _build_gpu_provider_race_handoff(
+        provider_launch_request=provider_launch_request,
+        generated_at=generated_at,
+    )
+    _write_job_json(job_dir, "gpu_provider_race_handoff.json", provider_race_handoff)
     gpu_result = _gpu_provisioning_result(
         request_manifest=gpu_request,
         validation=validation,
@@ -9646,7 +10213,9 @@ def build_robot_eval_job(
         "evaluation_substrate": selected_evaluation_substrate or None,
         "wam_evaluation_status": wam_eval_result.get("status") if wam_eval_result else None,
         "robot_pov_status": robot_pov_manifest.get("status"),
-        "robot_pov_evidence_proven": bool(robot_pov_manifest.get("robot_pov_evidence_proven")),
+        "robot_pov_evidence_proven": _strict_bool(
+            robot_pov_manifest.get("robot_pov_evidence_proven")
+        ),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
         "sc3_eval_protocol_status": sc3_eval_protocol.get("status"),
         "sc3_correlation_claim_status": sc3_eval_protocol.get("correlation_claim_status"),
@@ -9654,7 +10223,7 @@ def build_robot_eval_job(
         "real_world_validation_followup_plan_status": _mapping(
             deployment_validation.get("followup_plan")
         ).get("status"),
-        "real_world_outcome_records_present": bool(
+        "real_world_outcome_records_present": _strict_bool(
             _mapping(deployment_validation.get("ledger")).get("real_world_outcome_records_present")
         ),
         "owner_evidence_record_count": int(
@@ -9759,6 +10328,7 @@ def build_robot_eval_job(
         gpu_result=gpu_result,
         gpu_cost_ledger=gpu_cost_ledger,
         remote_cloud_closure=remote_cloud_closure,
+        wam_eval_result=wam_eval_result,
         generated_at=generated_at,
     )
     evidence["live_eval_closure_status"] = live_closure.get("status")
@@ -9956,26 +10526,26 @@ def build_robot_eval_job(
         "remote_cloud_execution_closure_path": (
             "remote_cloud_execution_closure_manifest.json"
         ),
-        "remote_cloud_execution_proven": bool(
+        "remote_cloud_execution_proven": _strict_bool(
             remote_cloud_closure.get("remote_cloud_execution_proven")
         ),
-        "remote_cloud_clean_shutdown_proven": bool(
+        "remote_cloud_clean_shutdown_proven": _strict_bool(
             remote_cloud_closure.get("clean_shutdown_proven")
         ),
         "robot_team_grade_eval_closure_status": robot_team_grade_closure.get("status"),
         "robot_team_grade_eval_closure_path": (
             "robot_team_grade_eval_closure_manifest.json"
         ),
-        "robot_team_grade_evaluation_complete": bool(
+        "robot_team_grade_evaluation_complete": _strict_bool(
             robot_team_grade_closure.get("robot_team_grade_evaluation_complete")
         ),
-        "sim_only_beta_core_complete": bool(
+        "sim_only_beta_core_complete": _strict_bool(
             robot_team_grade_closure.get("sim_only_beta_core_complete")
         ),
-        "sim_only_customer_handoff_complete": bool(
+        "sim_only_customer_handoff_complete": _strict_bool(
             robot_team_grade_closure.get("sim_only_customer_handoff_complete")
         ),
-        "evaluation_readiness_complete": bool(
+        "evaluation_readiness_complete": _strict_bool(
             robot_team_grade_closure.get("evaluation_readiness_complete")
         ),
         "gpu_provisioning_status": gpu_result.get("status"),
@@ -9984,7 +10554,9 @@ def build_robot_eval_job(
         "scenario_eval_run_count": scenario_eval_matrix.get("scenario_eval_run_count"),
         "scenario_variation_names_covered": scenario_eval_matrix.get("variation_names_covered"),
         "robot_pov_observation_status": robot_pov_manifest.get("status"),
-        "robot_pov_evidence_proven": bool(robot_pov_manifest.get("robot_pov_evidence_proven")),
+        "robot_pov_evidence_proven": _strict_bool(
+            robot_pov_manifest.get("robot_pov_evidence_proven")
+        ),
         "policy_execution_status": _mapping(policy_execution.get("manifest")).get("status"),
         "sc3_eval_protocol_status": sc3_eval_protocol.get("status"),
         "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
@@ -10016,7 +10588,9 @@ def build_robot_eval_job(
         ).get("status"),
         "live_eval_closure_status": live_closure.get("status"),
         "live_eval_closure_manifest_path": "live_eval_closure_manifest.json",
-        "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
+        "live_end_to_end_verified": _strict_bool(
+            live_closure.get("live_end_to_end_verified")
+        ),
         "training_status": training_res.get("status"),
         "evaluation_status": eval_result.get("status"),
         "task_eval_run_report_status": task_eval_run_report.get("status"),
@@ -10095,6 +10669,7 @@ def build_robot_eval_job(
             "scheduler_decision": "scheduler_decision.json",
             "worker_launch_plan": "worker_launch_plan.json",
         "gpu_provider_launch_request": "gpu_provider_launch_request.json",
+        "gpu_provider_race_handoff": "gpu_provider_race_handoff.json",
         "worker_manifest": "worker_manifest.json",
         "gpu_cost_control_ledger": "gpu_cost_control_ledger.json",
         "remote_cloud_execution_closure_manifest": (
@@ -10129,56 +10704,80 @@ def build_robot_eval_job(
         },
         "live_provider_calls_performed": False,
         "remote_asset_downloads_performed": False,
-        "local_cpu_preflight_smoke_ran": bool(
+        "local_cpu_preflight_smoke_ran": _strict_bool(
             _read_optional_mapping(
                 pipeline_dir / "simulation_automation" / "cpu_simulator_preflight_manifest.json"
             ).get("local_cpu_smoke_ran")
         ),
-        "simulators_run": bool(sim_result.get("simulators_run")),
-        "gpu_training_run": bool(training_res.get("gpu_training_run")),
+        "simulators_run": _strict_bool(sim_result.get("simulators_run")),
+        "gpu_training_run": _strict_bool(training_res.get("gpu_training_run")),
         "messages_sent": False,
         "payments_touched": False,
         "deployments_performed": False,
-        "review_acceptance_proven": bool(proof_boundary.get("review_acceptance_proven")),
-        "rights_privacy_scope_proven": bool(proof_boundary.get("rights_privacy_scope_proven")),
-        "signed_delivery_access_proven": bool(
+        "review_acceptance_proven": _strict_bool(
+            proof_boundary.get("review_acceptance_proven")
+        ),
+        "rights_privacy_scope_proven": _strict_bool(
+            proof_boundary.get("rights_privacy_scope_proven")
+        ),
+        "signed_delivery_access_proven": _strict_bool(
             proof_boundary.get("signed_delivery_access_proven")
         ),
-        "customer_handoff_ready": bool(
+        "customer_handoff_ready": _strict_bool(
             robot_team_grade_closure.get("sim_only_customer_handoff_complete")
         ),
         "delivery_access_is_deployment_approval": False,
         "package_delivery_is_deployment_approval": False,
         "deployment_approval_proven": False,
         "physical_robot_readiness_proven": False,
-        "safety_validation_proven": bool(proof_boundary.get("safety_validation_proven")),
-        "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
-        "robot_policy_execution_proven": bool(proof_boundary.get("robot_policy_execution_proven")),
-        "real_world_outcome_records_present": bool(
+        "safety_validation_proven": _strict_bool(
+            proof_boundary.get("safety_validation_proven")
+        ),
+        "simulator_execution_proven": _strict_bool(
+            proof_boundary.get("simulator_execution_proven")
+        ),
+        "robot_policy_execution_proven": _strict_bool(
+            proof_boundary.get("robot_policy_execution_proven")
+        ),
+        "real_world_outcome_records_present": _strict_bool(
             proof_boundary.get("real_world_outcome_records_present")
         ),
         "owner_evidence_record_count": int(proof_boundary.get("owner_evidence_record_count") or 0),
         "missing_owner_evidence_record_ids": _string_list(
             proof_boundary.get("missing_owner_evidence_record_ids")
         ),
-        "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
-        "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
-        "non_ranking_operational_claim_validated": bool(proof_boundary.get("non_ranking_operational_claim_validated")),
-        "rank_fidelity_result_proven": bool(proof_boundary.get("rank_fidelity_result_proven")),
-        "public_claim_upgrade_allowed": bool(proof_boundary.get("public_claim_upgrade_allowed")),
+        "real_world_outcome_proven": _strict_bool(
+            proof_boundary.get("real_world_outcome_proven")
+        ),
+        "physics_contact_validated": _strict_bool(
+            proof_boundary.get("physics_contact_validated")
+        ),
+        "non_ranking_operational_claim_validated": _strict_bool(
+            proof_boundary.get("non_ranking_operational_claim_validated")
+        ),
+        "rank_fidelity_result_proven": _strict_bool(
+            proof_boundary.get("rank_fidelity_result_proven")
+        ),
+        "public_claim_upgrade_allowed": _strict_bool(
+            proof_boundary.get("public_claim_upgrade_allowed")
+        ),
         "live_eval_closure_blockers": _string_list(live_closure.get("blockers")),
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "live_eval_closure_manifest_path": "live_eval_closure_manifest.json",
-            "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
-            "review_acceptance_proven": bool(proof_boundary.get("review_acceptance_proven")),
-            "rights_privacy_scope_proven": bool(
+            "live_end_to_end_verified": _strict_bool(
+                live_closure.get("live_end_to_end_verified")
+            ),
+            "review_acceptance_proven": _strict_bool(
+                proof_boundary.get("review_acceptance_proven")
+            ),
+            "rights_privacy_scope_proven": _strict_bool(
                 proof_boundary.get("rights_privacy_scope_proven")
             ),
-            "signed_delivery_access_proven": bool(
+            "signed_delivery_access_proven": _strict_bool(
                 proof_boundary.get("signed_delivery_access_proven")
             ),
-            "customer_handoff_ready": bool(
+            "customer_handoff_ready": _strict_bool(
                 robot_team_grade_closure.get("sim_only_customer_handoff_complete")
             ),
             "sc3_eval_protocol_path": SC3_EVAL_PROTOCOL_ARTIFACT,
@@ -10188,19 +10787,31 @@ def build_robot_eval_job(
             "package_delivery_is_deployment_approval": False,
             "deployment_approval_proven": False,
             "physical_robot_readiness_proven": False,
-            "safety_validation_proven": bool(proof_boundary.get("safety_validation_proven")),
-            "simulator_execution_proven": bool(proof_boundary.get("simulator_execution_proven")),
-            "robot_policy_execution_proven": bool(
+            "safety_validation_proven": _strict_bool(
+                proof_boundary.get("safety_validation_proven")
+            ),
+            "simulator_execution_proven": _strict_bool(
+                proof_boundary.get("simulator_execution_proven")
+            ),
+            "robot_policy_execution_proven": _strict_bool(
                 proof_boundary.get("robot_policy_execution_proven")
             ),
-            "real_world_outcome_records_present": bool(
+            "real_world_outcome_records_present": _strict_bool(
                 proof_boundary.get("real_world_outcome_records_present")
             ),
-            "real_world_outcome_proven": bool(proof_boundary.get("real_world_outcome_proven")),
-            "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
-            "non_ranking_operational_claim_validated": bool(proof_boundary.get("non_ranking_operational_claim_validated")),
-            "rank_fidelity_result_proven": bool(proof_boundary.get("rank_fidelity_result_proven")),
-            "public_claim_upgrade_allowed": bool(
+            "real_world_outcome_proven": _strict_bool(
+                proof_boundary.get("real_world_outcome_proven")
+            ),
+            "physics_contact_validated": _strict_bool(
+                proof_boundary.get("physics_contact_validated")
+            ),
+            "non_ranking_operational_claim_validated": _strict_bool(
+                proof_boundary.get("non_ranking_operational_claim_validated")
+            ),
+            "rank_fidelity_result_proven": _strict_bool(
+                proof_boundary.get("rank_fidelity_result_proven")
+            ),
+            "public_claim_upgrade_allowed": _strict_bool(
                 proof_boundary.get("public_claim_upgrade_allowed")
             ),
         },
@@ -10302,7 +10913,9 @@ def build_robot_eval_job(
         "manifest_path": str((job_dir / "job_run_manifest.json").resolve()),
         "status": status,
         "live_eval_closure_status": live_closure.get("status"),
-        "live_end_to_end_verified": bool(live_closure.get("live_end_to_end_verified")),
+        "live_end_to_end_verified": _strict_bool(
+            live_closure.get("live_end_to_end_verified")
+        ),
         "claim_boundary": dict(run_manifest["claim_boundary"]),
     }
 

@@ -3484,6 +3484,27 @@ def _rights_privacy_status(
     consent_revoked_at = _string(
         capture_rights.get("consent_revoked_at") or capture_rights.get("consentRevokedAt")
     )
+    commercialization_terms = _mapping(
+        capture_rights.get("commercialization_terms")
+        or capture_rights.get("commercializationTerms")
+        or capture_rights.get("commercial_terms")
+        or capture_rights.get("commercialTerms")
+    )
+    revenue_share_terms = _mapping(
+        capture_rights.get("operator_revenue_terms")
+        or capture_rights.get("operatorRevenueTerms")
+        or capture_rights.get("revenue_share_terms")
+        or capture_rights.get("revenueShareTerms")
+        or commercialization_terms.get("operator_revenue_terms")
+        or commercialization_terms.get("revenue_share_terms")
+        or commercialization_terms.get("revenue_share")
+    )
+    exclusivity_terms = _mapping(
+        capture_rights.get("exclusivity_terms")
+        or capture_rights.get("exclusivityTerms")
+        or commercialization_terms.get("exclusivity_terms")
+        or commercialization_terms.get("exclusivity")
+    )
     sim_eval_scope_allowed = (
         "mujoco_g1_simulator_evaluation_for_this_staged_capture" in consent_scope
         or _bool(capture_rights.get("external_use_allowed"))
@@ -3548,6 +3569,9 @@ def _rights_privacy_status(
         "consent_revoked": consent_revoked,
         "consent_revoked_at": consent_revoked_at or None,
         "revocation_takedown_required": consent_revoked,
+        "commercialization_terms": commercialization_terms,
+        "revenue_share_terms": revenue_share_terms,
+        "exclusivity_terms": exclusivity_terms,
     }
 
 
@@ -3587,8 +3611,11 @@ def _rights_records(
         key="expiration_at",
         fallback=_rights_field(rights_review, rights_summary, key="expires_at", fallback=None),
     )
-    blocked = bool(rights_privacy.get("blocked"))
+    blocked = _bool(rights_privacy.get("blocked"))
     blocker_status = "blocked_rights_privacy" if blocked else "needs_use_specific_approval"
+    commercialization_terms = _mapping(rights_privacy.get("commercialization_terms"))
+    revenue_share_terms = _mapping(rights_privacy.get("revenue_share_terms"))
+    exclusivity_terms = _mapping(rights_privacy.get("exclusivity_terms"))
     categories = [
         {
             "rights_scope": "raw_confidential_data",
@@ -3655,10 +3682,23 @@ def _rights_records(
                     "privacy_processing_status": privacy_manifest.get("status"),
                     "consent_revoked": rights_privacy.get("consent_revoked"),
                 },
-                "revocation_takedown_required": rights_privacy.get(
-                    "revocation_takedown_required"
-                )
-                is True,
+                "commercialization_terms": commercialization_terms
+                if scope == "commercial_licensing"
+                else {},
+                "operator_revenue_terms": revenue_share_terms
+                if scope == "revenue_share"
+                else {},
+                "exclusivity_terms": exclusivity_terms
+                if scope == "exclusivity_limits"
+                else {},
+                "terms_record_present": bool(
+                    (scope == "commercial_licensing" and commercialization_terms)
+                    or (scope == "revenue_share" and revenue_share_terms)
+                    or (scope == "exclusivity_limits" and exclusivity_terms)
+                ),
+                "revocation_takedown_required": _bool(
+                    rights_privacy.get("revocation_takedown_required")
+                ),
                 "claim_boundary": "rights_record_is_review_packet_not_blanket_clearance",
             }
         )
@@ -3681,21 +3721,30 @@ def _rights_packet(
         rights_privacy=rights_privacy,
         source_artifacts=source_artifacts,
     )
+    commercialization_terms = _mapping(rights_privacy.get("commercialization_terms"))
+    revenue_share_terms = _mapping(rights_privacy.get("revenue_share_terms"))
+    exclusivity_terms = _mapping(rights_privacy.get("exclusivity_terms"))
+    revenue_share_record_present = bool(revenue_share_terms)
+    blocked = _bool(rights_privacy.get("blocked"))
+    consent_revoked = _bool(rights_privacy.get("consent_revoked"))
+    revocation_takedown_required = _bool(
+        rights_privacy.get("revocation_takedown_required")
+    )
     return {
         "schema_version": RIGHTS_PACKET_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "blocked" if rights_privacy.get("blocked") else "review_required",
+        "status": "blocked" if blocked else "review_required",
         "record_count": len(records),
         "records": records,
         "source_artifacts": dict(source_artifacts),
-        "consent_revoked": rights_privacy.get("consent_revoked") is True,
+        "consent_revoked": consent_revoked,
         "consent_revoked_at": rights_privacy.get("consent_revoked_at"),
         "revocation_takedown": {
             "schema_version": "real_site_robot_eval_revocation_takedown.v1",
             "status": "takedown_required"
-            if rights_privacy.get("revocation_takedown_required")
+            if revocation_takedown_required
             else "not_required",
-            "consent_revoked": rights_privacy.get("consent_revoked") is True,
+            "consent_revoked": consent_revoked,
             "consent_revoked_at": rights_privacy.get("consent_revoked_at"),
             "affected_surfaces": [
                 "robot_eval_dataset",
@@ -3706,16 +3755,24 @@ def _rights_packet(
         },
         "revenue_share_review": {
             "schema_version": "real_site_robot_eval_revenue_share_review.v1",
-            "status": "review_required",
+            "status": "recorded_review_required"
+            if revenue_share_record_present
+            else "review_required",
             "required_before_paid_reuse_or_resale": True,
-            "owner_revenue_share_record_present": False,
+            "owner_revenue_share_record_present": revenue_share_record_present,
+            "operator_revenue_terms": revenue_share_terms,
+            "commercialization_terms": commercialization_terms,
+            "exclusivity_terms": exclusivity_terms,
             "revenue_share_commitment_made": False,
             "payout_commitment_allowed": False,
+            "claim_boundary": (
+                "operator_revenue_terms_are_review_metadata_not_payment_or_resale_clearance"
+            ),
         },
         "commercial_use_claim_allowed": False,
         "external_licensing_claim_allowed": False,
         "blocker_status": "blocked_rights_privacy"
-        if rights_privacy.get("blocked")
+        if blocked
         else "needs_use_specific_approval",
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }

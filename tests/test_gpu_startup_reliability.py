@@ -113,6 +113,11 @@ def test_paid_single_provider_job_races_two_cold_creates_by_default(
     launches two contenders on the one provider, keeps the marker winner, terminates the
     dud, and collects from the winner's contender dir."""
     monkeypatch.delenv(J.COLD_RACE_CONTENDERS_ENV, raising=False)
+    monkeypatch.setenv(
+        J.ISAAC_WORKER_IMAGE_REF_ENV,
+        "registry.example/blueprint/isaac-eval-worker:test",
+    )
+    monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "10.0")
     launched: list[dict] = []
     terminated: list[str] = []
 

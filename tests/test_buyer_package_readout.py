@@ -69,6 +69,16 @@ def test_complete_manifest_produces_buyer_readable_summary_without_overclaim() -
     assert boundary["success_claim_ledger_present"] is False
     assert boundary["physical_deployment_ready"] is False
     assert boundary["package_purchase_is_not_deployment_approval"] is True
+    rights_section = readout["sections"]["rights_privacy_provenance"]
+    assert rights_section["operator_revenue_terms_present"] is False
+    assert rights_section["commercialization_terms_present"] is False
+    assert rights_section["exclusivity_terms_present"] is False
+    assert rights_section["paid_reuse_or_resale_blocked"] is True
+    assert rights_section["data_processing_terms_review_included"] is False
+    assert rights_section["retention_policy_present"] is False
+    assert rights_section["subprocessor_list_present"] is False
+    assert rights_section["access_audit_terms_present"] is False
+    assert rights_section["dpa_approval_claimed"] is False
 
     markdown = render_buyer_package_readout_markdown(readout)
     assert "Highest truthful claim: no_claim" in markdown
@@ -115,6 +125,357 @@ def test_blocked_export_status_blocks_readout() -> None:
 
     assert readout["status"] == "blocked_incomplete_package"
     assert "export_manifest_not_ready:blocked_missing_inputs" in readout["blockers"]
+
+
+def test_revoked_consent_surfaces_takedown_blocker() -> None:
+    manifest = _complete_export_manifest()
+    manifest["status"] = "blocked_consent_revoked_takedown_required"
+    manifest["blockers"] = ["consent:consent_revoked_takedown_required"]
+    manifest["included_artifacts"]["revocation_takedown_manifest"] = (
+        "revocation_takedown_manifest.json"
+    )
+    manifest["consent_evidence"] = {
+        "consent_revoked": True,
+        "consent_revoked_at": "2026-07-04T12:00:00Z",
+    }
+    manifest["revocation_takedown"] = {
+        "status": "takedown_required",
+        "path": "revocation_takedown_manifest.json",
+        "consent_revoked": True,
+        "local_package_access_revoked": True,
+        "delivery_blocked": True,
+        "signed_access_revoked": True,
+        "downstream_takedown_required": True,
+        "webapp_takedown_executed": False,
+        "hosted_session_takedown_executed": False,
+        "downstream_takedown_artifacts": {
+            "webapp_rights_privacy_takedown_notice": (
+                "webapp_rights_privacy_takedown_notice.json"
+            ),
+            "hosted_session_takedown_request": "hosted_session_takedown_request.json",
+            "downstream_takedown_execution_ledger": (
+                "downstream_takedown_execution_ledger.json"
+            ),
+        },
+        "downstream_takedown_execution_ledger_path": (
+            "downstream_takedown_execution_ledger.json"
+        ),
+        "required_actions": ["remove_or_expire_hosted_sessions"],
+        "downstream_unexecuted_actions": ["notify_webapp_rights_privacy_blocking"],
+    }
+    manifest["downstream_takedown_execution_ledger"] = {
+        "schema_version": "post_training_downstream_takedown_execution_ledger.v1",
+        "status": "queued_unexecuted_downstream_takedown",
+        "external_takedown_executor_present": False,
+        "webapp_or_hosted_takedown_execution_proven": False,
+    }
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    assert readout["status"] == "blocked_incomplete_package"
+    assert "revocation_takedown:consent_revoked_takedown_required" in readout["blockers"]
+    takedown = readout["sections"]["revocation_takedown"]
+    assert takedown["status"] == "takedown_required"
+    assert takedown["local_package_access_revoked"] is True
+    assert takedown["delivery_blocked_by_consent_revocation"] is True
+    assert takedown["signed_access_revoked_by_consent"] is True
+    assert takedown["webapp_takedown_executed"] is False
+    assert takedown["hosted_session_takedown_executed"] is False
+    assert takedown["webapp_rights_privacy_takedown_notice_path"] == (
+        "webapp_rights_privacy_takedown_notice.json"
+    )
+    assert takedown["hosted_session_takedown_request_path"] == (
+        "hosted_session_takedown_request.json"
+    )
+    assert takedown["downstream_takedown_execution_ledger_included"] is True
+    assert takedown["downstream_takedown_execution_ledger_status"] == (
+        "queued_unexecuted_downstream_takedown"
+    )
+    assert takedown["downstream_takedown_execution_ledger_path"] == (
+        "downstream_takedown_execution_ledger.json"
+    )
+    assert takedown["external_takedown_executor_present"] is False
+    assert readout["claim_boundary"]["consent_revocation_blocks_downstream_use"] is True
+    assert (
+        readout["claim_boundary"]["downstream_takedown_execution_ledger_present"]
+        is True
+    )
+    assert readout["claim_boundary"]["webapp_or_hosted_takedown_execution_proven"] is False
+
+    markdown = render_buyer_package_readout_markdown(readout)
+    assert "Consent revocation blocks package delivery and training use." in markdown
+    assert "not proof that WebApp or hosted-session takedown has executed" in markdown
+
+
+def test_string_true_consent_revocation_blocks_readout() -> None:
+    manifest = _complete_export_manifest()
+    manifest["consent_evidence"] = {"consent_revoked": "true"}
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    assert readout["status"] == "blocked_incomplete_package"
+    assert "revocation_takedown:consent_revoked_takedown_required" in readout["blockers"]
+    assert readout["sections"]["revocation_takedown"]["status"] == "takedown_required"
+    assert readout["sections"]["revocation_takedown"]["consent_revoked"] is True
+    assert readout["claim_boundary"]["consent_revocation_blocks_downstream_use"] is True
+
+
+def test_string_true_takedown_execution_does_not_prove_execution() -> None:
+    manifest = _complete_export_manifest()
+    manifest["consent_evidence"] = {"consent_revoked": "true"}
+    manifest["revocation_takedown"] = {
+        "webapp_takedown_executed": "true",
+        "hosted_session_takedown_executed": "true",
+    }
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    takedown = readout["sections"]["revocation_takedown"]
+    assert takedown["consent_revoked"] is True
+    assert takedown["webapp_takedown_executed"] is False
+    assert takedown["hosted_session_takedown_executed"] is False
+    assert takedown["webapp_or_hosted_takedown_execution_proven"] is False
+    assert readout["claim_boundary"]["webapp_or_hosted_takedown_execution_proven"] is False
+
+
+def test_string_false_manifest_booleans_do_not_overclaim() -> None:
+    manifest = _complete_export_manifest()
+    manifest["claim_boundary"]["rights_privacy_scope_proven"] = "false"
+    manifest["consent_evidence"] = {
+        "consent_evidence_present": "false",
+        "consent_revoked": "false",
+    }
+    manifest["revocation_takedown"] = {
+        "local_package_access_revoked": "false",
+        "delivery_blocked": "false",
+        "signed_access_revoked": "false",
+        "downstream_takedown_required": "false",
+        "webapp_takedown_executed": "false",
+        "hosted_session_takedown_executed": "false",
+    }
+    manifest["revenue_share_review"] = {
+        "owner_revenue_share_record_present": "false",
+        "required_before_paid_reuse_or_resale": "false",
+        "commercial_use_claim_allowed": "false",
+        "external_licensing_claim_allowed": "false",
+    }
+    manifest["data_processing_terms_review"] = {
+        "retention_policy_present": "false",
+        "subprocessor_list_present": "false",
+        "access_audit_terms_present": "false",
+    }
+    manifest["export_policy"] = {
+        **manifest["export_policy"],
+        "clips_manifest_included": "false",
+        "visual_augmentation_packet_included": "false",
+        "visual_augmentation_generated_videos_are_raw_capture_evidence": "false",
+    }
+    manifest["optional_exports"] = {
+        "formats": {
+            "lerobot_v3": {
+                "format_written": "false",
+                "consumer_layout_complete": "false",
+                "status": "available_not_written",
+            },
+            "video_bundle": {
+                "materialized_clip_count": 0,
+                "missing_clip_file_count": 0,
+            },
+        }
+    }
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    assert readout["status"] == "buyer_readout_ready_review_required"
+    rights = readout["sections"]["rights_privacy_provenance"]
+    assert rights["rights_privacy_scope_proven"] is False
+    assert rights["consent_evidence_present"] is False
+    assert rights["owner_revenue_share_record_present"] is False
+    assert rights["required_before_paid_reuse_or_resale"] is False
+    assert rights["retention_policy_present"] is False
+    takedown = readout["sections"]["revocation_takedown"]
+    assert takedown["local_package_access_revoked"] is False
+    assert takedown["delivery_blocked_by_consent_revocation"] is False
+    assert takedown["signed_access_revoked_by_consent"] is False
+    assert takedown["webapp_takedown_executed"] is False
+    assert readout["sections"]["robot_pov_evidence"]["clips_manifest_included"] is False
+    assert readout["sections"]["media_provenance"]["generated_media_included"] is False
+    assert readout["claim_boundary"]["local_package_access_revoked"] is False
+    assert readout["sections"]["export_integrity"][
+        "lerobot_round_trip_validation"
+    ] == {}
+
+
+def test_lerobot_round_trip_validation_gates_export_integrity() -> None:
+    manifest = _complete_export_manifest()
+    manifest["optional_exports"] = {
+        "formats": {
+            "lerobot_v3": {
+                "format_written": True,
+                "status": "written_native",
+                "consumer_layout_complete": True,
+            }
+        }
+    }
+
+    # A lerobot export with no round-trip validation verdict must fail closed.
+    missing = build_buyer_package_readout(export_manifest=manifest)
+    assert missing["status"] == "blocked_incomplete_package"
+    assert (
+        "export_integrity:lerobot_round_trip_validation_missing:lerobot_v3"
+        in missing["blockers"]
+    )
+
+    # A blocked validation verdict means the buyer cannot load the dataset.
+    manifest["optional_exports"]["formats"]["lerobot_v3"]["round_trip_validation"] = {
+        "status": "blocked",
+        "blockers": ["timestamps_not_monotonic:episode_0"],
+    }
+    blocked = build_buyer_package_readout(export_manifest=manifest)
+    assert blocked["status"] == "blocked_incomplete_package"
+    assert (
+        "export_integrity:lerobot_export_not_loadable:lerobot_v3"
+        in blocked["blockers"]
+    )
+    section = blocked["sections"]["export_integrity"]
+    assert section["lerobot_round_trip_validation"]["lerobot_v3"] == "blocked"
+
+    # A passed verdict restores the readout.
+    manifest["optional_exports"]["formats"]["lerobot_v3"]["round_trip_validation"] = {
+        "status": "passed",
+        "blockers": [],
+    }
+    manifest["optional_exports"]["formats"]["lerobot_v3"]["state_action_provenance"] = {
+        "real_state_fraction": 1.0,
+        "real_action_fraction": 1.0,
+        "measured_state_fraction_floor": 0.5,
+        "measured_state_fraction_floor_passed": True,
+    }
+    passed = build_buyer_package_readout(export_manifest=manifest)
+    assert passed["status"] == "buyer_readout_ready_review_required"
+    assert passed["sections"]["export_integrity"]["lerobot_round_trip_validation"] == {
+        "lerobot_v3": "passed"
+    }
+
+
+def test_unwritten_optional_lerobot_formats_do_not_require_round_trip_validation() -> None:
+    manifest = _complete_export_manifest()
+    manifest["optional_exports"] = {
+        "formats": {
+            "lerobot_v3": {
+                "format_written": False,
+                "status": "available_not_written",
+            },
+            "gr00t_lerobot": {
+                "format_written": False,
+                "status": "blocked_optional_dependency_missing",
+            },
+        }
+    }
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    assert readout["status"] == "buyer_readout_ready_review_required"
+    assert readout["sections"]["export_integrity"][
+        "lerobot_round_trip_validation"
+    ] == {}
+    assert not any(
+        blocker.startswith("export_integrity:lerobot_round_trip_validation_missing")
+        for blocker in readout["blockers"]
+    )
+
+
+def test_gr00t_round_trip_validation_also_gated() -> None:
+    manifest = _complete_export_manifest()
+    manifest["optional_exports"] = {
+        "formats": {
+            "gr00t_lerobot": {
+                "format_written": True,
+                "round_trip_validation": {
+                    "status": "blocked",
+                    "blockers": ["episode_length_mismatch:episode_0"],
+                },
+            }
+        }
+    }
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    assert readout["status"] == "blocked_incomplete_package"
+    assert (
+        "export_integrity:lerobot_export_not_loadable:gr00t_lerobot"
+        in readout["blockers"]
+    )
+
+
+def _claimed_lerobot_v3_entry(**provenance_overrides: object) -> dict:
+    entry: dict = {
+        "format_written": True,
+        "status": "written_native",
+        "consumer_layout_complete": True,
+        "round_trip_validation": {"status": "passed", "blockers": []},
+        "state_action_provenance": {
+            "real_state_fraction": 1.0,
+            "real_action_fraction": 1.0,
+            "measured_state_fraction_floor": 0.5,
+            "measured_state_fraction_floor_passed": True,
+        },
+    }
+    entry["state_action_provenance"].update(provenance_overrides)
+    return entry
+
+
+def test_insufficient_measured_state_fraction_blocks_robot_pov_evidence() -> None:
+    manifest = _complete_export_manifest()
+    manifest["optional_exports"] = {
+        "formats": {
+            "lerobot_v3": _claimed_lerobot_v3_entry(
+                real_state_fraction=0.2,
+                measured_state_fraction_floor_passed=False,
+            )
+        }
+    }
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    assert readout["status"] == "blocked_incomplete_package"
+    assert (
+        "robot_pov_evidence:insufficient_measured_state_fraction:lerobot_v3"
+        in readout["blockers"]
+    )
+    pov = readout["sections"]["robot_pov_evidence"]
+    assert pov["status"] == "missing"
+    assert pov["measured_state_fractions"]["lerobot_v3"] == 0.2
+
+
+def test_claimed_lerobot_export_without_state_provenance_fails_closed() -> None:
+    manifest = _complete_export_manifest()
+    entry = _claimed_lerobot_v3_entry()
+    del entry["state_action_provenance"]
+    manifest["optional_exports"] = {"formats": {"lerobot_v3": entry}}
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    assert readout["status"] == "blocked_incomplete_package"
+    assert (
+        "robot_pov_evidence:measured_state_fraction_unknown:lerobot_v3"
+        in readout["blockers"]
+    )
+
+
+def test_measured_state_fraction_floor_passed_keeps_robot_pov_present() -> None:
+    manifest = _complete_export_manifest()
+    manifest["optional_exports"] = {
+        "formats": {"lerobot_v3": _claimed_lerobot_v3_entry()}
+    }
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    assert readout["status"] == "buyer_readout_ready_review_required"
+    pov = readout["sections"]["robot_pov_evidence"]
+    assert pov["status"] == "present"
+    assert pov["measured_state_fractions"]["lerobot_v3"] == 1.0
+    assert pov["measured_state_fraction_floor"] == 0.5
 
 
 def test_product_handoff_is_optional_and_never_blocks() -> None:

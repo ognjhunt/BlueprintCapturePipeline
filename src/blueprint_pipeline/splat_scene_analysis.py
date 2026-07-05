@@ -178,9 +178,6 @@ def suggest_robot_start(
     xyz = np.asarray(splat.xyz, dtype=np.float64)
     vis = splat.opacity_sigmoid >= DEFAULT_VISIBLE_OPACITY
     finite = np.isfinite(xyz).all(axis=1)
-    in_band = (
-        (xyz[:, up] >= geom.floor + 0.05 * geom.up_sign * 0)  # band starts at floor
-    )
     # standing band along up-axis between floor and floor+robot_height (sign-aware)
     band_lo = min(geom.floor, geom.floor + geom.up_sign * robot_height)
     band_hi = max(geom.floor, geom.floor + geom.up_sign * robot_height)

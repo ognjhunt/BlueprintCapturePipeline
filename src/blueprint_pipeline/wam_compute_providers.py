@@ -1341,6 +1341,13 @@ def _result_from_manifest(
     runtime_blockers = _string_list(
         inspection.get("runtime_result_blockers") or manifest.get("runtime_result_blockers")
     )
+    runtime_parse_blockers = [
+        f"provider_runtime_result_json_parse_error:{error}"
+        for error in _string_list(inspection.get("json_parse_errors"))
+    ]
+    if runtime_parse_blockers:
+        runtime_blockers = [*runtime_blockers, *runtime_parse_blockers]
+        runtime_status = runtime_status or "blocked"
     provider_blockers = _string_list(
         manifest.get("provider_command_blockers") or manifest.get("blockers")
     )
@@ -1363,6 +1370,7 @@ def _result_from_manifest(
         runtime_result_status=runtime_status,
     )
     blockers = list(provider_blockers)
+    blockers.extend(runtime_parse_blockers)
     if output_zip_present and output_available != "available":
         blockers.append(output_available)
     if not output_zip_present and _string(manifest.get("status")) == "completed":
@@ -1649,6 +1657,7 @@ class RunPodWamComputeProvider(WamComputeProvider):
                 token_file=spec.token_file,
                 secret_env_file=spec.secret_env_file,
                 output_path=output_path,
+                max_spend_usd=spec.hard_cap_usd,
                 allow_paid_runpod_launch=True,
                 skip_public_staging_verification=spec.skip_public_staging_verification,
                 verify_output_put_url=spec.verify_output_put_url,

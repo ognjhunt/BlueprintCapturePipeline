@@ -9,7 +9,10 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 import blueprint_pipeline.isaac_particlefield_render_job as render_job
+from blueprint_pipeline import paid_lane_guard
 from blueprint_pipeline.isaac_particlefield_render_job import (
     build_launch_request,
     build_render_bundle,
@@ -88,6 +91,16 @@ class _CollectProvider:
     def terminate(self, instance_id: str) -> dict:
         self.terminated.append(instance_id)
         return {"status": "terminated"}
+
+    def inspect(self, instance_id: str) -> dict:
+        if instance_id in self.terminated:
+            return {"status": "unavailable", "http": 404, "instance_id": instance_id}
+        return {
+            "status": "observed",
+            "http": 200,
+            "instance_id": instance_id,
+            "desiredStatus": "RUNNING",
+        }
 
 
 def _zip_bytes(files: dict[str, str]) -> bytes:
@@ -209,6 +222,60 @@ def test_watch_and_collect_terminates_post_marker_progress_stall(
     assert result["last_bootstrap"]["phase"] == "container_bash_started"
 
 
+def test_watch_and_collect_treats_same_phase_marker_changes_as_progress(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip")
+    payloads = [
+        _zip_bytes({"bootstrap.json": json.dumps({"phase": "bootstrap_fetch_progress", "bytes_read": 1})}),
+        _zip_bytes({"bootstrap.json": json.dumps({"phase": "bootstrap_fetch_progress", "bytes_read": 2})}),
+        _zip_bytes({"bootstrap.json": json.dumps({"phase": "bootstrap_fetch_progress", "bytes_read": 3})}),
+        _zip_bytes(
+            {
+                "bootstrap.json": json.dumps({"phase": "runner_done", "rc": 0}),
+                "isaac_runtime_result.json": json.dumps({"status": "completed"}),
+            }
+        ),
+    ]
+    read_count = {"value": 0}
+
+    class _Response:
+        def read(self) -> bytes:
+            index = min(read_count["value"], len(payloads) - 1)
+            read_count["value"] += 1
+            return payloads[index]
+
+    now = 0.0
+
+    def _time() -> float:
+        return now
+
+    def _sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr(render_job.time, "time", _time)
+    monkeypatch.setattr(render_job.time, "sleep", _sleep)
+    monkeypatch.setattr(render_job.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response())
+
+    result = render_job.watch_and_collect(
+        job_dir,
+        tmp_path / "out",
+        "pod-active-progress",
+        provider=_CollectProvider(),
+        max_seconds=6,
+        poll=1,
+        progress_timeout_seconds=2,
+    )
+
+    assert result["status"] == "completed"
+    assert result["post_marker_progress_timeout_observed"] is False
+    assert result["teardown_reason"] == "runner_done_terminated_no_warm_reuse"
+
+
 # ---------------------------------------------------------------------------
 # Provider reliability manifest integration (paid path, hermetic fakes).
 # ---------------------------------------------------------------------------
@@ -217,12 +284,22 @@ def test_watch_and_collect_terminates_post_marker_progress_stall(
 class _FakePaidProvider:
     name = "runpod"
 
-    def __init__(self, *, available: bool = True, launch_status: str = "launched") -> None:
+    def __init__(
+        self,
+        *,
+        available: bool = True,
+        launch_status: str = "launched",
+        availability_payload: dict | None = None,
+    ) -> None:
         self._available = available
         self._launch_status = launch_status
+        self._availability_payload = availability_payload
         self.terminated: list[str] = []
+        self.launch_calls = 0
 
     def available(self) -> dict:
+        if self._availability_payload is not None:
+            return dict(self._availability_payload)
         if self._available:
             return {"available": True}
         return {"available": False, "reason": "runpod_api_key_missing"}
@@ -231,12 +308,23 @@ class _FakePaidProvider:
         return {"imageName": "img:tag", "gpuTypeIds": ["NVIDIA L40S"]}
 
     def launch(self, job_dir, request, *, cold: bool = False) -> dict:  # noqa: ANN001
+        self.launch_calls += 1
         if self._launch_status != "launched":
             return {"status": "blocked", "blockers": ["no_pod_started"]}
         return {"status": "launched", "instance_id": "pod-1", "mode": "cold_create"}
 
     def stop(self, instance_id: str) -> dict:
         return {"status": "stopped", "http": 200}
+
+    def inspect(self, instance_id: str) -> dict:
+        if instance_id in self.terminated:
+            return {"status": "unavailable", "http": 404, "instance_id": instance_id}
+        return {
+            "status": "observed",
+            "http": 200,
+            "instance_id": instance_id,
+            "desiredStatus": "RUNNING",
+        }
 
     def terminate(self, instance_id: str) -> dict:
         self.terminated.append(instance_id)
@@ -270,7 +358,15 @@ def _successful_watch_result() -> dict:
         "runner_result_source": "isaac_runtime_result.json",
         "last_bootstrap": {"phase": "runner_done"},
         "runner_console_tail": "",
-        "teardown": {"status": "terminated", "http": 200},
+        "teardown": {
+            "status": "terminated",
+            "http": 200,
+            "verification": {
+                "provider_status": "not_found",
+                "api_confirmed": True,
+                "http": 404,
+            },
+        },
         "teardown_reason": "runner_done_terminated_no_warm_reuse",
         "timed_out_without_runner_done": False,
         "post_marker_progress_timeout_observed": False,
@@ -280,6 +376,59 @@ def _successful_watch_result() -> dict:
         "final_result_without_runner_done": False,
         "elapsed_seconds": 10.0,
     }
+
+
+def test_launch_runpod_blocks_without_budget_before_provider_lookup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        render_job,
+        "get_render_provider",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider lookup must not happen before budget guard")
+        ),
+    )
+
+    result = render_job.launch_runpod(tmp_path, {"imageName": "img:tag"})
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "prelaunch_spend_guard_blocked"
+    assert "isaac_particlefield_prelaunch_spend_guard_not_passed" in result["blockers"]
+    assert "max_spend_usd_missing" in result["blockers"]
+    assert result["prelaunch_spend_guard"]["can_launch"] is False
+    assert result["prelaunch_spend_guard"]["budget_source"] == "missing"
+
+
+def test_paid_run_missing_budget_fails_before_provider_launch(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    provider = _FakePaidProvider()
+    _patch_paid_job_pipeline(monkeypatch, tmp_path, provider)
+    monkeypatch.setattr(
+        render_job,
+        "watch_and_collect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("watch must not run when prelaunch budget is missing")
+        ),
+    )
+
+    manifest = render_job.run_isaac_particlefield_render_job(
+        source=tmp_path / "s.ply",
+        out_dir=tmp_path / "out",
+        cameras=_CAMS,
+        allow_paid=True,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert provider.launch_calls == 0
+    assert "isaac_particlefield_prelaunch_spend_guard_not_passed" in manifest["blockers"]
+    assert "max_spend_usd_missing" in manifest["blockers"]
+    assert manifest["prelaunch_spend_guard"]["can_launch"] is False
+    reliability = json.loads(Path(manifest["provider_reliability_manifest"]).read_text())
+    assert reliability["failed_phase"] == "pre_spend_preflight"
+    assert "max_spend_usd_missing" in reliability["failure_blockers"]
 
 
 def test_paid_run_enables_stall_watchdog_by_default_and_writes_reliability_manifest(
@@ -297,7 +446,11 @@ def test_paid_run_enables_stall_watchdog_by_default_and_writes_reliability_manif
     monkeypatch.setattr(render_job, "watch_and_collect", fake_watch)
     out_dir = tmp_path / "out"
     manifest = render_job.run_isaac_particlefield_render_job(
-        source=tmp_path / "s.ply", out_dir=out_dir, cameras=_CAMS, allow_paid=True,
+        source=tmp_path / "s.ply",
+        out_dir=out_dir,
+        cameras=_CAMS,
+        allow_paid=True,
+        max_spend_usd=10.0,
     )
     assert manifest["status"] == "completed"
     # Stall watchdog is on by default — a booted-but-silent pod cannot bill forever.
@@ -328,7 +481,11 @@ def test_paid_run_stall_watchdog_env_override(monkeypatch, tmp_path: Path) -> No
 
     monkeypatch.setattr(render_job, "watch_and_collect", fake_watch)
     render_job.run_isaac_particlefield_render_job(
-        source=tmp_path / "s.ply", out_dir=tmp_path / "out", cameras=_CAMS, allow_paid=True,
+        source=tmp_path / "s.ply",
+        out_dir=tmp_path / "out",
+        cameras=_CAMS,
+        allow_paid=True,
+        max_spend_usd=10.0,
     )
     assert captured_kwargs["progress_timeout_seconds"] == 123
 
@@ -345,7 +502,11 @@ def test_paid_run_capacity_unavailable_fails_before_spend_with_manifest(
     monkeypatch.setattr(render_job, "watch_and_collect", fail_watch)
     out_dir = tmp_path / "out"
     manifest = render_job.run_isaac_particlefield_render_job(
-        source=tmp_path / "s.ply", out_dir=out_dir, cameras=_CAMS, allow_paid=True,
+        source=tmp_path / "s.ply",
+        out_dir=out_dir,
+        cameras=_CAMS,
+        allow_paid=True,
+        max_spend_usd=10.0,
     )
     assert manifest["status"] == "blocked"
     assert "runpod_api_key_missing" in manifest["blockers"]
@@ -356,6 +517,81 @@ def test_paid_run_capacity_unavailable_fails_before_spend_with_manifest(
     )
     # No launch happened, so no phase past preflight was recorded.
     assert reliability["furthest_phase_reached"] == "pre_spend_preflight"
+    assert provider.launch_calls == 0
+
+
+def test_paid_run_strict_preflight_rejects_non_boolean_capacity_before_launch(
+    monkeypatch, tmp_path: Path
+) -> None:
+    provider = _FakePaidProvider(availability_payload={"available": "yes"})
+    _patch_paid_job_pipeline(monkeypatch, tmp_path, provider)
+
+    manifest = render_job.run_isaac_particlefield_render_job(
+        source=tmp_path / "s.ply",
+        out_dir=tmp_path / "out",
+        cameras=_CAMS,
+        allow_paid=True,
+        max_spend_usd=10.0,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert provider.launch_calls == 0
+    reliability = json.loads(Path(manifest["provider_reliability_manifest"]).read_text())
+    assert reliability["failed_phase"] == "pre_spend_preflight"
+    assert any(
+        blocker.startswith("capacity_unavailable:capacity_evidence_missing")
+        for blocker in reliability["failure_blockers"]
+    )
+
+
+def test_paid_run_strict_preflight_rejects_unpinned_image_before_launch(
+    monkeypatch, tmp_path: Path
+) -> None:
+    provider = _FakePaidProvider()
+    _patch_paid_job_pipeline(monkeypatch, tmp_path, provider)
+
+    manifest = render_job.run_isaac_particlefield_render_job(
+        source=tmp_path / "s.ply",
+        out_dir=tmp_path / "out",
+        cameras=_CAMS,
+        allow_paid=True,
+        max_spend_usd=10.0,
+        image="docker.io/example/isaac-worker:latest",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert provider.launch_calls == 0
+    reliability = json.loads(Path(manifest["provider_reliability_manifest"]).read_text())
+    assert reliability["failed_phase"] == "pre_spend_preflight"
+    assert any(
+        blocker.startswith("worker_image_contract_invalid:image_not_pinned")
+        for blocker in reliability["failure_blockers"]
+    )
+
+
+def test_paid_run_strict_preflight_rejects_disabled_watchdog_before_launch(
+    monkeypatch, tmp_path: Path
+) -> None:
+    provider = _FakePaidProvider()
+    _patch_paid_job_pipeline(monkeypatch, tmp_path, provider)
+
+    manifest = render_job.run_isaac_particlefield_render_job(
+        source=tmp_path / "s.ply",
+        out_dir=tmp_path / "out",
+        cameras=_CAMS,
+        allow_paid=True,
+        max_spend_usd=10.0,
+        post_marker_progress_timeout_seconds=0,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert provider.launch_calls == 0
+    reliability = json.loads(Path(manifest["provider_reliability_manifest"]).read_text())
+    assert reliability["failed_phase"] == "pre_spend_preflight"
+    assert any(
+        blocker == "runtime_contract_invalid:startup_timeout_seconds_not_positive"
+        for blocker in reliability["failure_blockers"]
+    )
 
 
 def test_paid_run_post_marker_stall_recorded_in_runtime_phase(
@@ -377,7 +613,15 @@ def test_paid_run_post_marker_stall_recorded_in_runtime_phase(
                 "timeout_seconds": 900,
                 "elapsed_since_phase_seconds": 901.0,
             },
-            "teardown": {"status": "terminated", "http": 200},
+            "teardown": {
+                "status": "terminated",
+                "http": 200,
+                "verification": {
+                    "provider_status": "not_found",
+                    "api_confirmed": True,
+                    "http": 404,
+                },
+            },
             "teardown_reason": "post_marker_progress_timeout_terminated",
             "runner_done_observed": False,
         })
@@ -385,7 +629,11 @@ def test_paid_run_post_marker_stall_recorded_in_runtime_phase(
 
     monkeypatch.setattr(render_job, "watch_and_collect", stalled_watch)
     manifest = render_job.run_isaac_particlefield_render_job(
-        source=tmp_path / "s.ply", out_dir=tmp_path / "out", cameras=_CAMS, allow_paid=True,
+        source=tmp_path / "s.ply",
+        out_dir=tmp_path / "out",
+        cameras=_CAMS,
+        allow_paid=True,
+        max_spend_usd=10.0,
     )
     assert manifest["status"] == "blocked"
     reliability = json.loads(Path(manifest["provider_reliability_manifest"]).read_text())
@@ -415,7 +663,7 @@ def test_paid_run_keep_running_records_open_billing_risk(
     monkeypatch.setattr(render_job, "watch_and_collect", kept_watch)
     manifest = render_job.run_isaac_particlefield_render_job(
         source=tmp_path / "s.ply", out_dir=tmp_path / "out", cameras=_CAMS,
-        allow_paid=True, preserve_instance=True,
+        allow_paid=True, preserve_instance=True, max_spend_usd=10.0,
     )
     reliability = json.loads(Path(manifest["provider_reliability_manifest"]).read_text())
     assert reliability["teardown_proven"] is False
@@ -423,3 +671,153 @@ def test_paid_run_keep_running_records_open_billing_risk(
     assert reliability["run_completed"] is False
     teardown = reliability["phase_contracts"]["teardown"]
     assert teardown["keep_alive_requested"] is True
+
+
+def test_paid_run_self_reported_teardown_is_open_billing_risk(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # A terminate DELETE that was never API-verified terminal must not prove teardown.
+    provider = _FakePaidProvider()
+    _patch_paid_job_pipeline(monkeypatch, tmp_path, provider)
+
+    def unverified_watch(job_dir, out_dir, instance_id, **kwargs):  # noqa: ANN001
+        result = _successful_watch_result()
+        result["teardown"] = {"status": "terminated", "http": 200}
+        return result
+
+    monkeypatch.setattr(render_job, "watch_and_collect", unverified_watch)
+    manifest = render_job.run_isaac_particlefield_render_job(
+        source=tmp_path / "s.ply", out_dir=tmp_path / "out", cameras=_CAMS,
+        allow_paid=True, max_spend_usd=10.0,
+    )
+    reliability = json.loads(Path(manifest["provider_reliability_manifest"]).read_text())
+    assert reliability["teardown_proven"] is False
+    assert reliability["open_billing_risk"] is True
+    assert any(
+        "terminal_status_not_api_confirmed" in b
+        for b in reliability["phase_contracts"]["teardown"]["blockers"]
+    )
+    # The pending-teardown record stays open: an unproven teardown cannot close it.
+    records = paid_lane_guard.load_pending_teardowns()
+    assert len(records) == 1
+    assert records[0]["instance_id"] == "pod-1"
+
+
+def test_paid_run_preflight_routes_through_shared_chokepoint(
+    monkeypatch, tmp_path: Path
+) -> None:
+    provider = _FakePaidProvider()
+    _patch_paid_job_pipeline(monkeypatch, tmp_path, provider)
+    monkeypatch.setattr(render_job, "watch_and_collect", lambda *a, **k: _successful_watch_result())
+    manifest = render_job.run_isaac_particlefield_render_job(
+        source=tmp_path / "s.ply", out_dir=tmp_path / "out", cameras=_CAMS,
+        allow_paid=True, max_spend_usd=10.0,
+    )
+    reliability = json.loads(Path(manifest["provider_reliability_manifest"]).read_text())
+    preflight = reliability["phase_contracts"]["pre_spend_preflight"]
+    assert preflight["schema_version"] == "pre_spend_preflight.v1"
+    assert preflight["lane"] == "isaac_particlefield_render"
+
+
+def test_paid_run_opens_pending_teardown_and_closes_on_proven_teardown(
+    monkeypatch, tmp_path: Path
+) -> None:
+    provider = _FakePaidProvider()
+    _patch_paid_job_pipeline(monkeypatch, tmp_path, provider)
+    monkeypatch.setattr(render_job, "watch_and_collect", lambda *a, **k: _successful_watch_result())
+    render_job.run_isaac_particlefield_render_job(
+        source=tmp_path / "s.ply", out_dir=tmp_path / "out", cameras=_CAMS,
+        allow_paid=True, max_spend_usd=10.0,
+    )
+    assert paid_lane_guard.load_pending_teardowns() == []
+    all_records = paid_lane_guard.load_pending_teardowns(include_closed=True)
+    assert len(all_records) == 1
+    record = all_records[0]
+    assert record["status"] == "closed"
+    assert record["provider"] == "runpod"
+    assert record["lane"] == "isaac_particlefield_render"
+    assert record["instance_id"] == "pod-1"
+    assert record["teardown_proof"]["status"] == "PASS"
+
+
+def test_crash_after_launch_leaves_record_that_reap_orphans_cleans(
+    monkeypatch, tmp_path: Path
+) -> None:
+    provider = _FakePaidProvider()
+    _patch_paid_job_pipeline(monkeypatch, tmp_path, provider)
+
+    def crashing_watch(*_args, **_kwargs):
+        raise RuntimeError("simulated crash between launch and collect")
+
+    monkeypatch.setattr(render_job, "watch_and_collect", crashing_watch)
+    with pytest.raises(RuntimeError):
+        render_job.run_isaac_particlefield_render_job(
+            source=tmp_path / "s.ply", out_dir=tmp_path / "out", cameras=_CAMS,
+            allow_paid=True, max_spend_usd=10.0,
+        )
+    records = paid_lane_guard.load_pending_teardowns()
+    assert len(records) == 1
+    assert records[0]["status"] == "open"
+    assert records[0]["instance_id"] == "pod-1"
+
+    report = paid_lane_guard.reap_orphans(
+        provider_clients={"runpod": provider},
+        max_age_override_seconds=0,
+    )
+    assert report["reaped_count"] == 1
+    assert report["open_billing_risk_count"] == 0
+    entry = report["records"][0]
+    assert entry["teardown_proof"]["status"] == "PASS"
+    assert provider.terminated == ["pod-1"]
+    assert paid_lane_guard.load_pending_teardowns() == []
+
+
+def test_watch_and_collect_verifies_terminate_via_provider_api(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = _CollectProvider()
+    (tmp_path / "provider_output_get_url.txt").write_text("https://example.test/out.zip")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    payload = _zip_bytes({"bootstrap.json": json.dumps({"phase": "runner_timeout"})})
+
+    class _Response:
+        def read(self) -> bytes:
+            return payload
+
+    monkeypatch.setattr(render_job.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(render_job.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response())
+    result = render_job.watch_and_collect(
+        tmp_path, out_dir, "pod-9", provider=provider, max_seconds=1, poll=0,
+    )
+    verification = result["teardown"].get("verification")
+    assert verification is not None
+    assert verification["api_confirmed"] is True
+    assert verification["provider_status"] == "not_found"
+
+
+def test_main_forwards_paid_budget(monkeypatch, tmp_path: Path, capsys) -> None:
+    captured: dict = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"status": "prepared", "prelaunch_spend_guard": {"can_launch": False}}
+
+    monkeypatch.setattr(render_job, "run_isaac_particlefield_render_job", fake_run)
+
+    exit_code = render_job.main(
+        [
+            "--source",
+            str(tmp_path / "scene.ply"),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--allow-paid",
+            "--max-spend-usd",
+            "4.5",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["allow_paid"] is True
+    assert captured["max_spend_usd"] == 4.5
+    assert "prelaunch_spend_guard" in capsys.readouterr().out

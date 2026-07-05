@@ -22,9 +22,16 @@ from blueprint_pipeline.robot_eval_execution import (
 from blueprint_pipeline.robot_eval_job_orchestrator import (
     AgentsSdkRobotEvalJobAdapter,
     FakeRobotEvalJobAgentAdapter,
+    _apply_live_closure_to_proof_boundary,
     _build_scheduler_decision,
+    _proof_boundary,
     _remote_cloud_execution_closure_manifest,
     _robot_team_grade_eval_closure_manifest,
+    _attempt_task_success,
+    _evaluation_result,
+    _standard_policy_scorecard,
+    _webapp_robot_eval_status_projection,
+    _write_robot_eval_report,
     build_robot_eval_job,
     resolve_simulator_selection_policy,
     run_robot_eval_job_request_inbox,
@@ -740,6 +747,367 @@ def test_minimal_webapp_request_gets_beta_enrichment_without_overwriting_source(
     assert run_manifest["artifacts"]["job_request_enrichment_manifest"] == (
         "job_request_enrichment_manifest.json"
     )
+
+
+def test_webapp_projection_surfaces_consent_revocation_takedown(tmp_path: Path) -> None:
+    job_dir = tmp_path / "job"
+    _write_json(
+        job_dir / "revocation_takedown_manifest.json",
+        {
+            "schema_version": "post_training_revocation_takedown_manifest.v1",
+            "status": "takedown_required",
+        },
+    )
+    _write_json(
+        job_dir / "webapp_rights_privacy_takedown_notice.json",
+        {
+            "schema_version": "post_training_webapp_rights_privacy_takedown_notice.v1",
+            "status": "queued_unexecuted_webapp_rights_privacy_blocking",
+        },
+    )
+    _write_json(
+        job_dir / "hosted_session_takedown_request.json",
+        {
+            "schema_version": "post_training_hosted_session_takedown_request.v1",
+            "status": "queued_unexecuted_hosted_session_takedown",
+        },
+    )
+    data_package_export = {
+        "status": "blocked_consent_revoked_takedown_required",
+        "blockers": ["consent:consent_revoked_takedown_required"],
+        "consent_evidence": {
+            "consent_revoked": "true",
+            "consent_revoked_at": "2026-07-04T12:00:00Z",
+        },
+        "revocation_takedown": {
+            "status": "takedown_required",
+            "path": "revocation_takedown_manifest.json",
+            "consent_revoked": "false",
+            "consent_revoked_at": "2026-07-04T12:00:00Z",
+            "local_package_access_revoked": "false",
+            "delivery_blocked": "false",
+            "signed_access_revoked": "false",
+            "downstream_takedown_required": "false",
+            "webapp_takedown_executed": "true",
+            "hosted_session_takedown_executed": "true",
+            "downstream_takedown_artifacts": {
+                "webapp_rights_privacy_takedown_notice": (
+                    "webapp_rights_privacy_takedown_notice.json"
+                ),
+                "hosted_session_takedown_request": (
+                    "hosted_session_takedown_request.json"
+                ),
+            },
+            "required_actions": ["remove_or_expire_hosted_sessions"],
+            "downstream_unexecuted_actions": ["notify_webapp_rights_privacy_blocking"],
+        },
+    }
+
+    projection = _webapp_robot_eval_status_projection(
+        job_dir=job_dir,
+        job_id="job-revoked",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        status="simulator_command_completed",
+        blockers=[],
+        request={},
+        scenario_eval_matrix={},
+        simulator_result={},
+        copied_artifacts={},
+        robot_pov_manifest={},
+        policy_manifest={},
+        policy_execution_manifest={},
+        evaluation_result={},
+        proof_boundary={},
+        live_closure={},
+        data_package_export=data_package_export,
+        generated_at="2026-07-04T12:05:00Z",
+    )
+
+    assert projection["state"] == "blocked"
+    assert projection["buyer_display_state"] == "blocked_consent_revoked_takedown_required"
+    takedown = projection["rights_privacy_takedown"]
+    assert takedown["status"] == "takedown_required"
+    assert takedown["local_package_access_revoked"] is True
+    assert takedown["delivery_blocked_by_consent_revocation"] is True
+    assert takedown["signed_access_revoked_by_consent"] is True
+    assert takedown["webapp_takedown_executed"] is False
+    assert takedown["hosted_session_takedown_executed"] is False
+    assert takedown["webapp_or_hosted_takedown_execution_proven"] is False
+    assert takedown["revocation_takedown_manifest_path"] == "revocation_takedown_manifest.json"
+    assert takedown["webapp_rights_privacy_takedown_notice_path"] == (
+        "webapp_rights_privacy_takedown_notice.json"
+    )
+    assert takedown["hosted_session_takedown_request_path"] == (
+        "hosted_session_takedown_request.json"
+    )
+    assert projection["artifact_paths"]["webapp_rights_privacy_takedown_notice"] == (
+        "webapp_rights_privacy_takedown_notice.json"
+    )
+    assert projection["artifact_paths"]["hosted_session_takedown_request"] == (
+        "hosted_session_takedown_request.json"
+    )
+    assert (
+        projection["buyer_display_guardrails"]["consent_revocation_blocks_downstream_use"]
+        is True
+    )
+    assert (
+        projection["buyer_display_guardrails"][
+            "webapp_or_hosted_takedown_execution_proven"
+        ]
+        is False
+    )
+
+
+def test_webapp_projection_proof_boundary_uses_strict_booleans(
+    tmp_path: Path,
+) -> None:
+    projection = _webapp_robot_eval_status_projection(
+        job_dir=tmp_path / "job",
+        job_id="job-string-proof",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        status="completed",
+        blockers=[],
+        request={},
+        scenario_eval_matrix={},
+        simulator_result={},
+        copied_artifacts={},
+        robot_pov_manifest={},
+        policy_manifest={},
+        policy_execution_manifest={"robot_policy_execution_proven": "true"},
+        evaluation_result={},
+        proof_boundary={
+            "simulator_execution_proven": "true",
+            "robot_policy_execution_proven": "true",
+            "real_world_outcome_proven": "true",
+            "physics_contact_validated": "true",
+            "non_ranking_operational_claim_validated": "true",
+            "rank_fidelity_result_proven": "true",
+            "public_claim_upgrade_allowed": "true",
+        },
+        live_closure={},
+        data_package_export={},
+        generated_at="2026-07-04T12:05:00Z",
+    )
+
+    assert projection["buyer_display_state"] == "awaiting_pipeline_evidence"
+    assert projection["buyer_display_guardrails"]["readiness_claim_upgrade_allowed"] is False
+    assert projection["policy_interface"]["robot_policy_execution_proven"] is False
+    boundary = projection["proof_boundary"]
+    assert boundary["simulator_execution_proven"] is False
+    assert boundary["robot_policy_execution_proven"] is False
+    assert boundary["real_world_outcome_proven"] is False
+    assert boundary["physics_contact_validated"] is False
+    assert boundary["non_ranking_operational_claim_validated"] is False
+    assert boundary["rank_fidelity_result_proven"] is False
+    assert boundary["public_claim_upgrade_allowed"] is False
+
+
+def test_proof_boundary_uses_strict_booleans_for_claim_inputs() -> None:
+    proof = _proof_boundary(
+        simulator="isaac",
+        simulator_result={
+            "simulators_run": "true",
+            "simulator_execution_proven": "true",
+        },
+        training_result={
+            "gpu_training_run": "true",
+            "training_completed": "true",
+        },
+        policy_execution_manifest={"robot_policy_execution_proven": "true"},
+        deployment_outcome_ledger={
+            "real_world_outcome_records_present": "true",
+            "real_world_outcome_proven": "true",
+            "owner_evidence_record_count": 1,
+        },
+        generated_at="2026-07-04T12:05:00Z",
+    )
+
+    assert proof["simulators_run"] is False
+    assert proof["gpu_training_run"] is False
+    assert proof["training_completed"] is False
+    assert proof["simulator_execution_proven"] is False
+    assert proof["robot_policy_execution_proven"] is False
+    assert proof["real_world_outcome_records_present"] is False
+    assert proof["real_world_outcome_proven"] is False
+    boundary = proof["claim_boundary"]
+    assert boundary["simulators_run"] is False
+    assert boundary["gpu_training_run"] is False
+    assert boundary["simulator_execution_proven"] is False
+    assert boundary["robot_policy_execution_proven"] is False
+    assert boundary["real_world_outcome_records_present"] is False
+
+
+def test_live_closure_proof_boundary_requires_real_boolean_upgrades() -> None:
+    base = _proof_boundary(
+        simulator="isaac",
+        simulator_result={},
+        training_result={},
+        policy_execution_manifest={},
+        deployment_outcome_ledger={},
+        generated_at="2026-07-04T12:05:00Z",
+    )
+    stringly_live_closure = {
+        "status": "verified",
+        "live_end_to_end_verified": "true",
+        "proof_boundary": {
+            "live_end_to_end_verified": "true",
+            "review_acceptance_proven": "true",
+            "rights_privacy_scope_proven": "true",
+            "signed_delivery_access_proven": "true",
+            "safety_validation_proven": "true",
+            "simulator_execution_proven": "true",
+            "robot_policy_execution_proven": "true",
+            "real_world_outcome_proven": "true",
+            "physics_contact_validated": "true",
+            "non_ranking_operational_claim_validated": "true",
+            "rank_fidelity_result_proven": "true",
+            "public_claim_upgrade_allowed": "true",
+        },
+    }
+
+    stringly = _apply_live_closure_to_proof_boundary(
+        proof_boundary=base,
+        live_closure=stringly_live_closure,
+    )
+
+    assert stringly["status"] == "review_only"
+    assert stringly["live_end_to_end_verified"] is False
+    assert stringly["review_acceptance_proven"] is False
+    assert stringly["rights_privacy_scope_proven"] is False
+    assert stringly["signed_delivery_access_proven"] is False
+    assert stringly["safety_validation_proven"] is False
+    assert stringly["simulator_execution_proven"] is False
+    assert stringly["robot_policy_execution_proven"] is False
+    assert stringly["real_world_outcome_proven"] is False
+    assert stringly["physics_contact_validated"] is False
+    assert stringly["non_ranking_operational_claim_validated"] is False
+    assert stringly["rank_fidelity_result_proven"] is False
+    assert stringly["public_claim_upgrade_allowed"] is False
+    assert stringly["claim_boundary"]["public_claim_upgrade_allowed"] is False
+
+    boolean_live_closure = {
+        **stringly_live_closure,
+        "live_end_to_end_verified": True,
+        "proof_boundary": {
+            key: True
+            for key in stringly_live_closure["proof_boundary"]
+        },
+    }
+    boolean = _apply_live_closure_to_proof_boundary(
+        proof_boundary=base,
+        live_closure=boolean_live_closure,
+    )
+
+    assert boolean["status"] == "live_end_to_end_verified"
+    assert boolean["live_end_to_end_verified"] is True
+    assert boolean["simulator_execution_proven"] is True
+    assert boolean["robot_policy_execution_proven"] is True
+    assert boolean["public_claim_upgrade_allowed"] is True
+    assert boolean["claim_boundary"]["public_claim_upgrade_allowed"] is True
+
+
+def test_robot_eval_report_uses_strict_booleans_for_claim_fields(tmp_path: Path) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+
+    report = _write_robot_eval_report(
+        job_dir=job_dir,
+        job_id="job-string-report",
+        scene_id="scene-1",
+        capture_id="capture-1",
+        job_status="completed",
+        blockers=[],
+        request={"operation": "evaluate_only"},
+        scenario_eval_matrix={},
+        policy_manifest={"selected_modalities": ["policy_api_endpoint"]},
+        policy_execution_manifest={
+            "status": "completed",
+            "selected_modalities": ["policy_api_endpoint"],
+            "robot_policy_execution_proven": "true",
+        },
+        evaluation_result={},
+        deployment_validation={
+            "ledger": {
+                "real_world_outcome_records_present": "true",
+                "real_world_outcome_proven": "true",
+                "owner_evidence_record_count": 1,
+            }
+        },
+        live_closure={
+            "status": "verified",
+            "repo_local_artifacts_ready": "true",
+            "live_external_ready": "true",
+            "live_end_to_end_verified": "true",
+        },
+        proof_boundary={
+            "review_acceptance_proven": "true",
+            "rights_privacy_scope_proven": "true",
+            "signed_delivery_access_proven": "true",
+            "safety_validation_proven": "true",
+            "simulator_execution_proven": "true",
+            "robot_policy_execution_proven": "true",
+            "real_world_outcome_proven": "true",
+            "physics_contact_validated": "true",
+            "non_ranking_operational_claim_validated": "true",
+            "rank_fidelity_result_proven": "true",
+            "public_claim_upgrade_allowed": "true",
+        },
+        generated_at="2026-07-04T12:05:00Z",
+    )
+
+    written = _read_json(job_dir / "robot_eval_report.json")
+    assert written == report
+    assert report["policy_interface"]["robot_policy_execution_proven"] is False
+    assert report["real_world_validation"]["real_world_outcome_records_present"] is False
+    assert report["real_world_validation"]["real_world_outcome_proven"] is False
+    assert report["live_eval_closure"]["repo_local_artifacts_ready"] is False
+    assert report["live_eval_closure"]["live_external_ready"] is False
+    assert report["live_eval_closure"]["live_end_to_end_verified"] is False
+    boundary = report["proof_boundary"]
+    assert boundary["review_acceptance_proven"] is False
+    assert boundary["rights_privacy_scope_proven"] is False
+    assert boundary["signed_delivery_access_proven"] is False
+    assert boundary["safety_validation_proven"] is False
+    assert boundary["simulator_execution_proven"] is False
+    assert boundary["robot_policy_execution_proven"] is False
+    assert boundary["real_world_outcome_proven"] is False
+    assert boundary["physics_contact_validated"] is False
+    assert boundary["non_ranking_operational_claim_validated"] is False
+    assert boundary["rank_fidelity_result_proven"] is False
+    assert boundary["public_claim_upgrade_allowed"] is False
+
+
+def test_policy_scorecard_and_evaluation_use_strict_success_labels() -> None:
+    attempts = [
+        {"attempt_id": "a1", "success": True},
+        {"attempt_id": "a2", "success": "true"},
+        {"attempt_id": "a3", "success": "false"},
+        {"attempt_id": "a4", "task_success": "true"},
+        {"attempt_id": "a5", "task_outcome": {"task_success": "true"}},
+    ]
+
+    scorecard = _standard_policy_scorecard(attempts)
+    evaluation = _evaluation_result(
+        evaluation_request={"status": "requested"},
+        simulator_result={"status": "completed"},
+        copied_artifacts={
+            "normalized_attempt_trace": {
+                "status": "completed",
+                "attempts": attempts,
+            }
+        },
+        generated_at="2026-07-04T12:05:00Z",
+    )
+
+    assert scorecard["success_rate"] == 0.2
+    assert evaluation["status"] == "completed_with_failures"
+    assert evaluation["standard_policy_scorecard"]["success_rate"] == 0.2
+    assert _attempt_task_success({"task_success": True}) is True
+    assert _attempt_task_success({"task_success": "true"}) is False
+    assert _attempt_task_success({"success": "true"}) is False
+    assert _attempt_task_success({"task_outcome": {"task_success": "true"}}) is False
 
 
 def _write_minimal_glb_with_accessor_bounds(path: Path) -> None:
@@ -7709,10 +8077,10 @@ def test_robot_eval_job_real_provisioner_fails_closed_without_gates(
 
     assert result["status"] == "blocked"
     assert result["provider"] == "vast"
-    assert result["blockers"] == [
-        "missing_env_BLUEPRINT_ALLOW_GPU_PROVISIONING",
-        "missing_cli_allow_gpu_provisioning",
-    ]
+    assert result["reason"] == "prelaunch_spend_guard_blocked"
+    assert "prelaunch_spend_guard_not_passed" in result["blockers"]
+    assert "missing_env_BLUEPRINT_ALLOW_GPU_PROVISIONING" in result["blockers"]
+    assert "missing_cli_allow_gpu_provisioning" in result["blockers"]
     assert "gpu_provisioning_blocked" in blocked["blockers"]
 
 
@@ -7895,6 +8263,44 @@ def test_remote_cloud_execution_closure_requires_provider_shutdown_evidence() ->
         "worker_storage_credentials"
     )
     assert proven["outputs"]["artifact_upload_evidence"]["uploaded_file_count"] == 12
+
+    stringly_ledger = {
+        **proven_ledger,
+        "live_provider_calls_performed": "true",
+        "gpu_time": {"actual_gpu_time_record_present": "true"},
+        "artifact_finalizer": {
+            **proven_ledger["artifact_finalizer"],  # type: ignore[index]
+            "worker_artifacts_finalized_before_shutdown": "true",
+            "provider_shutdown_proven": "true",
+            "provider_shutdown_evidence": {
+                "provider_shutdown_proven": "true",
+                "zero_active_workers_after_run": "true",
+            },
+        },
+    }
+    stringly = _remote_cloud_execution_closure_manifest(
+        job_id="job-remote",
+        provisioner="runpod",
+        simulator="mujoco",
+        worker_launch_plan=worker_launch_plan,
+        worker_manifest=worker_manifest,
+        provider_launch_request=provider_launch_request,
+        gpu_result={
+            "live_provider_calls_performed": "true",
+            "provider_runtime_started_at": "2026-06-15T00:00:01Z",
+        },
+        gpu_cost_ledger=stringly_ledger,
+        sim_result={"simulator_execution_proven": "true"},
+        generated_at="2026-06-15T00:00:00Z",
+    )
+    assert stringly["status"] == "ready_for_explicit_provider_runtime"
+    assert stringly["remote_cloud_execution_proven"] is False
+    assert stringly["clean_shutdown_proven"] is False
+    assert stringly["live_provider_calls_performed"] is False
+    assert stringly["checks"]["actual_gpu_time_record_present"] is False
+    assert stringly["checks"]["simulator_execution_proven"] is False
+    assert stringly["checks"]["worker_finalizer_proven"] is False
+    assert stringly["checks"]["provider_shutdown_proven"] is False
 
 
 def test_remote_cloud_execution_closure_blocks_provider_input_setup_upload_not_proven() -> None:
@@ -9979,6 +10385,7 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     startup_plan = _read_json(job_dir / "gpu_startup_pipeline_plan.json")
     worker_manifest = _read_json(job_dir / "worker_manifest.json")
     provider_launch = _read_json(job_dir / "gpu_provider_launch_request.json")
+    provider_race_handoff = _read_json(job_dir / "gpu_provider_race_handoff.json")
     provisioning = _read_json(job_dir / "gpu_provisioning_result.json")
     cost_ledger = _read_json(job_dir / "gpu_cost_control_ledger.json")
     remote_closure = _read_json(job_dir / "remote_cloud_execution_closure_manifest.json")
@@ -10058,6 +10465,9 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     assert provider_launch["provider_request_shape"]["inputs"][  # type: ignore[index]
         "capture_root_bundle_uri_fetchable_by_provider"
     ] is True
+    assert provider_launch["provider_race_handoff_path"] == (
+        "gpu_provider_race_handoff.json"
+    )
     local_prereq = provider_launch["provider_request_shape"][  # type: ignore[index]
         "local_sim_only_prerequisite"
     ]
@@ -10072,6 +10482,122 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
         "blueprint_pipeline.provider_race"
     )
     assert prelaunch_guard["provider_race"]["candidate_count"] >= 1
+    assert prelaunch_guard["provider_race"]["provider_race_contract_ready"] is True
+    assert prelaunch_guard["provider_race"]["race_required_for_customer_path"] is True
+    assert (
+        prelaunch_guard["provider_race"]["customer_path_provider_failover_wired"]
+        is False
+    )
+    assert (
+        prelaunch_guard["provider_race"][
+            "customer_path_provider_failover_handoff_wired"
+        ]
+        is True
+    )
+    assert (
+        prelaunch_guard["provider_race"][
+            "customer_path_provider_failover_runtime_wired"
+        ]
+        is False
+    )
+    assert prelaunch_guard["provider_race"][
+        "customer_path_provider_failover_runtime_status"
+    ] == "blocked_pending_teardown_owned_race_launcher"
+    assert (
+        "runpod_provider_race_teardown_owned_allocation_contract_missing"
+        in prelaunch_guard["provider_race"][
+            "customer_path_provider_failover_runtime_blockers"
+        ]
+    )
+    runtime_readiness = prelaunch_guard["provider_race"]["runtime_readiness"]
+    assert runtime_readiness["schema_version"] == (
+        "robot_eval_provider_race_runtime_readiness.v1"
+    )
+    assert runtime_readiness["customer_path_provider_failover_runtime_wired"] is False
+    assert runtime_readiness["claim_boundary"][
+        "serial_provider_launch_must_remain_blocked_until_runtime_wired"
+    ] is True
+    assert prelaunch_guard["provider_race"]["provider_race_handoff_path"] == (
+        "gpu_provider_race_handoff.json"
+    )
+    assert (
+        prelaunch_guard["provider_race"][
+            "customer_path_serial_launch_blocked_unless_override"
+        ]
+        is True
+    )
+    assert (
+        prelaunch_guard["provider_race"]["launcher_contract"][
+            "serial_provider_launch_default_allowed"
+        ]
+        is False
+    )
+    assert provider_race_handoff["schema_version"] == (
+        "robot_eval_gpu_provider_race_handoff.v1"
+    )
+    assert provider_race_handoff["status"] == "blocked_before_provider_race_launcher"
+    assert "prelaunch_spend_guard_not_passed" in provider_race_handoff["blockers"]
+    assert (
+        "prelaunch_local_sim_only_prerequisite_not_passed"
+        in provider_race_handoff["blockers"]
+    )
+    assert provider_race_handoff["provider_race_required_for_customer_path"] is True
+    assert (
+        provider_race_handoff["customer_path_provider_failover_handoff_wired"]
+        is True
+    )
+    assert (
+        provider_race_handoff["customer_path_provider_failover_runtime_wired"]
+        is False
+    )
+    assert provider_race_handoff["customer_path_provider_failover_runtime_status"] == (
+        "blocked_pending_teardown_owned_race_launcher"
+    )
+    assert (
+        "customer_path_provider_failover_runtime_not_wired"
+        in provider_race_handoff["blockers"]
+    )
+    assert (
+        "provider_race_runtime_launcher_not_implemented"
+        not in provider_race_handoff["blockers"]
+    )
+    assert (
+        "runpod_provider_race_teardown_owned_allocation_contract_missing"
+        in provider_race_handoff["customer_path_provider_failover_runtime_blockers"]
+    )
+    assert provider_race_handoff["provider_race_runtime_readiness"][
+        "runtime_eligible_candidate_count"
+    ] < 2
+    assert provider_race_handoff["execution_contract"][
+        "teardown_owned_loser_cleanup_required"
+    ] is True
+    assert provider_race_handoff["execution_contract"][
+        "provider_race_runtime_launcher_available"
+    ] is True
+    assert provider_race_handoff["execution_contract"][
+        "live_race_execution_proven"
+    ] is False
+    assert provider_race_handoff["provider_race_runtime_launcher_available"] is True
+    assert provider_race_handoff["provider_race_runtime_launcher_blockers"] == []
+    assert provider_race_handoff["provider_race_launcher_result_path"] == (
+        "gpu_provider_race_launcher_result.json"
+    )
+    assert provider_race_handoff["launcher_command"].startswith(
+        "blueprint-run-robot-eval-provider-race "
+    )
+    assert provider_race_handoff["claim_boundary"][
+        "provider_race_handoff_is_not_customer_runtime_failover"
+    ] is True
+    assert provider_race_handoff["claim_boundary"][
+        "provider_race_runtime_launcher_not_implemented"
+    ] is False
+    assert provider_race_handoff["claim_boundary"][
+        "provider_race_launcher_command_available"
+    ] is True
+    assert provider_race_handoff["live_provider_calls_performed"] is False
+    assert provider_race_handoff["race_module"] == "blueprint_pipeline.provider_race"
+    assert provider_race_handoff["race_candidate_count"] >= 2
+    assert provider_race_handoff["runnable_candidate_count"] >= 2
     assert provider_launch["provider_request_shape"]["runtime_preflight"][  # type: ignore[index]
         "vulkan_required"
     ] is True
@@ -11767,6 +12293,56 @@ def test_command_simulator_records_stdout_stderr_and_exit_code_when_allowed(
     assert run_manifest["public_claim_upgrade_allowed"] is False
 
 
+def test_command_simulator_rejects_string_execution_proof_flags(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    request_path = tmp_path / "job-request.json"
+    _write_json(request_path, _full_job_request(capture_root))
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-command-string-proof",
+        provisioner="fixture_local",
+        simulator="mujoco",
+        allow_simulator_execution=True,
+        allowed_simulators=["mujoco"],
+        simulator_commands={
+            "mujoco": (
+                f"{sys.executable} -c "
+                "\"import json; print(json.dumps({"
+                "'simulator_execution_proven': 'true', "
+                "'isaac_sim_execution_proven': 'true', "
+                "'isaac_robot_asset_execution_proven': 'true', "
+                "'unitree_g1_asset_spawned': 'true'}))\""
+            )
+        },
+    )
+
+    job_dir = (
+        capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "job-command-string-proof"
+    )
+    result = _read_json(job_dir / "simulator_service_result.json")
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "simulator_output_declared_execution_not_proven"
+    assert result["blockers"] == ["simulator_output_declared_execution_not_proven"]
+    assert result["simulator_execution_proven"] is False
+    assert result["isaac_sim_execution_proven"] is False
+    assert result["isaac_robot_asset_execution_proven"] is False
+    assert result["unitree_g1_asset_spawned"] is False
+    assert run_manifest["simulator_execution_proven"] is False
+    assert run_manifest["public_claim_upgrade_allowed"] is False
+
+
 def test_training_request_is_export_only_and_training_result_blocks_without_gates(
     tmp_path: Path,
 ) -> None:
@@ -12335,6 +12911,7 @@ def test_robot_eval_job_can_run_fixture_wam_evaluation_substrate(tmp_path: Path)
     labels = _read_json(job_dir / "vision_success_labels.json")
     scorecard = _read_json(job_dir / "policy_ranking_scorecard.json")
     claim_boundary = _read_json(job_dir / "wam_eval_claim_boundary.json")
+    task_eval_report = _read_json(job_dir / "task_eval_run_report.json")
     followup = _read_json(job_dir / "real_world_validation_followup_request.json")
 
     assert run_manifest["evaluation_substrate"] == "fixture_wam"
@@ -12359,6 +12936,23 @@ def test_robot_eval_job_can_run_fixture_wam_evaluation_substrate(tmp_path: Path)
     assert claim_boundary["policy_ranking_is_not_evaluation_readiness"] is True
     assert claim_boundary["customer_specific_srcc_claimed"] is False
     assert claim_boundary["passing_wam_heldout_eval_is_not_rank_fidelity_result"] is True
+    assert task_eval_report["provider_execution"]["evaluation_substrate"] == "fixture_wam"
+    assert task_eval_report["provider_execution"]["wam_evaluation_status"] == "completed"
+    assert task_eval_report["wam_evaluation"]["status"] == "completed"
+    assert task_eval_report["wam_evaluation"]["wam_score_claim_grade"] == (
+        "fixture_evaluator_only"
+    )
+    assert task_eval_report["wam_evaluation"]["bare_score_forbidden"] is True
+    assert task_eval_report["wam_evaluation"]["calibration_anchor_set"] == []
+    assert "score" not in task_eval_report["wam_evaluation"]
+    assert task_eval_report["claim_boundary"][
+        "generated_wam_rollouts_are_model_derived_support_artifacts"
+    ] is True
+    assert task_eval_report["claim_boundary"][
+        "wam_evaluator_bounded_policy_ranking_is_not_task_success"
+    ] is True
+    assert "success" not in task_eval_report
+    assert "task_success" not in task_eval_report
     assert followup["minimum_validation_requirements"]["paired_real_outcome_records_required"] is True
     assert run_manifest["rank_fidelity_result_proven"] is False
     assert run_manifest["public_claim_upgrade_allowed"] is False
@@ -12513,6 +13107,7 @@ def test_robot_eval_job_can_run_fake_cosmos_wam_provider_adapter(
     runtime_package = _read_json(job_dir / "wam_provider_runtime_package.json")
     scorecard = _read_json(job_dir / "policy_ranking_scorecard.json")
     claim_boundary = _read_json(job_dir / "wam_eval_claim_boundary.json")
+    task_eval_report = _read_json(job_dir / "task_eval_run_report.json")
 
     assert run_manifest["evaluation_substrate"] == "cosmos3_wam"
     assert run_manifest["wam_evaluation_status"] == "completed"
@@ -12540,6 +13135,21 @@ def test_robot_eval_job_can_run_fake_cosmos_wam_provider_adapter(
     assert scorecard["single_best_policy_claimed"] is False
     assert claim_boundary["live_provider_calls_performed"] is True
     assert claim_boundary["rank_fidelity_result_proven"] is False
+    assert task_eval_report["provider_execution"]["evaluation_substrate"] == "cosmos3_wam"
+    assert task_eval_report["provider_execution"]["wam_provider_execution_status"] == (
+        "completed"
+    )
+    assert task_eval_report["provider_execution"]["wam_provider_command_used"] is True
+    assert task_eval_report["wam_evaluation"]["provider_command_used"] is True
+    assert task_eval_report["wam_evaluation"]["wam_score_claim_grade"] == (
+        "fixture_evaluator_only"
+    )
+    assert task_eval_report["wam_evaluation"]["bare_score_forbidden"] is True
+    assert task_eval_report["claim_boundary"][
+        "wam_outputs_do_not_prove_physical_readiness"
+    ] is True
+    assert "task_success" not in task_eval_report["provider_execution"]
+    assert "success_rate" not in task_eval_report["provider_execution"]
     assert run_manifest["public_claim_upgrade_allowed"] is False
 
 

@@ -16,11 +16,12 @@
 
 ## What this packet is — and is not
 
-This packet proves that the pipeline's launch gate passed with evidence on
-file for this one capture. It is **not** a safety approval, not a deployment
-authorization, and not proof of live payments or payouts. Items listed under
-"Operator checklist still open" remain yours to complete before any external
-claim is made.
+This packet proves that the pipeline's automated launch-stage checks passed
+with evidence on file for this one capture. It is **not** a safety approval,
+not a deployment authorization, not legal sign-off, not secret-rotation proof,
+and not proof of live payments or payouts. Items listed under "Operator
+checklist still open" remain yours to complete before any external claim is
+made.
 
 ---
 
@@ -61,12 +62,18 @@ claim is made.
 
 ## Operator checklist still open (not claimed by this packet)
 
-1. Live buyer payment settlement evidence (Stripe).
-2. Live capturer payout settlement and connected-account readiness.
-3. Real-device claim-flow evidence for this `capture_job_id`.
-4. Named finance owner for payout exceptions.
+1. Legal/EHS sign-off on the current consent, rights, redaction, and delivery posture.
+2. Operator DPA/data-processing terms covering retention, subprocessors, and access-audit obligations.
+3. Paperclip ops relay secret rotation and redeploy evidence.
+4. Live buyer payment settlement evidence (Stripe).
+5. Live capturer payout settlement and connected-account readiness.
+6. Real-device claim-flow evidence for this `capture_job_id`.
+7. Named finance owner for payout exceptions.
 
 Full list with required evidence: `launch_gate_summary.json.operator_required_checks`.
+The per-capture top-level status remains
+`automated_contracts_passed_manual_ops_required` until
+`pipeline/operator_launch_evidence.json` verifies those required evidence ids.
 
 ---
 

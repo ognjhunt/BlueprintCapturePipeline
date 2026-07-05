@@ -12,7 +12,6 @@ from blueprint_pipeline.simulator_beta_readiness import (
     _frame_evidence,
     _handoff_gate,
     _image_nonblank,
-    _isaac_gate,
     _mujoco_gate,
     _official_policy_gate,
     _runpod_gate,

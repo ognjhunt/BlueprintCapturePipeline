@@ -11,6 +11,7 @@ import pytest
 from blueprint_pipeline import robot_eval_provider_launcher as launcher
 from blueprint_pipeline.robot_eval_provider_launcher import (
     ALLOW_PROVIDER_LAUNCH_ENV,
+    ALLOW_SERIAL_PROVIDER_LAUNCH_ENV,
     PROVIDER_LAUNCH_COMMAND_ENV,
     main as provider_launcher_main,
     run_gpu_provider_launcher,
@@ -87,6 +88,171 @@ def _ready_provider_launch_request(
 
 def _python_command(code: str) -> str:
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+
+
+def _add_passed_race_guard(request_path: Path, *, write_handoff: bool = True) -> None:
+    payload = _read_json(request_path)
+    payload["prelaunch_spend_guard"] = {
+        "schema_version": "robot_eval_provider_prelaunch_spend_guard.v1",
+        "required_before_provider_launch": True,
+        "can_launch": True,
+        "blockers": [],
+        "provider_race": {
+            "schema_version": "robot_eval_provider_race_contract.v1",
+            "race_module": "blueprint_pipeline.provider_race",
+            "race_required_for_customer_path": True,
+            "customer_path_provider_failover_wired": False,
+            "customer_path_provider_failover_runtime_wired": False,
+            "customer_path_provider_failover_runtime_status": (
+                "blocked_pending_teardown_owned_race_launcher"
+            ),
+            "provider_race_handoff_path": "gpu_provider_race_handoff.json",
+            "candidate_count": 2,
+            "race_candidate_count": 2,
+            "customer_path_provider_failover_runtime_blockers": [
+                "runpod_provider_race_teardown_owned_allocation_contract_missing"
+            ],
+            "launcher_contract": {
+                "provider_race_launcher_available": True,
+                "provider_race_launcher_command": "blueprint-run-robot-eval-provider-race",
+            },
+            "candidates": [
+                {"provider": "runpod", "race_candidate": True, "selected": True},
+                {"provider": "vast", "race_candidate": True, "selected": False},
+            ],
+        },
+    }
+    _write_json(request_path, payload)
+    if write_handoff:
+        _write_json(
+            request_path.parent / "gpu_provider_race_handoff.json",
+            {
+                "schema_version": "robot_eval_gpu_provider_race_handoff.v1",
+                "generated_at": "2026-07-04T00:00:00Z",
+                "job_id": payload["job_id"],
+                "status": "blocked_before_provider_race_launcher",
+                "reason": "provider_race_handoff_blocked",
+                "blockers": [
+                    "customer_path_provider_failover_runtime_not_wired",
+                    "runpod_provider_race_teardown_owned_allocation_contract_missing",
+                ],
+                "provider_launch_request_path": "gpu_provider_launch_request.json",
+                "provider_race_required_for_customer_path": True,
+                "customer_path_provider_failover_handoff_wired": True,
+                "customer_path_provider_failover_runtime_wired": False,
+                "customer_path_provider_failover_runtime_status": (
+                    "blocked_pending_teardown_owned_race_launcher"
+                ),
+                "customer_path_provider_failover_runtime_blockers": [
+                    "runpod_provider_race_teardown_owned_allocation_contract_missing"
+                ],
+                "provider_race_runtime_launcher_available": True,
+                "provider_race_runtime_launcher_blockers": [],
+                "provider_race_launcher_result_path": (
+                    "gpu_provider_race_launcher_result.json"
+                ),
+                "launcher_command": (
+                    "blueprint-run-robot-eval-provider-race "
+                    "--provider-launch-request gpu_provider_launch_request.json "
+                    "--handoff gpu_provider_race_handoff.json"
+                ),
+                "live_provider_calls_performed": False,
+                "race_candidate_count": 2,
+                "runnable_candidate_count": 2,
+                "claim_boundary": {
+                    "provider_race_handoff_is_not_customer_runtime_failover": True,
+                    "live_provider_calls_performed": False,
+                },
+            },
+        )
+
+
+def _add_ready_race_guard(request_path: Path) -> None:
+    payload = _read_json(request_path)
+    runtime_readiness = {
+        "schema_version": "robot_eval_provider_race_runtime_readiness.v1",
+        "status": "runtime_ready",
+        "customer_path_provider_failover_runtime_wired": True,
+        "runtime_candidate_count": 2,
+        "runtime_eligible_candidate_count": 2,
+        "runtime_candidates": [
+            {
+                "provider": "runpod",
+                "adapter_command_present": True,
+                "teardown_owned_allocation_contract_present": True,
+                "customer_path_race_runtime_eligible": True,
+                "blockers": [],
+            },
+            {
+                "provider": "vast",
+                "adapter_command_present": True,
+                "teardown_owned_allocation_contract_present": True,
+                "customer_path_race_runtime_eligible": True,
+                "blockers": [],
+            },
+        ],
+        "blockers": [],
+    }
+    payload["prelaunch_spend_guard"] = {
+        "schema_version": "robot_eval_provider_prelaunch_spend_guard.v1",
+        "required_before_provider_launch": True,
+        "can_launch": True,
+        "blockers": [],
+        "provider_race": {
+            "schema_version": "robot_eval_provider_race_contract.v1",
+            "race_module": "blueprint_pipeline.provider_race",
+            "race_required_for_customer_path": True,
+            "customer_path_provider_failover_wired": True,
+            "customer_path_provider_failover_runtime_wired": True,
+            "customer_path_provider_failover_runtime_status": "runtime_ready",
+            "provider_race_handoff_path": "gpu_provider_race_handoff.json",
+            "candidate_count": 2,
+            "race_candidate_count": 2,
+            "customer_path_provider_failover_runtime_blockers": [],
+            "runtime_readiness": runtime_readiness,
+            "launcher_contract": {
+                "provider_race_launcher_available": True,
+                "provider_race_launcher_command": "blueprint-run-robot-eval-provider-race",
+            },
+            "candidates": [
+                {"provider": "runpod", "race_candidate": True, "selected": True},
+                {"provider": "vast", "race_candidate": True, "selected": False},
+            ],
+        },
+    }
+    _write_json(request_path, payload)
+    _write_json(
+        request_path.parent / "gpu_provider_race_handoff.json",
+        {
+            "schema_version": "robot_eval_gpu_provider_race_handoff.v1",
+            "generated_at": "2026-07-04T00:00:00Z",
+            "job_id": payload["job_id"],
+            "status": "ready_for_customer_provider_race_runtime",
+            "reason": "provider_race_handoff_ready",
+            "blockers": [],
+            "provider_launch_request_path": "gpu_provider_launch_request.json",
+            "provider_race_required_for_customer_path": True,
+            "customer_path_provider_failover_handoff_wired": True,
+            "customer_path_provider_failover_runtime_wired": True,
+            "customer_path_provider_failover_runtime_status": "runtime_ready",
+            "customer_path_provider_failover_runtime_blockers": [],
+            "provider_race_runtime_launcher_available": True,
+            "provider_race_runtime_launcher_blockers": [],
+            "provider_race_launcher_result_path": "gpu_provider_race_launcher_result.json",
+            "launcher_command": (
+                "blueprint-run-robot-eval-provider-race "
+                "--provider-launch-request gpu_provider_launch_request.json "
+                "--handoff gpu_provider_race_handoff.json"
+            ),
+            "live_provider_calls_performed": False,
+            "race_candidate_count": 2,
+            "runnable_candidate_count": 2,
+            "claim_boundary": {
+                "provider_race_handoff_is_not_customer_runtime_failover": False,
+                "live_provider_calls_performed": False,
+            },
+        },
+    )
 
 
 def test_provider_launcher_helper_edges() -> None:
@@ -185,6 +351,193 @@ def test_provider_launcher_blocks_when_prelaunch_spend_guard_is_false(
     assert result["provider_context"]["prelaunch_spend_guard_can_launch"] is False
     assert result["provider_race"]["race_module"] == "blueprint_pipeline.provider_race"
     assert not (tmp_path / "gpu_provider_launcher.stdout.log").exists()
+
+
+def test_provider_launcher_blocks_serial_command_when_provider_race_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    _add_passed_race_guard(request_path)
+    marker = tmp_path / "serial-command-ran"
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+    monkeypatch.delenv(ALLOW_SERIAL_PROVIDER_LAUNCH_ENV, raising=False)
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        provider_launch_command=_python_command(
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"
+        ),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["execution_performed"] is False
+    assert "provider_race_required_serial_launch_blocked" in result["blockers"]
+    assert "provider_race_runtime_launcher_not_implemented" not in result["blockers"]
+    assert "customer_path_provider_failover_runtime_not_wired" in result["blockers"]
+    assert (
+        "runpod_provider_race_teardown_owned_allocation_contract_missing"
+        in result["blockers"]
+    )
+    assert f"missing_env_{ALLOW_SERIAL_PROVIDER_LAUNCH_ENV}" in result["blockers"]
+    assert "missing_cli_allow_serial_provider_launch" in result["blockers"]
+    assert result["provider_race_required_for_customer_path"] is True
+    assert result["provider_race_handoff_path"] == "gpu_provider_race_handoff.json"
+    assert result["provider_race_handoff"]["present"] is True
+    assert result["provider_race_handoff"]["handoff_status"] == (
+        "blocked_before_provider_race_launcher"
+    )
+    assert (
+        "provider_race_handoff_runtime_not_wired"
+        in result["provider_race_handoff"]["runtime_blockers"]
+    )
+    assert result["provider_context"]["provider_race_required_for_customer_path"] is True
+    assert result["provider_context"][
+        "customer_path_provider_failover_runtime_wired"
+    ] is False
+    assert result["provider_context"][
+        "customer_path_provider_failover_runtime_status"
+    ] == "blocked_pending_teardown_owned_race_launcher"
+    assert result["provider_context"][
+        "customer_path_provider_race_runtime_launcher_available"
+    ] is True
+    assert result["serial_provider_launch_override"]["override_effective"] is False
+    assert not marker.exists()
+    assert not (tmp_path / "gpu_provider_launcher.stdout.log").exists()
+
+
+def test_provider_launcher_blocks_ready_race_handoff_without_serial_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    _add_ready_race_guard(request_path)
+    marker = tmp_path / "serial-command-ran"
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+    monkeypatch.delenv(ALLOW_SERIAL_PROVIDER_LAUNCH_ENV, raising=False)
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        provider_launch_command=_python_command(
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"
+        ),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["execution_performed"] is False
+    assert "provider_race_required_serial_launch_blocked" in result["blockers"]
+    assert "provider_race_runtime_launcher_not_implemented" not in result["blockers"]
+    assert "customer_path_provider_failover_runtime_not_wired" not in result["blockers"]
+    assert result["provider_race_handoff"]["status"] == "valid"
+    assert result["provider_race_handoff"]["runtime_wired"] is True
+    assert result["provider_race_handoff"]["handoff_status"] == (
+        "ready_for_customer_provider_race_runtime"
+    )
+    assert result["provider_context"][
+        "customer_path_provider_failover_runtime_wired"
+    ] is True
+    assert result["provider_context"][
+        "customer_path_provider_race_runtime_launcher_available"
+    ] is True
+    assert not marker.exists()
+    assert not (tmp_path / "gpu_provider_launcher.stdout.log").exists()
+
+
+def test_provider_launcher_blocks_ready_handoff_with_nested_runtime_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    _add_ready_race_guard(request_path)
+    handoff_path = tmp_path / "gpu_provider_race_handoff.json"
+    handoff = _read_json(handoff_path)
+    handoff["customer_path_provider_failover_runtime_blockers"] = [
+        "teardown_owned_loser_cleanup_not_proven"
+    ]
+    handoff["provider_race_runtime_launcher_blockers"] = [
+        "provider_race_runtime_launcher_contract_not_signed"
+    ]
+    _write_json(handoff_path, handoff)
+    marker = tmp_path / "serial-command-ran"
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+    monkeypatch.delenv(ALLOW_SERIAL_PROVIDER_LAUNCH_ENV, raising=False)
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        provider_launch_command=_python_command(
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"
+        ),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["execution_performed"] is False
+    assert "teardown_owned_loser_cleanup_not_proven" in result["blockers"]
+    assert "provider_race_runtime_launcher_contract_not_signed" in result["blockers"]
+    assert result["provider_race_handoff"]["status"] == "blocked"
+    assert (
+        "teardown_owned_loser_cleanup_not_proven"
+        in result["provider_race_handoff"]["runtime_blockers"]
+    )
+    assert not marker.exists()
+
+
+def test_provider_launcher_serial_override_requires_env_and_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    _add_passed_race_guard(request_path)
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+    monkeypatch.setenv(ALLOW_SERIAL_PROVIDER_LAUNCH_ENV, "true")
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        allow_serial_provider_launch=True,
+        provider_launch_command=_python_command("print('serial override accepted')"),
+    )
+
+    assert result["status"] == "completed"
+    assert result["execution_performed"] is True
+    assert result["provider_launcher_command_executed"] is True
+    assert result["provider_race_required_for_customer_path"] is True
+    assert (tmp_path / "gpu_provider_launcher.stdout.log").read_text(
+        encoding="utf-8"
+    ).strip() == "serial override accepted"
+
+
+def test_provider_launcher_blocks_provider_race_when_handoff_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    _add_passed_race_guard(request_path, write_handoff=False)
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        provider_launch_command=_python_command("print('should not run')"),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["execution_performed"] is False
+    assert "provider_race_handoff_file_missing" in result["blockers"]
+    assert result["provider_race_handoff"]["required"] is True
+    assert result["provider_race_handoff"]["present"] is False
 
 
 def test_provider_launcher_executes_operator_command_with_redacted_artifact(
@@ -523,3 +876,91 @@ def test_provider_launcher_cli_provider_request_and_error_paths(
 
     with pytest.raises(SystemExit):
         provider_launcher_main([])
+
+
+# ---------------------------------------------------------------------------
+# Unified pre-spend chokepoint (paid_lane_guard.require_pre_spend_preflight).
+# ---------------------------------------------------------------------------
+
+
+def test_provider_launcher_blocks_on_failing_unified_preflight_without_executing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    payload = _read_json(request_path)
+    payload["provider_request_shape"]["image"]["configured_image_ref"] = (
+        "registry.example/blueprint/isaac-eval-worker:latest"
+    )
+    _write_json(request_path, payload)
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+    marker = tmp_path / "command_ran.txt"
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        provider_launch_command=_python_command(
+            f"open({str(marker)!r}, 'w').write('ran')"
+        ),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "pre_spend_preflight_blocked"
+    assert result["execution_performed"] is False
+    assert not marker.exists()
+    preflight = result["pre_spend_preflight"]
+    assert preflight["schema_version"] == "pre_spend_preflight.v1"
+    assert preflight["lane"] == "robot_eval_provider_launcher"
+    assert preflight["status"] == "FAIL"
+    assert any("image_not_pinned" in blocker for blocker in result["blockers"])
+
+
+def test_provider_launcher_records_passing_unified_preflight(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        provider_launch_command=_python_command("print('ok')"),
+    )
+
+    assert result["status"] == "completed"
+    preflight = result["pre_spend_preflight"]
+    assert preflight["status"] == "PASS"
+    assert preflight["lane"] == "robot_eval_provider_launcher"
+    assert preflight["spend_allowed"] is True
+
+
+def test_provider_launcher_preflight_fails_closed_on_missing_limits(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    payload = _read_json(request_path)
+    payload["provider_request_shape"]["limits"] = {}
+    _write_json(request_path, payload)
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        provider_launch_command=_python_command("print('should not run')"),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "pre_spend_preflight_blocked"
+    assert result["execution_performed"] is False
+    assert any(
+        "startup_timeout_seconds_not_positive" in blocker
+        for blocker in result["blockers"]
+    )

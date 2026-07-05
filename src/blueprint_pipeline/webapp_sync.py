@@ -8,10 +8,12 @@ import os
 import time
 from datetime import datetime, timezone
 from hashlib import sha256
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from .common import parse_bool
 from .launch_proof_policy import buyer_access_required, production_forces_false, production_forces_true
 
 
@@ -77,6 +79,20 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _safety_bool(value: Any) -> bool:
+    return parse_bool(value, default=False)
+
+
+def _revocation_bool(value: Any) -> bool:
+    if isinstance(value, str) and value.strip().lower() in {
+        "revoked",
+        "withdrawn",
+        "rescinded",
+    }:
+        return True
+    return parse_bool(value, default=False)
+
+
 def _artifact_uri_checksums(artifacts: Mapping[str, Any]) -> Dict[str, str]:
     checksums: Dict[str, str] = {}
     for key, value in artifacts.items():
@@ -117,6 +133,19 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
     # weakest truthful description.
     real_world_proven = proof_boundary.get("real_world_outcome_proven") is True
     simulator_proven = proof_boundary.get("simulator_execution_proven") is True
+    robot_policy_execution_proven = (
+        proof_boundary.get("robot_policy_execution_proven") is True
+    )
+    physics_contact_validated = proof_boundary.get("physics_contact_validated") is True
+    non_ranking_operational_claim_validated = (
+        proof_boundary.get("non_ranking_operational_claim_validated") is True
+    )
+    rank_fidelity_result_proven = (
+        proof_boundary.get("rank_fidelity_result_proven") is True
+    )
+    public_claim_upgrade_allowed = (
+        proof_boundary.get("public_claim_upgrade_allowed") is True
+    )
     if real_world_proven:
         success_rate_substrate = "real_robot_outcome"
     elif simulator_proven:
@@ -130,8 +159,8 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
         value.get("revocation_takedown") or rights_privacy.get("revocation_takedown")
     )
     consent_revoked = (
-        rights_privacy.get("consent_revoked") is True
-        or revocation_takedown.get("consent_revoked") is True
+        _revocation_bool(rights_privacy.get("consent_revoked"))
+        or _revocation_bool(revocation_takedown.get("consent_revoked"))
         or revocation_takedown.get("status") == "takedown_required"
     )
     product_sku = str(product_handoff.get("product_sku") or "").strip() or None
@@ -318,21 +347,15 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             ),
         },
         "proof_boundary": {
-            "simulator_execution_proven": bool(
-                proof_boundary.get("simulator_execution_proven")
+            "simulator_execution_proven": simulator_proven,
+            "robot_policy_execution_proven": robot_policy_execution_proven,
+            "real_world_outcome_proven": real_world_proven,
+            "physics_contact_validated": physics_contact_validated,
+            "non_ranking_operational_claim_validated": (
+                non_ranking_operational_claim_validated
             ),
-            "robot_policy_execution_proven": bool(
-                proof_boundary.get("robot_policy_execution_proven")
-            ),
-            "real_world_outcome_proven": bool(
-                proof_boundary.get("real_world_outcome_proven")
-            ),
-            "physics_contact_validated": bool(proof_boundary.get("physics_contact_validated")),
-            "non_ranking_operational_claim_validated": bool(proof_boundary.get("non_ranking_operational_claim_validated")),
-            "rank_fidelity_result_proven": bool(proof_boundary.get("rank_fidelity_result_proven")),
-            "public_claim_upgrade_allowed": bool(
-                proof_boundary.get("public_claim_upgrade_allowed")
-            ),
+            "rank_fidelity_result_proven": rank_fidelity_result_proven,
+            "public_claim_upgrade_allowed": public_claim_upgrade_allowed,
             # Each proven flag lists the whitelisted manifests a buyer can audit it
             # against. An empty list means no synced artifact backs the flag.
             "evidence_manifest_paths": {
@@ -379,14 +402,12 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "pricing_is_out_of_band": True,
             "revenue_share_review": {
                 "status": str(revenue_share_review.get("status") or "not_available").strip(),
-                "required_before_paid_reuse_or_resale": revenue_share_review.get(
-                    "required_before_paid_reuse_or_resale"
-                )
-                is True,
-                "owner_revenue_share_record_present": revenue_share_review.get(
-                    "owner_revenue_share_record_present"
-                )
-                is True,
+                "required_before_paid_reuse_or_resale": _safety_bool(
+                    revenue_share_review.get("required_before_paid_reuse_or_resale")
+                ),
+                "owner_revenue_share_record_present": _safety_bool(
+                    revenue_share_review.get("owner_revenue_share_record_present")
+                ),
                 "revenue_share_commitment_made": revenue_share_review.get(
                     "revenue_share_commitment_made"
                 )
@@ -427,9 +448,7 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "must_not_display_as": must_not_display_as,
             "provider_commands_exposed": False,
             "provider_credentials_exposed": False,
-            "readiness_claim_upgrade_allowed": bool(
-                proof_boundary.get("public_claim_upgrade_allowed")
-            ),
+            "readiness_claim_upgrade_allowed": public_claim_upgrade_allowed,
         },
     }
 
@@ -669,7 +688,37 @@ def sync_webapp_pipeline_attachment(
     evaluation_readiness: Optional[Mapping[str, Any]] = None,
     robot_eval_status_projection: Optional[Mapping[str, Any]] = None,
     authoritative_state_update: bool = False,
+    capture_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    # Rights are authoritative continuously: an open consent takedown on the
+    # source capture must stop this sync before anything reaches the webapp.
+    if capture_root is not None:
+        from .consent_takedown import evaluate_delivery_time_takedown_gate
+
+        gate = evaluate_delivery_time_takedown_gate(
+            capture_root=capture_root, surface="webapp_sync"
+        )
+        if not gate.get("serve_allowed"):
+            if _string_env("PIPELINE_SYNC_WEBAPP_URL") or _string_env(
+                "PIPELINE_SYNC_TOKEN"
+            ) or production_forces_true("PIPELINE_SYNC_REQUIRED", default=False):
+                raise WebappSyncError(
+                    f"open_consent_takedown:{gate.get('status')}"
+                )
+            return {
+                "status": "failed",
+                "reason": f"open_consent_takedown:{gate.get('status')}",
+                "blocker": "open_consent_takedown",
+                "attempts": 0,
+                "takedown_gate": gate,
+                "webapp_response_ids": {},
+                "buyer_access_check": {
+                    "status": "blocked",
+                    "buyer_access_checked": False,
+                    "reason": "open_consent_takedown",
+                    "blocker": "open_consent_takedown",
+                },
+            }
     sync_url = _string_env("PIPELINE_SYNC_WEBAPP_URL")
     sync_token = _string_env("PIPELINE_SYNC_TOKEN")
     sync_required = production_forces_true("PIPELINE_SYNC_REQUIRED", default=False)

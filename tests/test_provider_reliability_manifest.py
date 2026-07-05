@@ -11,6 +11,7 @@ from __future__ import annotations
 from blueprint_pipeline.provider_reliability_manifest import (
     BLOCKER_CAPACITY_UNAVAILABLE,
     BLOCKER_IMAGE_CONTRACT_INVALID,
+    BLOCKER_PHASE_CONTRACT_MISSING,
     BLOCKER_POST_MARKER_NO_PROGRESS,
     BLOCKER_RUNTIME_CONTRACT_INVALID,
     BLOCKER_SPEND_GATE_CLOSED,
@@ -72,6 +73,7 @@ def _proven_teardown() -> dict:
         terminate_requested=True,
         provider_terminal_status="TERMINATED",
         verified_at="2026-07-04T12:00:00Z",
+        status_source="provider_api",
     )
 
 
@@ -263,6 +265,40 @@ class TestTeardownProof:
         result = _proven_teardown()
         assert result["status"] == "PASS"
         assert result["billing_stopped"] is True
+        assert result["provider_terminal_status_source"] == "provider_api"
+        assert result["open_billing_risk"] is False
+
+    def test_self_reported_terminal_status_is_not_proof(self) -> None:
+        # A runner claiming "terminated" from its own DELETE response is not an
+        # API-confirmed terminal state; only a provider state query proves it.
+        result = build_teardown_proof(
+            provider="runpod",
+            allocation_id="pod-123",
+            terminate_requested=True,
+            provider_terminal_status="TERMINATED",
+            verified_at="2026-07-04T12:00:00Z",
+        )
+        assert result["status"] == "FAIL"
+        assert result["billing_stopped"] is False
+        assert result["open_billing_risk"] is True
+        assert any(
+            "terminal_status_not_api_confirmed" in b for b in result["blockers"]
+        )
+
+    def test_named_non_api_source_is_not_proof(self) -> None:
+        result = build_teardown_proof(
+            provider="runpod",
+            allocation_id="pod-123",
+            terminate_requested=True,
+            provider_terminal_status="TERMINATED",
+            verified_at="2026-07-04T12:00:00Z",
+            status_source="runner_claim",
+        )
+        assert result["status"] == "FAIL"
+        assert any(
+            "terminal_status_not_api_confirmed:runner_claim" in b
+            for b in result["blockers"]
+        )
 
     def test_terminate_request_alone_is_not_proof(self) -> None:
         result = build_teardown_proof(
@@ -288,7 +324,33 @@ class TestTeardownProof:
             verified_at="2026-07-04T12:00:00Z",
         )
         assert result["status"] == "FAIL"
-        assert any("non_terminal_status:stopped" in b for b in result["blockers"])
+        assert any(
+            "runpod_stopped_volume_may_continue_billing:stopped" in b
+            for b in result["blockers"]
+        )
+        assert result["residual_billing_possible"] is True
+        assert result["billing_sweep_recommended"] is True
+        assert result["billing_sweep_action"]["recommended_action"] == (
+            "delete_stopped_or_exited_allocation"
+        )
+
+    def test_runpod_exited_is_not_terminal_for_billing(self) -> None:
+        result = build_teardown_proof(
+            provider="runpod",
+            allocation_id="pod-exited",
+            terminate_requested=True,
+            provider_terminal_status="EXITED",
+            verified_at="2026-07-04T12:00:00Z",
+            status_source="provider_api",
+        )
+        assert result["status"] == "FAIL"
+        assert result["billing_stopped"] is False
+        assert result["open_billing_risk"] is True
+        assert any(
+            "runpod_stopped_volume_may_continue_billing:exited" in b
+            for b in result["blockers"]
+        )
+        assert result["billing_sweep_action"]["allocation_id"] == "pod-exited"
 
     def test_keep_alive_records_open_billing(self) -> None:
         result = build_teardown_proof(
@@ -304,6 +366,7 @@ class TestTeardownProof:
         assert any(
             "allocation_intentionally_kept_alive" in b for b in result["blockers"]
         )
+        assert result["billing_sweep_recommended"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +574,25 @@ class TestReliabilityManifest:
         assert any(
             b.startswith(BLOCKER_TEARDOWN_UNPROVEN) for b in manifest["blockers"]
         )
+
+    def test_missing_required_phase_is_attributed_as_first_failure(self) -> None:
+        manifest = build_provider_reliability_manifest(
+            run_id="run-missing-artifact-collection",
+            provider="runpod",
+            pre_spend_preflight=_passing_preflight(),
+            provider_launch=_pass("provider_launch"),
+            container_startup=_pass("container_startup"),
+            runtime_execution=_pass("runtime_execution"),
+            teardown=_proven_teardown(),
+            not_applicable_phases=("artifact_quality", "task_evaluation"),
+        )
+        assert manifest["run_completed"] is False
+        assert manifest["failed_phase"] == "artifact_collection"
+        assert manifest["failure_blockers"] == [
+            f"{BLOCKER_PHASE_CONTRACT_MISSING}:artifact_collection"
+        ]
+        assert f"{BLOCKER_PHASE_CONTRACT_MISSING}:artifact_collection" in manifest["blockers"]
+        assert manifest["phases"]["artifact_collection"]["present"] is False
 
     def test_fully_successful_run_completes(self) -> None:
         manifest = build_provider_reliability_manifest(

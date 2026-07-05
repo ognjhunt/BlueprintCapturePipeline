@@ -822,6 +822,22 @@ def test_mujoco_g1_command_runs_every_matrix_row_with_fake_backend(
     assert fidelity_qa_path.is_file()
     assert planner_state_path.is_file()
     assert control_stream_path.is_file()
+    control_rows = [
+        json.loads(line)
+        for line in control_stream_path.read_text(encoding="utf-8").splitlines()
+    ]
+    first_control_row = control_rows[0]
+    first_action = first_control_row["action"]
+    assert first_control_row["sim_time_s"] == 0.0
+    assert first_action["sim_time_s"] == 0.0
+    assert len(first_control_row["base_pose_7d"]) == 7
+    assert first_control_row["base_pose_7d"] == first_action["base_pose_7d"]
+    assert first_control_row["base_pose_7d"][0] == pytest.approx(-1.0)
+    assert first_control_row["base_pose_7d"][2] == pytest.approx(0.793)
+    assert first_control_row["robot_state_source"] == (
+        "mujoco_qpos_root_pose_after_mj_forward"
+    )
+    assert first_control_row["timestamp_source"] == "mujoco_data_time_s"
     closure = json.loads(closure_path.read_text(encoding="utf-8"))
     trace_package = json.loads(trace_package_path.read_text(encoding="utf-8"))
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))

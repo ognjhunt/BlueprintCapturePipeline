@@ -87,12 +87,15 @@ def test_unitree_unifolm_runpod_server_launch_writes_proxy_url_without_secret_va
         job_dir=tmp_path / "job",
         image_name="docker.io/nijelhunt/blueprint-unitree-unifolm:test",
         gpu_type_ids=["NVIDIA GeForce RTX 4090"],
+        max_spend_usd=0.75,
         allow_paid_runpod_launch=True,
         generated_at="now",
     )
 
     assert manifest["status"] == "pod_created"
     assert manifest["server_url"] == "https://podabc123-8777.proxy.runpod.net/act"
+    assert manifest["prelaunch_spend_guard"]["can_launch"] is True
+    assert manifest["prelaunch_spend_guard"]["requested_budget_usd"] == 0.75
     assert manifest["redacted_pod_payload"]["ports"] == ["8777/http"]
     assert "HF_TOKEN" in manifest["redacted_pod_payload"]["env_keys"]
     assert "runtime-hf-secret" not in json.dumps(manifest)
@@ -106,6 +109,82 @@ def test_unitree_unifolm_runpod_server_launch_writes_proxy_url_without_secret_va
     assert payload["env"]["BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT"] == (  # type: ignore[index]
         "unitreerobotics/UnifoLM-VLA-Base"
     )
+
+
+def test_unitree_unifolm_runpod_server_launch_blocks_before_post_without_budget(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setenv("BLUEPRINT_ALLOW_RUNPOD_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH", "true")
+    monkeypatch.delenv(server.RUNPOD_UNIFOLM_MAX_SPEND_USD_ENV, raising=False)
+    monkeypatch.setattr(
+        server,
+        "_read_runpod_api_key",
+        lambda: (
+            "runtime-runpod-secret",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "_read_model_secret_env",
+        lambda: ({}, {"status": "not_configured", "raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(
+        server,
+        "_runpod_request",
+        lambda **kwargs: calls.append(dict(kwargs)) or (201, {"id": "podabc123"}),
+    )
+
+    manifest = server.launch_unitree_unifolm_runpod_server(
+        job_dir=tmp_path / "job",
+        image_name="docker.io/nijelhunt/blueprint-unitree-unifolm:test",
+        gpu_type_ids=["NVIDIA GeForce RTX 4090"],
+        allow_paid_runpod_launch=True,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert "unitree_unifolm_runpod_prelaunch_spend_guard_not_passed" in manifest["blockers"]
+    assert "unitree_unifolm_runpod_max_spend_usd_missing" in manifest["blockers"]
+    assert manifest["prelaunch_spend_guard"]["required_before_provider_launch"] is True
+    assert manifest["prelaunch_spend_guard"]["can_launch"] is False
+    assert calls == []
+
+
+def test_unitree_unifolm_runpod_server_launch_accepts_budget_from_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_RUNPOD_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH", "true")
+    monkeypatch.setenv(server.RUNPOD_UNIFOLM_MAX_SPEND_USD_ENV, "0.5")
+    monkeypatch.setattr(
+        server,
+        "_read_runpod_api_key",
+        lambda: (
+            "runtime-runpod-secret",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "_read_model_secret_env",
+        lambda: ({}, {"status": "not_configured", "raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(server, "_runpod_request", lambda **_kwargs: (201, {"id": "podabc123"}))
+
+    manifest = server.launch_unitree_unifolm_runpod_server(
+        job_dir=tmp_path / "job",
+        image_name="docker.io/nijelhunt/blueprint-unitree-unifolm:test",
+        gpu_type_ids=["NVIDIA GeForce RTX 4090"],
+        allow_paid_runpod_launch=True,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "pod_created"
+    assert manifest["prelaunch_spend_guard"]["budget_source"] == "env"
+    assert manifest["prelaunch_spend_guard"]["requested_budget_usd"] == 0.5
 
 
 def test_unitree_unifolm_runpod_server_delete_uses_state(

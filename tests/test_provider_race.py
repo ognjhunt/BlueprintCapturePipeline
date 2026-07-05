@@ -19,8 +19,7 @@ import time
 import zipfile
 from pathlib import Path
 
-import pytest
-
+from blueprint_pipeline import paid_lane_guard
 from blueprint_pipeline.provider_race import (
     ProviderCircuitBreaker,
     boot_marker_present,
@@ -50,6 +49,7 @@ class FakeProvider:
         self.launch_cold = None
         self.last_request = None
         self.terminate_calls = []
+        self.inspect_calls = []
         self.marker_calls = 0
         self._marker_seen = 0
 
@@ -66,6 +66,12 @@ class FakeProvider:
     def terminate(self, instance_id):
         self.terminate_calls.append(instance_id)
         return {"status": "terminated", "http": 204, "instance_id": instance_id}
+
+    def inspect(self, instance_id):
+        self.inspect_calls.append(instance_id)
+        if instance_id in self.terminate_calls:
+            return {"status": "unavailable", "http": 404}
+        return {"status": "observed", "http": 200, "desiredStatus": "RUNNING"}
 
     # called by the shared marker_check below
     def has_marker(self, launch_result):
@@ -376,6 +382,134 @@ def test_race_passes_cold_flag_and_per_provider_request(tmp_path: Path):
     assert seen == {"fast": True, "other": True}            # request built per provider
     assert fast.last_request == {"built_for": "fast"}
     assert fast.launch_cold is True                          # cold forwarded to .launch
+
+
+def test_race_blocks_before_provider_launch_when_prelaunch_guard_fails(
+    tmp_path: Path,
+) -> None:
+    provider = FakeProvider("runpod", boots=True, marker_after=1)
+    res = race_launch(
+        [provider],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=1,
+        job_dir=tmp_path,
+        prelaunch_guard={
+            "schema_version": "robot_eval_provider_prelaunch_spend_guard.v1",
+            "required_before_provider_launch": True,
+            "can_launch": False,
+            "blockers": ["max_spend_usd_missing"],
+        },
+        sleep=_NO_SLEEP,
+    )
+
+    assert res["status"] == "blocked"
+    assert res["reason"] == "prelaunch_spend_guard_not_passed"
+    assert provider.launch_calls == 0
+    assert provider.terminate_calls == []
+    assert res["terminated_losers"] == 0
+    contender = res["contenders"][0]
+    assert contender["outcome"] == "prelaunch_blocked"
+    assert contender["blockers"] == [
+        "prelaunch_spend_guard_not_passed",
+        "max_spend_usd_missing",
+    ]
+    assert contender["prelaunch_guard"]["can_launch"] is False
+
+
+def test_race_can_skip_one_provider_by_prelaunch_guard_and_launch_another(
+    tmp_path: Path,
+) -> None:
+    blocked = FakeProvider("blocked", boots=True, marker_after=1)
+    healthy = FakeProvider("healthy", boots=True, marker_after=1)
+
+    def guard_for(provider: FakeProvider) -> dict:
+        return (
+            {"can_launch": False, "blockers": ["provider_budget_closed"]}
+            if provider.name == "blocked"
+            else {"can_launch": True, "blockers": []}
+        )
+
+    res = race_launch(
+        [blocked, healthy],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=1,
+        job_dir=tmp_path,
+        prelaunch_guard=guard_for,
+        sleep=_NO_SLEEP,
+    )
+
+    assert res["status"] == "launched"
+    assert res["provider"] == "healthy"
+    assert blocked.launch_calls == 0
+    assert healthy.launch_calls == 1
+    records = {record["provider"]: record for record in res["contenders"]}
+    assert records["blocked"]["outcome"] == "prelaunch_blocked"
+    assert records["healthy"]["outcome"] == "won"
+
+
+def test_race_opens_pending_teardown_for_winner_and_closes_loser(
+    tmp_path: Path,
+) -> None:
+    fast = FakeProvider("fast", boots=True, marker_after=1)
+    dud = FakeProvider("dud", boots=False)
+
+    res = race_launch(
+        [fast, dud],
+        request={"spec": 1},
+        marker_check=_marker_check,
+        marker_timeout=0.05,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+        prelaunch_guard={"can_launch": True, "blockers": []},
+        pending_teardown_lane="isaac_g1_kitchen_parity",
+        sleep=_NO_SLEEP,
+    )
+
+    assert res["status"] == "launched"
+    assert res["provider"] == "fast"
+    assert res["pending_teardown_record"]
+    assert fast.last_request["pending_teardown_record"] == res["pending_teardown_record"]
+    assert dud.terminate_calls == ["dud-iid"]
+    assert dud.inspect_calls == ["dud-iid"]
+
+    open_records = paid_lane_guard.load_pending_teardowns()
+    assert len(open_records) == 1
+    assert open_records[0]["instance_id"] == "fast-iid"
+    assert open_records[0]["path"] == res["pending_teardown_record"]
+
+    all_records = paid_lane_guard.load_pending_teardowns(include_closed=True)
+    by_instance = {record["instance_id"]: record for record in all_records}
+    assert by_instance["fast-iid"]["status"] == "open"
+    assert by_instance["dud-iid"]["status"] == "closed"
+    assert by_instance["dud-iid"]["teardown_proof"]["status"] == "PASS"
+
+
+def test_race_cancels_pending_teardown_when_launch_returns_no_allocation(
+    tmp_path: Path,
+) -> None:
+    no_capacity = FakeProvider("no-capacity", launches=False)
+
+    res = race_launch(
+        [no_capacity],
+        request={"spec": 1},
+        marker_check=_marker_check,
+        marker_timeout=0.05,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+        prelaunch_guard={"can_launch": True, "blockers": []},
+        pending_teardown_lane="isaac_g1_kitchen_parity",
+        sleep=_NO_SLEEP,
+    )
+
+    assert res["status"] == "blocked"
+    assert no_capacity.terminate_calls == []
+    assert paid_lane_guard.load_pending_teardowns() == []
+    records = paid_lane_guard.load_pending_teardowns(include_closed=True)
+    assert len(records) == 1
+    assert records[0]["status"] == "cancelled_no_allocation"
+    assert records[0]["cancel_reason"] == "launch_returned_no_allocation"
 
 
 def test_race_forwards_launch_kwargs_to_capable_provider(tmp_path: Path):

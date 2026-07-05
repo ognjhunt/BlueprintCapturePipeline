@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -1133,6 +1134,14 @@ def test_runpod_poll_can_stop_pod_for_warm_reuse_instead_of_delete(
     warm_candidate = json.loads(warm_candidate_file.read_text())
     assert warm_candidate["pod_id"] == "pod-123"
     assert warm_candidate["image_name"] == "docker.io/example/wam:20260629"
+    reliability = json.loads((job_dir / "provider_reliability_manifest.json").read_text())
+    assert reliability["open_billing_risk"] is True
+    teardown = reliability["phase_contracts"]["teardown"]
+    assert teardown["residual_billing_possible"] is True
+    assert teardown["billing_sweep_recommended"] is True
+    assert teardown["billing_sweep_action"]["allocation_id"] == "pod-123"
+    assert reliability["billing_sweep_recommended"] is True
+    assert reliability["billing_sweep_action"]["allocation_id"] == "pod-123"
 
 
 def test_runpod_stop_http_error_rechecks_missing_pod_as_spend_released(
@@ -1400,8 +1409,15 @@ def test_runpod_poll_does_not_keep_blocked_output_zip_running(
 
     def fake_runpod_request(**kwargs):
         requests.append(dict(kwargs))
-        if kwargs["path"] == "/pods/pod-blocked-123":
+        if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-blocked-123":
             return 204, {}
+        if (
+            kwargs["method"] == "GET"
+            and kwargs["path"] == "/pods/pod-blocked-123"
+            and any(r.get("method") == "DELETE" for r in requests)
+        ):
+            # Deleted pods answer the post-delete verification probe with 404.
+            raise urllib.error.HTTPError(kwargs["path"], 404, "gone", None, None)
         raise AssertionError(f"unexpected runpod request: {kwargs}")
 
     monkeypatch.setenv(runner.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "keep_on_success")
@@ -1426,10 +1442,13 @@ def test_runpod_poll_does_not_keep_blocked_output_zip_running(
     assert manifest["teardown_performed"] is True
     assert manifest["continuing_spend_from_this_run"] is False
     assert (job_dir / "runpod_wam_async_delete_manifest.json").is_file()
-    assert [request["method"] for request in requests] == ["DELETE"]
+    assert [request["method"] for request in requests] == ["DELETE", "GET"]
+    delete_manifest = json.loads((job_dir / "runpod_wam_async_delete_manifest.json").read_text())
+    assert delete_manifest["terminal_state_api_confirmed"] is True
+    assert delete_manifest["verified_pod_status"] == "not_found"
 
 
-def test_runpod_poll_stop_teardown_does_not_record_failed_pod_as_warm_candidate(
+def test_runpod_poll_deletes_failed_output_even_when_stop_requested(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1459,8 +1478,15 @@ def test_runpod_poll_stop_teardown_does_not_record_failed_pod_as_warm_candidate(
 
     def fake_runpod_request(**kwargs):
         requests.append(dict(kwargs))
-        if kwargs["path"] == "/pods/pod-failed-stop-123/stop":
-            return 200, {"id": "pod-failed-stop-123", "desiredStatus": "EXITED"}
+        if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-failed-stop-123":
+            return 202, {}
+        if (
+            kwargs["method"] == "GET"
+            and kwargs["path"] == "/pods/pod-failed-stop-123"
+            and any(r.get("method") == "DELETE" for r in requests)
+        ):
+            # Deleted pods answer the post-delete verification probe with 404.
+            raise urllib.error.HTTPError(kwargs["path"], 404, "gone", None, None)
         raise AssertionError(f"unexpected runpod request: {kwargs}")
 
     monkeypatch.setenv(runner.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "stop")
@@ -1482,16 +1508,20 @@ def test_runpod_poll_stop_teardown_does_not_record_failed_pod_as_warm_candidate(
 
     assert manifest["status"] == "completed"
     assert manifest["runtime_output_success"] is False
-    assert manifest["teardown_action"] == "stop"
+    assert manifest["auto_teardown_failure"] is True
+    assert manifest["teardown_action"] == "delete"
     assert manifest["teardown_performed"] is True
-    assert [request["path"] for request in requests] == ["/pods/pod-failed-stop-123/stop"]
+    assert [request["method"] for request in requests] == ["DELETE", "GET"]
+    assert [request["path"] for request in requests] == [
+        "/pods/pod-failed-stop-123",
+        "/pods/pod-failed-stop-123",
+    ]
     assert not warm_candidate_file.exists()
-    stop_manifest = json.loads((job_dir / "runpod_wam_async_stop_manifest.json").read_text())
-    assert stop_manifest["stopped_pod_preserved_for_warm_reuse"] is False
-    assert stop_manifest["warm_candidate"]["status"] == "not_recorded"
-    assert stop_manifest["warm_candidate"]["reason"] == (
-        "runtime_output_not_successful_for_warm_reuse"
-    )
+    assert not (job_dir / "runpod_wam_async_stop_manifest.json").exists()
+    delete_manifest = json.loads((job_dir / "runpod_wam_async_delete_manifest.json").read_text())
+    assert delete_manifest["status"] == "completed"
+    assert delete_manifest["terminal_state_api_confirmed"] is True
+    assert delete_manifest["verified_pod_status"] == "not_found"
 
 
 def test_runpod_stop_command_stops_running_pod_without_output(
@@ -1645,6 +1675,252 @@ def test_runpod_output_download_rejects_empty_zip(
     )
     assert "X-Amz-Signature=secret" not in persisted
     assert "REDACTED_QUERY" in persisted
+
+
+def test_runpod_poll_blocks_downloaded_zip_without_provider_result_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_get_url_file = tmp_path / "provider_output_get_url.txt"
+    output_get_url_file.write_text(
+        "https://spaces.example/output.zip?X-Amz-Signature=download-secret\n",
+        encoding="utf-8",
+    )
+    output_get_url_file.chmod(0o600)
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    downloaded_zip = tmp_path / "downloaded.zip"
+    with zipfile.ZipFile(downloaded_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("logs/provider.log", "entrypoint exited without a result manifest")
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-missing-result",
+                "output_path": str(output_zip),
+                "provider_output_get_url_file": {
+                    "path": str(output_get_url_file),
+                    "raw_secret_values_recorded": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return downloaded_zip.read_bytes()
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-missing-result":
+            return 202, {}
+        if (
+            kwargs["method"] == "GET"
+            and kwargs["path"] == "/pods/pod-missing-result"
+            and any(r.get("method") == "DELETE" for r in requests)
+        ):
+            # Deleted pods answer the post-delete verification probe with 404.
+            raise urllib.error.HTTPError(kwargs["path"], 404, "gone", None, None)
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(runner.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["output_zip_present"] is True
+    assert manifest["provider_output_terminal"] is False
+    assert manifest["provider_output_usable"] is False
+    assert manifest["provider_runtime_operational"] is False
+    assert manifest["runtime_output_success"] is False
+    assert manifest["provider_command_status"] == "blocked"
+    assert "provider_runtime_result_manifest_missing" in manifest["provider_command_blockers"]
+    assert manifest["provider_output_validation_status"] == "blocked"
+    assert manifest["teardown_performed"] is True
+    assert [request["method"] for request in requests] == ["DELETE", "GET"]
+    assert [request["path"] for request in requests] == [
+        "/pods/pod-missing-result",
+        "/pods/pod-missing-result",
+    ]
+    delete_manifest = json.loads((job_dir / "runpod_wam_async_delete_manifest.json").read_text())
+    assert delete_manifest["terminal_state_api_confirmed"] is True
+    assert delete_manifest["verified_pod_status"] == "not_found"
+    assert output_zip.is_file()
+
+
+def test_runpod_poll_blocks_malformed_provider_result_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("wam_runtime_result.json", "{not-json")
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-malformed-result",
+                "output_path": str(output_zip),
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-malformed-result":
+            return 202, {}
+        if (
+            kwargs["method"] == "GET"
+            and kwargs["path"] == "/pods/pod-malformed-result"
+            and any(r.get("method") == "DELETE" for r in requests)
+        ):
+            # Deleted pods answer the post-delete verification probe with 404.
+            raise urllib.error.HTTPError(kwargs["path"], 404, "gone", None, None)
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["output_zip_present"] is True
+    assert manifest["provider_output_terminal"] is False
+    assert manifest["provider_output_usable"] is False
+    assert manifest["provider_command_status"] == "blocked"
+    assert any(
+        blocker.startswith("provider_output_manifest_malformed:wam_runtime_result.json")
+        for blocker in manifest["provider_command_blockers"]
+    )
+    assert manifest["provider_runtime_operational"] is False
+    assert manifest["teardown_performed"] is True
+    assert [request["method"] for request in requests] == ["DELETE", "GET"]
+    assert [request["path"] for request in requests] == [
+        "/pods/pod-malformed-result",
+        "/pods/pod-malformed-result",
+    ]
+    delete_manifest = json.loads((job_dir / "runpod_wam_async_delete_manifest.json").read_text())
+    assert delete_manifest["terminal_state_api_confirmed"] is True
+    assert delete_manifest["verified_pod_status"] == "not_found"
+
+
+def test_runpod_poll_treats_entrypoint_failure_with_stale_heartbeat_as_terminal_blocked(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "wam_provider_output.json",
+            json.dumps({"schema_version": "wam_provider_output.v1", "status": "running"}),
+        )
+        archive.writestr(
+            "runpod_wam_provider_entrypoint_execution.json",
+            json.dumps(
+                {
+                    "schema_version": "runpod_wam_provider_entrypoint_execution.v1",
+                    "status": "blocked",
+                    "returncode": 1,
+                    "blockers": ["runpod_wam_provider_entrypoint_nonzero_or_timeout"],
+                    "raw_secret_values_recorded": False,
+                }
+            ),
+        )
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-entrypoint-failed",
+                "output_path": str(output_zip),
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-entrypoint-failed":
+            return 202, {}
+        if (
+            kwargs["method"] == "GET"
+            and kwargs["path"] == "/pods/pod-entrypoint-failed"
+            and any(r.get("method") == "DELETE" for r in requests)
+        ):
+            # Deleted pods answer the post-delete verification probe with 404.
+            raise urllib.error.HTTPError(kwargs["path"], 404, "gone", None, None)
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["output_zip_present"] is True
+    assert manifest["provider_output_terminal"] is True
+    assert manifest["provider_output_usable"] is False
+    assert manifest["provider_output_validation_status"] == "completed"
+    assert manifest["runtime_result_status"] == "blocked"
+    assert manifest["provider_command_status"] == "blocked"
+    assert "runpod_wam_provider_entrypoint_nonzero_or_timeout" in (
+        manifest["provider_command_blockers"]
+    )
+    assert manifest["provider_runtime_operational"] is False
+    assert manifest["runtime_output_success"] is False
+    assert manifest["teardown_performed"] is True
+    assert [request["method"] for request in requests] == ["DELETE", "GET"]
+    assert [request["path"] for request in requests] == [
+        "/pods/pod-entrypoint-failed",
+        "/pods/pod-entrypoint-failed",
+    ]
+    delete_manifest = json.loads((job_dir / "runpod_wam_async_delete_manifest.json").read_text())
+    assert delete_manifest["terminal_state_api_confirmed"] is True
+    assert delete_manifest["verified_pod_status"] == "not_found"
 
 
 def test_runpod_unitree_unifolm_create_uses_provider_kind_without_leaking_urls(
@@ -2487,6 +2763,13 @@ def test_runpod_poll_deletes_active_pod_after_startup_heartbeat_timeout(
         requests.append(dict(kwargs))
         if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-startup-stalled":
             return 202, {}
+        if (
+            kwargs["method"] == "GET"
+            and kwargs["path"] == "/pods/pod-startup-stalled"
+            and any(r.get("method") == "DELETE" for r in requests)
+        ):
+            # Deleted pods answer the post-delete verification probe with 404.
+            raise urllib.error.HTTPError(kwargs["path"], 404, "gone", None, None)
         if kwargs["path"] == "/pods/pod-startup-stalled":
             return 200, {"desiredStatus": "RUNNING"}
         raise AssertionError(f"unexpected runpod request: {kwargs}")
@@ -2517,11 +2800,84 @@ def test_runpod_poll_deletes_active_pod_after_startup_heartbeat_timeout(
     assert [request["path"] for request in requests] == [
         "/pods/pod-startup-stalled",
         "/pods/pod-startup-stalled",
+        # Post-delete state probe: teardown proof requires API confirmation.
+        "/pods/pod-startup-stalled",
     ]
     reliability = json.loads((job_dir / "provider_reliability_manifest.json").read_text())
     assert reliability["failed_phase"] == "container_startup"
     assert reliability["open_billing_risk"] is False
     assert (job_dir / "runpod_wam_async_delete_manifest.json").is_file()
+
+
+def test_runpod_poll_deletes_stalled_pod_without_teardown_flag(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-auto-stalled",
+                "output_path": str(output_zip),
+                "created_at_epoch": runner.time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests: list[dict[str, object]] = []
+    monotonic_values = iter([0.0, 0.0, 2.0])
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-auto-stalled":
+            return 202, {}
+        if (
+            kwargs["method"] == "GET"
+            and kwargs["path"] == "/pods/pod-auto-stalled"
+            and any(r.get("method") == "DELETE" for r in requests)
+        ):
+            # Deleted pods answer the post-delete verification probe with 404.
+            raise urllib.error.HTTPError(kwargs["path"], 404, "gone", None, None)
+        if kwargs["path"] == "/pods/pod-auto-stalled":
+            return 200, {"desiredStatus": "RUNNING"}
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(monotonic_values, 2.0))
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=100,
+        retry_interval_seconds=10,
+        teardown=False,
+        post_marker_no_progress_timeout_seconds=1,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["runtime_stall_observed"] is True
+    assert manifest["auto_teardown_failure"] is True
+    assert manifest["teardown_requested"] is True
+    assert manifest["teardown_action"] == "delete"
+    assert manifest["teardown_performed"] is True
+    assert manifest["continuing_spend_from_this_run"] is False
+    assert [request["path"] for request in requests] == [
+        "/pods/pod-auto-stalled",
+        "/pods/pod-auto-stalled",
+        # Post-delete state probe: teardown proof requires API confirmation.
+        "/pods/pod-auto-stalled",
+    ]
+    reliability = json.loads((job_dir / "provider_reliability_manifest.json").read_text())
+    assert reliability["failed_phase"] == "container_startup"
+    assert reliability["open_billing_risk"] is False
 
 
 def test_runpod_poll_deletes_pod_after_nonterminal_heartbeat_stalls(
@@ -2570,10 +2926,17 @@ def test_runpod_poll_deletes_pod_after_nonterminal_heartbeat_stalls(
 
     def fake_runpod_request(**kwargs):
         requests.append(dict(kwargs))
-        if kwargs["path"] == "/pods/pod-runtime-stalled":
-            return 200, {"desiredStatus": "RUNNING"}
         if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-runtime-stalled":
             return 202, {}
+        if (
+            kwargs["method"] == "GET"
+            and kwargs["path"] == "/pods/pod-runtime-stalled"
+            and any(r.get("method") == "DELETE" for r in requests)
+        ):
+            # Deleted pods answer the post-delete verification probe with 404.
+            raise urllib.error.HTTPError(kwargs["path"], 404, "gone", None, None)
+        if kwargs["path"] == "/pods/pod-runtime-stalled":
+            return 200, {"desiredStatus": "RUNNING"}
         raise AssertionError(f"unexpected runpod request: {kwargs}")
 
     monkeypatch.setattr(
@@ -2603,6 +2966,8 @@ def test_runpod_poll_deletes_pod_after_nonterminal_heartbeat_stalls(
     assert [request["path"] for request in requests] == [
         "/pods/pod-runtime-stalled",
         "/pods/pod-runtime-stalled",
+        # Post-delete state probe: teardown proof requires API confirmation.
+        "/pods/pod-runtime-stalled",
     ]
     reliability = json.loads((job_dir / "provider_reliability_manifest.json").read_text())
     assert reliability["failed_phase"] == "runtime_execution"
@@ -2610,4 +2975,80 @@ def test_runpod_poll_deletes_pod_after_nonterminal_heartbeat_stalls(
         blocker.startswith("post_marker_no_progress:")
         for blocker in reliability["failure_blockers"]
     )
+    assert reliability["open_billing_risk"] is False
+
+
+def test_runpod_poll_deletes_blocked_runtime_output_without_teardown_flag(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    output_zip = job_dir / "runpod_provider_runtime_output.zip"
+    job_dir.mkdir()
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "wam_runtime_result.json",
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": ["runpod_wam_outer_bootstrap_failed_before_runtime_result"],
+                }
+            ),
+        )
+    (job_dir / "runpod_wam_async_state.json").write_text(
+        json.dumps(
+            {
+                "provider_bundle_kind": "wam",
+                "pod_id": "pod-blocked-output",
+                "output_path": str(output_zip),
+                "created_at_epoch": runner.time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        requests.append(dict(kwargs))
+        if kwargs["method"] == "DELETE" and kwargs["path"] == "/pods/pod-blocked-output":
+            return 202, {}
+        if (
+            kwargs["method"] == "GET"
+            and kwargs["path"] == "/pods/pod-blocked-output"
+            and any(r.get("method") == "DELETE" for r in requests)
+        ):
+            # Deleted pods answer the post-delete verification probe with 404.
+            raise urllib.error.HTTPError(kwargs["path"], 404, "gone", None, None)
+        raise AssertionError(f"unexpected runpod request: {kwargs}")
+
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
+    )
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+
+    manifest = runner.poll_runpod_wam_async_run(
+        job_dir=job_dir,
+        max_wait_seconds=1,
+        retry_interval_seconds=1,
+        teardown=False,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["runtime_output_success"] is False
+    assert manifest["auto_teardown_failure"] is True
+    assert manifest["teardown_requested"] is True
+    assert manifest["teardown_action"] == "delete"
+    assert manifest["teardown_performed"] is True
+    assert manifest["continuing_spend_from_this_run"] is False
+    assert [request["path"] for request in requests] == [
+        "/pods/pod-blocked-output",
+        # Post-delete state probe: teardown proof requires API confirmation.
+        "/pods/pod-blocked-output",
+    ]
+    reliability = json.loads((job_dir / "provider_reliability_manifest.json").read_text())
+    assert reliability["failed_phase"] == "runtime_execution"
+    assert "runner_failed:blocked" in reliability["failure_blockers"]
     assert reliability["open_billing_risk"] is False

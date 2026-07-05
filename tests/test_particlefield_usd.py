@@ -9,7 +9,6 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from blueprint_pipeline.gaussian_splat_decode import SplatData
 from blueprint_pipeline.particlefield_usd import (

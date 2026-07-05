@@ -3710,3 +3710,344 @@ def test_oscar_cosmos_wam_evaluator_cli(
     )
     assert exit_code == 0
     assert '"learned_wam_model_ran": false' in capsys.readouterr().out
+
+
+def _passing_ladder_validation() -> dict[str, object]:
+    return {
+        "schema_version": "policy_ranking_ladder_validation.v1",
+        "status": "recovered",
+        "ranker_ordering_recovered": True,
+        "expected_ranking": [
+            "endpoint_policy",
+            "endpoint_policy_noise_0p1",
+            "endpoint_policy_noise_0p3",
+        ],
+        "spearman_rank_correlation_vs_expected": 1.0,
+        "blockers": [],
+    }
+
+
+def test_oscar_cosmos_wam_evaluator_caps_wam_score_claim_without_consistency_or_anchors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_wam_runtime_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    input_job = _input_job(tmp_path)
+
+    summary = evaluator.run_oscar_cosmos_wam_evaluator(
+        input_job_dir=input_job,
+        job_dir=tmp_path / "wam_claim_gate_job",
+        generated_at="now",
+    )
+
+    job_dir = tmp_path / "wam_claim_gate_job"
+    for filename in (
+        "wam_consistency_score.json",
+        "wam_calibration_anchor_check.json",
+        "wam_score_claim_gate.json",
+    ):
+        assert (job_dir / filename).is_file()
+
+    gate = json.loads((job_dir / "wam_score_claim_gate.json").read_text(encoding="utf-8"))
+    assert gate["granted_grade"] == "fixture_evaluator_only"
+    assert gate["max_allowed_grade"] == "review_grade"
+    assert gate["consistency_measured_and_passed"] is False
+    assert gate["calibration_anchors_present_and_passed"] is False
+    assert gate["consistency"]["consistency_score"] is None
+    assert gate["calibration_anchors"]["anchor_set"] == []
+
+    anchor_check = json.loads(
+        (job_dir / "wam_calibration_anchor_check.json").read_text(encoding="utf-8")
+    )
+    assert anchor_check["anchors_present"] is False
+    assert "calibration_anchor_validation_missing" in anchor_check["blockers"]
+
+    scorecard = json.loads(
+        (job_dir / "wam_policy_scorecard.json").read_text(encoding="utf-8")
+    )
+    assert scorecard["wam_score_claim_grade"] == "fixture_evaluator_only"
+    assert scorecard["wam_score_claim"]["max_allowed_grade"] == "review_grade"
+    assert "consistency_score" in scorecard["wam_score_claim"]["consistency"]
+    assert "anchor_set" in scorecard["wam_score_claim"]["calibration_anchors"]
+
+    assert summary["wam_score_claim_grade"] == "fixture_evaluator_only"
+    assert summary["wam_score_above_review_grade_allowed"] is False
+    assert summary["artifact_paths"]["wam_score_claim_gate"].endswith(
+        "wam_score_claim_gate.json"
+    )
+
+
+def test_oscar_cosmos_wam_evaluator_review_grade_capped_without_anchors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("cv2")
+    pytest.importorskip("numpy")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LOCAL_WAM_MODEL", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING", "true")
+    input_job = _input_job(tmp_path)
+    checkpoint = tmp_path / "checkpoints" / "model"
+    checkpoint.mkdir(parents=True)
+    wam_command = tmp_path / "wam_model_command.py"
+    wam_command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+output = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"])
+video = output.parent / "rollout_1.mp4"
+width, height = 320, 256
+writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 8.0, (width, height))
+for index in range(12):
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[:, : width // 2] = (255, 30 + index * 12, 0)
+    frame[:, width // 2 :] = (0, 180, 220 - index * 8)
+    for x in range(0, width, 32):
+        cv2.line(frame, (x, 0), (x, height - 1), (255, 255, 255), 1)
+    for y in range(0, height, 32):
+        cv2.line(frame, (0, y), (width - 1, y), (20, 20, 20), 1)
+    writer.write(frame)
+writer.release()
+payload = {
+    "schema_version": "oscar_wam_command_adapter.v1",
+    "status": "completed",
+    "adapter_id": "blueprint_oscar_wam_command_adapter",
+    "rollouts": [
+        {
+            "rollout_id": "rollout_1",
+            "policy_id": "unit_test_wam",
+            "scenario_eval_run_id": "run_1",
+            "generated_video_path": str(video),
+            "model_rollout_confidence": 0.42,
+        }
+    ],
+    "fresh_model_command_executed_this_invocation": True,
+    "fresh_model_run_claimed": True,
+    "learned_wam_model_ran": True,
+    "truth_boundary": {"generated_video_is_model_output": True},
+}
+output.write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    label_command = tmp_path / "success_label_command.py"
+    label_command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+request = json.loads(Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_INPUT"]).read_text(encoding="utf-8"))
+rollout = request["rollouts"][0]
+payload = {
+    "schema_version": "wam_success_labels.command.v1",
+    "provider": "fake-vlm",
+    "model": "fake-video-judge",
+    "labels": [
+        {
+            "rollout_id": rollout["rollout_id"],
+            "scenario_eval_run_id": rollout["scenario_eval_run_id"],
+            "policy_id": rollout["policy_id"],
+            "success": True,
+            "confidence": 0.91,
+            "rationale": "The generated video reaches the target.",
+            "task_completion_evidence": ["target reached"],
+            "failure_modes": [],
+            "visual_evidence_used": True,
+        }
+    ],
+}
+Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+
+    summary = evaluator.run_oscar_cosmos_wam_evaluator(
+        input_job_dir=input_job,
+        job_dir=tmp_path / "wam_review_cap_job",
+        model_candidates=("oscar_wam",),
+        wam_model_command=f"{sys.executable} {wam_command}",
+        wam_model_checkpoint=checkpoint,
+        allow_wam_model_run=True,
+        wam_success_label_command=f"{sys.executable} {label_command}",
+        allow_wam_success_labeling=True,
+        generated_at="now",
+    )
+
+    assert summary["wam_success_label_from_generated_video"] is True
+    gate = json.loads(
+        (tmp_path / "wam_review_cap_job" / "wam_score_claim_gate.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert gate["requested_grade"] == "review_grade"
+    assert gate["granted_grade"] == "review_grade"
+    assert gate["max_allowed_grade"] == "review_grade"
+    assert "wam_score_without_consistency_or_calibration" not in gate["blockers"]
+    assert gate["upgrade_requirements"]
+    assert summary["wam_score_claim_grade"] == "review_grade"
+    assert summary["wam_score_above_review_grade_allowed"] is False
+
+
+def test_oscar_cosmos_wam_evaluator_allows_calibrated_grade_with_anchors_and_consistency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("cv2")
+    pytest.importorskip("numpy")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LOCAL_WAM_MODEL", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING", "true")
+    input_job = _input_job(tmp_path)
+    # calibration anchors: passing known-ordering ladder validation
+    _write_json(
+        input_job / "policy_ranking_ladder_validation.json",
+        _passing_ladder_validation(),
+    )
+    # reference trajectory: simulated locomotion trace with root positions
+    _write_jsonl(
+        input_job / "g1_mujoco_locomotion_trace.jsonl",
+        [
+            {
+                "scenario_eval_run_id": "run_1",
+                "sim_time": index * 0.1,
+                "root_position": [index * 0.1, 0.0, 0.79],
+                "root_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+            }
+            for index in range(4)
+        ],
+    )
+    checkpoint = tmp_path / "checkpoints" / "model"
+    checkpoint.mkdir(parents=True)
+    wam_command = tmp_path / "wam_model_command.py"
+    wam_command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+output = Path(os.environ["BLUEPRINT_WAM_ROLLOUT_OUTPUT"])
+video = output.parent / "rollout_1.mp4"
+width, height = 320, 256
+writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 8.0, (width, height))
+for index in range(12):
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[:, : width // 2] = (255, 30 + index * 12, 0)
+    frame[:, width // 2 :] = (0, 180, 220 - index * 8)
+    for x in range(0, width, 32):
+        cv2.line(frame, (x, 0), (x, height - 1), (255, 255, 255), 1)
+    for y in range(0, height, 32):
+        cv2.line(frame, (0, y), (width - 1, y), (20, 20, 20), 1)
+    writer.write(frame)
+writer.release()
+payload = {
+    "schema_version": "oscar_wam_command_adapter.v1",
+    "status": "completed",
+    "adapter_id": "blueprint_oscar_wam_command_adapter",
+    "rollouts": [
+        {
+            "rollout_id": "rollout_1",
+            "policy_id": "unit_test_wam",
+            "scenario_eval_run_id": "run_1",
+            "generated_video_path": str(video),
+            "model_rollout_confidence": 0.42,
+            "trajectory": [
+                {"timestamp": index * 0.1, "position": [index * 0.1, 0.0, 0.79]}
+                for index in range(4)
+            ],
+        }
+    ],
+    "fresh_model_command_executed_this_invocation": True,
+    "fresh_model_run_claimed": True,
+    "learned_wam_model_ran": True,
+    "truth_boundary": {"generated_video_is_model_output": True},
+}
+output.write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    label_command = tmp_path / "success_label_command.py"
+    label_command.write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+request = json.loads(Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_INPUT"]).read_text(encoding="utf-8"))
+rollout = request["rollouts"][0]
+payload = {
+    "schema_version": "wam_success_labels.command.v1",
+    "provider": "fake-vlm",
+    "model": "fake-video-judge",
+    "labels": [
+        {
+            "rollout_id": rollout["rollout_id"],
+            "scenario_eval_run_id": rollout["scenario_eval_run_id"],
+            "policy_id": rollout["policy_id"],
+            "success": True,
+            "confidence": 0.91,
+            "rationale": "The generated video reaches the target.",
+            "task_completion_evidence": ["target reached"],
+            "failure_modes": [],
+            "visual_evidence_used": True,
+        }
+    ],
+}
+Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+
+    summary = evaluator.run_oscar_cosmos_wam_evaluator(
+        input_job_dir=input_job,
+        job_dir=tmp_path / "wam_calibrated_job",
+        model_candidates=("oscar_wam",),
+        wam_model_command=f"{sys.executable} {wam_command}",
+        wam_model_checkpoint=checkpoint,
+        allow_wam_model_run=True,
+        wam_success_label_command=f"{sys.executable} {label_command}",
+        allow_wam_success_labeling=True,
+        generated_at="now",
+    )
+
+    job_dir = tmp_path / "wam_calibrated_job"
+    consistency_score = json.loads(
+        (job_dir / "wam_consistency_score.json").read_text(encoding="utf-8")
+    )
+    assert consistency_score["status"] == "scored"
+    assert consistency_score["passed"] is True
+    assert consistency_score["consistency_score"] is not None
+
+    anchor_check = json.loads(
+        (job_dir / "wam_calibration_anchor_check.json").read_text(encoding="utf-8")
+    )
+    assert anchor_check["anchors_present"] is True
+    assert anchor_check["anchors_passed"] is True
+    assert anchor_check["anchor_set"] == [
+        "endpoint_policy",
+        "endpoint_policy_noise_0p1",
+        "endpoint_policy_noise_0p3",
+    ]
+
+    gate = json.loads((job_dir / "wam_score_claim_gate.json").read_text(encoding="utf-8"))
+    assert gate["requested_grade"] == "calibrated_evaluator_grade"
+    assert gate["granted_grade"] == "calibrated_evaluator_grade"
+    assert gate["blockers"] == []
+    assert gate["consistency"]["consistency_score"] is not None
+    assert gate["calibration_anchors"]["anchor_set"]
+
+    scorecard = json.loads(
+        (job_dir / "wam_policy_scorecard.json").read_text(encoding="utf-8")
+    )
+    assert scorecard["wam_score_claim_grade"] == "calibrated_evaluator_grade"
+    assert scorecard["wam_score_claim"]["consistency"]["consistency_score"] is not None
+    assert scorecard["wam_score_claim"]["calibration_anchors"]["anchor_set"]
+
+    assert summary["wam_score_claim_grade"] == "calibrated_evaluator_grade"
+    assert summary["wam_score_above_review_grade_allowed"] is True

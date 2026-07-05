@@ -55,9 +55,12 @@ class TestComposite:
         robot[20:30, 28:36] = (255, 0, 0)  # a red robot patch
         distance = np.full((48, 64), np.inf)
         distance[20:30, 28:36] = robot_range
-        scene_p = tmp_path / "scene.png"; Image.fromarray(scene).save(scene_p)
-        robot_p = tmp_path / "robot.png"; Image.fromarray(robot).save(robot_p)
-        dist_p = tmp_path / "dist.npy"; np.save(dist_p, distance)
+        scene_p = tmp_path / "scene.png"
+        Image.fromarray(scene).save(scene_p)
+        robot_p = tmp_path / "robot.png"
+        Image.fromarray(robot).save(robot_p)
+        dist_p = tmp_path / "dist.npy"
+        np.save(dist_p, distance)
         return cam, scene_p, robot_p, dist_p
 
     def test_robot_in_front_of_wall_visible(self, tmp_path):
@@ -82,7 +85,6 @@ class TestComposite:
     def test_splat_hole_does_not_occlude(self, tmp_path):
         # No splat mass on these rays at all: robot must win.
         cam, scene_p, robot_p, dist_p = self._files(tmp_path, robot_range=6.0)
-        empty = _splat_wall(4.0)
         far_left = SplatData(
             count=1, xyz=np.array([[4.0, -50.0, 1.0]], np.float32),
             opacity=np.full(1, 5.0, np.float32), f_dc=np.zeros((1, 3), np.float32),

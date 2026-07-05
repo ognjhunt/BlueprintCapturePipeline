@@ -119,6 +119,9 @@ RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV = (
 RUNPOD_UNITREE_GROOT_SONIC_REQUIRE_SEALED_IMAGE_ENV = (
     "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_REQUIRE_SEALED_IMAGE"
 )
+RUNPOD_UNITREE_GROOT_N17_SONIC_HARD_CAP_USD_ENV = (
+    "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_HARD_CAP_USD"
+)
 OSCAR_WAM_VISUAL_PROFILE_ENV = "BLUEPRINT_OSCAR_WAM_VISUAL_PROFILE"
 DEFAULT_WAM_VISUAL_PROFILE = "review_quality"
 PERSISTENT_WAM_LONG_REVIEW_ROLLOUT_ENV = "BLUEPRINT_ALLOW_PERSISTENT_WAM_LONG_REVIEW_ROLLOUT"
@@ -9918,6 +9921,7 @@ def run_persistent_session_runpod(
             provider_output_put_url_file=staging_dir / "provider_output_put_url.txt",
             provider_output_get_url_file=staging_dir / "provider_output_get_url.txt",
             output_path=output_zip,
+            max_spend_usd=_float_env(RUNPOD_UNITREE_GROOT_N17_SONIC_HARD_CAP_USD_ENV, 3.0),
             allow_paid_runpod_launch=True,
             skip_public_staging_verification=True,
             image_name=runpod_image_name,

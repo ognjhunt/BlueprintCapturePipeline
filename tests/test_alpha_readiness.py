@@ -327,6 +327,27 @@ def _write_geometry_lane(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
 
 
+def _write_operator_launch_evidence(capture_root: Path, required_checks: list[dict[str, object]]) -> None:
+    checks = {
+        str(check["id"]): {
+            "status": "verified",
+            "evidence_uri": f"gs://local-blueprint/operator-evidence/{check['id']}.json",
+            "verified_at": "2026-07-04T00:00:00+00:00",
+            "verified_by": "ops-owner",
+        }
+        for check in required_checks
+    }
+    (capture_root / "pipeline" / "operator_launch_evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "operator_launch_evidence.v1",
+                "checks": checks,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _build_capture(
     tmp_path: Path,
     *,
@@ -360,7 +381,7 @@ def _build_capture(
             "capture_contributor_payout_eligible": True,
             "consent_status": "documented",
             "permission_document_uri": "gs://local-blueprint/rights/consent-packet.pdf",
-            "consent_scope": ["zone-a"],
+            "consent_scope": ["zone-a", "derived_generation", "robot_evaluation"],
             "consent_notes": [],
         },
     }
@@ -537,7 +558,27 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
     sync_result = json.loads((capture_root / "pipeline" / "webapp_sync_result.json").read_text(encoding="utf-8"))
 
     assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
-    assert launch_gate_summary["overall_status"] == "external_beta_contract_ready"
+    assert launch_gate_summary["overall_status"] == "automated_contracts_passed_manual_ops_required"
+    assert launch_gate_summary["source_acceptance"]["contract_status"] == "external_beta_contract_ready"
+    assert launch_gate_summary["source_acceptance"]["operator_evidence_status"] == "blocked"
+    assert launch_gate_summary["operator_evidence_status"]["status"] == "blocked"
+    assert launch_gate_summary["operator_evidence_status"]["evidence_file_present"] is False
+    assert "legal_consent_posture_signoff_evidence_missing_or_unverified" in (
+        launch_gate_summary["operator_evidence_status"]["blockers"]
+    )
+    assert "paperclip_ops_relay_secret_rotation_evidence_missing_or_unverified" in (
+        launch_gate_summary["operator_evidence_status"]["blockers"]
+    )
+    assert "operator_dpa_data_processing_terms_evidence_missing_or_unverified" in (
+        launch_gate_summary["operator_evidence_status"]["blockers"]
+    )
+    assert {
+        "legal_consent_posture_signoff",
+        "operator_dpa_data_processing_terms",
+        "paperclip_ops_relay_secret_rotation",
+        "buyer_payment_settlement",
+        "identity_kyc_provider_decision",
+    }.issubset({check["id"] for check in launch_gate_summary["operator_required_checks"]})
     assert all(check["passed"] for check in launch_gate_summary["stage_checks"])
     assert sync_result["status"] == "succeeded"
     assert sync_result["latest_stage"] == "evaluation_prep"
@@ -584,6 +625,16 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
     assert sync_calls[1]["evaluation_readiness"]["site_package_manifest"]["status"] in {"ready", "blocked"}
     assert sync_calls[1]["evaluation_readiness"]["proof_pack_manifest"]["status"] in {"ready", "blocked"}
 
+    _write_operator_launch_evidence(capture_root, launch_gate_summary["operator_required_checks"])
+    verified_launch_gate = build_launch_gate_summary(capture_root=capture_root)
+
+    assert verified_launch_gate["overall_status"] == "external_beta_live_evidence_ready"
+    assert verified_launch_gate["source_acceptance"]["contract_status"] == "external_beta_contract_ready"
+    assert verified_launch_gate["operator_evidence_status"]["status"] == "verified"
+    assert verified_launch_gate["operator_evidence_status"]["evidence_file_present"] is True
+    assert verified_launch_gate["operator_evidence_status"]["blockers"] == []
+    assert all(check["passed"] for check in verified_launch_gate["operator_required_checks"])
+
 
 def test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready(monkeypatch, tmp_path: Path) -> None:
     capture_root, descriptor_uri = _build_capture(
@@ -622,7 +673,9 @@ def test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready(monkeypa
 
     assert alpha_summary["profile"] == "iphone_video_only"
     assert alpha_summary["verdicts"]["external_alpha"]["status"] == "go"
-    assert launch_gate_summary["overall_status"] == "external_beta_contract_ready"
+    assert launch_gate_summary["overall_status"] == "automated_contracts_passed_manual_ops_required"
+    assert launch_gate_summary["source_acceptance"]["contract_status"] == "external_beta_contract_ready"
+    assert launch_gate_summary["operator_evidence_status"]["status"] == "blocked"
     assert sync_calls[1]["artifacts"]["geometry_summary_uri"].endswith("/geometry/geometry_summary.json")
 
 

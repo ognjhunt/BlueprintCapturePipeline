@@ -92,6 +92,31 @@ def test_report_blocks_when_rights_gate_is_present_but_not_cleared() -> None:
     assert "rights_privacy_gate_not_cleared" in report["blockers"]
 
 
+def test_report_blocks_when_cleared_rights_gate_carries_blockers_or_takedown() -> None:
+    ledger = build_success_claim_ledger(task_metadata=None)
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(1, 0)},
+        success_claim_ledger=ledger,
+        rights_privacy_gate={
+            "status": "cleared",
+            "cleared": True,
+            "blockers": ["manual_rights_review_required"],
+            "revocation_takedown": {"status": "takedown_required"},
+        },
+    )
+
+    assert report["status"] == "blocked"
+    assert (
+        "rights_privacy_gate_blocker:manual_rights_review_required"
+        in report["blockers"]
+    )
+    assert (
+        "rights_privacy_gate_consent_revoked_takedown_required"
+        in report["blockers"]
+    )
+
+
 def test_report_scopes_success_language_to_ledger_claim() -> None:
     ledger = build_success_claim_ledger(
         task_metadata={"task_id": "move-tote"},
@@ -139,6 +164,172 @@ def test_report_refuses_provider_task_success_claims() -> None:
     assert provider["pod_status"] == "EXITED"
 
 
+def test_report_refuses_nested_provider_task_success_claims() -> None:
+    ledger = build_success_claim_ledger(task_metadata=None)
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(2, 0)},
+        success_claim_ledger=ledger,
+        provider_execution={
+            "pod_status": "EXITED",
+            "runtime": {
+                "exit_code": 0,
+                "taskSuccess": True,
+                "deploymentReady": True,
+            },
+            "summaries": [
+                {
+                    "provider": "runpod",
+                    "successRate": 1.0,
+                    "gpu_seconds": 42,
+                }
+            ],
+        },
+        rights_privacy_gate={"status": "cleared"},
+    )
+
+    provider = report["provider_execution"]
+    assert provider["runtime"] == {"exit_code": 0}
+    assert provider["summaries"] == [{"provider": "runpod", "gpu_seconds": 42}]
+    assert provider["refused_task_success_keys"] == [
+        "runtime.deploymentReady",
+        "runtime.taskSuccess",
+        "summaries[0].successRate",
+    ]
+    assert (
+        "provider_payload_attempted_task_success_claim:runtime.taskSuccess"
+        in report["blockers"]
+    )
+    assert (
+        "provider_payload_attempted_task_success_claim:runtime.deploymentReady"
+        in report["blockers"]
+    )
+    assert (
+        "provider_payload_attempted_task_success_claim:summaries[0].successRate"
+        in report["blockers"]
+    )
+    assert report["status"] == "blocked"
+
+
+def test_report_redacts_policy_binding_secrets() -> None:
+    ledger = build_success_claim_ledger(task_metadata=None)
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(1, 0)},
+        success_claim_ledger=ledger,
+        policy_binding={
+            "policy_id": "policy-1",
+            "checkpoint_id": "ckpt-1",
+            "reference": {
+                "endpoint": "https://policy.example",
+                "api_key": "sk-live-secret",
+                "openai_api_key": "sk-openai-secret",
+            },
+            "fallbacks": [
+                {
+                    "provider": "backup",
+                    "bearerToken": "token-123",
+                    "access_key_id": "AKIA_TEST",
+                    "auth": {"mode": "basic", "service_password": "pw"},
+                    "aws_secret_access_key": "secret-test",
+                    "provider_credentials": {"username": "service", "password": "pw"},
+                    "runpod_api_token": "rp-live-token",
+                    "secret_access_key": "secret-test",
+                }
+            ],
+        },
+        rights_privacy_gate={"status": "cleared"},
+    )
+
+    binding = report["policy_binding"]
+    assert binding["reference"]["api_key"] == "<redacted>"
+    assert binding["reference"]["openai_api_key"] == "<redacted>"
+    assert binding["fallbacks"][0]["access_key_id"] == "<redacted>"
+    assert binding["fallbacks"][0]["auth"]["mode"] == "basic"
+    assert binding["fallbacks"][0]["auth"]["service_password"] == "<redacted>"
+    assert binding["fallbacks"][0]["aws_secret_access_key"] == "<redacted>"
+    assert binding["fallbacks"][0]["bearerToken"] == "<redacted>"
+    assert binding["fallbacks"][0]["provider_credentials"] == "<redacted>"
+    assert binding["fallbacks"][0]["runpod_api_token"] == "<redacted>"
+    assert binding["fallbacks"][0]["secret_access_key"] == "<redacted>"
+    assert binding["reference"]["endpoint"] == "https://policy.example"
+    assert binding["checkpoint_id"] == "ckpt-1"
+    assert binding["secret_values_redacted"] is True
+    assert binding["redacted_secret_paths"] == [
+        "fallbacks[0].access_key_id",
+        "fallbacks[0].auth.service_password",
+        "fallbacks[0].aws_secret_access_key",
+        "fallbacks[0].bearerToken",
+        "fallbacks[0].provider_credentials",
+        "fallbacks[0].runpod_api_token",
+        "fallbacks[0].secret_access_key",
+        "reference.api_key",
+        "reference.openai_api_key",
+    ]
+    assert (
+        "policy_binding_secret_value_redacted:reference.api_key"
+        in report["blockers"]
+    )
+    assert (
+        "policy_binding_secret_value_redacted:fallbacks[0].bearerToken"
+        in report["blockers"]
+    )
+    assert (
+        "policy_binding_secret_value_redacted:fallbacks[0].access_key_id"
+        in report["blockers"]
+    )
+    assert (
+        "policy_binding_secret_value_redacted:fallbacks[0].secret_access_key"
+        in report["blockers"]
+    )
+    assert (
+        "policy_binding_secret_value_redacted:reference.openai_api_key"
+        in report["blockers"]
+    )
+    assert (
+        "policy_binding_secret_value_redacted:fallbacks[0].runpod_api_token"
+        in report["blockers"]
+    )
+    assert (
+        "policy_binding_secret_value_redacted:fallbacks[0].aws_secret_access_key"
+        in report["blockers"]
+    )
+    assert (
+        "policy_binding_secret_value_redacted:"
+        "fallbacks[0].auth.service_password"
+        in report["blockers"]
+    )
+    assert (
+        "policy_binding_secret_value_redacted:fallbacks[0].provider_credentials"
+        in report["blockers"]
+    )
+    assert report["status"] == "blocked"
+
+
+def test_report_preserves_already_redacted_policy_binding_secrets() -> None:
+    ledger = build_success_claim_ledger(task_metadata=None)
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(1, 0)},
+        success_claim_ledger=ledger,
+        policy_binding={
+            "policy_id": "policy-1",
+            "reference": {"api_key": "<redacted>"},
+        },
+        rights_privacy_gate={"status": "cleared"},
+    )
+
+    binding = report["policy_binding"]
+    assert binding["reference"]["api_key"] == "<redacted>"
+    assert binding["secret_values_redacted"] is True
+    assert binding["redacted_secret_paths"] == ["reference.api_key"]
+    assert not any(
+        blocker.startswith("policy_binding_secret_value_redacted")
+        for blocker in report["blockers"]
+    )
+    assert report["status"] == "ready_review_required"
+
+
 def test_report_carries_safety_claim_boundary() -> None:
     ledger = build_success_claim_ledger(task_metadata=None)
     report = build_task_eval_run_report(
@@ -165,3 +356,165 @@ def test_layers_input_composes_ledger_inline() -> None:
     )
     assert report["evidence_level"] == "media_valid"
     assert report["success_claim_ledger"]["highest_truthful_claim"] == "media_valid"
+
+
+def _wam_gate_payload(
+    *,
+    granted_grade: str,
+    consistency_score: float | None,
+    anchors_passed: bool,
+    anchor_set: list[str] | None = None,
+) -> dict:
+    return {
+        "schema_version": "wam_score_claim_gate.v1",
+        "status": "granted",
+        "requested_grade": granted_grade,
+        "granted_grade": granted_grade,
+        "max_allowed_grade": granted_grade,
+        "consistency_measured_and_passed": consistency_score is not None,
+        "calibration_anchors_present_and_passed": anchors_passed,
+        "consistency": {
+            "status": "scored" if consistency_score is not None else "missing",
+            "consistency_score": consistency_score,
+            "passed": consistency_score is not None,
+            "blockers": [],
+        },
+        "calibration_anchors": {
+            "anchors_present": anchors_passed,
+            "anchors_passed": anchors_passed,
+            "anchor_set": anchor_set if anchor_set is not None else [],
+            "anchor_validation_status": "recovered" if anchors_passed else None,
+            "spearman_rank_correlation_vs_expected": 1.0 if anchors_passed else None,
+        },
+        "blockers": [],
+    }
+
+
+def test_report_without_wam_evaluation_stays_unchanged() -> None:
+    ledger = build_success_claim_ledger(task_metadata=None)
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(1, 0)},
+        success_claim_ledger=ledger,
+        rights_privacy_gate={"status": "cleared"},
+    )
+    assert report["wam_evaluation"] is None
+    assert not any(b.startswith("wam_evaluation") for b in report["blockers"])
+
+
+def test_report_demotes_above_review_wam_claim_without_evidence() -> None:
+    ledger = build_success_claim_ledger(task_metadata=None)
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(2, 0)},
+        success_claim_ledger=ledger,
+        rights_privacy_gate={"status": "cleared"},
+        wam_evaluation=_wam_gate_payload(
+            granted_grade="calibrated_evaluator_grade",
+            consistency_score=None,
+            anchors_passed=False,
+        ),
+    )
+    section = report["wam_evaluation"]
+    assert section["wam_score_claim_grade"] == "fixture_evaluator_only"
+    assert "wam_score_without_consistency_or_calibration" in section["blockers"]
+    assert (
+        "wam_evaluation:wam_score_without_consistency_or_calibration"
+        in report["blockers"]
+    )
+    assert report["status"] == "blocked"
+
+
+def test_report_preserves_calibrated_wam_claim_with_evidence() -> None:
+    ledger = build_success_claim_ledger(task_metadata=None)
+    anchor_set = ["policy_clean", "policy_clean_noise_0p1", "policy_clean_noise_0p3"]
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(2, 0)},
+        success_claim_ledger=ledger,
+        rights_privacy_gate={"status": "cleared"},
+        wam_evaluation=_wam_gate_payload(
+            granted_grade="calibrated_evaluator_grade",
+            consistency_score=0.93,
+            anchors_passed=True,
+            anchor_set=anchor_set,
+        ),
+    )
+    section = report["wam_evaluation"]
+    assert section["wam_score_claim_grade"] == "calibrated_evaluator_grade"
+    assert section["consistency_score"] == 0.93
+    assert section["calibration_anchor_set"] == anchor_set
+    assert section["calibration_anchors_passed"] is True
+    assert not any(b.startswith("wam_evaluation") for b in report["blockers"])
+
+
+def test_report_wam_section_always_shows_anchor_set_and_consistency_number() -> None:
+    ledger = build_success_claim_ledger(task_metadata=None)
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(1, 0)},
+        success_claim_ledger=ledger,
+        rights_privacy_gate={"status": "cleared"},
+        wam_evaluation=_wam_gate_payload(
+            granted_grade="review_grade",
+            consistency_score=None,
+            anchors_passed=False,
+        ),
+    )
+    section = report["wam_evaluation"]
+    # never a bare score: grade always travels with the consistency number
+    # and the anchor set, even when unmeasured/absent
+    assert "consistency_score" in section
+    assert "calibration_anchor_set" in section
+    assert "score" not in section
+    assert section["bare_score_forbidden"] is True
+
+
+def test_report_rejects_unrecognized_wam_claim_grade() -> None:
+    ledger = build_success_claim_ledger(task_metadata=None)
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(1, 0)},
+        success_claim_ledger=ledger,
+        rights_privacy_gate={"status": "cleared"},
+        wam_evaluation=_wam_gate_payload(
+            granted_grade="deployment_grade",
+            consistency_score=0.99,
+            anchors_passed=True,
+        ),
+    )
+    section = report["wam_evaluation"]
+    assert section["wam_score_claim_grade"] == "fixture_evaluator_only"
+    assert any(b.startswith("wam_evaluation") for b in report["blockers"])
+
+
+def test_report_recomputes_wam_evidence_from_nested_payload() -> None:
+    ledger = build_success_claim_ledger(task_metadata=None)
+    tampered = _wam_gate_payload(
+        granted_grade="calibrated_evaluator_grade",
+        consistency_score=0.99,
+        anchors_passed=True,
+        anchor_set=["policy_clean", "policy_noisy"],
+    )
+    tampered["consistency_measured_and_passed"] = True
+    tampered["calibration_anchors_present_and_passed"] = True
+    tampered["consistency"]["status"] = "blocked"
+    tampered["consistency"]["passed"] = False
+    tampered["calibration_anchors"]["anchors_passed"] = False
+
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(1, 0)},
+        success_claim_ledger=ledger,
+        rights_privacy_gate={"status": "cleared"},
+        wam_evaluation=tampered,
+    )
+
+    section = report["wam_evaluation"]
+    assert section["wam_score_claim_grade"] == "fixture_evaluator_only"
+    assert "wam_consistency_claim_flag_without_passing_nested_evidence" in section["blockers"]
+    assert "wam_calibration_claim_flag_without_passing_nested_evidence" in section["blockers"]
+    assert (
+        "wam_evaluation:wam_score_without_consistency_or_calibration"
+        in report["blockers"]
+    )

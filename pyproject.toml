@@ -151,6 +151,7 @@ blueprint-build-policy-improvement-run = "blueprint_pipeline.policy_improvement_
 blueprint-run-major-capability-scenarios = "blueprint_pipeline.major_capability_scenario_suite:main"
 blueprint-prepare-robot-eval-provider-inputs = "blueprint_pipeline.robot_eval_provider_input_setup:main"
 blueprint-run-gpu-provider-launcher = "blueprint_pipeline.robot_eval_provider_launcher:main"
+blueprint-run-robot-eval-provider-race = "blueprint_pipeline.robot_eval_provider_race_launcher:main"
 blueprint-run-runpod-provider-adapter = "blueprint_pipeline.runpod_provider_adapter:main"
 blueprint-run-vast-provider-adapter = "blueprint_pipeline.vast_provider_adapter:main"
 blueprint-run-lambda-provider-adapter = "blueprint_pipeline.lambda_provider_adapter:main"

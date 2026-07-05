@@ -25,6 +25,13 @@ class HandoffMessage:
     capture_id: str
     raw_prefix_uri: str
     pipeline_handoff_uri: str | None
+    robot_eval_job_request_uri: str | None = None
+    robot_eval_request_inbox_uri: str | None = None
+    robot_eval_job_id: str | None = None
+    robot_eval_provisioner: str | None = None
+    robot_eval_simulator: str | None = None
+    robot_eval_evaluation_substrate: str | None = None
+    robot_eval_budget_usd: float | None = None
 
     @property
     def capture_prefix(self) -> str:
@@ -56,12 +63,34 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
     if pipeline_handoff_uri is not None and not isinstance(pipeline_handoff_uri, str):
         raise PipelineError("Pub/Sub handoff pipeline_handoff_uri must be a string when present.")
 
+    robot_eval_job_request_uri = _optional_string(
+        data,
+        "robot_eval_job_request_uri",
+        "robot_eval_job_request_path",
+    )
+    robot_eval_request_inbox_uri = _optional_string(
+        data,
+        "robot_eval_request_inbox_uri",
+        "robot_eval_request_inbox_path",
+    )
+    robot_eval_budget_usd = _optional_number(data, "robot_eval_budget_usd")
+
     return HandoffMessage(
         bucket=bucket,
         scene_id=scene_id,
         capture_id=capture_id,
         raw_prefix_uri=raw_prefix_uri,
         pipeline_handoff_uri=pipeline_handoff_uri,
+        robot_eval_job_request_uri=robot_eval_job_request_uri,
+        robot_eval_request_inbox_uri=robot_eval_request_inbox_uri,
+        robot_eval_job_id=_optional_string(data, "robot_eval_job_id"),
+        robot_eval_provisioner=_optional_string(data, "robot_eval_provisioner"),
+        robot_eval_simulator=_optional_string(data, "robot_eval_simulator"),
+        robot_eval_evaluation_substrate=_optional_string(
+            data,
+            "robot_eval_evaluation_substrate",
+        ),
+        robot_eval_budget_usd=robot_eval_budget_usd,
     )
 
 
@@ -185,6 +214,30 @@ def _synthesize_pipeline_handoff(handoff: HandoffMessage, *, capture_root: Path)
 
 JOB_LEDGER_FILENAME = "pipeline_job_ledger.json"
 JOB_LEDGER_SCHEMA_VERSION = "pipeline_job_ledger.v1"
+JOB_STATUS_SCHEMA_VERSION = "pipeline_job_status.v1"
+PROVIDER_OPS_STATUS_SCHEMA_VERSION = "provider_ops_status.v1"
+_JOB_RETRYABLE_STATUSES = {"processing", "failed_retryable"}
+_PROVIDER_STATUS_FILENAMES = {
+    "wam_compute_run_result.json",
+    "runpod_wam_async_poll_manifest.json",
+    "runpod_wam_async_create_manifest.json",
+    "vast_wam_async_poll_manifest.json",
+    "vast_wam_async_create_manifest.json",
+    "vast_provider_adapter_result.json",
+    "remote_cloud_execution_closure_manifest.json",
+    "provider_reliability_manifest.json",
+    "runpod_wam_provider_reliability_manifest.json",
+    "gpu_provider_launch_request.json",
+}
+_PROVIDER_STATUS_FIELD_NAMES = {
+    "continuing_spend_from_this_run",
+    "teardown_status",
+    "provider_phase",
+    "provider_command_status",
+    "output_availability",
+    "provider_runtime_output_zip_path",
+    "provider_output_validation_status",
+}
 
 
 def _read_job_ledger(capture_root: Path) -> dict[str, Any]:
@@ -202,6 +255,239 @@ def _write_job_ledger(capture_root: Path, ledger: Mapping[str, Any]) -> None:
     (capture_root / JOB_LEDGER_FILENAME).write_text(
         json.dumps(dict(ledger), indent=2, sort_keys=True), encoding="utf-8"
     )
+
+
+def _string(value: Any) -> str:
+    return str(value).strip() if isinstance(value, str) else ""
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _relative_to(root: Path, path: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _attempt_history(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
+    history = ledger.get("attempt_history")
+    if not isinstance(history, list):
+        return []
+    return [dict(item) for item in history if isinstance(item, Mapping)]
+
+
+def _looks_like_provider_status_artifact(path: Path, payload: Mapping[str, Any]) -> bool:
+    if path.name in _PROVIDER_STATUS_FILENAMES:
+        return True
+    if any(key in payload for key in _PROVIDER_STATUS_FIELD_NAMES):
+        return True
+    schema = _string(payload.get("schema_version"))
+    return bool(
+        schema
+        and any(
+            token in schema
+            for token in ("provider", "runpod_wam", "vast_wam", "wam_compute")
+        )
+    )
+
+
+def _provider_status_blockers(payload: Mapping[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    for key in (
+        "blockers",
+        "provider_command_blockers",
+        "runtime_result_blockers",
+        "completion_blockers",
+    ):
+        for blocker in _string_list(payload.get(key)):
+            if blocker not in blockers:
+                blockers.append(blocker)
+    nested_validation = payload.get("provider_output_validation")
+    if isinstance(nested_validation, Mapping):
+        for blocker in _string_list(nested_validation.get("blockers")):
+            if blocker not in blockers:
+                blockers.append(blocker)
+    return blockers
+
+
+def _provider_status_row(
+    *,
+    capture_root: Path,
+    path: Path,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    teardown_status = _string(payload.get("teardown_status")) or _string(
+        payload.get("teardown_action")
+    )
+    provider_phase = (
+        _string(payload.get("provider_phase"))
+        or _string(payload.get("pod_status"))
+        or _string(payload.get("instance_status"))
+        or _string(payload.get("status"))
+    )
+    continuing_spend = _bool_or_none(payload.get("continuing_spend_from_this_run"))
+    return {
+        "artifact_path": _relative_to(capture_root, path),
+        "schema_version": payload.get("schema_version"),
+        "status": payload.get("status"),
+        "provider": payload.get("provider"),
+        "provider_phase": provider_phase or None,
+        "provider_command_status": payload.get("provider_command_status"),
+        "runtime_result_status": payload.get("runtime_result_status"),
+        "output_availability": payload.get("output_availability"),
+        "output_zip_present": payload.get("output_zip_present"),
+        "provider_runtime_output_zip_path": payload.get(
+            "provider_runtime_output_zip_path"
+        )
+        or payload.get("output_zip_path")
+        or payload.get("output_path"),
+        "provider_output_validation_status": payload.get(
+            "provider_output_validation_status"
+        ),
+        "teardown_status": teardown_status or None,
+        "teardown_performed": payload.get("teardown_performed"),
+        "continuing_spend_from_this_run": continuing_spend,
+        "blockers": _provider_status_blockers(payload),
+    }
+
+
+def _provider_ops_status(capture_root: Path) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    if capture_root.is_dir():
+        for path in sorted(capture_root.rglob("*.json")):
+            if path.name == JOB_LEDGER_FILENAME:
+                continue
+            payload = _read_optional_json_object(path)
+            if not payload or not _looks_like_provider_status_artifact(path, payload):
+                continue
+            rows.append(
+                _provider_status_row(
+                    capture_root=capture_root,
+                    path=path,
+                    payload=payload,
+                )
+            )
+    continuing_spend_any = any(
+        row.get("continuing_spend_from_this_run") is True for row in rows
+    )
+    blocker_count = sum(len(row.get("blockers") or []) for row in rows)
+    if continuing_spend_any:
+        status = "running_spend_attention_required"
+    elif rows and blocker_count:
+        status = "blocked_or_review_required"
+    elif rows:
+        status = "observed"
+    else:
+        status = "not_observed"
+    return {
+        "schema_version": PROVIDER_OPS_STATUS_SCHEMA_VERSION,
+        "status": status,
+        "provider_artifact_count": len(rows),
+        "continuing_spend_from_this_run": continuing_spend_any,
+        "teardown_attention_required": continuing_spend_any,
+        "blocker_count": blocker_count,
+        "provider_statuses": rows,
+        "claim_boundary": {
+            "ops_status_only": True,
+            "status_query_is_not_provider_execution": True,
+            "provider_runtime_success_is_not_task_success": True,
+            "continuing_spend_true_requires_operator_poll_or_teardown": True,
+        },
+    }
+
+
+def read_handoff_job_status(
+    *,
+    storage_root: Path,
+    bucket: str,
+    scene_id: str,
+    capture_id: str,
+) -> dict[str, Any]:
+    """Read durable local job state for a staged Pub/Sub handoff capture."""
+
+    capture_root = storage_root / bucket / "scenes" / scene_id / "captures" / capture_id
+    ledger = _read_job_ledger(capture_root)
+    run_e2e_stage_ledger = _read_optional_json_object(
+        capture_root / "pipeline" / "run_e2e_stage_ledger.json"
+    )
+    staged_capture_present = capture_root.is_dir()
+    upload_complete_present = (
+        capture_root / "raw" / "capture_upload_complete.json"
+    ).is_file()
+    pipeline_handoff_present = (capture_root / "pipeline_handoff.json").is_file()
+    provider_ops_status = _provider_ops_status(capture_root)
+    if ledger:
+        status = str(ledger.get("status") or "unknown").strip() or "unknown"
+    elif staged_capture_present:
+        status = "not_started"
+    else:
+        status = "not_staged"
+    return {
+        "schema_version": JOB_STATUS_SCHEMA_VERSION,
+        "status": status,
+        "bucket": bucket,
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "capture_root": str(capture_root),
+        "staged_capture_present": staged_capture_present,
+        "upload_complete_present": upload_complete_present,
+        "pipeline_handoff_present": pipeline_handoff_present,
+        "job_ledger_present": bool(ledger),
+        "attempt_count": int(ledger.get("attempt_count") or 0) if ledger else 0,
+        "run_e2e_status": ledger.get("run_e2e_status") if ledger else None,
+        "run_e2e_stage_ledger_present": bool(run_e2e_stage_ledger),
+        "run_e2e_stage_ledger_path": str(
+            capture_root / "pipeline" / "run_e2e_stage_ledger.json"
+        ),
+        "run_e2e_stage_status": run_e2e_stage_ledger.get("status")
+        if run_e2e_stage_ledger
+        else None,
+        "run_e2e_current_stage": run_e2e_stage_ledger.get("current_stage")
+        if run_e2e_stage_ledger
+        else None,
+        "run_e2e_failed_stage": run_e2e_stage_ledger.get("failed_stage")
+        if run_e2e_stage_ledger
+        else None,
+        "run_e2e_last_completed_stage": run_e2e_stage_ledger.get(
+            "last_completed_stage"
+        )
+        if run_e2e_stage_ledger
+        else None,
+        "run_e2e_stage_ledger": run_e2e_stage_ledger or None,
+        "provider_ops_status": provider_ops_status,
+        "provider_runtime_status": provider_ops_status.get("status"),
+        "provider_runtime_artifact_count": provider_ops_status.get(
+            "provider_artifact_count"
+        ),
+        "continuing_spend_from_this_run": provider_ops_status.get(
+            "continuing_spend_from_this_run"
+        ),
+        "teardown_attention_required": provider_ops_status.get(
+            "teardown_attention_required"
+        ),
+        "started_at": ledger.get("started_at") if ledger else None,
+        "updated_at": ledger.get("updated_at") if ledger else None,
+        "last_attempt_started_at": (
+            ledger.get("last_attempt_started_at") if ledger else None
+        ),
+        "completed_at": ledger.get("completed_at") if ledger else None,
+        "last_failed_at": ledger.get("last_failed_at") if ledger else None,
+        "last_error_type": ledger.get("last_error_type") if ledger else None,
+        "last_error": ledger.get("last_error") if ledger else None,
+        "retry_expected_on_redelivery": status in _JOB_RETRYABLE_STATUSES,
+        "completed_redelivery_is_noop": status == "completed",
+        "attempt_history": _attempt_history(ledger),
+        "ledger": ledger,
+    }
 
 
 def process_handoff_payload(
@@ -243,6 +529,9 @@ def process_handoff_payload(
         }
 
     attempt_count = int(ledger.get("attempt_count") or 0) + 1
+    previous_history = _attempt_history(ledger)
+    job_started_at = str(ledger.get("started_at") or "").strip() or utc_now_iso()
+    attempt_started_at = utc_now_iso()
     _write_job_ledger(
         capture_root,
         {
@@ -251,14 +540,92 @@ def process_handoff_payload(
             "scene_id": handoff.scene_id,
             "capture_id": handoff.capture_id,
             "attempt_count": attempt_count,
-            "started_at": utc_now_iso(),
+            "started_at": job_started_at,
+            "updated_at": attempt_started_at,
+            "last_attempt_started_at": attempt_started_at,
+            "attempt_history": previous_history,
         },
     )
-    result = run_e2e(
-        capture_root=str(capture_root),
-        provider=provider,
-        run_evaluation_prep=run_evaluation_prep,
+    run_kwargs: dict[str, Any] = {
+        "capture_root": str(capture_root),
+        "provider": provider,
+        "run_evaluation_prep": run_evaluation_prep,
+        "resume_completed_stages": True,
+    }
+    robot_eval_job_request = _resolve_staged_handoff_path(
+        handoff.robot_eval_job_request_uri,
+        handoff=handoff,
+        capture_root=capture_root,
+        storage_root=storage_root,
+        expect_directory=False,
     )
+    robot_eval_request_inbox = _resolve_staged_handoff_path(
+        handoff.robot_eval_request_inbox_uri,
+        handoff=handoff,
+        capture_root=capture_root,
+        storage_root=storage_root,
+        expect_directory=True,
+    )
+    if robot_eval_job_request is not None:
+        run_kwargs["robot_eval_job_request"] = str(robot_eval_job_request)
+    if robot_eval_request_inbox is not None:
+        run_kwargs["robot_eval_request_inbox"] = str(robot_eval_request_inbox)
+    if robot_eval_job_request is not None or robot_eval_request_inbox is not None:
+        run_kwargs.update(
+            {
+                "robot_eval_job_id": handoff.robot_eval_job_id,
+                "robot_eval_provisioner": (
+                    handoff.robot_eval_provisioner or "fixture_local"
+                ),
+                "robot_eval_simulator": handoff.robot_eval_simulator or "fixture",
+                "robot_eval_evaluation_substrate": (
+                    handoff.robot_eval_evaluation_substrate
+                ),
+                "robot_eval_budget_usd": handoff.robot_eval_budget_usd,
+                "allow_robot_eval_gpu_provisioning": False,
+                "allow_robot_eval_simulator_execution": False,
+            }
+        )
+    try:
+        result = run_e2e(**run_kwargs)
+    except Exception as exc:
+        failed_at = utc_now_iso()
+        failure_record = {
+            "attempt_number": attempt_count,
+            "status": "failed_retryable",
+            "stage": "run_e2e",
+            "started_at": attempt_started_at,
+            "failed_at": failed_at,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+        _write_job_ledger(
+            capture_root,
+            {
+                "schema_version": JOB_LEDGER_SCHEMA_VERSION,
+                "status": "failed_retryable",
+                "scene_id": handoff.scene_id,
+                "capture_id": handoff.capture_id,
+                "attempt_count": attempt_count,
+                "started_at": job_started_at,
+                "updated_at": failed_at,
+                "last_attempt_started_at": attempt_started_at,
+                "last_failed_at": failed_at,
+                "last_error_type": type(exc).__name__,
+                "last_error": str(exc),
+                "attempt_history": [*previous_history, failure_record],
+            },
+        )
+        raise
+    completed_at = utc_now_iso()
+    completion_record = {
+        "attempt_number": attempt_count,
+        "status": "completed",
+        "stage": "run_e2e",
+        "started_at": attempt_started_at,
+        "completed_at": completed_at,
+        "run_e2e_status": str(result.get("status") or "") or None,
+    }
     _write_job_ledger(
         capture_root,
         {
@@ -267,9 +634,14 @@ def process_handoff_payload(
             "scene_id": handoff.scene_id,
             "capture_id": handoff.capture_id,
             "attempt_count": attempt_count,
-            "started_at": utc_now_iso(),
-            "completed_at": utc_now_iso(),
+            "started_at": job_started_at,
+            "updated_at": completed_at,
+            "last_attempt_started_at": attempt_started_at,
+            "completed_at": completed_at,
             "run_e2e_status": str(result.get("status") or "") or None,
+            "last_error_type": None,
+            "last_error": None,
+            "attempt_history": [*previous_history, completion_record],
         },
     )
     return {
@@ -342,18 +714,109 @@ def _required_string(data: Mapping[str, Any], key: str) -> str:
     return value.strip()
 
 
+def _optional_string(data: Mapping[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = data.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise PipelineError(f"Pub/Sub handoff {key} must be a string when present.")
+        if value.strip():
+            return value.strip()
+    return None
+
+
+def _optional_number(data: Mapping[str, Any], key: str) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise PipelineError(f"Pub/Sub handoff {key} must be a number when present.")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise PipelineError(
+                f"Pub/Sub handoff {key} must be a number when present."
+            ) from exc
+    raise PipelineError(f"Pub/Sub handoff {key} must be a number when present.")
+
+
+def _resolve_staged_handoff_path(
+    value: str | None,
+    *,
+    handoff: HandoffMessage,
+    capture_root: Path,
+    storage_root: Path,
+    expect_directory: bool,
+) -> Path | None:
+    if not value:
+        return None
+    if value.startswith("gs://"):
+        prefix = f"gs://{handoff.bucket}/"
+        if not value.startswith(prefix):
+            raise PipelineError(
+                "Pub/Sub handoff robot eval path must reference the handoff bucket."
+            )
+        local_path = storage_root / handoff.bucket / value[len(prefix) :]
+    else:
+        path = Path(value)
+        local_path = path if path.is_absolute() else capture_root / path
+    if expect_directory:
+        if not local_path.is_dir():
+            raise PipelineError(
+                f"Staged robot eval request inbox is missing: {local_path}"
+            )
+    elif not local_path.is_file():
+        raise PipelineError(f"Staged robot eval job request is missing: {local_path}")
+    return local_path
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Pull BlueprintCapture Pub/Sub handoffs and run blueprint_pipeline.run_e2e."
     )
-    parser.add_argument("--subscription", required=True)
+    parser.add_argument("--subscription")
     parser.add_argument("--storage-root", type=Path)
     parser.add_argument("--provider", default="openai", choices=("claude", "openai"))
     parser.add_argument("--max-messages", type=int, default=1)
     parser.add_argument("--skip-evaluation-prep", action="store_true")
+    parser.add_argument("--status", action="store_true")
+    parser.add_argument("--bucket")
+    parser.add_argument("--scene-id")
+    parser.add_argument("--capture-id")
     args = parser.parse_args(argv)
 
     storage_root = args.storage_root or Path(tempfile.gettempdir()) / "blueprint-pubsub-handoffs"
+    if args.status:
+        missing = [
+            name
+            for name, value in (
+                ("--bucket", args.bucket),
+                ("--scene-id", args.scene_id),
+                ("--capture-id", args.capture_id),
+            )
+            if not value
+        ]
+        if missing:
+            parser.error("--status requires " + ", ".join(missing))
+        print(
+            json.dumps(
+                read_handoff_job_status(
+                    storage_root=storage_root,
+                    bucket=str(args.bucket),
+                    scene_id=str(args.scene_id),
+                    capture_id=str(args.capture_id),
+                ),
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if not args.subscription:
+        parser.error("--subscription is required unless --status is used")
     processed = pull_and_process(
         subscription=args.subscription,
         storage_root=storage_root,

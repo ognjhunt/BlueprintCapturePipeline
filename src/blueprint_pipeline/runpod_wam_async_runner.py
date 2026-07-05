@@ -16,7 +16,17 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .paid_lane_guard import (
+    PreSpendPreflightBlocked,
+    bind_pending_teardown_instance,
+    cancel_pending_teardown,
+    close_pending_teardown,
+    image_contract_from_ref,
+    open_pending_teardown,
+    require_pre_spend_preflight,
+)
 from .provider_reliability_manifest import (
+    TEARDOWN_STATUS_SOURCE_PROVIDER_API,
     build_provider_reliability_manifest,
     build_teardown_proof,
     evaluate_post_marker_stall,
@@ -70,6 +80,7 @@ RUNPOD_UNITREE_GROOT_SONIC_FULL_LOOP_OVERRIDE_ENV = (
 )
 RUNPOD_UNITREE_GROOT_SONIC_MAX_UNGATED_LOOP_STEPS = 2
 RUNPOD_PROVIDER_BUNDLE_KINDS = ("wam", "unitree_unifolm", "unitree_groot_n17_sonic")
+RUNPOD_WAM_LANE = "runpod_wam_async"
 RUNPOD_TERMINAL_POD_STATUSES = {"not_found", "EXITED", "TERMINATED", "FAILED", "STOPPED"}
 RUNPOD_ACTIVE_POD_STATUSES = {
     "CREATED",
@@ -82,6 +93,29 @@ RUNPOD_ACTIVE_POD_STATUSES = {
     "RESTARTING",
     "pending_api_visibility",
 }
+RUNPOD_WAM_PROVIDER_OUTPUT_NONTERMINAL_STATUSES = {"running", "starting", "in_progress"}
+RUNPOD_WAM_PROVIDER_OUTPUT_SUCCESS_STATUSES = {"completed", "success", "succeeded"}
+RUNPOD_WAM_PROVIDER_OUTPUT_FAILURE_STATUSES = {
+    "blocked",
+    "failed",
+    "error",
+    "timeout",
+    "timed_out",
+}
+RUNPOD_WAM_PROVIDER_OUTPUT_RUNTIME_RESULT_NAMES = {
+    "wam": (
+        "wam_runtime_result.json",
+        "isaac_runtime_result.json",
+    ),
+    "unitree_unifolm": ("unitree_unifolm_policy_provider_output.json",),
+    "unitree_groot_n17_sonic": (
+        "unitree_groot_n17_sonic_policy_provider_output.json",
+        "unitree_groot_n17_sonic_wam_persistent_session_output.json",
+        "wam_runtime_result.json",
+    ),
+}
+RUNPOD_WAM_PROVIDER_ENTRYPOINT_MANIFEST_NAME = "runpod_wam_provider_entrypoint_execution.json"
+RUNPOD_WAM_PROVIDER_HEARTBEAT_MANIFEST_NAME = "wam_provider_output.json"
 DEFAULT_GPU_TYPE_IDS = (
     "NVIDIA A40",
     "NVIDIA RTX A5000",
@@ -1624,7 +1658,6 @@ def create_runpod_wam_async_run(
         }
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
         return manifest
-        return manifest
     bundle_url_from_file, bundle_url_file_meta = _read_sensitive_url_file(
         str(provider_bundle_url_file or ""),
         label="provider_bundle_url_file",
@@ -1741,7 +1774,32 @@ def create_runpod_wam_async_run(
         container_disk_gb=container_disk_gb,
         volume_gb=volume_gb,
     )
+    post_marker_timeout = _runpod_wam_post_marker_timeout_seconds()
+    try:
+        pre_spend_preflight = require_pre_spend_preflight(
+            lane=RUNPOD_WAM_LANE,
+            provider="runpod",
+            credential_present=bool(api_key),
+            capacity_evidence={
+                "available": bool(api_key and gpu_type_ids),
+                "detail": f"runpod_on_demand_pool_configured:{len(list(gpu_type_ids))}_gpu_types",
+            },
+            image_contract=image_contract_from_ref(image_name),
+            runtime_contract={
+                "startup_marker": "nonterminal_output_heartbeat",
+                "progress_marker": "provider_output_zip",
+                "startup_timeout_seconds": post_marker_timeout,
+                "no_progress_timeout_seconds": post_marker_timeout,
+            },
+            spend_gate_open=prelaunch_spend_guard.get("can_launch") is True,
+            record_dir=resolved_job_dir,
+        )
+    except PreSpendPreflightBlocked as blocked_preflight:
+        pre_spend_preflight = blocked_preflight.preflight
     blockers: list[str] = []
+    if pre_spend_preflight.get("status") != "PASS":
+        blockers.append("runpod_wam_pre_spend_preflight_not_passed")
+        blockers.extend(pre_spend_preflight.get("blockers") or [])
     if staging_manifest.get("status") != "ready":
         blockers.extend(staging_manifest.get("blockers") or ["runpod_wam_staging_not_ready"])
     if not direct_provider_urls and self_test.get("status") != "passed":
@@ -1798,6 +1856,7 @@ def create_runpod_wam_async_run(
             "model_secret_env_status": model_secret_env_status,
             "provider_runtime_config_env_status": provider_runtime_config_env_status,
             "prelaunch_spend_guard": prelaunch_spend_guard,
+            "pre_spend_preflight": pre_spend_preflight,
             "api_key_status": api_key_meta,
             "raw_secret_values_recorded": False,
         }
@@ -1847,6 +1906,14 @@ def create_runpod_wam_async_run(
         else ""
     )
     warm_start_http_error: dict[str, Any] | None = None
+    # Teardown obligation goes on disk BEFORE any billable RunPod call: if this
+    # process dies between launch and collect, reap_orphans finds the record.
+    pending_teardown = open_pending_teardown(
+        provider="runpod",
+        lane=RUNPOD_WAM_LANE,
+        run_id=f"wam-{provider_bundle_kind}-{int(time.time() * 1000)}",
+        job_dir=str(resolved_job_dir),
+    )
     try:
         if selected_existing_pod_id:
             update_payload = _existing_pod_update_payload(payload)
@@ -2008,6 +2075,11 @@ def create_runpod_wam_async_run(
                     },
                     "raw_secret_values_recorded": False,
                 }
+                cancel_pending_teardown(
+                    pending_teardown["path"],
+                    reason="runpod_create_pod_http_error_no_allocation",
+                    evidence={"http_status_code": fallback_exc.code},
+                )
                 write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
                 return manifest
         else:
@@ -2036,6 +2108,11 @@ def create_runpod_wam_async_run(
                 },
                 "raw_secret_values_recorded": False,
             }
+            cancel_pending_teardown(
+                pending_teardown["path"],
+                reason="runpod_create_pod_http_error_no_allocation",
+                evidence={"http_status_code": exc.code},
+            )
             write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
             return manifest
     if not pod_id:
@@ -2052,8 +2129,14 @@ def create_runpod_wam_async_run(
             "provider_runtime_config_env_status": provider_runtime_config_env_status,
             "raw_secret_values_recorded": False,
         }
+        cancel_pending_teardown(
+            pending_teardown["path"],
+            reason="runpod_create_response_missing_pod_id",
+            evidence={"http_status_code": status_code},
+        )
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
         return manifest
+    bind_pending_teardown_instance(pending_teardown["path"], pod_id)
     state = {
         "schema_version": RUNPOD_WAM_STATE_SCHEMA_VERSION,
         "generated_at": generated,
@@ -2075,6 +2158,8 @@ def create_runpod_wam_async_run(
         "bundle_path": str(resolved_bundle),
         "full_loop_guard": full_loop_guard,
         "prelaunch_spend_guard": prelaunch_spend_guard,
+        "pre_spend_preflight": pre_spend_preflight,
+        "pending_teardown_record": pending_teardown["path"],
         "token_file": str(resolved_token_file),
         "secret_env_file": str(resolved_secret_env_file),
         "image_name": image_name,
@@ -2112,6 +2197,8 @@ def create_runpod_wam_async_run(
         "provider_output_get_url_file": output_get_url_file_meta,
         "full_loop_guard": full_loop_guard,
         "prelaunch_spend_guard": prelaunch_spend_guard,
+        "pre_spend_preflight": pre_spend_preflight,
+        "pending_teardown_record": pending_teardown["path"],
         "model_secret_env_status": model_secret_env_status,
         "provider_runtime_config_env_status": provider_runtime_config_env_status,
         "runpod_response_keys": sorted(response.keys()),
@@ -2144,6 +2231,32 @@ def _delete_pod(
         response = {}
         status = "completed" if exc.code in {404, 410} else "blocked"
         blockers = [] if status == "completed" else ["runpod_delete_pod_http_error"]
+    # The DELETE response is only a request acknowledgement. Teardown proof needs
+    # the provider to report the pod terminal on a state query, so probe it.
+    terminal_state_api_confirmed = False
+    verified_pod_status: str | None = None
+    terminal_state_verification: dict[str, Any] | None = None
+    if status_code in {404, 410}:
+        # The state API already says the allocation does not exist.
+        terminal_state_api_confirmed = True
+        verified_pod_status = "not_found"
+    elif status == "completed":
+        terminal_state_verification = _verify_pod_not_active_after_teardown_error(
+            pod_id=pod_id,
+            api_key=api_key,
+            generated_at=generated_at,
+        )
+        probe_status = _string(terminal_state_verification.get("pod_status"))
+        if probe_status and probe_status not in {"http_error", "status_probe_error"}:
+            verified_pod_status = probe_status
+        terminal_state_api_confirmed = bool(
+            terminal_state_verification.get("spend_released")
+        )
+        if not terminal_state_api_confirmed:
+            blockers = [
+                *blockers,
+                "runpod_delete_terminal_state_not_api_confirmed",
+            ]
     manifest = {
         "schema_version": RUNPOD_WAM_DELETE_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -2153,6 +2266,9 @@ def _delete_pod(
         "http_status_code": status_code,
         "response_keys": sorted(response.keys()),
         "blockers": blockers,
+        "terminal_state_api_confirmed": terminal_state_api_confirmed,
+        "verified_pod_status": verified_pod_status,
+        "terminal_state_verification": terminal_state_verification,
         "continuing_spend_from_this_run": status != "completed",
         "raw_secret_values_recorded": False,
     }
@@ -2336,6 +2452,7 @@ def _teardown_proof_from_runpod_poll(
 ) -> dict[str, Any]:
     terminal_status = ""
     terminate_requested = bool(teardown_requested)
+    status_source: str | None = None
     teardown = _mapping(teardown_manifest)
     if keep_running_on_success:
         return build_teardown_proof(
@@ -2348,16 +2465,27 @@ def _teardown_proof_from_runpod_poll(
         )
     if teardown.get("status") == "completed":
         terminate_requested = True
-        terminal_status = "deleted" if teardown_action == "delete" else "stopped"
+        if teardown.get("terminal_state_api_confirmed") is True and _string(
+            teardown.get("verified_pod_status")
+        ):
+            # The delete/stop manifest carries a provider state query result.
+            terminal_status = _string(teardown.get("verified_pod_status")).lower()
+            status_source = TEARDOWN_STATUS_SOURCE_PROVIDER_API
+        else:
+            # Legacy self-reported completion — recorded, but cannot prove teardown.
+            terminal_status = "deleted" if teardown_action == "delete" else "stopped"
     elif pod_status in RUNPOD_TERMINAL_POD_STATUSES or pod_status.upper() in RUNPOD_TERMINAL_POD_STATUSES:
+        # pod_status comes from the poll's own GET /pods/{id} query — API evidence.
         terminal_status = "not_found" if pod_status == "not_found" else pod_status.lower()
         terminate_requested = True
+        status_source = TEARDOWN_STATUS_SOURCE_PROVIDER_API
     return build_teardown_proof(
         provider="runpod",
         allocation_id=pod_id,
         terminate_requested=terminate_requested,
         provider_terminal_status=terminal_status or None,
         verified_at=generated_at if terminal_status else None,
+        status_source=status_source,
     )
 
 
@@ -2369,7 +2497,14 @@ def _write_wam_provider_reliability_manifest(
     teardown_manifest: Mapping[str, Any] | None,
     generated_at: str,
 ) -> str:
-    output_present = poll_manifest.get("output_zip_present") is True
+    output_zip_present = poll_manifest.get("output_zip_present") is True
+    provider_output_validation = _mapping(poll_manifest.get("provider_output_validation"))
+    provider_output_validation_status = _string(provider_output_validation.get("status"))
+    provider_output_terminal = poll_manifest.get("provider_output_terminal") is True
+    provider_output_contract_valid = bool(
+        output_zip_present and provider_output_validation_status == "completed"
+    )
+    output_present = bool(output_zip_present and provider_output_terminal)
     pod_id = _string(poll_manifest.get("pod_id"))
     pod_status = _string(poll_manifest.get("pod_status"))
     provider_bundle_kind = _string(poll_manifest.get("provider_bundle_kind")) or "wam"
@@ -2395,7 +2530,7 @@ def _write_wam_provider_reliability_manifest(
         pod_launch_mode=state.get("pod_launch_mode"),
         pod_id=pod_id or None,
     )
-    startup_seen = bool(output_present or poll_manifest.get("last_nonterminal_output"))
+    startup_seen = bool(output_zip_present or poll_manifest.get("last_nonterminal_output"))
     startup_blockers = []
     if not startup_seen and not active_without_terminal_output:
         startup_blockers.append("startup_marker_timeout:no_runtime_or_heartbeat_observed")
@@ -2411,6 +2546,10 @@ def _write_wam_provider_reliability_manifest(
     runtime_blockers: list[str] = []
     if stall_evaluation.get("stall_mode") == "runtime_execution":
         runtime_blockers.extend(stall_blockers)
+    if output_zip_present and provider_output_validation_status == "blocked":
+        runtime_blockers.extend(
+            str(blocker) for blocker in provider_output_validation.get("blockers") or []
+        )
     if runtime_result_status in {"blocked", "failed", "error", "timeout", "timed_out"}:
         runtime_blockers.append(f"runner_failed:{runtime_result_status}")
         runtime_blockers.extend(f"runner_failed:{blocker}" for blocker in runtime_result_blockers)
@@ -2420,10 +2559,23 @@ def _write_wam_provider_reliability_manifest(
         provider_command_status=poll_manifest.get("provider_command_status"),
         runtime_result_status=runtime_result_status or None,
     )
+    artifact_collection_blockers = (
+        []
+        if provider_output_contract_valid
+        else [
+            str(blocker)
+            for blocker in (
+                provider_output_validation.get("blockers")
+                or ["artifact_collection_failed:runtime_output_zip_not_received"]
+            )
+        ]
+    )
     collection = _reliability_phase(
-        output_present,
-        [] if output_present else ["artifact_collection_failed:runtime_output_zip_not_received"],
+        provider_output_contract_valid,
+        artifact_collection_blockers,
         output_zip_path=poll_manifest.get("provider_runtime_output_zip_path"),
+        output_zip_present=output_zip_present,
+        provider_output_validation_status=provider_output_validation_status or None,
     )
     teardown = _teardown_proof_from_runpod_poll(
         pod_id=pod_id,
@@ -2454,6 +2606,11 @@ def _write_wam_provider_reliability_manifest(
             "teardown_action": poll_manifest.get("teardown_action"),
         },
     )
+    # A PASSING teardown proof releases the crash-safety record; anything less
+    # keeps it open for reap_orphans.
+    pending_teardown_record = _string(state.get("pending_teardown_record"))
+    if pending_teardown_record:
+        close_pending_teardown(pending_teardown_record, teardown)
     path = job_dir / RUNPOD_WAM_PROVIDER_RELIABILITY_MANIFEST_NAME
     write_json(path, manifest)
     return str(path)
@@ -2465,6 +2622,7 @@ def _download_provider_output_zip(
     provider_output_get_url: str,
     output_path: Path,
     generated_at: str,
+    provider_bundle_kind: str = "wam",
 ) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "schema_version": "runpod_wam_output_download.v1",
@@ -2488,6 +2646,14 @@ def _download_provider_output_zip(
             data = response.read()
         output_path.write_bytes(data)
         valid_zip = bool(data) and zipfile.is_zipfile(output_path)
+        output_validation = (
+            _validate_wam_provider_output_zip(
+                output_path,
+                provider_bundle_kind=provider_bundle_kind,
+            )
+            if valid_zip
+            else {}
+        )
         manifest.update(
             {
                 "status": "completed" if valid_zip else "not_available",
@@ -2495,6 +2661,16 @@ def _download_provider_output_zip(
                 "output_present": valid_zip,
                 "valid_zip": valid_zip,
                 "empty_download": not bool(data),
+                "provider_output_validation": output_validation,
+                "provider_output_validation_status": output_validation.get("status")
+                if output_validation
+                else None,
+                "provider_output_terminal": output_validation.get("terminal_output_present")
+                if output_validation
+                else False,
+                "provider_output_usable": output_validation.get("provider_output_usable")
+                if output_validation
+                else False,
             }
         )
         if not valid_zip:
@@ -2539,6 +2715,282 @@ def _zip_wam_provider_output_status(zip_path: Path) -> str:
     if not isinstance(payload, Mapping):
         return ""
     return _string(payload.get("status"))
+
+
+def _provider_output_runtime_result_candidates(provider_bundle_kind: str) -> tuple[str, ...]:
+    return RUNPOD_WAM_PROVIDER_OUTPUT_RUNTIME_RESULT_NAMES.get(
+        provider_bundle_kind,
+        RUNPOD_WAM_PROVIDER_OUTPUT_RUNTIME_RESULT_NAMES["wam"],
+    )
+
+
+def _read_provider_output_json_member(
+    archive: zipfile.ZipFile,
+    member: str,
+) -> tuple[dict[str, Any] | None, str]:
+    try:
+        payload = json.loads(archive.read(member).decode("utf-8") or "{}")
+    except Exception as exc:
+        return None, type(exc).__name__
+    if not isinstance(payload, Mapping):
+        return None, "not_object"
+    return dict(payload), ""
+
+
+def _provider_output_member(
+    names: Sequence[str],
+    suffixes: Sequence[str],
+) -> str:
+    for suffix in suffixes:
+        for name in names:
+            if name == suffix or name.endswith(f"/{suffix}"):
+                return name
+    return ""
+
+
+def _provider_output_status_kind(status: str) -> str:
+    normalized = status.lower()
+    if normalized in RUNPOD_WAM_PROVIDER_OUTPUT_NONTERMINAL_STATUSES:
+        return "nonterminal"
+    if normalized in RUNPOD_WAM_PROVIDER_OUTPUT_SUCCESS_STATUSES:
+        return "success"
+    if normalized in RUNPOD_WAM_PROVIDER_OUTPUT_FAILURE_STATUSES:
+        return "failure"
+    return ""
+
+
+def _provider_output_blockers(payload: Mapping[str, Any]) -> list[str]:
+    blockers = payload.get("blockers")
+    if not isinstance(blockers, Sequence) or isinstance(blockers, (str, bytes)):
+        return []
+    return [str(blocker) for blocker in blockers if str(blocker)]
+
+
+def _validate_wam_provider_output_zip(
+    zip_path: Path,
+    *,
+    provider_bundle_kind: str,
+) -> dict[str, Any]:
+    resolved = zip_path.expanduser()
+    manifest: dict[str, Any] = {
+        "schema_version": "runpod_wam_provider_output_validation.v1",
+        "status": "missing",
+        "zip_path": str(resolved),
+        "zip_present": False,
+        "valid_zip": False,
+        "terminal_output_present": False,
+        "provider_output_usable": False,
+        "runtime_result_manifest_present": False,
+        "entrypoint_execution_manifest_present": False,
+        "heartbeat_manifest_present": False,
+        "blockers": ["provider_output_zip_missing"],
+        "raw_secret_values_recorded": False,
+    }
+    if not resolved.is_file():
+        return manifest
+    manifest.update(
+        {
+            "status": "blocked",
+            "zip_present": True,
+            "zip_size_bytes": resolved.stat().st_size,
+            "blockers": [],
+        }
+    )
+    if not zipfile.is_zipfile(resolved):
+        manifest.update(
+            {
+                "valid_zip": False,
+                "blockers": ["provider_output_zip_invalid"],
+            }
+        )
+        return manifest
+
+    try:
+        with zipfile.ZipFile(resolved) as archive:
+            names = sorted(archive.namelist())
+            manifest.update(
+                {
+                    "valid_zip": True,
+                    "zip_member_count": len(names),
+                    "zip_members_preview": names[:50],
+                }
+            )
+            runtime_member = _provider_output_member(
+                names,
+                _provider_output_runtime_result_candidates(provider_bundle_kind),
+            )
+            if runtime_member:
+                payload, parse_error = _read_provider_output_json_member(archive, runtime_member)
+                manifest.update(
+                    {
+                        "runtime_result_manifest_present": True,
+                        "runtime_result_manifest_name": runtime_member,
+                    }
+                )
+                if parse_error or payload is None:
+                    manifest["blockers"] = [
+                        f"provider_output_manifest_malformed:{runtime_member}:{parse_error}"
+                    ]
+                    return manifest
+                runtime_status = _string(payload.get("status")).lower()
+                runtime_blockers = _provider_output_blockers(payload)
+                manifest.update(
+                    {
+                        "runtime_result_status": runtime_status or None,
+                        "runtime_result_blockers": runtime_blockers,
+                    }
+                )
+                status_kind = _provider_output_status_kind(runtime_status)
+                if status_kind == "nonterminal":
+                    manifest.update(
+                        {
+                            "status": "nonterminal",
+                            "blockers": [],
+                            "nonterminal_runtime_result_status": runtime_status,
+                        }
+                    )
+                    return manifest
+                if not runtime_status:
+                    manifest["blockers"] = [
+                        f"provider_output_manifest_status_missing:{runtime_member}"
+                    ]
+                    return manifest
+                if not status_kind:
+                    manifest["blockers"] = [
+                        f"provider_output_manifest_status_unrecognized:{runtime_status}"
+                    ]
+                    return manifest
+                provider_output_usable = bool(status_kind == "success" and not runtime_blockers)
+                manifest.update(
+                    {
+                        "status": "completed",
+                        "terminal_output_present": True,
+                        "provider_output_usable": provider_output_usable,
+                        "blockers": []
+                        if provider_output_usable
+                        else (
+                            runtime_blockers
+                            or [f"provider_output_manifest_status:{runtime_status}"]
+                        ),
+                    }
+                )
+                return manifest
+
+            entrypoint_member = _provider_output_member(
+                names,
+                (RUNPOD_WAM_PROVIDER_ENTRYPOINT_MANIFEST_NAME,),
+            )
+            if entrypoint_member:
+                payload, parse_error = _read_provider_output_json_member(archive, entrypoint_member)
+                manifest.update(
+                    {
+                        "entrypoint_execution_manifest_present": True,
+                        "entrypoint_execution_manifest_name": entrypoint_member,
+                    }
+                )
+                if parse_error or payload is None:
+                    manifest["blockers"] = [
+                        f"provider_entrypoint_execution_manifest_malformed:"
+                        f"{entrypoint_member}:{parse_error}"
+                    ]
+                    return manifest
+                entrypoint_status = _string(payload.get("status")).lower()
+                returncode = payload.get("returncode")
+                entrypoint_blockers = _provider_output_blockers(payload)
+                entrypoint_failed = bool(
+                    _provider_output_status_kind(entrypoint_status) == "failure"
+                    or (isinstance(returncode, int) and returncode != 0)
+                )
+                manifest.update(
+                    {
+                        "entrypoint_execution_status": entrypoint_status or None,
+                        "entrypoint_execution_returncode": returncode
+                        if isinstance(returncode, int)
+                        else None,
+                    }
+                )
+                if entrypoint_failed:
+                    manifest.update(
+                        {
+                            "status": "completed",
+                            "terminal_output_present": True,
+                            "provider_output_usable": False,
+                            "runtime_result_status": "blocked",
+                            "runtime_result_blockers": entrypoint_blockers
+                            or ["provider_entrypoint_failed_without_runtime_result"],
+                            "blockers": entrypoint_blockers
+                            or ["provider_entrypoint_failed_without_runtime_result"],
+                        }
+                    )
+                    return manifest
+                if _provider_output_status_kind(entrypoint_status) == "success":
+                    manifest["blockers"] = [
+                        "provider_runtime_result_manifest_missing_after_completed_entrypoint"
+                    ]
+                    return manifest
+
+            heartbeat_member = _provider_output_member(
+                names,
+                (RUNPOD_WAM_PROVIDER_HEARTBEAT_MANIFEST_NAME,),
+            )
+            if heartbeat_member:
+                payload, parse_error = _read_provider_output_json_member(archive, heartbeat_member)
+                manifest.update(
+                    {
+                        "heartbeat_manifest_present": True,
+                        "heartbeat_manifest_name": heartbeat_member,
+                    }
+                )
+                if parse_error or payload is None:
+                    manifest["blockers"] = [
+                        f"provider_output_heartbeat_manifest_malformed:"
+                        f"{heartbeat_member}:{parse_error}"
+                    ]
+                    return manifest
+                heartbeat_status = _string(payload.get("status")).lower()
+                heartbeat_blockers = _provider_output_blockers(payload)
+                manifest["heartbeat_status"] = heartbeat_status or None
+                status_kind = _provider_output_status_kind(heartbeat_status)
+                if status_kind == "nonterminal":
+                    manifest.update(
+                        {
+                            "status": "nonterminal",
+                            "blockers": [],
+                            "nonterminal_runtime_result_status": heartbeat_status,
+                        }
+                    )
+                    return manifest
+                if status_kind == "failure":
+                    manifest.update(
+                        {
+                            "status": "completed",
+                            "terminal_output_present": True,
+                            "provider_output_usable": False,
+                            "runtime_result_status": heartbeat_status,
+                            "runtime_result_blockers": heartbeat_blockers
+                            or [f"provider_output_heartbeat_status:{heartbeat_status}"],
+                            "blockers": heartbeat_blockers
+                            or [f"provider_output_heartbeat_status:{heartbeat_status}"],
+                        }
+                    )
+                    return manifest
+                if status_kind == "success":
+                    manifest["blockers"] = [
+                        "provider_runtime_result_manifest_missing_after_completed_heartbeat"
+                    ]
+                    return manifest
+
+            manifest["blockers"] = ["provider_runtime_result_manifest_missing"]
+            return manifest
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        manifest.update(
+            {
+                "status": "blocked",
+                "valid_zip": False,
+                "blockers": [f"provider_output_zip_invalid:{type(exc).__name__}"],
+            }
+        )
+        return manifest
 
 
 def poll_runpod_wam_async_run(
@@ -2603,23 +3055,34 @@ def poll_runpod_wam_async_run(
                 provider_output_get_url=output_get_url,
                 output_path=output_path,
                 generated_at=generated,
+                provider_bundle_kind=provider_bundle_kind,
             )
             output_present = output_path.is_file()
             if download_manifest.get("status") == "completed":
+                output_validation = _mapping(download_manifest.get("provider_output_validation"))
                 downloaded_inspection = _inspect_provider_runtime_output_zip(
                     output_path,
                     expected_video_count=0,
                 )
-                runtime_status = _string(downloaded_inspection.get("runtime_result_status"))
-                nonterminal_statuses = {"running", "starting", "in_progress"}
+                runtime_status = _string(
+                    output_validation.get("runtime_result_status")
+                    or downloaded_inspection.get("runtime_result_status")
+                )
                 # The OSCAR outer wrapper heartbeats via wam_provider_output.json (status=running)
                 # with no wam_runtime_result.json yet, so runtime_result_status is empty for it.
                 # Fall back to the provider-output status so the first heartbeat is recognized as
                 # nonterminal and the poll keeps waiting for the model to finish.
-                heartbeat_status = runtime_status
+                heartbeat_status = _string(
+                    output_validation.get("nonterminal_runtime_result_status")
+                    or runtime_status
+                    or output_validation.get("heartbeat_status")
+                )
                 if not heartbeat_status:
                     heartbeat_status = _zip_wam_provider_output_status(output_path)
-                if heartbeat_status in nonterminal_statuses:
+                if (
+                    output_validation.get("status") == "nonterminal"
+                    or heartbeat_status in RUNPOD_WAM_PROVIDER_OUTPUT_NONTERMINAL_STATUSES
+                ):
                     last_progress_monotonic = time.monotonic()
                     nonterminal_path = output_path.with_name(
                         f"{output_path.stem}_nonterminal{output_path.suffix}"
@@ -2634,6 +3097,7 @@ def poll_runpod_wam_async_run(
                         "nonterminal_zip_path": str(nonterminal_path),
                         "nonterminal_zip_size_bytes": nonterminal_path.stat().st_size,
                         "provider_bundle_kind": provider_bundle_kind,
+                        "provider_output_validation": output_validation,
                         "raw_secret_values_recorded": False,
                     }
                     write_json(
@@ -2742,18 +3206,28 @@ def poll_runpod_wam_async_run(
         video_extract_dir=resolved_job_dir / "runpod_wam_output_videos",
         expected_video_count=0 if provider_bundle_kind == "unitree_unifolm" else 1,
     )
-    output_present = output_inspection.get("zip_present") is True
-    runtime_result_status = _string(output_inspection.get("runtime_result_status"))
-    # Provider-runtime layer only: the pod stayed alive and the output zip arrived
-    # without an explicitly terminal runtime status. This is infrastructure health.
-    provider_runtime_operational = bool(
-        output_present
-        and (
-            not runtime_result_status
-            or runtime_result_status
-            not in {"blocked", "failed", "error", "timeout", "timed_out"}
-        )
+    provider_output_validation = _validate_wam_provider_output_zip(
+        output_path,
+        provider_bundle_kind=provider_bundle_kind,
     )
+    output_zip_present = output_inspection.get("zip_present") is True
+    provider_output_validation_status = _string(provider_output_validation.get("status"))
+    provider_output_terminal = provider_output_validation.get("terminal_output_present") is True
+    provider_output_usable = provider_output_validation.get("provider_output_usable") is True
+    provider_output_validation_failed = bool(
+        output_zip_present and provider_output_validation_status == "blocked"
+    )
+    output_present = bool(
+        output_zip_present and (provider_output_terminal or provider_output_validation_failed)
+    )
+    runtime_result_status = _string(
+        provider_output_validation.get("runtime_result_status")
+        or output_inspection.get("runtime_result_status")
+    )
+    # Provider-runtime layer only: the pod stayed alive and the output zip arrived
+    # with a recognized successful terminal result. This is infrastructure health,
+    # not task success.
+    provider_runtime_operational = provider_output_usable
     # Task layer: only an explicit boolean task_success in the runtime result counts.
     # Absent or non-boolean stays None — provider runtime success never promotes to it.
     runtime_result_payload = output_inspection.get("runtime_result")
@@ -2764,6 +3238,9 @@ def poll_runpod_wam_async_run(
         else None
     )
     runtime_output_success = provider_runtime_operational
+    runtime_result_failed = (
+        runtime_result_status in RUNPOD_WAM_PROVIDER_OUTPUT_FAILURE_STATUSES
+    )
     elapsed_wait_seconds = max(0.0, time.monotonic() - started_monotonic)
     wait_deadline_expired = elapsed_wait_seconds >= max(0, max_wait_seconds)
     pod_status_is_active = (
@@ -2845,10 +3322,12 @@ def poll_runpod_wam_async_run(
                 "raw_secret_values_recorded": False,
             }
     remote_runtime_running_without_terminal_output = bool(
-        not output_present
-        and pod_status_is_active
+        not output_present and pod_status_is_active
     )
     runtime_stall_observed = bool(stall_evaluation.get("should_terminate"))
+    auto_teardown_failure = bool(
+        runtime_stall_observed or runtime_result_failed or provider_output_validation_failed
+    )
     nonterminal_running_output = bool(
         last_nonterminal_output
         and not output_present
@@ -2862,10 +3341,15 @@ def poll_runpod_wam_async_run(
         requested_keep_running_on_success and not keep_running_on_success
     )
     should_teardown = bool(
-        teardown
-        and (output_present or pod_status_is_terminal or runtime_stall_observed)
-        and not keep_running_on_success
+        auto_teardown_failure
+        or (
+            teardown
+            and (output_present or pod_status_is_terminal or runtime_stall_observed)
+            and not keep_running_on_success
+        )
     )
+    effective_teardown_action = "delete" if auto_teardown_failure else teardown_action
+    effective_teardown_requested = bool(teardown or auto_teardown_failure)
     teardown_pending = bool(
         not blockers and should_teardown and pod_id and api_key and pod_status != "not_found"
     )
@@ -2888,10 +3372,10 @@ def poll_runpod_wam_async_run(
     )
     provider_status = (
         "completed"
-        if output_present
+        if provider_output_usable
         else (
             "blocked"
-            if runtime_stall_observed
+            if output_present or runtime_stall_observed
             else ("running" if remote_runtime_running_without_terminal_output else "blocked")
         )
     )
@@ -2900,14 +3384,23 @@ def poll_runpod_wam_async_run(
         provider_blockers.extend(
             str(blocker) for blocker in stall_evaluation.get("blockers") or []
         )
+    if output_zip_present and not provider_output_usable:
+        provider_blockers.extend(
+            str(blocker) for blocker in provider_output_validation.get("blockers") or []
+        )
     if not output_present and not remote_runtime_running_without_terminal_output:
         provider_blockers.append("runpod_provider_runtime_output_zip_not_received_locally")
     if blockers:
         provider_blockers.extend(blockers)
+    poll_status = (
+        "blocked"
+        if provider_output_validation_failed
+        else ("completed" if output_present else ("running" if continuing_spend else "blocked"))
+    )
     manifest = {
         "schema_version": RUNPOD_WAM_POLL_SCHEMA_VERSION,
         "generated_at": generated,
-        "status": "completed" if output_present else ("running" if continuing_spend else "blocked"),
+        "status": poll_status,
         "job_dir": str(resolved_job_dir),
         "provider_bundle_kind": provider_bundle_kind,
         "pod_id": pod_id,
@@ -2921,7 +3414,11 @@ def poll_runpod_wam_async_run(
         "last_pod_status_error": last_pod_status_error,
         "provider_command_status": provider_status,
         "provider_command_blockers": provider_blockers,
-        "output_zip_present": output_present,
+        "output_zip_present": output_zip_present,
+        "provider_output_terminal": provider_output_terminal,
+        "provider_output_usable": provider_output_usable,
+        "provider_output_validation_status": provider_output_validation_status or None,
+        "provider_output_validation": provider_output_validation,
         "runtime_output_success": runtime_output_success,
         "provider_runtime_operational": provider_runtime_operational,
         "runtime_task_success": runtime_task_success,
@@ -2934,18 +3431,22 @@ def poll_runpod_wam_async_run(
         "post_marker_no_progress_timeout_seconds": post_marker_timeout_seconds,
         "stall_evaluation": stall_evaluation,
         "runtime_stall_observed": runtime_stall_observed,
+        "auto_teardown_failure": auto_teardown_failure,
         "stall_teardown_requested": stall_teardown_requested,
         "elapsed_wait_seconds": round(elapsed_wait_seconds, 6),
         "max_wait_seconds": max_wait_seconds,
         "wait_deadline_expired": wait_deadline_expired,
         "provider_runtime_output_zip_path": str(output_path),
         "runtime_result": output_inspection.get("runtime_result"),
-        "runtime_result_status": output_inspection.get("runtime_result_status"),
-        "runtime_result_blockers": output_inspection.get("runtime_result_blockers"),
+        "runtime_result_status": runtime_result_status or None,
+        "runtime_result_blockers": provider_output_validation.get("runtime_result_blockers")
+        or output_inspection.get("runtime_result_blockers"),
         "last_nonterminal_output": last_nonterminal_output,
         "mp4_count": output_inspection.get("mp4_count"),
-        "teardown_requested": teardown,
-        "teardown_action": teardown_action if teardown else "not_requested",
+        "teardown_requested": effective_teardown_requested,
+        "teardown_action": effective_teardown_action
+        if effective_teardown_requested
+        else "not_requested",
         "teardown_pending": teardown_pending,
         "teardown_performed": existing_teardown_completed,
         "requested_keep_running_on_success": requested_keep_running_on_success,
@@ -2962,8 +3463,9 @@ def poll_runpod_wam_async_run(
             manifest,
         )
         stop_instead_of_delete = bool(
-            not runtime_stall_observed
-            and (teardown_action == "stop" or keepalive_runtime_unhealthy_on_success)
+            not auto_teardown_failure
+            and not runtime_stall_observed
+            and (effective_teardown_action == "stop" or keepalive_runtime_unhealthy_on_success)
         )
         if stop_instead_of_delete:
             teardown_manifest = _stop_pod(
@@ -2998,7 +3500,9 @@ def poll_runpod_wam_async_run(
         )
         manifest["continuing_spend_from_this_run"] = continuing_spend
         manifest["status"] = (
-            "completed"
+            "blocked"
+            if provider_output_validation_failed
+            else "completed"
             if output_present
             else ("running" if continuing_spend and not runtime_stall_observed else "blocked")
         )

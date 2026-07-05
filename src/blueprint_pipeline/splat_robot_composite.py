@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Mapping, Tuple
+from typing import Mapping
 
 import numpy as np
 

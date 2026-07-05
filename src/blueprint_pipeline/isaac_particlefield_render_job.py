@@ -31,12 +31,24 @@ from typing import Any, Mapping, Sequence
 
 from .common import utc_now_iso
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider, list_render_providers
+from .paid_lane_guard import (
+    PreSpendPreflightBlocked,
+    bind_pending_teardown_instance,
+    cancel_pending_teardown,
+    close_pending_teardown,
+    image_contract_from_ref,
+    open_pending_teardown,
+    provider_state_from_inspect,
+    require_pre_spend_preflight,
+)
 from .provider_reliability_manifest import (
+    TEARDOWN_STATUS_SOURCE_PROVIDER_API,
     build_provider_reliability_manifest,
     build_teardown_proof,
 )
 
 SCHEMA_VERSION = "isaac_particlefield_render_job.v1"
+RENDER_LANE = "isaac_particlefield_render"
 RELIABILITY_MANIFEST_NAME = "provider_reliability_manifest.json"
 POST_MARKER_NO_PROGRESS_TIMEOUT_ENV = "BLUEPRINT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS"
 # A booted worker that stops changing bootstrap phase for this long is a stall,
@@ -350,9 +362,27 @@ def build_launch_request(job_dir: Path, *, image: str, cameras_file: str, width:
 
 
 def launch_runpod(job_dir: Path, request: dict, *, cold: bool = False,
-                  warm_candidates: Sequence[str] = DEFAULT_WARM_CANDIDATES) -> dict:
+                  warm_candidates: Sequence[str] = DEFAULT_WARM_CANDIDATES,
+                  max_spend_usd: float | None = None) -> dict:
     """Backward-compat RunPod launch (warm-restart-then-cold). Delegates to the provider
     abstraction. Returns {instance_id, pod_id, mode, attempts}; spends money."""
+    prelaunch_guard = _particlefield_prelaunch_spend_guard(
+        allow_paid=True,
+        max_spend_usd=max_spend_usd,
+        max_seconds=0,
+        max_hourly_rate_usd=None,
+    )
+    if prelaunch_guard.get("can_launch") is not True:
+        return {
+            "status": "blocked",
+            "reason": "prelaunch_spend_guard_blocked",
+            "blockers": [
+                "isaac_particlefield_prelaunch_spend_guard_not_passed",
+                *(prelaunch_guard.get("blockers") or []),
+            ],
+            "prelaunch_spend_guard": prelaunch_guard,
+        }
+    request["prelaunch_spend_guard"] = prelaunch_guard
     provider = get_render_provider("runpod", warm_candidates=warm_candidates)
     result = provider.launch(job_dir, request, cold=cold)
     if result.get("instance_id") and "pod_id" not in result:
@@ -369,6 +399,14 @@ def _read_json_file(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _progress_marker_signature(marker: Mapping[str, Any]) -> str:
+    """Stable signature for a downloaded bootstrap/progress marker."""
+    try:
+        return json.dumps(dict(marker), sort_keys=True, default=str, separators=(",", ":"))
+    except TypeError:
+        return repr(sorted(dict(marker).items()))
 
 
 def _runner_result_from_dir(out_dir: Path) -> tuple[dict, str | None]:
@@ -404,6 +442,7 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
     progress_timeout_seconds = max(0, int(progress_timeout_seconds or 0))
     progress_phase_set = set(progress_stall_phases or DEFAULT_POST_MARKER_STALL_PHASES)
     last_progress_phase = ""
+    last_progress_marker_signature = ""
     last_progress_at = t0
     progress_timeout_observed = False
     progress_timeout_detail: dict[str, Any] = {}
@@ -426,8 +465,10 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         if boot:
             last_boot = boot
             phase = str(boot.get("phase") or "")
-            if phase and phase != last_progress_phase:
+            marker_signature = _progress_marker_signature(boot)
+            if phase and marker_signature != last_progress_marker_signature:
                 last_progress_phase = phase
+                last_progress_marker_signature = marker_signature
                 last_progress_at = time.time()
         console = out_dir / "runner_console.log"
         if console.is_file():
@@ -445,6 +486,7 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
                 "phase": last_progress_phase,
                 "timeout_seconds": progress_timeout_seconds,
                 "elapsed_since_phase_seconds": round(time.time() - last_progress_at, 1),
+                "elapsed_since_progress_seconds": round(time.time() - last_progress_at, 1),
             }
             done = False
             break
@@ -512,6 +554,12 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         # A pod that never reached runner_done is not a reusable warm worker. Terminate it so
         # providers that bill stopped disks (notably RunPod) release storage as well as compute.
         teardown = provider.terminate(instance_id)
+        if isinstance(teardown, dict) and hasattr(provider, "inspect"):
+            # The DELETE response alone is self-reported; only a follow-up state
+            # query can prove the allocation is billing-terminal.
+            teardown["verification"] = provider_state_from_inspect(
+                provider.inspect(instance_id)
+            )
         teardown_reason = (
             "runner_timeout_terminated"
             if runner_timeout_observed
@@ -572,8 +620,122 @@ def _phase(passed: bool, blockers: Sequence[str] = (), **fields: Any) -> dict:
     }
 
 
+def _render_runtime_contract(progress_timeout_seconds: int) -> dict[str, Any]:
+    timeout = max(0, int(progress_timeout_seconds or 0))
+    return {
+        "startup_marker": "container_bash_started",
+        "progress_marker": "bootstrap.json",
+        "startup_timeout_seconds": timeout,
+        "no_progress_timeout_seconds": timeout,
+        "progress_stall_phases": list(DEFAULT_POST_MARKER_STALL_PHASES),
+    }
+
+
+def _credential_present_from_availability(availability: Mapping[str, Any]) -> bool:
+    if availability.get("available") is True:
+        return True
+    reason = str(availability.get("reason") or "").strip().lower()
+    if any(token in reason for token in ("key_missing", "credential_missing", "api_key_missing")):
+        return False
+    return bool(reason)
+
+
+def _render_pre_spend_preflight(
+    *,
+    provider_name: str,
+    availability: Mapping[str, Any] | None,
+    image_ref: str,
+    progress_timeout_seconds: int,
+    spend_gate_open: bool,
+) -> dict[str, Any]:
+    """Route the render lane through the shared pre-spend chokepoint.
+
+    Raises :class:`PreSpendPreflightBlocked` (with the FAIL preflight attached)
+    instead of returning a failing contract — no billable call may follow.
+    """
+    availability_evidence = dict(availability or {})
+    if "detail" not in availability_evidence and availability_evidence.get("reason"):
+        availability_evidence["detail"] = availability_evidence.get("reason")
+    return require_pre_spend_preflight(
+        lane=RENDER_LANE,
+        provider=provider_name,
+        credential_present=_credential_present_from_availability(availability_evidence),
+        capacity_evidence=availability_evidence,
+        image_contract=image_contract_from_ref(image_ref),
+        runtime_contract=_render_runtime_contract(progress_timeout_seconds),
+        spend_gate_open=spend_gate_open,
+    )
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _particlefield_prelaunch_spend_guard(
+    *,
+    allow_paid: bool,
+    max_spend_usd: float | None,
+    max_seconds: int,
+    max_hourly_rate_usd: Any,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    budget = _number(max_spend_usd)
+    hourly_rate = _number(max_hourly_rate_usd)
+    estimated_max_cost_usd = (
+        round(float(hourly_rate) * max(0, int(max_seconds)) / 3600.0, 6)
+        if hourly_rate is not None
+        else None
+    )
+    if not allow_paid:
+        blockers.append("paid_launch_not_allowed")
+    if budget is None:
+        blockers.append("max_spend_usd_missing")
+    elif budget <= 0:
+        blockers.append("max_spend_usd_not_positive")
+    if (
+        budget is not None
+        and budget > 0
+        and estimated_max_cost_usd is not None
+        and estimated_max_cost_usd > budget
+    ):
+        blockers.append("estimated_max_cost_exceeds_max_spend_usd")
+    can_launch = not blockers
+    return {
+        "schema_version": "isaac_particlefield_prelaunch_spend_guard.v1",
+        "status": "passed" if can_launch else "blocked",
+        "required_before_provider_launch": True,
+        "can_launch": can_launch,
+        "max_spend_usd": budget,
+        "budget_source": "argument" if budget is not None else "missing",
+        "max_seconds": int(max_seconds),
+        "max_hourly_rate_usd": hourly_rate,
+        "estimated_max_cost_usd": estimated_max_cost_usd,
+        "blockers": blockers,
+        "claim_boundary": {
+            "spend_guard_only": True,
+            "can_launch_is_not_provider_success": True,
+            "can_launch_is_not_render_success": True,
+            "no_provider_api_call_before_can_launch": True,
+        },
+    }
+
+
 def _teardown_proof_from_watch(provider_name: str, instance_id: str, watch: Mapping[str, Any]) -> dict:
-    """Map a ``watch_and_collect`` teardown record onto a fail-closed teardown proof."""
+    """Map a ``watch_and_collect`` teardown record onto a fail-closed teardown proof.
+
+    Only an API-confirmed post-terminate state (``teardown.verification`` written by
+    the watch loop from a provider state query) can prove teardown; the terminate
+    call's own response is self-reported and fails the proof.
+    """
     teardown = dict(watch.get("teardown") or {})
     reason = str(watch.get("teardown_reason") or "").strip()
     status = str(teardown.get("status") or "").strip().lower()
@@ -589,6 +751,18 @@ def _teardown_proof_from_watch(provider_name: str, instance_id: str, watch: Mapp
             provider_terminal_status=None,
             keep_alive_requested=True,
             keep_alive_reason=reason or status or "kept_alive",
+        )
+    verification = dict(teardown.get("verification") or {})
+    api_confirmed = verification.get("api_confirmed") is True
+    observed_status = str(verification.get("provider_status") or "").strip().lower()
+    if api_confirmed and observed_status:
+        return build_teardown_proof(
+            provider=provider_name,
+            allocation_id=instance_id,
+            terminate_requested=True,
+            provider_terminal_status=observed_status,
+            verified_at=utc_now_iso(),
+            status_source=TEARDOWN_STATUS_SOURCE_PROVIDER_API,
         )
     return build_teardown_proof(
         provider=provider_name,
@@ -613,6 +787,7 @@ def _build_render_run_reliability_manifest(
     availability: Mapping[str, Any] | None,
     launch: Mapping[str, Any] | None,
     watch: Mapping[str, Any] | None,
+    pre_spend_preflight: Mapping[str, Any] | None = None,
     instance_id: str = "",
 ) -> dict:
     """Compose the ops-facing reliability manifest for one render-lane run.
@@ -622,14 +797,13 @@ def _build_render_run_reliability_manifest(
     faked as PASS.
     """
     availability = dict(availability or {})
-    available = bool(availability.get("available"))
-    preflight = _phase(
-        available,
-        [] if available else [
-            f"capacity_unavailable:{availability.get('reason') or 'provider_credentials_missing'}"
-        ],
-        availability=availability,
-    )
+    preflight = dict(pre_spend_preflight or {})
+    if not preflight:
+        preflight = _phase(
+            False,
+            [f"capacity_unavailable:{availability.get('reason') or 'pre_spend_preflight_missing'}"],
+            availability=availability,
+        )
 
     launch_phase = None
     startup_phase = None
@@ -705,6 +879,7 @@ def run_isaac_particlefield_render_job(
     warm_candidates: Sequence[str] | None = None,
     preserve_instance: bool = False,
     post_marker_progress_timeout_seconds: int | None = None,
+    max_spend_usd: float | None = None,
 ) -> dict:
     """Full job, provider-agnostic. Without ``allow_paid`` it prepares + stages and returns a
     launchable plan. ``provider`` selects the GPU backend (``runpod`` or ``vast``); the
@@ -763,16 +938,63 @@ def run_isaac_particlefield_render_job(
         manifest["blockers"].append("staging_failed")
         manifest["staging"]["stderr_tail"] = staged.get("stderr_tail")
         return manifest
-    spec = build_render_launch_spec(job_dir, image=image or default_image(), cameras_file=cameras_file)
+    selected_image = image or default_image()
+    spec = build_render_launch_spec(job_dir, image=selected_image, cameras_file=cameras_file)
     request = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = _launch_shape_summary(prov.name, request)
+    prelaunch_spend_guard = _particlefield_prelaunch_spend_guard(
+        allow_paid=allow_paid,
+        max_spend_usd=max_spend_usd,
+        max_seconds=max_seconds,
+        max_hourly_rate_usd=getattr(spec, "max_hourly_rate_usd", None),
+    )
+    manifest["prelaunch_spend_guard"] = prelaunch_spend_guard
     if not allow_paid:
         manifest["status"] = "prepared"
         manifest["note"] = f"staged + launchable on {prov.name}; re-run with allow_paid=True to spend GPU"
         return manifest
+    if prelaunch_spend_guard.get("can_launch") is not True:
+        manifest["blockers"].append("isaac_particlefield_prelaunch_spend_guard_not_passed")
+        manifest["blockers"].extend(prelaunch_spend_guard.get("blockers") or [])
+        manifest["provider_reliability_manifest"] = _write_reliability_manifest(
+            out_dir,
+            _build_render_run_reliability_manifest(
+                provider_name=prov.name,
+                run_id=f"prelaunch-{utc_now_iso()}",
+                session_dir=str(out_dir),
+                availability=None,
+                launch=None,
+                watch=None,
+                pre_spend_preflight=_phase(
+                    False,
+                    [
+                        "isaac_particlefield_prelaunch_spend_guard_not_passed",
+                        *(prelaunch_spend_guard.get("blockers") or []),
+                    ],
+                    prelaunch_spend_guard=prelaunch_spend_guard,
+                ),
+            ),
+        )
+        return manifest
+    progress_timeout = (
+        _default_post_marker_timeout()
+        if post_marker_progress_timeout_seconds is None
+        else max(0, int(post_marker_progress_timeout_seconds))
+    )
     avail = prov.available()
-    if not avail.get("available"):
-        manifest["blockers"].append(avail.get("reason") or "provider_credentials_missing")
+    try:
+        preflight = _render_pre_spend_preflight(
+            provider_name=prov.name,
+            availability=avail,
+            image_ref=selected_image,
+            progress_timeout_seconds=progress_timeout,
+            spend_gate_open=prelaunch_spend_guard.get("can_launch") is True,
+        )
+    except PreSpendPreflightBlocked as blocked:
+        preflight = blocked.preflight
+        if avail.get("reason"):
+            manifest["blockers"].append(str(avail.get("reason")))
+        manifest["blockers"].extend(preflight.get("blockers") or ["pre_spend_preflight_failed"])
         manifest["provider_reliability_manifest"] = _write_reliability_manifest(
             out_dir,
             _build_render_run_reliability_manifest(
@@ -782,11 +1004,25 @@ def run_isaac_particlefield_render_job(
                 availability=avail,
                 launch=None,
                 watch=None,
+                pre_spend_preflight=preflight,
             ),
         )
         return manifest
+    request["prelaunch_spend_guard"] = prelaunch_spend_guard
+    # Teardown obligation is recorded BEFORE the billable call: a crash anywhere
+    # between launch and collect leaves this record for reap_orphans.
+    pending = open_pending_teardown(
+        provider=prov.name,
+        lane=RENDER_LANE,
+        run_id=f"render-{int(time.time() * 1000)}",
+        job_dir=str(job_dir),
+        max_age_seconds=int(max_seconds) + 1800,
+    )
+    manifest["pending_teardown_record"] = pending["path"]
     launch = prov.launch(job_dir, request, cold=cold)
     manifest["launch"] = launch
+    if launch.get("instance_id"):
+        bind_pending_teardown_instance(pending["path"], str(launch["instance_id"]))
     nonce_path = job_dir / "launch_session_nonce.txt"
     run_id = ""
     if nonce_path.is_file():
@@ -796,6 +1032,10 @@ def run_isaac_particlefield_render_job(
             run_id = ""
     run_id = run_id or str(launch.get("instance_id") or f"launch-{utc_now_iso()}")
     if launch.get("status") != "launched":
+        if not launch.get("instance_id"):
+            cancel_pending_teardown(
+                pending["path"], reason="launch_returned_no_allocation", evidence=launch
+            )
         manifest["blockers"].append("launch_failed")
         manifest["provider_reliability_manifest"] = _write_reliability_manifest(
             out_dir,
@@ -806,31 +1046,34 @@ def run_isaac_particlefield_render_job(
                 availability=avail,
                 launch=launch,
                 watch=None,
+                pre_spend_preflight=preflight,
             ),
         )
         return manifest
-    progress_timeout = (
-        _default_post_marker_timeout()
-        if post_marker_progress_timeout_seconds is None
-        else max(0, int(post_marker_progress_timeout_seconds))
-    )
     result = watch_and_collect(job_dir, out_dir / "render_output", launch["instance_id"],
                                provider=prov, max_seconds=max_seconds,
                                preserve_instance=preserve_instance,
                                keep_running=preserve_instance,
                                progress_timeout_seconds=progress_timeout)
     manifest["render"] = result
+    reliability = _build_render_run_reliability_manifest(
+        provider_name=prov.name,
+        run_id=run_id,
+        session_dir=str(out_dir),
+        availability=avail,
+        launch=launch,
+        watch=result,
+        pre_spend_preflight=preflight,
+        instance_id=str(launch.get("instance_id") or ""),
+    )
     manifest["provider_reliability_manifest"] = _write_reliability_manifest(
-        out_dir,
-        _build_render_run_reliability_manifest(
-            provider_name=prov.name,
-            run_id=run_id,
-            session_dir=str(out_dir),
-            availability=avail,
-            launch=launch,
-            watch=result,
-            instance_id=str(launch.get("instance_id") or ""),
-        ),
+        out_dir, reliability
+    )
+    # Only a PASSING teardown proof can close the pending record; anything else
+    # stays open for the orphan reaper.
+    close_pending_teardown(
+        pending["path"],
+        dict((reliability.get("phase_contracts") or {}).get("teardown") or {}),
     )
     manifest["status"] = "completed" if result.get("status") == "completed" else "blocked"
     return manifest
@@ -850,6 +1093,12 @@ def main(argv=None) -> int:
     ap.add_argument("--image", default=None)
     ap.add_argument("--up-axis", type=int, default=None, choices=[0, 1, 2])
     ap.add_argument("--max-seconds", type=int, default=1200)
+    ap.add_argument(
+        "--max-spend-usd",
+        type=float,
+        default=None,
+        help="Required with --allow-paid; blocks before provider launch when absent.",
+    )
     ap.add_argument("--list-providers", action="store_true",
                     help="print providers + credential availability and exit")
     args = ap.parse_args(argv)
@@ -861,7 +1110,7 @@ def main(argv=None) -> int:
     m = run_isaac_particlefield_render_job(
         source=args.source, out_dir=args.out_dir, cameras_file=args.cameras_file,
         allow_paid=args.allow_paid, cold=args.cold, image=args.image, up_axis=args.up_axis,
-        max_seconds=args.max_seconds, provider=args.provider,
+        max_seconds=args.max_seconds, provider=args.provider, max_spend_usd=args.max_spend_usd,
     )
     print(json.dumps(m, indent=2, default=str))
     return 0 if m.get("status") in ("completed", "prepared") else 1

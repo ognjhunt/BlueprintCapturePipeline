@@ -38,6 +38,9 @@ What the automated gate proves:
 
 What the automated gate does not prove:
 
+- Legal/EHS sign-off on the current consent, rights, redaction, and delivery posture.
+- Operator DPA or equivalent data-processing terms for retention, subprocessors, and access-audit obligations.
+- Paperclip ops relay secret rotation and redeploy from a secret manager.
 - Live Stripe buyer payment completion.
 - Live Stripe Connect payout settlement.
 - Identity/KYC or background-check provider readiness.
@@ -47,6 +50,9 @@ What the automated gate does not prove:
 
 What still requires operator evidence before truthful launch:
 
+- Legal/EHS sign-off on the capture consent posture.
+- Operator DPA/data-processing terms covering retention, subprocessors, and access-audit obligations.
+- Paperclip ops relay secret rotation and redeploy evidence.
 - Real-device discovery, reservation, and upload on iPhone.
 - Real-device discovery, reservation, and upload on glasses.
 - Real-device discovery, reservation, and upload on Android.
@@ -56,6 +62,12 @@ What still requires operator evidence before truthful launch:
 
 Required operator evidence:
 
+- `legal_consent_posture_signoff`
+  Category: legal/EHS. Evidence: signature over the current capture consent, rights, redaction, and delivery posture.
+- `operator_dpa_data_processing_terms`
+  Category: legal/privacy ops. Evidence: operator DPA or equivalent data-processing terms covering retention policy, subprocessor list, and access-audit terms for delivered packages and hosted review access.
+- `paperclip_ops_relay_secret_rotation`
+  Category: ops security. Evidence: Cloud Secret Manager version or equivalent rotation record, plus redeploy evidence for the Paperclip ops relay secret.
 - `iphone_real_device_claim_flow`
   Category: real-device capture. Evidence: screen recording showing discovery, reservation, upload completion, and the same `capture_job_id` on iPhone.
 - `glasses_real_device_claim_flow`
@@ -78,6 +90,12 @@ Required operator evidence:
   Category: finance ops. Evidence: named human finance owner and review queue/route before any live payout execution flag is enabled.
 - `buyer_artifact_access`
   Category: buyer access. Evidence: authenticated buyer session proving artifact or fulfillment access after purchase.
+
+Per-capture `launch_gate_summary.json` reads `pipeline/operator_launch_evidence.json`
+with schema `operator_launch_evidence.v1`. Until every required evidence id is
+verified there, `overall_status` remains
+`automated_contracts_passed_manual_ops_required` even when all automated stage
+checks pass.
 
 Truthful launch messaging after the automated gate passes but before operator evidence:
 

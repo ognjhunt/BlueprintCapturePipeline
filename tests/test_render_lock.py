@@ -18,7 +18,6 @@ import pytest
 from blueprint_pipeline import render_lock as render_lock_module
 from blueprint_pipeline.render_lock import (
     LockInfo,
-    RenderLock,
     RenderLockError,
     RenderLockTimeout,
     render_lock,

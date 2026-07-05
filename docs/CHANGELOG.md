@@ -1,5 +1,29 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-05
+
+### User-Facing
+
+- PTDP real-data-fraction floor + synthesized-state honesty gate: the
+  lerobot_v3 / gr00t_lerobot training exports now compute
+  `real_state_fraction` / `real_action_fraction` (measured vs
+  zero-fill-synthesized `observation.state` and fallback-synthesized action
+  rows), per episode and package-wide. Each export manifest carries a
+  `state_action_provenance` block (fractions, configurable floor via
+  `BLUEPRINT_PTDP_MEASURED_STATE_FRACTION_FLOOR`, default 0.5, per-episode
+  provenance counts so a buyer can filter episodes); below the floor the
+  export downgrades to `written_degraded` with
+  `insufficient_measured_state_fraction` and the buyer readout's
+  robot-POV-evidence section blocks
+  (`insufficient_measured_state_fraction:<format>`; a claimed lerobot export
+  with no provenance report fails closed as
+  `measured_state_fraction_unknown:<format>`). Frame rows gain an
+  `action_synthesized_fallback` column alongside
+  `state_synthesized_zero_fill`, and the package manifest surfaces the
+  fractions + floor verdict in `export_policy` and `claim_boundary`
+  (`measured_state_fraction_floor_passed`). A fully-measured package passes
+  with fractions = 1.0.
+
 ## 2026-07-04
 
 ### User-Facing
@@ -76,6 +100,17 @@
   typed verdicts no longer coerce to task success, visible arm presence no
   longer satisfies reach-required tasks, and stale artifacts no longer count
   as current-run truth without freshness evidence.
+- Closed the July 3 Pipeline beta-remediation items for capture handoff wiring
+  and rights/privacy fail-closed behavior in committed history
+  (`docs/beta-launch-audit-2026-07-03/REMEDIATION-STATUS.md`), including
+  Pub/Sub storage-trigger handoff validation and PIPE-01/02/03/04/05/06
+  remediation markers. This records blocker closure in source/tests; it is not
+  external beta readiness, buyer delivery proof, or live provider proof.
+- Uncommitted July 4 work adds further paid-lane, consent-revocation,
+  LeRobot-export, WAM-score, provider-race, buyer-readout, PTDP, WebApp sync,
+  and run-e2e hardening. Treat those files as local work until committed; they
+  improve fail-closed package/runtime contracts but do not prove live paid runs,
+  deployment readiness, physical robot readiness, or task success.
 
 ### Employee-Facing
 
@@ -110,6 +145,26 @@
   hermetically when absent. Requirements are derived from task contract
   metadata (affordance ids, declared `success_state_change`), never task-id
   string matching.
+- `scripts/pytest_fast.sh` now blocks the old false-green path by requiring the
+  full no-GPU validation dependencies before running the fast lane, and
+  `scripts/pytest_full.sh` provides a full `python -m pytest tests/` wrapper.
+  Hermetic kitchen task fixtures under
+  `tests/fixtures/kitchen_task_min/` keep claim tests meaningful even when
+  local generated `output/` artifacts are absent.
+- Committed remediation touched capture handoff infrastructure
+  (`deploy/terraform/main.tf`, `functions/storage_trigger.py`,
+  `scripts/validate_pubsub_handoff_infra.py`,
+  `src/blueprint_pipeline/pubsub_handoff_listener.py`) and Pipeline
+  rights/privacy gates (`alpha_readiness.py`, `evaluation_prep_stage.py`,
+  `proof_contracts.py`, `qualification.py`) with focused tests.
+- Uncommitted July 4 modules include
+  `src/blueprint_pipeline/paid_lane_guard.py`,
+  `src/blueprint_pipeline/consent_takedown.py`,
+  `src/blueprint_pipeline/lerobot_export_validation.py`,
+  `src/blueprint_pipeline/wam_score_claim_gate.py`, and
+  `src/blueprint_pipeline/robot_eval_provider_race_launcher.py`, plus tests.
+  `pyproject.toml` also has an uncommitted
+  `blueprint-run-robot-eval-provider-race` CLI entrypoint.
 
 ### Future-Agent-Facing
 
@@ -122,6 +177,12 @@
   `success_state_change: {object, property}` in their task metadata; the
   ledger then withholds simulator/policy task claims until a measured
   before/after change of that property exists.
+- Evidence boundary: this entry covers six commits dated 2026-07-04
+  (`c47eeea3d`, `376a58139`, `31082785b`, `4f4b0201e`, `f93d97c09`, and
+  `19d996359`) plus explicitly labeled uncommitted local changes whose file
+  mtimes were also on 2026-07-04. Keep the uncommitted paid-lane/takedown/WAM
+  score/provider-race work separate from shipped proof until it is committed
+  and validated.
 
 ## 2026-07-03
 

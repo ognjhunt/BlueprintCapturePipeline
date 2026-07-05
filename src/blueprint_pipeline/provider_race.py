@@ -38,6 +38,19 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .common import utc_now_iso
+from .paid_lane_guard import (
+    bind_pending_teardown_instance,
+    cancel_pending_teardown,
+    close_pending_teardown,
+    open_pending_teardown,
+    provider_state_from_inspect,
+)
+from .provider_reliability_manifest import (
+    TEARDOWN_STATUS_SOURCE_PROVIDER_API,
+    build_teardown_proof,
+)
+
 SCHEMA_VERSION = "provider_race.v2"
 
 
@@ -184,6 +197,86 @@ def _resolve_launch_kwargs(launch_kwargs, provider) -> dict[str, Any]:
     return dict(value)
 
 
+def _resolve_prelaunch_guard(prelaunch_guard, provider) -> dict[str, Any]:
+    """Resolve the optional fail-closed spend guard for one provider."""
+    if prelaunch_guard is None:
+        return {}
+    value = prelaunch_guard(provider) if callable(prelaunch_guard) else prelaunch_guard
+    if not value:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError("prelaunch_guard must be a mapping or callable returning a mapping")
+    return dict(value)
+
+
+def _guard_blockers(guard: Mapping[str, Any]) -> list[str]:
+    """Return blockers when a supplied prelaunch guard does not authorize launch."""
+    if not guard:
+        return []
+    if guard.get("can_launch") is True:
+        return []
+    raw_blockers = guard.get("blockers")
+    if isinstance(raw_blockers, str):
+        blockers = [raw_blockers]
+    elif isinstance(raw_blockers, Sequence) and not isinstance(raw_blockers, (bytes, bytearray)):
+        blockers = [str(item) for item in raw_blockers if str(item or "").strip()]
+    else:
+        blockers = []
+    return ["prelaunch_spend_guard_not_passed", *blockers]
+
+
+def _pending_teardown_run_id(provider_name: str, idx: int) -> str:
+    return f"race-{idx}-{_safe_segment(provider_name)}-{time.time_ns()}"
+
+
+def _teardown_proof_from_provider_action(
+    provider: object,
+    instance_id: str,
+    teardown: Mapping[str, Any],
+    action: str,
+) -> dict[str, Any]:
+    provider_name = str(getattr(provider, "name", "") or "unknown").strip()
+    action_text = str(action or "").strip().lower()
+    status = str(teardown.get("status") or "").strip().lower()
+    if action_text == "stop":
+        return build_teardown_proof(
+            provider=provider_name,
+            allocation_id=instance_id,
+            terminate_requested=False,
+            provider_terminal_status=None,
+            keep_alive_requested=True,
+            keep_alive_reason=status or "stopped_for_warm_reuse",
+        )
+    verification: dict[str, Any] = {}
+    if hasattr(provider, "inspect"):
+        try:
+            verification = provider_state_from_inspect(provider.inspect(instance_id))
+        except Exception as exc:  # noqa: BLE001 - failed verification is evidence
+            verification = {
+                "api_confirmed": False,
+                "provider_status": "",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+    observed_status = str(verification.get("provider_status") or "").strip().lower()
+    if verification.get("api_confirmed") is True and observed_status:
+        return build_teardown_proof(
+            provider=provider_name,
+            allocation_id=instance_id,
+            terminate_requested=True,
+            provider_terminal_status=observed_status,
+            verified_at=utc_now_iso(),
+            status_source=TEARDOWN_STATUS_SOURCE_PROVIDER_API,
+        )
+    return build_teardown_proof(
+        provider=provider_name,
+        allocation_id=instance_id,
+        terminate_requested=True,
+        provider_terminal_status="terminated" if status == "terminated" else status or None,
+        verified_at=utc_now_iso() if status == "terminated" else None,
+    )
+
+
 def boot_marker_present(
     job_dir: str | Path | None = None,
     *,
@@ -246,6 +339,9 @@ def race_launch(
     launch_kwargs: Mapping[str, Any] | Callable[[object], Mapping[str, Any]] | None = None,
     bundle_kind: str | None = None,
     readiness_marker: str | None = None,
+    prelaunch_guard: Mapping[str, Any] | Callable[[object], Mapping[str, Any]] | None = None,
+    pending_teardown_lane: str | None = None,
+    pending_teardown_max_age_seconds: int = 7200,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict:
@@ -274,6 +370,16 @@ def race_launch(
         launch_kwargs: optional mapping, or callable returning a mapping, forwarded to
             ``provider.launch``. This lets the job enforce warm-only semantics with
             ``allow_cold_fallback=False`` without baking provider-specific options into the racer.
+        prelaunch_guard: optional mapping, or callable returning a mapping, that must
+            carry ``can_launch: true`` before the provider's ``launch`` method is
+            called. A failed guard records a contender-level
+            ``prelaunch_blocked`` outcome and makes zero provider API calls.
+        pending_teardown_lane: optional paid-lane name. When supplied, every contender
+            that passes its prelaunch guard opens a ``pending_teardown.v1`` record
+            immediately before ``provider.launch``. The winning record is returned to
+            the caller; loser records are closed only with provider-API teardown proof.
+        pending_teardown_max_age_seconds: orphan-reaper max age for records opened by
+            ``pending_teardown_lane``.
         sleep / monotonic: injectable clocks for hermetic, fast tests.
 
     Returns:
@@ -319,6 +425,8 @@ def race_launch(
         {"provider": p.name, "index": i, "outcome": None, "instance_id": None,
          "mode": None, "launch": None, "terminated": None, "reason": None,
          "stopped": None, "teardown_action": None, "launch_kwargs": None,
+         "prelaunch_guard": None, "pending_teardown_record": None,
+         "pending_teardown_status": None, "blockers": [],
          "polls": 0, "elapsed_seconds": 0.0}
         for i, p in enumerate(runnable)
     ]
@@ -335,8 +443,30 @@ def race_launch(
 
         # -- launch --
         try:
+            guard = _resolve_prelaunch_guard(prelaunch_guard, provider)
+            rec["prelaunch_guard"] = guard or None
+            blockers = _guard_blockers(guard)
+            if blockers:
+                rec["outcome"] = "prelaunch_blocked"
+                rec["reason"] = blockers[0]
+                rec["blockers"] = blockers
+                rec["elapsed_seconds"] = round(monotonic() - started, 3)
+                return
             kwargs = _resolve_launch_kwargs(launch_kwargs, provider)
             request_body = _resolve_request(request, provider, sub_dir)
+            pending_record: dict[str, Any] | None = None
+            if pending_teardown_lane:
+                pending_record = open_pending_teardown(
+                    provider=provider.name,
+                    lane=str(pending_teardown_lane),
+                    run_id=_pending_teardown_run_id(provider.name, idx),
+                    job_dir=sub_dir,
+                    max_age_seconds=max(1, int(pending_teardown_max_age_seconds)),
+                )
+                rec["pending_teardown_record"] = pending_record["path"]
+                if isinstance(request_body, Mapping):
+                    request_body = dict(request_body)
+                    request_body["pending_teardown_record"] = pending_record["path"]
             rec["launch_kwargs"] = dict(kwargs)
             try:
                 launch = provider.launch(
@@ -355,16 +485,33 @@ def race_launch(
                     cold=cold,
                 )
         except Exception as exc:  # noqa: BLE001 — a thrown launch is just a dud, not a crash
+            if rec.get("pending_teardown_record"):
+                cancel_pending_teardown(
+                    rec["pending_teardown_record"],
+                    reason="provider_launch_raised_before_allocation",
+                )
+                rec["pending_teardown_status"] = "cancelled_no_allocation"
             rec["outcome"] = "no_capacity"
             rec["reason"] = ("launch_raised:" + repr(exc))[:200]
             rec["elapsed_seconds"] = round(monotonic() - started, 3)
             return
         if isinstance(launch, dict):
             launch.setdefault("job_dir", str(sub_dir))
+            if rec.get("pending_teardown_record"):
+                launch["pending_teardown_record"] = rec["pending_teardown_record"]
         rec["launch"] = launch if isinstance(launch, dict) else {"raw": repr(launch)[:200]}
         iid = launch.get("instance_id") if isinstance(launch, dict) else None
+        if iid and rec.get("pending_teardown_record"):
+            bind_pending_teardown_instance(rec["pending_teardown_record"], str(iid))
         launched = isinstance(launch, dict) and launch.get("status") == "launched" and bool(iid)
         if not launched:
+            if rec.get("pending_teardown_record") and not iid:
+                cancel_pending_teardown(
+                    rec["pending_teardown_record"],
+                    reason="launch_returned_no_allocation",
+                    evidence=launch if isinstance(launch, Mapping) else {},
+                )
+                rec["pending_teardown_status"] = "cancelled_no_allocation"
             rec["outcome"] = "no_capacity"
             blockers = launch.get("blockers") if isinstance(launch, dict) else None
             rec["reason"] = (blockers[0] if blockers else "launch_not_launched")
@@ -439,6 +586,17 @@ def race_launch(
                     rec["stopped"] = {"status": "stop_failed", "error": repr(exc)[:200]}
                 else:
                     rec["terminated"] = {"status": "terminate_failed", "error": repr(exc)[:200]}
+            if rec.get("pending_teardown_record"):
+                teardown = rec.get("stopped") if rec.get("teardown_action") == "stop" else rec.get("terminated")
+                proof = _teardown_proof_from_provider_action(
+                    runnable[i],
+                    str(iid),
+                    teardown if isinstance(teardown, Mapping) else {},
+                    str(rec.get("teardown_action") or "terminate"),
+                )
+                rec["teardown_proof"] = proof
+                closure = close_pending_teardown(rec["pending_teardown_record"], proof)
+                rec["pending_teardown_status"] = closure.get("status")
             terminated += 1
 
     # 4) Feed outcomes back into the breaker. A provider that booted (won OR booted_lost)
@@ -453,13 +611,18 @@ def race_launch(
                 circuit_breaker.record_dud(rec["provider"])
 
     if winner_idx is None:
+        blocked_reason = (
+            "prelaunch_spend_guard_not_passed"
+            if records and all(rec.get("outcome") == "prelaunch_blocked" for rec in records)
+            else "all_providers_dudded"
+        )
         return _result(
             None,
             None,
             records,
             skipped_names,
             terminated,
-            reason="all_providers_dudded",
+            reason=blocked_reason,
             bundle_kind=bundle_kind,
             readiness_marker=readiness_marker,
         )
@@ -489,6 +652,7 @@ def _result(
             "mode": win_rec["mode"],
             "winner_provider": winner_provider,
             "winner_launch": win_rec["launch"],
+            "pending_teardown_record": win_rec.get("pending_teardown_record"),
             "bundle_kind": bundle_kind,
             "readiness_marker": readiness_marker,
             "contenders": records,
@@ -504,6 +668,7 @@ def _result(
         "mode": None,
         "winner_provider": None,
         "winner_launch": None,
+        "pending_teardown_record": None,
         "bundle_kind": bundle_kind,
         "readiness_marker": readiness_marker,
         "contenders": records,

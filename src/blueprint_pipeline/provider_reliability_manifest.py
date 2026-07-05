@@ -49,6 +49,13 @@ RUN_PHASES: tuple[str, ...] = (
 )
 
 KNOWN_PROVIDERS = frozenset({"runpod", "vast", "lambda", "digitalocean", "fixture"})
+# The only status_source that can prove teardown: a provider state query (or an
+# API 404 on the allocation). Anything else is a self-report and fails closed.
+TEARDOWN_STATUS_SOURCE_PROVIDER_API = "provider_api"
+RUNPOD_RESIDUAL_VOLUME_BILLING_STATUSES = frozenset({"exited", "stopped"})
+PROVIDER_BILLING_TERMINAL_STATUSES = frozenset(
+    {"terminated", "destroyed", "deleted", "not_found"}
+)
 
 # Blocker codes are stable, grep-able identifiers. Free-text detail goes after ':'.
 BLOCKER_CAPACITY_UNAVAILABLE = "capacity_unavailable"
@@ -61,6 +68,7 @@ BLOCKER_POST_MARKER_NO_PROGRESS = "post_marker_no_progress"
 BLOCKER_RUNNER_FAILED = "runner_failed"
 BLOCKER_TEARDOWN_UNPROVEN = "teardown_unproven"
 BLOCKER_STALE_ARTIFACT = "stale_artifact_rejected"
+BLOCKER_PHASE_CONTRACT_MISSING = "phase_contract_missing"
 
 
 def _string_list(value: Any) -> list[str]:
@@ -273,21 +281,33 @@ def build_teardown_proof(
     verified_at: str | None = None,
     keep_alive_requested: bool = False,
     keep_alive_reason: str | None = None,
+    status_source: str | None = None,
 ) -> dict[str, Any]:
-    """Teardown is proven only by a provider-reported terminal status.
+    """Teardown is proven only by an API-confirmed provider terminal status.
 
     A terminate *request* alone is not proof — the provider must report the
     allocation terminal (or the operator must have explicitly kept it alive, in
     which case the manifest records an OPEN billing allocation, never silence).
+    ``status_source`` names where ``provider_terminal_status`` came from; only
+    ``"provider_api"`` (a provider state query, or an API 404 on the allocation)
+    can prove teardown. A runner's own claim about its DELETE call — including
+    a 2xx response to the terminate request — is self-reported and fails closed.
     """
     blockers: list[str] = []
     terminal = str(provider_terminal_status or "").strip().lower()
+    provider_name = str(provider or "").strip().lower()
     alloc = str(allocation_id or "").strip()
+    source = str(status_source or "").strip().lower()
+    residual_billing_possible = bool(
+        provider_name == "runpod" and terminal in RUNPOD_RESIDUAL_VOLUME_BILLING_STATUSES
+    )
+    billing_sweep_recommended = False
 
     if keep_alive_requested:
         if not str(keep_alive_reason or "").strip():
             blockers.append(f"{BLOCKER_TEARDOWN_UNPROVEN}:keep_alive_without_reason")
         blockers.append(f"{BLOCKER_TEARDOWN_UNPROVEN}:allocation_intentionally_kept_alive:{alloc or 'unknown'}")
+        billing_sweep_recommended = True
     else:
         if not alloc:
             blockers.append(f"{BLOCKER_TEARDOWN_UNPROVEN}:allocation_id_missing")
@@ -295,14 +315,19 @@ def build_teardown_proof(
             blockers.append(f"{BLOCKER_TEARDOWN_UNPROVEN}:terminate_never_requested")
         if not terminal:
             blockers.append(f"{BLOCKER_TEARDOWN_UNPROVEN}:terminal_status_not_verified")
-        elif terminal not in {
-            "terminated",
-            "destroyed",
-            "deleted",
-            "exited",
-            "not_found",
-        }:
-            blockers.append(f"{BLOCKER_TEARDOWN_UNPROVEN}:non_terminal_status:{terminal}")
+        else:
+            if source != TEARDOWN_STATUS_SOURCE_PROVIDER_API:
+                blockers.append(
+                    f"{BLOCKER_TEARDOWN_UNPROVEN}:terminal_status_not_api_confirmed:"
+                    f"{source or 'self_reported'}"
+                )
+            if residual_billing_possible:
+                blockers.append(
+                    f"{BLOCKER_TEARDOWN_UNPROVEN}:runpod_stopped_volume_may_continue_billing:{terminal}"
+                )
+                billing_sweep_recommended = True
+            elif terminal not in PROVIDER_BILLING_TERMINAL_STATUSES:
+                blockers.append(f"{BLOCKER_TEARDOWN_UNPROVEN}:non_terminal_status:{terminal}")
         if terminal and not str(verified_at or "").strip():
             blockers.append(f"{BLOCKER_TEARDOWN_UNPROVEN}:verification_timestamp_missing")
 
@@ -312,12 +337,28 @@ def build_teardown_proof(
         blockers=blockers,
         claim_boundary=(
             "Teardown proof shows the billing allocation reached a provider-reported "
-            "terminal state. It says nothing about run success or artifact quality."
+            "billing-terminal state. Stopped/EXITED RunPod allocations may still carry "
+            "volume billing and require a delete/sweep. This says nothing about run "
+            "success or artifact quality."
         ),
-        provider=str(provider or "").strip().lower() or None,
+        provider=provider_name or None,
         allocation_id=alloc or None,
         billing_stopped=not blockers,
         provider_terminal_status=terminal or None,
+        provider_terminal_status_source=source or None,
+        open_billing_risk=bool(blockers),
+        residual_billing_possible=residual_billing_possible,
+        billing_sweep_recommended=billing_sweep_recommended,
+        billing_sweep_action=(
+            {
+                "provider": provider_name,
+                "allocation_id": alloc or None,
+                "recommended_action": "delete_stopped_or_exited_allocation",
+                "reason": "stopped_or_exited_runpod_volume_may_continue_billing",
+            }
+            if billing_sweep_recommended and alloc
+            else None
+        ),
         keep_alive_requested=bool(keep_alive_requested),
         keep_alive_reason=str(keep_alive_reason or "").strip() or None,
         verified_at=str(verified_at or "").strip() or None,
@@ -458,14 +499,22 @@ def build_provider_reliability_manifest(
     failure_blockers: list[str] = []
     for phase in RUN_PHASES:
         contract = phases[phase]
+        if phase in not_applicable:
+            continue
         if contract is not None and phase not in not_applicable:
             furthest = phase
-            if failed_phase is None and not _passed(contract):
-                failed_phase = phase
-                failure_blockers = _string_list(contract.get("blockers"))
+        if failed_phase is not None:
+            continue
+        if contract is None:
+            failed_phase = phase
+            failure_blockers = [f"{BLOCKER_PHASE_CONTRACT_MISSING}:{phase}"]
+        elif not _passed(contract):
+            failed_phase = phase
+            failure_blockers = _string_list(contract.get("blockers"))
 
     teardown_contract = phases["teardown"]
     teardown_proven = _passed(teardown_contract)
+    teardown_details = _mapping(teardown_contract)
     open_billing_risk = not teardown_proven
 
     blockers: list[str] = list(failure_blockers)
@@ -495,6 +544,12 @@ def build_provider_reliability_manifest(
         "failure_blockers": _dedupe(failure_blockers),
         "open_billing_risk": open_billing_risk,
         "teardown_proven": teardown_proven,
+        "billing_sweep_recommended": bool(
+            teardown_details.get("billing_sweep_recommended")
+        ),
+        "billing_sweep_action": teardown_details.get("billing_sweep_action")
+        if isinstance(teardown_details.get("billing_sweep_action"), Mapping)
+        else None,
         "spend": _mapping(spend) or None,
         "not_applicable_phases": sorted(not_applicable),
         "phases": {

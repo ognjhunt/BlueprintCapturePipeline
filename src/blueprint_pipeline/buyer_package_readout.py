@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .common import utc_now_iso
+from .common import parse_bool, utc_now_iso
 from .success_claim_contracts import CLAIM_LADDER
 
 BUYER_PACKAGE_READOUT_SCHEMA_VERSION = "buyer_package_readout.v1"
@@ -49,12 +49,41 @@ def _strict_bool(value: Any) -> bool:
     return value is True
 
 
+def _manifest_bool(value: Any) -> bool:
+    return parse_bool(value, default=False)
+
+
 def _int_or_none(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
     return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        values: list[Any] = []
+    elif isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list | tuple | set):
+        values = list(value)
+    else:
+        values = [value]
+    out: list[str] = []
+    for item in values:
+        text = str(item or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
 
 
 def _section(status: str, blockers: list[str], **fields: Any) -> dict[str, Any]:
@@ -66,6 +95,19 @@ def _presence_section(
 ) -> dict[str, Any]:
     blockers = [] if present else [missing_blocker]
     return _section("present" if present else "missing", blockers, **fields)
+
+
+def _lerobot_format_claimed(format_entry: Mapping[str, Any]) -> bool:
+    entry = _mapping(format_entry)
+    if not entry:
+        return False
+    status = str(entry.get("status") or "").strip().lower()
+    return (
+        _manifest_bool(entry.get("format_written"))
+        or _manifest_bool(entry.get("consumer_layout_complete"))
+        or bool(_mapping(entry.get("round_trip_validation")))
+        or status.startswith("written")
+    )
 
 
 def build_buyer_package_readout(
@@ -86,6 +128,12 @@ def build_buyer_package_readout(
     manifest_counts = _mapping(manifest.get("manifest_counts"))
     package_files = _mapping(manifest.get("package_files"))
     consent_evidence = _mapping(manifest.get("consent_evidence"))
+    revocation_takedown = _mapping(manifest.get("revocation_takedown"))
+    downstream_takedown_execution_ledger = _mapping(
+        manifest.get("downstream_takedown_execution_ledger")
+    )
+    revenue_share_review = _mapping(manifest.get("revenue_share_review"))
+    data_processing_terms_review = _mapping(manifest.get("data_processing_terms_review"))
     optional_exports = _mapping(manifest.get("optional_exports"))
     optional_formats = _mapping(optional_exports.get("formats"))
     video_bundle = _mapping(optional_formats.get("video_bundle"))
@@ -93,6 +141,27 @@ def build_buyer_package_readout(
     gr00t_lerobot = _mapping(optional_formats.get("gr00t_lerobot"))
     handoff = _mapping(product_handoff) or _mapping(manifest.get("product_handoff"))
     ledger = _mapping(success_claim_ledger)
+    manifest_blockers = _string_list(manifest.get("blockers"))
+    consent_revoked = (
+        _manifest_bool(consent_evidence.get("consent_revoked"))
+        or _manifest_bool(revocation_takedown.get("consent_revoked"))
+    )
+    revocation_required = bool(
+        consent_revoked
+        or revocation_takedown.get("status") == "takedown_required"
+        or manifest.get("status") == "blocked_consent_revoked_takedown_required"
+        or "consent:consent_revoked_takedown_required" in manifest_blockers
+    )
+    webapp_takedown_executed = _strict_bool(
+        revocation_takedown.get("webapp_takedown_executed")
+    )
+    hosted_session_takedown_executed = (
+        _strict_bool(revocation_takedown.get("hosted_session_takedown_executed"))
+    )
+    downstream_takedown_artifacts = _mapping(
+        revocation_takedown.get("downstream_takedown_artifacts")
+        or manifest.get("downstream_takedown_artifacts")
+    )
 
     sections: dict[str, dict[str, Any]] = {}
 
@@ -116,17 +185,121 @@ def build_buyer_package_readout(
         ),
         consent_evidence_record_included="consent_evidence" in included
         or bool(str(consent_evidence.get("path") or "").strip()),
-        consent_evidence_present=consent_evidence.get("consent_evidence_present")
-        is True,
+        consent_evidence_present=_manifest_bool(
+            consent_evidence.get("consent_evidence_present")
+        ),
         consent_evidence_status=consent_evidence.get("status"),
+        revenue_share_review_included=bool(revenue_share_review),
+        revenue_share_review_status=revenue_share_review.get("status"),
+        owner_revenue_share_record_present=(
+            _manifest_bool(revenue_share_review.get("owner_revenue_share_record_present"))
+        ),
+        operator_revenue_terms_present=bool(
+            _mapping(revenue_share_review.get("operator_revenue_terms"))
+        ),
+        commercialization_terms_present=bool(
+            _mapping(revenue_share_review.get("commercialization_terms"))
+        ),
+        exclusivity_terms_present=bool(
+            _mapping(revenue_share_review.get("exclusivity_terms"))
+        ),
+        required_before_paid_reuse_or_resale=(
+            _manifest_bool(
+                revenue_share_review.get("required_before_paid_reuse_or_resale")
+            )
+        ),
+        paid_reuse_or_resale_blocked=(
+            not _manifest_bool(revenue_share_review.get("commercial_use_claim_allowed"))
+            or not _manifest_bool(
+                revenue_share_review.get("external_licensing_claim_allowed")
+            )
+        ),
+        revenue_share_commitment_made=False,
+        payout_commitment_allowed=False,
+        commercial_use_claim_allowed=False,
+        data_processing_terms_review_included=bool(data_processing_terms_review),
+        data_processing_terms_review_status=data_processing_terms_review.get("status"),
+        retention_policy_present=(
+            _manifest_bool(data_processing_terms_review.get("retention_policy_present"))
+        ),
+        subprocessor_list_present=(
+            _manifest_bool(data_processing_terms_review.get("subprocessor_list_present"))
+        ),
+        access_audit_terms_present=(
+            _manifest_bool(data_processing_terms_review.get("access_audit_terms_present"))
+        ),
+        dpa_approval_claimed=False,
+        external_delivery_claim_allowed=False,
         provenance_chain_present="proof_boundaries" in included,
+    )
+    sections["revocation_takedown"] = _section(
+        "takedown_required" if revocation_required else "not_required",
+        ["consent_revoked_takedown_required"] if revocation_required else [],
+        revocation_takedown_manifest_included=(
+            "revocation_takedown_manifest" in included
+            or bool(str(revocation_takedown.get("path") or "").strip())
+        ),
+        revocation_takedown_manifest_path=revocation_takedown.get("path")
+        or included.get("revocation_takedown_manifest"),
+        consent_revoked=consent_revoked,
+        consent_revoked_at=consent_evidence.get("consent_revoked_at")
+        or revocation_takedown.get("consent_revoked_at"),
+        local_package_access_revoked=_manifest_bool(
+            revocation_takedown.get("local_package_access_revoked")
+        )
+        or revocation_required,
+        delivery_blocked_by_consent_revocation=_manifest_bool(
+            revocation_takedown.get("delivery_blocked")
+        )
+        or revocation_required,
+        signed_access_revoked_by_consent=_manifest_bool(
+            revocation_takedown.get("signed_access_revoked")
+        )
+        or revocation_required,
+        downstream_takedown_required=_manifest_bool(
+            revocation_takedown.get("downstream_takedown_required")
+        )
+        or revocation_required,
+        webapp_takedown_executed=webapp_takedown_executed,
+        hosted_session_takedown_executed=hosted_session_takedown_executed,
+        webapp_or_hosted_takedown_execution_proven=bool(
+            webapp_takedown_executed and hosted_session_takedown_executed
+        ),
+        downstream_takedown_artifacts=downstream_takedown_artifacts,
+        downstream_takedown_execution_ledger_included=bool(
+            downstream_takedown_execution_ledger
+        ),
+        downstream_takedown_execution_ledger_status=(
+            downstream_takedown_execution_ledger.get("status")
+        ),
+        downstream_takedown_execution_ledger_path=(
+            revocation_takedown.get("downstream_takedown_execution_ledger_path")
+            or downstream_takedown_artifacts.get("downstream_takedown_execution_ledger")
+        ),
+        external_takedown_executor_present=(
+            _manifest_bool(
+                downstream_takedown_execution_ledger.get(
+                    "external_takedown_executor_present"
+                )
+            )
+        ),
+        webapp_rights_privacy_takedown_notice_path=downstream_takedown_artifacts.get(
+            "webapp_rights_privacy_takedown_notice"
+        ),
+        hosted_session_takedown_request_path=downstream_takedown_artifacts.get(
+            "hosted_session_takedown_request"
+        ),
+        required_actions=_string_list(revocation_takedown.get("required_actions")),
+        downstream_unexecuted_actions=_string_list(
+            revocation_takedown.get("downstream_unexecuted_actions")
+        ),
     )
 
     materialized_clip_count = _int_or_none(video_bundle.get("materialized_clip_count")) or 0
     missing_clip_file_count = _int_or_none(video_bundle.get("missing_clip_file_count")) or 0
-    consumer_layout_complete = bool(
-        lerobot_v3.get("consumer_layout_complete")
-        or gr00t_lerobot.get("consumer_layout_complete")
+    consumer_layout_complete = (
+        _manifest_bool(lerobot_v3.get("consumer_layout_complete"))
+        or _manifest_bool(gr00t_lerobot.get("consumer_layout_complete"))
     )
     pov_present = any(key in included for key in _POV_KEYS) or materialized_clip_count > 0
     pov_blockers: list[str] = []
@@ -136,18 +309,56 @@ def build_buyer_package_readout(
         pov_blockers.append("declared_clip_files_missing")
     if materialized_clip_count > 0 and not consumer_layout_complete:
         pov_blockers.append("training_consumer_layout_incomplete")
+    measured_state_fractions: dict[str, float] = {}
+    measured_state_fraction_floors: list[float] = []
+    for format_name, format_entry in (
+        ("lerobot_v3", lerobot_v3),
+        ("gr00t_lerobot", gr00t_lerobot),
+    ):
+        if not _lerobot_format_claimed(format_entry):
+            continue
+        state_action_provenance = _mapping(format_entry.get("state_action_provenance"))
+        real_state_fraction = _float_or_none(
+            state_action_provenance.get("real_state_fraction")
+        )
+        measured_state_fraction_floor = _float_or_none(
+            state_action_provenance.get("measured_state_fraction_floor")
+        )
+        if measured_state_fraction_floor is not None:
+            measured_state_fraction_floors.append(measured_state_fraction_floor)
+        if real_state_fraction is None:
+            pov_blockers.append(f"measured_state_fraction_unknown:{format_name}")
+            continue
+        measured_state_fractions[format_name] = real_state_fraction
+        floor_passed = _strict_bool(
+            state_action_provenance.get("measured_state_fraction_floor_passed")
+        )
+        if measured_state_fraction_floor is not None:
+            floor_passed = floor_passed and real_state_fraction >= measured_state_fraction_floor
+        if not floor_passed:
+            pov_blockers.append(
+                f"insufficient_measured_state_fraction:{format_name}"
+            )
     sections["robot_pov_evidence"] = _section(
         "present" if not pov_blockers else "missing",
         pov_blockers,
         pov_artifact_keys=[key for key in _POV_KEYS if key in included],
-        clips_manifest_included=bool(export_policy.get("clips_manifest_included")),
+        clips_manifest_included=_manifest_bool(
+            export_policy.get("clips_manifest_included")
+        ),
         materialized_clip_count=materialized_clip_count,
         missing_clip_file_count=missing_clip_file_count,
-        lerobot_v3_consumer_layout_complete=bool(
+        lerobot_v3_consumer_layout_complete=_manifest_bool(
             lerobot_v3.get("consumer_layout_complete")
         ),
-        gr00t_lerobot_consumer_layout_complete=bool(
+        gr00t_lerobot_consumer_layout_complete=_manifest_bool(
             gr00t_lerobot.get("consumer_layout_complete")
+        ),
+        measured_state_fractions=measured_state_fractions,
+        measured_state_fraction_floor=(
+            max(measured_state_fraction_floors)
+            if measured_state_fraction_floors
+            else None
         ),
     )
 
@@ -175,10 +386,14 @@ def build_buyer_package_readout(
     )
 
     media_blockers: list[str] = []
-    generated_media_included = bool(export_policy.get("visual_augmentation_packet_included"))
-    if generated_media_included and export_policy.get(
-        "visual_augmentation_generated_videos_are_raw_capture_evidence"
-    ) is not False:
+    generated_media_included = _manifest_bool(
+        export_policy.get("visual_augmentation_packet_included")
+    )
+    generated_media_claimed_raw = parse_bool(
+        export_policy.get("visual_augmentation_generated_videos_are_raw_capture_evidence"),
+        default=True,
+    )
+    if generated_media_included and generated_media_claimed_raw:
         media_blockers.append("generated_media_not_segregated_from_raw_capture")
     sections["media_provenance"] = _section(
         "present" if not media_blockers else "missing",
@@ -193,12 +408,32 @@ def build_buyer_package_readout(
         integrity_blockers.append("checksums_manifest_missing")
     if not package_files:
         integrity_blockers.append("package_file_inventory_missing")
+    # A lerobot-format export the buyer cannot load back (LeRobotDataset round
+    # trip) must never read "ready": require a passed round-trip verdict for
+    # every lerobot-format export the package claims to include.
+    lerobot_round_trip: dict[str, Any] = {}
+    for format_name, format_entry in (
+        ("lerobot_v3", lerobot_v3),
+        ("gr00t_lerobot", gr00t_lerobot),
+    ):
+        if not _lerobot_format_claimed(format_entry):
+            continue
+        validation = _mapping(format_entry.get("round_trip_validation"))
+        validation_status = str(validation.get("status") or "").strip() or None
+        lerobot_round_trip[format_name] = validation_status
+        if not validation:
+            integrity_blockers.append(
+                f"lerobot_round_trip_validation_missing:{format_name}"
+            )
+        elif validation_status != "passed":
+            integrity_blockers.append(f"lerobot_export_not_loadable:{format_name}")
     sections["export_integrity"] = _section(
         "present" if not integrity_blockers else "missing",
         integrity_blockers,
         checksums_path=manifest.get("checksums_path"),
         package_file_count=len(package_files),
         schema_version=manifest.get("schema_version"),
+        lerobot_round_trip_validation=lerobot_round_trip,
     )
 
     replay_present = "replay_review_instructions" in included or bool(
@@ -230,6 +465,8 @@ def build_buyer_package_readout(
         blockers.append(f"export_manifest_not_ready:{export_status or 'missing'}")
     for name in BUYER_CRITICAL_SECTIONS:
         blockers.extend(f"{name}:{blocker}" for blocker in sections[name]["blockers"])
+    if revocation_required:
+        blockers.append("revocation_takedown:consent_revoked_takedown_required")
 
     highest_claim = str(ledger.get("highest_truthful_claim") or "").strip()
     if highest_claim not in CLAIM_LADDER:
@@ -243,6 +480,26 @@ def build_buyer_package_readout(
         "generated_media_is_not_physical_proof": True,
         "simulator_results_are_not_real_world_outcomes": True,
         "readout_summarizes_existing_evidence_only": True,
+        "consent_revocation_blocks_downstream_use": revocation_required,
+        "local_package_access_revoked": _manifest_bool(
+            revocation_takedown.get("local_package_access_revoked")
+        )
+        or revocation_required,
+        "delivery_blocked_by_consent_revocation": _manifest_bool(
+            revocation_takedown.get("delivery_blocked")
+        )
+        or revocation_required,
+        "signed_access_revoked_by_consent": _manifest_bool(
+            revocation_takedown.get("signed_access_revoked")
+        )
+        or revocation_required,
+        "webapp_or_hosted_takedown_execution_proven": bool(
+            webapp_takedown_executed and hosted_session_takedown_executed
+        ),
+        "downstream_takedown_execution_ledger_present": bool(
+            downstream_takedown_execution_ledger
+        ),
+        "readout_is_not_takedown_execution_proof": True,
     }
 
     status = "buyer_readout_ready_review_required" if not blockers else (
@@ -301,4 +558,14 @@ def render_buyer_package_readout_markdown(readout: Mapping[str, Any]) -> str:
             ),
         ]
     )
+    if boundary.get("consent_revocation_blocks_downstream_use") is True:
+        lines.extend(
+            [
+                "- Consent revocation blocks package delivery and training use.",
+                (
+                    "- This readout is not proof that WebApp or hosted-session "
+                    "takedown has executed."
+                ),
+            ]
+        )
     return "\n".join(lines) + "\n"

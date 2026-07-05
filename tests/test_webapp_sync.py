@@ -657,6 +657,37 @@ def test_projection_labels_success_rate_substrate_from_proof_boundary() -> None:
     )
 
 
+def test_projection_proof_boundary_uses_strict_booleans() -> None:
+    from blueprint_pipeline.webapp_sync import _safe_robot_eval_status_projection
+
+    projection = _safe_robot_eval_status_projection(
+        {
+            "proof_boundary": {
+                "simulator_execution_proven": "true",
+                "robot_policy_execution_proven": 1,
+                "real_world_outcome_proven": "yes",
+                "physics_contact_validated": "true",
+                "non_ranking_operational_claim_validated": "true",
+                "rank_fidelity_result_proven": "true",
+                "public_claim_upgrade_allowed": "true",
+            }
+        }
+    )
+
+    boundary = projection["proof_boundary"]
+    assert boundary["simulator_execution_proven"] is False
+    assert boundary["robot_policy_execution_proven"] is False
+    assert boundary["real_world_outcome_proven"] is False
+    assert boundary["physics_contact_validated"] is False
+    assert boundary["non_ranking_operational_claim_validated"] is False
+    assert boundary["rank_fidelity_result_proven"] is False
+    assert boundary["public_claim_upgrade_allowed"] is False
+    assert (
+        projection["buyer_display_guardrails"]["readiness_claim_upgrade_allowed"]
+        is False
+    )
+
+
 def test_projection_rights_privacy_defaults_fail_closed() -> None:
     from blueprint_pipeline.webapp_sync import _safe_robot_eval_status_projection
 
@@ -694,6 +725,19 @@ def test_projection_rights_privacy_defaults_fail_closed() -> None:
     assert revoked["rights_privacy"]["revocation_takedown_required"] is True
     assert revoked["rights_privacy"]["rights_privacy_blocking"] is True
 
+    string_revoked = _safe_robot_eval_status_projection(
+        {
+            "rights_privacy": {
+                "rights_status": "approved",
+                "privacy_status": "cleared",
+                "consent_scope": ["internal_evaluation"],
+                "consent_revoked": "true",
+            }
+        }
+    )
+    assert string_revoked["rights_privacy"]["consent_revoked"] is True
+    assert string_revoked["rights_privacy"]["rights_privacy_blocking"] is True
+
 
 def test_projection_product_handoff_passthrough_and_wiring_flag() -> None:
     from blueprint_pipeline.webapp_sync import _safe_robot_eval_status_projection
@@ -730,6 +774,21 @@ def test_projection_product_handoff_passthrough_and_wiring_flag() -> None:
     ] is False
     assert wired["product_handoff"]["entitlement_wiring_present"] is True
     assert wired["product_handoff"]["product_sku"] == "TER-001"
+
+    stringly_safety_flags = _safe_robot_eval_status_projection(
+        {
+            "revenue_share_review": {
+                "required_before_paid_reuse_or_resale": "true",
+                "owner_revenue_share_record_present": "true",
+                "revenue_share_commitment_made": "true",
+                "payout_commitment_allowed": "true",
+            }
+        }
+    )["product_handoff"]["revenue_share_review"]
+    assert stringly_safety_flags["required_before_paid_reuse_or_resale"] is True
+    assert stringly_safety_flags["owner_revenue_share_record_present"] is True
+    assert stringly_safety_flags["revenue_share_commitment_made"] is False
+    assert stringly_safety_flags["payout_commitment_allowed"] is False
 
 
 def test_projection_proof_boundary_lists_evidence_manifests() -> None:

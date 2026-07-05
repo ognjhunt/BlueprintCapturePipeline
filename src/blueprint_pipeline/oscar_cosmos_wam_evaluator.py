@@ -46,6 +46,11 @@ from .wam_generated_video_review import (
     validate_generated_mp4_for_review,
     visual_smoke_generated_rollouts_for_review,
 )
+from .wam_score_claim_gate import (
+    apply_wam_score_claim_gate,
+    evaluate_wam_calibration_anchors,
+    score_wam_rollout_set_consistency,
+)
 
 
 WAM_EVALUATOR_SCHEMA_VERSION = "oscar_cosmos_wam_evaluator.v1"
@@ -4971,8 +4976,56 @@ def run_oscar_cosmos_wam_evaluator(
             "lightweight_state_proxy_does_not_prove_task_success": True,
             "score_does_not_prove_generated_world_rank_fidelity": True,
             "score_does_not_prove_forward_inverse_consistency": True,
+            "score_above_review_grade_requires_consistency_and_calibration_anchors": True,
         },
     }
+
+    reference_trajectory_steps = [
+        {"timestamp": row.get("sim_time"), "position": row.get("root_position")}
+        for row in locomotion_rows
+        if isinstance(row.get("root_position"), Sequence)
+        and not isinstance(row.get("root_position"), (str, bytes, bytearray))
+    ] or [
+        {
+            "timestamp": row.get("timestamp"),
+            "position": _mapping(row.get("normalized_action")).get("waypoint"),
+        }
+        for row in action_rows
+        if isinstance(_mapping(row.get("normalized_action")).get("waypoint"), Sequence)
+    ]
+    wam_consistency_score = score_wam_rollout_set_consistency(
+        rollouts=rollouts,
+        reference={"trajectory": reference_trajectory_steps},
+        generated_at=generated,
+    )
+    write_json(output_dir / "wam_consistency_score.json", wam_consistency_score)
+    calibration_anchor_check = evaluate_wam_calibration_anchors(
+        _load_json(input_dir / "policy_ranking_ladder_validation.json") or None,
+        generated_at=generated,
+    )
+    write_json(output_dir / "wam_calibration_anchor_check.json", calibration_anchor_check)
+    review_grade_evidence_ok = bool(success_label_generated and visual_rollout_useful)
+    consistency_measured_ok = bool(
+        wam_consistency_score.get("status") == "scored"
+        and wam_consistency_score.get("passed") is True
+    )
+    anchors_ok = bool(
+        calibration_anchor_check.get("anchors_present")
+        and calibration_anchor_check.get("anchors_passed")
+    )
+    wam_score_claim_gate = apply_wam_score_claim_gate(
+        requested_grade="calibrated_evaluator_grade"
+        if review_grade_evidence_ok and consistency_measured_ok and anchors_ok
+        else "review_grade"
+        if review_grade_evidence_ok
+        else "fixture_evaluator_only",
+        consistency=wam_consistency_score,
+        calibration_anchors=calibration_anchor_check,
+        generated_at=generated,
+    )
+    write_json(output_dir / "wam_score_claim_gate.json", wam_score_claim_gate)
+    scorecard["wam_score_claim"] = wam_score_claim_gate
+    scorecard["wam_score_claim_grade"] = wam_score_claim_gate["granted_grade"]
     write_json(output_dir / "wam_policy_scorecard.json", scorecard)
     prediction_outcome_correlation_ledger = _build_prediction_outcome_correlation_ledger(
         generated_at=generated,
@@ -5693,6 +5746,14 @@ def run_oscar_cosmos_wam_evaluator(
         "external_episode_consistency_scorer_id": consistency.get(
             "external_episode_consistency_scorer_id"
         ),
+        "wam_score_claim_grade": wam_score_claim_gate["granted_grade"],
+        "wam_score_above_review_grade_allowed": wam_score_claim_gate["max_allowed_grade"]
+        == "calibrated_evaluator_grade",
+        "wam_score_claim_gate_status": wam_score_claim_gate["status"],
+        "wam_consistency_score": wam_consistency_score.get("consistency_score"),
+        "wam_calibration_anchors_passed": bool(
+            calibration_anchor_check.get("anchors_passed")
+        ),
         "blockers": visual_quality_blockers
         if visual_quality_blockers
         else generated_blockers
@@ -5714,6 +5775,11 @@ def run_oscar_cosmos_wam_evaluator(
             "wam_success_labels": str(output_dir / "wam_success_labels.json"),
             "failure_labels": str(output_dir / "failure_labels.json"),
             "wam_policy_scorecard": str(output_dir / "wam_policy_scorecard.json"),
+            "wam_consistency_score": str(output_dir / "wam_consistency_score.json"),
+            "wam_calibration_anchor_check": str(
+                output_dir / "wam_calibration_anchor_check.json"
+            ),
+            "wam_score_claim_gate": str(output_dir / "wam_score_claim_gate.json"),
             "wam_prediction_outcome_correlation_ledger": str(
                 output_dir / "wam_prediction_outcome_correlation_ledger.json"
             ),

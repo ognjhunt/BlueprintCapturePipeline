@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 
 from blueprint_pipeline import isaac_g1_kitchen_parity_job as J
+from blueprint_pipeline import paid_lane_guard
 
 import pytest
 
@@ -26,6 +27,7 @@ def _set_test_worker_image(monkeypatch) -> None:
         J.ISAAC_WORKER_IMAGE_REF_ENV,
         "registry.example/blueprint/isaac-eval-worker:test",
     )
+    monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "10.0")
 
 
 def test_build_request_shapes_worker_paths() -> None:
@@ -980,7 +982,12 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
 
     def _fake_race(providers, request, marker_check, marker_timeout, *, job_dir, cold=False,
                    poll_interval=10.0, circuit_breaker=None, terminate_losers=True,
-                   launch_kwargs=None, sleep=None, monotonic=None):
+                   launch_kwargs=None, prelaunch_guard=None,
+                   pending_teardown_lane=None, pending_teardown_max_age_seconds=0,
+                   sleep=None, monotonic=None):
+        assert prelaunch_guard["can_launch"] is True
+        assert pending_teardown_lane == J.ISAAC_G1_KITCHEN_PARITY_LANE
+        assert pending_teardown_max_age_seconds >= 300
         bodies = []
         for i, provider_obj in enumerate(providers):
             contender_dir = Path(job_dir) / f"contender-{i}-{provider_obj.name}"
@@ -1042,6 +1049,65 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
     assert captured["collect_instance_id"] == "vast-iid"
     assert captured["collect_job_dir"].name == "contender-1-vast"
     assert captured["progress_timeout_seconds"] == 360
+
+
+def test_paid_launch_blocks_before_provider_call_without_max_spend(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_test_worker_image(monkeypatch)
+    monkeypatch.delenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, raising=False)
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
+    )
+
+    def _fake_stage(bundle_zip, job_dir, *, key_prefix):
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+        (job_dir / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+        (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+        return {"status": "completed", "manifest": {}}
+
+    class _NoLaunchProvider:
+        name = "digitalocean"
+
+        def __init__(self) -> None:
+            self.launch_calls = 0
+
+        def available(self) -> dict:
+            return {"provider": self.name, "available": True}
+
+        def build_request(self, spec, job_dir):
+            return {"image": spec.image}
+
+        def launch(self, *_args, **_kwargs):
+            self.launch_calls += 1
+            raise AssertionError("provider launch must be prelaunch-blocked")
+
+    provider = _NoLaunchProvider()
+    monkeypatch.setattr(J, "stage_bundle", _fake_stage)
+    monkeypatch.setattr(J, "get_render_provider", lambda name, warm_candidates=(): provider)
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="digitalocean",
+        allow_paid=True,
+        allow_dirty_paid_launch=True,
+        max_attempts=1,
+    )
+
+    assert m["status"] == "blocked"
+    assert "isaac_g1_prelaunch_spend_guard_not_passed" in m["blockers"]
+    assert "isaac_g1_max_spend_usd_missing" in m["blockers"]
+    assert m["prelaunch_spend_guard"]["can_launch"] is False
+    assert m["prelaunch_spend_guard"]["budget_source"] == "missing"
+    assert m["prelaunch_spend_guard"]["claim_boundary"][
+        "no_provider_api_call_before_can_launch"
+    ] is True
+    assert provider.launch_calls == 0
 
 
 def test_paid_vast_launch_blocks_before_staging_without_override(
@@ -1375,6 +1441,7 @@ def test_paid_image_startup_canary_bypasses_large_image_block_without_harness(
     )
     monkeypatch.setenv(J.ISAAC_WORKER_IMAGE_REF_ENV, image_ref)
     monkeypatch.setenv(J.ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV, str(diagnostic_path))
+    monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "10.0")
     monkeypatch.setattr(
         J,
         "_git_worktree_evidence",
@@ -1814,6 +1881,183 @@ def test_launch_with_marker_retry_reports_provider_capacity_before_instance(
     trace = json.loads((jd / J.LAUNCH_ATTEMPT_TRACE_FILENAME).read_text(encoding="utf-8"))
     assert trace["status"] == "blocked"
     assert trace["blockers"] == res["blockers"]
+
+
+def test_launch_with_marker_retry_blocks_prelaunch_guard_before_launch(
+    tmp_path: Path,
+) -> None:
+    class _NoLaunchProvider:
+        name = "runpod"
+
+        def __init__(self) -> None:
+            self.launch_calls = 0
+
+        def launch(self, *_args, **_kwargs):
+            self.launch_calls += 1
+            raise AssertionError("prelaunch guard should block before launch")
+
+    provider = _NoLaunchProvider()
+    jd = tmp_path / "job"
+    jd.mkdir()
+    guard = {
+        "schema_version": "isaac_g1_kitchen_parity_prelaunch_spend_guard.v1",
+        "status": "blocked",
+        "can_launch": False,
+        "blockers": ["isaac_g1_max_spend_usd_missing"],
+    }
+
+    res = J.launch_with_marker_retry(
+        provider,
+        jd,
+        {"img": "x"},
+        max_attempts=2,
+        prelaunch_guard=guard,
+    )
+
+    assert res["status"] == "blocked"
+    assert "isaac_g1_prelaunch_spend_guard_not_passed" in res["blockers"]
+    assert "isaac_g1_max_spend_usd_missing" in res["blockers"]
+    assert res["attempts"][0]["result"] == "prelaunch_blocked"
+    assert provider.launch_calls == 0
+
+
+def test_launch_with_marker_retry_opens_pending_teardown_after_guard(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+    fp = _make_fake_provider()(marker=True)
+    guard = {
+        "schema_version": "isaac_g1_kitchen_parity_prelaunch_spend_guard.v1",
+        "status": "ready",
+        "can_launch": True,
+        "blockers": [],
+    }
+
+    monkeypatch.setattr(J.time, "sleep", lambda s: None)
+    monkeypatch.setattr(J.urllib.request, "urlopen", fp.urlopen)
+
+    res = J.launch_with_marker_retry(
+        fp,
+        jd,
+        {"img": "x"},
+        max_attempts=1,
+        marker_timeout=5,
+        poll=1,
+        prelaunch_guard=guard,
+    )
+
+    assert res["status"] == "launched"
+    assert res["pending_teardown_record"]
+    records = paid_lane_guard.load_pending_teardowns()
+    assert len(records) == 1
+    record = records[0]
+    assert record["status"] == "open"
+    assert record["lane"] == J.ISAAC_G1_KITCHEN_PARITY_LANE
+    assert record["provider"] == "unknown"
+    assert record["instance_id"] == "pod0"
+    assert record["path"] == res["pending_teardown_record"]
+
+
+def test_launch_with_marker_retry_cancels_pending_teardown_without_allocation(
+    tmp_path: Path,
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+
+    class _BlockedBeforeAllocationProvider:
+        name = "runpod"
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            return {"status": "blocked", "blockers": ["no_capacity"]}
+
+    guard = {
+        "schema_version": "isaac_g1_kitchen_parity_prelaunch_spend_guard.v1",
+        "status": "ready",
+        "can_launch": True,
+        "blockers": [],
+    }
+
+    res = J.launch_with_marker_retry(
+        _BlockedBeforeAllocationProvider(),
+        jd,
+        {"img": "x"},
+        max_attempts=1,
+        prelaunch_guard=guard,
+    )
+
+    assert res["status"] == "blocked"
+    assert paid_lane_guard.load_pending_teardowns() == []
+    records = paid_lane_guard.load_pending_teardowns(include_closed=True)
+    assert len(records) == 1
+    record = records[0]
+    assert record["status"] == "cancelled_no_allocation"
+    assert record["cancel_reason"] == "launch_returned_no_allocation"
+    assert record["cancel_evidence"]["blockers"] == ["no_capacity"]
+
+
+def test_launch_with_marker_retry_closes_pending_teardown_on_api_proof(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+
+    class _ApiConfirmedTerminateProvider:
+        name = "runpod"
+
+        def __init__(self) -> None:
+            self.terminated: list[str] = []
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            return {"status": "launched", "instance_id": "pod0", "mode": "cold_create"}
+
+        def terminate(self, instance_id):
+            self.terminated.append(instance_id)
+            return {"status": "terminated", "http": 204}
+
+        def inspect(self, instance_id):
+            assert instance_id == "pod0"
+            return {"status": "unavailable", "http": 404}
+
+    provider = _ApiConfirmedTerminateProvider()
+    guard = {
+        "schema_version": "isaac_g1_kitchen_parity_prelaunch_spend_guard.v1",
+        "status": "ready",
+        "can_launch": True,
+        "blockers": [],
+    }
+    clock = {"t": 0.0}
+    monkeypatch.setattr(J.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(J.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(J.urllib.request, "urlopen", _make_fake_provider()(marker=False).urlopen)
+
+    res = J.launch_with_marker_retry(
+        provider,
+        jd,
+        {"img": "x"},
+        max_attempts=1,
+        marker_timeout=2,
+        poll=1,
+        prelaunch_guard=guard,
+    )
+
+    assert res["status"] == "blocked"
+    assert provider.terminated == ["pod0"]
+    attempt = res["attempts"][0]
+    assert attempt["pending_teardown_status"] == "closed"
+    assert attempt["teardown_proof"]["status"] == "PASS"
+    assert paid_lane_guard.load_pending_teardowns() == []
+    records = paid_lane_guard.load_pending_teardowns(include_closed=True)
+    assert len(records) == 1
+    record = records[0]
+    assert record["status"] == "closed"
+    assert record["lane"] == J.ISAAC_G1_KITCHEN_PARITY_LANE
+    assert record["instance_id"] == "pod0"
+    assert record["teardown_proof"]["status"] == "PASS"
 
 
 def test_launch_with_marker_retry_terminates_pre_runtime_stall(

@@ -353,7 +353,7 @@ def _build_staged_capture(
             "derived_scene_generation_allowed": True,
             "consent_status": "documented",
             "permission_document_uri": "gs://local-blueprint/rights/consent-packet.pdf",
-            "consent_scope": ["cabinet zone"],
+            "consent_scope": ["cabinet zone", "derived_generation", "robot_evaluation"],
         },
         **_PACKAGING_UPSTREAM_IDS,
         "upstream_handoff": dict(_PACKAGING_UPSTREAM_IDS),

@@ -40,6 +40,31 @@ def _spec(**over) -> RenderLaunchSpec:
     return RenderLaunchSpec(**base)
 
 
+def _passing_prelaunch_guard() -> dict[str, object]:
+    return {
+        "schema_version": "isaac_particlefield_prelaunch_spend_guard.v1",
+        "required_before_provider_launch": True,
+        "can_launch": True,
+        "blockers": [],
+    }
+
+
+def _guarded_runpod_request(**overrides: object) -> dict[str, object]:
+    request: dict[str, object] = {
+        "imageName": "img:tag",
+        "env": {},
+        "dockerStartCmd": ["-lc", "run"],
+        "prelaunch_spend_guard": _passing_prelaunch_guard(),
+    }
+    request.update(overrides)
+    return request
+
+
+def _with_prelaunch_guard(request: dict) -> dict:
+    request["prelaunch_spend_guard"] = _passing_prelaunch_guard()
+    return request
+
+
 # ----------------------------- spec + registry -----------------------------
 
 def test_render_launch_spec_bootstrap_script_is_last_argv() -> None:
@@ -87,6 +112,32 @@ def test_runpod_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> N
     assert "runpod_api_key_missing" in res["blockers"]
 
 
+def test_runpod_launch_blocks_without_prelaunch_guard_before_provider_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_key(_self):
+        return "rp-key"
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        calls.append((method, path))
+        return 201, {"id": "pod-should-not-start"}
+
+    monkeypatch.setattr(RunPodRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
+
+    res = RunPodRenderProvider().launch(
+        tmp_path,
+        {"imageName": "img:tag", "env": {}, "dockerStartCmd": ["-lc", "run"]},
+        cold=True,
+    )
+
+    assert res["status"] == "blocked"
+    assert "runpod_render_prelaunch_spend_guard_missing" in res["blockers"]
+    assert calls == []
+
+
 def test_runpod_warm_start_rejection_is_recorded_before_cold_fallback(tmp_path: Path, monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
@@ -110,7 +161,7 @@ def test_runpod_warm_start_rejection_is_recorded_before_cold_fallback(tmp_path: 
     monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
     res = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
         tmp_path,
-        {"imageName": "img:tag", "env": {}, "dockerStartCmd": ["-lc", "run"]},
+        _guarded_runpod_request(),
         cold=False,
     )
 
@@ -154,7 +205,7 @@ def test_runpod_warm_only_blocks_without_cold_create(tmp_path: Path, monkeypatch
     monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
     res = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
         tmp_path,
-        {"imageName": "img:tag", "env": {}, "dockerStartCmd": ["-lc", "run"]},
+        _guarded_runpod_request(),
         cold=False,
         allow_cold_fallback=False,
     )
@@ -185,7 +236,7 @@ def test_runpod_warm_update_failure_does_not_start_stale_command(tmp_path: Path,
     monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
     res = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
         tmp_path,
-        {"imageName": "img:tag", "env": {}, "dockerStartCmd": ["-lc", "run"]},
+        _guarded_runpod_request(),
         cold=False,
     )
 
@@ -284,6 +335,28 @@ def test_vast_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> Non
     assert "vast_api_key_missing" in res["blockers"]
 
 
+def test_vast_launch_blocks_without_prelaunch_guard_before_provider_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_key(_self):
+        return "vast-key"
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        calls.append((method, path))
+        return 200, {"offers": []}
+
+    monkeypatch.setattr(VastRenderProvider, "_key", fake_key)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+
+    res = VastRenderProvider().launch(tmp_path, {"search_payload": {}}, cold=False)
+
+    assert res["status"] == "blocked"
+    assert "vast_render_prelaunch_spend_guard_missing" in res["blockers"]
+    assert calls == []
+
+
 def test_vast_stop_fail_closed_without_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.SECRETS", tmp_path)
     res = VastRenderProvider().stop("12345")
@@ -317,7 +390,7 @@ def test_vast_launch_writes_started_instance_id(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._offers_from_response", lambda _resp: [offer])
     monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._select_offer", lambda offers, **_kw: offers[0])
 
-    req = VastRenderProvider().build_request(_spec(), tmp_path)
+    req = _with_prelaunch_guard(VastRenderProvider().build_request(_spec(), tmp_path))
     res = VastRenderProvider().launch(tmp_path, req)
 
     assert res["status"] == "launched"
@@ -852,7 +925,7 @@ def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatc
                         lambda _resp: [stale, fresh])
     monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._select_offer", fake_select)
 
-    req = VastRenderProvider().build_request(_spec(), tmp_path)
+    req = _with_prelaunch_guard(VastRenderProvider().build_request(_spec(), tmp_path))
     res = VastRenderProvider().launch(tmp_path, req)
 
     assert res["status"] == "launched"
@@ -927,6 +1000,31 @@ def test_digitalocean_launch_fail_closed_without_token(monkeypatch, tmp_path: Pa
     assert p.available()["available"] is False
 
 
+def test_digitalocean_launch_blocks_without_prelaunch_guard_before_provider_call(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    calls = []
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        calls.append((method, path))
+        return 202, {"droplet": {"id": 4242, "status": "new"}}
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    res = G.DigitalOceanRenderProvider().launch(
+        tmp_path,
+        G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path),
+    )
+
+    assert res["status"] == "blocked"
+    assert "digitalocean_render_prelaunch_spend_guard_missing" in res["blockers"]
+    assert calls == []
+
+
 def test_digitalocean_launch_creates_droplet_and_writes_id(monkeypatch, tmp_path: Path) -> None:
     from blueprint_pipeline import gpu_render_providers as G
 
@@ -949,7 +1047,7 @@ def test_digitalocean_launch_creates_droplet_and_writes_id(monkeypatch, tmp_path
 
     monkeypatch.setattr(G, "_do_call", fake_call)
     p = G.DigitalOceanRenderProvider()
-    res = p.launch(tmp_path, p.build_request(_spec(), tmp_path))
+    res = p.launch(tmp_path, _with_prelaunch_guard(p.build_request(_spec(), tmp_path)))
     assert res["status"] == "launched"
     assert res["instance_id"] == "4242"
     assert res["mode"] == "do_gpu_droplet"
@@ -978,7 +1076,7 @@ def test_digitalocean_launch_regenerates_user_data_after_nonce_injection(
 
     monkeypatch.setattr(G, "_do_call", fake_call)
     provider = G.DigitalOceanRenderProvider()
-    request = provider.build_request(_spec(), tmp_path)
+    request = _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
     request["env"]["BLUEPRINT_LAUNCH_SESSION_ID"] = "nonce-123"
 
     res = provider.launch(tmp_path, request)
@@ -1016,7 +1114,9 @@ def test_digitalocean_launch_uses_configured_ssh_keys_without_account_lookup(mon
     monkeypatch.setattr(G, "_do_call", fake_call)
     res = G.DigitalOceanRenderProvider().launch(
         tmp_path,
-        G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path),
+        _with_prelaunch_guard(
+            G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)
+        ),
     )
 
     assert res["status"] == "launched"
@@ -1048,7 +1148,9 @@ def test_digitalocean_launch_retries_gpu_size_region_unavailable(monkeypatch, tm
     monkeypatch.setattr(G, "_do_call", fake_call)
     res = G.DigitalOceanRenderProvider().launch(
         tmp_path,
-        G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path),
+        _with_prelaunch_guard(
+            G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)
+        ),
     )
 
     assert res["status"] == "launched"
@@ -1083,7 +1185,9 @@ def test_digitalocean_launch_blocks_h200_without_hourly_budget_override(
     monkeypatch.setattr(G, "_do_call", fake_call)
     res = G.DigitalOceanRenderProvider().launch(
         tmp_path,
-        G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path),
+        _with_prelaunch_guard(
+            G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)
+        ),
     )
 
     assert res["status"] == "blocked"
@@ -1114,7 +1218,9 @@ def test_digitalocean_launch_blocks_without_ssh_key(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(G, "_do_call", fake_call)
     res = G.DigitalOceanRenderProvider().launch(
         tmp_path,
-        G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path),
+        _with_prelaunch_guard(
+            G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)
+        ),
     )
 
     assert res["status"] == "blocked"
