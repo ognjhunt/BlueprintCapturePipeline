@@ -6,6 +6,7 @@ from pathlib import Path
 
 from blueprint_pipeline.lerobot_policy_family import (
     ADAPTER_SCHEMA_VERSION,
+    GROOT_LIBERO_REMOTE_REPO_ID,
     SCRIPTED_PICK_PLACE_FAMILY_ID,
     SCRIPTED_PICK_PLACE_TYPE,
     create_scripted_baseline_checkpoint,
@@ -109,6 +110,24 @@ def test_learned_lerobot_type_requires_torch_runtime_never_emulated(
     assert loaded.requires_torch_runtime is True
     assert "policy_type_requires_torch_inference_runtime" in loaded.blockers
     assert loaded.policy is None
+
+
+def test_known_remote_groot_libero_checkpoint_is_gpu_adapter_only() -> None:
+    loaded = load_lerobot_policy_checkpoint(GROOT_LIBERO_REMOTE_REPO_ID)
+    assert loaded.policy_type == "groot"
+    assert loaded.family_id == "nvidia_groot_n17_lerobot_libero_10_640"
+    assert loaded.checkpoint_reference_kind == "hf_repo_id"
+    assert loaded.cpu_loadable is False
+    assert loaded.requires_torch_runtime is True
+    assert "policy_type_requires_torch_inference_runtime" in loaded.blockers
+    assert "checkpoint_dir_missing" not in loaded.blockers
+    assert "learned_policy_safetensors_missing" not in loaded.blockers
+    assert loaded.config["embodiment_tag"] == "libero_sim"
+    assert loaded.config["action_decode_transform"] == "libero"
+
+    manifest = loaded.manifest()
+    assert manifest["checkpoint_reference_kind"] == "hf_repo_id"
+    assert manifest["claim_boundary"]["checkpoint_load_is_not_task_success"] is True
 
 
 def test_action_chunk_is_deterministic_7d_and_truncates_on_grip_transition(

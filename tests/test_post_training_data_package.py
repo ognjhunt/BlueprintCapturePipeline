@@ -10,6 +10,7 @@ import pytest
 from tests.video_codec import require_video_codec_or_skip
 
 import blueprint_pipeline.post_training_data_package as package_module
+from blueprint_pipeline.scaniverse_asset_import import build_scaniverse_asset_import
 from blueprint_pipeline.post_training_data_package import (
     _artifact,
     _read_optional_mapping,
@@ -42,6 +43,29 @@ def _write_valid_mp4_or_placeholder(path: Path, *, frame_count: int = 1) -> None
             writer.write(np.full((32, 32, 3), 40 + index, dtype=np.uint8))
     finally:
         writer.release()
+
+
+def _write_ascii_ply(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "ply",
+                "format ascii 1.0",
+                "element vertex 4",
+                "property float x",
+                "property float y",
+                "property float z",
+                "end_header",
+                "0 0 0",
+                "1 0 0",
+                "1 1 0.1",
+                "0 1 0.1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _capture_root(tmp_path: Path) -> Path:
@@ -1388,6 +1412,89 @@ def test_post_training_data_package_includes_visual_augmentation_support_packet(
     )
     archive_members = json.loads((output_dir / "archive_manifest.json").read_text(encoding="utf-8"))
     assert "visual_augmentation_support_manifest.json" in archive_members["included_files"]
+
+
+def test_post_training_data_package_labels_scaniverse_assets_as_support_only(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    export_dir = tmp_path / "scaniverse_exports"
+    ply = export_dir / "pilot_splat.ply"
+    usdz = export_dir / "pilot_scene.usdz"
+    sidecar = export_dir / "blueprint_scaniverse_sidecar.json"
+    _write_ascii_ply(ply)
+    usdz.write_bytes(b"USDZ placeholder")
+    _write_json(
+        sidecar,
+        {
+            "blueprint_assignment_id": "assignment-1",
+            "blueprint_scene_id": "scene-1",
+            "blueprint_capture_id": "capture-1",
+            "scaniverse_site_id": "scaniverse-site-1",
+            "scaniverse_scan_id": "scaniverse-scan-1",
+            "capture_hardware": "Insta360 X5",
+            "source_video_filename": "pilot.insv",
+            "metric_scale_calibrated": False,
+            "export_created_at": "2026-07-06T12:00:00Z",
+            "export_performed_by": "operator@example.test",
+            "rights_scope": "pilot_review_only",
+        },
+    )
+    import_result = build_scaniverse_asset_import(
+        capture_root=capture_root,
+        assets=[ply, usdz],
+        source_manifest=sidecar,
+    )
+    assert import_result["status"] == "ready_for_review"
+
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    output_dir = tmp_path / "package"
+    monkeypatch.setattr(package_module, "_write_native_hdf5", lambda path, rows: False)
+    monkeypatch.setattr(package_module, "_write_native_parquet", lambda path, rows: False)
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=output_dir,
+    )
+
+    assert manifest["status"] == "export_ready_review_required"
+    assert manifest["included_artifacts"]["scaniverse_import_manifest"].endswith(
+        "scaniverse_import_manifest.json"
+    )
+    assert manifest["export_policy"]["scaniverse_support_assets_included"] is True
+    assert manifest["export_policy"]["scaniverse_assets_are_external_derived_support"] is True
+    assert manifest["export_policy"]["scaniverse_assets_are_raw_capture_evidence"] is False
+    assert manifest["export_policy"]["scaniverse_assets_are_task_success_evidence"] is False
+    assert manifest["export_policy"]["scaniverse_assets_are_physics_contact_evidence"] is False
+    assert manifest["scaniverse_support_asset_manifest_path"] == (
+        "scaniverse_support_asset_manifest.json"
+    )
+    support = json.loads(
+        (output_dir / "scaniverse_support_asset_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert support["external_derived_support_asset"] is True
+    assert support["raw_capture_evidence"] is False
+    assert support["claim_boundary"]["isaac_sim_execution_proven"] is False
+    assert support["claim_boundary"]["physics_contact_validated"] is False
+    assert support["claim_boundary"]["scaniverse_assets_are_task_success_evidence"] is False
+    package_index = json.loads((output_dir / "package_index.json").read_text(encoding="utf-8"))
+    assert package_index["files"]["scaniverse_support_asset_manifest"] == (
+        "scaniverse_support_asset_manifest.json"
+    )
+    buyer_readout = json.loads((output_dir / "buyer_package_readout.json").read_text(encoding="utf-8"))
+    derived = buyer_readout["sections"]["derived_support_assets"]
+    assert derived["status"] == "present_support_only"
+    assert derived["scaniverse_assets_are_raw_capture_evidence"] is False
+    assert derived["scaniverse_assets_are_task_success_evidence"] is False
+    assert derived["scaniverse_assets_are_physics_contact_evidence"] is False
+    archive_members = json.loads((output_dir / "archive_manifest.json").read_text(encoding="utf-8"))
+    assert "scaniverse_support_asset_manifest.json" in archive_members["included_files"]
 
 
 def test_post_training_data_package_main_returns_status_codes(

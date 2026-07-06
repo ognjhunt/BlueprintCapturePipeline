@@ -981,6 +981,26 @@ and writes `pipeline/worldlabs_export_manifest.json` with checksums and source
 URLs. It does not start a new World Labs generation, run simulators, or prove
 generated-world rank fidelity.
 
+Scaniverse-assisted asset import:
+
+```bash
+blueprint-import-scaniverse-assets \
+  --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
+  --asset /path/to/scaniverse-export.usdz \
+  --asset /path/to/scaniverse-splat.ply \
+  --blueprint-sidecar /path/to/blueprint-scaniverse-sidecar.json
+```
+
+This stages local Scaniverse exports into `pipeline/scaniverse_assets/`,
+preserves checksums/source metadata, and forwards CPU-preflight-supported local
+formats into scene-asset preflight. It does not call Niantic APIs, run
+simulators, or treat Scaniverse geometry as raw capture truth. The lane is
+eligible for PTDP packaging only as an `external_derived_support_asset`, so
+buyer readouts must keep it separate from raw Blueprint evidence, task success,
+physics/contact proof, and deployment readiness. The lane is
+documented in
+[`docs/SCANIVERSE_ASSET_IMPORT.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SCANIVERSE_ASSET_IMPORT.md).
+
 To also download local PLY/SPZ splats for object-index enrichment:
 
 ```bash

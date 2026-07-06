@@ -56,6 +56,26 @@ KNOWN_TORCH_POLICY_TYPES = (
     "vqbet",
     "groot",
 )
+GROOT_LIBERO_REMOTE_REPO_ID = "nvidia/gr00t17-lerobot-libero_10-640"
+KNOWN_REMOTE_LEROBOT_CHECKPOINTS: dict[str, dict[str, Any]] = {
+    GROOT_LIBERO_REMOTE_REPO_ID: {
+        "type": "groot",
+        "family_id": "nvidia_groot_n17_lerobot_libero_10_640",
+        "n_obs_steps": 1,
+        "input_features": {
+            "observation.images.wrist_image": {"type": "VISUAL", "shape": [256, 256, 3]},
+            "observation.images.image": {"type": "VISUAL", "shape": [256, 256, 3]},
+            "observation.state": {"type": "STATE", "shape": [8]},
+        },
+        "output_features": {"action": {"type": "ACTION", "shape": [7]}},
+        "device": "cuda",
+        "chunk_size": 16,
+        "n_action_steps": 16,
+        "action_decode_transform": "libero",
+        "embodiment_tag": "libero_sim",
+        "use_relative_actions": False,
+    }
+}
 
 ACTION_DIM = 7  # SC3-style 7d delta end-effector action: dxyz, drpy, gripper.
 
@@ -283,6 +303,7 @@ class LoadedPolicyFamily:
     policy: ScriptedPickPlacePolicy | None
     config: dict[str, Any]
     blockers: list[str]
+    checkpoint_reference_kind: str = "local_dir"
 
     def manifest(self) -> dict[str, Any]:
         return {
@@ -290,6 +311,7 @@ class LoadedPolicyFamily:
             "family_id": self.family_id,
             "policy_type": self.policy_type,
             "checkpoint_dir": self.checkpoint_dir,
+            "checkpoint_reference_kind": self.checkpoint_reference_kind,
             "checkpoint_sha256": self.checkpoint_sha256,
             "checkpoint_format": "lerobot_pretrained_dir",
             "cpu_loadable": self.cpu_loadable,
@@ -305,12 +327,20 @@ class LoadedPolicyFamily:
 
 
 def load_lerobot_policy_checkpoint(checkpoint_dir: str | Path) -> LoadedPolicyFamily:
-    root = Path(checkpoint_dir).expanduser().resolve()
+    checkpoint_text = _string(checkpoint_dir)
+    root = Path(checkpoint_text).expanduser().resolve()
     blockers: list[str] = []
     config: dict[str, Any] = {}
     policy_type = ""
+    checkpoint_reference_kind = "local_dir"
     if not root.is_dir():
-        blockers.append("checkpoint_dir_missing")
+        remote_config = KNOWN_REMOTE_LEROBOT_CHECKPOINTS.get(checkpoint_text)
+        if remote_config:
+            config = dict(remote_config)
+            policy_type = _string(config.get("type"))
+            checkpoint_reference_kind = "hf_repo_id"
+        else:
+            blockers.append("checkpoint_dir_missing")
     else:
         config_path = root / LEROBOT_CONFIG_FILENAME
         if not config_path.is_file():
@@ -345,7 +375,9 @@ def load_lerobot_policy_checkpoint(checkpoint_dir: str | Path) -> LoadedPolicyFa
                     cpu_loadable = True
         elif policy_type in KNOWN_TORCH_POLICY_TYPES:
             requires_torch_runtime = True
-            if not (root / LEARNED_WEIGHTS_FILENAME).is_file():
+            if checkpoint_reference_kind == "local_dir" and not (
+                root / LEARNED_WEIGHTS_FILENAME
+            ).is_file():
                 blockers.append("learned_policy_safetensors_missing")
             blockers.append("policy_type_requires_torch_inference_runtime")
         else:
@@ -376,6 +408,7 @@ def load_lerobot_policy_checkpoint(checkpoint_dir: str | Path) -> LoadedPolicyFa
         policy=policy,
         config=config,
         blockers=blockers,
+        checkpoint_reference_kind=checkpoint_reference_kind,
     )
 
 

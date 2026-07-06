@@ -10,6 +10,7 @@ from blueprint_pipeline.lerobot_policy_family import (
     create_scripted_baseline_checkpoint,
 )
 from blueprint_pipeline.real_policy_family_eval_harness import (
+    default_groot_libero_family_config,
     default_family_config,
     family_adapter_command,
     register_family_in_validation_ladder,
@@ -127,6 +128,38 @@ def test_gpu_policy_swap_is_config_only(tmp_path: Path) -> None:
     )
 
 
+def test_groot_libero_family_config_is_gpu_integration_proof() -> None:
+    family = default_groot_libero_family_config(python_executable="/usr/bin/python3")
+
+    assert family["family_id"] == "nvidia_groot_n17_lerobot_libero_10_640"
+    assert family["checkpoint_dir"] == "nvidia/gr00t17-lerobot-libero_10-640"
+    assert family["requires_gpu"] is True
+    assert family["adapter_mode"] == "persistent"
+    assert family["render_obs_frames"] is True
+    assert family["chunk_size"] == 16
+    assert family["executed_horizon"] == 16
+    assert family["integration_proof_scope"] == "libero_panda_groot_integration_proof"
+    assert "--serve" in family["adapter_command"]
+    assert "blueprint_pipeline.lerobot_torch_policy_adapter" in family["adapter_command"]
+    assert family["gpu_runtime"]["python_package_extra"] == "lerobot[groot]"
+    assert family["gpu_runtime"]["not_cpu_baseline_lane"] is True
+    assert family["source_policy"]["embodiment_tag"] == "libero_sim"
+    assert family["source_policy"]["action_decode_transform"] == "libero"
+    scoring = family["meaningful_manipulator_scoring"]
+    assert scoring["workflow_projection_status"] == "available_for_integration_plumbing"
+    assert scoring["required_for_quality_claim"] == (
+        "libero_panda_simulator_bridge_or_panda_task_evaluator"
+    )
+    assert scoring["blueprint_tabletop_proxy_is_panda_evaluator"] is False
+    boundary = family["claim_boundary"]
+    assert boundary["learned_policy_invocation_proof_target"] is True
+    assert boundary["panda_or_libero_task_success_proven"] is False
+    assert boundary["meaningful_manipulator_scoring_proven"] is False
+    assert boundary["blueprint_site_task_success_proven"] is False
+    assert boundary["physical_robot_readiness_proven"] is False
+    assert boundary["buyer_facing_deployment_claim_allowed"] is False
+
+
 def test_ladder_registration_is_validation_only_and_never_production(
     tmp_path: Path,
 ) -> None:
@@ -226,3 +259,28 @@ def test_full_real_policy_family_eval_end_to_end(tmp_path: Path) -> None:
     )
     assert registry["registered_in"] == "validation_ladder_only"
     assert registry["production_candidate_registration"]["registered"] is False
+
+
+def test_ladder_registration_carries_groot_libero_boundaries(tmp_path: Path) -> None:
+    family = default_groot_libero_family_config(python_executable="/usr/bin/python3")
+    registry = register_family_in_validation_ladder(
+        job_dir=tmp_path,
+        family=family,
+        checkpoint_sha256="",
+        verification={"real_rollout_report": False},
+        generated_at="2026-07-06T00:00:00+00:00",
+    )
+
+    assert registry["registered_in"] == "validation_ladder_only"
+    assert registry["integration_proof_scope"] == "libero_panda_groot_integration_proof"
+    assert registry["source_policy"]["repo_id"] == "nvidia/gr00t17-lerobot-libero_10-640"
+    assert registry["gpu_runtime"]["requires_gpu_runtime"] is True
+    assert registry["meaningful_manipulator_scoring"]["required_for_quality_claim"] == (
+        "libero_panda_simulator_bridge_or_panda_task_evaluator"
+    )
+    assert registry["production_candidate_registration"]["registered"] is False
+    boundary = registry["claim_boundary"]
+    assert boundary["libero_panda_action_projection_to_blueprint_delta_ee"] is True
+    assert boundary["panda_or_libero_task_success_proven"] is False
+    assert boundary["physical_robot_readiness_proven"] is False
+    assert boundary["public_claim_upgrade_allowed"] is False

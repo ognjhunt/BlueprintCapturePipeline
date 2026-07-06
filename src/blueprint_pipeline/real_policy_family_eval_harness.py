@@ -32,6 +32,12 @@ from .lerobot_policy_family import (
     create_scripted_baseline_checkpoint,
     load_lerobot_policy_checkpoint,
 )
+from .lerobot_torch_policy_adapter import (
+    GROOT_LIBERO_CHECKPOINT_REPO_ID,
+    GROOT_LIBERO_INTEGRATION_LABEL,
+    LIBERO_VISUAL_FEATURE_KEYS,
+    build_gpu_runtime_contract,
+)
 from .policy_ranking_ladder import build_known_ordering_policy_ladder
 
 HARNESS_MANIFEST_SCHEMA_VERSION = "real_policy_family_eval_harness_manifest.v1"
@@ -81,6 +87,87 @@ def default_family_config(
         "executed_horizon": 16,
         "max_rollout_seconds": 20.0,
     }
+
+
+def default_groot_libero_family_config(
+    *,
+    checkpoint: str = GROOT_LIBERO_CHECKPOINT_REPO_ID,
+    family_id: str = "nvidia_groot_n17_lerobot_libero_10_640",
+    device: str = "cuda",
+    python_executable: str | None = None,
+) -> dict[str, Any]:
+    """Family config for NVIDIA's GR00T N1.7 LIBERO/Panda checkpoint.
+
+    This is intentionally an integration-proof lane. It can prove that the
+    Blueprint closed-loop harness invoked a real learned GR00T/LeRobot policy,
+    but the first run is still a LIBERO/Panda action projection onto the
+    Blueprint tabletop proxy, not a production manipulator-quality claim.
+    """
+    executable = _string(python_executable) or sys.executable
+    adapter_command = " ".join(
+        [
+            shlex.quote(executable),
+            "-m",
+            "blueprint_pipeline.lerobot_torch_policy_adapter",
+            "--checkpoint",
+            shlex.quote(checkpoint),
+            "--device",
+            shlex.quote(device),
+            "--chunk-size",
+            "16",
+            "--serve",
+        ]
+    )
+    family = default_family_config(
+        family_id=family_id,
+        checkpoint_dir=checkpoint,
+        adapter_command=adapter_command,
+        requires_gpu=True,
+    )
+    family.update(
+        {
+            "adapter_mode": "persistent",
+            "render_obs_frames": True,
+            "chunk_size": 16,
+            "executed_horizon": 16,
+            "integration_proof_scope": GROOT_LIBERO_INTEGRATION_LABEL,
+            "source_policy": {
+                "repo_id": checkpoint,
+                "policy_type": "groot",
+                "trained_dataset": "IPEC-COMMUNITY/libero_10_no_noops_1.0.0_lerobot",
+                "embodiment_tag": "libero_sim",
+                "action_decode_transform": "libero",
+                "expected_visual_features": list(LIBERO_VISUAL_FEATURE_KEYS),
+                "expected_state_dim": 8,
+                "expected_action_dim": 7,
+            },
+            "gpu_runtime": build_gpu_runtime_contract(
+                checkpoint=checkpoint,
+                device=device,
+                policy_type="groot",
+            ),
+            "meaningful_manipulator_scoring": {
+                "status": "not_claimed_by_blueprint_tabletop_projection",
+                "workflow_projection_status": "available_for_integration_plumbing",
+                "required_for_quality_claim": (
+                    "libero_panda_simulator_bridge_or_panda_task_evaluator"
+                ),
+                "blueprint_tabletop_proxy_is_panda_evaluator": False,
+            },
+            "claim_boundary": {
+                "learned_policy_invocation_proof_target": True,
+                "libero_panda_action_projection_to_blueprint_delta_ee": True,
+                "panda_or_libero_task_success_proven": False,
+                "meaningful_manipulator_scoring_proven": False,
+                "blueprint_site_task_success_proven": False,
+                "humanoid_readiness_proven": False,
+                "physical_robot_readiness_proven": False,
+                "buyer_facing_deployment_claim_allowed": False,
+                "production_candidate_registration_allowed": False,
+            },
+        }
+    )
+    return family
 
 
 def write_demo_pick_place_capture_root(root: str | Path) -> Path:
@@ -509,6 +596,12 @@ def register_family_in_validation_ladder(
         "registered_in": "validation_ladder_only",
         "ranking_ladder_path": "real_policy_family_ranking_ladder.json",
         "closed_loop_eval_verified": verification.get("real_rollout_report") is True,
+        "integration_proof_scope": family.get("integration_proof_scope"),
+        "source_policy": _mapping(family.get("source_policy")),
+        "gpu_runtime": _mapping(family.get("gpu_runtime")),
+        "meaningful_manipulator_scoring": _mapping(
+            family.get("meaningful_manipulator_scoring")
+        ),
         "production_candidate_registration": {
             "registered": False,
             "registry": "UNITREE_ACTION_COMMAND_CANDIDATES",
@@ -531,6 +624,7 @@ def register_family_in_validation_ladder(
         "claim_boundary": {
             "validation_ladder_registration_is_not_production_candidacy": True,
             "closed_loop_cpu_eval_is_not_gpu_or_physical_proof": True,
+            **_mapping(family.get("claim_boundary")),
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -630,6 +724,12 @@ def run_real_policy_family_eval(
         "status": status,
         "family_id": family_id,
         "family_config": dict(family),
+        "integration_proof_scope": family.get("integration_proof_scope"),
+        "source_policy": _mapping(family.get("source_policy")),
+        "gpu_runtime": _mapping(family.get("gpu_runtime")),
+        "meaningful_manipulator_scoring": _mapping(
+            family.get("meaningful_manipulator_scoring")
+        ),
         "checkpoint_manifest": loaded.manifest(),
         "job_id": job_id,
         "job_dir": str(job_dir),
@@ -656,6 +756,7 @@ def run_real_policy_family_eval(
         "claim_boundary": {
             "closed_loop_cpu_eval_is_not_gpu_or_physical_proof": True,
             "report_truth_comes_from_task_eval_run_report_ledger": True,
+            **_mapping(family.get("claim_boundary")),
             "public_claim_upgrade_allowed": False,
         },
     }
@@ -678,6 +779,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             "this directory instead of --family-config"
         ),
     )
+    parser.add_argument(
+        "--groot-libero-checkpoint",
+        nargs="?",
+        const=GROOT_LIBERO_CHECKPOINT_REPO_ID,
+        default=None,
+        help=(
+            "Use the NVIDIA GR00T N1.7 LIBERO/Panda LeRobot checkpoint as a "
+            "GPU learned-policy integration proof."
+        ),
+    )
+    parser.add_argument("--groot-libero-device", default="cuda")
     parser.add_argument("--allow-simulator-execution", action="store_true")
     parser.add_argument("--bootstrap-demo-capture-root", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=600)
@@ -696,8 +808,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             checkpoint_dir=str(checkpoint),
         )
         family["render_obs_frames"] = True
+    elif args.groot_libero_checkpoint:
+        family = default_groot_libero_family_config(
+            checkpoint=args.groot_libero_checkpoint,
+            device=args.groot_libero_device,
+        )
     else:
-        print("[real-policy-eval] FAILED: provide --family-config or --scripted-baseline-checkpoint")
+        print(
+            "[real-policy-eval] FAILED: provide --family-config, "
+            "--scripted-baseline-checkpoint, or --groot-libero-checkpoint"
+        )
         return 1
 
     manifest = run_real_policy_family_eval(

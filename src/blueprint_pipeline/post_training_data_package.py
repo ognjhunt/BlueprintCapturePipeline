@@ -3408,6 +3408,7 @@ def _write_package_files(
     scene_id: str,
     capture_id: str,
     visual_augmentation_packet: Mapping[str, Any] | None = None,
+    scaniverse_import: Mapping[str, Any] | None = None,
     rl_post_training_handoff: Mapping[str, Any] | None = None,
     clip_curation: Mapping[str, Any] | None = None,
     clip_source_roots: Sequence[Path] = (),
@@ -3554,6 +3555,56 @@ def _write_package_files(
             output_dir / "visual_augmentation_support_manifest.json",
             visual_augmentation_support,
         )
+    scaniverse_payload = _mapping(scaniverse_import)
+    scaniverse_support: Dict[str, Any] | None = None
+    if scaniverse_payload:
+        scaniverse_boundary = _mapping(scaniverse_payload.get("claim_boundary"))
+        scaniverse_support = {
+            "schema_version": "post_training_scaniverse_support_manifest.v1",
+            "generated_at": generated_at,
+            "status": "included_external_derived_support_packet",
+            "source_import_manifest": included_artifacts.get("scaniverse_import_manifest"),
+            "source_proof_boundary": included_artifacts.get(
+                "scaniverse_import_proof_boundary"
+            ),
+            "source_import_status": scaniverse_payload.get("status"),
+            "asset_count": int(scaniverse_payload.get("asset_count") or 0),
+            "asset_roles": sorted(
+                {
+                    str(_mapping(asset).get("asset_role") or "").strip()
+                    for asset in scaniverse_payload.get("assets") or []
+                    if str(_mapping(asset).get("asset_role") or "").strip()
+                }
+            ),
+            "external_derived_support_asset": True,
+            "raw_capture_evidence": False,
+            "physical_robot_episode_evidence": False,
+            "buyer_review_label": (
+                "Scaniverse-derived support assets; raw Blueprint capture "
+                "evidence remains authoritative."
+            ),
+            "isaac_handoff_candidacy": _mapping(
+                scaniverse_payload.get("isaac_handoff_candidacy")
+            ),
+            "claim_boundary": {
+                **scaniverse_boundary,
+                "artifact_purpose": "post_training_scaniverse_support",
+                "included_in_post_training_data_package": True,
+                "external_derived_support_asset": True,
+                "scaniverse_assets_are_raw_capture_evidence": False,
+                "scaniverse_assets_are_task_success_evidence": False,
+                "scaniverse_assets_are_physics_contact_evidence": False,
+                "isaac_sim_execution_proven": False,
+                "physics_contact_validated": False,
+                "robot_policy_execution_proven": False,
+                "deployment_readiness_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        }
+        write_json(
+            output_dir / "scaniverse_support_asset_manifest.json",
+            scaniverse_support,
+        )
     rl_handoff_payload = dict(rl_post_training_handoff or {})
     if rl_handoff_payload:
         write_json(output_dir / "rl_post_training_handoff_packet.json", rl_handoff_payload)
@@ -3581,6 +3632,10 @@ def _write_package_files(
     if visual_augmentation_support:
         package_file_index["visual_augmentation_support_manifest"] = (
             "visual_augmentation_support_manifest.json"
+        )
+    if scaniverse_support:
+        package_file_index["scaniverse_support_asset_manifest"] = (
+            "scaniverse_support_asset_manifest.json"
         )
     if rl_handoff_payload:
         package_file_index["rl_post_training_handoff_packet"] = (
@@ -3658,6 +3713,7 @@ def _write_package_files(
         "dataset_card": dataset_card,
         "license_manifest": license_manifest,
         "visual_augmentation_support": visual_augmentation_support,
+        "scaniverse_support": scaniverse_support,
         "rl_post_training_handoff": rl_handoff_payload,
         "package_index": package_index,
         "checksums": checksums,
@@ -3699,6 +3755,7 @@ def _write_archive(output_dir: Path, generated_at: str) -> Dict[str, Any]:
         output_dir / "data_processing_terms_review.json",
         output_dir / "success_claim_ledger.json",
         output_dir / "visual_augmentation_support_manifest.json",
+        output_dir / "scaniverse_support_asset_manifest.json",
         output_dir / "rl_post_training_handoff_packet.json",
         output_dir / "package_index.json",
         output_dir / "checksums.json",
@@ -3948,6 +4005,11 @@ def build_post_training_data_package_export(
         ("worldlabs_export_manifest", "worldlabs_export_manifest.json"),
         ("arena_environment_packet", "simulation_automation/arena_environment_packet.json"),
         ("gpu_handoff_packet", "simulation_automation/gpu_handoff_packet.json"),
+        ("scaniverse_import_manifest", "scaniverse_assets/scaniverse_import_manifest.json"),
+        (
+            "scaniverse_import_proof_boundary",
+            "scaniverse_assets/scaniverse_import_proof_boundary.json",
+        ),
     ):
         value = _pipeline_artifact(pipeline_dir, relative_path)
         if value:
@@ -4194,6 +4256,9 @@ def build_post_training_data_package_export(
         if resolved_job_dir
         else {}
     )
+    scaniverse_import = _read_optional_mapping(
+        pipeline_dir / "scaniverse_assets" / "scaniverse_import_manifest.json"
+    )
     rl_post_training_handoff = build_rl_post_training_handoff_packet(
         scene_id=context.scene_id,
         capture_id=context.capture_id,
@@ -4226,6 +4291,7 @@ def build_post_training_data_package_export(
         scene_id=context.scene_id,
         capture_id=context.capture_id,
         visual_augmentation_packet=visual_augmentation_packet,
+        scaniverse_import=scaniverse_import,
         rl_post_training_handoff=rl_post_training_handoff,
         clip_curation=_clip_curation_summary(context.capture_root),
         clip_source_roots=clip_source_roots,
@@ -4340,6 +4406,11 @@ def build_post_training_data_package_export(
         "physical_robot_readiness_proven": False,
         "field_readiness_proven": False,
         "safety_validation_proven": False,
+        "scaniverse_support_assets_included": bool(scaniverse_import),
+        "scaniverse_assets_are_raw_capture_evidence": False,
+        "scaniverse_assets_are_task_success_evidence": False,
+        "scaniverse_assets_are_physics_contact_evidence": False,
+        "scaniverse_assets_are_deployment_readiness_evidence": False,
         "consent_revocation_blocks_downstream_use": manifest_consent_revoked,
         "package_delivery_is_not_revenue_share_commitment": True,
     }
@@ -4434,6 +4505,9 @@ def build_post_training_data_package_export(
             ),
             "visual_augmentation_generated_video_count": int(
                 visual_augmentation_packet.get("generated_video_count") or 0
+            ),
+            "scaniverse_support_asset_count": int(
+                scaniverse_import.get("asset_count") or 0
             ),
             "rl_handoff_recoverable_failure_label_count": int(
                 _mapping(
@@ -4564,6 +4638,11 @@ def build_post_training_data_package_export(
                 visual_augmentation_packet
             ),
             "visual_augmentation_generated_videos_are_raw_capture_evidence": False,
+            "scaniverse_support_assets_included": bool(scaniverse_import),
+            "scaniverse_assets_are_external_derived_support": bool(scaniverse_import),
+            "scaniverse_assets_are_raw_capture_evidence": False,
+            "scaniverse_assets_are_task_success_evidence": False,
+            "scaniverse_assets_are_physics_contact_evidence": False,
             "rl_post_training_handoff_included": bool(rl_post_training_handoff),
             "rl_sparse_reward_signal_included": bool(
                 _mapping(rl_post_training_handoff.get("sparse_reward_signal"))
@@ -4600,6 +4679,11 @@ def build_post_training_data_package_export(
         "visual_augmentation_support_manifest_path": (
             "visual_augmentation_support_manifest.json"
             if package_files.get("visual_augmentation_support")
+            else None
+        ),
+        "scaniverse_support_asset_manifest_path": (
+            "scaniverse_support_asset_manifest.json"
+            if package_files.get("scaniverse_support")
             else None
         ),
         "rl_post_training_handoff_packet_path": "rl_post_training_handoff_packet.json",

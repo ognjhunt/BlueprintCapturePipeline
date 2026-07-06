@@ -458,6 +458,24 @@ def build_buyer_package_readout(
         entitlement_wiring_present=bool(product_sku and entitlement_id),
         pricing_is_out_of_band=True,
     )
+    scaniverse_support_included = _manifest_bool(
+        export_policy.get("scaniverse_support_assets_included")
+    )
+    sections["derived_support_assets"] = _section(
+        "present_support_only" if scaniverse_support_included else "not_included",
+        [],
+        scaniverse_support_assets_included=scaniverse_support_included,
+        scaniverse_support_asset_manifest_path=manifest.get(
+            "scaniverse_support_asset_manifest_path"
+        ),
+        scaniverse_assets_are_external_derived_support=_manifest_bool(
+            export_policy.get("scaniverse_assets_are_external_derived_support")
+        ),
+        scaniverse_assets_are_raw_capture_evidence=False,
+        scaniverse_assets_are_task_success_evidence=False,
+        scaniverse_assets_are_physics_contact_evidence=False,
+        owner_system_simulator_evidence_required_for_claim_upgrade=True,
+    )
 
     blockers: list[str] = []
     export_status = str(manifest.get("status") or "").strip()
@@ -479,6 +497,9 @@ def build_buyer_package_readout(
         "package_purchase_is_not_deployment_approval": True,
         "generated_media_is_not_physical_proof": True,
         "simulator_results_are_not_real_world_outcomes": True,
+        "scaniverse_assets_are_raw_capture_evidence": False,
+        "scaniverse_assets_are_task_success_evidence": False,
+        "scaniverse_assets_are_physics_contact_evidence": False,
         "readout_summarizes_existing_evidence_only": True,
         "consent_revocation_blocks_downstream_use": revocation_required,
         "local_package_access_revoked": _manifest_bool(
