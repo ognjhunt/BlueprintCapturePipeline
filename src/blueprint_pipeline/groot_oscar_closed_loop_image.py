@@ -314,7 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Inspect the sealed blueprint-groot-oscar-eval image contract."
     )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--print-sealed-contract", action="store_true", default=True)
+    mode.add_argument("--print-sealed-contract", action="store_true")
     mode.add_argument("--print-launch-plan", action="store_true")
     mode.add_argument("--print-snapshot-plan", action="store_true")
     parser.add_argument("--start-frame", default="/workspace/initial_policy_frame.png")
