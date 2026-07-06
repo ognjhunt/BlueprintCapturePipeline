@@ -69,6 +69,57 @@ def test_sc3_protocol_defines_required_data_and_blocks_correlation_without_ancho
     assert artifact["policy_adapter_pack_contracts"][0]["launch_reviewable_without_execution"] is True
 
 
+def test_sc3_protocol_requires_real_booleans_for_policy_execution_claims() -> None:
+    artifact = build_sc3_eval_protocol_artifact(
+        generated_at="now",
+        job_request={},
+        policy_package_manifest={
+            "selected_modalities": ["policy_api_endpoint", "docker_container"],
+            "modalities": {
+                "policy_api_endpoint": {
+                    "selected": True,
+                    "status": "launch_ready_review_required",
+                },
+                "docker_container": {
+                    "selected": "true",
+                    "status": "launch_ready_review_required",
+                },
+            },
+        },
+        policy_execution_manifest={
+            "status": "completed",
+            "robot_team_policy_execution_proven": "true",
+            "modality_results": {
+                "policy_api_endpoint": {
+                    "status": "completed",
+                    "execution_performed": "true",
+                    "robot_policy_execution_proven": "true",
+                },
+                "docker_container": {
+                    "status": "completed",
+                    "execution_performed": True,
+                    "robot_policy_execution_proven": True,
+                },
+            },
+        },
+        robot_pov_observation_manifest=_robot_pov_manifest(),
+    )
+
+    assert [row["modality"] for row in artifact["policy_adapter_pack_contracts"]] == [
+        "policy_api_endpoint"
+    ]
+    contract = artifact["policy_adapter_pack_contracts"][0]
+    assert contract["execution_performed"] is False
+    assert contract["robot_team_policy_execution_proven"] is False
+    assert contract["launch_reviewable_without_execution"] is True
+    assert (
+        artifact["data_requirements"]["policy_requery_trace"][
+            "robot_team_policy_execution_proven"
+        ]
+        is False
+    )
+
+
 def test_sc3_protocol_fails_closed_on_missing_multiview_and_preserves_ranking_status() -> None:
     artifact = build_sc3_eval_protocol_artifact(
         generated_at="now",

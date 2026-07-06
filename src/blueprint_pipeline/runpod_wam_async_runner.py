@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, parse_bool, utc_now_iso, write_json
 from .paid_lane_guard import (
     PreSpendPreflightBlocked,
     bind_pending_teardown_instance,
@@ -1225,8 +1225,14 @@ def _read_compatible_warm_candidate(
             "mismatches": mismatches,
             "raw_secret_values_recorded": False,
         }
-    running_preserved = bool(payload.get("running_pod_preserved_for_hot_reuse"))
-    stopped_preserved = bool(payload.get("stopped_pod_preserved_for_warm_reuse"))
+    running_preserved = parse_bool(
+        payload.get("running_pod_preserved_for_hot_reuse"),
+        default=False,
+    )
+    stopped_preserved = parse_bool(
+        payload.get("stopped_pod_preserved_for_warm_reuse"),
+        default=False,
+    )
     reuse_kind = "existing_pod_candidate"
     if running_preserved:
         reuse_kind = "running_hot_candidate"
@@ -2579,11 +2585,17 @@ def _write_wam_provider_reliability_manifest(
     )
     teardown = _teardown_proof_from_runpod_poll(
         pod_id=pod_id,
-        teardown_requested=bool(poll_manifest.get("teardown_requested")),
+        teardown_requested=parse_bool(
+            poll_manifest.get("teardown_requested"),
+            default=False,
+        ),
         teardown_manifest=teardown_manifest,
         teardown_action=_string(poll_manifest.get("teardown_action")) or "not_requested",
         pod_status=pod_status,
-        keep_running_on_success=bool(poll_manifest.get("keep_running_on_success")),
+        keep_running_on_success=parse_bool(
+            poll_manifest.get("keep_running_on_success"),
+            default=False,
+        ),
         generated_at=generated_at,
     )
     manifest = build_provider_reliability_manifest(
@@ -2600,8 +2612,9 @@ def _write_wam_provider_reliability_manifest(
         not_applicable_phases=("artifact_quality", "task_evaluation"),
         spend={
             "provider_bundle_kind": provider_bundle_kind,
-            "continuing_spend_from_this_run": bool(
-                poll_manifest.get("continuing_spend_from_this_run")
+            "continuing_spend_from_this_run": parse_bool(
+                poll_manifest.get("continuing_spend_from_this_run"),
+                default=False,
             ),
             "teardown_action": poll_manifest.get("teardown_action"),
         },

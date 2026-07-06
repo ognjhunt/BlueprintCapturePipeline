@@ -481,6 +481,46 @@ def test_runpod_create_reuses_recorded_warm_candidate(
     assert manifest["warm_existing_pod"]["existing_pod_id"] == "warm-file-pod-123"
 
 
+def test_warm_candidate_string_false_flags_are_not_preserved_reuse(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    warm_candidate_file = tmp_path / "warm_candidate.json"
+    warm_candidate_file.write_text(
+        json.dumps(
+            {
+                "schema_version": runner.RUNPOD_WAM_WARM_CANDIDATE_SCHEMA_VERSION,
+                "generated_at": "prior",
+                "pod_id": "warm-file-pod-123",
+                "provider_bundle_kind": "wam",
+                "image_name": "docker.io/example/wam:20260629",
+                "cloud_type": "SECURE",
+                "running_pod_preserved_for_hot_reuse": "false",
+                "stopped_pod_preserved_for_warm_reuse": "false",
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(runner.RUNPOD_WAM_WARM_CANDIDATE_FILE_ENV, str(warm_candidate_file))
+
+    candidate = runner._read_compatible_warm_candidate(
+        provider_bundle_kind="wam",
+        image_name="docker.io/example/wam:20260629",
+        cloud_type="SECURE",
+    )
+
+    assert candidate["status"] == "selected"
+    assert candidate["reuse_kind"] == "existing_pod_candidate"
+    assert candidate["running_pod_preserved_for_hot_reuse"] is False
+    assert candidate["stopped_pod_preserved_for_warm_reuse"] is False
+    assert (
+        candidate["claim_boundary"]["running_hot_candidate_still_uses_update_start_path"]
+        is False
+    )
+    assert candidate["claim_boundary"]["resident_in_pod_job_queue_not_proven"] is False
+
+
 def test_runpod_create_falls_back_when_stopped_warm_candidate_cannot_start(
     tmp_path: Path,
     monkeypatch,
@@ -1142,6 +1182,39 @@ def test_runpod_poll_can_stop_pod_for_warm_reuse_instead_of_delete(
     assert teardown["billing_sweep_action"]["allocation_id"] == "pod-123"
     assert reliability["billing_sweep_recommended"] is True
     assert reliability["billing_sweep_action"]["allocation_id"] == "pod-123"
+
+
+def test_provider_reliability_manifest_parses_string_false_spend_flags(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+
+    manifest_path = runner._write_wam_provider_reliability_manifest(
+        job_dir=job_dir,
+        state={
+            "schema_version": runner.RUNPOD_WAM_STATE_SCHEMA_VERSION,
+            "generated_at": "prior",
+        },
+        poll_manifest={
+            "pod_id": "pod-123",
+            "pod_status": "RUNNING",
+            "provider_bundle_kind": "wam",
+            "output_zip_present": False,
+            "provider_output_terminal": False,
+            "teardown_requested": "false",
+            "keep_running_on_success": "false",
+            "continuing_spend_from_this_run": "false",
+        },
+        teardown_manifest=None,
+        generated_at="now",
+    )
+
+    reliability = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    teardown = reliability["phase_contracts"]["teardown"]
+    assert reliability["spend"]["continuing_spend_from_this_run"] is False
+    assert teardown["keep_alive_requested"] is False
+    assert "teardown_unproven:terminate_never_requested" in teardown["blockers"]
 
 
 def test_runpod_stop_http_error_rechecks_missing_pod_as_spend_released(

@@ -1897,7 +1897,7 @@ def make_local_oscar_subprocess_generate(
         output_video = out_dir / "oscar_next_observation.mp4"
         landmarks = request.get("skeleton_landmarks") or []
         skeleton_video = (
-            build_skeleton_video(landmarks, out_dir) if (build_skeleton_video and landmarks) else None
+            build_skeleton_video(landmarks, out_dir) if build_skeleton_video else None
         )
         argv = build_oscar_inference_argv(
             python=python,
@@ -2843,6 +2843,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--require-sam3-completed", action="store_true")
     parser.add_argument("--require-da3-completed", action="store_true")
     parser.add_argument("--require-fresh-learned-policy-requery", action="store_true")
+    parser.add_argument(
+        "--groot-sonic-policy-server-url",
+        default=None,
+        help=(
+            "Wire a live GR00T N1.7+SONIC ZMQ policy server as the learned "
+            "policy_endpoint (real per-step requery on the WAM-generated "
+            "observation). Example: tcp://127.0.0.1:5550"
+        ),
+    )
+    parser.add_argument("--groot-root", default=None)
     parser.add_argument("--clean-frame-reanchor-interval", type=int, default=0)
     parser.add_argument("--wam-consistency-command")
     parser.add_argument("--allow-wam-consistency-scoring", action="store_true")
@@ -3050,6 +3060,53 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         import subprocess
 
+        def _step_skeleton_video_builder(
+            landmarks: Sequence[Mapping[str, Any]], step_out_dir: Path
+        ) -> Path | None:
+            """Render this step's projected-skeleton conditioning clip.
+
+            OSCAR's inference CLI requires --skeleton-video; without landmarks
+            there is nothing truthful to render, so return None and let the
+            step fail closed rather than fabricating conditioning.
+            """
+            from .oscar_wam_provider_bundle import (
+                _render_projected_skeleton_conditioning_video,
+            )
+
+            if landmarks:
+                trace_path = Path(step_out_dir) / "step_skeleton_trace.jsonl"
+                with trace_path.open("w", encoding="utf-8") as handle:
+                    for frame_index in range(max(1, int(args.num_frames))):
+                        handle.write(
+                            json.dumps(
+                                {
+                                    "frame_index": frame_index,
+                                    "projected_landmarks": [dict(l) for l in landmarks],
+                                }
+                            )
+                            + "\n"
+                        )
+            elif projected_skeleton_trace_path and Path(projected_skeleton_trace_path).is_file():
+                # No per-step landmarks: condition on the materialized SEED
+                # skeleton trace (truthfully the seed pose, not this step's
+                # action). Recorded via the trace filename.
+                trace_path = Path(projected_skeleton_trace_path)
+            else:
+                return None
+            output_path = Path(step_out_dir) / "step_skeleton_conditioning.mp4"
+            try:
+                _render_projected_skeleton_conditioning_video(
+                    trace_path=trace_path,
+                    output_path=output_path,
+                    width=int(args.oscar_width),
+                    height=int(args.oscar_height),
+                    fps=float(args.oscar_fps),
+                    num_frames=max(1, int(args.num_frames)),
+                )
+            except Exception:
+                return None
+            return output_path if output_path.is_file() else None
+
         oscar_generate = make_local_oscar_subprocess_generate(
             oscar_repo=args.oscar_repo,
             checkpoint=args.checkpoint,
@@ -3059,6 +3116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             width=int(args.oscar_width),
             fps=float(args.oscar_fps),
             run=subprocess.run,
+            build_skeleton_video=_step_skeleton_video_builder,
             extract_next_frame=extract_next_observation_frame_from_video,
         )
         backend = make_oscar_per_step_wam_backend(
@@ -3068,11 +3126,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             num_frames=int(args.num_frames),
             seed=int(args.oscar_seed),
         )
+    policy_endpoint = None
+    if args.groot_sonic_policy_server_url:
+        from .groot_sonic_policy_endpoint import make_groot_sonic_zmq_policy_endpoint
+
+        policy_endpoint = make_groot_sonic_zmq_policy_endpoint(
+            policy_server_url=args.groot_sonic_policy_server_url,
+            groot_root=args.groot_root,
+        )
     manifest = run_oscar_isaac_closed_loop(
         output_dir=out_dir,
         start_frame_path=args.start_frame,
         route_points=route,
         wam_generate_next=backend,
+        policy_endpoint=policy_endpoint,
         steps=int(args.steps),
         harness_backend_kind=args.harness_backend_kind,
         harness_backend_command=harness_command,

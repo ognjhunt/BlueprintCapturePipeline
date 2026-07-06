@@ -7129,6 +7129,11 @@ def _write_task_eval_run_buyer_report(
         "gpu_cost_control_ledger_status": gpu_cost_ledger.get("status"),
         "remote_cloud_execution_status": remote_cloud_closure.get("status"),
         "simulator_service_status": simulator_result.get("status"),
+        "simulator_framework": simulator_result.get("framework"),
+        "evaluation_substrate": _string(
+            request.get("evaluation_substrate") or request.get("evaluationSubstrate")
+        )
+        or None,
         "evaluation_status": evaluation_result.get("status"),
         "live_eval_closure_status": live_closure.get("status"),
     }

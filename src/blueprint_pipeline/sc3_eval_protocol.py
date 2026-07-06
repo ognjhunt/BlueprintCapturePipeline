@@ -144,6 +144,10 @@ def _string(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _strict_bool(value: Any) -> bool:
+    return value is True
+
+
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_string(item) for item in value if _string(item)]
@@ -226,11 +230,11 @@ def _policy_adapter_review_contracts(
     contracts: list[dict[str, Any]] = []
     for modality, payload in modalities.items():
         modality_payload = _mapping(payload)
-        if not modality_payload.get("selected"):
+        if not _strict_bool(modality_payload.get("selected")):
             continue
         execution = _mapping(execution_results.get(modality))
-        execution_performed = bool(execution.get("execution_performed"))
-        execution_proven = bool(execution.get("robot_policy_execution_proven"))
+        execution_performed = _strict_bool(execution.get("execution_performed"))
+        execution_proven = _strict_bool(execution.get("robot_policy_execution_proven"))
         package_status = _string(modality_payload.get("status"))
         execution_status = _string(execution.get("status")) or "not_executed"
         contracts.append(
@@ -372,7 +376,7 @@ def build_sc3_eval_protocol_artifact(
         "policy_requery_trace": {
             "status": _string(policy_execution_manifest.get("status")) or "not_available",
             "path": policy_trace_path or "policy_execution_trace.json",
-            "robot_team_policy_execution_proven": bool(
+            "robot_team_policy_execution_proven": _strict_bool(
                 policy_execution_manifest.get("robot_team_policy_execution_proven")
             ),
         },

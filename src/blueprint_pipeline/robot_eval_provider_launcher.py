@@ -84,6 +84,10 @@ def _env_truthy(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _strict_bool(value: Any) -> bool:
+    return value is True
+
+
 def _secret_env_var_names(request: Mapping[str, Any]) -> list[str]:
     provider_shape = _mapping(request.get("provider_request_shape"))
     environment = _mapping(provider_shape.get("environment"))
@@ -171,17 +175,19 @@ def _provider_context(request: Mapping[str, Any]) -> dict[str, Any]:
         "provider_race_required_for_customer_path": _provider_race_required(
             provider_race
         ),
-        "customer_path_provider_failover_runtime_wired": bool(
+        "customer_path_provider_failover_runtime_wired": _strict_bool(
             provider_race.get("customer_path_provider_failover_runtime_wired")
         ),
         "customer_path_provider_failover_runtime_status": provider_race.get(
             "customer_path_provider_failover_runtime_status"
         )
         or _mapping(provider_race.get("runtime_readiness")).get("status"),
-        "customer_path_provider_race_runtime_launcher_available": bool(
-            provider_race.get("provider_race_runtime_launcher_available")
-            or _mapping(provider_race.get("launcher_contract")).get(
-                "provider_race_launcher_available"
+        "customer_path_provider_race_runtime_launcher_available": (
+            _strict_bool(provider_race.get("provider_race_runtime_launcher_available"))
+            or _strict_bool(
+                _mapping(provider_race.get("launcher_contract")).get(
+                    "provider_race_launcher_available"
+                )
             )
         ),
         "provider_race_candidate_count": int(
@@ -319,7 +325,7 @@ def _provider_race_handoff_summary(
             "status": "valid" if not all_blockers else "blocked",
             "handoff_status": handoff_status or None,
             "runtime_wired": runtime_wired,
-            "provider_race_runtime_launcher_available": bool(
+            "provider_race_runtime_launcher_available": _strict_bool(
                 handoff.get("provider_race_runtime_launcher_available")
             ),
             "launcher_command": handoff.get("launcher_command"),
@@ -683,10 +689,12 @@ def _run_builtin_vast_provider_adapter(
             "provider_launcher_command_executed": False,
             "builtin_provider_adapter_executed": True,
             "live_provider_calls_performed_by_launcher_module": True,
-            "live_provider_call_proven": bool(adapter_result.get("live_provider_call_proven")),
-            "provider_allocation_proven": bool(
-                adapter_result.get("provider_allocation_proven")
-                or adapter_result.get("vast_instance_ids")
+            "live_provider_call_proven": _strict_bool(
+                adapter_result.get("live_provider_call_proven")
+            ),
+            "provider_allocation_proven": (
+                _strict_bool(adapter_result.get("provider_allocation_proven"))
+                or bool(adapter_result.get("vast_instance_ids"))
             ),
             "provider_side_effects_may_have_occurred": True,
             "adapter_result_path": str(request_path.parent / "vast_provider_adapter_result.json"),

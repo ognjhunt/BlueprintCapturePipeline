@@ -267,6 +267,22 @@ def test_provider_launcher_helper_edges() -> None:
     assert launcher._number(object()) is None
     assert launcher._output_text(None) == ""
     assert "\ufffd" in launcher._output_text(b"\xff")
+    context = launcher._provider_context(
+        {
+            "prelaunch_spend_guard": {
+                "provider_race": {
+                    "customer_path_provider_failover_runtime_wired": "true",
+                    "provider_race_runtime_launcher_available": "true",
+                    "launcher_contract": {"provider_race_launcher_available": "true"},
+                }
+            }
+        }
+    )
+    assert context["customer_path_provider_failover_runtime_wired"] is False
+    assert (
+        context["customer_path_provider_race_runtime_launcher_available"]
+        is False
+    )
 
 
 def test_provider_launcher_blocks_when_launch_request_is_not_ready(
@@ -647,6 +663,44 @@ def test_provider_launcher_invokes_builtin_vast_adapter_without_operator_command
     assert calls[0]["mode"] == "live-startup-probe"
     assert calls[0]["allow_vast_api_call"] is True
     assert calls[0]["allow_instance_launch"] is True
+
+
+def test_provider_launcher_builtin_vast_adapter_requires_boolean_proof_flags(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+        provider="vast",
+    )
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+
+    def fake_vast_adapter(**_kwargs):  # type: ignore[no-untyped-def]
+        return {
+            "status": "completed",
+            "vast_instance_ids": [],
+            "live_provider_call_proven": "true",
+            "provider_allocation_proven": "true",
+            "all_vast_instances_destroyed_by_adapter": "true",
+            "blockers": [],
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter.run_vast_provider_adapter",
+        fake_vast_adapter,
+    )
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+    )
+
+    assert result["status"] == "completed"
+    assert result["live_provider_calls_performed_by_launcher_module"] is True
+    assert result["live_provider_call_proven"] is False
+    assert result["provider_allocation_proven"] is False
+    assert result["vast_instance_ids"] == []
+    assert result["all_vast_instances_destroyed_by_adapter"] == "true"
 
 
 def test_provider_launcher_records_command_failure(
