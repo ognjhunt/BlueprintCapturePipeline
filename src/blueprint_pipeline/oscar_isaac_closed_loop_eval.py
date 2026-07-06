@@ -43,9 +43,14 @@ from .oscar_cosmos_wam_evaluator import (
     WAM_CONSISTENCY_COMMAND_ENV,
     WAM_CONSISTENCY_COMMAND_OUTPUT,
     WAM_CONSISTENCY_GATE_ENV,
+    WAM_SUCCESS_LABEL_COMMAND_ENV,
+    WAM_SUCCESS_LABEL_COMMAND_OUTPUT,
+    WAM_SUCCESS_LABEL_GATE_ENV,
     _env_truthy as _wam_consistency_env_truthy,
     _normalize_wam_episode_consistency,
+    _normalize_wam_success_labels,
     _run_wam_consistency_command,
+    _run_wam_success_label_command,
     _unscored_wam_episode_consistency,
     _wam_consistency_blockers,
 )
@@ -1916,6 +1921,10 @@ def make_local_oscar_subprocess_generate(
             skeleton_video=skeleton_video,
         )
         completed = run(argv, cwd=str(repo), capture_output=True, text=True, check=False)
+        stdout_log = out_dir / "oscar_subprocess_stdout.log"
+        stderr_log = out_dir / "oscar_subprocess_stderr.log"
+        stdout_log.write_text(str(getattr(completed, "stdout", "") or ""), encoding="utf-8")
+        stderr_log.write_text(str(getattr(completed, "stderr", "") or ""), encoding="utf-8")
         returncode = getattr(completed, "returncode", 1)
         if returncode != 0 or not output_video.is_file():
             return {
@@ -1923,6 +1932,8 @@ def make_local_oscar_subprocess_generate(
                 "blockers": [f"oscar_per_step_inference_returncode_{returncode}"],
                 "generated_frame_path": "",
                 "generated_video_path": str(output_video) if output_video.is_file() else "",
+                "stdout_log_path": str(stdout_log),
+                "stderr_log_path": str(stderr_log),
             }
         next_frame = extract_next_frame(output_video, out_dir)
         if not next_frame or not Path(next_frame).is_file():
@@ -1931,11 +1942,15 @@ def make_local_oscar_subprocess_generate(
                 "blockers": ["oscar_per_step_next_frame_extraction_failed"],
                 "generated_frame_path": "",
                 "generated_video_path": str(output_video),
+                "stdout_log_path": str(stdout_log),
+                "stderr_log_path": str(stderr_log),
             }
         return {
             "status": "completed",
             "generated_frame_path": str(next_frame),
             "generated_video_path": str(output_video),
+            "stdout_log_path": str(stdout_log),
+            "stderr_log_path": str(stderr_log),
         }
 
     return _oscar_generate
@@ -2029,6 +2044,304 @@ def _wam_episode_consistency_requested(
     allow_wam_consistency_scoring: bool,
 ) -> bool:
     return bool(allow_wam_consistency_scoring or _wam_consistency_command(explicit_command))
+
+
+def _wam_success_label_command(explicit_command: str | None) -> str:
+    return _string(explicit_command) or _string(os.getenv(WAM_SUCCESS_LABEL_COMMAND_ENV))
+
+
+def _closed_loop_generated_episode_artifacts(
+    *,
+    output_dir: Path,
+    generated_at: str,
+    trace_rows: Sequence[Mapping[str, Any]],
+    initial_frame_path: str,
+    policy_id: str,
+    task_prompts: Sequence[str],
+    target: Sequence[float],
+) -> dict[str, Any]:
+    step_videos: list[dict[str, Any]] = []
+    for row in trace_rows:
+        video_path = _string(row.get("wam_generated_video"))
+        if not video_path:
+            continue
+        resolved_video = Path(video_path).expanduser()
+        step_videos.append(
+            {
+                "step_index": row.get("step_index"),
+                "generated_video_path": video_path,
+                "generated_video_present": resolved_video.is_file(),
+                "generated_frame_path": row.get("wam_generated_frame"),
+                "source_observation_frame_path": row.get("source_observation_frame"),
+                "policy_action": row.get("policy_action"),
+                "policy_action_source": row.get("policy_action_source"),
+                "policy_requeried_fresh": bool(row.get("policy_requeried_fresh")),
+            }
+        )
+    present_videos = [row for row in step_videos if row.get("generated_video_present")]
+    selected = present_videos[-1] if present_videos else {}
+    selected_video = _string(selected.get("generated_video_path"))
+    blockers = [] if selected_video else ["missing_generated_video_for_closed_loop_success_review"]
+    rollouts = (
+        [
+            {
+                "rollout_id": "oscar_isaac_closed_loop_episode",
+                "scenario_eval_run_id": "isaac_closed_loop_episode",
+                "policy_id": policy_id,
+                "model_candidate": "oscar_2b_per_step",
+                "generated_video_path": selected_video,
+                "generated_frame_path": selected.get("generated_frame_path"),
+                "source_observation_frame_path": initial_frame_path,
+                "final_generated_frame_path": selected.get("generated_frame_path"),
+                "selected_review_video_step_index": selected.get("step_index"),
+                "step_video_count": len(present_videos),
+                "task_target_position_xyz": [round(float(c), 6) for c in target],
+                "task_prompt": next((prompt for prompt in task_prompts if prompt), ""),
+                "generated_step_videos": step_videos,
+            }
+        ]
+        if selected_video
+        else []
+    )
+    manifest = {
+        "schema_version": "closed_loop_generated_episode_manifest.v1",
+        "generated_at": generated_at,
+        "status": "completed" if selected_video else "blocked",
+        "source_initial_site_capture_frame_path": initial_frame_path,
+        "step_video_count": len(present_videos),
+        "selected_review_video_path": selected_video or None,
+        "selected_review_video_step_index": selected.get("step_index"),
+        "generated_step_videos": step_videos,
+        "rollouts": rollouts,
+        "blockers": blockers,
+        "sim_only_constraint": {
+            "real_world_data_allowed": "site_capture_only",
+            "source_initial_frame_is_site_capture_input": True,
+            "generated_videos_are_model_outputs": True,
+            "physical_robot_rollout_used": False,
+        },
+        "claim_boundary": {
+            "generated_episode_video_is_model_derived_support_media": True,
+            "generated_episode_video_is_not_raw_robot_evidence": True,
+            "selected_review_video_is_not_task_success_without_success_label": True,
+            "real_world_task_success_proven": False,
+            "physical_robot_readiness_proven": False,
+        },
+        "raw_secret_values_recorded": False,
+    }
+    manifest_path = output_dir / "closed_loop_generated_episode_manifest.json"
+    results_path = output_dir / "closed_loop_generated_episode_results.json"
+    write_json(manifest_path, manifest)
+    write_json(
+        results_path,
+        {
+            "schema_version": "closed_loop_generated_episode_results.v1",
+            "generated_at": generated_at,
+            "status": manifest["status"],
+            "rollouts": rollouts,
+            "blockers": blockers,
+            "claim_boundary": manifest["claim_boundary"],
+        },
+    )
+    return {
+        **manifest,
+        "manifest_path": str(manifest_path),
+        "results_path": str(results_path),
+    }
+
+
+def _score_closed_loop_generated_video_success(
+    *,
+    output_dir: Path,
+    generated_at: str,
+    episode_artifacts: Mapping[str, Any],
+    task_prompts: Sequence[str],
+    command: str | None,
+    allow_wam_success_labeling: bool,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    success_dir = output_dir / "generated_video_success"
+    ensure_dir(success_dir)
+    rollouts = [
+        dict(item)
+        for item in episode_artifacts.get("rollouts", []) or []
+        if isinstance(item, Mapping)
+    ]
+    visual_smoke = visual_smoke_generated_rollouts_for_review(
+        rollouts=rollouts,
+        output_dir=success_dir / "visual_smoke",
+        generated_at=generated_at,
+        require_review_quality_profile=False,
+    )
+    visual_rollout_useful = bool(
+        _mapping(visual_smoke.get("claim_boundary")).get(
+            "visual_rollout_useful_for_task_success_review"
+        )
+    )
+    visual_smoke_path = success_dir / "wam_generated_rollout_visual_smoke.json"
+    write_json(visual_smoke_path, visual_smoke)
+    request_path = success_dir / "wam_success_label_request.json"
+    output_path = success_dir / WAM_SUCCESS_LABEL_COMMAND_OUTPUT
+    task_prompt = next((prompt for prompt in task_prompts if prompt), "")
+    request = {
+        "schema_version": "wam_success_label_request.v1",
+        "generated_at": generated_at,
+        "status": "ready_for_vlm_judge"
+        if rollouts and visual_rollout_useful
+        else "blocked_generated_rollout_visual_quality"
+        if rollouts
+        else "blocked_missing_generated_rollout",
+        "source_isaac_closed_loop_output_dir": str(output_dir),
+        "closed_loop_generated_episode_manifest": episode_artifacts.get("manifest_path"),
+        "closed_loop_generated_episode_results": episode_artifacts.get("results_path"),
+        "generated_rollout_visual_smoke": str(visual_smoke_path),
+        "generated_rollout_visual_smoke_status": _string(visual_smoke.get("status")),
+        "generated_rollout_visually_useful_for_success_review": visual_rollout_useful,
+        "rollouts": rollouts,
+        "task_prompts": [
+            {
+                "scenario_eval_run_id": "isaac_closed_loop_episode",
+                "task_prompt": task_prompt,
+                "task_id": "isaac_g1_oscar_per_step_closed_loop",
+            }
+        ],
+        "success_label_contract": {
+            "expected_output_path": str(output_path),
+            "required_top_level_keys": ["labels"],
+            "label_required_keys": ["rollout_id", "success", "confidence", "rationale"],
+            "success_requires": [
+                "The visible robot end effector reaches the task-relevant target.",
+                "The target object or control visibly changes into the requested state.",
+                "The state change is causally plausible from robot motion.",
+                "Ambiguous, occluded, or prompt-only evidence fails closed.",
+            ],
+        },
+        "sim_only_constraint": {
+            "real_world_data_allowed": "site_capture_only",
+            "source_initial_frame_is_site_capture_input": True,
+            "judge_input_is_generated_video": True,
+            "physical_robot_rollout_used": False,
+        },
+        "claim_boundary": {
+            "judge_input_is_generated_video_not_raw_robot_evidence": True,
+            "judge_success_label_does_not_prove_forward_inverse_consistency": True,
+            "judge_success_label_does_not_prove_real_world_task_success": True,
+            "judge_success_label_does_not_prove_physical_robot_readiness": True,
+            "raw_credentials_written_to_artifacts": False,
+        },
+    }
+    write_json(request_path, request)
+
+    configured_command = _wam_success_label_command(command)
+    label_blockers: list[str] = []
+    command_result: dict[str, Any] | None = None
+    command_payload: dict[str, Any] = {}
+    if not rollouts:
+        label_blockers = ["missing_generated_video_for_success_label"]
+    elif not visual_rollout_useful:
+        label_blockers = _string_list(visual_smoke.get("blockers")) or [
+            "generated_rollout_not_visually_useful_for_success_review"
+        ]
+    elif allow_wam_success_labeling or configured_command:
+        if not _wam_consistency_env_truthy(WAM_SUCCESS_LABEL_GATE_ENV):
+            label_blockers.append(f"missing_env_{WAM_SUCCESS_LABEL_GATE_ENV}")
+        if not allow_wam_success_labeling:
+            label_blockers.append("missing_cli_allow_wam_success_labeling")
+        if not configured_command:
+            label_blockers.append("missing_wam_success_label_command")
+        if not label_blockers:
+            command_payload, command_result = _run_wam_success_label_command(
+                command=configured_command,
+                input_path=request_path,
+                output_path=output_path,
+                timeout_seconds=timeout_seconds,
+            )
+            if command_result.get("status") != "completed":
+                label_blockers.extend(
+                    _string_list(command_result.get("blockers"))
+                    or ["wam_success_label_command_blocked"]
+                )
+    else:
+        label_blockers = ["requires_wam_success_review"]
+
+    if command_payload and not label_blockers:
+        success_labels = _normalize_wam_success_labels(
+            command_payload=command_payload,
+            rollouts=rollouts,
+            generated_at=generated_at,
+            visual_smoke_status=_string(visual_smoke.get("status")),
+            visual_rollout_useful=visual_rollout_useful,
+        )
+        label_blockers = _string_list(success_labels.get("blockers"))
+    else:
+        success_labels = {
+            "schema_version": "wam_success_labels.v1",
+            "generated_at": generated_at,
+            "status": "blocked" if not rollouts or not visual_rollout_useful else "requires_review",
+            "wam_success_label_from_generated_video": False,
+            "visual_smoke_status": _string(visual_smoke.get("status")),
+            "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
+            "review_grade_visual_evidence_available": visual_rollout_useful,
+            "review_grade_success_labels": False,
+            "label_count": 0,
+            "labels": [],
+            "blockers": label_blockers,
+            "command_result": command_result,
+            "human_review_required": bool(rollouts and visual_rollout_useful),
+            "claim_boundary": {
+                "success_label_is_from_generated_video_not_physical_robot": True,
+                "success_label_requires_passed_visual_smoke": True,
+                "success_label_does_not_prove_forward_inverse_consistency": True,
+                "success_label_does_not_prove_real_world_task_success": True,
+                "raw_credentials_written_to_artifacts": False,
+                "secret_hashes_written_to_artifacts": False,
+            },
+        }
+    if command_result is not None:
+        success_labels["command_result"] = command_result
+    labels = [
+        dict(item)
+        for item in success_labels.get("labels", []) or []
+        if isinstance(item, Mapping)
+    ]
+    generated_video_success_label_passed = bool(
+        success_labels.get("status") == "completed"
+        and success_labels.get("review_grade_success_labels")
+        and labels
+        and all(label.get("review_task_success") is True for label in labels)
+    )
+    write_json(success_dir / "wam_success_labels.json", success_labels)
+    return {
+        "schema_version": "closed_loop_generated_video_success.v1",
+        "generated_at": generated_at,
+        "status": "completed" if generated_video_success_label_passed else "not_proven",
+        "request_path": str(request_path),
+        "success_labels_path": str(success_dir / "wam_success_labels.json"),
+        "visual_smoke_path": str(visual_smoke_path),
+        "command_output_path": str(output_path),
+        "success_label_judge_configured": bool(configured_command),
+        "success_label_judge_ran": bool(
+            isinstance(command_result, Mapping) and command_result.get("status") == "completed"
+        ),
+        "wam_success_label_from_generated_video": bool(
+            success_labels.get("wam_success_label_from_generated_video")
+        ),
+        "generated_video_success_label_passed": generated_video_success_label_passed,
+        "simulated_manipulation_success_shown": generated_video_success_label_passed,
+        "real_world_task_success_proven": False,
+        "physical_robot_readiness_proven": False,
+        "success_labels": success_labels,
+        "blockers": label_blockers
+        if not generated_video_success_label_passed
+        else _string_list(success_labels.get("blockers")),
+        "claim_boundary": {
+            "simulated_manipulation_success_shown_requires_generated_video_label": True,
+            "generated_video_success_label_is_sim_only_support": True,
+            "real_world_task_success_proven": False,
+            "physical_robot_readiness_proven": False,
+            "forward_inverse_consistency_proven_by_success_label": False,
+        },
+    }
 
 
 def _score_closed_loop_step_episode_consistency(
@@ -2267,6 +2580,11 @@ def run_oscar_isaac_closed_loop(
     wam_consistency_command: str | None = None,
     allow_wam_consistency_scoring: bool = False,
     wam_consistency_timeout_seconds: float | None = None,
+    require_forward_inverse_consistency: bool = False,
+    wam_success_label_command: str | None = None,
+    allow_wam_success_labeling: bool = False,
+    require_generated_video_success_label: bool = False,
+    wam_success_label_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     resolved_out = Path(output_dir).expanduser().resolve()
@@ -2596,6 +2914,29 @@ def run_oscar_isaac_closed_loop(
         for row in trace_rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
 
+    generated_episode_artifacts = _closed_loop_generated_episode_artifacts(
+        output_dir=resolved_out,
+        generated_at=generated,
+        trace_rows=trace_rows,
+        initial_frame_path=initial_clean_frame,
+        policy_id=policy_id,
+        task_prompts=cleaned_target_prompts,
+        target=target,
+    )
+    generated_video_success = _score_closed_loop_generated_video_success(
+        output_dir=resolved_out,
+        generated_at=generated,
+        episode_artifacts=generated_episode_artifacts,
+        task_prompts=cleaned_target_prompts,
+        command=wam_success_label_command,
+        allow_wam_success_labeling=allow_wam_success_labeling,
+        timeout_seconds=(
+            float(wam_success_label_timeout_seconds)
+            if wam_success_label_timeout_seconds is not None
+            else float(backend_timeout_seconds)
+        ),
+    )
+
     final_pose = trace_rows[-1]["root_position"] if trace_rows else list(route[0])
     reached = bool(
         trace_rows
@@ -2623,10 +2964,29 @@ def run_oscar_isaac_closed_loop(
     consistency_early_termination_recommended = any(
         row.get("wam_episode_consistency_early_termination_recommended") for row in proof_rows
     )
+    generated_video_success_label_passed = bool(
+        generated_video_success.get("generated_video_success_label_passed")
+    )
+    simulated_manipulation_success_shown = bool(
+        generated_video_success.get("simulated_manipulation_success_shown")
+    )
     if policy_endpoint is not None and not policy_endpoint_requery_contract_proven:
         blockers.append("blocked_learned_policy_requery_not_proven")
     if require_fresh_learned_policy_requery and fresh_learned_policy_requery_steps < 1:
         blockers.append("fresh_learned_policy_requery_not_proven")
+    if require_forward_inverse_consistency and (
+        not consistency_results
+        or consistency_scorer_ran_steps < len(proof_rows)
+        or consistency_proven_steps < len(proof_rows)
+        or consistency_early_termination_recommended
+    ):
+        blockers.append("forward_inverse_consistency_not_proven")
+    if require_generated_video_success_label and not simulated_manipulation_success_shown:
+        blockers.append("generated_video_success_label_not_proven")
+        blockers.extend(
+            f"generated_video_success_label:{blocker}"
+            for blocker in _string_list(generated_video_success.get("blockers"))
+        )
     status = "completed" if trace_rows and not blockers else "blocked"
     feed_forward_verified = all(
         trace_rows[index]["source_observation_frame"] == trace_rows[index - 1]["wam_generated_frame"]
@@ -2691,12 +3051,38 @@ def run_oscar_isaac_closed_loop(
                 if str(blocker)
             }
         ),
+        "closed_loop_generated_episode_manifest_path": generated_episode_artifacts[
+            "manifest_path"
+        ],
+        "closed_loop_generated_episode_results_path": generated_episode_artifacts[
+            "results_path"
+        ],
+        "generated_video_success_label_requested": bool(
+            require_generated_video_success_label
+            or allow_wam_success_labeling
+            or _wam_success_label_command(wam_success_label_command)
+        ),
+        "generated_video_success_label_judge_configured": bool(
+            generated_video_success.get("success_label_judge_configured")
+        ),
+        "generated_video_success_label_judge_ran": bool(
+            generated_video_success.get("success_label_judge_ran")
+        ),
+        "generated_video_success_label_passed": generated_video_success_label_passed,
+        "simulated_manipulation_success_shown": simulated_manipulation_success_shown,
+        "real_world_task_success_proven": False,
         "requirements": {
             "fresh_oscar_provider_required": bool(require_fresh_oscar_provider),
             "real_perception_backend_required": bool(require_real_perception_backend),
             "sam3_completed_required": bool(require_sam3_completed),
             "da3_completed_required": bool(require_da3_completed),
             "fresh_learned_policy_requery_required": bool(require_fresh_learned_policy_requery),
+            "forward_inverse_consistency_required": bool(
+                require_forward_inverse_consistency
+            ),
+            "generated_video_success_label_required": bool(
+                require_generated_video_success_label
+            ),
         },
         "per_step": proof_rows,
     }
@@ -2743,10 +3129,30 @@ def run_oscar_isaac_closed_loop(
         "manipulation_success_proven": bool(
             manipulation_success_judge.get("manipulation_success_proven")
         ),
+        "closed_loop_generated_episode_manifest_path": generated_episode_artifacts[
+            "manifest_path"
+        ],
+        "closed_loop_generated_episode_results_path": generated_episode_artifacts[
+            "results_path"
+        ],
+        "generated_video_success": generated_video_success,
+        "generated_video_success_label_request_path": generated_video_success[
+            "request_path"
+        ],
+        "generated_video_success_labels_path": generated_video_success[
+            "success_labels_path"
+        ],
+        "generated_video_success_label_passed": generated_video_success_label_passed,
+        "simulated_manipulation_success_shown": simulated_manipulation_success_shown,
+        "real_world_task_success_proven": False,
         "success_proof": {
             "manipulation_success_proven": bool(
                 manipulation_success_judge.get("manipulation_success_proven")
             ),
+            "simulated_manipulation_success_shown": simulated_manipulation_success_shown,
+            "generated_video_success_label_passed": generated_video_success_label_passed,
+            "generated_video_success_label_is_sim_only": True,
+            "real_world_task_success_proven": False,
             "did_target_manipulation_succeed": bool(
                 manipulation_success_judge.get("did_target_manipulation_succeed")
             ),
@@ -2779,7 +3185,10 @@ def run_oscar_isaac_closed_loop(
             "manipulation_success_evaluator and kept separate from structural loop proof; it is "
             "not_proven unless a learned-policy task-success signal fired. Forward/inverse "
             "episode consistency, when configured, is an external reliability/abstention "
-            "signal only and can block feed-forward policy requery without proving task success."
+            "signal only and can block feed-forward policy requery without proving task success. "
+            "Generated-video success labels are sim-only support labels over model-derived media; "
+            "they do not prove real-world task success, physical robot readiness, or "
+            "forward/inverse episode consistency."
         ),
         "raw_secret_values_recorded": False,
     }
@@ -2857,6 +3266,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--wam-consistency-command")
     parser.add_argument("--allow-wam-consistency-scoring", action="store_true")
     parser.add_argument("--wam-consistency-timeout-seconds", type=float)
+    parser.add_argument("--require-forward-inverse-consistency", action="store_true")
+    parser.add_argument("--wam-success-label-command")
+    parser.add_argument("--allow-wam-success-labeling", action="store_true")
+    parser.add_argument("--require-generated-video-success-label", action="store_true")
+    parser.add_argument("--wam-success-label-timeout-seconds", type=float)
     parser.add_argument(
         "--short-visual-sanity-manifest",
         default=None,
@@ -3034,6 +3448,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "wam_episode_consistency_command_configured": bool(
                     args.wam_consistency_command
                 ),
+                "forward_inverse_consistency_required": bool(
+                    args.require_forward_inverse_consistency
+                ),
+                "wam_success_labeling_configured": bool(
+                    args.allow_wam_success_labeling or args.wam_success_label_command
+                ),
+                "wam_success_label_command_configured": bool(
+                    args.wam_success_label_command
+                ),
+                "generated_video_success_label_required": bool(
+                    args.require_generated_video_success_label
+                ),
             },
             "blockers": list(wam_backend_readiness.get("blockers") or []),
         }
@@ -3081,7 +3507,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             json.dumps(
                                 {
                                     "frame_index": frame_index,
-                                    "projected_landmarks": [dict(l) for l in landmarks],
+                                    "projected_landmarks": [
+                                        dict(landmark) for landmark in landmarks
+                                    ],
                                 }
                             )
                             + "\n"
@@ -3156,6 +3584,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         wam_consistency_command=args.wam_consistency_command,
         allow_wam_consistency_scoring=bool(args.allow_wam_consistency_scoring),
         wam_consistency_timeout_seconds=args.wam_consistency_timeout_seconds,
+        require_forward_inverse_consistency=bool(args.require_forward_inverse_consistency),
+        wam_success_label_command=args.wam_success_label_command,
+        allow_wam_success_labeling=bool(args.allow_wam_success_labeling),
+        require_generated_video_success_label=bool(
+            args.require_generated_video_success_label
+        ),
+        wam_success_label_timeout_seconds=args.wam_success_label_timeout_seconds,
     )
     print(json.dumps({"status": manifest["status"], "steps_executed": manifest.get("steps_executed")}, sort_keys=True))
     return 0 if manifest["status"] == "completed" else 2

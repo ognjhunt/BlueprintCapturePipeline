@@ -306,6 +306,8 @@ def _normalize_policy_server_action(action: Mapping[str, Any]) -> dict[str, Any]
         hand_targets["right_hand_joints"] = _jsonable(right_hand)
     if hand_targets:
         normalized["hand_targets"] = hand_targets
+    if not action_chunk:
+        return None
     return normalized
 
 

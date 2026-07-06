@@ -45,6 +45,7 @@ def build_local_delivery_command_manifest(
     *,
     output_dir: str | Path = ".",
     delivery_root: str | Path | None = None,
+    capture_root: str | Path | None = None,
 ) -> Dict[str, Any]:
     resolved_output = Path(output_dir).resolve()
     generated_at = utc_now_iso()
@@ -57,6 +58,31 @@ def build_local_delivery_command_manifest(
     bundle_dir = resolved_output / "delivery_bundle"
     if not bundle_dir.is_dir():
         blockers.append("missing_delivery_bundle")
+
+    # Rights are authoritative continuously: an open consent takedown on the
+    # source capture must stop this buyer-bundle copy. When a capture root is
+    # provided, re-read consent live and block on revocation; when it is not,
+    # record that the gate was not evaluated (visible, not a silent bypass).
+    consent_gate: Dict[str, Any] = {
+        "evaluated": False,
+        "reason": "no_capture_root_provided",
+    }
+    if capture_root is not None:
+        from .consent_takedown import evaluate_delivery_time_takedown_gate
+
+        gate = evaluate_delivery_time_takedown_gate(
+            capture_root=Path(capture_root).expanduser(),
+            surface="arena_local_delivery",
+        )
+        consent_gate = {
+            "evaluated": True,
+            "status": _string(gate.get("status")),
+            "serve_allowed": bool(gate.get("serve_allowed")),
+            "blockers": [str(item) for item in (gate.get("blockers") or [])],
+            "capture_root": str(Path(capture_root).expanduser()),
+        }
+        if not gate.get("serve_allowed"):
+            blockers.append(f"consent_takedown_open:{_string(gate.get('status'))}")
 
     local_access_paths: List[Dict[str, Any]] = []
     delivery_root_path = Path(root_text).expanduser().resolve() if root_text else None
@@ -88,6 +114,7 @@ def build_local_delivery_command_manifest(
         "delivery_root": str(delivery_root_path) if delivery_root_path else None,
         "target_dir": str(target_dir) if target_dir else None,
         "blockers": blockers,
+        "consent_gate": consent_gate,
         "signed_urls": [],
         "local_access_paths": local_access_paths,
         "storage_upload_performed": False,
@@ -117,10 +144,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--output-dir", default=".")
     parser.add_argument("--delivery-root", default=None)
+    parser.add_argument(
+        "--capture-root",
+        default=None,
+        help="Source capture root; delivery is blocked if its consent is revoked.",
+    )
     args = parser.parse_args(argv)
     result = build_local_delivery_command_manifest(
         output_dir=args.output_dir,
         delivery_root=args.delivery_root,
+        capture_root=args.capture_root,
     )
     print(f"[arena-local-delivery] manifest={Path(args.output_dir).resolve() / OUTPUT_FILENAME}")
     print(f"[arena-local-delivery] status={result['status']}")

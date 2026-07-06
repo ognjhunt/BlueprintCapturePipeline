@@ -1,0 +1,14 @@
+# Main-env deps the GR00T x OSCAR closed loop needs ON TOP of the pinned
+# blueprint-oscar-wam base (which already carries torch 2.10.0+cu128, cuDNN,
+# transformer-engine, OSCAR source + its worldsim deps). This mirrors the
+# proven runtime line from output/kitchen_g1_groot_sonic_eval/.../run_t4.sh:
+#   pip install -e . mujoco pillow pyzmq msgpack msgpack-numpy imageio uv huggingface_hub
+# Intentionally NO torch/torchvision here so the base's cu128 build is untouched.
+mujoco
+pillow
+pyzmq
+msgpack
+msgpack-numpy
+imageio
+uv
+huggingface_hub

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -180,3 +181,78 @@ def test_arena_package_delivery_local_success_blockers_and_cli(
     blocked_output = capsys.readouterr().out
     assert blocked_exit == 1
     assert "[arena-local-delivery] blockers=3" in blocked_output
+
+
+def _delivery_capture(tmp_path: Path, *, revoked: bool) -> Path:
+    capture_root = tmp_path / "scenes" / "s1" / "captures" / "c1"
+    (capture_root / "raw").mkdir(parents=True)
+    (capture_root / "raw" / "rights_consent.json").write_text(
+        json.dumps(
+            {
+                "consent_status": "revoked" if revoked else "documented",
+                **(
+                    {"consent_revoked": True, "consent_revoked_at": "2026-07-04T00:00:00Z"}
+                    if revoked
+                    else {}
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return capture_root
+
+
+def test_arena_delivery_blocks_open_consent_takedown(tmp_path: Path, monkeypatch) -> None:
+    capture_root = _delivery_capture(tmp_path, revoked=True)
+    output_dir = tmp_path / "arena-package"
+    nested = output_dir / "delivery_bundle" / "clips" / "clip.mp4"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"clip")
+    delivery_root = tmp_path / "deliveries"
+    monkeypatch.setenv(delivery.GATE_ENV, "true")
+
+    manifest = delivery.build_local_delivery_command_manifest(
+        output_dir=output_dir, delivery_root=delivery_root, capture_root=capture_root
+    )
+
+    assert manifest["status"] == "blocked"
+    assert any("consent" in blocker for blocker in manifest["blockers"])
+    assert manifest["local_access_paths"] == []  # nothing copied
+    assert not (delivery_root / output_dir.name / "clips" / "clip.mp4").exists()
+
+
+def test_arena_delivery_allows_documented_consent(tmp_path: Path, monkeypatch) -> None:
+    capture_root = _delivery_capture(tmp_path, revoked=False)
+    output_dir = tmp_path / "arena-package"
+    nested = output_dir / "delivery_bundle" / "clip.mp4"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"clip")
+    delivery_root = tmp_path / "deliveries"
+    monkeypatch.setenv(delivery.GATE_ENV, "true")
+
+    manifest = delivery.build_local_delivery_command_manifest(
+        output_dir=output_dir, delivery_root=delivery_root, capture_root=capture_root
+    )
+
+    assert manifest["status"] == "local_delivery_ready_review_required"
+    assert manifest["consent_gate"]["evaluated"] is True
+    assert (delivery_root / output_dir.name / "clip.mp4").read_bytes() == b"clip"
+
+
+def test_arena_delivery_marks_consent_gate_unevaluated_without_capture_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output_dir = tmp_path / "arena-package"
+    nested = output_dir / "delivery_bundle" / "clip.mp4"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"clip")
+    delivery_root = tmp_path / "deliveries"
+    monkeypatch.setenv(delivery.GATE_ENV, "true")
+
+    manifest = delivery.build_local_delivery_command_manifest(
+        output_dir=output_dir, delivery_root=delivery_root
+    )
+
+    # Honest transparency: the gate not running is visible, not silent.
+    assert manifest["consent_gate"]["evaluated"] is False
+    assert manifest["status"] == "local_delivery_ready_review_required"

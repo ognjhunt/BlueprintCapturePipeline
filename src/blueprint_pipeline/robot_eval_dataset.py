@@ -3453,6 +3453,7 @@ def _rights_privacy_status(
     privacy_manifest: Mapping[str, Any],
     descriptor: Mapping[str, Any] | None = None,
     raw_manifest: Mapping[str, Any] | None = None,
+    capture_root: str | Path | None = None,
 ) -> Dict[str, Any]:
     descriptor = _mapping(descriptor)
     raw_manifest = _mapping(raw_manifest)
@@ -3481,6 +3482,14 @@ def _rights_privacy_status(
             )
         )
     )
+    # TOCTOU: re-read consent LIVE so a revocation that landed after the
+    # descriptor/manifest were written still blocks the dataset (fail-closed;
+    # a live read can only ADD a revocation, never clear the manifest state).
+    if not consent_revoked and capture_root is not None:
+        from .consent_takedown import read_consent_state
+
+        if read_consent_state(capture_root).get("state") == "revoked":
+            consent_revoked = True
     consent_revoked_at = _string(
         capture_rights.get("consent_revoked_at") or capture_rights.get("consentRevokedAt")
     )
@@ -4039,6 +4048,8 @@ def build_real_site_robot_eval_dataset(
         privacy_manifest=privacy_manifest,
         descriptor=descriptor,
         raw_manifest=raw_manifest,
+        # Live consent re-read at dataset emit (revoke-after-manifest guard).
+        capture_root=capture_root,
     )
     rights_packet = _rights_packet(
         rights_summary=rights_summary,

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from blueprint_pipeline.success_claim_contracts import build_success_claim_ledger
 from blueprint_pipeline.task_eval_run_report import (
     RECOMMENDED_MIN_TRIALS_PER_CONDITION,
@@ -50,6 +53,28 @@ def test_scorecard_never_emits_bare_rate_without_trials_and_interval() -> None:
         scorecard["recommended_min_trials_per_condition"]
         == RECOMMENDED_MIN_TRIALS_PER_CONDITION
     )
+
+
+def test_scorecard_withholds_numeric_rates_at_no_claim() -> None:
+    # A no_claim run has no task-success grounding; publishing success_rate +
+    # "completed" lets a buyer anchor on numbers the ladder never earned.
+    scorecard = build_task_eval_scorecard(
+        attempts=_attempts(3, 1), evidence_level="no_claim"
+    )
+    assert scorecard["status"] == "rates_withheld_insufficient_evidence"
+    assert scorecard["rates_published"] is False
+    row = scorecard["conditions"][0]
+    assert row["trials"] == 4 and row["successes"] == 3  # factual counts kept
+    assert row["success_rate"] is None  # numeric interval withheld
+
+
+def test_scorecard_withholds_numeric_rates_at_media_valid() -> None:
+    # media_valid means the media is decodable — still not a task-success claim.
+    scorecard = build_task_eval_scorecard(
+        attempts=_attempts(3, 1), evidence_level="media_valid"
+    )
+    assert scorecard["status"] == "rates_withheld_insufficient_evidence"
+    assert scorecard["conditions"][0]["success_rate"] is None
 
 
 def test_scorecard_rejects_non_boolean_success_labels() -> None:
@@ -517,4 +542,56 @@ def test_report_recomputes_wam_evidence_from_nested_payload() -> None:
     assert (
         "wam_evaluation:wam_score_without_consistency_or_calibration"
         in report["blockers"]
+    )
+
+
+def _revoked_capture(tmp_path: Path) -> Path:
+    capture_root = tmp_path / "scenes" / "s" / "captures" / "c"
+    (capture_root / "raw").mkdir(parents=True)
+    (capture_root / "raw" / "rights_consent.json").write_text(
+        json.dumps(
+            {
+                "consent_status": "revoked",
+                "consent_revoked": True,
+                "consent_revoked_at": "2026-07-04T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return capture_root
+
+
+def test_report_blocks_on_live_consent_revocation_despite_clean_gate(tmp_path) -> None:
+    # Rights gate mapping is CLEARED with no revocation — the stale-manifest case.
+    ledger = build_success_claim_ledger(task_metadata=None)
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(1, 0)},
+        success_claim_ledger=ledger,
+        rights_privacy_gate={"status": "cleared", "cleared": True},
+        capture_root=_revoked_capture(tmp_path),
+    )
+    assert report["status"] == "blocked"
+    assert (
+        "rights_privacy_gate_consent_revoked_takedown_required" in report["blockers"]
+    )
+
+
+def test_report_not_blocked_by_live_read_when_consent_documented(tmp_path) -> None:
+    capture_root = tmp_path / "scenes" / "s" / "captures" / "c"
+    (capture_root / "raw").mkdir(parents=True)
+    (capture_root / "raw" / "rights_consent.json").write_text(
+        json.dumps({"consent_status": "documented"}), encoding="utf-8"
+    )
+    ledger = build_success_claim_ledger(task_metadata=None)
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(1, 0)},
+        success_claim_ledger=ledger,
+        rights_privacy_gate={"status": "cleared", "cleared": True},
+        capture_root=capture_root,
+    )
+    assert (
+        "rights_privacy_gate_consent_revoked_takedown_required"
+        not in report["blockers"]
     )

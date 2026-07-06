@@ -123,6 +123,49 @@ The sealed image manifest only proves build/package readiness. It does not prove
 provider startup, GR00T policy inference, WAM rollout quality, semantic task
 success, or physical robot readiness.
 
+## GR00T x OSCAR Closed-Loop Eval (sealed)
+
+`groot_oscar_closed_loop/` is the sealed image for the closed-loop lane
+(`oscar_isaac_closed_loop_eval` + `groot_sonic_policy_endpoint`, the "T4" lane)
+where OSCAR-2B generates each observation and a live GR00T N1.7 + SONIC server is
+requeried per step. It exists to turn the 40-70 min/pod hand-bootstrap into
+`docker pull` + go. It extends the digest-pinned `blueprint-oscar-wam` base and
+adds the last mile: the GR00T Python-3.10 `uv` venv, both checkpoints
+(`LucaFrat/groot-bs16` + `zywu2115/OSCAR-2B@c9781ffa`, baked for zero runtime HF
+pulls), our package, and the `libosmesa6`/`mujoco` main-env deps.
+
+Two build paths, same contract:
+
+```bash
+# Primary: crane-snapshot an already-healthy pod (freezes tonight's exact env).
+./scripts/snapshot_groot_oscar_eval_pod.sh --print-plan        # hermetic dry run
+BLUEPRINT_ALLOW_GROOT_OSCAR_SNAPSHOT=true \
+BLUEPRINT_GROOT_OSCAR_SNAPSHOT_SSH="root@<host> -p <port> -i $HOME/.ssh/id_ed25519" \
+BLUEPRINT_GROOT_OSCAR_SNAPSHOT_BASE_IMAGE="<pod-base-image-ref>" \
+BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF="docker.io/nijelhunt/blueprint-groot-oscar-eval:20260706-cu128-amd64" \
+./scripts/snapshot_groot_oscar_eval_pod.sh
+
+# Fallback: reproducible clean build from the pinned base.
+BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF="docker.io/nijelhunt/blueprint-groot-oscar-eval:20260706-cu128-amd64" \
+BLUEPRINT_ALLOW_GROOT_OSCAR_CLOSED_LOOP_IMAGE_PUSH=true \
+./scripts/build_push_groot_oscar_closed_loop_image.sh
+```
+
+Launcher wiring is additive and fail-closed: the closed-loop launch uses the
+sealed image (no clone/venv/download) only when
+`BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF` is a versioned/digest ref AND
+`BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SEALED_IMAGE_CONFIRMED=true`. Otherwise the
+legacy runtime-bootstrap path is unchanged. Inspect the contract / launch plan:
+
+```bash
+python -m blueprint_pipeline.groot_oscar_closed_loop_image --print-sealed-contract
+python -m blueprint_pipeline.groot_oscar_closed_loop_image --print-launch-plan --steps 1
+```
+
+Full runbook: `docs/runbooks/groot-oscar-closed-loop-sealed-image.md`. The image
+proves build/runtime readiness only — not provider startup, GR00T inference, WAM
+quality, or task success.
+
 ## MuJoCo Worker
 
 ```bash

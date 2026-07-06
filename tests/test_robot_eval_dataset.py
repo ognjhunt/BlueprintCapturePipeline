@@ -1119,3 +1119,37 @@ def test_robot_eval_dataset_recognizes_robot_team_submission_modalities(
         if item["modality_id"] == "policy_api_endpoint"
     )
     assert policy_modality["review_status"] == "reference_present_requires_owner_system_review"
+
+
+def test_rights_privacy_status_blocks_on_live_consent_revocation(tmp_path: Path) -> None:
+    from blueprint_pipeline.robot_eval_dataset import _rights_privacy_status
+
+    capture_root = tmp_path / "scenes" / "s" / "captures" / "c"
+    (capture_root / "raw").mkdir(parents=True)
+    # LIVE source is revoked; the descriptor/manifest below are stale-clean.
+    (capture_root / "raw" / "rights_consent.json").write_text(
+        json.dumps(
+            {
+                "consent_status": "revoked",
+                "consent_revoked": True,
+                "consent_revoked_at": "2026-07-04T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _rights_privacy_status(
+        rights_summary={},
+        rights_review={},
+        privacy_manifest={},
+        descriptor={
+            "capture_rights": {
+                "consent_status": "documented",
+                "consent_scope": ["robot_evaluation", "model_training"],
+            }
+        },
+        raw_manifest={},
+        capture_root=capture_root,
+    )
+    assert result["consent_revoked"] is True
+    assert result["revocation_takedown_required"] is True
+    assert result["blocked"] is True

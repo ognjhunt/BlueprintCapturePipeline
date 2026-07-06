@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import wam_episode_consistency_label_local as consistency_labeler
+from tests.video_codec import require_video_codec_or_skip
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -25,7 +26,7 @@ def _write_motion_video(path: Path) -> Path:
         (96, 64),
     )
     if not writer.isOpened():
-        pytest.skip("cv2 VideoWriter cannot create mp4")
+        require_video_codec_or_skip("cv2 VideoWriter cannot create mp4")
     try:
         for index in range(8):
             frame = np.zeros((64, 96, 3), dtype=np.uint8)

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .success_claim_contracts import (
@@ -315,6 +316,16 @@ def build_task_eval_scorecard(
     if not conditions and not invalid_attempts:
         blockers.append("no_attempts_available_for_scorecard")
 
+    # Numeric success rates are published only when the evidence level carries a
+    # task-success claim (review_task_success and above). Below that (no_claim,
+    # media_valid) the per-attempt labels are not task-success measurements, so
+    # emitting rates + "completed" would let a reader anchor on numbers the ladder
+    # never earned — keep the factual trial/success counts, withhold the interval.
+    rates_published = (
+        evidence_level in CLAIM_LADDER
+        and CLAIM_LADDER.index(evidence_level)
+        >= CLAIM_LADDER.index("review_task_success")
+    )
     rows: List[Dict[str, Any]] = []
     for (task_id, scenario_id), bucket in conditions.items():
         interval = _wilson_interval(bucket["successes"], bucket["trials"])
@@ -324,13 +335,20 @@ def build_task_eval_scorecard(
                 "scenario_id": scenario_id,
                 "trials": bucket["trials"],
                 "successes": bucket["successes"],
-                "success_rate": interval,
+                "success_rate": interval if rates_published else None,
                 "below_recommended_trials": bucket["trials"] < recommended_min_trials,
             }
         )
+    if not rows or blockers:
+        status = "blocked"
+    elif rates_published:
+        status = "completed"
+    else:
+        status = "rates_withheld_insufficient_evidence"
     return {
         "schema_version": SCORECARD_SCHEMA_VERSION,
-        "status": "completed" if rows and not blockers else "blocked",
+        "status": status,
+        "rates_published": rates_published,
         "evidence_level": evidence_level,
         "success_definition": (
             "Rates count attempt-level success labels at evidence level "
@@ -401,6 +419,7 @@ def build_task_eval_run_report(
     policy_binding: Mapping[str, Any] | None = None,
     rights_privacy_gate: Mapping[str, Any] | None = None,
     wam_evaluation: Mapping[str, Any] | None = None,
+    capture_root: str | Path | None = None,
     generated_at: str | None = None,
 ) -> Dict[str, Any]:
     """Compose the buyer deliverable for one Task Evaluation Run, fail-closed.
@@ -450,6 +469,14 @@ def build_task_eval_run_report(
         blockers.append("rights_privacy_gate_missing")
     else:
         blockers.extend(_rights_privacy_gate_blockers(rights_gate))
+    # TOCTOU: re-read consent LIVE at report emit so a revocation that landed
+    # after the rights gate was computed still blocks the buyer report. Fail-closed:
+    # a live read can only ADD the revocation blocker, never clear an inherited one.
+    if capture_root is not None:
+        from .consent_takedown import read_consent_state
+
+        if read_consent_state(capture_root).get("state") == "revoked":
+            blockers.append("rights_privacy_gate_consent_revoked_takedown_required")
 
     policy_binding_payload, policy_binding_blockers = _sanitize_policy_binding(
         policy_binding

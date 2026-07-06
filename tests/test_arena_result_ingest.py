@@ -146,7 +146,11 @@ def test_arena_result_ingest_writes_package_and_blocks_live_gates(tmp_path: Path
     assert buyer_report["success_claim_ledger"]["highest_truthful_claim"] == "no_claim"
     condition = buyer_report["scorecard"]["conditions"][0]
     assert condition["trials"] == 1
-    assert condition["success_rate"]["point"] == 0.0
+    assert condition["successes"] == 0
+    # no_claim withholds the numeric success_rate (only the factual counts stand);
+    # publishing a rate + "completed" here would over-claim a run with no grounding.
+    assert condition["success_rate"] is None
+    assert buyer_report["scorecard"]["status"] == "rates_withheld_insufficient_evidence"
     assert (output_dir / "dataset_card.json").is_file()
     assert (output_dir / "archives" / "post_training_data_package.tar.gz").is_file()
 

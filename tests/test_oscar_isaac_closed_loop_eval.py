@@ -104,6 +104,49 @@ Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_OUTPUT"]).write_text(json.dumps(paylo
     return command
 
 
+def _write_success_label_command(tmp_path: Path, *, success: bool) -> Path:
+    command = tmp_path / ("wam_success_pass.py" if success else "wam_success_fail.py")
+    command.write_text(
+        f"""
+import json
+import os
+from pathlib import Path
+
+request = json.loads(Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_INPUT"]).read_text(encoding="utf-8"))
+assert request["schema_version"] == "wam_success_label_request.v1"
+assert request["sim_only_constraint"]["real_world_data_allowed"] == "site_capture_only"
+assert request["claim_boundary"]["judge_input_is_generated_video_not_raw_robot_evidence"] is True
+rollout = request["rollouts"][0]
+payload = {{
+    "schema_version": "wam_success_labels.command.v1",
+    "status": "completed",
+    "provider": "fake-generated-video-success",
+    "model": "fake-vlm",
+    "labels": [
+        {{
+            "rollout_id": rollout["rollout_id"],
+            "scenario_eval_run_id": rollout["scenario_eval_run_id"],
+            "policy_id": rollout["policy_id"],
+            "success": {success!r},
+            "confidence": 0.93,
+            "rationale": "The generated video was reviewed against the task prompt.",
+            "task_completion_evidence": ["visible robot-caused target state change"]
+            if {success!r}
+            else [],
+            "failure_modes": []
+            if {success!r}
+            else ["target_state_change_not_visible"],
+            "visual_evidence_used": True,
+        }}
+    ],
+}}
+Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    return command
+
+
 def _passed_visual_smoke(**kwargs):
     return {
         "schema_version": "wam_generated_rollout_visual_smoke.v1",
@@ -706,6 +749,122 @@ def test_closed_loop_external_episode_consistency_stays_separate_from_task_succe
         )
     )
     assert judge["manipulation_success_proven"] is False
+
+
+def test_closed_loop_generated_video_success_label_is_sim_only_and_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=31)
+    consistency_command = _write_episode_consistency_command(
+        tmp_path, inverse_consistent=True
+    )
+    success_command = _write_success_label_command(tmp_path, success=True)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING", "true")
+    monkeypatch.setattr(L, "visual_smoke_generated_rollouts_for_review", _passed_visual_smoke)
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_stub_wam_with_video(tmp_path),
+        steps=2,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        perception_target_prompts=["open the fridge"],
+        wam_consistency_command=f"{sys.executable} {consistency_command}",
+        allow_wam_consistency_scoring=True,
+        require_forward_inverse_consistency=True,
+        wam_success_label_command=f"{sys.executable} {success_command}",
+        allow_wam_success_labeling=True,
+        require_generated_video_success_label=True,
+        wam_consistency_timeout_seconds=5.0,
+        wam_success_label_timeout_seconds=5.0,
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["forward_inverse_consistency_proven"] is True
+    assert manifest["generated_video_success_label_passed"] is True
+    assert manifest["simulated_manipulation_success_shown"] is True
+    assert manifest["real_world_task_success_proven"] is False
+    assert manifest["manipulation_success_proven"] is False
+    assert manifest["success_proof"]["generated_video_success_label_is_sim_only"] is True
+    assert manifest["success_proof"]["real_world_task_success_proven"] is False
+    assert "generated_video_success_label_not_proven" not in manifest["blockers"]
+
+    request = json.loads(
+        Path(manifest["generated_video_success_label_request_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert request["schema_version"] == "wam_success_label_request.v1"
+    assert request["sim_only_constraint"]["real_world_data_allowed"] == "site_capture_only"
+    assert request["sim_only_constraint"]["physical_robot_rollout_used"] is False
+    assert request["rollouts"][0]["generated_video_path"].endswith(".mp4")
+    assert request["task_prompts"][0]["task_prompt"] == "open the fridge"
+
+    labels = json.loads(
+        Path(manifest["generated_video_success_labels_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert labels["status"] == "completed"
+    assert labels["labels"][0]["review_task_success"] is True
+    assert labels["claim_boundary"][
+        "success_label_does_not_prove_forward_inverse_consistency"
+    ] is True
+
+
+def test_closed_loop_required_generated_video_success_label_blocks_without_labeler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=32)
+    monkeypatch.setattr(L, "visual_smoke_generated_rollouts_for_review", _passed_visual_smoke)
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_stub_wam_with_video(tmp_path),
+        steps=2,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        require_generated_video_success_label=True,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["generated_video_success_label_passed"] is False
+    assert manifest["simulated_manipulation_success_shown"] is False
+    assert "generated_video_success_label_not_proven" in manifest["blockers"]
+    assert "generated_video_success_label:requires_wam_success_review" in manifest[
+        "blockers"
+    ]
+    assert manifest["real_world_task_success_proven"] is False
+
+
+def test_closed_loop_required_forward_inverse_consistency_blocks_without_scorer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=33)
+    monkeypatch.setattr(L, "visual_smoke_generated_rollouts_for_review", _passed_visual_smoke)
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_stub_wam_with_video(tmp_path),
+        steps=2,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        require_forward_inverse_consistency=True,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["forward_inverse_consistency_proven"] is False
+    assert "forward_inverse_consistency_not_proven" in manifest["blockers"]
 
 
 def test_closed_loop_episode_consistency_failure_early_terminates_feed_forward(
@@ -1319,6 +1478,8 @@ def test_local_oscar_subprocess_generate_runs_and_extracts(tmp_path: Path) -> No
 
     class _Done:
         returncode = 0
+        stdout = "oscar stdout"
+        stderr = "oscar stderr"
 
     def _fake_run(argv, **kwargs):
         seen_argv.append(list(argv))
@@ -1356,12 +1517,16 @@ def test_local_oscar_subprocess_generate_runs_and_extracts(tmp_path: Path) -> No
     out = gen(request)
     assert out["status"] == "completed"
     assert Path(out["generated_frame_path"]).is_file()
+    assert Path(out["stdout_log_path"]).read_text(encoding="utf-8") == "oscar stdout"
+    assert Path(out["stderr_log_path"]).read_text(encoding="utf-8") == "oscar stderr"
     assert "--skeleton-video" in seen_argv[0]  # skeleton conditioning passed to OSCAR
 
 
 def test_local_oscar_subprocess_generate_blocks_on_nonzero(tmp_path: Path) -> None:
     class _Fail:
         returncode = 1
+        stdout = "usage"
+        stderr = "error: --skeleton-video required"
 
     gen = L.make_local_oscar_subprocess_generate(
         oscar_repo="/opt/oscar",
@@ -1372,6 +1537,8 @@ def test_local_oscar_subprocess_generate_blocks_on_nonzero(tmp_path: Path) -> No
     out = gen({"output_dir": str(tmp_path), "reference_frame_path": "/f.png", "task_prompt": "t", "num_frames": 8, "seed": 1})
     assert out["status"] == "blocked"
     assert any("returncode" in b for b in out["blockers"])
+    assert Path(out["stdout_log_path"]).read_text(encoding="utf-8") == "usage"
+    assert Path(out["stderr_log_path"]).read_text(encoding="utf-8") == "error: --skeleton-video required"
 
 
 def test_extract_next_observation_selects_earliest_usable_future_frame(tmp_path: Path) -> None:

@@ -201,6 +201,7 @@ blueprint-run-oscar-cosmos-wam-evaluator = "blueprint_pipeline.oscar_cosmos_wam_
 blueprint-run-oscar-cosmos-wam-command-adapter = "blueprint_pipeline.oscar_cosmos_wam_command_adapter:main"
 blueprint-run-oscar-wam-command-adapter = "blueprint_pipeline.oscar_wam_command_adapter:main"
 blueprint-run-oscar-wam-provider-command-adapter = "blueprint_pipeline.oscar_wam_provider_command_adapter:main"
+blueprint-groot-oscar-closed-loop-image = "blueprint_pipeline.groot_oscar_closed_loop_image:main"
 blueprint-run-oscar-visual-augmentation-generation = "blueprint_pipeline.oscar_visual_augmentation_generation_runner:main"
 blueprint-run-openvla-policy-provider-smoke = "blueprint_pipeline.openvla_policy_provider_smoke:main"
 blueprint-label-wam-generated-video-gemini = "blueprint_pipeline.wam_generated_video_success_label_gemini:main"

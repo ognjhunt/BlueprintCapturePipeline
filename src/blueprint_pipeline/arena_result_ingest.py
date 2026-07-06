@@ -1939,6 +1939,8 @@ def build_arena_result_ingest(
         },
         policy_binding=_mapping(request.get("policy_package")) or None,
         rights_privacy_gate=_mapping(request.get("rights_privacy_scope")) or None,
+        # Live consent re-read at report emit (revoke-after-manifest guard).
+        capture_root=context.capture_root,
         generated_at=generated_at,
     )
     write_json(resolved_output_dir / "task_eval_run_report.json", task_eval_run_report)

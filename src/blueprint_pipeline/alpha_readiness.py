@@ -1623,6 +1623,9 @@ def sync_webapp_evaluation_prep(
             artifacts={str(key): value for key, value in artifacts.items() if value},
             derived_assets=derived_assets,
             evaluation_readiness=evaluation_readiness,
+            # Pass the capture root so the delivery-time consent-takedown gate
+            # re-reads consent live and blocks the sync on an open revocation.
+            capture_root=capture_root,
         )
     except (WebappSyncError, ValueError) as exc:
         result = {

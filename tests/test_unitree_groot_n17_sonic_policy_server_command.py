@@ -148,6 +148,37 @@ def test_policy_server_command_allows_contract_probe_state_for_sim_attempt(tmp_p
     ] is True
 
 
+def test_policy_server_command_blocks_empty_sonic_action_chunk(tmp_path) -> None:
+    frame = tmp_path / "ego.png"
+    Image.new("RGB", (2, 2), color=(1, 2, 3)).save(frame)
+
+    class EmptyActionClient:
+        def get_action(self, _observation):
+            return ({"motion_token": []}, {})
+
+        def close(self):
+            pass
+
+    response, exit_code = command.run_policy_server_command(
+        payload={
+            "observation": {
+                "task_id": "contact_or_push_light_object",
+                "camera_frame_path": str(frame),
+                "unitree_g1_sonic_state": _state_fields(),
+            }
+        },
+        policy_server_url="tcp://127.0.0.1:5550",
+        policy_client_factory=lambda **_kwargs: EmptyActionClient(),
+    )
+
+    assert exit_code == 2
+    assert response["status"] == "blocked"
+    assert (
+        "blocked_gr00t_policy_server_response_missing_unitree_g1_sonic_action"
+        in response["blockers"]
+    )
+
+
 def test_policy_server_command_blocks_when_server_dependency_or_server_fails(
     tmp_path,
 ) -> None:

@@ -176,8 +176,10 @@ def _stub_sync(monkeypatch, sync_calls: list[dict[str, object]]) -> None:  # typ
     def _sync(**kwargs):  # type: ignore[no-untyped-def]
         sync_calls.append(kwargs)
         # Mirror the fields the real sync always emits so the launch gate's
-        # sync-truth verification sees the same contract.
-        attachment_payload = dict(kwargs)
+        # sync-truth verification sees the same contract. capture_root is an
+        # internal consent-gate input, not part of the webapp attachment payload
+        # (the real builder never echoes it), so exclude it here too.
+        attachment_payload = {k: v for k, v in kwargs.items() if k != "capture_root"}
         attachment_payload["upstream_links_verified"] = True
         attachment_payload["placeholder_fallback_allowed"] = False
         return {

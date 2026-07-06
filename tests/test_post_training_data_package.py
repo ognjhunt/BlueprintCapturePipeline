@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.video_codec import require_video_codec_or_skip
+
 import blueprint_pipeline.post_training_data_package as package_module
 from blueprint_pipeline.post_training_data_package import (
     _artifact,
@@ -34,7 +36,7 @@ def _write_valid_mp4_or_placeholder(path: Path, *, frame_count: int = 1) -> None
         return
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (32, 32))
     if not writer.isOpened():
-        pytest.skip("cv2 mp4 writer unavailable")
+        require_video_codec_or_skip("cv2 mp4 writer unavailable")
     try:
         for index in range(frame_count):
             writer.write(np.full((32, 32, 3), 40 + index, dtype=np.uint8))
@@ -983,7 +985,7 @@ def test_lerobot_v3_export_loads_with_installed_lerobot(tmp_path: Path) -> None:
     clip_path = job_dir / "clip-1.mp4"
     writer = cv2.VideoWriter(str(clip_path), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (32, 32))
     if not writer.isOpened():
-        pytest.skip("cv2 mp4 writer unavailable")
+        require_video_codec_or_skip("cv2 mp4 writer unavailable")
     for index in range(3):
         writer.write(np.full((32, 32, 3), 40 + index * 40, dtype=np.uint8))
     writer.release()

@@ -130,6 +130,8 @@ def make_groot_sonic_zmq_policy_endpoint(
                 + ",".join(str(b) for b in (response.get("blockers") or [f"exit_code:{exit_code}"]))
             )
         chunk = _chunk_from_response(response)
+        if not chunk:
+            raise RuntimeError("groot_sonic_requery_blocked:blocked_empty_sonic_action_chunk")
         dx, dy, dyaw = project_chunk_to_root_delta(chunk)
         previous = None
         for row in reversed(list(action_history or [])):
@@ -160,7 +162,7 @@ def make_groot_sonic_zmq_policy_endpoint(
             "requery_step_index": int(step_index),
             "out_of_distribution_action_projection": True,
             "projection": {
-                "kind": "declared_deterministic_chunk_thirds_tanh",
+                "kind": "declared_deterministic_leading_chunk_components_tanh",
                 "step_m": PROJECTION_STEP_M,
                 "yaw_rad": PROJECTION_YAW_RAD,
             },

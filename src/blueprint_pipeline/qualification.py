@@ -5468,6 +5468,10 @@ def run_qualification_pipeline(
                 artifacts=webapp_sync_artifacts,
                 derived_assets=_scene_memory_derived_assets(scene_memory_artifacts),
                 evaluation_readiness=webapp_evaluation_readiness,
+                # Rights are authoritative continuously: pass the capture root so
+                # the delivery-time consent-takedown gate re-reads consent live and
+                # blocks the sync on an open revocation (without this the gate is inert).
+                capture_root=capture_root,
             )
         except (WebappSyncError, ValueError) as exc:
             webapp_sync_result = {

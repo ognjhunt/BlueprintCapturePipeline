@@ -7,6 +7,7 @@ from typing import Any, Callable
 import pytest
 
 from blueprint_pipeline.lerobot_export_validation import validate_lerobot_export
+from tests.video_codec import require_video_codec_or_skip
 
 FPS = 5
 
@@ -360,7 +361,7 @@ def test_decoded_video_frame_count_mismatch_blocks(tmp_path: Path) -> None:
         str(video), cv2.VideoWriter_fourcc(*"mp4v"), float(FPS), (32, 32)
     )
     if not writer.isOpened():
-        pytest.skip("cv2 mp4 writer unavailable")
+        require_video_codec_or_skip("cv2 mp4 writer unavailable")
     for index in range(5):
         writer.write(np.full((32, 32, 3), 40 * index, dtype=np.uint8))
     writer.release()

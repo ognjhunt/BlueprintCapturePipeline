@@ -7186,6 +7186,8 @@ def _write_task_eval_run_buyer_report(
         policy_binding=policy_binding_payload,
         rights_privacy_gate=rights_privacy_gate,
         wam_evaluation=wam_score_claim_payload,
+        # Live consent re-read at buyer-report emit closes the revoke-after-manifest window.
+        capture_root=_capture_root_from_job_dir(job_dir),
         generated_at=generated_at,
     )
     if wam_eval:
@@ -7668,6 +7670,22 @@ def _valid_explicitly_blocked_scenario_eval_run_ids(
     return sorted(valid_ids), sorted(invalid_ids - valid_ids)
 
 
+def _capture_root_from_job_dir(job_dir: Path) -> Path | None:
+    """Find the capture root (the dir carrying the consent source) above a job dir.
+
+    Robust to nesting depth: walk up until a directory carries the capture's
+    consent source or descriptor. Returns None when no capture root is found.
+    """
+    for parent in (Path(job_dir), *Path(job_dir).parents):
+        if (
+            (parent / "raw" / "rights_consent.json").exists()
+            or (parent / "capture_descriptor.json").exists()
+            or (parent / "raw" / "manifest.json").exists()
+        ):
+            return parent
+    return None
+
+
 def _webapp_robot_eval_status_projection(
     *,
     job_dir: Path,
@@ -7705,6 +7723,17 @@ def _webapp_robot_eval_status_projection(
         == "blocked_consent_revoked_takedown_required"
         or "consent:consent_revoked_takedown_required" in data_package_blockers
     )
+    # TOCTOU guard: re-read consent LIVE at this buyer-facing emit point so a
+    # revocation that landed after the upstream export manifest was written still
+    # blocks the projection. A live read can only ADD a revocation, never clear
+    # an inherited one.
+    _live_capture_root = _capture_root_from_job_dir(job_dir)
+    if _live_capture_root is not None:
+        from .consent_takedown import read_consent_state
+
+        if read_consent_state(_live_capture_root).get("state") == "revoked":
+            consent_revoked = True
+            revocation_required = True
     webapp_takedown_executed = revocation_takedown.get("webapp_takedown_executed") is True
     hosted_session_takedown_executed = (
         revocation_takedown.get("hosted_session_takedown_executed") is True

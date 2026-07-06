@@ -53,6 +53,17 @@ def test_endpoint_fails_closed_on_blocked_server() -> None:
         endpoint({}, [], 0)
 
 
+def test_endpoint_fails_closed_on_empty_completed_action_chunk() -> None:
+    def fake(**_kwargs):
+        return ({"status": "completed", "action": {"action_chunk": []}}, 0)
+
+    endpoint = make_groot_sonic_zmq_policy_endpoint(
+        policy_server_url="tcp://127.0.0.1:5550", run_command=fake
+    )
+    with pytest.raises(RuntimeError, match="blocked_empty_sonic_action_chunk"):
+        endpoint({"camera_frame_path": "/a.jpg"}, [], 1)
+
+
 def test_endpoint_injects_labeled_nominal_state_surrogate() -> None:
     captured = {}
 
