@@ -534,6 +534,27 @@ def summarize_sources(results: Sequence[CommandResult]) -> list[dict[str, str]]:
 def manual_checks() -> list[dict[str, str]]:
     return [
         {
+            "id": "legal_consent_posture_signoff",
+            "category": "legal_ehs",
+            "status": "manual_signoff_required",
+            "required_evidence": "Signature over the current capture consent, rights, redaction, and delivery posture.",
+            "not_proven_by_automation": "Repository contracts do not prove legal/EHS approval for the current external-user consent posture.",
+        },
+        {
+            "id": "operator_dpa_data_processing_terms",
+            "category": "legal_privacy_ops",
+            "status": "manual_signoff_required",
+            "required_evidence": "Operator DPA or equivalent data-processing terms covering retention policy, subprocessors, and access-audit terms.",
+            "not_proven_by_automation": "Repository contracts do not prove signed operator data-processing terms or privacy-ops approval.",
+        },
+        {
+            "id": "paperclip_ops_relay_secret_rotation",
+            "category": "ops_security",
+            "status": "manual_security_evidence_required",
+            "required_evidence": "Cloud Secret Manager version or equivalent rotation record, plus redeploy evidence for the Paperclip ops relay secret.",
+            "not_proven_by_automation": "Repository contracts do not prove the production Paperclip ops relay secret was rotated and redeployed from a secret manager.",
+        },
+        {
             "id": "iphone_real_device_claim_flow",
             "category": "real_device_capture",
             "status": "manual_live_evidence_required",

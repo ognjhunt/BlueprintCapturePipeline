@@ -208,6 +208,29 @@ def test_closeout_summary_filters_passed_and_manual_required_entries() -> None:
     assert summary["remaining_manual_evidence_ids"] == ["manual_live"]
 
 
+def test_manual_checks_include_full_operator_legal_payments_and_delivery_ledger() -> None:
+    gate = _load_gate_module()
+
+    ids = {item["id"] for item in gate.manual_checks()}
+
+    assert {
+        "legal_consent_posture_signoff",
+        "operator_dpa_data_processing_terms",
+        "paperclip_ops_relay_secret_rotation",
+        "iphone_real_device_claim_flow",
+        "glasses_real_device_claim_flow",
+        "android_real_device_claim_flow",
+        "buyer_payment_settlement",
+        "capturer_payout_settlement",
+        "stripe_connected_account_live_readiness",
+        "payout_exception_monitor_live",
+        "identity_kyc_provider_decision",
+        "background_check_provider_decision",
+        "human_finance_review_owner",
+        "buyer_artifact_access",
+    } == ids
+
+
 def test_closeout_summary_does_not_claim_passed_contracts_on_automation_failure() -> None:
     gate = _load_gate_module()
     report = {
