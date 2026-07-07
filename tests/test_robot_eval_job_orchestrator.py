@@ -7585,6 +7585,94 @@ def test_robot_eval_job_request_inbox_uses_request_capture_root(
     ).exists()
 
 
+def test_robot_eval_job_request_inbox_processes_two_request_capture_roots_in_one_pass(
+    tmp_path: Path,
+) -> None:
+    control_capture_root = _build_capture_root(tmp_path / "control")
+    first_capture_root = _build_capture_root(tmp_path / "first-request")
+    second_capture_root = _build_capture_root(tmp_path / "second-request")
+    for capture_root in (first_capture_root, second_capture_root):
+        _write_robot_eval_cards(capture_root)
+        _write_fixture_attempts(capture_root, success=True)
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+    first_request = _full_job_request(first_capture_root)
+    first_request["job_id"] = "first-request-root-job"
+    first_request["buyer_request_id"] = "buyer-request-1"
+    first_request["owner_system"] = {
+        "name": "Blueprint-WebApp",
+        "request_id": "first-request-root-job",
+        "buyer_request_id": "buyer-request-1",
+        "site_submission_id": "site-submission-1",
+        "capture_job_id": "capture-job-1",
+    }
+    first_request["site_package"] = {
+        **first_request["site_package"],
+        "site_submission_id": "site-submission-1",
+        "capture_job_id": "capture-job-1",
+        "capture_id": "capture-1",
+        "site_slug": "site-one",
+    }
+    second_request = _full_job_request(second_capture_root)
+    second_request["job_id"] = "second-request-root-job"
+    second_request["buyer_request_id"] = "buyer-request-2"
+    second_request["owner_system"] = {
+        "name": "Blueprint-WebApp",
+        "request_id": "second-request-root-job",
+        "buyer_request_id": "buyer-request-2",
+        "site_submission_id": "site-submission-2",
+        "capture_job_id": "capture-job-2",
+    }
+    second_request["site_package"] = {
+        **second_request["site_package"],
+        "site_submission_id": "site-submission-2",
+        "capture_job_id": "capture-job-2",
+        "capture_id": "capture-2",
+        "site_slug": "site-two",
+    }
+    _write_json(inbox_dir / "first-request-root-job.json", first_request)
+    _write_json(inbox_dir / "second-request-root-job.json", second_request)
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=control_capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    assert result["status"] == "completed"
+    assert result["processed_count"] == 2
+    assert {
+        job["request_capture_root"] for job in result["jobs"]
+    } == {str(first_capture_root), str(second_capture_root)}
+    assert (
+        first_capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "first-request-root-job"
+        / "job_run_manifest.json"
+    ).is_file()
+    assert (
+        second_capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "second-request-root-job"
+        / "job_run_manifest.json"
+    ).is_file()
+    assert not (
+        control_capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "first-request-root-job"
+    ).exists()
+    assert not (
+        control_capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "second-request-root-job"
+    ).exists()
+
+
 def test_robot_eval_job_request_inbox_accepts_webapp_queue_envelope(
     tmp_path: Path,
 ) -> None:
