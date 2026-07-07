@@ -374,6 +374,20 @@ def test_sync_webapp_pipeline_attachment_returns_buyer_access_and_checksums(monk
     def _fake_urlopen(request, timeout=0):  # type: ignore[no-untyped-def]
         assert timeout > 0
         if request.full_url.endswith("/buyer-access"):
+            timestamp = request.get_header("X-blueprint-pipeline-timestamp")
+            signature = request.get_header("X-blueprint-pipeline-signature")
+            assert timestamp
+            assert signature
+            expected = hmac.new(
+                b"token",
+                f"{timestamp}.".encode("utf-8") + request.data,
+                hashlib.sha256,
+            ).hexdigest()
+            assert signature == f"sha256={expected}"
+            assert request.get_header("Authorization") is None
+            payload = json.loads(request.data.decode("utf-8"))
+            assert payload["webapp_response_ids"]["listing_id"] == "robot-eval-cap-1"
+            assert payload["webapp_response_ids"]["capture_job_id"] == "cap-job-1"
             return _Response({"buyer_accessible": True})
         timestamp = request.get_header("X-blueprint-pipeline-timestamp")
         signature = request.get_header("X-blueprint-pipeline-signature")
@@ -389,8 +403,10 @@ def test_sync_webapp_pipeline_attachment_returns_buyer_access_and_checksums(monk
         return _Response(
             {
                 "attachment_id": "att-1",
-                "listing_id": "listing-1",
+                "listing_id": "robot-eval-cap-1",
                 "artifact_id": "artifact-1",
+                "capture_job_id": "cap-job-1",
+                "marketplace_publication": {"sku": "robot-eval-cap-1"},
             }
         )
 
@@ -400,7 +416,7 @@ def test_sync_webapp_pipeline_attachment_returns_buyer_access_and_checksums(monk
 
     assert result["status"] == "succeeded"
     assert result["webapp_response_ids"]["attachment_id"] == "att-1"
-    assert result["webapp_response_ids"]["listing_id"] == "listing-1"
+    assert result["webapp_response_ids"]["listing_id"] == "robot-eval-cap-1"
     assert result["artifact_uri_checksums"]["qualification_summary_uri"]
     assert result["buyer_access_check"]["buyer_access_checked"] is True
     assert result["buyer_access_check"]["buyer_accessible"] is True

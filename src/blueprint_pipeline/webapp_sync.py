@@ -542,6 +542,13 @@ def _extract_webapp_response_ids(response: Mapping[str, Any]) -> Dict[str, Any]:
         "artifact_id",
         "capture_job_id",
         "buyer_artifact_id",
+        "entitlement_id",
+        "entitlementId",
+        "marketplace_entitlement_id",
+        "marketplaceEntitlementId",
+        "sku",
+        "marketplace_sku",
+        "marketplaceSku",
     )
     out: Dict[str, Any] = {}
     for key in keys:
@@ -553,6 +560,14 @@ def _extract_webapp_response_ids(response: Mapping[str, Any]) -> Dict[str, Any]:
         value = nested.get(key)
         if value and key not in out:
             out[key] = value
+    for nested_key in ("marketplace_publication", "marketplacePublication", "pipeline"):
+        nested_response = response.get(nested_key)
+        if not isinstance(nested_response, Mapping):
+            continue
+        for key in keys:
+            value = nested_response.get(key)
+            if value and key not in out:
+                out[key] = value
     return out
 
 
@@ -567,13 +582,16 @@ def _buyer_access_check_payload(response: Mapping[str, Any]) -> Dict[str, Any]:
             "blocker": "buyer_access_check_not_configured" if buyer_access_required() else None,
         }
     payload = {"webapp_response_ids": _extract_webapp_response_ids(response)}
+    body = json.dumps(payload).encode("utf-8")
+    headers = (
+        _pipeline_sync_headers(check_token, body)
+        if check_token
+        else {"Content-Type": "application/json"}
+    )
     request = urllib_request.Request(
         check_url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            **({"Authorization": f"Bearer {check_token}"} if check_token else {}),
-        },
+        data=body,
+        headers=headers,
         method="POST",
     )
     try:
