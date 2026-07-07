@@ -204,6 +204,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         "pipeline_full_test_lane_ci": "success",
         "pipeline_sim_only_local_gate_ci": "success",
         "webapp_main_ci": "success",
+        "operator_evidence": "blocked",
     }
     assert packet["remaining_blockers"]["manual_live_evidence_ids"] == [
         "buyer_payment_settlement"
@@ -219,6 +220,113 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
     ]
     assert packet["remaining_blockers"]["ci_evidence_blockers"] == []
     assert packet["claim_boundary"]["automated_contracts_do_not_prove_real_pubsub_delivery"] is True
+    assert packet["operator_evidence_status"]["evidence_file_present"] is False
+    assert packet["operator_evidence_status"]["remaining_ids"] == ["buyer_payment_settlement"]
+
+
+def test_launch_readiness_packet_filters_verified_operator_evidence_ids(tmp_path: Path) -> None:
+    pipeline = tmp_path / "BlueprintCapturePipeline"
+    webapp = tmp_path / "Blueprint-WebApp"
+    contracts = tmp_path / "BlueprintContracts"
+    capture = tmp_path / "BlueprintCapture"
+    heads = {
+        "pipeline": _init_clean_repo_at_origin_main(pipeline),
+        "webapp": _init_clean_repo_at_origin_main(webapp),
+        "contracts": _init_clean_repo_at_origin_main(contracts),
+        "capture": _init_clean_repo_at_origin_main(capture),
+    }
+
+    _write_json(
+        pipeline / "output" / "paid_marketplace_launch_gate.json",
+        {
+            "schema_version": "v1",
+            "overall_status": "automated_contracts_passed_manual_ops_required",
+            "closeout_summary": {
+                "remaining_manual_evidence_ids": [
+                    "buyer_payment_settlement",
+                    "buyer_artifact_access",
+                ],
+            },
+        },
+    )
+    _write_text(pipeline / "output" / "paid_marketplace_launch_gate.md")
+    _write_json(
+        pipeline / "output" / "external_alpha_launch_gate.json",
+        {"schema_version": "external_alpha_launch_gate.v1", "overall_status": "passed", "checks": []},
+    )
+    _write_text(pipeline / "output" / "external_alpha_launch_gate.md")
+    _write_json(
+        pipeline / "output" / "sim_only_beta_local_gate_report.json",
+        {"schema_version": "blueprint.sim_only_beta_local_gate_report.v1", "status": "passed"},
+    )
+    _write_json(
+        pipeline / "output" / "launch_audit_live_pipeline_setup_20260707.json",
+        {"schema_version": "blueprint_live_pipeline_setup.v1", "status": "ready", "blockers": []},
+    )
+    _write_json(
+        webapp / "output" / "pipeline" / "robot_eval_job_requests" / "forwarding_preflight.json",
+        {
+            "schema_version": "blueprint.webapp.robot_eval_forwarding_readiness.v1",
+            "status": "ready",
+            "blockers": [],
+        },
+    )
+    _write_json(
+        pipeline / "output" / "operator_launch_evidence.json",
+        {
+            "schema_version": "operator_launch_evidence.v1",
+            "checks": {
+                "buyer_payment_settlement": {
+                    "status": "verified",
+                    "evidence_uri": "gs://blueprint-live/evidence/buyer_payment_settlement.json",
+                    "verified_at": "2026-07-07T00:00:00+00:00",
+                    "verified_by": "ops-owner",
+                    "payment_intent_id": "pi_live_123",
+                    "stripe_event_id": "evt_live_123",
+                    "stripe_mode": "live",
+                }
+            },
+        },
+    )
+    _write_ci_evidence(
+        pipeline / "output" / "pipeline_main_ci_evidence.json",
+        evidence_id="pipeline_main_ci_evidence",
+        head_sha=heads["pipeline"],
+        workflow="CI",
+    )
+    _write_ci_evidence(
+        pipeline / "output" / "pipeline_full_test_lane_ci_evidence.json",
+        evidence_id="pipeline_full_test_lane_ci_evidence",
+        head_sha=heads["pipeline"],
+        workflow="Full Test Lane",
+        test_counts={"tests": 3917, "failures": 0, "errors": 0, "skipped": 3},
+    )
+    _write_ci_evidence(
+        pipeline / "output" / "pipeline_sim_only_local_gate_ci_evidence.json",
+        evidence_id="pipeline_sim_only_local_gate_ci_evidence",
+        head_sha=heads["pipeline"],
+        workflow="Sim-Only Local Gate",
+    )
+    _write_ci_evidence(
+        pipeline / "output" / "webapp_main_ci_evidence.json",
+        evidence_id="webapp_main_ci_evidence",
+        head_sha=heads["webapp"],
+        workflow="CI",
+    )
+
+    packet = build_launch_readiness_packet(
+        pipeline_repo=pipeline,
+        webapp_repo=webapp,
+        contracts_repo=contracts,
+        capture_repo=capture,
+        generated_at="2026-07-07T00:00:00+00:00",
+    )
+
+    assert packet["status"] == "local_ready_live_external_blocked"
+    assert packet["operator_evidence_status"]["verified_ids"] == ["buyer_payment_settlement"]
+    assert packet["operator_evidence_status"]["remaining_ids"] == ["buyer_artifact_access"]
+    assert packet["remaining_blockers"]["manual_live_evidence_ids"] == ["buyer_artifact_access"]
+    assert packet["readiness_summary"]["operator_evidence"] == "blocked"
 
 
 def test_launch_readiness_packet_blocks_missing_required_artifacts(tmp_path: Path) -> None:

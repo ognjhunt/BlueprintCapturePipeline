@@ -460,6 +460,52 @@ def _operator_required_check(
     }
 
 
+def validate_operator_launch_evidence(
+    operator_evidence: Mapping[str, Any],
+    required_check_ids: List[str],
+) -> Dict[str, Any]:
+    """Validate launch operator evidence for a bounded list of evidence ids.
+
+    This public helper shares the same per-id proof requirements used by the
+    per-capture launch gate, so repo-level packets do not accidentally accept a
+    generic ``status=verified`` record for live payments, payouts, device flows,
+    or buyer artifact access.
+    """
+
+    normalized_ids = [str(item).strip() for item in required_check_ids if str(item).strip()]
+    evidence_file_errors = _operator_evidence_file_errors(operator_evidence)
+    checks = [
+        _operator_required_check(
+            check_id=check_id,
+            scope="operator_evidence",
+            required_evidence="live operator evidence for launch-readiness packet",
+            operator_evidence=operator_evidence,
+            evidence_file_errors=evidence_file_errors,
+        )
+        for check_id in normalized_ids
+    ]
+    verified_ids = [str(check["id"]) for check in checks if check["passed"]]
+    remaining_ids = [str(check["id"]) for check in checks if not check["passed"]]
+    blockers = [
+        str(check["blocker"])
+        for check in checks
+        if not check["passed"] and check.get("blocker")
+    ]
+    return {
+        "schema_version": _OPERATOR_LAUNCH_EVIDENCE_SCHEMA_VERSION,
+        "status": "verified" if not remaining_ids else "blocked",
+        "evidence_file_present": bool(operator_evidence),
+        "schema_errors": evidence_file_errors,
+        "required_count": len(checks),
+        "verified_count": len(verified_ids),
+        "verified_ids": verified_ids,
+        "remaining_ids": remaining_ids,
+        "blockers": blockers,
+        "checks": checks,
+        "claim_boundary": "operator_evidence_is_live_human_or_external_service_proof_not_automation",
+    }
+
+
 def _runtime_capability_payload(
     *,
     profile: str,

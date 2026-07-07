@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from blueprint_pipeline.alpha_readiness import validate_operator_launch_evidence
+
 
 SCHEMA_VERSION = "blueprint.launch_readiness_packet.v1"
 CI_EVIDENCE_SCHEMA_VERSION = "blueprint.github_actions_evidence.v1"
@@ -128,6 +130,18 @@ def _latest_sim_only_report(pipeline_repo: Path) -> Path:
     if candidates:
         return candidates[0]
     return pipeline_repo / "output" / "sim_only_beta_local_gate_report.json"
+
+
+def _operator_evidence_path(pipeline_repo: Path, explicit_path: Path | None) -> Path | None:
+    if explicit_path is not None:
+        return explicit_path
+    for candidate in (
+        pipeline_repo / "output" / "operator_launch_evidence.json",
+        pipeline_repo / "output" / "pipeline" / "operator_launch_evidence.json",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _manual_ids_from_paid_gate(payload: Mapping[str, Any]) -> list[str]:
@@ -261,6 +275,7 @@ def build_launch_readiness_packet(
     webapp_repo: Path,
     contracts_repo: Path,
     capture_repo: Path,
+    operator_evidence_path: Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     paid_gate = pipeline_repo / "output" / "paid_marketplace_launch_gate.json"
@@ -276,6 +291,7 @@ def build_launch_readiness_packet(
     pipeline_full_lane_evidence = pipeline_repo / "output" / "pipeline_full_test_lane_ci_evidence.json"
     pipeline_sim_only_evidence = pipeline_repo / "output" / "pipeline_sim_only_local_gate_ci_evidence.json"
     webapp_ci_evidence = pipeline_repo / "output" / "webapp_main_ci_evidence.json"
+    resolved_operator_evidence_path = _operator_evidence_path(pipeline_repo, operator_evidence_path)
 
     artifacts = [
         _artifact("paid_marketplace_launch_gate_json", paid_gate, source_repo="BlueprintCapturePipeline"),
@@ -286,6 +302,14 @@ def build_launch_readiness_packet(
         _artifact("live_pipeline_setup_audit", live_setup, source_repo="BlueprintCapturePipeline"),
         _artifact("webapp_forwarding_preflight", forwarding_preflight, source_repo="Blueprint-WebApp"),
     ]
+    if resolved_operator_evidence_path is not None:
+        artifacts.append(
+            _artifact(
+                "operator_launch_evidence",
+                resolved_operator_evidence_path,
+                source_repo="OperatorEvidence",
+            )
+        )
     ci_artifacts = [
         _ci_artifact(
             "pipeline_main_ci_evidence",
@@ -319,8 +343,22 @@ def build_launch_readiness_packet(
     live_payload = _read_json(live_setup)
     forwarding_payload = _read_json(forwarding_preflight)
     sim_payload = _read_json(sim_only_report)
+    operator_evidence_payload = (
+        _read_json(resolved_operator_evidence_path)
+        if resolved_operator_evidence_path is not None
+        else {}
+    )
 
-    manual_evidence_ids = _manual_ids_from_paid_gate(paid_payload)
+    paid_gate_manual_evidence_ids = _manual_ids_from_paid_gate(paid_payload)
+    operator_evidence_status = validate_operator_launch_evidence(
+        operator_evidence_payload,
+        paid_gate_manual_evidence_ids,
+    )
+    manual_evidence_ids = [
+        str(item)
+        for item in operator_evidence_status.get("remaining_ids", paid_gate_manual_evidence_ids)
+        if str(item).strip()
+    ]
     live_setup_blockers = [
         str(item)
         for item in live_payload.get("blockers", [])
@@ -375,6 +413,7 @@ def build_launch_readiness_packet(
             "pipeline_full_test_lane_ci": ci_artifacts[1].get("conclusion"),
             "pipeline_sim_only_local_gate_ci": ci_artifacts[2].get("conclusion"),
             "webapp_main_ci": ci_artifacts[3].get("conclusion"),
+            "operator_evidence": operator_evidence_status.get("status"),
         },
         "remaining_blockers": {
             "manual_live_evidence_ids": manual_evidence_ids,
@@ -382,6 +421,11 @@ def build_launch_readiness_packet(
             "live_pipeline_setup_blockers": live_setup_blockers,
             "webapp_forwarding_blockers": forwarding_blockers,
             "ci_evidence_blockers": ci_evidence_blockers,
+        },
+        "operator_evidence_status": {
+            **operator_evidence_status,
+            "evidence_file": str(resolved_operator_evidence_path) if resolved_operator_evidence_path else None,
+            "paid_gate_manual_evidence_ids": paid_gate_manual_evidence_ids,
         },
         "commands_to_refresh": [
             "python scripts/run_paid_marketplace_launch_gate.py",
@@ -484,6 +528,14 @@ def main() -> None:
     parser.add_argument("--webapp-repo", type=Path, default=_repo_root().parent / "Blueprint-WebApp")
     parser.add_argument("--contracts-repo", type=Path, default=_repo_root().parent / "BlueprintContracts")
     parser.add_argument("--capture-repo", type=Path, default=_repo_root().parent / "BlueprintCapture")
+    parser.add_argument(
+        "--operator-evidence",
+        type=Path,
+        help=(
+            "Optional operator_launch_evidence.v1 file. When omitted, "
+            "output/operator_launch_evidence.json is used if present."
+        ),
+    )
     parser.add_argument("--output", type=Path, default=_repo_root() / "output" / "launch_readiness_packet.json")
     parser.add_argument(
         "--markdown-output",
@@ -497,6 +549,7 @@ def main() -> None:
         webapp_repo=args.webapp_repo.resolve(),
         contracts_repo=args.contracts_repo.resolve(),
         capture_repo=args.capture_repo.resolve(),
+        operator_evidence_path=args.operator_evidence.resolve() if args.operator_evidence else None,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(packet, indent=2, sort_keys=True) + "\n", encoding="utf-8")
