@@ -170,6 +170,12 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         test_counts={"tests": 3917, "failures": 0, "errors": 0, "skipped": 3},
     )
     _write_ci_evidence(
+        pipeline / "output" / "pipeline_sim_only_local_gate_ci_evidence.json",
+        evidence_id="pipeline_sim_only_local_gate_ci_evidence",
+        head_sha=heads["pipeline"],
+        workflow="Sim-Only Local Gate",
+    )
+    _write_ci_evidence(
         pipeline / "output" / "webapp_main_ci_evidence.json",
         evidence_id="webapp_main_ci_evidence",
         head_sha=_git(webapp, "rev-parse", "HEAD"),
@@ -196,6 +202,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         "webapp_forwarding_preflight": "blocked",
         "pipeline_main_ci": "success",
         "pipeline_full_test_lane_ci": "success",
+        "pipeline_sim_only_local_gate_ci": "success",
         "webapp_main_ci": "success",
     }
     assert packet["remaining_blockers"]["manual_live_evidence_ids"] == [
@@ -234,6 +241,9 @@ def test_launch_readiness_packet_blocks_missing_required_artifacts(tmp_path: Pat
     assert "missing_artifact:paid_marketplace_launch_gate_json" in packet["artifact_blockers"]
     assert "missing_artifact:webapp_forwarding_preflight" in packet["artifact_blockers"]
     assert "missing_ci_evidence:pipeline_full_test_lane_ci_evidence" in packet[
+        "ci_evidence_blockers"
+    ]
+    assert "missing_ci_evidence:pipeline_sim_only_local_gate_ci_evidence" in packet[
         "ci_evidence_blockers"
     ]
 

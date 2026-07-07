@@ -274,6 +274,7 @@ def build_launch_readiness_packet(
     )
     pipeline_ci_evidence = pipeline_repo / "output" / "pipeline_main_ci_evidence.json"
     pipeline_full_lane_evidence = pipeline_repo / "output" / "pipeline_full_test_lane_ci_evidence.json"
+    pipeline_sim_only_evidence = pipeline_repo / "output" / "pipeline_sim_only_local_gate_ci_evidence.json"
     webapp_ci_evidence = pipeline_repo / "output" / "webapp_main_ci_evidence.json"
 
     artifacts = [
@@ -297,6 +298,12 @@ def build_launch_readiness_packet(
             pipeline_full_lane_evidence,
             repo_name="BlueprintCapturePipeline",
             workflow="Full Test Lane",
+        ),
+        _ci_artifact(
+            "pipeline_sim_only_local_gate_ci_evidence",
+            pipeline_sim_only_evidence,
+            repo_name="BlueprintCapturePipeline",
+            workflow="Sim-Only Local Gate",
         ),
         _ci_artifact(
             "webapp_main_ci_evidence",
@@ -366,7 +373,8 @@ def build_launch_readiness_packet(
             "webapp_forwarding_preflight": forwarding_payload.get("status"),
             "pipeline_main_ci": ci_artifacts[0].get("conclusion"),
             "pipeline_full_test_lane_ci": ci_artifacts[1].get("conclusion"),
-            "webapp_main_ci": ci_artifacts[2].get("conclusion"),
+            "pipeline_sim_only_local_gate_ci": ci_artifacts[2].get("conclusion"),
+            "webapp_main_ci": ci_artifacts[3].get("conclusion"),
         },
         "remaining_blockers": {
             "manual_live_evidence_ids": manual_evidence_ids,
@@ -381,6 +389,7 @@ def build_launch_readiness_packet(
             "python scripts/run_sim_only_beta_local_gate.py",
             "python scripts/collect_github_actions_evidence.py --repo ognjhunt/BlueprintCapturePipeline --run-id <pipeline-ci-run-id> --evidence-id pipeline_main_ci_evidence --output output/pipeline_main_ci_evidence.json",
             "python scripts/collect_github_actions_evidence.py --repo ognjhunt/BlueprintCapturePipeline --run-id <full-lane-run-id> --evidence-id pipeline_full_test_lane_ci_evidence --junit <downloaded-junit.xml> --output output/pipeline_full_test_lane_ci_evidence.json",
+            "python scripts/collect_github_actions_evidence.py --repo ognjhunt/BlueprintCapturePipeline --run-id <sim-only-local-gate-run-id> --evidence-id pipeline_sim_only_local_gate_ci_evidence --output output/pipeline_sim_only_local_gate_ci_evidence.json",
             "python scripts/collect_github_actions_evidence.py --repo ognjhunt/Blueprint-WebApp --run-id <webapp-ci-run-id> --evidence-id webapp_main_ci_evidence --output output/webapp_main_ci_evidence.json",
             "python -m blueprint_pipeline.live_pipeline_setup --no-load-env-files --output-path output/launch_audit_live_pipeline_setup_20260707.json",
             "cd ../Blueprint-WebApp && npm run pipeline:forwarding:preflight -- --require-forwarding",
