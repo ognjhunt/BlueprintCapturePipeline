@@ -69,6 +69,15 @@ def dedupe(values: Iterable[Any]) -> list[str]:
     return string_list(list(values))
 
 
+def number_is_zero(value: Any) -> bool:
+    try:
+        if value is None or isinstance(value, bool):
+            return False
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def refs_from_fields(payload: Mapping[str, Any], *field_names: str) -> list[str]:
     refs: list[str] = []
     for field_name in field_names:
@@ -296,6 +305,13 @@ def build_failure_diagnosis_audit(
     )
     failed_attempt_id_set = set(required_attempt_ids)
     failed_run_id_set = set(required_run_ids)
+    zero_failures_reviewed = (
+        not failed_attempts
+        and not label_rows
+        and string(labels_payload.get("status"))
+        in {"no_failures_labeled", "zero_failures_reviewed"}
+        and number_is_zero(labels_payload.get("failed_attempt_count"))
+    )
     labels_missing_failure_mode_ids: list[str] = []
     labels_missing_evidence_refs: list[str] = []
     labels_missing_review_status: list[str] = []
@@ -410,6 +426,7 @@ def build_failure_diagnosis_audit(
         "failure_diagnosis_coverage_complete": not coverage_blockers,
         "failure_diagnosis_review_complete": not review_blockers,
         "failure_diagnosis_complete": not coverage_blockers and not review_blockers,
+        "zero_failures_reviewed": zero_failures_reviewed,
         "coverage_blockers": coverage_blockers,
         "review_blockers": review_blockers,
         "blockers": [*coverage_blockers, *review_blockers],

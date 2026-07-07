@@ -28,8 +28,21 @@ def main() -> None:
     listener = repo_root / "src" / "blueprint_pipeline" / "pubsub_handoff_listener.py"
     terraform = repo_root / "deploy" / "terraform" / "main.tf"
     deploy_script = repo_root / "deploy" / "scripts" / "deploy.sh"
+    systemd_service = repo_root / "deploy" / "systemd" / "blueprint-pubsub-handoff-listener.service"
+    systemd_timer = repo_root / "deploy" / "systemd" / "blueprint-pubsub-handoff-listener.timer"
+    systemd_env_example = repo_root / "deploy" / "systemd" / "pipeline-control-plane.env.example"
+    systemd_installer = repo_root / "scripts" / "install_live_pipeline_control_plane.sh"
 
-    for path in (pyproject, listener, terraform, deploy_script):
+    for path in (
+        pyproject,
+        listener,
+        terraform,
+        deploy_script,
+        systemd_service,
+        systemd_timer,
+        systemd_env_example,
+        systemd_installer,
+    ):
         if not path.exists():
             fail(f"{path.relative_to(repo_root)} is missing")
 
@@ -38,6 +51,10 @@ def main() -> None:
     terraform_text = compact(terraform.read_text(encoding="utf-8"))
     deploy_text = deploy_script.read_text(encoding="utf-8")
     deploy_compact = compact(deploy_text)
+    systemd_service_text = systemd_service.read_text(encoding="utf-8")
+    systemd_timer_text = systemd_timer.read_text(encoding="utf-8")
+    systemd_env_text = systemd_env_example.read_text(encoding="utf-8")
+    systemd_installer_text = systemd_installer.read_text(encoding="utf-8")
 
     for needle, description in [
         (
@@ -53,6 +70,10 @@ def main() -> None:
         ("def stage_handoff_capture", "GCS staging function"),
         ("def process_handoff_payload", "handoff processor"),
         ("def pull_and_process", "pull subscriber loop"),
+        ("def _control_plane_handoff_payload", "control-plane payload enrichment"),
+        ("stage_capture_handoff_for_control_plane", "control-plane staging helper call"),
+        ("--stage-control-plane", "control-plane staging CLI flag"),
+        ("--skip-run-e2e", "stage-only listener CLI flag"),
         ("from google.cloud import pubsub_v1", "Pub/Sub subscriber import"),
         ("subscriber.pull", "pull subscription call"),
         ("from .run_e2e import run_end_to_end", "pipeline entrypoint import"),
@@ -112,6 +133,45 @@ def main() -> None:
     if "Pub/Sub Topic: pipeline-trigger" in deploy_text:
         fail("deploy summary still references stale pipeline-trigger topic")
     require_contains(deploy_compact, 'Pub/Sub Topic: ${SWAP_TOPIC}', "deploy summary canonical topic")
+
+    for needle, description in [
+        ("blueprint_pipeline.pubsub_handoff_listener", "systemd listener module entrypoint"),
+        ("BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION=blueprint-pipeline-handoff-listener", "systemd listener subscription env"),
+        ("BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true", "systemd listener stages control-plane input"),
+        ("BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true", "systemd listener leaves execution to control plane"),
+        ("--max-messages", "systemd listener bounded batch flag"),
+    ]:
+        require_contains(systemd_service_text, needle, description)
+    for needle, description in [
+        ("OnUnitActiveSec=1min", "systemd listener timer cadence"),
+        ("Unit=blueprint-pubsub-handoff-listener.service", "systemd listener timer unit binding"),
+    ]:
+        require_contains(systemd_timer_text, needle, description)
+    for needle, description in [
+        ("blueprint-pubsub-handoff-listener.service", "systemd installer copies listener service"),
+        ("blueprint-pubsub-handoff-listener.timer", "systemd installer copies listener timer"),
+        ("systemctl enable --now blueprint-pubsub-handoff-listener.timer", "systemd installer enables listener timer"),
+        ('STATE_DIR="${STATE_DIR:-/var/lib/blueprint/pipeline-control-plane}"', "systemd installer state dir default"),
+        ('HANDOFF_DIR="${HANDOFF_DIR:-/var/lib/blueprint/pubsub-handoffs}"', "systemd installer handoff dir default"),
+        ('"${STATE_DIR}/robot-eval-job-requests"', "systemd installer creates request inbox"),
+        ('"${STATE_DIR}/incoming_webapp_job_requests"', "systemd installer creates intake work dir"),
+    ]:
+        require_contains(systemd_installer_text, needle, description)
+    for needle, description in [
+        (
+            "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX=/var/lib/blueprint/pipeline-control-plane/robot-eval-job-requests",
+            "env example configured request inbox",
+        ),
+        (
+            "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR=/var/lib/blueprint/pipeline-control-plane/incoming_webapp_job_requests",
+            "env example configured intake work dir",
+        ),
+        (
+            "BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH=/var/lib/blueprint/pipeline-control-plane/live_pipeline_staged_inputs.json",
+            "env example configured staged inputs path",
+        ),
+    ]:
+        require_contains(systemd_env_text, needle, description)
 
     print("Pub/Sub handoff infra validation passed: listener, Terraform subscription, IAM, DLQ, and deploy script wiring are present.")
 

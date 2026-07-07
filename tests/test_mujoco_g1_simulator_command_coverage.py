@@ -279,6 +279,16 @@ def test_mujoco_asset_resolution_xml_matrix_and_route_helpers(
     assert source["menagerie_git_commit"] == "commit"
     assert source["asset_file_count"] == 1
     assert source["checksums"]["scene.xml"]
+    assert source["fixture_asset"] is False
+
+    (g1_root / "BLUEPRINT_FIXTURE_ASSET.txt").write_text(
+        "fixture only", encoding="utf-8"
+    )
+    fixture_source = mg._asset_source_manifest(g1_root)
+    assert fixture_source["source"] == "blueprint_committed_fixture_mjcf"
+    assert fixture_source["source_url"] is None
+    assert fixture_source["menagerie_git_commit"] is None
+    assert fixture_source["fixture_asset"] is True
 
     output_xml = tmp_path / "generated" / "g1.xml"
     mg._write_g1_xml_with_absolute_meshes(g1_root / "g1.xml", output_xml)

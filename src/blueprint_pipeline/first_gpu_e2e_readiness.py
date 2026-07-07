@@ -982,7 +982,7 @@ def build_first_gpu_e2e_readiness(
         "warnings": warnings,
         "next_commands": {
             "local_pipeline": (
-                f"blueprint-run-e2e --capture-root {context.capture_root} --provider openai "
+                f"blueprint-run-e2e --capture-root {context.capture_root} --provider local "
                 "--pipeline-lane current --run-evaluation-prep --evaluation-prep-provider manual"
             ),
             "simulation_automation": f"blueprint-run-simulation-automation --capture-root {context.capture_root}",

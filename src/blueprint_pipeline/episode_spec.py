@@ -239,6 +239,19 @@ def _scene_class_task_hints(site_text: str) -> List[Dict[str, Any]]:
     return hints
 
 
+def _site_type_notes(site_text: str, scene_hints: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    normalized = _string(site_text)
+    if not normalized or scene_hints:
+        return []
+    return [
+        {
+            "code": "site_type_unrecognized",
+            "detail": "No deterministic task template matched the capture site type text; generic/object-grounded task proposals remain review-only.",
+            "site_type_text": normalized,
+        }
+    ]
+
+
 def _task_category_from_text(text: str) -> str:
     lower = text.lower()
     if any(token in lower for token in ("pick", "place", "grasp", "bin", "tote")):
@@ -426,10 +439,14 @@ def build_task_anchor_proposals(
     generated_at: str,
 ) -> Dict[str, Any]:
     hints: List[Dict[str, Any]] = []
+    notes: List[Dict[str, Any]] = []
     hints.extend(_task_hypothesis_hints(capture_root))
     hints.extend(_capture_manifest_task_hints(capture_root))
     hints.extend(_object_label_task_hints(pipeline_dir))
-    hints.extend(_scene_class_task_hints(_site_type_text(capture_root)))
+    site_text = _site_type_text(capture_root)
+    scene_hints = _scene_class_task_hints(site_text)
+    notes.extend(_site_type_notes(site_text, scene_hints))
+    hints.extend(scene_hints)
     hints.extend(_scene_asset_task_hints(automation_dir))
     if not hints:
         hints.append(
@@ -454,6 +471,7 @@ def build_task_anchor_proposals(
         "status": "compiled_review_required",
         "proposal_count": len(proposals),
         "proposals": proposals,
+        "input_notes": notes,
         "proposal_authority": "review_input_not_execution_or_proof",
         "review_required": True,
         "proof_booleans_mutable_by_proposals": False,

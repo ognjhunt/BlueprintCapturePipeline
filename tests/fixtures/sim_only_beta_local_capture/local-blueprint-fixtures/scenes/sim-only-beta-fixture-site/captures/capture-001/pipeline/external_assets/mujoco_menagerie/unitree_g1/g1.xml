@@ -1,0 +1,16 @@
+<mujoco model="blueprint_fixture_unitree_g1_smoke">
+  <compiler angle="radian"/>
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="pelvis" pos="0 0 0.9">
+      <freejoint name="floating_base_joint"/>
+      <geom name="fixture_torso" type="capsule" fromto="0 0 -0.25 0 0 0.25" size="0.12" rgba="0.2 0.35 0.8 1" mass="8"/>
+      <geom name="fixture_head" type="sphere" pos="0 0 0.42" size="0.11" rgba="0.2 0.35 0.8 1" mass="1"/>
+      <geom name="fixture_left_leg" type="capsule" fromto="-0.08 0 -0.25 -0.08 0 -0.75" size="0.04" rgba="0.1 0.1 0.1 1" mass="1"/>
+      <geom name="fixture_right_leg" type="capsule" fromto="0.08 0 -0.25 0.08 0 -0.75" size="0.04" rgba="0.1 0.1 0.1 1" mass="1"/>
+    </body>
+  </worldbody>
+  <keyframe>
+    <key name="stand" qpos="0 0 0.9 1 0 0 0"/>
+  </keyframe>
+</mujoco>

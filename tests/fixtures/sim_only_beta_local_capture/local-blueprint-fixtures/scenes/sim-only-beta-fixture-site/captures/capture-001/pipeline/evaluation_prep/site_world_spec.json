@@ -1,0 +1,27 @@
+{
+  "schema_version": "site_world_spec.v1",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "status": "fixture_review_ready",
+  "fixture_only": true,
+  "site_type": "fixture indoor navigation route",
+  "robot_profiles": [
+    {
+      "id": "unitree_g1",
+      "display_name": "Unitree G1",
+      "embodiment_type": "humanoid",
+      "action_space": {
+        "name": "fixture_navigation_pose",
+        "dim": 3
+      },
+      "claim_boundary": "fixture robot profile defines local eval scope only"
+    }
+  ],
+  "proof_boundary": {
+    "synthetic_fixture_only": true,
+    "real_capture_upload_proven": false,
+    "simulator_execution_proven": false,
+    "production_deployment_proven": false,
+    "remote_cloud_provider_execution_proven": false,
+    "public_claim_upgrade_allowed": false
+  }
+}

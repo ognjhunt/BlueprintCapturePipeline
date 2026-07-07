@@ -12,11 +12,14 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.alpha_readiness import (
     build_launch_gate_summary,
     write_pipeline_sync_result,
 )
 from blueprint_pipeline.canonical_site_package import _world_labs_readiness
+from blueprint_pipeline.evaluation_prep_stage import _privacy_processing_cleared
 from blueprint_pipeline.launch_bundle import build_buyer_trust_score
 from blueprint_pipeline.proof_contracts import (
     build_proof_pack_manifest,
@@ -50,6 +53,33 @@ def _launch_gate_capture(tmp_path: Path, *, descriptor_overrides: dict | None = 
 
 def _stage_checks(summary: dict) -> dict:
     return {check["name"]: check for check in summary["stage_checks"]}
+
+
+def _operator_check(summary: dict, check_id: str) -> dict:
+    return {check["id"]: check for check in summary["operator_required_checks"]}[check_id]
+
+
+def test_operator_launch_evidence_template_is_parseable_and_non_verified() -> None:
+    template = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs" / "operator_launch_evidence.template.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert template["schema_version"] == "operator_launch_evidence.v1"
+    checks = template["checks"]
+    for check_id in (
+        "buyer_payment_settlement",
+        "capturer_payout_settlement",
+        "stripe_connected_account_live_readiness",
+        "buyer_artifact_access",
+        "human_finance_review_owner",
+    ):
+        assert checks[check_id]["status"] == "manual_live_evidence_required"
+    assert checks["buyer_artifact_access"]["buyer_session_ref"] == ""
+    assert checks["stripe_connected_account_live_readiness"]["provider_state_checked"] is False
+    assert checks["buyer_payment_settlement"]["stripe_mode"] == ""
+    assert checks["capturer_payout_settlement"]["stripe_mode"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +344,23 @@ def test_fallback_redaction_is_flagged_for_manual_review() -> None:
     assert fallback["privacy"]["external_delivery_allowed"] is False
 
 
+def test_evaluation_prep_does_not_treat_privacy_fallback_as_cleared() -> None:
+    assert (
+        _privacy_processing_cleared(
+            rights_review=None,
+            privacy_processing={"status": "face_anonymized_fallback"},
+        )
+        is False
+    )
+    assert (
+        _privacy_processing_cleared(
+            rights_review=None,
+            privacy_processing={"status": "full_frame_redacted_local_proof"},
+        )
+        is False
+    )
+
+
 def test_proof_pack_manifest_fails_closed_on_missing_rights_review() -> None:
     manifest = build_proof_pack_manifest(
         scene_id="scene-1",
@@ -375,8 +422,10 @@ def test_world_labs_readiness_raw_bypass_never_reads_ready_outside_production(mo
         rights_review={"status": "cleared"},
         provenance_summary={"status": "grounded"},
     )
-    # Labeled non-production preview stays possible but is never "ready".
-    assert readiness["status"] == "review_required"
+    # Labeled non-production preview stays visible, but it never downgrades
+    # privacy failures to warnings.
+    assert readiness["status"] == "blocked"
+    assert "privacy_safe_world_model_input_not_verified" in readiness["blockers"]
     assert "raw_video_bypass_input_non_production" in readiness["warnings"]
 
 
@@ -560,6 +609,200 @@ def test_launch_gate_blocks_payout_without_explicit_eligibility(tmp_path: Path) 
     summary = build_launch_gate_summary(capture_root=capture_root, env={})
     checks = _stage_checks(summary)
     assert checks["capturer_payout_transition_ready"]["passed"] is False
+
+
+def test_operator_launch_evidence_rejects_wrong_schema_version(tmp_path: Path) -> None:
+    capture_root = _launch_gate_capture(tmp_path)
+    (capture_root / "pipeline" / "operator_launch_evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "operator_launch_evidence.v0",
+                "checks": {
+                    "legal_consent_posture_signoff": {
+                        "status": "verified",
+                        "signed_record_uri": "gs://operator/legal-signoff.json",
+                        "verified_at": "2026-07-07T00:00:00+00:00",
+                        "verified_by": "legal-owner",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = build_launch_gate_summary(capture_root=capture_root, env={})
+
+    assert "operator_launch_evidence_schema_version_invalid" in summary["operator_evidence_status"]["schema_errors"]
+    legal_check = {
+        check["id"]: check for check in summary["operator_required_checks"]
+    }["legal_consent_posture_signoff"]
+    assert legal_check["passed"] is False
+    assert "operator_launch_evidence_schema_version_invalid" in legal_check["evidence_validation_errors"]
+
+
+def test_buyer_artifact_access_operator_evidence_requires_executed_authenticated_fetch(
+    tmp_path: Path,
+) -> None:
+    capture_root = _launch_gate_capture(tmp_path)
+    (capture_root / "pipeline" / "operator_launch_evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "operator_launch_evidence.v1",
+                "checks": {
+                    "buyer_artifact_access": {
+                        "status": "verified",
+                        "evidence_uri": "gs://operator/buyer-access-attestation.json",
+                        "verified_at": "2026-07-07T00:00:00+00:00",
+                        "verified_by": "ops-owner",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = build_launch_gate_summary(capture_root=capture_root, env={})
+    buyer_access = _operator_check(summary, "buyer_artifact_access")
+
+    assert buyer_access["passed"] is False
+    assert buyer_access["evidence_validation_errors"] == [
+        "missing_authenticated_buyer_session_ref",
+        "missing_artifact_access_log",
+        "missing_executed_artifact_access_fetch",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("check_id", "expected_errors"),
+    [
+        ("legal_consent_posture_signoff", ["missing_signed_legal_or_dpa_record"]),
+        ("operator_dpa_data_processing_terms", ["missing_signed_legal_or_dpa_record"]),
+        (
+            "paperclip_ops_relay_secret_rotation",
+            ["missing_secret_version_ref", "missing_redeploy_evidence"],
+        ),
+        (
+            "iphone_real_device_claim_flow",
+            ["missing_real_device_recording", "missing_capture_job_id_continuity"],
+        ),
+        (
+            "buyer_artifact_access",
+            [
+                "missing_authenticated_buyer_session_ref",
+                "missing_artifact_access_log",
+                "missing_executed_artifact_access_fetch",
+            ],
+        ),
+    ],
+)
+def test_operator_launch_evidence_rejects_generic_evidence_uri_for_specific_live_checks(
+    tmp_path: Path,
+    check_id: str,
+    expected_errors: list[str],
+) -> None:
+    capture_root = _launch_gate_capture(tmp_path)
+    (capture_root / "pipeline" / "operator_launch_evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "operator_launch_evidence.v1",
+                "checks": {
+                    check_id: {
+                        "status": "verified",
+                        "evidence_uri": f"gs://operator/{check_id}.json",
+                        "verified_at": "2026-07-07T00:00:00+00:00",
+                        "verified_by": "ops-owner",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    check = _operator_check(build_launch_gate_summary(capture_root=capture_root, env={}), check_id)
+
+    assert check["passed"] is False
+    assert check["evidence_validation_errors"] == expected_errors
+
+
+@pytest.mark.parametrize(
+    ("check_id", "fields"),
+    [
+        (
+            "buyer_payment_settlement",
+            {"payment_intent_id": "pi_live_123", "stripe_event_id": "evt_live_payment_123"},
+        ),
+        (
+            "capturer_payout_settlement",
+            {
+                "payout_id": "po_live_123",
+                "transfer_id": "tr_live_123",
+                "webhook_reconciliation_uri": "gs://operator/payout-reconciliation.json",
+            },
+        ),
+    ],
+)
+def test_operator_payment_and_payout_evidence_require_live_mode(
+    tmp_path: Path,
+    check_id: str,
+    fields: dict[str, str],
+) -> None:
+    capture_root = _launch_gate_capture(tmp_path)
+    (capture_root / "pipeline" / "operator_launch_evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "operator_launch_evidence.v1",
+                "checks": {
+                    check_id: {
+                        "status": "verified",
+                        "evidence_uri": f"gs://operator/{check_id}.json",
+                        "verified_at": "2026-07-07T00:00:00+00:00",
+                        "verified_by": "ops-owner",
+                        **fields,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    check = _operator_check(build_launch_gate_summary(capture_root=capture_root, env={}), check_id)
+
+    assert check["passed"] is False
+    assert check["evidence_validation_errors"] == ["stripe_mode_not_live"]
+
+
+def test_buyer_artifact_access_operator_evidence_requires_successful_fetch_status(
+    tmp_path: Path,
+) -> None:
+    capture_root = _launch_gate_capture(tmp_path)
+    (capture_root / "pipeline" / "operator_launch_evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "operator_launch_evidence.v1",
+                "checks": {
+                    "buyer_artifact_access": {
+                        "status": "verified",
+                        "buyer_session_ref": "buyer-session-live-123",
+                        "artifact_access_log_uri": "gs://operator/buyer-access-log.json",
+                        "authenticated_fetch_status": "failed",
+                        "verified_at": "2026-07-07T00:00:00+00:00",
+                        "verified_by": "ops-owner",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    buyer_access = _operator_check(
+        build_launch_gate_summary(capture_root=capture_root, env={}),
+        "buyer_artifact_access",
+    )
+
+    assert buyer_access["passed"] is False
+    assert buyer_access["evidence_validation_errors"] == [
+        "missing_executed_artifact_access_fetch"
+    ]
 
 
 def test_launch_gate_blocks_ungrounded_provenance(tmp_path: Path) -> None:

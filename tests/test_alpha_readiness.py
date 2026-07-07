@@ -329,6 +329,58 @@ def _write_geometry_lane(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
 
 
+def _operator_launch_evidence_fields(check_id: str) -> dict[str, object]:
+    base_uri = f"gs://local-blueprint/operator-evidence/{check_id}.json"
+    if check_id in {"legal_consent_posture_signoff", "operator_dpa_data_processing_terms"}:
+        return {"signed_record_uri": base_uri}
+    if check_id == "paperclip_ops_relay_secret_rotation":
+        return {
+            "secret_version_ref": "projects/blueprint/secrets/paperclip-ops-relay/versions/7",
+            "redeploy_evidence_uri": base_uri,
+        }
+    if check_id.endswith("_real_device_claim_flow"):
+        return {
+            "recording_uri": base_uri,
+            "capture_job_id": "capture-job-live-123",
+        }
+    if check_id == "buyer_payment_settlement":
+        return {
+            "payment_intent_id": "pi_live_123",
+            "stripe_event_id": "evt_live_payment_123",
+            "stripe_mode": "live",
+        }
+    if check_id == "capturer_payout_settlement":
+        return {
+            "payout_id": "po_live_123",
+            "transfer_id": "tr_live_123",
+            "webhook_reconciliation_uri": base_uri,
+            "creator_payout_ledger_ref": "creatorPayouts/live-123",
+            "stripe_mode": "live",
+        }
+    if check_id == "stripe_connected_account_live_readiness":
+        return {
+            "provider_account_ref": "acct_live_123",
+            "provider_state_checked": True,
+            "provider_mode": "live",
+            "live_provider_ready": True,
+            "payouts_enabled": True,
+            "blocking_requirements": [],
+        }
+    if check_id == "payout_exception_monitor_live":
+        return {"monitor_uri": base_uri, "alert_policy_uri": "projects/blueprint/alertPolicies/payouts"}
+    if check_id in {"identity_kyc_provider_decision", "background_check_provider_decision"}:
+        return {"decision_record_uri": base_uri}
+    if check_id == "human_finance_review_owner":
+        return {"finance_owner": "ops-owner", "review_queue_uri": "https://ops.example/finance-review"}
+    if check_id == "buyer_artifact_access":
+        return {
+            "buyer_session_ref": "buyer-session-live-123",
+            "artifact_access_log_uri": base_uri,
+            "authenticated_fetch_status": "succeeded",
+        }
+    return {"evidence_uri": base_uri}
+
+
 def _write_operator_launch_evidence(capture_root: Path, required_checks: list[dict[str, object]]) -> None:
     checks = {
         str(check["id"]): {
@@ -336,6 +388,7 @@ def _write_operator_launch_evidence(capture_root: Path, required_checks: list[di
             "evidence_uri": f"gs://local-blueprint/operator-evidence/{check['id']}.json",
             "verified_at": "2026-07-04T00:00:00+00:00",
             "verified_by": "ops-owner",
+            **_operator_launch_evidence_fields(str(check["id"])),
         }
         for check in required_checks
     }

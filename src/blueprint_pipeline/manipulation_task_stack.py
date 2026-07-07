@@ -90,6 +90,51 @@ def _load_optional_json(path: str | Path | None) -> dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+def _site_object_index_entries(capture_root: Path) -> list[dict[str, Any]]:
+    for path in (
+        capture_root / "raw" / "object_index.json",
+        capture_root / "raw" / "objects" / "index.json",
+        capture_root / "raw" / "arkit" / "objects" / "index.json",
+        capture_root / "object_index.json",
+    ):
+        if not path.is_file():
+            continue
+        payload = read_json_any(path)
+        raw_objects = payload.get("objects") if isinstance(payload, Mapping) else payload
+        if isinstance(raw_objects, Sequence) and not isinstance(raw_objects, (str, bytes)):
+            return [dict(item) for item in raw_objects if isinstance(item, Mapping)]
+    return []
+
+
+def _site_index_supports_object_class(
+    entries: Sequence[Mapping[str, Any]],
+    object_class: str,
+) -> bool:
+    if not entries:
+        return True
+    token_map = {
+        "tote": {"tote", "bin", "container", "crate", "box", "basket"},
+    }
+    tokens = token_map.get(object_class.lower(), {object_class.lower()})
+    for entry in entries:
+        haystack = " ".join(
+            _string(entry.get(key)).lower()
+            for key in (
+                "object_id",
+                "id",
+                "label",
+                "class_name",
+                "class",
+                "category",
+                "description",
+                "semantic_label",
+            )
+        )
+        if any(token and token in haystack for token in tokens):
+            return True
+    return False
+
+
 def _tote_template(
     *,
     object_id: str,
@@ -745,6 +790,33 @@ def build_manipulation_task_stack(
         inline_contract = request_manipulation.get("object_contract") or request_manipulation.get("objectContract")
         object_contract_payload = dict(inline_contract) if isinstance(inline_contract, Mapping) else {}
 
+    site_object_index = _site_object_index_entries(root)
+    implicit_default_object = (
+        object_id == DEFAULT_OBJECT_ID
+        and object_class == "tote"
+        and not request_manipulation
+        and not object_contract_payload
+        and not object_asset_path
+    )
+    site_object_index_policy: dict[str, Any] = {
+        "object_index_checked": bool(site_object_index),
+        "object_index_object_count": len(site_object_index),
+        "implicit_default_object": implicit_default_object,
+        "template_inference_allowed_by_site_object_index": allow_template_inference,
+    }
+    if (
+        implicit_default_object
+        and site_object_index
+        and not _site_index_supports_object_class(site_object_index, object_class)
+    ):
+        allow_template_inference = False
+        site_object_index_policy.update(
+            {
+                "template_inference_allowed_by_site_object_index": False,
+                "blocker": "site_object_index_does_not_contain_default_tote_object",
+            }
+        )
+
     generated_object_asset: dict[str, Any] = {}
     if not object_asset_path and object_class == "tote" and allow_template_inference:
         generated_object_asset = write_mujoco_tote_asset(
@@ -909,6 +981,15 @@ def build_manipulation_task_stack(
         if value:
             artifacts[key] = str(value)
     physics_complete = physics_output.get("status") == "complete"
+    stack_blockers = (
+        []
+        if eval_report.get("status") == "ready_for_policy_comparison" and physics_complete
+        else list(eval_report.get("blockers") or [])
+        + ([] if physics_complete else ["manipulation_physics_simulator_not_complete"])
+    )
+    site_index_blocker = _string(site_object_index_policy.get("blocker"))
+    if site_index_blocker and site_index_blocker not in stack_blockers:
+        stack_blockers.append(site_index_blocker)
     manifest = {
         "schema_version": STACK_MANIFEST_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -945,11 +1026,9 @@ def build_manipulation_task_stack(
         "grasp_physics_validated": physics_output.get("grasp_physics_validated") is True,
         "carry_physics_validated": physics_output.get("carry_physics_validated") is True,
         "placement_physics_validated": physics_output.get("placement_physics_validated") is True,
+        "site_object_index_policy": site_object_index_policy,
         "artifacts": artifacts,
-        "blockers": []
-        if eval_report.get("status") == "ready_for_policy_comparison" and physics_complete
-        else list(eval_report.get("blockers") or [])
-        + ([] if physics_complete else ["manipulation_physics_simulator_not_complete"]),
+        "blockers": stack_blockers,
         "claim_boundary": {
             **CLAIM_BOUNDARY,
             "manipulation_task_contract_ready": object_contract.get("status") == "ready",

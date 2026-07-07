@@ -1,0 +1,27 @@
+{
+  "schema_version": "v1",
+  "scene_id": "sim-only-beta-fixture-site",
+  "capture_id": "capture-001",
+  "raw_prefix": "scenes/sim-only-beta-fixture-site/captures/capture-001/raw",
+  "raw_video_uri": "gs://local-blueprint-fixtures/scenes/sim-only-beta-fixture-site/captures/capture-001/raw/walkthrough.mp4",
+  "source_video_sha256": "1eca152f09f86ccd78d26aa2194bd241ba14036e936f946f4492dad3bcbec8a9",
+  "completed_at": "2026-01-01T00:00:00+00:00",
+  "capture_rights": {
+    "derived_scene_generation_allowed": true,
+    "data_licensing_allowed": false,
+    "capture_contributor_payout_eligible": false,
+    "external_use_allowed": true,
+    "consent_status": "documented",
+    "permission_document_uri": "fixture://sim-only-beta-local-gate/consent.md",
+    "consent_scope": [
+      "mujoco_g1_simulator_evaluation_for_this_staged_capture"
+    ]
+  },
+  "proof_boundary": {
+    "synthetic_fixture_only": true,
+    "fallback_allowed_for_beta_release": false,
+    "real_capture_upload_proven": false,
+    "production_deployment_proven": false,
+    "public_claim_upgrade_allowed": false
+  }
+}

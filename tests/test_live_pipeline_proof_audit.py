@@ -60,6 +60,11 @@ def _live_closure_evidence(path: Path, *, job_id: str = "closure-job-1") -> Path
                 "storage_upload_performed": True,
                 "signed_urls": ["https://delivery.example/signed/package-1"],
                 "entitlement_verified": True,
+                "buyer_access_check": {
+                    "buyer_access_checked": True,
+                    "buyer_accessible": True,
+                    "status": "ok",
+                },
             },
             "safety_contact_physics": {
                 "physics_contact_validated": True,

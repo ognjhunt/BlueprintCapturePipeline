@@ -224,6 +224,12 @@ def test_run_local_bundle_workflow_can_request_scene_memory_lane(
 
     assert result["pipeline_lane"] == "scene_memory"
     assert captured["lane"] == "scene_memory"
+    assert "--provider local" in result["commands"]["agent_review_local"]
+    assert "agent_review_openai" not in result["commands"]
+    assert result["remaining_runtime_requirements"]["agent_review_local"] == [
+        "no LLM key required",
+        "use --provider openai or --provider claude only for configured external review overrides",
+    ]
 
 
 def test_run_local_bundle_workflow_can_request_deeper_pipeline_lanes(

@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from blueprint_pipeline.robot_eval_dataset import build_real_site_robot_eval_dataset
 from scripts.run_sim_only_beta_local_gate import _validate_sim_only_outputs
+from scripts.run_sim_only_beta_local_gate import (
+    _committed_fixture_capture_root,
+    _materialize_fixture_capture_root,
+    main,
+)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -118,6 +124,82 @@ def _write_completed_job(
                 "public_claim_upgrade_allowed": False,
             },
         )
+
+
+def test_committed_fixture_generates_validated_semantic_spawn_target(
+    tmp_path: Path,
+) -> None:
+    capture_root = _materialize_fixture_capture_root(
+        source_capture_root=_committed_fixture_capture_root(),
+        work_root=tmp_path / "fixture-work",
+    )
+
+    assert (capture_root / "pipeline" / "worldlabs_assets" / "scene.glb").is_file()
+    assert (
+        capture_root
+        / "pipeline"
+        / "external_assets"
+        / "mujoco_menagerie"
+        / "unitree_g1"
+        / "BLUEPRINT_FIXTURE_ASSET.txt"
+    ).is_file()
+
+    build_real_site_robot_eval_dataset(capture_root=capture_root)
+
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    task_cards = json.loads((robot_eval_root / "task_cards.json").read_text())
+    scenario_cards = json.loads((robot_eval_root / "scenario_cards.json").read_text())
+    object_index = json.loads((robot_eval_root / "site_card.json").read_text())[
+        "geometry"
+    ]["object_index"]
+
+    assert object_index["physics_coverage_complete"] is True
+    assert task_cards["cards"][0]["task_id"] == "fixture_counter_navigation"
+    assert task_cards["cards"][0]["target_object_ids"] == ["fixture_service_counter"]
+    assert task_cards["cards"][0]["semantic_grounding"][
+        "validated_spawn_target_pair"
+    ] is True
+    assert scenario_cards["cards"][0]["scenario_id"] == (
+        "scenario_fixture_counter_navigation_unitree_g1"
+    )
+    assert scenario_cards["cards"][0]["semantic_spawn_target"][
+        "validated_spawn_target_pair"
+    ] is True
+    assert scenario_cards["cards"][0]["semantic_spawn_target"][
+        "fallback_allowed_for_beta_release"
+    ] is False
+
+
+def test_local_gate_defaults_to_committed_fixture_and_writes_blocked_report(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "sim_only_beta_local_gate_report.json"
+    webapp_repo = tmp_path / "Blueprint-WebApp"
+    webapp_repo.mkdir()
+
+    exit_code = main(
+        [
+            "--fixture-work-root",
+            str(tmp_path / "fixture-work"),
+            "--webapp-repo",
+            str(webapp_repo),
+            "--mujoco-g1-root",
+            str(tmp_path / "missing-g1"),
+            "--output-path",
+            str(report_path),
+        ]
+    )
+
+    report = json.loads(report_path.read_text())
+    assert exit_code == 1
+    assert report["status"] == "blocked"
+    assert report["failed_stage"] == "preflight"
+    assert report["blockers"] == [f"mujoco_g1_root_missing:{tmp_path / 'missing-g1'}"]
+    assert report["capture_root"].endswith(
+        "local-blueprint-fixtures/scenes/sim-only-beta-fixture-site/captures/capture-001"
+    )
+    assert report["simulator_execution_proven"] is False
+    assert report["public_claim_upgrade_allowed"] is False
 
 
 def test_local_gate_validates_route_proof_job_when_inbox_has_stale_rows(tmp_path: Path) -> None:
@@ -338,3 +420,73 @@ def test_local_gate_blocks_precisely_when_wam_handoff_artifacts_are_missing(
         "wam_handoff_artifact_wam_eval_claim_boundary_missing",
     ]
     assert report["proof_boundary"]["generated_world_rank_fidelity_result_proven"] is False
+
+
+def test_local_gate_reports_missing_closure_artifacts_as_blockers(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    proof_path = capture_root / "pipeline" / "live_pipeline_control_plane" / "route.json"
+    _write_json(
+        proof_path,
+        {
+            "status": "forwarded_to_pipeline_intake",
+            "job_request": {"job_id": "job-1"},
+            "pipeline_intake": {
+                "accepted": True,
+                "status": "staged_for_control_plane",
+                "input_blockers": [],
+            },
+            "proof_boundary": {
+                "local_webapp_route_forwarding_proven": True,
+                "pipeline_intake_staged_request_proven": True,
+                "simulator_execution_proven": False,
+            },
+        },
+    )
+    _write_json(
+        capture_root / "pipeline" / "robot_eval_job_requests" / "inbox_run_manifest.json",
+        {
+            "status": "completed",
+            "processed_count": 1,
+            "jobs": [{"job_id": "job-1", "status": "blocked"}],
+        },
+    )
+    job_root = capture_root / "pipeline" / "robot_eval_jobs" / "job-1"
+    _write_json(
+        job_root / "job_run_manifest.json",
+        {"status": "blocked", "simulator_execution_proven": False},
+    )
+    _write_json(
+        job_root / "scenario_eval_matrix.json",
+        {
+            "status": "blocked_invalid_requested_scope",
+            "blockers": ["scenario_eval_matrix_semantic_spawn_target_missing"],
+            "semantic_spawn_target_coverage_complete": False,
+        },
+    )
+    _write_json(
+        job_root / "simulator_service_result.json",
+        {"status": "failed", "simulator_execution_proven": False},
+    )
+    _write_json(
+        job_root / "robot_team_grade_eval_closure_manifest.json",
+        {
+            "status": "blocked_robot_team_grade_requirements",
+            "sim_only_beta_blocked_requirement_ids": ["task_success_metrics"],
+            "requirements": [
+                {
+                    "requirement_id": "task_success_metrics",
+                    "sim_only_beta_required": True,
+                    "passed": False,
+                    "blockers": ["scenario_eval_matrix_blocked"],
+                }
+            ],
+        },
+    )
+
+    report = _validate_sim_only_outputs(capture_root=capture_root, proof_path=proof_path)
+
+    assert report["status"] == "blocked"
+    assert "job_status_not_simulator_command_completed" in report["blockers"]
+    assert "simulator_command_batch_closure_manifest_missing" in report["blockers"]
+    assert "semantic_spawn_target_coverage_incomplete" in report["blockers"]
+    assert report["scenario_eval_matrix"]["status"] == "blocked_invalid_requested_scope"

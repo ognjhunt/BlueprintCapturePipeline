@@ -603,8 +603,8 @@ blueprint-serve-wam-vla-policy-endpoint --host 127.0.0.1 --port 8765
 
 ```bash
 python -m blueprint_pipeline.mujoco_g1_wam_vla_policy_endpoint_eval \\
-  --job-root /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/robot_eval_jobs \\
-  --g1-model-root /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/external_assets/mujoco_menagerie/unitree_g1
+  --job-root "${BLUEPRINT_PIPELINE_REPO:-.}/robot_eval_jobs" \\
+  --g1-model-root "${BLUEPRINT_PIPELINE_REPO:-.}/output/external_assets/mujoco_menagerie/unitree_g1"
 ```
 
 Success for endpoint plumbing means `endpoint_policy_used=true`, `fixture_policy_used=false`, endpoint attempts were invoked, and the returned actions normalized and controlled MuJoCo.

@@ -6,6 +6,7 @@ WORKDIR /app
 # System deps needed by opencv-headless and trimesh
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libsm6 libxext6 libxrender-dev libgl1 \
+    ffmpeg \
     git curl \
     && rm -rf /var/lib/apt/lists/*
 

@@ -13,6 +13,68 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def test_live_evidence_loads_signed_access_manifest_delivery_proof(tmp_path: Path) -> None:
+    capture_root = tmp_path / "storage" / "scenes" / "scene-1" / "captures" / "capture-1"
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-signed-access"
+    _write_json(
+        job_dir / "signed_access_manifest.json",
+        {
+            "schema_version": "post_training_signed_access_manifest.v1",
+            "status": "signed_access_ready",
+            "storage_upload_performed": True,
+            "signed_urls": ["https://signed.example.test/package.zip"],
+            "entitlement_verified": True,
+            "buyer_access_check": {
+                "entitlement_verified": True,
+                "buyer_access_checked": True,
+                "buyer_accessible": True,
+                "status": "signed_url_minted",
+            },
+            "operator_attestation": "delivery owner accepted signed buyer access",
+        },
+    )
+
+    evidence, sources = lrec._load_live_evidence(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request={},
+    )
+    gate = lrec._signed_delivery_access_gate(evidence)
+
+    assert str(job_dir / "signed_access_manifest.json") in sources
+    assert gate["passed"] is True
+    assert gate["blockers"] == []
+    assert gate["evidence"]["entitlement_verified"] is True
+    assert gate["evidence"]["buyer_access_checked"] is True
+
+
+def test_live_evidence_does_not_upgrade_local_delivery_manifest(tmp_path: Path) -> None:
+    capture_root = tmp_path / "storage" / "scenes" / "scene-1" / "captures" / "capture-1"
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-local-access"
+    _write_json(
+        job_dir / "signed_access_manifest.json",
+        {
+            "schema_version": "post_training_signed_access_manifest.v1",
+            "status": "local_delivery_ready_review_required",
+            "storage_upload_performed": False,
+            "local_access_paths": ["local/package.zip"],
+            "entitlement_verified": False,
+            "operator_attestation": "delivery owner reviewed local package copy",
+        },
+    )
+
+    evidence, _sources = lrec._load_live_evidence(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        job_request={},
+    )
+    gate = lrec._signed_delivery_access_gate(evidence)
+
+    assert gate["passed"] is False
+    assert "signed_delivery_access_not_proven" in gate["blockers"]
+    assert "signed_delivery_entitlement_not_verified" in gate["blockers"]
+
+
 def test_low_level_validation_helpers_cover_edge_branches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -411,6 +473,32 @@ def test_owner_evidence_gates_cover_reference_failure_branches(tmp_path: Path) -
         {"delivery_access": {"signed_urls": ["https://signed.example"], "entitlementVerified": False}}
     )
     assert "signed_delivery_entitlement_not_verified" in delivery_gate["blockers"]
+    missing_entitlement = lrec._signed_delivery_access_gate(
+        {
+            "delivery_access": {
+                "signed_urls": ["https://signed.example"],
+                "operator_attestation": "owner accepted signed delivery access",
+                "buyer_access_check": {
+                    "buyer_access_checked": True,
+                    "buyer_accessible": True,
+                },
+            }
+        }
+    )
+    assert "signed_delivery_entitlement_not_verified" in missing_entitlement["blockers"]
+    attestation_only = lrec._signed_delivery_access_gate(
+        {
+            "delivery_access": {
+                "signed_urls": ["https://signed.example"],
+                "entitlement_verified": True,
+                "operator_attestation": "owner accepted signed delivery access",
+            }
+        }
+    )
+    assert (
+        "signed_delivery_buyer_access_check_not_executed"
+        in attestation_only["blockers"]
+    )
 
     safety_gate = lrec._safety_contact_physics_gate(
         evidence={

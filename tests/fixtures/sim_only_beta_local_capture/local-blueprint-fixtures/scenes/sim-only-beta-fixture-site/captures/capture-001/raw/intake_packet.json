@@ -1,0 +1,19 @@
+{
+  "schema_version": "v1",
+  "workflowName": "Fixture sim-only local beta gate",
+  "taskSteps": [
+    "navigate from the marked start to the fixture service counter"
+  ],
+  "zone": "fixture-zone",
+  "owner": "blueprint-fixture",
+  "successCriteria": [
+    "scene load trace exists",
+    "spawn pose trace exists",
+    "action or policy trace exists"
+  ],
+  "proof_boundary": {
+    "synthetic_fixture_only": true,
+    "fallback_allowed_for_beta_release": false,
+    "public_claim_upgrade_allowed": false
+  }
+}

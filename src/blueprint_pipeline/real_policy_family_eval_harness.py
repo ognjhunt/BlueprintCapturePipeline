@@ -38,6 +38,7 @@ from .lerobot_torch_policy_adapter import (
     LIBERO_VISUAL_FEATURE_KEYS,
     build_gpu_runtime_contract,
 )
+from .robot_eval_job_request_contract import ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION
 from .policy_ranking_ladder import build_known_ordering_policy_ladder
 
 HARNESS_MANIFEST_SCHEMA_VERSION = "real_policy_family_eval_harness_manifest.v1"
@@ -382,7 +383,7 @@ def build_real_policy_eval_job_request(
 ) -> dict[str, Any]:
     family_id = _string(family.get("family_id"))
     return {
-        "schema_version": "robot_eval_job_request.v1",
+        "schema_version": ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
         "customer": {
             "id": "blueprint-real-policy-validation",
             "name": "Blueprint real policy family validation",

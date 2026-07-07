@@ -6,16 +6,16 @@ The current active process is: `BlueprintCapture` output -> privacy-safe World L
 
 For public language, Google/Meta smart glasses are supported only for approved repeat walkthroughs where the assignment, hardware, launch proof, and downstream capture/package proof exist. This repo treats glasses outputs as partial/internal until that proof chain exists.
 
-AI and engineer orientation maps live under [`docs/architecture/`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture):
+AI and engineer orientation maps live under [`docs/architecture/`](docs/architecture):
 
-- [`ai-onboarding-map.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/ai-onboarding-map.md)
-- [`source-of-truth-map.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/source-of-truth-map.md)
-- [`command-safety-matrix.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/command-safety-matrix.md)
-- [`refactor-hotspots.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/architecture/refactor-hotspots.md)
+- [`ai-onboarding-map.md`](docs/architecture/ai-onboarding-map.md)
+- [`source-of-truth-map.md`](docs/architecture/source-of-truth-map.md)
+- [`command-safety-matrix.md`](docs/architecture/command-safety-matrix.md)
+- [`refactor-hotspots.md`](docs/architecture/refactor-hotspots.md)
 
 Robot-team buyers: what a Task Evaluation Run / Post-Training Data Package
 contains, how to verify it, and its claim boundaries are documented in
-[`docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md).
+[`docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md`](docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md).
 Every package export writes a fail-closed `buyer_package_readout.json` +
 `buyer_package_summary.md` and `replay_review_instructions.md`.
 
@@ -414,7 +414,7 @@ The `dev` extra carries the full no-GPU validation stack (`usd-core`/`pxr`,
 scene-placement, and parity
 tests run instead of skipping. For the canonical one-command CPU setup, the
 import probe, and the green-baseline test commands, see
-[docs/DEV_SETUP.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/DEV_SETUP.md).
+[docs/DEV_SETUP.md](docs/DEV_SETUP.md).
 
 Run repository commands through the synced environment:
 
@@ -430,7 +430,7 @@ Optional LLM support for the capture review agent:
 uv sync --extra dev --extra llm
 ```
 
-Local tests automatically add `src/` and the sibling `BlueprintContracts/src` to `sys.path` through [`tests/conftest.py`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/conftest.py). If the contracts repo is not present beside this repo, install `blueprint-contracts` before running `uv run pytest`.
+Local tests automatically add `src/` and the sibling `BlueprintContracts/src` to `sys.path` through [`tests/conftest.py`](tests/conftest.py). If the contracts repo is not present beside this repo, install `blueprint-contracts` before running `uv run pytest`.
 
 Cross-repo external alpha gate:
 
@@ -454,7 +454,7 @@ Local sim-only beta gate:
 ```bash
 python scripts/run_sim_only_beta_local_gate.py \
   --capture-root /absolute/path/to/capture-root \
-  --webapp-repo /Users/nijelhunt_1/workspace/Blueprint-WebApp \
+  --webapp-repo ../Blueprint-WebApp \
   --mujoco-g1-root /absolute/path/to/mujoco_menagerie/unitree_g1
 ```
 
@@ -706,7 +706,7 @@ Legacy `video_to_world`, retrieval-index, and live-geometry validation material
 remains in older docs for compatibility, but those paths are not part of the
 active Capture App -> World Labs -> CPU preflight -> simulation-manifest flow.
 
-The main `blueprint-pipeline` job stays CPU-only. The concrete service contract, storage behavior, and model-path rules are documented in [docs/PRIVACY_RUNNER_SERVICES.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/PRIVACY_RUNNER_SERVICES.md).
+The main `blueprint-pipeline` job stays CPU-only. The concrete service contract, storage behavior, and model-path rules are documented in [docs/PRIVACY_RUNNER_SERVICES.md](docs/PRIVACY_RUNNER_SERVICES.md).
 
 The privacy path treats depth generation as a first-class optional artifact when
 depth evidence is available or a depth runner is configured:
@@ -719,7 +719,7 @@ depth evidence is available or a depth runner is configured:
 ## Legacy GPU Bring-Up
 
 For the current sample-video to owner-GPU proof path, use
-[`docs/FIRST_GPU_E2E_RUNBOOK.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/FIRST_GPU_E2E_RUNBOOK.md).
+[`docs/FIRST_GPU_E2E_RUNBOOK.md`](docs/FIRST_GPU_E2E_RUNBOOK.md).
 It sequences local capture preflight, current pipeline lanes, WebApp forwarding,
 owner GPU simulator command execution, proof ingestion, and closure audits
 without promoting CPU or simulator smoke artifacts into rank-fidelity proof.
@@ -783,12 +783,12 @@ owner command runs, and block when the sync manifest is blocked, plus
 `gpu_vm_sync_manifest` files that checksum the required raw,
 simulation-automation, and run-packet artifacts before a GPU VM handoff.
 
-The older single-VM GPU runbook is still available for legacy downstream world-model work in [docs/GPU_VM_RUNBOOK.md](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/GPU_VM_RUNBOOK.md), but it is not the active preview, upload, CPU-preflight, or simulation-manifest path.
+The older single-VM GPU runbook is still available for legacy downstream world-model work in [docs/GPU_VM_RUNBOOK.md](docs/GPU_VM_RUNBOOK.md), but it is not the active preview, upload, CPU-preflight, or simulation-manifest path.
 
-For privacy-service bring-up, use the service images under [`deploy/docker/`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/deploy/docker) and the Terraform stack under [`deploy/terraform/main.tf`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/deploy/terraform/main.tf).
+For privacy-service bring-up, use the service images under [`deploy/docker/`](deploy/docker) and the Terraform stack under [`deploy/terraform/main.tf`](deploy/terraform/main.tf).
 
 The canonical no-GPU local setup is documented in
-[`docs/DEV_SETUP.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/DEV_SETUP.md).
+[`docs/DEV_SETUP.md`](docs/DEV_SETUP.md).
 Use that setup before dry-render, USD placement, MuJoCo, or provider-staging
 tests; it verifies `PIL`, `pxr`, `mujoco`, `trimesh`, `collada`, and `boto3`.
 
@@ -840,7 +840,7 @@ Qualification agent review:
 ```bash
 blueprint-agent-review \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
-  --provider openai
+  --provider local
 ```
 
 Optional agent-review wrapper:
@@ -848,8 +848,16 @@ Optional agent-review wrapper:
 ```bash
 blueprint-run-e2e \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
-  --provider openai
+  --provider local
 ```
+
+Use `--provider local` for deterministic no-LLM contract runs. Use
+`--provider openai` or `--provider claude` only when the corresponding external
+review provider is intentionally configured.
+
+`blueprint-run-e2e` runs evaluation prep and the WebApp sync handoff by default
+so the CLI matches the autonomous handoff listener. Use
+`--skip-evaluation-prep` only for a narrow local developer run.
 
 Explicit legacy scene-memory build:
 
@@ -889,7 +897,7 @@ PYTHONPATH=src python -m blueprint_pipeline.simready_assets \
 ```
 
 The simready asset lane is documented in
-[`docs/SIMREADY_ASSET_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SIMREADY_ASSET_LANE.md).
+[`docs/SIMREADY_ASSET_LANE.md`](docs/SIMREADY_ASSET_LANE.md).
 It writes review artifacts only; it does not run Isaac Sim, MuJoCo, PyBullet,
 live providers, model downloads, or rank-fidelity trials.
 Evaluation prep surfaces existing SimReady artifacts but does not auto-build
@@ -918,7 +926,7 @@ Recent G1 support modules:
   helpers. Importing the package pulls in no `isaacsim`, `torch`,
   `google-genai`, network, or GPU dependency; USD, perception, VLM, and PhysX
   backends are injected. See
-  [`src/blueprint_pipeline/scene_placement/README.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/scene_placement/README.md).
+  [`src/blueprint_pipeline/scene_placement/README.md`](src/blueprint_pipeline/scene_placement/README.md).
 - `src/blueprint_pipeline/warm_render_server.py` implements a hermetically
   tested warm-serve control loop. Live multi-job reuse after one real Isaac
   scene load still requires on-GPU proof.
@@ -949,7 +957,7 @@ blueprint-build-palatial-physready \
 Use `--label microwave --label tote` or `--object-id <object_id>` to focus a
 pilot on captured objects that should become PhysReady twins. The Palatial lane
 is documented in
-[`docs/PALATIAL_PHYSREADY_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/PALATIAL_PHYSREADY_LANE.md).
+[`docs/PALATIAL_PHYSREADY_LANE.md`](docs/PALATIAL_PHYSREADY_LANE.md).
 
 Legacy local Marble sim-asset handoff module:
 
@@ -961,7 +969,7 @@ PYTHONPATH=src python -m blueprint_pipeline.marble_sim_assets \
 Use `--world-manifest /path/to/worldlabs_world_manifest.json` to review an
 explicit local World Labs world manifest. The Marble handoff lane is documented
 in
-[`docs/MARBLE_SIM_ASSET_HANDOFF.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/MARBLE_SIM_ASSET_HANDOFF.md).
+[`docs/MARBLE_SIM_ASSET_HANDOFF.md`](docs/MARBLE_SIM_ASSET_HANDOFF.md).
 It reads persisted World Labs manifests and emits Isaac Sim, MuJoCo, and
 PyBullet review packets without downloading remote assets, calling World Labs,
 running simulators, or claiming generated-world rank fidelity.
@@ -999,7 +1007,7 @@ eligible for PTDP packaging only as an `external_derived_support_asset`, so
 buyer readouts must keep it separate from raw Blueprint evidence, task success,
 physics/contact proof, and deployment readiness. The lane is
 documented in
-[`docs/SCANIVERSE_ASSET_IMPORT.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SCANIVERSE_ASSET_IMPORT.md).
+[`docs/SCANIVERSE_ASSET_IMPORT.md`](docs/SCANIVERSE_ASSET_IMPORT.md).
 
 To also download local PLY/SPZ splats for object-index enrichment:
 
@@ -1048,7 +1056,7 @@ blueprint-run-simulation-automation \
 ```
 
 The simulation automation lane is documented in
-[`docs/SIMULATION_AUTOMATION_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SIMULATION_AUTOMATION_LANE.md).
+[`docs/SIMULATION_AUTOMATION_LANE.md`](docs/SIMULATION_AUTOMATION_LANE.md).
 It writes local orchestration manifests only, including an optional
 `isaac_lab_arena` Arena Pack review packet. It does not run simulators, download
 assets, start training, call providers, or prove generated-world rank fidelity unless explicit
@@ -1155,7 +1163,7 @@ three camera views, seven policy checkpoints, and at most 20-second rollouts.
 Blueprint writes `sc3_eval_protocol.json` to keep those requirements, accepted
 anchor joins, correlation metrics, and robot/policy adapter contracts explicit.
 See
-[`docs/SC3_EVAL_PROTOCOL.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/SC3_EVAL_PROTOCOL.md).
+[`docs/SC3_EVAL_PROTOCOL.md`](docs/SC3_EVAL_PROTOCOL.md).
 `cosmos3_super` is a high-cost adjudication candidate, not the default local
 path; `cosmos3_edge` is not treated as a released/default runtime unless a
 future session reverifies availability from primary sources.
@@ -1283,7 +1291,7 @@ claimed by WAM execution or by the evaluator itself. The OSCAR/Cosmos WAM
 evaluator writes `wam_episode_consistency_request.json`; a separate VLM or human
 review command writes `wam_episode_consistency.command.json`; the evaluator then
 normalizes that result into `wam_consistency_checks.json`. See
-[`docs/WAM_EPISODE_CONSISTENCY_SCORER.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/WAM_EPISODE_CONSISTENCY_SCORER.md).
+[`docs/WAM_EPISODE_CONSISTENCY_SCORER.md`](docs/WAM_EPISODE_CONSISTENCY_SCORER.md).
 
 For Unitree G1, the robot-policy lane is Unitree-native. Use `unitree_g1_policy`
 for locomotion/control, `unitree_groot_n17_sonic_policy` as the current top
@@ -1320,7 +1328,7 @@ separate Unitree-specific policy endpoint consumes the observation and emits
 normalized G1 actions. For this machine, source `.env.unitree.local` to bind the
 verified local Unitree RL Gym root and checkpoint before running G1 MuJoCo policy
 proofs. See
-[`docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md).
+[`docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md`](docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md).
 
 Use the explicit provider-registry fields instead of the legacy
 `selected_provider` field when answering what controls the G1:
@@ -2105,7 +2113,7 @@ camera/skeleton provenance and can attach reviewed backend outputs. Generated
 videos from this packet are support assets only; they do not prove contact
 physics, physical robot readiness, deployment approval, safety validation, or
 real-world task success.
-See [`docs/OSCAR_VISUAL_AUGMENTATION_PACKET.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/OSCAR_VISUAL_AUGMENTATION_PACKET.md).
+See [`docs/OSCAR_VISUAL_AUGMENTATION_PACKET.md`](docs/OSCAR_VISUAL_AUGMENTATION_PACKET.md).
 
 Site/capture batch registry with retry/resume status:
 
@@ -2129,6 +2137,6 @@ Shared contract code lives in `BlueprintContracts`:
 - `runtime_layer_contract`
 - `canonical_package`
 
-The bridge contract for this repo is documented in [`docs/CAPTURE_BRIDGE_CONTRACT.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/CAPTURE_BRIDGE_CONTRACT.md).
+The bridge contract for this repo is documented in [`docs/CAPTURE_BRIDGE_CONTRACT.md`](docs/CAPTURE_BRIDGE_CONTRACT.md).
 
-Current cross-repo implementation status is tracked in [`docs/READINESS_MATRIX.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/READINESS_MATRIX.md). It is intentionally strict about what is shipped in-repo versus what still depends on live GPU/runtime/model access.
+Current cross-repo implementation status is tracked in [`docs/READINESS_MATRIX.md`](docs/READINESS_MATRIX.md). It is intentionally strict about what is shipped in-repo versus what still depends on live GPU/runtime/model access.

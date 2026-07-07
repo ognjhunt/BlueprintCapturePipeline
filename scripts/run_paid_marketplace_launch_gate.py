@@ -61,13 +61,24 @@ def tail_text(text: str, limit: int = 80) -> str:
 
 
 def run_command(spec: CommandSpec) -> CommandResult:
-    completed = subprocess.run(
-        spec.command,
-        cwd=spec.cwd,
-        capture_output=True,
-        text=True,
-        env=contract_test_env(),
-    )
+    if not spec.cwd.is_dir():
+        return unavailable_result(
+            spec,
+            f"required_working_directory_missing: {spec.cwd}",
+        )
+    try:
+        completed = subprocess.run(
+            spec.command,
+            cwd=spec.cwd,
+            capture_output=True,
+            text=True,
+            env=contract_test_env(),
+        )
+    except FileNotFoundError as exc:
+        return unavailable_result(
+            spec,
+            f"command_or_working_directory_missing: {exc}",
+        )
     status = "passed" if completed.returncode == 0 else "failed"
     return CommandResult(
         id=spec.id,
@@ -112,6 +123,25 @@ def skipped_result(spec: CommandSpec, reason: str) -> CommandResult:
         skip_reason=reason,
         evidence_class=evidence_class,
         evidence_note=evidence_note,
+    )
+
+
+def unavailable_result(spec: CommandSpec, reason: str) -> CommandResult:
+    return CommandResult(
+        id=spec.id,
+        label=spec.label,
+        repo=spec.repo,
+        command=spec.command,
+        cwd=str(spec.cwd),
+        status="failed",
+        blocking=spec.blocking,
+        source_tags=spec.source_tags,
+        skip_reason=reason,
+        evidence_class="required_repo_or_command_unavailable",
+        evidence_note=(
+            "A required launch-gate command could not start. The gate wrote this "
+            "failure artifact instead of raising an unhandled traceback."
+        ),
     )
 
 
@@ -467,17 +497,35 @@ def closeout_summary(report: dict) -> dict[str, object]:
         for result in report["automated_checks"]
         if result["status"] == "passed"
     ]
+    automated_failed = [
+        {
+            "id": result.get("id", result["label"]),
+            "label": result["label"],
+            "status": result["status"],
+            "skip_reason": result.get("skip_reason"),
+        }
+        for result in report["automated_checks"]
+        if result.get("blocking", True) and result["status"] == "failed"
+    ]
     manual_required = [
         item["id"]
         for item in report["manual_checks"]
         if item["status"].startswith("manual_")
     ]
+    if report.get("overall_status") == "automation_failed":
+        readout = (
+            "Automated repository contracts did not pass. This is a failing "
+            "launch-gate closeout, not manual-ops-ready proof."
+        )
+    else:
+        readout = (
+            "Automated repository contracts passed, with any listed toolchain "
+            "items marked as operator-required in this shell. This is a "
+            "manual-ops closeout, not Operational Launch Ready proof."
+        )
     return {
-        "operator_readout": (
-            "Automated repository contracts passed, with Android unit evidence marked as "
-            "operator-toolchain-required in this shell. This is a manual-ops closeout, "
-            "not Operational Launch Ready proof."
-        ),
+        "operator_readout": readout,
+        "automated_contracts_failed": automated_failed,
         "automated_contracts_prove": automated_passed,
         "automated_contracts_do_not_prove": [
             "live Stripe buyer payment completion",
@@ -510,6 +558,14 @@ def render_markdown(report: dict) -> str:
         lines.append("Automated contracts prove:")
         for item in closeout["automated_contracts_prove"]:
             lines.append(f"- {item}")
+        lines.append("")
+    if closeout.get("automated_contracts_failed"):
+        lines.append("Automated contracts failed:")
+        for item in closeout["automated_contracts_failed"]:
+            label = item.get("label") or item.get("id")
+            lines.append(f"- {label}: `{item.get('status')}`")
+            if item.get("skip_reason"):
+                lines.append(f"  Reason: {item['skip_reason']}")
         lines.append("")
     if closeout.get("automated_contracts_do_not_prove"):
         lines.append("Automated contracts do not prove:")

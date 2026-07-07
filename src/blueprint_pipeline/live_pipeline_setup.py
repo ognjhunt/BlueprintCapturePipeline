@@ -33,6 +33,7 @@ from .safe_env import load_env_files
 
 
 LIVE_PIPELINE_SETUP_SCHEMA_VERSION = "blueprint_live_pipeline_setup.v1"
+JOB_REQUEST_INBOX_ENV = "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX"
 
 OPENAI_AUTH_FACTS: Dict[str, Any] = {
     "repo_cli_api_auth": {
@@ -214,12 +215,57 @@ def _arena_results_status(path: Path | None) -> Dict[str, Any]:
     }
 
 
-def _capture_upstream_truth(capture_root: Path | None) -> Dict[str, Any]:
+def _request_inbox_status(inbox_path: Path | None) -> Dict[str, Any]:
+    if inbox_path is None:
+        return {
+            "configured": False,
+            "path": None,
+            "exists": False,
+            "json_request_count": 0,
+        }
+    json_count = len(sorted(inbox_path.glob("*.json"))) if inbox_path.is_dir() else 0
+    return {
+        "configured": True,
+        "path": str(inbox_path),
+        "exists": inbox_path.is_dir(),
+        "json_request_count": json_count,
+    }
+
+
+def _capture_upstream_truth(
+    capture_root: Path | None,
+    *,
+    job_request_inbox: Path | None = None,
+) -> Dict[str, Any]:
+    inbox_status = _request_inbox_status(job_request_inbox)
     if capture_root is None:
+        if inbox_status["configured"] and inbox_status["exists"]:
+            return {
+                "status": "ready_for_per_request_capture_roots",
+                "ready": True,
+                "fields_present": {},
+                "blockers": [],
+                "job_request_inbox": inbox_status,
+                "proof_boundary": (
+                    "A configured request inbox can accept per-request capture roots; "
+                    "this is intake readiness, not proof that a specific WebApp request "
+                    "has been processed."
+                ),
+            }
+        if inbox_status["configured"]:
+            return {
+                "status": "blocked",
+                "ready": False,
+                "fields_present": {},
+                "blockers": ["job_request_inbox_missing"],
+                "job_request_inbox": inbox_status,
+            }
         return {
             "status": "not_checked",
+            "ready": False,
             "fields_present": {},
-            "blockers": ["capture_root_not_provided"],
+            "blockers": ["capture_root_or_job_request_inbox_not_provided"],
+            "job_request_inbox": inbox_status,
         }
     descriptor = _read_optional_mapping(capture_root / "capture_descriptor.json")
     raw_manifest = _read_optional_mapping(capture_root / "raw" / "manifest.json")
@@ -234,8 +280,10 @@ def _capture_upstream_truth(capture_root: Path | None) -> Dict[str, Any]:
     blockers = [f"missing_webapp_{field}" for field, ok in present.items() if not ok]
     return {
         "status": "ready" if not blockers else "blocked",
+        "ready": not blockers,
         "fields_present": present,
         "blockers": blockers,
+        "job_request_inbox": inbox_status,
     }
 
 
@@ -423,6 +471,11 @@ def _next_inputs_needed(sections: Mapping[str, Mapping[str, Any]]) -> List[str]:
             "Install OpenAI Agents/Codex SDK dependencies and provide API credentials for repo CLI "
             "live operators, or explicitly allow Codex CLI host-OAuth execution."
         )
+    if not sections.get("webapp_upstream_truth", {}).get("ready"):
+        next_inputs.append(
+            "Provide a single capture root for direct setup audit, or configure "
+            f"{JOB_REQUEST_INBOX_ENV} so the control plane can resolve capture roots per request."
+        )
     next_inputs.append(
         "Use the DigitalOcean droplet as a control plane only unless GPU/Arena proof is produced "
         "and ingested."
@@ -438,6 +491,7 @@ def build_live_pipeline_setup_manifest(
     simulator_command: str | None = None,
     vision_labeling_command: str | None = None,
     delivery_command: str | None = None,
+    job_request_inbox: str | Path | None = None,
     load_local_env: bool = True,
     allow_digitalocean_read: bool = False,
     digitalocean_token_env: str = "DIGITALOCEAN_ACCESS_TOKEN",
@@ -466,6 +520,12 @@ def build_live_pipeline_setup_manifest(
                 "skipped_existing_keys": [],
                 "skipped_placeholder_keys": [],
             }
+        )
+        configured_job_request_inbox = job_request_inbox or os.getenv(JOB_REQUEST_INBOX_ENV)
+        job_request_inbox_path = (
+            Path(configured_job_request_inbox).expanduser().resolve()
+            if _string(configured_job_request_inbox)
+            else None
         )
         generated_at = utc_now_iso()
 
@@ -679,7 +739,10 @@ def build_live_pipeline_setup_manifest(
                 codex_cli_ready=commands["codex_cli"]["ready"],
                 codex_cli_host_oauth_allowed=env[CODEX_CLI_HOST_OAUTH_ENV]["ready"],
             ),
-            "webapp_upstream_truth": _capture_upstream_truth(capture_path),
+            "webapp_upstream_truth": _capture_upstream_truth(
+                capture_path,
+                job_request_inbox=job_request_inbox_path,
+            ),
             "digitalocean_control_plane": _digitalocean_read(
                 allow_read=allow_digitalocean_read,
                 token_env=digitalocean_token_env,
@@ -730,6 +793,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--simulator-command")
     parser.add_argument("--vision-labeling-command")
     parser.add_argument("--delivery-command")
+    parser.add_argument("--job-request-inbox")
     parser.add_argument("--no-load-env-files", action="store_true")
     parser.add_argument("--allow-digitalocean-read", action="store_true")
     parser.add_argument("--digitalocean-token-env", default="DIGITALOCEAN_ACCESS_TOKEN")
@@ -745,6 +809,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         simulator_command=args.simulator_command,
         vision_labeling_command=args.vision_labeling_command,
         delivery_command=args.delivery_command,
+        job_request_inbox=args.job_request_inbox,
         load_local_env=not args.no_load_env_files,
         allow_digitalocean_read=args.allow_digitalocean_read,
         digitalocean_token_env=args.digitalocean_token_env,

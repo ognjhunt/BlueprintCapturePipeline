@@ -123,7 +123,7 @@ def test_live_pipeline_control_plane_blocks_without_capture_root(tmp_path: Path,
     assert result["status"] == "blocked"
     assert result["capture_root"] is None
     assert "missing_capture_root" in result["blockers"]
-    assert result["inbox_run"]["blockers"] == ["missing_capture_root"]
+    assert result["inbox_run"]["blockers"] == ["missing_job_request_inbox"]
     assert result["control_plane_boundary"]["simulator_execution_proven"] is False
     assert result["secrets_leaked"] is False
     assert "secret-openai-control-plane" not in json.dumps(result)
@@ -250,6 +250,84 @@ def test_live_pipeline_control_plane_beta_env_defaults_to_mujoco_runtime(
     assert str(g1_root) in calls[0]["simulator_commands"]["mujoco"]
     assert "--max-rendered-episodes 11" in calls[0]["simulator_commands"]["mujoco"]
     assert "--max-rendered-steps 24" in calls[0]["simulator_commands"]["mujoco"]
+
+
+def test_live_pipeline_control_plane_processes_per_request_capture_roots_without_global_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    inbox_dir = tmp_path / "webapp-job-inbox"
+    _write_json(inbox_dir / "job.json", _webapp_queue_envelope(capture_root))
+    calls = []
+
+    def _run_inbox(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs)
+        return {
+            "schema_version": "robot_eval_job_request_inbox_run.v1",
+            "status": "completed",
+            "processed_count": 1,
+            "jobs": [{"job_id": "webapp-job-1", "status": "planned"}],
+            "claim_boundary": {},
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.live_pipeline_control_plane.run_robot_eval_job_request_inbox",
+        _run_inbox,
+    )
+
+    result = run_live_pipeline_control_plane(
+        job_request_inbox=inbox_dir,
+        load_local_env=False,
+        output_path=tmp_path / "control-plane.json",
+    )
+
+    assert result["status"] == "processed_jobs"
+    assert result["capture_root"] is None
+    assert result["job_request_inbox"] == str(inbox_dir.resolve())
+    assert result["setup_status"] in {"blocked", "local_ready_live_external_blocked"}
+    assert not any(blocker == "missing_capture_root" for blocker in result["blockers"])
+    assert result["inbox_run"]["per_request_capture_root_mode"] is True
+    assert calls[0]["capture_root"] == capture_root.resolve()
+    assert result["webapp_inbox_truth"]["status"] == "ready"
+    assert result["webapp_inbox_truth"]["accepted_request_count"] == 1
+    candidate = result["webapp_inbox_truth"]["candidates"][0]
+    assert candidate["per_request_capture_root_mode"] is True
+    assert candidate["request_capture_root_ready"] is True
+
+
+def test_live_pipeline_control_plane_blocks_per_request_mode_missing_request_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    inbox_dir = tmp_path / "webapp-job-inbox"
+    envelope = _webapp_queue_envelope(capture_root)
+    request = envelope["job_request"]
+    assert isinstance(request, dict)
+    site_package = request["site_package"]
+    assert isinstance(site_package, dict)
+    site_package.pop("capture_root")
+    _write_json(inbox_dir / "job.json", envelope)
+    calls = []
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.live_pipeline_control_plane.run_robot_eval_job_request_inbox",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    result = run_live_pipeline_control_plane(
+        job_request_inbox=inbox_dir,
+        load_local_env=False,
+        output_path=tmp_path / "control-plane.json",
+    )
+
+    assert result["status"] == "blocked"
+    assert calls == []
+    assert "inbox:job_request_missing_site_package_capture_root" in result["blockers"]
+    assert result["inbox_run"]["per_request_capture_root_mode"] is True
+    assert result["webapp_inbox_truth"]["status"] == "blocked"
+    assert "no_job_request_has_capture_root" in result["webapp_inbox_truth"]["blockers"]
 
 
 def test_live_pipeline_control_plane_writes_resumable_blocker_packets(

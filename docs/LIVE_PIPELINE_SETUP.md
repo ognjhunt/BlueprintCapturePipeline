@@ -53,18 +53,23 @@ blueprint-run-live-pipeline-control-plane
 The command loads repo/cwd/capture env files, writes
 `pipeline/live_pipeline_control_plane/live_pipeline_control_plane_manifest.json`,
 runs the setup audit, and consumes `BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX`
-through the existing `robot_eval_job_request.v1` orchestrator when both inbox
-and capture root are configured.
+through the existing `robot_eval_job_request.v1` orchestrator. In fleet mode,
+each accepted request supplies `site_package.capture_root`; no single global
+`BLUEPRINT_PIPELINE_CAPTURE_ROOT` is required.
 
-The control plane exits 0 even when blocked so a systemd timer does not
-restart-loop. Missing capture roots, inboxes, simulator commands, vision
-commands, delivery commands, or proof inputs are recorded as manifest blockers.
-It also writes:
+The control-plane command itself exits 0 even when blocked so a timer does not
+restart-loop. The production systemd unit runs a post-check that reads the
+manifest and either sends `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL` or fails the
+unit when `BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK=true` and a blocked pass has
+no configured webhook. Missing capture roots, inboxes, simulator commands,
+vision commands, delivery commands, or proof inputs are recorded as manifest
+blockers. It also writes:
 
 ```text
 pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.json
 pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.md
 pipeline/live_pipeline_control_plane/live_pipeline_proof_boundary_audit.json
+pipeline/live_pipeline_control_plane/live_pipeline_manifest_alert.json
 pipeline/live_pipeline_control_plane/live_pipeline_input_intake_audit.json
 pipeline/live_pipeline_control_plane/live_pipeline_staged_inputs.json
 ```
@@ -133,10 +138,16 @@ Follow-up queues are also request-contract artifacts: processing them creates a
 new deterministic rerun job, but real-world validation still requires fresh
 owner-supplied actuals and closure evidence.
 
-Queued WebApp requests count as upstream truth only when the request includes
-all four WebApp IDs and `site_package.capture_root` resolves to the same
-capture root configured for the control plane. Requests for another capture are
-reported in `webapp_inbox_truth` but remain blocked.
+`live_pipeline_setup` supports two upstream modes. In single-capture audit mode,
+provide `--capture-root` or `BLUEPRINT_PIPELINE_CAPTURE_ROOT`; queued WebApp
+requests count as upstream truth only when the request includes all four WebApp
+IDs and `site_package.capture_root` resolves to that configured capture root.
+In fleet mode, configure `--job-request-inbox` or
+`BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX`; the setup audit reports
+`ready_for_per_request_capture_roots` when the inbox exists. That is intake
+readiness only: the control plane still resolves and validates
+`site_package.capture_root` per request, and requests for another capture are
+reported in `webapp_inbox_truth` rather than silently accepted.
 
 The proof-boundary audit can also be run directly:
 
@@ -167,10 +178,11 @@ blueprint-intake-live-pipeline-inputs \
 
 The intake command checks that a WebApp request is a direct
 `robot_eval_job_request.v1` or queue envelope, contains all four WebApp IDs, and
-points at the configured capture root. With `--stage-webapp-request`, it copies
-that validated request into the configured inbox. Arena result directories are
-only marked `ready_for_ingest`; intake does not run Arena, set env files, process
-the job, or upgrade proof claims. With `--stage-arena-results`, intake writes
+either points at the configured single-capture root or carries a real
+`site_package.capture_root` for per-request mode. With `--stage-webapp-request`,
+it copies that validated request into the configured inbox. Arena result
+directories are only marked `ready_for_ingest`; intake does not run Arena, set
+env files, process the job, or upgrade proof claims. With `--stage-arena-results`, intake writes
 `live_pipeline_staged_inputs.json`; the next control-plane pass can consume the
 validated owner-results pointer when no `BLUEPRINT_ARENA_RESULTS_DIR` or
 `--arena-results-dir` override is set.
@@ -256,6 +268,22 @@ one-shot control plane after successful staging, set
 `BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND`, for example
 `/bin/systemctl start blueprint-pipeline-control-plane.service`.
 
+For capture-bridge Pub/Sub handoffs, the deployed
+`blueprint-pubsub-handoff-listener.timer` repeatedly drains
+`BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION`. In production the listener should keep:
+
+```bash
+BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true
+BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true
+```
+
+With those flags, the listener downloads the completed capture bundle, enriches
+the handoff from staged raw sidecars, writes a `robot_eval_job_request.v1`
+envelope into `BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX`, and records the staged
+request path in `pipeline_job_ledger.json`. It does not execute simulator or
+provider work; the next control-plane pass consumes the inbox and resolves
+`site_package.capture_root` per request.
+
 Install templates live under:
 
 ```text
@@ -267,7 +295,10 @@ scripts/install_live_pipeline_control_plane.sh
 ```
 
 The env file should provide paths and optional gates, not secrets in unit files.
-Leave live action gates unset until the exact command hook is ready.
+`scripts/install_live_pipeline_control_plane.sh` creates the default
+`/var/lib/blueprint/pipeline-control-plane` state tree, including
+`robot-eval-job-requests` and `incoming_webapp_job_requests`. Leave live action
+gates unset until the exact command hook is ready.
 
 ## OpenAI Auth Boundary
 

@@ -19,6 +19,7 @@ from typing import Any, Dict, Mapping, Sequence
 from .arena_package_audit import build_arena_package_proof_boundary_audit
 from .arena_result_ingest import CLAIM_BOUNDARY, main as arena_result_ingest_main
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .robot_eval_job_request_contract import ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION
 
 
 ARENA_FIXTURE_SMOKE_SCHEMA_VERSION = "arena_fixture_smoke.v1"
@@ -216,7 +217,7 @@ def _write_job_request(path: Path) -> None:
     _write_json(
         path,
         {
-            "schema_version": "robot_eval_job_request.v1",
+            "schema_version": ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
             "job_id": "arena-fixture-smoke-job",
             "policy_package": {
                 "policy_api_endpoint": {"endpoint_url": "https://robot.example/policy"},

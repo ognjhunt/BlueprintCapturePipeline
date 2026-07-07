@@ -1,0 +1,23 @@
+{
+  "schema_version": "v1",
+  "scene_id": "sim-only-beta-fixture-site",
+  "capture_id": "capture-001",
+  "site_id": "fixture-sim-only-beta-site",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "captured_at": "2026-01-01T00:00:00+00:00",
+  "special_task_type": "open_capture",
+  "task_hypothesis_status": "accepted",
+  "workflowName": "Fixture sim-only local beta gate",
+  "taskSteps": [
+    "navigate from the marked start to the fixture service counter"
+  ],
+  "zone": "fixture-zone",
+  "owner": "blueprint-fixture",
+  "capture_source": "repo_synthetic_fixture",
+  "capture_modality": "synthetic_manifest_fixture_no_real_video",
+  "proof_boundary": {
+    "synthetic_fixture_only": true,
+    "fallback_allowed_for_beta_release": false,
+    "public_claim_upgrade_allowed": false
+  }
+}

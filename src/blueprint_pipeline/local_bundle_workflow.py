@@ -191,9 +191,9 @@ def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) 
             f"--descriptor-gcs-uri {resolve_local_capture_context(resolved_capture).descriptor_uri} "
             f"--lane retrieval_index"
         ),
-        "agent_review_openai": (
+        "agent_review_local": (
             f"PYTHONPATH=src python3 -m blueprint_pipeline.run_e2e "
-            f"--capture-root {resolved_capture} --provider openai --run-evaluation-prep"
+            f"--capture-root {resolved_capture} --provider local --run-evaluation-prep"
         ),
     }
 
@@ -209,10 +209,9 @@ def remaining_runtime_requirements() -> Dict[str, list[str]]:
             "BLUEPRINT_ALLOW_CPU_SIMULATOR_PREFLIGHT=true",
             "--allow-cpu-simulator-preflight",
         ],
-        "agent_review_openai": [
-            "codex CLI installed",
-            "Codex login via local OAuth/session",
-            "optional: OPENAI_PHASE2_MODEL / OPENAI_PHASE2_REASONING_EFFORT overrides",
+        "agent_review_local": [
+            "no LLM key required",
+            "use --provider openai or --provider claude only for configured external review overrides",
         ],
         "agent_review_claude": ["ANTHROPIC_API_KEY"],
     }

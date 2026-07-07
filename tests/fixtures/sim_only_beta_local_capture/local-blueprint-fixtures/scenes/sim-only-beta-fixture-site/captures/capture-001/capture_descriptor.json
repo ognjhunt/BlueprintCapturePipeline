@@ -1,0 +1,57 @@
+{
+  "schema_version": "capture_descriptor.v1",
+  "scene_id": "sim-only-beta-fixture-site",
+  "capture_id": "capture-001",
+  "site_id": "fixture-sim-only-beta-site",
+  "capture_kind": "synthetic_sim_only_local_gate_fixture",
+  "privacy_status": "full_frame_redacted_local_proof",
+  "capture_rights": {
+    "derived_scene_generation_allowed": true,
+    "data_licensing_allowed": false,
+    "capture_contributor_payout_eligible": false,
+    "external_use_allowed": true,
+    "consent_status": "documented",
+    "permission_document_uri": "fixture://sim-only-beta-local-gate/consent.md",
+    "consent_scope": [
+      "mujoco_g1_simulator_evaluation_for_this_staged_capture"
+    ],
+    "consent_notes": [
+      "Synthetic fixture only; not a customer capture; no public claim upgrade."
+    ]
+  },
+  "metadata": {
+    "fixture": true,
+    "fixture_id": "sim_only_beta_local_gate_fixture.v1",
+    "fallback_allowed_for_beta_release": false,
+    "public_claim_upgrade_allowed": false,
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "external_use_allowed": true,
+      "consent_status": "documented",
+      "permission_document_uri": "fixture://sim-only-beta-local-gate/consent.md",
+      "consent_scope": [
+        "mujoco_g1_simulator_evaluation_for_this_staged_capture"
+      ]
+    },
+    "privacy_processing": {
+      "status": "full_frame_redacted_local_proof",
+      "fixture_only": true
+    },
+    "worldlabs_input_audit": {
+      "privacy_safe_input": true,
+      "raw_video_bypass_used": false,
+      "input_labeling": {
+        "privacy_safe_input": true,
+        "raw_video_bypass_used": false
+      }
+    },
+    "proof_boundary": {
+      "synthetic_fixture_only": true,
+      "real_capture_upload_proven": false,
+      "production_deployment_proven": false,
+      "public_claim_upgrade_allowed": false
+    }
+  }
+}

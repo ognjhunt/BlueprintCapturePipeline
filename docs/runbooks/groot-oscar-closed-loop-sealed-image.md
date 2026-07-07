@@ -109,7 +109,9 @@ legacy runtime-bootstrap recipe (`run_t4.sh`).
 Use this path when the sealed image has been pushed and the remaining blocker is
 DigitalOcean GPU capacity. Prepared mode is local-only: it validates the sealed
 contract, writes the input bundle and launch plan, and does not stage to object
-store or call the DigitalOcean capacity API.
+store or call the DigitalOcean capacity API. It also writes
+`paid_launch_resume_command.json`, a non-executable argv template that records
+the exact paid command plus the required approval and budget fields.
 
 ```bash
 blueprint-run-groot-oscar-digitalocean-closed-loop \
@@ -118,19 +120,98 @@ blueprint-run-groot-oscar-digitalocean-closed-loop \
   --task-prompt "Open the dishwasher door; if the dishwasher is already open, close the dishwasher door." \
   --seed-provenance-file <seed_provenance.json> \
   --out-dir <run_dir>
+
+python -m blueprint_pipeline.groot_oscar_digitalocean_closed_loop_job \
+  --audit-prepared-dir <run_dir>
+
+python -m blueprint_pipeline.groot_oscar_digitalocean_closed_loop_job \
+  --audit-objective-dir <run_dir>
+
+python -m blueprint_pipeline.groot_oscar_digitalocean_closed_loop_job \
+  --probe-digitalocean-capacity-dir <run_dir>
+
+python -m blueprint_pipeline.groot_oscar_digitalocean_closed_loop_job \
+  --wait-digitalocean-capacity-dir <run_dir> \
+  --wait-max-attempts 1 \
+  --wait-poll-interval-seconds 0 \
+  --acknowledge-digitalocean-query-approval
+
+python -m blueprint_pipeline.groot_oscar_digitalocean_closed_loop_job \
+  --materialize-paid-resume-dir <run_dir> \
+  --materialize-max-spend-usd <budget> \
+  --acknowledge-digitalocean-query-approval
 ```
+
+The objective audit is expected to report `objective_status: INCOMPLETE` until
+a live DigitalOcean run is collected. Its job is to separate local readiness
+from the still-missing capacity, droplet, result-contract, teardown, and
+semantic-success proof. Materialization only writes
+`paid_launch_command_materialized.json`; it does not query DigitalOcean or
+launch a droplet.
+
+The explicit capacity probe writes `digitalocean_capacity_probe.json`. The wait
+command writes `digitalocean_capacity_wait.json` and updates the latest probe
+artifact for each attempt. Both commands query DigitalOcean's size/region
+capacity preflight. Without `--launch-when-capacity-available`, the wait command
+is still read-only: it does not stage object storage, create a droplet, or
+reserve capacity. Re-run the objective audit after the probe or wait command to
+fold the current capacity result into
+`kitchen_dishwasher_full_pipeline_readiness_audit.json`.
+
+When we have explicit spend approval and want the launcher to run the pushed
+image as soon as capacity appears, use the wait command with a budget:
+
+```bash
+python -m blueprint_pipeline.groot_oscar_digitalocean_closed_loop_job \
+  --wait-digitalocean-capacity-dir <run_dir> \
+  --wait-max-attempts <attempts> \
+  --wait-poll-interval-seconds <seconds> \
+  --launch-when-capacity-available \
+  --allow-paid \
+  --max-spend-usd <budget> \
+  --acknowledge-digitalocean-query-approval
+```
+
+This mode first materializes `paid_launch_command_materialized.json`, then polls
+capacity. If every attempt is blocked, it stops before object-store staging and
+records `launch_started: false`. If capacity reports `available`, it hands off
+to the same paid launcher, which repeats capacity preflight immediately before
+staging and owns pending-teardown and teardown-proof recording.
+
+The default DigitalOcean candidate policy tries the cheaper 48GB NVIDIA sizes
+first (`gpu-6000adax1-48gb`, `gpu-l40sx1-48gb`) and, for this launcher's
+`--max-hourly-rate-usd 3.5` cap, also permits NVIDIA H100/H200 fallbacks
+(`gpu-h100x1-80gb`, `gpu-h200x1-141gb`). `gpu-4000adax1-20gb` remains in the
+candidate list only so the request-scoped VRAM filter can reject it before
+launch. AMD MI300 is intentionally not a default candidate for this CUDA sealed
+image path.
 
 When capacity should be checked and a real droplet may be launched, add
 `--allow-paid --max-spend-usd <budget>`. The launcher fails closed in this order:
 
 1. sealed image contract and launch plan
 2. spend guard
-3. read-only DigitalOcean GPU size/region capacity preflight
+3. read-only DigitalOcean GPU size/region capacity preflight; it must return
+   `available`, because `unknown`, `blocked`, token-missing, or probe-failed
+   states stop before object-store staging
 4. object-store staging
 5. droplet launch with pending-teardown record
 6. worker collection and provider-API teardown proof
 
 The worker runs the baked healthcheck, starts the GR00T policy server, then runs
 `oscar_isaac_closed_loop_eval` at native OSCAR resolution with
-`--require-fresh-learned-policy-requery` and `--stop-on-task-completion`. The
-`--steps` value is a safety cap, not a fixed frame count.
+`--require-fresh-learned-policy-requery`, `--min-coherent-horizon-frames 2`,
+`--allow-wam-consistency-scoring`, `--require-forward-inverse-consistency`, and
+`--stop-on-task-completion --min-steps 3`. The default consistency scorer is the
+quota-free local CV command
+`python -m blueprint_pipeline.wam_episode_consistency_label_local`; it is a
+generated-video reliability/abstention gate, not manipulation success proof.
+
+The `--steps` value is a safety cap, not a fixed frame count. OSCAR clip
+`--num-frames` is scoped to a generated support clip, not the episode length.
+The minimum step floor prevents an instant target-reached condition from being
+reported before the policy has actually consumed WAM-fed-forward observations.
+Generated-video semantic success is separate: enable
+`--require-generated-video-success-label` only with an explicit labeler command
+and required labeling/API gates, then keep that label separate from real-world
+task success.

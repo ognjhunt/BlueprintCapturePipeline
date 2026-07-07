@@ -204,6 +204,30 @@ def test_closeout_summary_filters_passed_and_manual_required_entries() -> None:
     assert summary["remaining_manual_evidence_ids"] == ["manual_live"]
 
 
+def test_closeout_summary_does_not_claim_passed_contracts_on_automation_failure() -> None:
+    gate = _load_gate_module()
+    report = {
+        "overall_status": "automation_failed",
+        "automated_checks": [
+            {"id": "webapp_request_sync_contracts", "label": "WebApp sync", "status": "failed"},
+        ],
+        "manual_checks": [],
+    }
+
+    summary = gate.closeout_summary(report)
+
+    assert "did not pass" in summary["operator_readout"]
+    assert "Automated repository contracts passed" not in summary["operator_readout"]
+    assert summary["automated_contracts_failed"] == [
+        {
+            "id": "webapp_request_sync_contracts",
+            "label": "WebApp sync",
+            "status": "failed",
+            "skip_reason": None,
+        }
+    ]
+
+
 def test_should_skip_android_sdk_missing_and_evidence_class(monkeypatch, tmp_path: Path) -> None:
     gate = _load_gate_module()
     monkeypatch.delenv("ANDROID_HOME", raising=False)

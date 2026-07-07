@@ -857,10 +857,10 @@ def test_qualification_allows_labeled_raw_worldlabs_bypass(monkeypatch, tmp_path
     assert provider_preview_status["status"] == "ready"
     assert provider_preview_status["labeling"]["non_production"] is True
     assert provider_preview_status["labeling"]["unredacted_input"] is True
-    assert adapter_input["status"] == "review_required"
-    assert adapter_input["blockers"] == []
+    assert adapter_input["status"] == "blocked"
+    assert "rights_provenance_review_blocked" in adapter_input["blockers"]
     assert "raw_video_bypass_input_non_production" in adapter_input["warnings"]
-    assert "rights_provenance_review_blocked_raw_bypass" in adapter_input["warnings"]
+    assert "rights_provenance_review_blocked_raw_bypass" not in adapter_input["warnings"]
     assert descriptor["metadata"]["worldlabs_input_labeling"]["raw_video_bypass_used"] is True
     assert sync_calls
     assert sync_calls[0]["evaluation_readiness"]["provider_preview_labeling"]["non_production"] is True

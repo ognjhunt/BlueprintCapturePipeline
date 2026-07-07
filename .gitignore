@@ -68,12 +68,15 @@ yolo11n-pose.pt
 output/
 workspace/
 tmp/
+live_pipeline_setup_manifest.json
 
 # Pipeline run data
 runs/
 local_runs/
 .local_runs/
 pipeline/
+!tests/fixtures/sim_only_beta_local_capture/**/pipeline/
+!tests/fixtures/sim_only_beta_local_capture/**/pipeline/**
 robot_eval_jobs/
 policy_endpoint_setups/
 frame_*.png

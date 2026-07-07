@@ -6,6 +6,9 @@ import pytest
 
 import blueprint_pipeline.pubsub_handoff_listener as listener_module
 from blueprint_pipeline.common import PipelineError
+from blueprint_pipeline.live_pipeline_control_plane import (
+    LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
+)
 from blueprint_pipeline.pubsub_handoff_listener import (
     HandoffMessage,
     main,
@@ -43,6 +46,41 @@ def _ios_bundle_blobs(prefix: str) -> "list[FakeBlob]":
         FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
         FakeBlob(f"{prefix}/raw/arkit/frames.jsonl", b"{}\n"),
         FakeBlob(f"{prefix}/raw/walkthrough.mov", b"\x00\x00"),
+    ]
+
+
+def _robot_eval_dataset_blobs(prefix: str) -> "list[FakeBlob]":
+    return [
+        FakeBlob(
+            f"{prefix}/pipeline/robot_eval_dataset/task_cards.json",
+            json.dumps(
+                {
+                    "cards": [
+                        {
+                            "task_id": "scene_anchor_geometry_0",
+                            "description": "Walk to the selected scene anchor.",
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+        ),
+        FakeBlob(
+            f"{prefix}/pipeline/robot_eval_dataset/scenario_cards.json",
+            json.dumps(
+                {
+                    "cards": [
+                        {
+                            "task_id": "scene_anchor_geometry_0",
+                            "scenario_id": "scenario_scene_anchor_geometry_0_unitree_g1",
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+        ),
+        FakeBlob(
+            f"{prefix}/pipeline/robot_eval_dataset/robot_eval_dataset_manifest.json",
+            b'{"schema_version":"robot_eval_dataset_manifest.v1"}',
+        ),
     ]
 
 
@@ -214,6 +252,78 @@ def test_process_handoff_threads_robot_eval_request_without_live_spend(
             "allow_robot_eval_simulator_execution": False,
         }
     ]
+
+
+def test_process_handoff_stages_control_plane_inbox_without_running_e2e(
+    tmp_path: Path,
+) -> None:
+    prefix = "scenes/scene-1/captures/capture-1"
+    client = FakeStorageClient(
+        [
+            *_ios_bundle_blobs(prefix),
+            *_robot_eval_dataset_blobs(prefix),
+            FakeBlob(f"{prefix}/capture_descriptor.json", b'{"scene_id":"scene-1"}'),
+        ]
+    )
+    configured_capture_root = tmp_path / "configured-single-capture-root"
+    configured_capture_root.mkdir()
+    inbox_dir = tmp_path / "control-plane-inbox"
+    manifest_path = tmp_path / "control-plane" / "live_pipeline_control_plane_manifest.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
+                "capture_root": str(configured_capture_root),
+                "job_request_inbox": str(inbox_dir),
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict] = []
+
+    def fake_run_e2e(**kwargs):
+        calls.append(kwargs)
+        return {"status": "unexpected"}
+
+    result = process_handoff_payload(
+        {
+            "bucket": "capture-bucket",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        },
+        storage_root=tmp_path,
+        provider="openai",
+        run_e2e=fake_run_e2e,
+        storage_client=client,  # type: ignore[arg-type]
+        run_e2e_enabled=False,
+        stage_control_plane=True,
+        control_plane_manifest_path=manifest_path,
+        control_plane_work_dir=tmp_path / "incoming-pubsub-handoffs",
+        overwrite_control_plane_input=True,
+    )
+
+    capture_root = tmp_path / "capture-bucket" / prefix
+    staged_requests = sorted(inbox_dir.glob("*.json"))
+    assert result["status"] == "processed"
+    assert result["run_e2e"]["status"] == "skipped"
+    assert calls == []
+    assert result["control_plane_staging"]["status"] == "staged_for_control_plane"
+    assert len(staged_requests) == 1
+    staged = json.loads(staged_requests[0].read_text(encoding="utf-8"))
+    job_request = staged["job_request"]
+    assert staged["source_kind"] == "capture_pipeline_handoff"
+    assert job_request["site_package"]["capture_root"] == str(capture_root.resolve())
+    assert job_request["source"]["selection_state"]["task_id"] == "scene_anchor_geometry_0"
+    assert job_request["owner_system"]["site_submission_id"] == "site-submission-scene-1"
+    ledger = json.loads(
+        (capture_root / "pipeline_job_ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger["status"] == "completed"
+    assert ledger["run_e2e_status"] == "skipped"
+    assert ledger["control_plane_staging_status"] == "staged_for_control_plane"
+    assert ledger["control_plane_staging_path"] == str(staged_requests[0])
 
 
 def test_redelivered_completed_handoff_is_idempotent(tmp_path: Path) -> None:

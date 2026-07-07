@@ -113,6 +113,11 @@ def _tokens(*parts: Any) -> set[str]:
     return {token for token in _normalize_text(*parts).split() if token}
 
 
+def _slug(value: Any, *, fallback: str = "task") -> str:
+    text = _normalize_text(value).replace(" ", "_")
+    return text.strip("_") or fallback
+
+
 def _read_optional_mapping(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -188,6 +193,47 @@ def _object_has_mask_or_keypoint(entry: Mapping[str, Any]) -> bool:
     if isinstance(keypoints, list):
         return bool(keypoints)
     return False
+
+
+def _object_has_tokens(entry: Mapping[str, Any], token_set: set[str]) -> bool:
+    return bool(
+        _tokens(
+            _object_label(entry),
+            _object_id(entry),
+            entry.get("description"),
+            entry.get("source_prompt"),
+        )
+        & token_set
+    )
+
+
+def _generic_default_task_from_objects(
+    objects: Sequence[Mapping[str, Any]],
+) -> tuple[str, str, str, dict[str, Any]]:
+    for entry in objects:
+        label = _object_label(entry)
+        if not label:
+            continue
+        return (
+            f"auto_inspect_{_slug(label, fallback='scene_object')}",
+            f"inspect the {label}",
+            label,
+            {
+                "default_task_source": "object_index_generic_default",
+                "default_task_replaces_legacy_template": True,
+                "selected_default_object_id": _object_id(entry),
+                "selected_default_label": label,
+            },
+        )
+    return (
+        "auto_groundable_task_required",
+        "inspect a groundable scene object",
+        "groundable scene object",
+        {
+            "default_task_source": "object_index_missing_groundable_object",
+            "default_task_replaces_legacy_template": True,
+        },
+    )
 
 
 def _object_bbox(entry: Mapping[str, Any]) -> Any:
@@ -997,6 +1043,19 @@ def build_eval_ready_task_grounding(
     resolved_capture_root = Path(capture_root).expanduser().resolve()
     generated_at = utc_now_iso()
     object_index, object_index_path = _read_object_index(resolved_capture_root)
+    default_task_metadata: dict[str, Any] = {
+        "default_task_source": "explicit_or_default_template",
+        "default_task_replaces_legacy_template": False,
+    }
+    if task_text == DEFAULT_TASK_TEXT and target_label == DEFAULT_TARGET_LABEL:
+        has_sink_or_handle_target = any(
+            _object_has_tokens(entry, _SINK_TOKENS | _HANDLE_TOKENS)
+            for entry in object_index
+        )
+        if not has_sink_or_handle_target:
+            task_id, task_text, target_label, default_task_metadata = (
+                _generic_default_task_from_objects(object_index)
+            )
     selected, candidates, parent_context = _select_task_targets(
         object_index,
         task_text=task_text,
@@ -1078,7 +1137,10 @@ def build_eval_ready_task_grounding(
         blockers.append("missing_task_target_label_or_keypoint")
     else:
         reasons = set(selected.get("match_reasons", []))
-        if "handle_semantics" not in reasons:
+        requires_handle_target = bool(
+            _tokens(task_text, target_label) & (_HANDLE_TOKENS | _SINK_TOKENS)
+        )
+        if requires_handle_target and "handle_semantics" not in reasons:
             blockers.append("missing_task_specific_handle_label_or_keypoint")
         if not selected.get("mask_or_keypoint_available"):
             warnings.append("selected_target_missing_mask_or_keypoint")
@@ -1111,6 +1173,33 @@ def build_eval_ready_task_grounding(
 
     learned_rollout_request_ready = not blockers
     robot_projection_ready = bool(fk_projection.get("status") == "completed")
+    requires_handle_target = bool(
+        _tokens(task_text, target_label) & (_HANDLE_TOKENS | _SINK_TOKENS)
+    )
+    if requires_handle_target:
+        vlm_or_human_review_checks = [
+            "right handle visibly moved in the intended direction",
+            "water appears or faucet state visibly changes",
+            "robot end effector interacts with the right handle rather than nearby fixtures",
+            "generated rollout preserves scene structure and is not visually inconsistent",
+        ]
+        deterministic_or_lightweight_checks = [
+            "project robot joints or end-effector through camera calibration into the task frame",
+            "reject skeleton projections that miss the selected target region",
+            "reject impossible rollouts with obvious kinematic discontinuities or target mismatch",
+            "score handle-on only from measured/proxy joint angle when that state is available",
+        ]
+    else:
+        vlm_or_human_review_checks = [
+            "selected target remains the same object throughout the rollout",
+            "robot observation focuses on the selected target rather than an unrelated fixture",
+            "generated rollout preserves scene structure and is not visually inconsistent",
+        ]
+        deterministic_or_lightweight_checks = [
+            "project robot joints or end-effector through camera calibration into the task frame",
+            "reject skeleton projections that miss the selected target region",
+            "reject impossible rollouts with obvious kinematic discontinuities or target mismatch",
+        ]
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -1121,6 +1210,7 @@ def build_eval_ready_task_grounding(
             "task_id": task_id,
             "task_text": task_text,
             "target_label": target_label,
+            **default_task_metadata,
             "target_prompts_for_object_index_backends": _target_prompts(
                 task_text=task_text,
                 target_label=target_label,
@@ -1170,18 +1260,8 @@ def build_eval_ready_task_grounding(
             "handle_proxy_state_check": str(output_dir / "handle_proxy_state_check.json"),
         },
         "success_check_plan": {
-            "vlm_or_human_review_checks": [
-                "right handle visibly moved in the intended direction",
-                "water appears or faucet state visibly changes",
-                "robot end effector interacts with the right handle rather than nearby fixtures",
-                "generated rollout preserves scene structure and is not visually inconsistent",
-            ],
-            "deterministic_or_lightweight_checks": [
-                "project robot joints or end-effector through camera calibration into the task frame",
-                "reject skeleton projections that miss the selected target region",
-                "reject impossible rollouts with obvious kinematic discontinuities or target mismatch",
-                "score handle-on only from measured/proxy joint angle when that state is available",
-            ],
+            "vlm_or_human_review_checks": vlm_or_human_review_checks,
+            "deterministic_or_lightweight_checks": deterministic_or_lightweight_checks,
             "uncertain_case_routing": "human_review_required_for_low_confidence_or_visual_state_only_success",
         },
         "readiness": {

@@ -135,6 +135,11 @@ def _live_closure_evidence(job_id: str = "webapp-job-1") -> dict[str, object]:
             "storage_upload_performed": True,
             "signed_urls": ["https://delivery.example/signed/package-1"],
             "entitlement_verified": True,
+            "buyer_access_check": {
+                "buyer_access_checked": True,
+                "buyer_accessible": True,
+                "status": "ok",
+            },
         },
         "safety_contact_physics": {
             "physics_contact_validated": True,
@@ -204,6 +209,70 @@ def test_capture_handoff_blocker_edges(tmp_path: Path) -> None:
     assert "capture_handoff_scene_id_mismatch" in audit["blockers"]
     assert "capture_handoff_capture_id_mismatch" in audit["blockers"]
     assert "capture_handoff_missing_site_submission_id" in audit["blockers"]
+
+
+def test_capture_handoff_rejects_dataset_older_than_upload_complete(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_robot_eval_dataset_cards(capture_root)
+    _write_json(
+        capture_root / "raw" / "capture_upload_complete.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "upload_completed_at": "2999-01-01T00:00:00Z",
+            "upload_run_id": "upload-run-newer-than-dataset",
+        },
+    )
+
+    envelope, audit = service._capture_handoff_to_webapp_request(
+        payload=_capture_handoff(),
+        capture_root=capture_root,
+    )
+
+    assert envelope is None
+    assert "robot_eval_dataset_stale_for_capture_upload_complete" in audit["blockers"]
+
+
+def test_capture_handoff_job_id_changes_for_distinct_upload_marker(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _write_json(
+        capture_root / "raw" / "capture_upload_complete.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "upload_completed_at": "2026-01-01T00:00:00Z",
+            "upload_run_id": "upload-run-1",
+        },
+    )
+    _seed_robot_eval_dataset_cards(capture_root)
+
+    first, first_audit = service._capture_handoff_to_webapp_request(
+        payload=_capture_handoff(),
+        capture_root=capture_root,
+    )
+
+    _write_json(
+        capture_root / "raw" / "capture_upload_complete.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "upload_completed_at": "2026-01-01T00:00:00Z",
+            "upload_run_id": "upload-run-2",
+        },
+    )
+    second, second_audit = service._capture_handoff_to_webapp_request(
+        payload=_capture_handoff(),
+        capture_root=capture_root,
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first_audit["job_id"] != second_audit["job_id"]
+    assert first["job_request"]["job_id"] != second["job_request"]["job_id"]
 
 
 def test_trigger_control_plane_edges(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -461,6 +530,58 @@ def test_live_pipeline_intake_service_converts_capture_handoff_to_webapp_request
     assert job_request["policy_package"]["high_level_skill_trace"]["ordered_skill_sequence"] == [
         "walk_to_target"
     ]
+
+
+def test_capture_handoff_can_stage_per_request_capture_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_capture_root = _capture_root(tmp_path)
+    request_capture_root = (
+        tmp_path
+        / "storage"
+        / "bucket"
+        / "scenes"
+        / "scene-2"
+        / "captures"
+        / "capture-2"
+    )
+    _write_json(
+        request_capture_root / "capture_descriptor.json",
+        {"scene_id": "scene-2", "capture_id": "capture-2"},
+    )
+    _write_json(request_capture_root / "raw" / "manifest.json", {"scene_id": "scene-2"})
+    _seed_robot_eval_dataset_cards(request_capture_root)
+    manifest_path = _control_manifest(tmp_path, manifest_capture_root)
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE", "true")
+    client = TestClient(create_app())
+    handoff = {
+        **_capture_handoff(),
+        "scene_id": "scene-2",
+        "capture_id": "capture-2",
+        "capture_root": str(request_capture_root),
+    }
+
+    response = client.post(
+        "/api/live-pipeline/capture-handoffs",
+        json=handoff,
+        headers={"authorization": "Bearer test-intake-token"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "staged_for_control_plane"
+    target_path = Path(payload["webapp_staging"]["target_path"])
+    staged = json.loads(target_path.read_text(encoding="utf-8"))
+    assert staged["job_request"]["site_package"]["capture_root"] == str(
+        request_capture_root
+    )
+    assert (
+        staged["job_request"]["source"]["selection_state"]["scene_id"]
+        == "scene-2"
+    )
 
 
 def test_live_pipeline_intake_service_blocks_capture_handoff_without_robot_eval_request(

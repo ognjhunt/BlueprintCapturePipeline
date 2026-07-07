@@ -6,11 +6,18 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-Environment=BLUEPRINT_PIPELINE_REPO=/Users/nijelhunt_1/workspace/BlueprintCapturePipeline
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
+Environment=PRIVACY_PIPELINE_ENABLED=true
+Environment=PRIVACY_FAIL_CLOSED=true
+Environment=PIPELINE_SYNC_REQUIRED=true
+Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
+Environment=BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK=true
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
+ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
 ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-run-live-pipeline-control-plane ]; then exec .venv/bin/blueprint-run-live-pipeline-control-plane; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_control_plane; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_control_plane'
-ExecStartPost=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && manifest="$${BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH:-/var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json}" && if [ -x .venv/bin/blueprint-audit-live-pipeline-proof-boundary ]; then exec .venv/bin/blueprint-audit-live-pipeline-proof-boundary --manifest-path "$${manifest}"; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_proof_audit --manifest-path "$${manifest}"; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_proof_audit --manifest-path "$${manifest}"'
+ExecStartPost=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && exec /bin/bash deploy/systemd/blueprint-control-plane-postchecks.sh'
 Nice=5
 NoNewPrivileges=true
 PrivateTmp=true

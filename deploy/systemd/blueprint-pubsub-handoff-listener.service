@@ -1,0 +1,27 @@
+[Unit]
+Description=Drain Blueprint capture-bridge Pub/Sub handoffs
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
+Environment=PRIVACY_PIPELINE_ENABLED=true
+Environment=PRIVACY_FAIL_CLOSED=true
+Environment=PIPELINE_SYNC_REQUIRED=true
+Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
+Environment=BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION=blueprint-pipeline-handoff-listener
+Environment=BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT=/var/lib/blueprint/pubsub-handoffs
+Environment=BLUEPRINT_PUBSUB_HANDOFF_PROVIDER=openai
+Environment=BLUEPRINT_PUBSUB_HANDOFF_MAX_MESSAGES=10
+Environment=BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true
+Environment=BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && subscription="$${BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION:-blueprint-pipeline-handoff-listener}" && storage_root="$${BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT:-/var/lib/blueprint/pubsub-handoffs}" && provider="$${BLUEPRINT_PUBSUB_HANDOFF_PROVIDER:-openai}" && max_messages="$${BLUEPRINT_PUBSUB_HANDOFF_MAX_MESSAGES:-10}" && if [ -x .venv/bin/blueprint-pubsub-handoff-listener ]; then exec .venv/bin/blueprint-pubsub-handoff-listener --subscription "$${subscription}" --storage-root "$${storage_root}" --provider "$${provider}" --max-messages "$${max_messages}"; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.pubsub_handoff_listener --subscription "$${subscription}" --storage-root "$${storage_root}" --provider "$${provider}" --max-messages "$${max_messages}"; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.pubsub_handoff_listener --subscription "$${subscription}" --storage-root "$${storage_root}" --provider "$${provider}" --max-messages "$${max_messages}"'
+Nice=5
+NoNewPrivileges=true
+PrivateTmp=true

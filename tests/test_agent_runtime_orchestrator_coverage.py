@@ -352,6 +352,10 @@ def test_agent_orchestrator_provider_selection_and_run_review(
 
     assert orch._provider_from_name("openai", repo_root=tmp_path, skill_runner=lambda *_args: None).name == "openai"
     assert orch._provider_from_name("claude", repo_root=tmp_path).name == "claude"
+    local_provider = orch._provider_from_name("local", repo_root=tmp_path)
+    assert local_provider.name == "local"
+    assert local_provider.invoke_skill("readiness_report_writer", {}) is None
+    assert local_provider.runtime_metadata()["external_provider_calls_performed"] is False
     with pytest.raises(ValueError, match="Unsupported agent provider"):
         orch._provider_from_name("bad", repo_root=tmp_path)
     with pytest.raises(ValueError, match="Unsupported agent review mode"):

@@ -1,0 +1,43 @@
+{
+  "schema_version": "task_anchor_manifest.v1",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "status": "fixture_review_ready",
+  "fixture_only": true,
+  "fallback_allowed_for_beta_release": false,
+  "public_claim_upgrade_allowed": false,
+  "tasks": [
+    {
+      "task_id": "fixture_counter_navigation",
+      "task_text": "Navigate from the validated start zone to the fixture service counter",
+      "task_category": "navigation",
+      "target_object_ids": [
+        "fixture_service_counter"
+      ],
+      "start_zone": [
+        -1.0,
+        0.0,
+        0.793
+      ],
+      "goal_zone": [
+        1.0,
+        0.0,
+        0.793
+      ],
+      "site_zone_source": "committed_sim_only_fixture",
+      "task_critical": false,
+      "review_required": true,
+      "accepted": true,
+      "source_artifact": "pipeline/evaluation_prep/task_anchor_manifest.json",
+      "claim_boundary": "fixture task anchor defines local sim-only scope only"
+    }
+  ],
+  "claim_boundary": {
+    "synthetic_fixture_only": true,
+    "real_capture_upload_proven": false,
+    "simulator_execution_proven": false,
+    "production_deployment_proven": false,
+    "remote_cloud_provider_execution_proven": false,
+    "generated_world_rank_fidelity_result_proven": false,
+    "public_claim_upgrade_allowed": false
+  }
+}

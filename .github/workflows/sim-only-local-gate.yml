@@ -1,0 +1,157 @@
+name: Sim-Only Local Gate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/sim-only-local-gate.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "scripts/run_sim_only_beta_local_gate.py"
+      - "src/blueprint_pipeline/**"
+      - "tests/fixtures/sim_only_beta_local_capture/**"
+      - "tests/test_sim_only_beta_local_gate.py"
+  push:
+    branches: ["**"]
+    paths:
+      - ".github/workflows/sim-only-local-gate.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "scripts/run_sim_only_beta_local_gate.py"
+      - "src/blueprint_pipeline/**"
+      - "tests/fixtures/sim_only_beta_local_capture/**"
+      - "tests/test_sim_only_beta_local_gate.py"
+  workflow_dispatch:
+    inputs:
+      webapp_ref:
+        description: "Blueprint-WebApp ref to check out; defaults to main."
+        required: false
+        type: string
+
+concurrency:
+  group: sim-only-local-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regenerate:
+    name: Regenerate sim-only local gate artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      WEBAPP_REPOSITORY: ognjhunt/Blueprint-WebApp
+      # WebApp main contains the robot-eval forwarding and buyer-delivery route
+      # fixes required by the local gate. workflow_dispatch can override this
+      # only for an explicit cross-repo rehearsal.
+      WEBAPP_REF: ${{ inputs.webapp_ref || 'main' }}
+      WEBAPP_TOKEN: ${{ secrets.BLUEPRINT_WEBAPP_CHECKOUT_TOKEN || github.token }}
+      CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
+      # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
+      CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
+      CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
+
+    steps:
+      - name: Checkout Pipeline
+        uses: actions/checkout@v4
+        with:
+          path: BlueprintCapturePipeline
+
+      - name: Checkout BlueprintContracts sibling
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init BlueprintContracts
+          cd BlueprintContracts
+          git remote add origin "https://x-access-token:${CONTRACTS_TOKEN}@github.com/${CONTRACTS_REPOSITORY}.git"
+          fetch_ref="${CONTRACTS_REF:-main}"
+          if git fetch --depth=1 origin "${fetch_ref}"; then
+            echo "Using BlueprintContracts ref ${fetch_ref}."
+          else
+            echo "::error::BlueprintContracts ref '${fetch_ref}' was not available. Push a matching Contracts branch/ref or set CONTRACTS_REF; refusing to validate against an implicit fallback."
+            exit 1
+          fi
+          git checkout --detach FETCH_HEAD
+
+      - name: Checkout WebApp sibling
+        id: checkout-webapp
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init Blueprint-WebApp
+          cd Blueprint-WebApp
+          git remote add origin "https://x-access-token:${WEBAPP_TOKEN}@github.com/${WEBAPP_REPOSITORY}.git"
+          fetch_ref="${WEBAPP_REF:-main}"
+          if git fetch --depth=1 origin "${fetch_ref}"; then
+            echo "resolved_ref=${fetch_ref}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::error::Blueprint-WebApp ref '${fetch_ref}' was not available. Pass workflow_dispatch webapp_ref or push a matching WebApp branch; refusing to validate against an implicit fallback."
+            exit 1
+          fi
+          git checkout --detach FETCH_HEAD
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install Pipeline dependencies
+        working-directory: BlueprintCapturePipeline
+        run: |
+          uv sync --extra dev
+          uv pip install -e ../BlueprintContracts
+
+      - name: Verify shared robot-eval request contract
+        working-directory: BlueprintCapturePipeline
+        run: |
+          uv run python scripts/verify_robot_eval_job_request_contract.py \
+            --contracts-repo ../BlueprintContracts
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: Blueprint-WebApp/package-lock.json
+
+      - name: Install WebApp dependencies
+        working-directory: Blueprint-WebApp
+        run: npm ci
+
+      - name: Ensure ffmpeg is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libegl1 libgl1 libglfw3 libosmesa6 mesa-utils
+
+      - name: Run sim-only local gate
+        working-directory: BlueprintCapturePipeline
+        env:
+          MUJOCO_GL: osmesa
+        run: |
+          uv run python scripts/run_sim_only_beta_local_gate.py \
+            --webapp-repo ../Blueprint-WebApp \
+            --fixture-work-root output/ci/sim_only_beta_local_gate_fixture \
+            --output-path output/ci/sim_only_beta_local_gate_report.json \
+            --command-timeout-seconds 900 \
+            --simulator-timeout-seconds 300 \
+            --health-timeout-seconds 45
+
+      - name: Record WebApp checkout ref
+        if: always()
+        working-directory: BlueprintCapturePipeline
+        run: |
+          mkdir -p output/ci
+          printf '%s\n' '${{ steps.checkout-webapp.outputs.resolved_ref }}' > output/ci/blueprint_webapp_ref.txt
+
+      - name: Upload sim-only local gate artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-only-beta-local-gate-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            BlueprintCapturePipeline/output/ci/blueprint_webapp_ref.txt
+            BlueprintCapturePipeline/output/ci/sim_only_beta_local_gate_report.json
+            BlueprintCapturePipeline/output/ci/sim_only_beta_local_gate_fixture/**/pipeline/live_pipeline_control_plane/sim_only_beta_local_gate/*.json
+            BlueprintCapturePipeline/output/ci/sim_only_beta_local_gate_fixture/**/pipeline/robot_eval_job_requests/**/*.json
+            BlueprintCapturePipeline/output/ci/sim_only_beta_local_gate_fixture/**/pipeline/robot_eval_jobs/**/*.json

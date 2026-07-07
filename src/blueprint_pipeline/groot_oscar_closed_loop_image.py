@@ -27,7 +27,14 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .lane_hardware_requirements import LANE_HARDWARE_REQUIREMENTS
+from .oscar_cosmos_wam_evaluator import (
+    WAM_CONSISTENCY_COMMAND_ENV,
+    WAM_CONSISTENCY_GATE_ENV,
+    WAM_SUCCESS_LABEL_COMMAND_ENV,
+    WAM_SUCCESS_LABEL_GATE_ENV,
+)
 from .oscar_official_release import OFFICIAL_OSCAR_HF_REVISION
+from .wam_episode_consistency_label_local import GATE_ENV as LOCAL_WAM_CONSISTENCY_GATE_ENV
 
 # --------------------------------------------------------------------------- #
 # configuration keys
@@ -39,6 +46,12 @@ ROBOT_EVAL_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
 DEFAULT_IMAGE_REF_FILE = "~/.blueprint-secrets/groot_oscar_closed_loop_image_ref"
 
 SEALED_CONFIRMED_ENV = "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SEALED_IMAGE_CONFIRMED"
+DEFAULT_MIN_TASK_ADAPTIVE_STEPS = 3
+DEFAULT_WAM_CONSISTENCY_COMMAND = (
+    "python -m blueprint_pipeline.wam_episode_consistency_label_local"
+)
+DEFAULT_WAM_CONSISTENCY_TIMEOUT_SECONDS = 300.0
+DEFAULT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS = 900.0
 
 # Baked-path env vars (defaults match the image layout; overridable so the same
 # wiring works whether the image was produced by the Dockerfile or by snapshot).
@@ -197,6 +210,16 @@ def build_sealed_launch_plan(
     # generation quality — never bake sub-native resolution into a launch plan.
     oscar_height: int = 480,
     oscar_width: int = 640,
+    min_coherent_horizon_frames: int = 2,
+    min_task_adaptive_steps: int = DEFAULT_MIN_TASK_ADAPTIVE_STEPS,
+    require_forward_inverse_consistency: bool = True,
+    wam_consistency_command: str | None = DEFAULT_WAM_CONSISTENCY_COMMAND,
+    allow_wam_consistency_scoring: bool = True,
+    wam_consistency_timeout_seconds: float | None = DEFAULT_WAM_CONSISTENCY_TIMEOUT_SECONDS,
+    require_generated_video_success_label: bool = False,
+    wam_success_label_command: str | None = None,
+    allow_wam_success_labeling: bool = False,
+    wam_success_label_timeout_seconds: float | None = DEFAULT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS,
     device: str = "cuda:0",
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -222,11 +245,53 @@ def build_sealed_launch_plan(
         "policy_server_port": contract["policy_server_port"],
         "groot_server_command": [],
         "closed_loop_command": [],
+        "episode_length_contract": {
+            "episode_length_unit": "closed_loop_control_steps",
+            "stop_condition": "task_completion_or_step_cap",
+            "steps_cap": int(steps),
+            "min_steps_before_task_completion": int(min_task_adaptive_steps),
+            "steps_is_safety_cap": True,
+            "oscar_num_frames_scope": "per_generation_clip_not_episode_limit",
+            "episode_not_bound_to_oscar_clip_frames": True,
+        },
+        "quality_gate_contract": {
+            "min_coherent_horizon_frames": int(min_coherent_horizon_frames),
+            "forward_inverse_consistency_required": bool(
+                require_forward_inverse_consistency
+            ),
+            "forward_inverse_consistency_command": _string(wam_consistency_command) or None,
+            "forward_inverse_consistency_allow_scoring": bool(
+                allow_wam_consistency_scoring
+            ),
+            "generated_video_success_label_required": bool(
+                require_generated_video_success_label
+            ),
+            "generated_video_success_label_command": _string(wam_success_label_command)
+            or None,
+            "generated_video_success_label_allow_labeling": bool(
+                allow_wam_success_labeling
+            ),
+            "claim_boundary": {
+                "forward_inverse_consistency_is_required_for_eval_run_quality": bool(
+                    require_forward_inverse_consistency
+                ),
+                "generated_video_success_label_is_separate_semantic_review": True,
+                "generated_video_success_label_is_not_real_world_task_success": True,
+            },
+        },
         "env": {},
         "raw_secret_values_recorded": False,
         "claim_boundary": _CLAIM_BOUNDARY,
     }
     if not contract["sealed_active"]:
+        return plan
+    if require_forward_inverse_consistency and not _string(wam_consistency_command):
+        plan["blockers"].append("wam_consistency_command_required")
+        plan["sealed_active"] = False
+        return plan
+    if require_generated_video_success_label and not _string(wam_success_label_command):
+        plan["blockers"].append("wam_success_label_command_required")
+        plan["sealed_active"] = False
         return plan
 
     groot_root = contract["groot_root"]
@@ -254,10 +319,54 @@ def build_sealed_launch_plan(
         # Episode length is task-adaptive: --steps is the hard cap and the
         # episode ends when the target-reached criterion fires.
         "--stop-on-task-completion",
+        "--min-steps", str(int(min_task_adaptive_steps)),
         "--harness-backend-kind", "fixture",
         "--oscar-height", str(int(oscar_height)),
         "--oscar-width", str(int(oscar_width)),
+        "--min-coherent-horizon-frames", str(int(min_coherent_horizon_frames)),
     ]
+    consistency_command = _string(wam_consistency_command)
+    if (
+        require_forward_inverse_consistency
+        or allow_wam_consistency_scoring
+        or consistency_command
+    ):
+        if consistency_command:
+            plan["closed_loop_command"].extend(
+                ["--wam-consistency-command", consistency_command]
+            )
+        if allow_wam_consistency_scoring:
+            plan["closed_loop_command"].append("--allow-wam-consistency-scoring")
+        if wam_consistency_timeout_seconds is not None:
+            plan["closed_loop_command"].extend(
+                [
+                    "--wam-consistency-timeout-seconds",
+                    str(float(wam_consistency_timeout_seconds)),
+                ]
+            )
+        if require_forward_inverse_consistency:
+            plan["closed_loop_command"].append("--require-forward-inverse-consistency")
+    success_label_command = _string(wam_success_label_command)
+    if (
+        require_generated_video_success_label
+        or allow_wam_success_labeling
+        or success_label_command
+    ):
+        if success_label_command:
+            plan["closed_loop_command"].extend(
+                ["--wam-success-label-command", success_label_command]
+            )
+        if allow_wam_success_labeling:
+            plan["closed_loop_command"].append("--allow-wam-success-labeling")
+        if wam_success_label_timeout_seconds is not None:
+            plan["closed_loop_command"].extend(
+                [
+                    "--wam-success-label-timeout-seconds",
+                    str(float(wam_success_label_timeout_seconds)),
+                ]
+            )
+        if require_generated_video_success_label:
+            plan["closed_loop_command"].append("--require-generated-video-success-label")
     plan["env"] = {
         "MUJOCO_GL": "osmesa",
         "PYTORCH_ALLOC_CONF": "expandable_segments:True",
@@ -266,6 +375,15 @@ def build_sealed_launch_plan(
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT": groot_root,
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL": contract["policy_server_url"],
     }
+    if consistency_command or allow_wam_consistency_scoring or require_forward_inverse_consistency:
+        plan["env"][WAM_CONSISTENCY_GATE_ENV] = "true"
+        plan["env"][LOCAL_WAM_CONSISTENCY_GATE_ENV] = "true"
+        if consistency_command:
+            plan["env"][WAM_CONSISTENCY_COMMAND_ENV] = consistency_command
+    if success_label_command or allow_wam_success_labeling or require_generated_video_success_label:
+        plan["env"][WAM_SUCCESS_LABEL_GATE_ENV] = "true"
+        if success_label_command:
+            plan["env"][WAM_SUCCESS_LABEL_COMMAND_ENV] = success_label_command
     return plan
 
 

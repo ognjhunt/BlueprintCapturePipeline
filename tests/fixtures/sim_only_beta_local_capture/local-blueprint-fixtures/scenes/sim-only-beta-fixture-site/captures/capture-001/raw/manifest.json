@@ -1,0 +1,70 @@
+{
+  "schema_version": "capture_raw_manifest.v1",
+  "scene_id": "sim-only-beta-fixture-site",
+  "capture_id": "capture-001",
+  "site_id": "fixture-sim-only-beta-site",
+  "video_uri": "walkthrough.mp4",
+  "requested_outputs": [
+    "qualification",
+    "preview_simulation",
+    "robot_eval_dataset",
+    "task_evaluation_run"
+  ],
+  "capture_source": "repo_synthetic_fixture",
+  "capture_modality": "synthetic_manifest_fixture_no_real_video",
+  "evidence_tier": "fixture_only",
+  "capture_capabilities": {
+    "walkthrough_video": false,
+    "camera_pose": false,
+    "intrinsics": false,
+    "depth": false,
+    "motion": false,
+    "manual_stage": true,
+    "synthetic_fixture": true
+  },
+  "workflowName": "Fixture sim-only local beta gate",
+  "taskSteps": [
+    "navigate from the marked start to the fixture service counter"
+  ],
+  "zone": "fixture-zone",
+  "owner": "blueprint-fixture",
+  "capture_rights": {
+    "derived_scene_generation_allowed": true,
+    "data_licensing_allowed": false,
+    "capture_contributor_payout_eligible": false,
+    "external_use_allowed": true,
+    "consent_status": "documented",
+    "permission_document_uri": "fixture://sim-only-beta-local-gate/consent.md",
+    "consent_scope": [
+      "mujoco_g1_simulator_evaluation_for_this_staged_capture"
+    ],
+    "consent_notes": [
+      "Synthetic fixture only; not a customer capture; no public claim upgrade."
+    ]
+  },
+  "owner_approval": {
+    "status": "documented",
+    "approved_scope": [
+      "mujoco_g1_simulator_evaluation_for_this_staged_capture"
+    ],
+    "permission_document_uri": "fixture://sim-only-beta-local-gate/consent.md",
+    "derived_scene_generation_allowed": true,
+    "data_licensing_allowed": false,
+    "capture_contributor_payout_eligible": false,
+    "customer_publication_allowed": false,
+    "generated_world_rank_fidelity_claim_allowed": false
+  },
+  "source_video": {
+    "raw_video_path": "raw/walkthrough.mp4",
+    "raw_video_uri": "gs://local-blueprint-fixtures/scenes/sim-only-beta-fixture-site/captures/capture-001/raw/walkthrough.mp4",
+    "sha256": "1eca152f09f86ccd78d26aa2194bd241ba14036e936f946f4492dad3bcbec8a9",
+    "fixture_only": true
+  },
+  "proof_boundary": {
+    "synthetic_fixture_only": true,
+    "fallback_allowed_for_beta_release": false,
+    "real_capture_upload_proven": false,
+    "production_deployment_proven": false,
+    "public_claim_upgrade_allowed": false
+  }
+}
