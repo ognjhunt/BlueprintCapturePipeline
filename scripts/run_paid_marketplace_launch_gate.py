@@ -31,6 +31,8 @@ class CommandSpec:
     blocking: bool = True
     source_tags: tuple[str, ...] = ()
     runs_when: str = "always"
+    timeout_seconds: int | None = None
+    preflight_failure: str | None = None
 
 
 @dataclass
@@ -60,12 +62,120 @@ def tail_text(text: str, limit: int = 80) -> str:
     return "\n".join(lines[-limit:])
 
 
+DEFAULT_IOS_SIMULATOR_NAME = "iPhone 17 Pro"
+DEFAULT_IOS_TEST_TIMEOUT_SECONDS = 900
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def parse_os_version(os_name: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for part in os_name.split("."):
+        try:
+            parts.append(int(part))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def available_ios_simulators() -> list[dict[str, str]]:
+    raw = subprocess.check_output(
+        ["xcrun", "simctl", "list", "devices", "available", "-j"],
+        text=True,
+    )
+    payload = json.loads(raw)
+    devices = payload.get("devices", {})
+    candidates: list[dict[str, str]] = []
+    for runtime, runtime_devices in devices.items():
+        if not runtime.startswith("com.apple.CoreSimulator.SimRuntime.iOS-"):
+            continue
+        os_name = runtime.removeprefix("com.apple.CoreSimulator.SimRuntime.iOS-").replace("-", ".")
+        for device in runtime_devices or []:
+            if not device.get("isAvailable", True):
+                continue
+            name = str(device.get("name") or "").strip()
+            udid = str(device.get("udid") or "").strip()
+            if not name or not udid:
+                continue
+            candidates.append({"name": name, "os": os_name, "udid": udid})
+    return candidates
+
+
+def simulator_description(candidates: list[dict[str, str]]) -> str:
+    if not candidates:
+        return "none"
+    return ", ".join(
+        f"{candidate['name']} iOS {candidate['os']} ({candidate['udid']})"
+        for candidate in sorted(
+            candidates,
+            key=lambda item: (item["name"], parse_os_version(item["os"]), item["udid"]),
+        )
+    )
+
+
+def newest_simulator(candidates: list[dict[str, str]]) -> dict[str, str]:
+    return max(candidates, key=lambda item: (parse_os_version(item["os"]), item["name"], item["udid"]))
+
+
+def resolve_ios_simulator_destination(
+    *,
+    preferred_name: str,
+    preferred_os: str | None,
+    preferred_udid: str | None,
+) -> str:
+    candidates = available_ios_simulators()
+    if preferred_udid:
+        for candidate in candidates:
+            if candidate["udid"] == preferred_udid:
+                return f"platform=iOS Simulator,id={candidate['udid']}"
+        raise RuntimeError(
+            "Configured iOS simulator UDID was not found among available iOS simulators: "
+            f"{preferred_udid}. Available: {simulator_description(candidates)}"
+        )
+
+    named_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate["name"] == preferred_name
+        and (preferred_os is None or candidate["os"] == preferred_os)
+    ]
+    if named_candidates:
+        return f"platform=iOS Simulator,id={newest_simulator(named_candidates)['udid']}"
+
+    if preferred_os:
+        raise RuntimeError(
+            "No available iOS simulator matched "
+            f"name={preferred_name!r} and os={preferred_os!r}. "
+            f"Available: {simulator_description(candidates)}"
+        )
+
+    iphone_candidates = [candidate for candidate in candidates if "iPhone" in candidate["name"]]
+    if iphone_candidates:
+        return f"platform=iOS Simulator,id={newest_simulator(iphone_candidates)['udid']}"
+    raise RuntimeError("No available iPhone simulator found for the paid marketplace launch gate.")
+
+
+def _timeout_text(value: bytes | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def run_command(spec: CommandSpec) -> CommandResult:
     if not spec.cwd.is_dir():
         return unavailable_result(
             spec,
             f"required_working_directory_missing: {spec.cwd}",
         )
+    if spec.preflight_failure:
+        return unavailable_result(spec, spec.preflight_failure)
     try:
         completed = subprocess.run(
             spec.command,
@@ -73,6 +183,23 @@ def run_command(spec: CommandSpec) -> CommandResult:
             capture_output=True,
             text=True,
             env=contract_test_env(),
+            timeout=spec.timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return CommandResult(
+            id=spec.id,
+            label=spec.label,
+            repo=spec.repo,
+            command=spec.command,
+            cwd=str(spec.cwd),
+            status="failed",
+            blocking=spec.blocking,
+            source_tags=spec.source_tags,
+            stdout_tail=tail_text(_timeout_text(exc.stdout)),
+            stderr_tail=tail_text(_timeout_text(exc.stderr)),
+            skip_reason=f"command_timed_out_after_{spec.timeout_seconds}_seconds",
+            evidence_class="launch_gate_command_timeout",
+            evidence_note="A required launch-gate command exceeded its configured timeout.",
         )
     except FileNotFoundError as exc:
         return unavailable_result(
@@ -157,6 +284,9 @@ def default_specs(
     capture_repo: Path,
     webapp_repo: Path,
     run_ios_tests: bool,
+    ios_simulator_destination: str | None = None,
+    ios_preflight_failure: str | None = None,
+    ios_test_timeout_seconds: int = DEFAULT_IOS_TEST_TIMEOUT_SECONDS,
 ) -> list[CommandSpec]:
     specs = [
         CommandSpec(
@@ -244,6 +374,7 @@ def default_specs(
     ]
 
     if run_ios_tests:
+        derived_data_path = capture_repo / "build" / "DerivedDataPaidMarketplaceGate"
         specs.append(
             CommandSpec(
                 id="ios_launch_contracts",
@@ -258,11 +389,15 @@ def default_specs(
                     "-scheme",
                     "BlueprintCapture",
                     "-destination",
-                    "platform=iOS Simulator,name=iPhone 16",
+                    ios_simulator_destination or "platform=iOS Simulator,name=unresolved",
+                    "-derivedDataPath",
+                    str(derived_data_path),
                     "-only-testing:BlueprintCaptureTests/PipelineContractTests",
                     "-only-testing:BlueprintCaptureTests/ScanHomeAndUploadTests",
                 ],
                 source_tags=("iphone", "glasses"),
+                timeout_seconds=ios_test_timeout_seconds,
+                preflight_failure=ios_preflight_failure,
             )
         )
 
@@ -625,6 +760,17 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--json-out")
     parser.add_argument("--markdown-out")
     parser.add_argument("--run-ios-tests", action="store_true")
+    parser.add_argument("--ios-simulator-udid", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_UDID"))
+    parser.add_argument(
+        "--ios-simulator-name",
+        default=os.getenv("BLUEPRINT_IOS_SIMULATOR_NAME", DEFAULT_IOS_SIMULATOR_NAME),
+    )
+    parser.add_argument("--ios-simulator-os", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_OS"))
+    parser.add_argument(
+        "--ios-test-timeout-seconds",
+        type=positive_int,
+        default=DEFAULT_IOS_TEST_TIMEOUT_SECONDS,
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     pipeline_repo = resolve_repo(Path(__file__).resolve().parents[1], args.pipeline_repo, "BlueprintCapturePipeline")
@@ -632,11 +778,26 @@ def main(argv: Iterable[str] | None = None) -> int:
     webapp_repo = resolve_repo(pipeline_repo, args.webapp_repo, "Blueprint-WebApp")
     load_env_files([pipeline_repo, capture_repo, webapp_repo])
 
+    ios_simulator_destination: str | None = None
+    ios_preflight_failure: str | None = None
+    if args.run_ios_tests and shutil.which("xcodebuild") is not None:
+        try:
+            ios_simulator_destination = resolve_ios_simulator_destination(
+                preferred_name=args.ios_simulator_name,
+                preferred_os=args.ios_simulator_os,
+                preferred_udid=args.ios_simulator_udid,
+            )
+        except (FileNotFoundError, json.JSONDecodeError, RuntimeError, subprocess.CalledProcessError) as exc:
+            ios_preflight_failure = f"ios_simulator_destination_unavailable: {exc}"
+
     specs = default_specs(
         pipeline_repo=pipeline_repo,
         capture_repo=capture_repo,
         webapp_repo=webapp_repo,
         run_ios_tests=bool(args.run_ios_tests),
+        ios_simulator_destination=ios_simulator_destination,
+        ios_preflight_failure=ios_preflight_failure,
+        ios_test_timeout_seconds=args.ios_test_timeout_seconds,
     )
 
     results: list[CommandResult] = []

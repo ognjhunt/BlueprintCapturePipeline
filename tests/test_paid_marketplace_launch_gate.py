@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -267,3 +268,56 @@ def test_should_skip_ios_xcodebuild_missing_and_evidence_class(monkeypatch, tmp_
     assert reason == "xcodebuild is not available in this shell."
     assert evidence_class == "operator_toolchain_required"
     assert "iOS simulator unit evidence is unrun" in evidence_note
+
+
+def test_resolve_ios_simulator_destination_prefers_available_udid(monkeypatch) -> None:
+    gate = _load_gate_module()
+    payload = {
+        "devices": {
+            "com.apple.CoreSimulator.SimRuntime.iOS-26-0": [
+                {"name": "iPhone 17 Pro", "udid": "IPHONE-17-PRO", "isAvailable": True},
+                {"name": "iPhone 17", "udid": "IPHONE-17", "isAvailable": True},
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        gate.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: json.dumps(payload),
+    )
+
+    destination = gate.resolve_ios_simulator_destination(
+        preferred_name="iPhone 17 Pro",
+        preferred_os="26.0",
+        preferred_udid=None,
+    )
+
+    assert destination == "platform=iOS Simulator,id=IPHONE-17-PRO"
+
+
+def test_resolve_ios_simulator_destination_falls_back_to_available_iphone(monkeypatch) -> None:
+    gate = _load_gate_module()
+    payload = {
+        "devices": {
+            "com.apple.CoreSimulator.SimRuntime.iOS-25-0": [
+                {"name": "iPhone 16e", "udid": "IPHONE-16E", "isAvailable": True},
+            ],
+            "com.apple.CoreSimulator.SimRuntime.iOS-26-0": [
+                {"name": "iPad Pro 13-inch (M4)", "udid": "IPAD-PRO", "isAvailable": True},
+                {"name": "iPhone 17", "udid": "IPHONE-17", "isAvailable": True},
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        gate.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: json.dumps(payload),
+    )
+
+    destination = gate.resolve_ios_simulator_destination(
+        preferred_name="iPhone 15",
+        preferred_os=None,
+        preferred_udid=None,
+    )
+
+    assert destination == "platform=iOS Simulator,id=IPHONE-17"
