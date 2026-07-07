@@ -25,6 +25,10 @@ from .robot_eval_job_orchestrator import (
     REQUIRED_ROBOT_EVAL_INPUTS,
     run_robot_eval_job_request_inbox,
 )
+from .robot_eval_job_request_contract import (
+    ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
+    ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
+)
 from .scenario_variation_instantiator import SCENARIO_VARIATION_NAMES
 from .simulation_automation import (
     SIMULATOR_FRAMEWORKS,
@@ -1219,7 +1223,7 @@ def _auto_stage_robot_eval_job_request(
     buyer_request_id = f"buyer-request-{job_id}"
     beta_runtime = _default_robot_eval_job_runtime(capture_root)
     request = {
-        "schema_version": "robot_eval_job_request.v1",
+        "schema_version": ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
         "job_id": job_id,
         "buyer_request_id": buyer_request_id,
         "customer": {
@@ -1320,7 +1324,7 @@ def _auto_stage_robot_eval_job_request(
     envelope_path = inbox / f"{job_id}.json"
     if not envelope_path.is_file():
         envelope = {
-            "queue_contract": "robot_eval_job_request_inbox.v1",
+            "queue_contract": ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
             "status": "queued_for_pipeline",
             "job_id": job_id,
             "buyer_request_id": buyer_request_id,

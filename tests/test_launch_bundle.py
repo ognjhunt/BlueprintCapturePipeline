@@ -73,6 +73,44 @@ def test_launch_bundle_defaults_preview_status_when_not_requested() -> None:
     assert bundle["recapture_requirements"]["required"] is False
 
 
+def test_launch_bundle_writes_deterministic_recapture_recommendations() -> None:
+    bundle = build_launch_qualification_bundle(
+        descriptor={"quality": {}, "capture_modality": "unknown_video_only", "evidence_tier": "pre_screen_video"},
+        qualification_record={"readiness_state": "not_ready_yet", "confidence": 0.4, "risks": []},
+        scorecard={
+            "completeness_status": "need_more_evidence",
+            "missing_evidence": ["task zone coverage"],
+            "follow_ups": [
+                "missing workflow, zone, or success criteria",
+                "object index missing",
+            ],
+        },
+        readiness_decision={"missing_evidence": [], "evidence_gaps": ["qa status is failed"]},
+        site_intake={
+            "capture_rights": {"consent_status": "documented", "consent_scope": ["sales-floor"]},
+            "task_scope": {"task_zone": {"label": "north aisle"}},
+        },
+        buyer_trust_score={"score": 40, "band": "low", "reasons": []},
+        provider_run={},
+        fidelity_review={
+            "status": "succeeded",
+            "findings": {"missing_views": ["north aisle endcap"]},
+            "assessments": {
+                "task_zone_completeness": {
+                    "status": "review_required",
+                    "score": 0.4,
+                }
+            },
+        },
+    )
+
+    recapture = bundle["recapture_requirements"]
+    assert recapture["required"] is True
+    assert any("north aisle" in item for item in recapture["recommendations"])
+    assert any("north aisle endcap" in item for item in recapture["recommendations"])
+    assert recapture["deterministic_recommendations"]
+
+
 def test_preview_provider_stub_writes_manifests(tmp_path: Path) -> None:
     result = run_preview_provider(
         provider_name="stub_preview",

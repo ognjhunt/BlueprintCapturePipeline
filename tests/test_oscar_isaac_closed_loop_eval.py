@@ -14,13 +14,12 @@ from pathlib import Path
 
 import pytest
 
-
-pytestmark = [pytest.mark.slow, pytest.mark.integration]
-pytest.importorskip("PIL")
-from PIL import Image
-
 from blueprint_pipeline import oscar_isaac_closed_loop_eval as L
 from blueprint_pipeline.oscar_wam_command_adapter import DEFAULT_NUM_FRAMES
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+Image = pytest.importorskip("PIL.Image")
 
 
 def _write_frame(path: Path, seed: int) -> Path:
@@ -2506,7 +2505,7 @@ def _write_clip(path, frames):
 
 
 def test_generated_clip_coherence_measures_drift(tmp_path):
-    cv2 = pytest.importorskip("cv2")
+    pytest.importorskip("cv2")
     import numpy as np
 
     rng = np.random.default_rng(7)
@@ -2537,7 +2536,7 @@ def test_generated_clip_coherence_measures_drift(tmp_path):
 
 
 def test_closed_loop_blocks_on_incoherent_generated_clip(tmp_path):
-    cv2 = pytest.importorskip("cv2")
+    pytest.importorskip("cv2")
     import numpy as np
 
     rng = np.random.default_rng(11)
@@ -2690,3 +2689,7 @@ def test_sealed_plan_and_cli_carry_stop_on_task_completion(tmp_path):
     )
     if plan["closed_loop_command"]:
         assert "--stop-on-task-completion" in plan["closed_loop_command"]
+        assert plan["closed_loop_command"][
+            plan["closed_loop_command"].index("--min-steps") + 1
+        ] == "3"
+        assert plan["episode_length_contract"]["min_steps_before_task_completion"] == 3

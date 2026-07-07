@@ -19,6 +19,10 @@ from .first_gpu_e2e_readiness import (
     build_first_gpu_e2e_readiness,
 )
 from .local_capture import resolve_local_capture_context
+from .robot_eval_job_request_contract import (
+    ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
+    ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
+)
 from .simulation_automation import SIMULATOR_FRAMEWORKS
 
 
@@ -47,6 +51,8 @@ WEBAPP_FORWARD_CAPTURE_ROOT_BY_SITE_ENV = (
     "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON"
 )
 WEBAPP_STAGED_INPUTS_ENV = "BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH"
+WEBAPP_JOB_REQUEST_QUEUE_CONTRACT = ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT
+WEBAPP_JOB_REQUEST_SCHEMA_VERSION = ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION
 WEBAPP_UPSTREAM_EVIDENCE_SOURCES = (
     "raw/manifest.json",
     "capture_descriptor.json",
@@ -425,7 +431,7 @@ blueprint-preflight-capture --capture-root "$CAPTURE_ROOT"
 
 blueprint-run-e2e \\
   --capture-root "$CAPTURE_ROOT" \\
-  --provider openai \\
+  --provider local \\
   --pipeline-lane current \\
   --run-evaluation-prep \\
   --evaluation-prep-provider manual
@@ -1347,7 +1353,7 @@ PY
 BLUEPRINT_PREVIEW_PROVIDER=world_labs \\
 blueprint-run-e2e \\
   --capture-root "$CAPTURE_ROOT" \\
-  --provider openai \\
+  --provider local \\
   --pipeline-lane current \\
   --run-evaluation-prep \\
   --evaluation-prep-provider manual
@@ -3723,7 +3729,7 @@ def _scene_asset_acquisition_manifest(
                 "BLUEPRINT_PREVIEW_PROVIDER=world_labs "
                 "WORLDLABS_API_KEY=<set-in-shell-not-artifact> "
                 f"blueprint-run-e2e --capture-root {shlex.quote(str(capture_root))} "
-                "--provider openai --pipeline-lane current --run-evaluation-prep "
+                "--provider local --pipeline-lane current --run-evaluation-prep "
                 "--evaluation-prep-provider manual"
             ),
             "materialize_worldlabs_assets": (
@@ -4037,7 +4043,7 @@ def _webapp_handoff_manifest(
                 ]
             ),
             "write_webapp_forwarding_preflight_report": (
-                "cd /Users/nijelhunt_1/workspace/Blueprint-WebApp && "
+                'cd "${BLUEPRINT_WEBAPP_ROOT:-../Blueprint-WebApp}" && '
                 "npm run pipeline:forwarding:preflight -- --require-forwarding "
                 "--probe-intake-audit "
                 f"--output {shlex.quote(forwarding_preflight_path or str(_default_webapp_forwarding_preflight_path(capture_root)))}"
@@ -4349,7 +4355,7 @@ def _default_test_robot_eval_job_request_template(
 ) -> Dict[str, Any]:
     robot_asset = _robot_asset_for_simulator(simulator)
     return {
-        "schema_version": "robot_eval_job_request.v1",
+        "schema_version": WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
         "job_id": "<real-webapp-job-id>",
         "customer": {
             "id": "<real-robot-team-id>",

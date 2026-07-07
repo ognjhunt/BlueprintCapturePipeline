@@ -50,6 +50,7 @@ _ALLOWED_CAPTURE_MODALITIES = {
     "android_video_only",
     "android_plus_scaffolding",
     "android_xr_video_only",
+    "unknown_video_only",
 }
 _ALLOWED_EVIDENCE_TIERS = {
     "pre_screen_video",
@@ -253,14 +254,22 @@ def _infer_capture_source(raw_source: str, capture_tier: str) -> str:
     source = raw_source.strip().lower()
     if source == "android_phone":
         return "android"
+    if source in {"ios", "iphonevideo", "iphone_video", "iphone_lidar"}:
+        return "iphone"
+    if source in {"rayban", "ray-ban", "ray-ban_meta", "rayban_meta", "meta", "meta_glasses"}:
+        return "glasses"
     if source in {"iphone", "glasses", "android"}:
         return source
+    if source:
+        return "unknown"
     tier = capture_tier.strip().lower()
     if "glasses" in tier:
         return "glasses"
     if "android" in tier:
         return "android"
-    return "iphone"
+    if "iphone" in tier or "ios" in tier:
+        return "iphone"
+    return "unknown"
 
 
 def _normalize_string_list(raw_value: Any) -> List[str]:
@@ -496,7 +505,7 @@ def _resolve_capture_modality(
         return "android_plus_scaffolding"
     if capture_source == "android":
         return "android_video_only"
-    return "iphone_arkit_lidar"
+    return "unknown_video_only"
 
 
 @dataclass(frozen=True)
@@ -570,7 +579,8 @@ class CaptureDescriptor:
         raw_prefix_uri = str(data.get("raw_prefix_uri", "")).strip()
         frames_index_uri = str(data.get("frames_index_uri", "")).strip()
         capture_tier = _normalize_capture_tier(data.get("capture_tier"))
-        capture_source = _infer_capture_source(str(data.get("capture_source", "")), capture_tier)
+        raw_capture_source = str(data.get("capture_source", ""))
+        capture_source = _infer_capture_source(raw_capture_source, capture_tier)
 
         if not scene_id:
             raise ValueError("capture_descriptor.scene_id is required")
@@ -584,6 +594,20 @@ class CaptureDescriptor:
         quality = data.get("quality") if isinstance(data.get("quality"), Mapping) else {}
         raw_metadata = data.get("metadata") if isinstance(data.get("metadata"), Mapping) else {}
         metadata = dict(raw_metadata)
+        normalized_raw_capture_source = raw_capture_source.strip()
+        if capture_source == "unknown":
+            metadata.setdefault("capture_source_unrecognized", True)
+            if normalized_raw_capture_source:
+                metadata.setdefault("raw_capture_source", normalized_raw_capture_source)
+                metadata.setdefault("capture_source_inference_reason", "unrecognized_capture_source")
+            else:
+                metadata.setdefault(
+                    "capture_source_inference_reason",
+                    "missing_capture_source_and_unrecognized_tier",
+                )
+        elif not normalized_raw_capture_source:
+            metadata.setdefault("capture_source_inferred", True)
+            metadata.setdefault("capture_source_inference_reason", f"inferred_from_capture_tier:{capture_tier}")
         for key in (
             "scene_memory_capture",
             "capture_rights",

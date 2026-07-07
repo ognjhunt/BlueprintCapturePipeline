@@ -1,0 +1,111 @@
+{
+  "schema_version": "operator_launch_evidence.v1",
+  "generated_at": "2026-07-07T00:00:00+00:00",
+  "checks": {
+    "legal_consent_posture_signoff": {
+      "status": "manual_live_evidence_required",
+      "signed_record_uri": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "operator_dpa_data_processing_terms": {
+      "status": "manual_live_evidence_required",
+      "signed_record_uri": "",
+      "document_uri": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "paperclip_ops_relay_secret_rotation": {
+      "status": "manual_live_evidence_required",
+      "secret_version_ref": "",
+      "redeploy_evidence_uri": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "iphone_real_device_claim_flow": {
+      "status": "manual_live_evidence_required",
+      "recording_uri": "",
+      "capture_job_id": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "glasses_real_device_claim_flow": {
+      "status": "manual_live_evidence_required",
+      "recording_uri": "",
+      "capture_job_id": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "android_real_device_claim_flow": {
+      "status": "manual_live_evidence_required",
+      "recording_uri": "",
+      "capture_job_id": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "buyer_payment_settlement": {
+      "status": "manual_live_evidence_required",
+      "stripe_mode": "",
+      "payment_intent_id": "",
+      "checkout_session_id": "",
+      "stripe_event_id": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "capturer_payout_settlement": {
+      "status": "manual_live_evidence_required",
+      "stripe_mode": "",
+      "payout_id": "",
+      "transfer_id": "",
+      "webhook_reconciliation_uri": "",
+      "creator_payout_ledger_ref": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "stripe_connected_account_live_readiness": {
+      "status": "manual_live_evidence_required",
+      "provider_account_ref": "",
+      "provider_state_checked": false,
+      "provider_mode": "",
+      "live_provider_ready": false,
+      "payouts_enabled": false,
+      "blocking_requirements": [],
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "payout_exception_monitor_live": {
+      "status": "manual_live_evidence_required",
+      "monitor_uri": "",
+      "alert_policy_uri": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "identity_kyc_provider_decision": {
+      "status": "manual_live_evidence_required",
+      "decision_record_uri": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "background_check_provider_decision": {
+      "status": "manual_live_evidence_required",
+      "decision_record_uri": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "human_finance_review_owner": {
+      "status": "manual_live_evidence_required",
+      "finance_owner": "",
+      "review_queue_uri": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
+    "buyer_artifact_access": {
+      "status": "manual_live_evidence_required",
+      "buyer_session_ref": "",
+      "artifact_access_log_uri": "",
+      "authenticated_fetch_status": "",
+      "verified_at": "",
+      "verified_by": ""
+    }
+  }
+}

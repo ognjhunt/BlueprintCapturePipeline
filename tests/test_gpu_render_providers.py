@@ -971,6 +971,8 @@ def test_digitalocean_build_request_wraps_worker_in_user_data(monkeypatch, tmp_p
     assert body["size"] == "gpu-6000adax1-48gb"   # RT cores + 48GB default
     assert body["region"] == "atl1"
     assert body["image"] == "gpu-h100x1-base"     # NVIDIA AI/ML-ready (drivers+docker)
+    assert body["min_gpu_ram_mb"] == spec.min_gpu_ram_mb
+    assert "max_hourly_rate_usd" not in body
     ud = body["user_data"]
     assert "set -x" not in ud
     assert "set -euo pipefail" in ud
@@ -1037,6 +1039,75 @@ def test_digitalocean_capacity_preflight_blocks_empty_gpu_region_lists(
     assert calls == [("GET", "/sizes?per_page=200")]
 
 
+def test_digitalocean_capacity_preflight_uses_h100_h200_fallbacks_when_budget_allows(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.delenv("BLUEPRINT_DO_GPU_SIZES", raising=False)
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_REGIONS", "atl1,nyc2")
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        assert token == "t-redacted"
+        if method == "GET" and path == "/sizes?per_page=200":
+            return 200, {
+                "sizes": [
+                    {
+                        "slug": "gpu-6000adax1-48gb",
+                        "available": True,
+                        "regions": [],
+                        "memory": 65536,
+                        "price_hourly": 1.57,
+                    },
+                    {
+                        "slug": "gpu-l40sx1-48gb",
+                        "available": True,
+                        "regions": [],
+                        "memory": 65536,
+                        "price_hourly": 1.57,
+                    },
+                    {
+                        "slug": "gpu-h100x1-80gb",
+                        "available": True,
+                        "regions": ["nyc2"],
+                        "memory": 245760,
+                        "price_hourly": 3.39,
+                    },
+                    {
+                        "slug": "gpu-h200x1-141gb",
+                        "available": True,
+                        "regions": ["nyc2"],
+                        "memory": 245760,
+                        "price_hourly": 3.44,
+                    },
+                ]
+            }
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+
+    default_budget = G.DigitalOceanRenderProvider().capacity_preflight(
+        {"min_gpu_ram_mb": 48000}
+    )
+    launcher_budget = G.DigitalOceanRenderProvider().capacity_preflight(
+        {"min_gpu_ram_mb": 48000, "max_hourly_rate_usd": 3.5}
+    )
+
+    assert default_budget["status"] == "blocked"
+    assert "digitalocean_gpu_size_region_unavailable" in default_budget["blockers"]
+    assert {
+        row["size"] for row in default_budget["budget_policy"]["rejected_size_candidates"]
+    } == {"gpu-h100x1-80gb", "gpu-h200x1-141gb"}
+    assert launcher_budget["status"] == "available"
+    assert launcher_budget["viable_size_regions"][0]["size"] == "gpu-h100x1-80gb"
+    assert launcher_budget["viable_size_regions"][0]["matching_regions"] == ["nyc2"]
+    assert "gpu-h200x1-141gb" in launcher_budget["size_candidates"]
+
+
 def test_digitalocean_capacity_preflight_reports_viable_size_region(
     monkeypatch,
     tmp_path: Path,
@@ -1073,6 +1144,58 @@ def test_digitalocean_capacity_preflight_reports_viable_size_region(
     assert res["blockers"] == []
     assert res["viable_size_regions"][0]["size"] == "gpu-6000adax1-48gb"
     assert res["viable_size_regions"][0]["matching_regions"] == ["nyc2"]
+
+
+def test_digitalocean_capacity_preflight_filters_below_requested_gpu_ram(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_SIZES", "gpu-4000adax1-20gb,gpu-6000adax1-48gb")
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_REGIONS", "atl1")
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        assert token == "t-redacted"
+        if method == "GET" and path == "/sizes?per_page=200":
+            return 200, {
+                "sizes": [
+                    {
+                        "slug": "gpu-4000adax1-20gb",
+                        "available": True,
+                        "regions": ["atl1"],
+                        "memory": 32768,
+                        "price_hourly": 0.76,
+                    },
+                    {
+                        "slug": "gpu-6000adax1-48gb",
+                        "available": True,
+                        "regions": ["atl1"],
+                        "memory": 65536,
+                        "price_hourly": 1.57,
+                    },
+                ]
+            }
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+
+    res = G.DigitalOceanRenderProvider().capacity_preflight({"min_gpu_ram_mb": 48000})
+
+    assert res["status"] == "available"
+    assert res["size_candidates"] == ["gpu-6000adax1-48gb"]
+    assert res["viable_size_regions"][0]["gpu_ram_mb"] == 48000
+    assert res["gpu_ram_policy"]["rejected_size_candidates"] == [
+        {
+            "size": "gpu-4000adax1-20gb",
+            "gpu_ram_mb": 20000,
+            "min_gpu_ram_mb": 48000,
+            "reason": "below_min_gpu_ram",
+        }
+    ]
 
 
 def test_digitalocean_launch_fail_closed_without_token(monkeypatch, tmp_path: Path) -> None:
@@ -1127,6 +1250,9 @@ def test_digitalocean_launch_creates_droplet_and_writes_id(monkeypatch, tmp_path
         if method == "GET" and path == "/account/keys?per_page=200":
             return 200, {"ssh_keys": [{"id": 98765, "name": "worker-key"}]}
         if method == "POST" and path == "/droplets":
+            assert "min_gpu_ram_mb" not in body
+            assert "max_hourly_rate_usd" not in body
+            assert "prelaunch_spend_guard" not in body
             assert body["ssh_keys"] == [98765]
             return 202, {"droplet": {"id": 4242, "status": "new"}}
         raise AssertionError((method, path))
@@ -1250,6 +1376,49 @@ def test_digitalocean_launch_retries_gpu_size_region_unavailable(monkeypatch, tm
     assert res["attempts"][-1]["size"] == "gpu-l40sx1-48gb"
     assert res["attempts"][-1]["region"] == "nyc2"
     assert res["budget_policy"]["max_hourly_rate_usd"] == pytest.approx(1.75)
+
+
+def test_digitalocean_launch_retries_skip_below_requested_gpu_ram(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.setenv("BLUEPRINT_DO_SSH_KEY_IDS", "123")
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_SIZES", "gpu-4000adax1-20gb,gpu-6000adax1-48gb")
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_REGIONS", "atl1")
+    calls = []
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        assert method == "POST"
+        assert path == "/droplets"
+        calls.append((body["size"], body["region"]))
+        assert body["size"] != "gpu-4000adax1-20gb"
+        assert "min_gpu_ram_mb" not in body
+        assert "max_hourly_rate_usd" not in body
+        assert "prelaunch_spend_guard" not in body
+        return 202, {"droplet": {"id": 4242, "status": "new"}}
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    provider = G.DigitalOceanRenderProvider()
+    request = _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
+    request["min_gpu_ram_mb"] = 48000
+
+    res = provider.launch(tmp_path, request)
+
+    assert res["status"] == "launched"
+    assert calls == [("gpu-6000adax1-48gb", "atl1")]
+    assert res["gpu_ram_policy"]["rejected_size_candidates"] == [
+        {
+            "size": "gpu-4000adax1-20gb",
+            "gpu_ram_mb": 20000,
+            "min_gpu_ram_mb": 48000,
+            "reason": "below_min_gpu_ram",
+        }
+    ]
 
 
 def test_digitalocean_launch_blocks_h200_without_hourly_budget_override(

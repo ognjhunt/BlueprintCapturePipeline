@@ -23,8 +23,20 @@ def _complete_export_manifest() -> dict:
             "calibration_report": "calibration_report.json",
             "robot_pov_observation_manifest": "robot_pov_observation_manifest.json",
             "replay_review_instructions": "replay_review_instructions.md",
+            "simulator_command_batch_metrics": "simulator_command_batch_metrics.json",
         },
         "manifest_counts": {"failure_label_count": 3},
+        "task_success_metrics": {
+            "source_artifact": "simulator_command_batch_metrics.json",
+            "metric_coverage_complete": True,
+            "required_metric_keys": [
+                "min_clearance_m",
+                "clearance_threshold_m",
+                "max_path_deviation_m",
+            ],
+            "attempt_metric_row_count": 1,
+            "missing_metric_row_count": 0,
+        },
         "export_policy": {
             "clips_manifest_included": True,
             "visual_augmentation_packet_included": True,
@@ -84,6 +96,48 @@ def test_complete_manifest_produces_buyer_readable_summary_without_overclaim() -
     assert "Highest truthful claim: no_claim" in markdown
     assert "not deployment approval" in markdown
     assert "Simulator results are not real-world outcomes." in markdown
+
+
+def test_failure_evidence_requires_label_count_or_reviewed_zero_attestation() -> None:
+    manifest = _complete_export_manifest()
+    manifest["manifest_counts"]["failure_label_count"] = 0
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    assert readout["status"] == "blocked_incomplete_package"
+    assert (
+        "failure_evidence:failure_labels_empty_without_zero_failures_reviewed"
+        in readout["blockers"]
+    )
+
+    manifest["manifest_counts"]["zero_failures_reviewed"] = True
+    passed = build_buyer_package_readout(export_manifest=manifest)
+    assert passed["status"] == "buyer_readout_ready_review_required"
+    assert passed["sections"]["failure_evidence"]["zero_failures_reviewed"] is True
+
+
+def test_task_success_criteria_requires_batch_metric_coverage() -> None:
+    manifest = _complete_export_manifest()
+    manifest["included_artifacts"].pop("simulator_command_batch_metrics")
+    manifest.pop("task_success_metrics")
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    assert readout["status"] == "blocked_incomplete_package"
+    assert (
+        "task_success_criteria:task_success_metrics_artifact_missing"
+        in readout["blockers"]
+    )
+    assert "task_success_criteria:task_success_metrics_missing" in readout["blockers"]
+
+    manifest = _complete_export_manifest()
+    manifest["task_success_metrics"]["required_metric_keys"] = ["min_clearance_m"]
+    metric_gap = build_buyer_package_readout(export_manifest=manifest)
+    assert metric_gap["status"] == "blocked_incomplete_package"
+    assert (
+        "task_success_criteria:task_success_required_metric_missing:max_path_deviation_m"
+        in metric_gap["blockers"]
+    )
 
 
 def test_ledger_claim_is_echoed_but_never_invented() -> None:

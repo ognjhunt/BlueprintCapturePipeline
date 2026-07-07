@@ -502,6 +502,8 @@ DO_GPU_BASE_IMAGE = "gpu-h100x1-base"        # "NVIDIA AI/ML Ready": Ubuntu + dr
 DEFAULT_DO_GPU_SIZE_CANDIDATES = (
     DEFAULT_DO_GPU_SIZE,
     "gpu-l40sx1-48gb",
+    "gpu-h100x1-80gb",
+    "gpu-h200x1-141gb",
     "gpu-4000adax1-20gb",
 )
 DEFAULT_DO_GPU_REGION_CANDIDATES = (DEFAULT_DO_GPU_REGION, "nyc2", "tor1", "ric1", "ams3")
@@ -512,6 +514,14 @@ DO_GPU_HOURLY_RATE_USD = {
     "gpu-mi300x1-192gb": 1.99,
     "gpu-h100x1-80gb": 3.39,
     "gpu-h200x1-141gb": 3.44,
+}
+DO_GPU_SIZE_VRAM_MB = {
+    "gpu-4000adax1-20gb": 20000,
+    "gpu-l40sx1-48gb": 48000,
+    "gpu-6000adax1-48gb": 48000,
+    "gpu-mi300x1-192gb": 192000,
+    "gpu-h100x1-80gb": 80000,
+    "gpu-h200x1-141gb": 141000,
 }
 DEFAULT_DO_MAX_HOURLY_RATE_USD = 1.75
 DO_GPU_SIZE_CANDIDATES_ENV = "BLUEPRINT_DO_GPU_SIZES"
@@ -631,22 +641,41 @@ def _do_region_candidates(initial: str) -> list[str]:
     return _ordered_unique([initial, *DEFAULT_DO_GPU_REGION_CANDIDATES])
 
 
-def _do_max_hourly_rate_usd() -> float:
+def _positive_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _do_max_hourly_rate_usd(request: Mapping[str, Any] | None = None) -> tuple[float, str]:
+    req = _mapping(request)
+    requested = _positive_float(req.get("max_hourly_rate_usd"))
+    if requested is not None:
+        return requested, "request:max_hourly_rate_usd"
     import os
 
     raw = (os.getenv(DO_GPU_MAX_HOURLY_RATE_ENV) or "").strip()
-    if raw:
-        try:
-            value = float(raw)
-            if value > 0:
-                return value
-        except ValueError:
-            pass
-    return DEFAULT_DO_MAX_HOURLY_RATE_USD
+    env_value = _positive_float(raw)
+    if env_value is not None:
+        return env_value, DO_GPU_MAX_HOURLY_RATE_ENV
+    return DEFAULT_DO_MAX_HOURLY_RATE_USD, "default"
 
 
-def _filter_do_size_candidates_by_budget(size_candidates: Sequence[str]) -> tuple[list[str], dict]:
-    max_hourly = _do_max_hourly_rate_usd()
+def _filter_do_size_candidates_by_budget(
+    size_candidates: Sequence[str],
+    request: Mapping[str, Any] | None = None,
+) -> tuple[list[str], dict]:
+    max_hourly, source = _do_max_hourly_rate_usd(request)
     allowed: list[str] = []
     rejected: list[dict] = []
     for size in size_candidates:
@@ -667,7 +696,52 @@ def _filter_do_size_candidates_by_budget(size_candidates: Sequence[str]) -> tupl
         allowed.append(size)
     return allowed, {
         "max_hourly_rate_usd": max_hourly,
+        "max_hourly_rate_source": source,
         "max_hourly_rate_env": DO_GPU_MAX_HOURLY_RATE_ENV,
+        "allowed_size_candidates": allowed,
+        "rejected_size_candidates": rejected,
+    }
+
+
+def _requested_do_min_gpu_ram_mb(request: Mapping[str, Any] | None = None) -> int:
+    req = _mapping(request)
+    return _positive_int(req.get("min_gpu_ram_mb")) or 0
+
+
+def _filter_do_size_candidates_by_gpu_ram(
+    size_candidates: Sequence[str],
+    request: Mapping[str, Any] | None = None,
+) -> tuple[list[str], dict]:
+    min_gpu_ram_mb = _requested_do_min_gpu_ram_mb(request)
+    if min_gpu_ram_mb <= 0:
+        allowed = list(size_candidates)
+        return allowed, {
+            "min_gpu_ram_mb": 0,
+            "allowed_size_candidates": allowed,
+            "rejected_size_candidates": [],
+        }
+    allowed: list[str] = []
+    rejected: list[dict] = []
+    for size in size_candidates:
+        gpu_ram_mb = DO_GPU_SIZE_VRAM_MB.get(size)
+        if gpu_ram_mb is None:
+            rejected.append({
+                "size": size,
+                "min_gpu_ram_mb": min_gpu_ram_mb,
+                "reason": "unknown_gpu_ram",
+            })
+            continue
+        if gpu_ram_mb < min_gpu_ram_mb:
+            rejected.append({
+                "size": size,
+                "gpu_ram_mb": gpu_ram_mb,
+                "min_gpu_ram_mb": min_gpu_ram_mb,
+                "reason": "below_min_gpu_ram",
+            })
+            continue
+        allowed.append(size)
+    return allowed, {
+        "min_gpu_ram_mb": min_gpu_ram_mb,
         "allowed_size_candidates": allowed,
         "rejected_size_candidates": rejected,
     }
@@ -788,6 +862,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             "_blueprint_worker_image": spec.image,
             "_blueprint_bootstrap_argv": list(spec.bootstrap_argv),
             "_blueprint_entrypoint": list(spec.entrypoint),
+            "min_gpu_ram_mb": int(spec.min_gpu_ram_mb),
             "tags": ["blueprint-isaac-render"],
             "ipv6": False,
             "monitoring": False,
@@ -814,15 +889,24 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         initial_region = str(req.get("region") or DEFAULT_DO_GPU_REGION)
         initial_size = str(req.get("size") or DEFAULT_DO_GPU_SIZE)
         size_candidates, budget_policy = _filter_do_size_candidates_by_budget(
-            _do_size_candidates(initial_size)
+            _do_size_candidates(initial_size),
+            req,
+        )
+        size_candidates, gpu_ram_policy = _filter_do_size_candidates_by_gpu_ram(
+            size_candidates,
+            req,
         )
         region_candidates = _do_region_candidates(initial_region)
         if not size_candidates:
+            blockers = ["digitalocean_gpu_size_below_min_vram"]
+            if budget_policy.get("allowed_size_candidates") == []:
+                blockers = ["digitalocean_gpu_size_over_budget"]
             return {
                 "status": "blocked",
                 "provider": self.name,
-                "blockers": ["digitalocean_gpu_size_over_budget"],
+                "blockers": blockers,
                 "budget_policy": budget_policy,
+                "gpu_ram_policy": gpu_ram_policy,
                 "size_candidates": [],
                 "region_candidates": region_candidates,
                 "raw_provider_response_recorded": False,
@@ -835,6 +919,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                 "blockers": ["digitalocean_gpu_capacity_probe_failed"],
                 "http": status,
                 "budget_policy": budget_policy,
+                "gpu_ram_policy": gpu_ram_policy,
                 "size_candidates": size_candidates,
                 "region_candidates": region_candidates,
                 "raw_provider_response_recorded": False,
@@ -857,6 +942,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                 "matching_regions": matching_regions,
                 "price_hourly": record.get("price_hourly"),
                 "memory_mb": record.get("memory"),
+                "gpu_ram_mb": DO_GPU_SIZE_VRAM_MB.get(size),
                 "vcpus": record.get("vcpus"),
             }
             if not record:
@@ -874,6 +960,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                 "provider": self.name,
                 "blockers": [],
                 "budget_policy": budget_policy,
+                "gpu_ram_policy": gpu_ram_policy,
                 "size_candidates": size_candidates,
                 "region_candidates": region_candidates,
                 "viable_size_regions": viable,
@@ -890,6 +977,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             "provider": self.name,
             "blockers": ["digitalocean_gpu_size_region_unavailable"],
             "budget_policy": budget_policy,
+            "gpu_ram_policy": gpu_ram_policy,
             "size_candidates": size_candidates,
             "region_candidates": region_candidates,
             "considered_size_regions": considered,
@@ -923,10 +1011,20 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                 or None,
             }
         launch_request = dict(request)
+        launch_request.pop("prelaunch_spend_guard", None)
         worker_env = launch_request.pop("env", None)
         worker_image = launch_request.pop("_blueprint_worker_image", None)
         bootstrap_argv = launch_request.pop("_blueprint_bootstrap_argv", None)
         entrypoint = launch_request.pop("_blueprint_entrypoint", None)
+        min_gpu_ram_mb = _requested_do_min_gpu_ram_mb(launch_request)
+        launch_request.pop("min_gpu_ram_mb", None)
+        budget_request = {
+            "max_hourly_rate_usd": launch_request.pop("max_hourly_rate_usd", None)
+        }
+        size_filter_request = {
+            **budget_request,
+            "min_gpu_ram_mb": min_gpu_ram_mb,
+        }
         if (
             isinstance(worker_env, dict)
             and worker_image
@@ -961,13 +1059,22 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         initial_region = str(launch_request.get("region") or DEFAULT_DO_GPU_REGION)
         initial_size = str(launch_request.get("size") or DEFAULT_DO_GPU_SIZE)
         size_candidates, budget_policy = _filter_do_size_candidates_by_budget(
-            _do_size_candidates(initial_size)
+            _do_size_candidates(initial_size),
+            size_filter_request,
+        )
+        size_candidates, gpu_ram_policy = _filter_do_size_candidates_by_gpu_ram(
+            size_candidates,
+            size_filter_request,
         )
         if not size_candidates:
+            blockers = ["digitalocean_gpu_size_below_min_vram"]
+            if budget_policy.get("allowed_size_candidates") == []:
+                blockers = ["digitalocean_gpu_size_over_budget"]
             return {
                 "status": "blocked",
-                "blockers": ["digitalocean_gpu_size_over_budget"],
+                "blockers": blockers,
                 "budget_policy": budget_policy,
+                "gpu_ram_policy": gpu_ram_policy,
                 "ssh_key_configuration": ssh_key_detail,
             }
         for size in size_candidates:
@@ -989,6 +1096,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                         "mode": "do_gpu_droplet",
                         "ssh_key_configuration": ssh_key_detail,
                         "budget_policy": budget_policy,
+                        "gpu_ram_policy": gpu_ram_policy,
                         "attempts": create_attempts,
                     }
                 attempt = {
@@ -1008,6 +1116,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                         "blockers": [f"do_droplet_create_http_{s}"],
                         "attempts": create_attempts,
                         "budget_policy": budget_policy,
+                        "gpu_ram_policy": gpu_ram_policy,
                         "ssh_key_configuration": ssh_key_detail,
                     }
         return {
@@ -1015,6 +1124,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             "blockers": ["digitalocean_gpu_size_region_unavailable"],
             "attempts": create_attempts,
             "budget_policy": budget_policy,
+            "gpu_ram_policy": gpu_ram_policy,
             "ssh_key_configuration": ssh_key_detail,
         }
 

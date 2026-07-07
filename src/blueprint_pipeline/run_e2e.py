@@ -863,7 +863,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Run a local capture through the current capture-to-package review path"
     )
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
-    parser.add_argument("--provider", required=True, choices=("claude", "openai"))
+    parser.add_argument(
+        "--provider",
+        required=True,
+        choices=("local", "claude", "openai"),
+        help=(
+            "Agent-review provider. Use local for deterministic no-LLM contract "
+            "runs; claude/openai may use configured external review providers."
+        ),
+    )
     parser.add_argument(
         "--pipeline-lane",
         default="current",
@@ -885,7 +893,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--openai-phase2-codex-bin")
     parser.add_argument("--openai-phase2-timeout-seconds", type=int)
     parser.add_argument("--openai-phase2-reasoning-effort")
-    parser.add_argument("--run-evaluation-prep", action="store_true")
+    evaluation_prep_group = parser.add_mutually_exclusive_group()
+    evaluation_prep_group.add_argument(
+        "--run-evaluation-prep",
+        dest="run_evaluation_prep",
+        action="store_true",
+        default=True,
+        help=(
+            "Run evaluation prep and WebApp sync handoff. This is the default for "
+            "the operator CLI; kept for explicitness and backward-compatible scripts."
+        ),
+    )
+    evaluation_prep_group.add_argument(
+        "--skip-evaluation-prep",
+        dest="run_evaluation_prep",
+        action="store_false",
+        help=(
+            "Developer-only escape hatch: stop after agent review and mark "
+            "evaluation_prep skipped in the run_e2e stage ledger."
+        ),
+    )
     parser.add_argument("--evaluation-prep-provider", default="manual")
     parser.add_argument(
         "--run-cosmos-validation",

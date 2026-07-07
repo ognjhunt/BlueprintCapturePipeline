@@ -39,6 +39,11 @@ _POV_KEYS = (
     "robot_pov_observations",
     "robot_pov_frame_sequence_manifest",
 )
+_TASK_SUCCESS_REQUIRED_METRIC_KEYS = (
+    "min_clearance_m",
+    "clearance_threshold_m",
+    "max_path_deviation_m",
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -95,6 +100,18 @@ def _presence_section(
 ) -> dict[str, Any]:
     blockers = [] if present else [missing_blocker]
     return _section("present" if present else "missing", blockers, **fields)
+
+
+def _task_success_metrics(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    for key in (
+        "task_success_metrics",
+        "simulator_command_batch_metrics",
+        "batch_metrics",
+    ):
+        metrics = _mapping(manifest.get(key))
+        if metrics:
+            return metrics
+    return {}
 
 
 def _lerobot_format_claimed(format_entry: Mapping[str, Any]) -> bool:
@@ -363,18 +380,69 @@ def build_buyer_package_readout(
     )
 
     failure_present = "failure_labels" in included
-    sections["failure_evidence"] = _presence_section(
-        present=failure_present,
-        missing_blocker="failure_labels_missing",
+    failure_label_count = _int_or_none(manifest_counts.get("failure_label_count"))
+    failure_review = _mapping(manifest.get("failure_evidence_review"))
+    zero_failures_reviewed = _strict_bool(
+        manifest_counts.get("zero_failures_reviewed")
+    ) or _strict_bool(failure_review.get("zero_failures_reviewed"))
+    failure_blockers: list[str] = []
+    if not failure_present:
+        failure_blockers.append("failure_labels_missing")
+    if failure_present and failure_label_count is None:
+        failure_blockers.append("failure_label_count_unknown")
+    if failure_present and failure_label_count == 0 and not zero_failures_reviewed:
+        failure_blockers.append("failure_labels_empty_without_zero_failures_reviewed")
+    sections["failure_evidence"] = _section(
+        "present" if not failure_blockers else "missing",
+        failure_blockers,
         failure_label_count=_int_or_none(manifest_counts.get("failure_label_count")),
+        zero_failures_reviewed=zero_failures_reviewed,
         failure_cases_preserved=failure_present,
     )
 
     criteria_present = "task_cards" in included and "eval_cards" in included
-    sections["task_success_criteria"] = _presence_section(
-        present=criteria_present,
-        missing_blocker="task_success_criteria_source_missing",
-        criteria_source="task_cards_and_eval_cards" if criteria_present else None,
+    task_metrics = _task_success_metrics(manifest)
+    metric_keys = set(_string_list(task_metrics.get("required_metric_keys")))
+    missing_metric_keys = sorted(
+        key for key in _TASK_SUCCESS_REQUIRED_METRIC_KEYS if key not in metric_keys
+    )
+    attempt_metric_row_count = _int_or_none(task_metrics.get("attempt_metric_row_count")) or 0
+    missing_metric_row_count = _int_or_none(task_metrics.get("missing_metric_row_count")) or 0
+    task_success_blockers: list[str] = []
+    if not criteria_present:
+        task_success_blockers.append("task_success_criteria_source_missing")
+    if (
+        "simulator_command_batch_metrics" not in included
+        and not str(task_metrics.get("source_artifact") or "").strip()
+    ):
+        task_success_blockers.append("task_success_metrics_artifact_missing")
+    if not task_metrics:
+        task_success_blockers.append("task_success_metrics_missing")
+    if task_metrics and not _strict_bool(task_metrics.get("metric_coverage_complete")):
+        task_success_blockers.append("task_success_metric_coverage_incomplete")
+    if task_metrics and attempt_metric_row_count <= 0:
+        task_success_blockers.append("task_success_metric_rows_missing")
+    if task_metrics and missing_metric_row_count > 0:
+        task_success_blockers.append("task_success_metric_rows_incomplete")
+    task_success_blockers.extend(
+        f"task_success_required_metric_missing:{key}" for key in missing_metric_keys
+    )
+    sections["task_success_criteria"] = _section(
+        "present" if not task_success_blockers else "missing",
+        task_success_blockers,
+        criteria_source="task_cards_eval_cards_and_batch_metrics"
+        if criteria_present and task_metrics
+        else None,
+        task_cards_included="task_cards" in included,
+        eval_cards_included="eval_cards" in included,
+        metrics_artifact_included="simulator_command_batch_metrics" in included,
+        metric_coverage_complete=_strict_bool(
+            task_metrics.get("metric_coverage_complete")
+        ),
+        attempt_metric_row_count=attempt_metric_row_count,
+        missing_metric_row_count=missing_metric_row_count,
+        required_metric_keys=sorted(metric_keys),
+        required_metric_keys_present=not missing_metric_keys,
     )
 
     calibration_present = "calibration_report" in included

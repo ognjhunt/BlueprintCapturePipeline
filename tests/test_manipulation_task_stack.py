@@ -119,6 +119,30 @@ def test_tote_template_builds_default_policy_eval_stack(tmp_path: Path) -> None:
     ]
 
 
+def test_default_manipulation_stack_does_not_fabricate_tote_for_sinkless_index(
+    tmp_path: Path,
+) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "object_index.json").write_text(
+        json.dumps({"objects": [{"object_id": "rack_01", "label": "storage rack"}]}),
+        encoding="utf-8",
+    )
+
+    result = build_manipulation_task_stack(capture_root=tmp_path, run_physics_sim=False)
+
+    assert result["status"] == "blocked"
+    assert "site_object_index_does_not_contain_default_tote_object" in result["blockers"]
+    assert "mujoco_tote_object_asset" not in result["artifacts"]
+    assert result["site_object_index_policy"] == {
+        "object_index_checked": True,
+        "object_index_object_count": 1,
+        "implicit_default_object": True,
+        "template_inference_allowed_by_site_object_index": False,
+        "blocker": "site_object_index_does_not_contain_default_tote_object",
+    }
+
+
 def test_unknown_object_without_contract_fails_closed(tmp_path: Path) -> None:
     result = build_manipulation_task_stack(
         capture_root=tmp_path,

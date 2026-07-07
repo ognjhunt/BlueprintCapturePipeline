@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
@@ -39,6 +40,10 @@ INTAKE_WORK_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR"
 INTAKE_TRIGGER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND"
 INTAKE_ALLOW_TRIGGER_ENV = "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER"
 INTAKE_OVERWRITE_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE"
+INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV = (
+    "BLUEPRINT_LIVE_PIPELINE_ALLOW_PER_REQUEST_CAPTURE_ROOT"
+)
+INTAKE_CAPTURE_ROOT_BY_SITE_ENV = "BLUEPRINT_LIVE_PIPELINE_CAPTURE_ROOT_BY_SITE_JSON"
 INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_intake_service.v1"
 CAPTURE_HANDOFF_SOURCE_KIND = "capture_pipeline_handoff"
 
@@ -158,6 +163,68 @@ def _cards_from_file(path: Path) -> list[Mapping[str, Any]]:
     return [card for card in _list_from_payload(payload) if isinstance(card, Mapping)]
 
 
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _parse_timestamp(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = _string(value)
+    if not text:
+        return None
+    normalized = text.removesuffix("Z") + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _capture_upload_complete_freshness(capture_root: Path) -> Dict[str, Any]:
+    path = capture_root / "raw" / "capture_upload_complete.json"
+    if not path.is_file():
+        return {"present": False}
+    payload = _read_mapping_file(path)
+    timestamp = None
+    timestamp_source = None
+    for key in (
+        "capture_upload_completed_at",
+        "captureUploadCompletedAt",
+        "upload_completed_at",
+        "uploadCompletedAt",
+        "completed_at",
+        "completedAt",
+        "uploaded_at",
+        "uploadedAt",
+        "generated_at",
+        "generatedAt",
+        "timestamp",
+    ):
+        timestamp = _parse_timestamp(payload.get(key))
+        if timestamp is not None:
+            timestamp_source = key
+            break
+    if timestamp is None:
+        timestamp = path.stat().st_mtime
+        timestamp_source = "file_mtime"
+    return {
+        "present": True,
+        "path": str(path),
+        "sha256": _file_sha256(path),
+        "timestamp": timestamp,
+        "timestamp_source": timestamp_source,
+    }
+
+
 def _capture_root_ids(capture_root: Path) -> Dict[str, str]:
     descriptor = _read_mapping_file(capture_root / "capture_descriptor.json")
     upload_complete = _read_mapping_file(capture_root / "raw" / "capture_upload_complete.json")
@@ -189,10 +256,53 @@ def _capture_root_ids(capture_root: Path) -> Dict[str, str]:
     }
 
 
+def _capture_root_map() -> Dict[str, Path]:
+    raw = _string(os.getenv(INTAKE_CAPTURE_ROOT_BY_SITE_ENV))
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    roots: Dict[str, Path] = {}
+    for key, value in payload.items():
+        text_key = _string(key)
+        text_value = _string(value)
+        if text_key and text_value:
+            roots[text_key] = Path(text_value).expanduser().resolve()
+    return roots
+
+
+def _capture_root_from_handoff_payload(
+    *,
+    payload: Mapping[str, Any],
+    manifest_capture_root: Path | None,
+) -> Path | None:
+    explicit = _first_string(payload.get("capture_root"), payload.get("captureRoot"))
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    roots = _capture_root_map()
+    lookup_keys = [
+        _first_string(payload.get("site_submission_id"), payload.get("siteSubmissionId")),
+        _first_string(payload.get("buyer_request_id"), payload.get("buyerRequestId")),
+        _first_string(payload.get("capture_job_id"), payload.get("captureJobId")),
+        _first_string(payload.get("scene_id"), payload.get("sceneId")),
+        _first_string(payload.get("capture_id"), payload.get("captureId")),
+        _first_string(payload.get("site_slug"), payload.get("siteSlug")),
+    ]
+    for key in lookup_keys:
+        if key and key in roots:
+            return roots[key]
+    return manifest_capture_root
+
+
 def _select_dataset_task(capture_root: Path) -> tuple[Dict[str, Any] | None, list[str]]:
     dataset_dir = capture_root / "pipeline" / "robot_eval_dataset"
     task_cards_path = dataset_dir / "task_cards.json"
     scenario_cards_path = dataset_dir / "scenario_cards.json"
+    upload_freshness = _capture_upload_complete_freshness(capture_root)
     blockers: list[str] = []
     if not task_cards_path.is_file():
         blockers.append("robot_eval_task_cards_missing")
@@ -202,6 +312,15 @@ def _select_dataset_task(capture_root: Path) -> tuple[Dict[str, Any] | None, lis
         return None, blockers
     task_cards = _cards_from_file(task_cards_path)
     scenario_cards = _cards_from_file(scenario_cards_path)
+    if upload_freshness.get("present"):
+        upload_timestamp = float(upload_freshness.get("timestamp") or 0.0)
+        stale_paths = [
+            path.name
+            for path in (task_cards_path, scenario_cards_path)
+            if path.stat().st_mtime + 0.001 < upload_timestamp
+        ]
+        if stale_paths:
+            blockers.append("robot_eval_dataset_stale_for_capture_upload_complete")
     if not task_cards:
         blockers.append("robot_eval_task_cards_empty")
     if not scenario_cards:
@@ -228,6 +347,11 @@ def _select_dataset_task(capture_root: Path) -> tuple[Dict[str, Any] | None, lis
             "scenario_id": _string(scenario.get("scenario_id") or scenario.get("scenarioId")),
             "task_cards_uri": str(task_cards_path),
             "scenario_cards_uri": str(scenario_cards_path),
+            "task_cards_sha256": _file_sha256(task_cards_path),
+            "scenario_cards_sha256": _file_sha256(scenario_cards_path),
+            "capture_upload_complete": upload_freshness,
+            "dataset_fresh_for_capture_upload_complete": not upload_freshness.get("present")
+            or "robot_eval_dataset_stale_for_capture_upload_complete" not in blockers,
             "task_card_count": len(task_cards),
             "scenario_card_count": len(scenario_cards),
         }, []
@@ -304,7 +428,13 @@ def _capture_handoff_to_webapp_request(
             "blockers": blockers,
         }
     assert dataset_selection is not None
-    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+    identity_digest_material = {
+        "handoff_payload": dict(payload),
+        "dataset_selection": dataset_selection,
+    }
+    digest = sha256(
+        json.dumps(identity_digest_material, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:12]
     scene_id = handoff_scene_id or capture_ids["scene_id"]
     capture_id = handoff_capture_id or capture_ids["capture_id"]
     job_id = _safe_stem(f"capture-handoff-{scene_id}-{capture_id}-{digest}")
@@ -586,6 +716,92 @@ def _redacted_real_robot_pov_response(
     }
 
 
+def stage_capture_handoff_for_control_plane(
+    *,
+    payload: Mapping[str, Any],
+    capture_root: str | Path,
+    manifest_path: str | Path,
+    work_dir: str | Path | None = None,
+    overwrite: bool = False,
+    staged_inputs_path: str | Path | None = None,
+) -> Dict[str, Any]:
+    """Convert a capture handoff into a control-plane inbox request.
+
+    This is the non-HTTP form of ``/api/live-pipeline/capture-handoffs`` used by
+    the Pub/Sub handoff listener. It stages input pointers only; it does not run
+    simulator/provider work or promote proof booleans.
+    """
+
+    resolved_manifest_path = Path(manifest_path).expanduser().resolve()
+    resolved_capture_root = Path(capture_root).expanduser().resolve()
+    resolved_work_dir = (
+        Path(work_dir).expanduser().resolve()
+        if work_dir
+        else _work_dir(resolved_manifest_path).resolve()
+    )
+    ensure_dir(resolved_work_dir)
+    handoff_path = _capture_handoff_candidate_path(payload, resolved_work_dir)
+    write_json(handoff_path, dict(payload))
+    envelope, handoff_audit = _capture_handoff_to_webapp_request(
+        payload=payload,
+        capture_root=resolved_capture_root,
+    )
+    if envelope is None:
+        return {
+            "schema_version": INTAKE_SCHEMA_VERSION,
+            "status": "blocked",
+            "accepted": False,
+            "generated_at": utc_now_iso(),
+            "candidate": {"path": str(handoff_path)},
+            "capture_handoff": handoff_audit,
+            "input_blockers": [
+                f"capture_handoff:{blocker}"
+                for blocker in handoff_audit.get("blockers", [])
+            ],
+            "proof_boundary": {
+                "capture_handoff_converted_to_job_request": False,
+                "intake_performs_robot_execution": False,
+                "intake_sets_proof_booleans": False,
+                "simulator_execution_proven": False,
+                "rank_fidelity_result_proven": False,
+                "public_claim_upgrade_allowed": False,
+            },
+        }
+
+    request_path = _candidate_path(envelope, resolved_work_dir)
+    write_json(request_path, envelope)
+    intake = build_live_pipeline_input_intake(
+        manifest_path=resolved_manifest_path,
+        webapp_job_request=request_path,
+        stage_webapp_request=True,
+        overwrite=overwrite,
+        allow_request_capture_root=True,
+        staged_inputs_path=staged_inputs_path,
+    )
+    response = _redacted_intake_response(
+        candidate_path=request_path,
+        intake=intake,
+        trigger={
+            "status": "not_run",
+            "performed": False,
+            "reason": "non_http_pubsub_staging_helper",
+        },
+    )
+    response["capture_handoff"] = {
+        **handoff_audit,
+        "candidate_path": str(handoff_path),
+        "webapp_job_request_candidate_path": str(request_path),
+        "converted_to_job_request": True,
+    }
+    response["proof_boundary"] = {
+        **_mapping(response.get("proof_boundary")),
+        "capture_handoff_converted_to_job_request": True,
+        "capture_handoff_endpoint_directly_runs_simulator": False,
+        "pubsub_listener_directly_runs_control_plane": False,
+    }
+    return response
+
+
 def _redacted_deployment_outcome_response(
     *,
     candidate_path: Path,
@@ -757,6 +973,9 @@ def create_app() -> FastAPI:
             "manifest_exists": manifest_path.is_file(),
             "token_configured": bool(_string(os.getenv(INTAKE_TOKEN_ENV))),
             "trigger_configured": bool(_string(os.getenv(INTAKE_TRIGGER_ENV))),
+            "per_request_capture_root_enabled": _truthy(
+                os.getenv(INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV)
+            ),
             "endpoints": [
                 "/api/live-pipeline/job-requests",
                 "/api/live-pipeline/capture-handoffs",
@@ -796,6 +1015,9 @@ def create_app() -> FastAPI:
             webapp_job_request=candidate_path,
             stage_webapp_request=True,
             overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
+            allow_request_capture_root=_truthy(
+                os.getenv(INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV)
+            ),
         )
         trigger = (
             _trigger_control_plane()
@@ -832,10 +1054,23 @@ def create_app() -> FastAPI:
         manifest_payload = read_json_any(manifest_path)
         if not isinstance(manifest_payload, Mapping):
             raise HTTPException(status_code=503, detail="control-plane manifest is not JSON object")
-        capture_root_text = _string(manifest_payload.get("capture_root"))
-        if not capture_root_text:
+        manifest_capture_root_text = _string(manifest_payload.get("capture_root"))
+        manifest_capture_root = (
+            Path(manifest_capture_root_text).resolve()
+            if manifest_capture_root_text
+            else None
+        )
+        capture_root = _capture_root_from_handoff_payload(
+            payload=payload,
+            manifest_capture_root=manifest_capture_root,
+        )
+        if capture_root is None:
             raise HTTPException(status_code=503, detail="control-plane capture_root missing")
-        capture_root = Path(capture_root_text).resolve()
+        if not capture_root.is_dir():
+            raise HTTPException(
+                status_code=503,
+                detail=f"capture_root missing for handoff: {capture_root}",
+            )
         work_dir = _work_dir(manifest_path).resolve()
         ensure_dir(work_dir)
         handoff_path = _capture_handoff_candidate_path(payload, work_dir)
@@ -880,6 +1115,7 @@ def create_app() -> FastAPI:
             webapp_job_request=request_path,
             stage_webapp_request=True,
             overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
+            allow_request_capture_root=True,
         )
         trigger = (
             _trigger_control_plane()

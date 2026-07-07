@@ -1830,17 +1830,15 @@ def _runtime_eligibility_payload(runtime_status: Mapping[str, Any]) -> Dict[str,
     }
 
 
-# Privacy pipeline statuses that mean people are provably not present or have been
-# redacted/anonymized. Mirrors qualification.privacy_world_model_ready and the
-# build_rights_provenance_review privacy_state cleared set. A capture whose raw
-# privacy pipeline status is not in this set has NOT been privacy-cleared and must
-# never reach a buyer-facing "launchable" artifact. See beta-launch audit PIPE-01.
+# Privacy pipeline statuses that mean people are provably not present or fully
+# removed. Fallback redaction statuses intentionally do not appear here because
+# build_rights_provenance_review marks them needs_review, not cleared. A capture
+# whose raw privacy pipeline status is not in this set has NOT been privacy-cleared
+# and must never reach a buyer-facing "launchable" artifact.
 _PRIVACY_CLEARED_STATUSES = frozenset(
     {
         "no_people_detected",
         "person_removed",
-        "face_anonymized_fallback",
-        "full_frame_redacted_local_proof",
     }
 )
 

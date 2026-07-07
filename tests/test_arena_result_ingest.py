@@ -649,6 +649,13 @@ def test_arena_result_ingest_command_output_and_delivery_edges(
                 "status": "completed",
                 "signed_urls": ["https://example.test/package.zip"],
                 "storage_upload_performed": True,
+                "entitlement_verified": True,
+                "buyer_access_check": {
+                    "buyer_access_checked": True,
+                    "buyer_accessible": True,
+                    "status": "signed_url_minted",
+                },
+                "operator_attestation": "delivery owner accepted signed buyer access",
             },
         )
         return {"status": "completed", "reason": None}
@@ -664,6 +671,12 @@ def test_arena_result_ingest_command_output_and_delivery_edges(
     assert _read_json(tmp_path / "delivery-signed" / "signed_access_manifest.json")[
         "status"
     ] == "signed_access_ready"
+    signed_manifest = _read_json(tmp_path / "delivery-signed" / "signed_access_manifest.json")
+    assert signed_manifest["entitlement_verified"] is True
+    assert signed_manifest["buyer_access_check"]["buyer_access_checked"] is True
+    assert signed_manifest["operator_attestation"] == (
+        "delivery owner accepted signed buyer access"
+    )
 
     def completed_command_without_access(_command: str, _timeout: int, cwd: Path) -> dict[str, object]:
         _write_json(cwd / "delivery_upload.command.json", {"status": "completed"})

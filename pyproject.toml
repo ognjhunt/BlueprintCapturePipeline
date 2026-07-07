@@ -23,7 +23,10 @@ classifiers = [
 ]
 
 dependencies = [
-    "blueprint-contracts @ git+https://github.com/ognjhunt/BlueprintContracts.git@9c076bd812a7b3530ac2fa1312d6e0dfa74eb21b",
+    # CI installs the matching BlueprintContracts checkout and runs
+    # scripts/verify_robot_eval_job_request_contract.py so the
+    # robot_eval_job_request.v1 schema cannot fall back silently.
+    "blueprint-contracts @ git+https://github.com/ognjhunt/BlueprintContracts.git@4c0020205bb2022f713ea795e64bb3c64aaf1c09",
     "pyyaml>=6.0",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
@@ -239,6 +242,7 @@ blueprint-smoke-arena-package-local = "blueprint_pipeline.arena_fixture_smoke:ma
 blueprint-audit-live-pipeline-setup = "blueprint_pipeline.live_pipeline_setup:main"
 blueprint-run-live-pipeline-control-plane = "blueprint_pipeline.live_pipeline_control_plane:main"
 blueprint-audit-live-pipeline-proof-boundary = "blueprint_pipeline.live_pipeline_proof_audit:main"
+blueprint-alert-live-pipeline-manifest = "blueprint_pipeline.live_pipeline_manifest_alert:main"
 blueprint-audit-live-robot-eval-closure = "blueprint_pipeline.live_robot_eval_closure:main"
 blueprint-intake-live-pipeline-inputs = "blueprint_pipeline.live_pipeline_input_intake:main"
 blueprint-live-pipeline-intake-service = "blueprint_pipeline.live_pipeline_intake_service:main"
@@ -281,6 +285,17 @@ where = ["src"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+"tests/synthesis/test_synthesize.py" = ["E402"]
+"tests/test_lightwheel_kitchen_isaac_scenarios.py" = ["E402"]
+"tests/test_mujoco_g1_simulator_command.py" = ["E402"]
+"tests/test_mujoco_g1_simulator_command_coverage.py" = ["E402"]
+"tests/test_native_runtime_service.py" = ["E402"]
+"tests/test_scene_wam_policy_episode_packet.py" = ["E402"]
+"tests/test_unitree_groot_n17_sonic_vast_persistent_session.py" = ["E402"]
+"tests/test_wam_derived_observation_harness.py" = ["E402"]
+"tests/test_wam_generated_video_review.py" = ["E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

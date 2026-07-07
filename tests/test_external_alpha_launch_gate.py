@@ -140,3 +140,72 @@ def test_pipeline_gate_uses_current_python_interpreter() -> None:
     assert command[:3] == [sys.executable, "-m", "pytest"]
     assert "tests/test_alpha_readiness.py" in command
     assert "tests/test_webapp_sync.py" in command
+
+
+def test_main_writes_failure_artifacts_when_capture_repo_is_missing(tmp_path: Path) -> None:
+    gate = _load_gate_module()
+    json_out = tmp_path / "external_alpha_launch_gate.json"
+    markdown_out = tmp_path / "external_alpha_launch_gate.md"
+
+    exit_code = gate.main(
+        [
+            "--capture-repo",
+            str(tmp_path / "missing-capture"),
+            "--pipeline-repo",
+            str(tmp_path),
+            "--skip-ios",
+            "--skip-android",
+            "--skip-pipeline",
+            "--json-out",
+            str(json_out),
+            "--markdown-out",
+            str(markdown_out),
+        ]
+    )
+
+    assert exit_code == 1
+    report = json.loads(json_out.read_text(encoding="utf-8"))
+    assert report["overall_status"] == "automation_failed"
+    assert report["error_type"] == "RuntimeError"
+    assert "Capture cloud extract-frames directory is missing" in report["error"]
+    assert markdown_out.is_file()
+    assert "Overall status: `automation_failed`" in markdown_out.read_text(encoding="utf-8")
+
+
+def test_main_writes_manual_required_android_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    monkeypatch.delenv("ANDROID_HOME", raising=False)
+    monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    json_out = tmp_path / "external_alpha_launch_gate.json"
+    markdown_out = tmp_path / "external_alpha_launch_gate.md"
+
+    exit_code = gate.main(
+        [
+            "--capture-repo",
+            str(tmp_path),
+            "--pipeline-repo",
+            str(tmp_path),
+            "--skip-capture-cloud",
+            "--skip-ios",
+            "--skip-pipeline",
+            "--json-out",
+            str(json_out),
+            "--markdown-out",
+            str(markdown_out),
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(json_out.read_text(encoding="utf-8"))
+    assert report["overall_status"] == "passed_manual_required"
+    android = next(
+        check for check in report["checks"] if check["id"] == "android_capture_contract_tests"
+    )
+    assert android["status"] == "manual_required"
+    assert "ANDROID_HOME or ANDROID_SDK_ROOT" in android["reason"]
+    markdown = markdown_out.read_text(encoding="utf-8")
+    assert "Overall status: `passed_manual_required`" in markdown
+    assert "Manual-required rows are intentionally not counted as proof" in markdown

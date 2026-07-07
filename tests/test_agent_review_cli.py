@@ -15,10 +15,11 @@ def _run_main_capturing_args(monkeypatch: pytest.MonkeyPatch, argv: list[str]):
 
     captured: dict[str, object] = {}
 
-    def _fake_run_agent_review(*, openai_phase2_config, **_kwargs):
+    def _fake_run_agent_review(*, openai_phase2_config, **kwargs):
         captured["config"] = openai_phase2_config
+        captured["provider_name"] = kwargs["provider_name"]
         return {
-            "provider": "openai",
+            "provider": kwargs["provider_name"],
             "readiness_state": "not_ready_yet",
             "final_memo_path": "memo.md",
             "final_bundle_path": "bundle.json",
@@ -26,7 +27,7 @@ def _run_main_capturing_args(monkeypatch: pytest.MonkeyPatch, argv: list[str]):
 
     monkeypatch.setattr(cli, "run_agent_review", _fake_run_agent_review)
     exit_code = cli.main(argv)
-    return exit_code, captured.get("config")
+    return exit_code, captured.get("config"), captured.get("provider_name")
 
 
 @pytest.mark.parametrize("mode", ["disabled", "codex_cli", "sdk", "auto"])
@@ -35,7 +36,7 @@ def test_openai_phase2_mode_choices_accept_all_supported_modes(
 ) -> None:
     # Every mode honored by build_openai_skill_runner / OpenAIPhase2Config must
     # parse without an argparse error (SystemExit) through the real CLI parser.
-    exit_code, _config = _run_main_capturing_args(
+    exit_code, _config, _provider_name = _run_main_capturing_args(
         monkeypatch,
         ["--capture-root", "/tmp/x", "--provider", "openai", "--openai-phase2-mode", mode],
     )
@@ -43,7 +44,7 @@ def test_openai_phase2_mode_choices_accept_all_supported_modes(
 
 
 def test_sdk_mode_reaches_openai_phase2_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    _exit_code, config = _run_main_capturing_args(
+    _exit_code, config, _provider_name = _run_main_capturing_args(
         monkeypatch,
         ["--capture-root", "/tmp/x", "--provider", "openai", "--openai-phase2-mode", "sdk"],
     )
@@ -53,7 +54,7 @@ def test_sdk_mode_reaches_openai_phase2_config(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_auto_mode_reaches_openai_phase2_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    _exit_code, config = _run_main_capturing_args(
+    _exit_code, config, _provider_name = _run_main_capturing_args(
         monkeypatch,
         ["--capture-root", "/tmp/x", "--provider", "openai", "--openai-phase2-mode", "auto"],
     )
@@ -69,3 +70,13 @@ def test_invalid_phase2_mode_is_rejected(monkeypatch: pytest.MonkeyPatch) -> Non
         cli.main(
             ["--capture-root", "/tmp/x", "--provider", "openai", "--openai-phase2-mode", "bogus"]
         )
+
+
+def test_local_provider_cli_is_no_llm_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    exit_code, config, provider_name = _run_main_capturing_args(
+        monkeypatch,
+        ["--capture-root", "/tmp/x", "--provider", "local"],
+    )
+    assert exit_code == 0
+    assert config is None
+    assert provider_name == "local"

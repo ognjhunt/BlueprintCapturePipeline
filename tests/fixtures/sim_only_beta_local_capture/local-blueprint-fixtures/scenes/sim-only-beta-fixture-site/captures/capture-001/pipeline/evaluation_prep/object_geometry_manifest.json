@@ -1,0 +1,70 @@
+{
+  "schema_version": "object_geometry_manifest.v1",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "status": "fixture_review_ready",
+  "fixture_only": true,
+  "fallback_allowed_for_beta_release": false,
+  "public_claim_upgrade_allowed": false,
+  "objects": [
+    {
+      "object_id": "fixture_service_counter",
+      "label": "fixture service counter",
+      "class_name": "service_counter",
+      "task_role": "navigation_goal",
+      "semantic_roles": [
+        "goal_fixture",
+        "navigation_waypoint"
+      ],
+      "center_xyz": [
+        1.0,
+        0.0,
+        0.793
+      ],
+      "collision_hulls": [
+        {
+          "kind": "box",
+          "center_xyz": [
+            1.0,
+            0.0,
+            0.5
+          ],
+          "size_xyz": [
+            0.7,
+            0.4,
+            1.0
+          ],
+          "fixture_only": true
+        }
+      ],
+      "support_surfaces": [
+        {
+          "kind": "top",
+          "center_xyz": [
+            1.0,
+            0.0,
+            1.0
+          ],
+          "size_xy": [
+            0.7,
+            0.4
+          ],
+          "fixture_only": true
+        }
+      ],
+      "provenance": {
+        "grounding_level": "fixture_declared",
+        "source_artifact": "tests/fixtures/sim_only_beta_local_capture",
+        "synthetic_fixture_only": true,
+        "real_capture_upload_proven": false
+      }
+    }
+  ],
+  "claim_boundary": {
+    "synthetic_fixture_only": true,
+    "object_index_is_capture_derived_semantic_context_not_physical_scene_certification": true,
+    "real_capture_upload_proven": false,
+    "simulator_execution_proven": false,
+    "production_deployment_proven": false,
+    "public_claim_upgrade_allowed": false
+  }
+}

@@ -1192,11 +1192,15 @@ def _write_mjcf_wrapper(
 def _asset_source_manifest(g1_root: Path) -> dict[str, Any]:
     asset_files = sorted((g1_root / "assets").glob("*"))
     menagerie_root = g1_root.parent
+    fixture_marker = g1_root / "BLUEPRINT_FIXTURE_ASSET.txt"
+    fixture_asset = fixture_marker.is_file()
     return {
-        "source": "google_deepmind_mujoco_menagerie",
-        "source_url": G1_SOURCE_URL,
+        "source": "blueprint_committed_fixture_mjcf"
+        if fixture_asset
+        else "google_deepmind_mujoco_menagerie",
+        "source_url": None if fixture_asset else G1_SOURCE_URL,
         "local_path": str(g1_root),
-        "menagerie_git_commit": _git_commit(menagerie_root),
+        "menagerie_git_commit": None if fixture_asset else _git_commit(menagerie_root),
         "asset_file_count": len(asset_files),
         "checksums": {
             "g1.xml": _sha256(g1_root / "g1.xml"),
@@ -1206,7 +1210,14 @@ def _asset_source_manifest(g1_root: Path) -> dict[str, Any]:
         },
         "license_path": str(g1_root / "LICENSE") if (g1_root / "LICENSE").is_file() else None,
         "policy_downloaded_from_online": False,
-        "downloaded_content_boundary": "Robot MJCF and mesh assets only; no locomotion policy was downloaded.",
+        "fixture_asset": fixture_asset,
+        "fixture_marker_path": str(fixture_marker) if fixture_asset else None,
+        "downloaded_content_boundary": (
+            "Committed fixture MJCF only; no Menagerie robot asset, real locomotion "
+            "policy, or production robot readiness is claimed."
+            if fixture_asset
+            else "Robot MJCF and mesh assets only; no locomotion policy was downloaded."
+        ),
     }
 
 
@@ -5373,15 +5384,15 @@ def run_mujoco_g1_simulator_command(
         "customer_delivery_readiness_proven": False,
         "public_claim_upgrade_allowed": False,
     }
+    source_manifest = _asset_source_manifest(resolved_g1_root)
     robot_asset = {
         "name": "Unitree G1",
         "uri_or_path": str(g1_xml),
-        "source": "google_deepmind_mujoco_menagerie",
+        "source": source_manifest.get("source") or "google_deepmind_mujoco_menagerie",
         "asset_class": "humanoid_mjcf",
         "mujoco_g1_asset_execution_proven": True,
         "isaac_robot_asset_execution_proven": False,
     }
-    source_manifest = _asset_source_manifest(resolved_g1_root)
     common = {
         "schema_version": MUJOCO_G1_SIMULATOR_COMMAND_ARTIFACT_SCHEMA_VERSION,
         "generated_at": generated_at,

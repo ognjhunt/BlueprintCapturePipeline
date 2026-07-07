@@ -256,7 +256,144 @@ def _operator_evidence_has_ref(entry: Mapping[str, Any]) -> bool:
     return False
 
 
-def _operator_evidence_verified(entry: Mapping[str, Any]) -> bool:
+def _operator_evidence_file_errors(operator_evidence: Mapping[str, Any]) -> List[str]:
+    if not operator_evidence:
+        return []
+    errors: List[str] = []
+    schema_version = str(operator_evidence.get("schema_version") or "").strip()
+    if schema_version != _OPERATOR_LAUNCH_EVIDENCE_SCHEMA_VERSION:
+        errors.append("operator_launch_evidence_schema_version_invalid")
+    checks = operator_evidence.get("checks")
+    if not isinstance(checks, (Mapping, list)):
+        errors.append("operator_launch_evidence_checks_missing")
+    return errors
+
+
+def _entry_has_any(entry: Mapping[str, Any], *keys: str) -> bool:
+    if _present_value(entry, *keys):
+        return True
+    metadata = entry.get("metadata")
+    if isinstance(metadata, Mapping) and _present_value(metadata, *keys):
+        return True
+    return False
+
+
+def _entry_bool(entry: Mapping[str, Any], key: str) -> bool:
+    value = entry.get(key)
+    metadata = entry.get("metadata")
+    if value is None and isinstance(metadata, Mapping):
+        value = metadata.get(key)
+    return value is True
+
+
+def _entry_list_empty(entry: Mapping[str, Any], *keys: str) -> bool:
+    for key in keys:
+        value = entry.get(key)
+        metadata = entry.get("metadata")
+        if value is None and isinstance(metadata, Mapping):
+            value = metadata.get(key)
+        if isinstance(value, list):
+            return len(value) == 0
+        if isinstance(value, str):
+            return value.strip() in {"", "[]", "none", "no_open_requirements"}
+    return False
+
+
+def _entry_status_success(entry: Mapping[str, Any], *keys: str) -> bool:
+    success_values = {"succeeded", "success", "ok", "passed", "verified", "200", "2xx", "http_200"}
+    for key in keys:
+        value = entry.get(key)
+        metadata = entry.get("metadata")
+        if value is None and isinstance(metadata, Mapping):
+            value = metadata.get(key)
+        if value is True:
+            return True
+        if isinstance(value, str) and value.strip().lower() in success_values:
+            return True
+    return False
+
+
+def _entry_declares_live_mode(entry: Mapping[str, Any]) -> bool:
+    metadata = entry.get("metadata")
+    livemode = entry.get("livemode")
+    if livemode is None and isinstance(metadata, Mapping):
+        livemode = metadata.get("livemode")
+    if livemode is True:
+        return True
+
+    for key in ("provider_mode", "stripe_mode", "mode", "environment"):
+        value = entry.get(key)
+        if value is None and isinstance(metadata, Mapping):
+            value = metadata.get(key)
+        if isinstance(value, str) and value.strip().lower() == "live":
+            return True
+    return False
+
+
+def _operator_evidence_specific_failures(check_id: str, entry: Mapping[str, Any]) -> List[str]:
+    failures: List[str] = []
+
+    if check_id in {"legal_consent_posture_signoff", "operator_dpa_data_processing_terms"}:
+        if not _entry_has_any(entry, "signed_record_uri", "document_uri"):
+            failures.append("missing_signed_legal_or_dpa_record")
+    elif check_id == "paperclip_ops_relay_secret_rotation":
+        if not _entry_has_any(entry, "secret_version_ref"):
+            failures.append("missing_secret_version_ref")
+        if not _entry_has_any(entry, "redeploy_evidence_uri", "redeploy_ref"):
+            failures.append("missing_redeploy_evidence")
+    elif check_id.endswith("_real_device_claim_flow"):
+        if not _entry_has_any(entry, "recording_uri", "screen_recording_uri"):
+            failures.append("missing_real_device_recording")
+        if not _entry_has_any(entry, "capture_job_id"):
+            failures.append("missing_capture_job_id_continuity")
+    elif check_id == "buyer_payment_settlement":
+        if not _entry_has_any(entry, "payment_intent_id", "checkout_session_id", "stripe_event_id"):
+            failures.append("missing_live_payment_identifier")
+        if not _entry_declares_live_mode(entry):
+            failures.append("stripe_mode_not_live")
+    elif check_id == "capturer_payout_settlement":
+        if not _entry_has_any(entry, "payout_id", "transfer_id"):
+            failures.append("missing_live_payout_or_transfer_identifier")
+        if not _entry_has_any(entry, "webhook_reconciliation_uri", "creator_payout_ledger_ref", "ledger_entry_uri"):
+            failures.append("missing_payout_webhook_or_ledger_reconciliation")
+        if not _entry_declares_live_mode(entry):
+            failures.append("stripe_mode_not_live")
+    elif check_id == "stripe_connected_account_live_readiness":
+        if not _entry_has_any(entry, "provider_account_ref", "stripe_account_id"):
+            failures.append("missing_connected_account_ref")
+        for key in ("provider_state_checked", "live_provider_ready", "payouts_enabled"):
+            if not _entry_bool(entry, key):
+                failures.append(f"{key}_not_true")
+        metadata = entry.get("metadata")
+        metadata_mode = metadata.get("provider_mode") if isinstance(metadata, Mapping) else ""
+        mode = str(entry.get("provider_mode") or metadata_mode or "").strip().lower()
+        if mode != "live":
+            failures.append("provider_mode_not_live")
+        if not _entry_list_empty(entry, "blocking_requirements", "requirements_currently_due"):
+            failures.append("blocking_requirements_not_proven_empty")
+    elif check_id == "payout_exception_monitor_live":
+        if not _entry_has_any(entry, "monitor_uri", "query_uri", "alert_policy_uri", "dashboard_uri"):
+            failures.append("missing_live_payout_exception_monitor_ref")
+    elif check_id in {"identity_kyc_provider_decision", "background_check_provider_decision"}:
+        if not _entry_has_any(entry, "decision_record_uri", "document_uri"):
+            failures.append("missing_provider_decision_record")
+    elif check_id == "human_finance_review_owner":
+        if not _entry_has_any(entry, "finance_owner"):
+            failures.append("missing_finance_owner")
+        if not _entry_has_any(entry, "review_queue_uri", "review_queue_ref"):
+            failures.append("missing_finance_review_queue")
+    elif check_id == "buyer_artifact_access":
+        if not _entry_has_any(entry, "buyer_session_ref"):
+            failures.append("missing_authenticated_buyer_session_ref")
+        if not _entry_has_any(entry, "artifact_access_log_uri"):
+            failures.append("missing_artifact_access_log")
+        if not _entry_status_success(entry, "signed_url_fetch_status", "authenticated_fetch_status"):
+            failures.append("missing_executed_artifact_access_fetch")
+
+    return failures
+
+
+def _operator_evidence_verified(entry: Mapping[str, Any], check_id: str) -> bool:
     status = str(entry.get("status") or "").strip().lower()
     if not status and entry.get("passed") is True:
         status = "verified"
@@ -289,6 +426,7 @@ def _operator_evidence_verified(entry: Mapping[str, Any]) -> bool:
         and _operator_evidence_has_ref(entry)
         and has_time
         and has_actor
+        and not _operator_evidence_specific_failures(check_id, entry)
     )
 
 
@@ -298,9 +436,17 @@ def _operator_required_check(
     scope: str,
     required_evidence: str,
     operator_evidence: Mapping[str, Any],
+    evidence_file_errors: List[str] | None = None,
 ) -> Dict[str, Any]:
     entry = _operator_evidence_entry(operator_evidence, check_id)
-    verified = _operator_evidence_verified(entry)
+    validation_errors = list(
+        evidence_file_errors
+        if evidence_file_errors is not None
+        else _operator_evidence_file_errors(operator_evidence)
+    )
+    if entry:
+        validation_errors.extend(_operator_evidence_specific_failures(check_id, entry))
+    verified = not validation_errors and _operator_evidence_verified(entry, check_id)
     status = str(entry.get("status") or "").strip().lower() if entry else "missing"
     return {
         "id": check_id,
@@ -309,6 +455,7 @@ def _operator_required_check(
         "passed": verified,
         "status": "verified" if verified else status or "unverified",
         "blocker": None if verified else f"{check_id}_evidence_missing_or_unverified",
+        "evidence_validation_errors": validation_errors,
         "evidence": entry,
     }
 
@@ -1185,6 +1332,7 @@ def build_launch_gate_summary(
     else:
         contract_status = "blocked"
 
+    operator_evidence_file_errors = _operator_evidence_file_errors(operator_evidence)
     operator_required_checks = [
         _operator_required_check(
             check_id="legal_consent_posture_signoff",
@@ -1315,6 +1463,7 @@ def build_launch_gate_summary(
         "required_for_external_beta": external_beta_operator_evidence_required,
         "evidence_file": _OPERATOR_LAUNCH_EVIDENCE_RELATIVE_PATH,
         "evidence_file_present": bool(operator_evidence),
+        "schema_errors": operator_evidence_file_errors,
         "required_count": len(operator_required_checks),
         "verified_count": sum(1 for check in operator_required_checks if check["passed"]),
         "blockers": operator_evidence_blockers,

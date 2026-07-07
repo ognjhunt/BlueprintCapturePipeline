@@ -10,7 +10,11 @@ from ..common import MAXIMUM_HIDDEN_ZONE_BOUND, ensure_dir, parse_bool, write_js
 from .artifacts import PipelineReviewArtifacts, load_pipeline_review_artifacts
 from .contracts import AgentReviewBundle, ReviewOutputFile, ReviewStepResult
 from .openai_phase2 import OpenAIPhase2Config, build_openai_skill_runner
-from .providers import ClaudeAgentProvider, OpenAIAgentProvider
+from .providers import (
+    ClaudeAgentProvider,
+    LocalDeterministicAgentProvider,
+    OpenAIAgentProvider,
+)
 from .skill_sync import sync_skill_pack
 
 
@@ -841,6 +845,8 @@ def _provider_from_name(
     openai_phase2_config: Optional[OpenAIPhase2Config] = None,
 ):
     normalized = provider.strip().lower()
+    if normalized in {"local", "deterministic", "no_llm", "no-llm"}:
+        return LocalDeterministicAgentProvider(repo_root=repo_root)
     if normalized == "claude":
         return ClaudeAgentProvider(skill_runner=skill_runner, repo_root=repo_root)
     if normalized == "openai":

@@ -30,7 +30,15 @@ def _openai_phase2_config_from_args(args: argparse.Namespace) -> Optional[OpenAI
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run agent review over a local capture pipeline")
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
-    parser.add_argument("--provider", required=True, choices=("claude", "openai"))
+    parser.add_argument(
+        "--provider",
+        required=True,
+        choices=("local", "claude", "openai"),
+        help=(
+            "Agent-review provider. Use local for deterministic no-LLM contract "
+            "runs; claude/openai may use configured external review providers."
+        ),
+    )
     parser.add_argument("--mode", default="qualification", choices=("qualification",))
     parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli", "sdk", "auto"))
     parser.add_argument("--openai-phase2-model")

@@ -1,0 +1,5 @@
+This is a minimal Blueprint local-gate fixture MJCF, not a MuJoCo Menagerie asset.
+It exists only to let scripts/run_sim_only_beta_local_gate.py exercise the local
+MuJoCo execution contract in a fresh clone. It does not prove real Unitree G1
+asset fidelity, robot readiness, deployment readiness, safety validation, or
+public claim eligibility.

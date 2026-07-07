@@ -44,9 +44,13 @@ def test_capture_bridge_normalizer_edges() -> None:
     assert cb._normalize_capture_tier("") == "tier2_glasses"
     assert cb._normalize_capture_tier("tier2_android_phone") == "tier2_android"
     assert cb._infer_capture_source("android_phone", "") == "android"
+    assert cb._infer_capture_source("ios", "") == "iphone"
+    assert cb._infer_capture_source("rayban_meta", "") == "glasses"
+    assert cb._infer_capture_source("drone", "tier1_iphone") == "unknown"
     assert cb._infer_capture_source("", "tier2_glasses") == "glasses"
     assert cb._infer_capture_source("", "tier2_android") == "android"
     assert cb._infer_capture_source("", "tier1_iphone") == "iphone"
+    assert cb._infer_capture_source("", "other") == "unknown"
     assert cb._normalize_string_list(" one ") == ["one"]
     assert cb._normalize_string_list(42) == ["42"]
     assert cb._normalize_uncertainty_priors({"": 1, "ok": "2.5", "bad": "nope"}) == {"ok": 2.5}
@@ -132,7 +136,7 @@ def test_capture_orientation_evidence_and_modality_edges() -> None:
         quality={},
         scaffolding_used=[],
         has_metric_arkit_bundle=False,
-    ) == "iphone_arkit_lidar"
+    ) == "unknown_video_only"
 
 
 @pytest.mark.parametrize(
@@ -175,6 +179,17 @@ def test_capture_descriptor_android_profile_and_metadata_edges() -> None:
     )
     assert profiled.metadata["capture_profile_id"] == "iphone_arkit_lidar"
     assert profiled.metadata["capture_capabilities"] == {"camera_pose": True}
+
+    unknown_source = cb.CaptureDescriptor.from_dict(
+        _payload(
+            capture_source="drone",
+            capture_tier="experimental",
+        )
+    )
+    assert unknown_source.capture_source == "unknown"
+    assert unknown_source.capture_modality == "unknown_video_only"
+    assert unknown_source.metadata["capture_source_unrecognized"] is True
+    assert unknown_source.metadata["raw_capture_source"] == "drone"
 
 
 def test_capture_descriptor_serialization_and_scene_builders(tmp_path) -> None:

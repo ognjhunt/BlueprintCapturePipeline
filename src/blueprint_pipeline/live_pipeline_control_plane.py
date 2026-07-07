@@ -32,6 +32,10 @@ from .robot_eval_job_orchestrator import (
     RobotEvalJobAgentAdapter,
     run_robot_eval_job_request_inbox,
 )
+from .robot_eval_job_request_contract import (
+    ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
+    ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
+)
 from .safe_env import load_env_files
 
 
@@ -83,8 +87,8 @@ POLICY_MODALITY_ORDER = (
     "sim_controller_plugin",
 )
 
-WEBAPP_JOB_REQUEST_SCHEMA_VERSION = "robot_eval_job_request.v1"
-WEBAPP_JOB_REQUEST_QUEUE_CONTRACT = "robot_eval_job_request_inbox.v1"
+WEBAPP_JOB_REQUEST_SCHEMA_VERSION = ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION
+WEBAPP_JOB_REQUEST_QUEUE_CONTRACT = ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT
 
 CAPTURE_ROOT_ENV = "BLUEPRINT_PIPELINE_CAPTURE_ROOT"
 JOB_REQUEST_INBOX_ENV = "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX"
@@ -305,12 +309,12 @@ def _overall_status(
     inbox: Mapping[str, Any],
     setup_manifest: Mapping[str, Any],
 ) -> str:
-    if capture_root is None:
-        return "blocked"
     if inbox.get("status") == "completed":
         return "processed_jobs"
     if inbox.get("status") == "empty":
         return "waiting_for_jobs"
+    if capture_root is None:
+        return "blocked"
     if setup_manifest.get("status") == "ready_for_live_external_execution":
         return "ready_for_live_external_execution"
     if setup_manifest.get("status") == "local_ready_live_external_blocked":
@@ -343,11 +347,15 @@ def _control_plane_next_inputs_needed(
         if webapp_upstream_truth_ready is not None
         else _setup_section_ready(setup_manifest, "webapp_upstream_truth")
     )
-    if capture_root is None:
-        next_inputs.append("Set BLUEPRINT_PIPELINE_CAPTURE_ROOT to a real capture root.")
+    if capture_root is None and job_request_inbox is None:
+        next_inputs.append(
+            "Set BLUEPRINT_PIPELINE_CAPTURE_ROOT for single-capture mode or "
+            "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX for per-request capture-root mode."
+        )
     elif not webapp_truth_ready:
         next_inputs.append(
-            "Provide a real WebApp capture root with site, request, buyer, and capture job IDs."
+            "Provide real WebApp IDs and a real site_package.capture_root on each queued "
+            "request, or run single-capture mode with a matching capture root."
         )
     if job_request_inbox is None:
         next_inputs.append("Set BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX to the WebApp job request inbox path.")
@@ -640,6 +648,7 @@ def _webapp_job_request_inbox_truth(
     inbox_path: Path | None,
     capture_root: Path | None,
 ) -> Dict[str, Any]:
+    per_request_capture_root_mode = capture_root is None
     if inbox_path is None:
         return {
             "status": "not_configured",
@@ -691,7 +700,12 @@ def _webapp_job_request_inbox_truth(
         missing_fields = [
             field for field, present in fields_present.items() if not present
         ]
-        accepted = capture_root_matches and not missing_fields
+        request_capture_root_ready = (
+            bool(request_capture_root)
+            if per_request_capture_root_mode
+            else capture_root_matches
+        )
+        accepted = request_capture_root_ready and not missing_fields
         candidates.append(
             {
                 "path": str(request_path),
@@ -700,6 +714,8 @@ def _webapp_job_request_inbox_truth(
                 "fields_present": fields_present,
                 "missing_fields": missing_fields,
                 "capture_root_matches_control_plane": capture_root_matches,
+                "per_request_capture_root_mode": per_request_capture_root_mode,
+                "request_capture_root_ready": request_capture_root_ready,
                 "request_capture_root_configured": bool(request_capture_root),
                 "policy_package_ready": bool(policy_package_audit["ready"]),
                 "policy_package_selected_modalities": policy_package_audit["selected_modalities"],
@@ -715,7 +731,10 @@ def _webapp_job_request_inbox_truth(
     if not candidates:
         blockers.append("no_robot_eval_job_request_v1_files")
     if candidates and not accepted_candidates:
-        if not any(candidate["capture_root_matches_control_plane"] for candidate in candidates):
+        if per_request_capture_root_mode:
+            if not any(candidate["request_capture_root_configured"] for candidate in candidates):
+                blockers.append("no_job_request_has_capture_root")
+        elif not any(candidate["capture_root_matches_control_plane"] for candidate in candidates):
             blockers.append("no_job_request_matches_configured_capture_root")
         if any(candidate["missing_fields"] for candidate in candidates):
             blockers.append("job_request_missing_required_webapp_ids")
@@ -739,8 +758,68 @@ def _webapp_job_request_inbox_truth(
         "truncated_candidates": len(candidates) > 20,
         "proof_boundary": (
             "Queued WebApp job requests prove upstream linkage only when they contain real "
-            "WebApp IDs and point at the configured capture root."
+            "WebApp IDs and either point at the configured capture root or carry their "
+            "own site_package.capture_root in per-request mode."
         ),
+    }
+
+
+def _per_request_capture_root_seed_from_inbox(inbox_path: Path) -> Dict[str, Any]:
+    if not inbox_path.is_dir():
+        return {
+            "status": "blocked",
+            "capture_root": None,
+            "request_count": 0,
+            "blockers": ["job_request_inbox_missing"],
+        }
+    request_paths = sorted(
+        path
+        for path in inbox_path.glob("*.json")
+        if path.is_file() and not path.name.startswith(".")
+    )
+    roots: List[Path] = []
+    missing_root_paths: List[str] = []
+    for request_path in request_paths:
+        try:
+            payload = read_json_any(request_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        request = _request_from_webapp_payload(payload)
+        if request is None:
+            continue
+        site_package = _as_mapping(request.get("site_package"))
+        request_capture_root = (
+            _string(site_package.get("capture_root") or site_package.get("captureRoot"))
+            or None
+        )
+        if not request_capture_root:
+            missing_root_paths.append(str(request_path))
+            continue
+        roots.append(Path(request_capture_root).expanduser().resolve())
+    if not roots and not missing_root_paths:
+        return {
+            "status": "empty",
+            "capture_root": None,
+            "request_count": 0,
+            "blockers": [],
+        }
+    if missing_root_paths:
+        return {
+            "status": "blocked",
+            "capture_root": str(roots[0]) if roots else None,
+            "request_count": len(roots) + len(missing_root_paths),
+            "missing_capture_root_request_paths": missing_root_paths,
+            "blockers": ["job_request_missing_site_package_capture_root"],
+        }
+    unique_roots = sorted({str(root) for root in roots})
+    return {
+        "status": "ready",
+        "capture_root": unique_roots[0],
+        "request_count": len(roots),
+        "unique_capture_roots": unique_roots,
+        "blockers": [],
     }
 
 
@@ -980,19 +1059,21 @@ BLOCKER_PACKET_TEMPLATES: Dict[str, Dict[str, str]] = {
         "owner": "Blueprint-WebApp operator",
         "required_input": (
             "A real robot_eval_job_request.v1 or queue envelope with site_submission_id, "
-            "request_id, buyer_request_id, capture_job_id, and the configured capture root."
+            "request_id, buyer_request_id, capture_job_id, and a real "
+            "site_package.capture_root."
         ),
         "safe_proof_command": (
             "blueprint-intake-live-pipeline-inputs --manifest-path <control-plane-manifest> "
             "--webapp-job-request <robot_eval_job_request.json> --stage-webapp-request --overwrite"
         ),
         "retry_condition": (
-            "Re-run after the WebApp request has real IDs and the request capture_root matches "
-            "BLUEPRINT_PIPELINE_CAPTURE_ROOT."
+            "Re-run after the WebApp request has real IDs and either carries its own "
+            "site_package.capture_root or matches BLUEPRINT_PIPELINE_CAPTURE_ROOT in "
+            "single-capture mode."
         ),
         "resume_target": (
-            "blueprint-run-live-pipeline-control-plane --capture-root <capture-root> "
-            "--job-request-inbox <job-request-inbox> --output-path <control-plane-manifest>"
+            "blueprint-run-live-pipeline-control-plane --job-request-inbox "
+            "<job-request-inbox> --output-path <control-plane-manifest>"
         ),
         "disallowed_workaround": (
             "Do not invent placeholder upstream IDs, copy capture IDs into WebApp IDs, or mark "
@@ -1522,7 +1603,7 @@ def _build_external_input_packet(
         "required_inputs": required_inputs,
         "enablement_inputs": enablement_inputs,
         "example_robot_eval_job_request": {
-            "schema_version": "robot_eval_job_request.v1",
+            "schema_version": WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
             "job_id": "REPLACE_WITH_WEBAPP_JOB_ID",
             "customer": {
                 "id": "REPLACE_WITH_ROBOT_TEAM_ID",
@@ -1885,6 +1966,7 @@ def run_live_pipeline_control_plane(
                 simulator_command=resolved_simulator_audit_command,
                 vision_labeling_command=resolved_vision_command,
                 delivery_command=resolved_delivery_command,
+                job_request_inbox=inbox_path,
                 load_local_env=False,
                 allow_digitalocean_read=digitalocean_read_allowed,
                 digitalocean_token_env=digitalocean_token_env,
@@ -1906,73 +1988,100 @@ def run_live_pipeline_control_plane(
             write_json(setup_output, setup_manifest)
 
         inbox_run: Dict[str, Any]
+        capture_root_for_inbox = capture_path
         if not process_inbox:
             inbox_run = _inbox_status_not_configured("inbox_processing_disabled")
-        elif capture_path is None:
-            inbox_run = _inbox_status_not_configured("missing_capture_root")
         elif inbox_path is None:
             inbox_run = _inbox_status_not_configured("missing_job_request_inbox")
         else:
             ensure_dir(inbox_path)
-            try:
-                inbox_result = run_robot_eval_job_request_inbox(
-                    capture_root=capture_path,
-                    inbox_dir=inbox_path,
-                    agent_adapter=_agent_adapter_from_mode(
-                        resolved_agent_mode,
-                        allow_live_operator=live_agent_operator_allowed,
-                    ),
-                    provisioner=resolved_provisioner,
-                    simulator=resolved_simulator,
-                    evaluation_substrate=evaluation_substrate,
-                    allow_gpu_provisioning=gpu_allowed,
-                    allow_simulator_execution=simulator_execution_allowed,
-                    allowed_simulators=effective_allowed_simulators,
-                    simulator_commands=parsed_simulator_commands,
-                    allow_cpu_simulator_preflight=cpu_preflight_allowed,
-                    cpu_preflight_backends=cpu_preflight_backends,
-                    cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
-                    allow_cpu_preflight_render=cpu_preflight_render_allowed,
-                    allow_training=training_allowed,
-                    training_command=training_command,
-                    timeout_seconds=resolved_timeout,
-                    budget_usd=budget_usd,
-                    arena_results_dir=arena_results_path,
-                    arena_scenario_count=arena_scenario_count,
-                    arena_shard_size=arena_shard_size,
-                    arena_num_envs=arena_num_envs,
-                    arena_retry_budget=arena_retry_budget,
-                    allow_rollout_vision_labeling=vision_allowed,
-                    vision_labeling_command=resolved_vision_command,
-                    allow_delivery_upload=delivery_allowed,
-                    delivery_command=resolved_delivery_command,
-                    arena_operator_mode=resolved_arena_operator_mode,
-                    allow_live_agents_sdk=live_agents_allowed,
-                    allow_live_codex_sdk=live_codex_allowed,
-                )
-                inbox_run = {
-                    **inbox_result,
-                    "processed": True,
-                    "manifest_path": str(
-                        capture_path
-                        / "pipeline"
-                        / "robot_eval_job_requests"
-                        / "inbox_run_manifest.json"
-                    ),
-                    "blockers": [],
-                }
-            except Exception as exc:  # pragma: no cover - exact exception varies by bad path
-                inbox_run = {
-                    "status": "blocked",
-                    "processed": False,
-                    "processed_count": 0,
-                    "blockers": [f"inbox_run_failed:{type(exc).__name__}"],
-                    "error_type": type(exc).__name__,
-                    "manifest_path": None,
-                }
+            should_run_inbox = True
+            if capture_root_for_inbox is None:
+                seed = _per_request_capture_root_seed_from_inbox(inbox_path)
+                if seed["status"] == "empty":
+                    should_run_inbox = False
+                    inbox_run = {
+                        "status": "empty",
+                        "processed": True,
+                        "processed_count": 0,
+                        "blockers": [],
+                        "manifest_path": None,
+                        "per_request_capture_root_mode": True,
+                    }
+                elif seed.get("blockers"):
+                    should_run_inbox = False
+                    inbox_run = {
+                        "status": "blocked",
+                        "processed": False,
+                        "processed_count": 0,
+                        "blockers": list(seed.get("blockers") or []),
+                        "manifest_path": None,
+                        "per_request_capture_root_mode": True,
+                        "per_request_capture_root_seed": seed,
+                    }
+                else:
+                    capture_root_for_inbox = Path(str(seed["capture_root"])).resolve()
+            if should_run_inbox:
+                try:
+                    inbox_result = run_robot_eval_job_request_inbox(
+                        capture_root=capture_root_for_inbox,
+                        inbox_dir=inbox_path,
+                        agent_adapter=_agent_adapter_from_mode(
+                            resolved_agent_mode,
+                            allow_live_operator=live_agent_operator_allowed,
+                        ),
+                        provisioner=resolved_provisioner,
+                        simulator=resolved_simulator,
+                        evaluation_substrate=evaluation_substrate,
+                        allow_gpu_provisioning=gpu_allowed,
+                        allow_simulator_execution=simulator_execution_allowed,
+                        allowed_simulators=effective_allowed_simulators,
+                        simulator_commands=parsed_simulator_commands,
+                        allow_cpu_simulator_preflight=cpu_preflight_allowed,
+                        cpu_preflight_backends=cpu_preflight_backends,
+                        cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
+                        allow_cpu_preflight_render=cpu_preflight_render_allowed,
+                        allow_training=training_allowed,
+                        training_command=training_command,
+                        timeout_seconds=resolved_timeout,
+                        budget_usd=budget_usd,
+                        arena_results_dir=arena_results_path,
+                        arena_scenario_count=arena_scenario_count,
+                        arena_shard_size=arena_shard_size,
+                        arena_num_envs=arena_num_envs,
+                        arena_retry_budget=arena_retry_budget,
+                        allow_rollout_vision_labeling=vision_allowed,
+                        vision_labeling_command=resolved_vision_command,
+                        allow_delivery_upload=delivery_allowed,
+                        delivery_command=resolved_delivery_command,
+                        arena_operator_mode=resolved_arena_operator_mode,
+                        allow_live_agents_sdk=live_agents_allowed,
+                        allow_live_codex_sdk=live_codex_allowed,
+                    )
+                    inbox_run = {
+                        **inbox_result,
+                        "processed": True,
+                        "manifest_path": str(
+                            capture_root_for_inbox
+                            / "pipeline"
+                            / "robot_eval_job_requests"
+                            / "inbox_run_manifest.json"
+                        ),
+                        "blockers": [],
+                        "per_request_capture_root_mode": capture_path is None,
+                    }
+                except Exception as exc:  # pragma: no cover - exact exception varies by bad path
+                    inbox_run = {
+                        "status": "blocked",
+                        "processed": False,
+                        "processed_count": 0,
+                        "blockers": [f"inbox_run_failed:{type(exc).__name__}"],
+                        "error_type": type(exc).__name__,
+                        "manifest_path": None,
+                    }
 
         blockers: List[str] = []
-        if capture_path is None:
+        if capture_path is None and inbox_path is None:
             blockers.append("missing_capture_root")
         for blocker in inbox_run.get("blockers") or []:
             blockers.append(f"inbox:{blocker}")

@@ -1,0 +1,98 @@
+name: Full Test Lane
+
+on:
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: "Extra pytest arguments appended after scripts/pytest_full.sh."
+        required: false
+        default: ""
+        type: string
+  schedule:
+    - cron: "17 8 * * 1"
+
+concurrency:
+  group: full-test-lane-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  full-pytest:
+    name: Full pytest lane on CPU runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      BLUEPRINT_LAUNCH_PROOF_MODE: production
+      PRIVACY_PIPELINE_ENABLED: "true"
+      PRIVACY_FAIL_CLOSED: "true"
+      PIPELINE_SYNC_REQUIRED: "true"
+      RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO: "true"
+      CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
+      # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
+      CONTRACTS_REF: 4c0020205bb2022f713ea795e64bb3c64aaf1c09
+      CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout BlueprintContracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init BlueprintContracts
+          cd BlueprintContracts
+          git remote add origin "https://x-access-token:${CONTRACTS_TOKEN}@github.com/${CONTRACTS_REPOSITORY}.git"
+          fetch_ref="${CONTRACTS_REF:-main}"
+          if git fetch --depth=1 origin "${fetch_ref}"; then
+            echo "Using BlueprintContracts ref ${fetch_ref}."
+          else
+            echo "::error::BlueprintContracts ref '${fetch_ref}' was not available. Push a matching Contracts branch/ref or set CONTRACTS_REF; refusing to validate against an implicit fallback."
+            exit 1
+          fi
+          git checkout --detach FETCH_HEAD
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install system media dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          uv sync --extra dev --extra cloud
+          uv pip install -e BlueprintContracts
+
+      - name: Verify shared robot-eval request contract
+        run: |
+          uv run python scripts/verify_robot_eval_job_request_contract.py \
+            --contracts-repo BlueprintContracts
+
+      - name: Collect full lane
+        run: |
+          mkdir -p output/ci
+          uv run python -m pytest -m "" --collect-only -q \
+            > output/ci/full-test-lane-collection.txt
+
+      - name: Run full lane
+        run: |
+          set -euo pipefail
+          extra_args="${{ inputs.pytest_args }}"
+          # shellcheck disable=SC2086
+          uv run scripts/pytest_full.sh \
+            --junitxml=output/ci/full-test-lane-junit.xml \
+            ${extra_args}
+
+      - name: Upload full lane report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-test-lane-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            output/ci/full-test-lane-collection.txt
+            output/ci/full-test-lane-junit.xml

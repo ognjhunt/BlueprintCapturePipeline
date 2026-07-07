@@ -199,6 +199,18 @@ variable "enable_notifications" {
   default     = true
 }
 
+variable "monitoring_notification_channels" {
+  description = "Google Monitoring notification channel resource names for production pipeline alerts. Production applies should pass at least one channel."
+  type        = list(string)
+  default     = []
+}
+
+variable "allow_empty_monitoring_notification_channels" {
+  description = "Explicit waiver for dry-run Terraform plans without alert receivers. Keep false for production applies."
+  type        = bool
+  default     = false
+}
+
 # =============================================================================
 # Providers
 # =============================================================================
@@ -1263,7 +1275,14 @@ resource "google_monitoring_alert_policy" "pipeline_failures" {
     }
   }
 
-  notification_channels = [] # Add notification channels as needed
+  notification_channels = var.monitoring_notification_channels
+
+  lifecycle {
+    precondition {
+      condition     = var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0
+      error_message = "monitoring_notification_channels must include at least one channel for production alert policies. Set allow_empty_monitoring_notification_channels=true only for dry-run plans."
+    }
+  }
 
   documentation {
     content   = "More than 5 pipeline job failures in 5 minutes. Check Cloud Run Job logs for details."
@@ -1292,10 +1311,55 @@ resource "google_monitoring_alert_policy" "queue_depth" {
     }
   }
 
-  notification_channels = []
+  notification_channels = var.monitoring_notification_channels
+
+  lifecycle {
+    precondition {
+      condition     = var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0
+      error_message = "monitoring_notification_channels must include at least one channel for production alert policies. Set allow_empty_monitoring_notification_channels=true only for dry-run plans."
+    }
+  }
 
   documentation {
     content   = "Pipeline queue depth exceeds 100 tasks for 10+ minutes. Consider scaling up or investigating processing issues."
+    mime_type = "text/markdown"
+  }
+}
+
+# Alert when capture-bridge handoffs are not being drained by the deployed
+# listener. This catches the failure mode where uploads publish successfully but
+# the pull subscription ages until Pub/Sub dead-letters the message.
+resource "google_monitoring_alert_policy" "capture_handoff_listener_lag" {
+  display_name = "Blueprint Capture Handoff Listener Lag"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Oldest unacked capture handoff age"
+
+    condition_threshold {
+      filter          = "resource.type=\"pubsub_subscription\" AND metric.type=\"pubsub.googleapis.com/subscription/oldest_unacked_message_age\" AND resource.labels.subscription_id=\"${google_pubsub_subscription.pipeline_handoff_listener.name}\""
+      duration        = "300s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = 300
+
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_MAX"
+      }
+    }
+  }
+
+  notification_channels = var.monitoring_notification_channels
+
+  lifecycle {
+    precondition {
+      condition     = var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0
+      error_message = "monitoring_notification_channels must include at least one channel for production alert policies. Set allow_empty_monitoring_notification_channels=true only for dry-run plans."
+    }
+  }
+
+  documentation {
+    content   = "Capture handoff messages are aging on blueprint-pipeline-handoff-listener. Check the deployed listener timer/service before messages hit the dead-letter threshold."
     mime_type = "text/markdown"
   }
 }

@@ -137,6 +137,23 @@ def test_episode_spec_task_scenario_profile_loaders_and_default_proposals(tmp_pa
         generated_at=generated_at,
     )
     assert default_manifest["proposals"][0]["source"] == "deterministic_default"
+    assert default_manifest["input_notes"] == []
+
+    _write_json(capture_root / "capture_descriptor.json", {"site_type": "aquarium touch tank"})
+    unrecognized_site_type_manifest = ep.build_task_anchor_proposals(
+        capture_root=capture_root,
+        pipeline_dir=pipeline_dir,
+        automation_dir=automation_dir,
+        generated_at=generated_at,
+    )
+    assert unrecognized_site_type_manifest["input_notes"] == [
+        {
+            "code": "site_type_unrecognized",
+            "detail": "No deterministic task template matched the capture site type text; generic/object-grounded task proposals remain review-only.",
+            "site_type_text": "aquarium touch tank",
+        }
+    ]
+    (capture_root / "capture_descriptor.json").unlink()
 
     _write_json(
         capture_root / "raw" / "task_hypothesis.json",

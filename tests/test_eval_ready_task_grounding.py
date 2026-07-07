@@ -124,6 +124,42 @@ def test_eval_ready_task_grounding_blocks_parent_sink_without_handle(tmp_path: P
     assert manifest["claim_boundary"]["learned_wam_rollout_is_not_physical_success_proof"] is True
 
 
+def test_eval_ready_task_grounding_default_does_not_emit_sink_task_for_sinkless_site(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "warehouse_capture"
+    _write_json(
+        capture_root / "raw" / "object_index.json",
+        {
+            "objects": [
+                {
+                    "object_id": "rack_01",
+                    "label": "storage rack",
+                    "mean_confidence": 0.87,
+                    "reference_crop": "object_index_artifacts/crops/rack.png",
+                    "all_crops": ["object_index_artifacts/crops/rack.png"],
+                    "keypoints": {"center": [300, 200]},
+                }
+            ]
+        },
+    )
+
+    manifest = grounding.build_eval_ready_task_grounding(capture_root=capture_root)
+
+    assert manifest["task"]["task_id"] == "auto_inspect_storage_rack"
+    assert manifest["task"]["task_text"] == "inspect the storage rack"
+    assert manifest["task"]["target_label"] == "storage rack"
+    assert manifest["task"]["default_task_replaces_legacy_template"] is True
+    assert "sink" not in json.dumps(manifest["task"]).lower()
+    assert "water appears or faucet state visibly changes" not in manifest[
+        "success_check_plan"
+    ]["vlm_or_human_review_checks"]
+    assert "missing_task_specific_handle_label_or_keypoint" not in manifest[
+        "readiness"
+    ]["blockers"]
+    assert manifest["selected_task_target"]["object_id"] == "rack_01"
+
+
 def test_eval_ready_task_grounding_cli_writes_summary(tmp_path: Path, capsys) -> None:
     capture_root = tmp_path / "capture"
     (capture_root / "raw").mkdir(parents=True)

@@ -141,7 +141,7 @@ To prove the request envelope is built by WebApp code rather than Pipeline
 fixture code, export the local rehearsal request from `Blueprint-WebApp`:
 
 ```bash
-WEBAPP_REPO=/Users/nijelhunt_1/workspace/Blueprint-WebApp
+WEBAPP_REPO="${WEBAPP_REPO:-../Blueprint-WebApp}"
 WEBAPP_REHEARSAL_REQUEST="$CAPTURE_ROOT/pipeline/robot_eval_job_requests/webapp_rehearsal/webapp-built-local-rehearsal.json"
 
 (
@@ -221,8 +221,8 @@ Before spending GPU time, run the cross-repo audit from
 
 ```bash
 blueprint-audit-first-gpu-cross-repo-readiness \
-  --capture-repo /Users/nijelhunt_1/workspace/BlueprintCapture \
-  --webapp-repo /Users/nijelhunt_1/workspace/Blueprint-WebApp \
+  --capture-repo "${CAPTURE_REPO:-../BlueprintCapture}" \
+  --webapp-repo "${WEBAPP_REPO:-../Blueprint-WebApp}" \
   --capture-root "$CAPTURE_ROOT" \
   --webapp-site-slug "$WEBAPP_SITE_SLUG" \
   --simulator isaac_sim \
@@ -285,7 +285,7 @@ Then run the current local path:
 ```bash
 blueprint-run-e2e \
   --capture-root "$CAPTURE_ROOT" \
-  --provider openai \
+  --provider local \
   --pipeline-lane current \
   --run-evaluation-prep \
   --evaluation-prep-provider manual

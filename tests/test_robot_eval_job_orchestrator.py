@@ -2181,6 +2181,11 @@ def test_robot_eval_job_live_closure_verifies_complete_external_evidence(
                 "storage_upload_performed": True,
                 "signed_urls": ["https://signed-access.tryblueprint.io/package-live-001"],
                 "entitlement_verified": True,
+                "buyer_access_check": {
+                    "buyer_access_checked": True,
+                    "buyer_accessible": True,
+                    "status": "ok",
+                },
                 "operator_attestation": {
                     "attested_by": "delivery-owner",
                     "attestation": "Signed delivery was uploaded and entitlement checked.",
@@ -3105,6 +3110,11 @@ def test_live_robot_eval_closure_accepts_camel_case_owner_attestations(
                 "storageUploadPerformed": True,
                 "signedUrls": ["https://signed-access.tryblueprint.io/package-1"],
                 "entitlementVerified": True,
+                "buyerAccessCheck": {
+                    "buyerAccessChecked": True,
+                    "buyerAccessible": True,
+                    "status": "ok",
+                },
                 "operatorAttestation": {
                     "attestedBy": "delivery-owner",
                     "acceptedClaimBoundary": "Owner accepted signed delivery access.",
@@ -3153,6 +3163,11 @@ def test_live_robot_eval_closure_blocks_signed_delivery_without_operator_attesta
                 "storage_upload_performed": True,
                 "signed_urls": ["https://signed-access.tryblueprint.io/package-1"],
                 "entitlement_verified": True,
+                "buyer_access_check": {
+                    "buyer_access_checked": True,
+                    "buyer_accessible": True,
+                    "status": "ok",
+                },
             },
         },
     )
@@ -7487,6 +7502,89 @@ def test_robot_eval_job_request_inbox_runs_webapp_job_request_automatically(
     assert run_manifest["public_claim_upgrade_allowed"] is False
 
 
+def test_robot_eval_job_request_inbox_skips_processed_same_content_until_changed(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+    request_path = inbox_dir / "webapp-job.json"
+    request = _full_job_request(capture_root)
+    request["job_id"] = "webapp-job-1"
+    _write_json(request_path, request)
+
+    first = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+    second = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+    request["job_id"] = "webapp-job-2"
+    _write_json(request_path, request)
+    third = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    assert first["processed_count"] == 1
+    assert first["processed_markers"][0]["status"] == "processed"
+    assert second["status"] == "empty"
+    assert second["processed_count"] == 0
+    assert second["skipped_processed_request_count"] == 1
+    assert second["skipped_processed_requests"][0]["reason"] == "already_processed_same_content"
+    assert third["processed_count"] == 1
+    assert third["jobs"][0]["job_id"] == "webapp-job-2"
+
+
+def test_robot_eval_job_request_inbox_uses_request_capture_root(
+    tmp_path: Path,
+) -> None:
+    control_capture_root = _build_capture_root(tmp_path / "control")
+    request_capture_root = _build_capture_root(tmp_path / "request")
+    _write_robot_eval_cards(request_capture_root)
+    _write_fixture_attempts(request_capture_root, success=True)
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+    request = _full_job_request(request_capture_root)
+    request["job_id"] = "request-root-job"
+    _write_json(inbox_dir / "request-root-job.json", request)
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=control_capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    assert result["processed_count"] == 1
+    assert result["jobs"][0]["request_capture_root"] == str(request_capture_root)
+    assert (
+        request_capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "request-root-job"
+        / "job_run_manifest.json"
+    ).is_file()
+    assert not (
+        control_capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "request-root-job"
+    ).exists()
+
+
 def test_robot_eval_job_request_inbox_accepts_webapp_queue_envelope(
     tmp_path: Path,
 ) -> None:
@@ -8809,11 +8907,22 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
     )
     _write_json(job_dir / "failure_labels.json", {"status": "no_failure_labels", "labels": []})
     _write_json(
+        job_dir / "simulator_command_batch_failure_labels.json",
+        {
+            "status": "no_failures_labeled",
+            "failed_attempt_count": 0,
+            "labels": [],
+        },
+    )
+    _write_json(
         job_dir / "simulator_command_batch_metrics.json",
         {
             "attempt_metric_row_count": 1,
+            "attempt_count": 1,
+            "failed_attempt_count": 0,
             "missing_metric_row_count": 0,
             "metric_coverage_complete": True,
+            "scenario_eval_run_coverage_complete": True,
         },
     )
     _write_json(

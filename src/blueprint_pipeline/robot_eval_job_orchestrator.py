@@ -65,6 +65,10 @@ from .robot_eval_execution import (
 )
 from .sc3_eval_protocol import SC3_EVAL_PROTOCOL_ARTIFACT, build_sc3_eval_protocol_artifact
 from .robot_eval_dataset import build_real_site_robot_eval_dataset
+from .robot_eval_job_request_contract import (
+    ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
+    ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
+)
 from .scene_asset_preflight import build_scene_asset_preflight
 from .simulation_automation import build_simulation_automation
 from .site_eval_director import build_site_eval_director
@@ -90,7 +94,7 @@ from .wam_provider_runtime import parse_wam_provider_commands
 from .wam_score_claim_gate import WAM_SCORE_CLAIM_GATE_SCHEMA_VERSION
 
 
-JOB_REQUEST_SCHEMA_VERSION = "robot_eval_job_request.v1"
+JOB_REQUEST_SCHEMA_VERSION = ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION
 JOB_VALIDATION_SCHEMA_VERSION = "robot_eval_job_validation.v1"
 JOB_REQUEST_ENRICHMENT_SCHEMA_VERSION = "robot_eval_job_request_enrichment.v1"
 JOB_PLAN_SCHEMA_VERSION = "robot_eval_job_plan.v1"
@@ -806,6 +810,14 @@ def _sha_payload(payload: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
+def _sha_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _read_optional_mapping(path: Path) -> Dict[str, Any]:
     if not path.is_file():
         return {}
@@ -820,7 +832,7 @@ def _read_job_request(job_request: str | Path | Mapping[str, Any]) -> Dict[str, 
         payload = read_json_any(Path(job_request))
     if not isinstance(payload, Mapping):
         raise ValueError(f"Expected job request JSON object at {job_request}")
-    if payload.get("queue_contract") == "robot_eval_job_request_inbox.v1" and isinstance(
+    if payload.get("queue_contract") == ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT and isinstance(
         payload.get("job_request"), Mapping
     ):
         return dict(payload["job_request"])
@@ -8639,9 +8651,26 @@ def _robot_team_grade_eval_closure_manifest(
     simulator_batch_failure_trace = scenario_failure_trace_from_labels(
         simulator_batch_labels
     )
+    simulator_batch_failed_attempt_count = _number(
+        simulator_batch_labels.get("failed_attempt_count")
+    )
+    simulator_batch_metric_failed_attempt_count = _number(
+        batch_metrics.get("failed_attempt_count")
+    )
+    simulator_batch_zero_failures_reviewed = bool(
+        _string(simulator_batch_labels.get("status"))
+        in {"no_failures_labeled", "zero_failures_reviewed"}
+        and simulator_batch_failed_attempt_count == 0
+        and simulator_batch_metric_failed_attempt_count == 0
+        and int(_number(batch_metrics.get("attempt_count"), 0) or 0) > 0
+        and batch_metrics.get("scenario_eval_run_coverage_complete") is True
+    )
     use_simulator_batch_failure_labels = bool(
-        failure_label_rows(simulator_batch_labels)
-        and simulator_batch_failure_trace.get("attempts")
+        (
+            failure_label_rows(simulator_batch_labels)
+            and simulator_batch_failure_trace.get("attempts")
+        )
+        or simulator_batch_zero_failures_reviewed
     )
     failure_diagnosis_labels = (
         simulator_batch_labels if use_simulator_batch_failure_labels else labels
@@ -9003,6 +9032,8 @@ def _robot_team_grade_eval_closure_manifest(
                 f"{bool(failure_diagnosis_audit.get('failure_diagnosis_coverage_complete'))}",
                 "failure_diagnosis_review_complete="
                 f"{bool(failure_diagnosis_audit.get('failure_diagnosis_review_complete'))}",
+                "zero_failures_reviewed="
+                f"{bool(failure_diagnosis_audit.get('zero_failures_reviewed'))}",
             ],
         ),
         requirement(
@@ -10993,12 +11024,51 @@ def _webapp_request_identity(request: Mapping[str, Any]) -> tuple[str, ...] | No
     return identity
 
 
+def _request_capture_root(request: Mapping[str, Any], default: Path) -> Path:
+    site_package = _mapping(request.get("site_package") or request.get("sitePackage"))
+    value = _string(site_package.get("capture_root") or site_package.get("captureRoot"))
+    return Path(value).expanduser().resolve() if value else default
+
+
 def _inbox_request_sort_key(path: Path) -> tuple[int, str]:
     try:
         mtime_ns = path.stat().st_mtime_ns
     except OSError:
         mtime_ns = 0
     return (mtime_ns, path.name)
+
+
+def _processed_request_marker_path(processed_dir: Path, request_path: Path, digest: str) -> Path:
+    safe_name = "".join(
+        char if char.isalnum() or char in {"-", "_", "."} else "-"
+        for char in request_path.name
+    ).strip(".-") or "request"
+    return processed_dir / f"{safe_name}.{digest[:16]}.processed.json"
+
+
+def _write_processed_request_marker(
+    *,
+    processed_dir: Path,
+    request_path: Path,
+    digest: str,
+    status: str,
+    job_id: str,
+    generated_at: str,
+    reason: str,
+) -> Dict[str, Any]:
+    ensure_dir(processed_dir)
+    marker = {
+        "schema_version": "robot_eval_job_request_processed_marker.v1",
+        "generated_at": generated_at,
+        "source_request_path": str(request_path),
+        "source_request_sha256": digest,
+        "status": status,
+        "job_id": job_id,
+        "reason": reason,
+    }
+    marker_path = _processed_request_marker_path(processed_dir, request_path, digest)
+    write_json(marker_path, marker)
+    return {"path": str(marker_path), **marker}
 
 
 def run_robot_eval_job_request_inbox(
@@ -11047,19 +11117,39 @@ def run_robot_eval_job_request_inbox(
     queue_root = context.pipeline_root / "robot_eval_job_requests"
     ensure_dir(queue_root)
     generated_at = utc_now_iso()
+    processed_dir = inbox_path / ".processed"
     request_paths = sorted(
         path
         for path in inbox_path.glob("*.json")
         if path.is_file() and not path.name.startswith(".")
     )
     loaded_requests: List[Dict[str, Any]] = []
+    skipped_processed_requests: List[Dict[str, Any]] = []
     for request_path in request_paths:
+        request_digest = _sha_file(request_path)
+        marker_path = _processed_request_marker_path(
+            processed_dir,
+            request_path,
+            request_digest,
+        )
+        if marker_path.is_file():
+            skipped_processed_requests.append(
+                {
+                    "source_request_path": str(request_path),
+                    "source_request_sha256": request_digest,
+                    "processed_marker_path": str(marker_path),
+                    "reason": "already_processed_same_content",
+                }
+            )
+            continue
         request = _read_job_request(request_path)
         request.setdefault("schema_version", JOB_REQUEST_SCHEMA_VERSION)
         loaded_requests.append(
             {
                 "path": request_path,
                 "request": request,
+                "sha256": request_digest,
+                "processed_marker_path": marker_path,
                 "identity": _webapp_request_identity(request),
                 "sort_key": _inbox_request_sort_key(request_path),
             }
@@ -11084,17 +11174,26 @@ def run_robot_eval_job_request_inbox(
     selected_requests.extend(selected_by_identity.values())
     selected_requests = sorted(selected_requests, key=lambda item: str(item["path"]))
     jobs: List[Dict[str, Any]] = []
+    processed_markers: List[Dict[str, Any]] = []
     for item in selected_requests:
         request_path = item["path"]
         request = dict(item["request"])
         job_id = _job_id_from_request(request_path, request)
+        request_capture_root = _request_capture_root(request, context.capture_root)
+        request_context = (
+            resolve_local_capture_context(request_capture_root)
+            if request_capture_root != context.capture_root
+            else context
+        )
         request["job_id"] = job_id
-        request["capture_root"] = str(context.capture_root)
-        queued_dir = queue_root / job_id
+        request["capture_root"] = str(request_context.capture_root)
+        job_queue_root = request_context.pipeline_root / "robot_eval_job_requests"
+        ensure_dir(job_queue_root)
+        queued_dir = job_queue_root / job_id
         ensure_dir(queued_dir)
         write_json(queued_dir / "job_request.json", request)
         result = build_robot_eval_job(
-            capture_root=context.capture_root,
+            capture_root=request_context.capture_root,
             job_request=request,
             job_id=job_id,
             agent_adapter=agent_adapter,
@@ -11140,10 +11239,34 @@ def run_robot_eval_job_request_inbox(
                 "status": result["status"],
                 "source_request_path": str(request_path),
                 "queued_request_path": str((queued_dir / "job_request.json").resolve()),
+                "request_capture_root": str(request_context.capture_root),
                 "job_dir": result["job_dir"],
                 "job_run_manifest_uri": result["manifest_path"],
                 "public_claim_upgrade_allowed": False,
             }
+        )
+        processed_markers.append(
+            _write_processed_request_marker(
+                processed_dir=processed_dir,
+                request_path=request_path,
+                digest=str(item["sha256"]),
+                status="processed",
+                job_id=job_id,
+                generated_at=generated_at,
+                reason="selected_for_robot_eval_job_run",
+            )
+        )
+    for item in superseded_requests:
+        processed_markers.append(
+            _write_processed_request_marker(
+                processed_dir=processed_dir,
+                request_path=item["path"],
+                digest=str(item["sha256"]),
+                status="superseded",
+                job_id=_job_id_from_request(item["path"], item["request"]),
+                generated_at=generated_at,
+                reason="superseded_by_newer_webapp_request_for_same_identity",
+            )
         )
     status = "completed" if jobs else "empty"
     manifest = {
@@ -11154,6 +11277,8 @@ def run_robot_eval_job_request_inbox(
         "inbox_dir": str(inbox_path),
         "queue_root": str(queue_root),
         "input_request_count": len(loaded_requests),
+        "skipped_processed_request_count": len(skipped_processed_requests),
+        "skipped_processed_requests": skipped_processed_requests,
         "processed_count": len(jobs),
         "superseded_request_count": len(superseded_requests),
         "superseded_requests": [
@@ -11165,6 +11290,8 @@ def run_robot_eval_job_request_inbox(
             }
             for item in sorted(superseded_requests, key=lambda entry: str(entry["path"]))
         ],
+        "processed_marker_dir": str(processed_dir),
+        "processed_markers": processed_markers,
         "jobs": jobs,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }

@@ -143,6 +143,19 @@ def _seed_ready_job(job_dir: Path) -> None:
     )
     _write_json(job_dir / "arena_eval_metrics.json", {"score": 1.0, "attempt_count": 1})
     _write_json(
+        job_dir / "simulator_command_batch_metrics.json",
+        {
+            "required_metric_keys": [
+                "min_clearance_m",
+                "clearance_threshold_m",
+                "max_path_deviation_m",
+            ],
+            "attempt_metric_row_count": 1,
+            "missing_metric_row_count": 0,
+            "metric_coverage_complete": True,
+        },
+    )
+    _write_json(
         job_dir / "clips_manifest.json",
         {
             "clip_count": 1,
@@ -266,8 +279,8 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
         output_dir=output_dir,
     )
 
-    assert manifest["status"] == "export_ready_review_required"
-    assert manifest["blockers"] == []
+    assert manifest["status"] == "blocked_buyer_readout_incomplete_package"
+    assert any(blocker.startswith("buyer_readout:") for blocker in manifest["blockers"])
     assert manifest["manifest_counts"]["attempt_count"] == 1
     assert manifest["manifest_counts"]["failure_label_count"] == 1
     assert manifest["manifest_counts"]["clip_count"] == 1
@@ -289,7 +302,7 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
     assert manifest["handoff_records"]["live_closure_gate_references"][
         "signed_delivery_access"
     ]["blockers"] == ["signed_url_missing"]
-    assert manifest["claim_boundary"]["post_training_package_export_ready"] is True
+    assert manifest["claim_boundary"]["post_training_package_export_ready"] is False
     assert manifest["claim_boundary"]["review_acceptance_proven"] is True
     assert manifest["claim_boundary"]["signed_delivery_access_proven"] is False
     assert manifest["claim_boundary"]["deployment_approval_proven"] is False
@@ -770,6 +783,29 @@ def test_measured_state_fraction_floor_is_env_configurable(
     assert provenance["real_state_fraction"] == 0.0
     assert provenance["measured_state_fraction_floor_passed"] is True
     assert "insufficient_measured_state_fraction" not in lerobot_v3["blockers"]
+
+
+def test_measured_state_fraction_floor_cannot_be_lowered_in_production(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_PTDP_MEASURED_STATE_FRACTION_FLOOR", "0.0")
+    monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
+
+    gate = package_module._state_action_provenance_gate(
+        {
+            "measured_state_rows": 0,
+            "synthesized_state_rows": 4,
+            "measured_action_rows": 4,
+            "synthesized_action_rows": 0,
+            "real_state_fraction": 0.0,
+            "real_action_fraction": 1.0,
+        },
+        [],
+    )
+
+    assert gate["measured_state_fraction_floor"] == pytest.approx(0.5)
+    assert gate["measured_state_fraction_floor_passed"] is False
+    assert "insufficient_measured_state_fraction" in gate["blockers"]
 
 
 def test_lerobot_and_gr00t_exports_require_video_for_every_episode(
@@ -1255,7 +1291,8 @@ def test_post_training_data_package_writes_blocked_customer_handoff_manifests(
         job_dir=job_dir,
     )
 
-    assert manifest["status"] == "export_ready_review_required"
+    assert manifest["status"] == "blocked_buyer_readout_incomplete_package"
+    assert any(blocker.startswith("buyer_readout:") for blocker in manifest["blockers"])
     assert manifest["included_artifacts"]["customer_handoff_report"] == (
         "customer_handoff_report.json"
     )
@@ -1277,7 +1314,7 @@ def test_post_training_data_package_writes_blocked_customer_handoff_manifests(
         "signed_delivery_access:signed_delivery_access_not_proven"
         in manifest["handoff_records"]["customer_handoff_blockers"]
     )
-    assert manifest["claim_boundary"]["post_training_package_export_ready"] is True
+    assert manifest["claim_boundary"]["post_training_package_export_ready"] is False
     assert manifest["claim_boundary"]["customer_handoff_ready"] is False
     assert manifest["claim_boundary"]["hosted_access_ready"] is False
     assert manifest["claim_boundary"]["deployment_approval_proven"] is False
@@ -1375,7 +1412,8 @@ def test_post_training_data_package_includes_visual_augmentation_support_packet(
         output_dir=output_dir,
     )
 
-    assert manifest["status"] == "export_ready_review_required"
+    assert manifest["status"] == "blocked_buyer_readout_incomplete_package"
+    assert any(blocker.startswith("buyer_readout:") for blocker in manifest["blockers"])
     assert (
         manifest["included_artifacts"]["oscar_visual_augmentation_packet_manifest"]
         == "oscar_visual_augmentation_packet/oscar_visual_augmentation_packet_manifest.json"
@@ -1461,7 +1499,8 @@ def test_post_training_data_package_labels_scaniverse_assets_as_support_only(
         output_dir=output_dir,
     )
 
-    assert manifest["status"] == "export_ready_review_required"
+    assert manifest["status"] == "blocked_buyer_readout_incomplete_package"
+    assert any(blocker.startswith("buyer_readout:") for blocker in manifest["blockers"])
     assert manifest["included_artifacts"]["scaniverse_import_manifest"].endswith(
         "scaniverse_import_manifest.json"
     )
@@ -1526,9 +1565,9 @@ def test_post_training_data_package_main_returns_status_codes(
                 str(ready_output),
             ]
         )
-        == 0
+        == 1
     )
-    assert "status=export_ready_review_required" in capsys.readouterr().out
+    assert "status=blocked_buyer_readout_incomplete_package" in capsys.readouterr().out
 
 
 def test_post_training_data_package_private_helpers_cover_optional_edges(
@@ -1653,7 +1692,12 @@ def test_post_training_data_package_writes_buyer_readout_and_replay_instructions
         output_dir=output_dir,
     )
 
-    assert manifest["status"] == "export_ready_review_required"
+    assert manifest["status"] == "blocked_buyer_readout_incomplete_package"
+    assert (
+        "buyer_readout:robot_pov_evidence:robot_pov_evidence_missing"
+        in manifest["blockers"]
+    )
+    assert manifest["claim_boundary"]["buyer_readout_ready"] is False
     assert manifest["replay_review_instructions_path"] == "replay_review_instructions.md"
     assert manifest["buyer_package_readout_path"] == "buyer_package_readout.json"
     assert manifest["buyer_package_summary_path"] == "buyer_package_summary.md"
@@ -1745,7 +1789,8 @@ def test_post_training_data_package_wires_consent_handoff_and_success_ledger(
     assert manifest["handoff_records"]["local_package_access_revoked"] is False
     assert manifest["export_policy"]["consent_revoked"] is False
     assert manifest["revocation_takedown"]["consent_revoked"] is False
-    assert manifest["status"] == "export_ready_review_required"
+    assert manifest["status"] == "blocked_buyer_readout_incomplete_package"
+    assert any(blocker.startswith("buyer_readout:") for blocker in manifest["blockers"])
     assert manifest["success_claim_ledger_path"] == "success_claim_ledger.json"
     assert manifest["product_handoff"]["entitlement_id"] == "ent-42"
 

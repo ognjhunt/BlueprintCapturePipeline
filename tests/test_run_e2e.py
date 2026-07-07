@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from blueprint_pipeline.run_e2e import run_end_to_end
+from blueprint_pipeline.run_e2e import main, run_end_to_end
 
 
 def test_run_e2e_keeps_agent_review_and_evaluation_prep(monkeypatch, tmp_path: Path) -> None:
@@ -92,3 +92,74 @@ def test_run_e2e_supports_full_lane_and_optional_cosmos_validation(monkeypatch, 
 
     assert result["pipeline_lanes"] == ["all"]
     assert result["cosmos_validation"]["synthesis_mode"] == "cosmos_i2w"
+
+
+def test_run_e2e_cli_runs_evaluation_prep_by_default(monkeypatch, tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run_end_to_end(**kwargs: object) -> dict[str, object]:
+        seen.update(kwargs)
+        return {
+            "preflight_status": "passed",
+            "pipeline_status": "completed",
+            "pipeline_lanes": ["current"],
+            "final_memo_path": "memo.md",
+            "final_bundle_path": "bundle.json",
+            "evaluation_prep": {"manifest_path": "evaluation_prep_manifest.json"},
+        }
+
+    monkeypatch.setattr("blueprint_pipeline.run_e2e.run_end_to_end", fake_run_end_to_end)
+
+    assert main(["--capture-root", str(tmp_path), "--provider", "openai"]) == 0
+    assert seen["run_evaluation_prep"] is True
+
+
+def test_run_e2e_cli_skip_evaluation_prep_is_explicit(monkeypatch, tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run_end_to_end(**kwargs: object) -> dict[str, object]:
+        seen.update(kwargs)
+        return {
+            "preflight_status": "passed",
+            "pipeline_status": "completed",
+            "pipeline_lanes": ["current"],
+            "final_memo_path": "memo.md",
+            "final_bundle_path": "bundle.json",
+        }
+
+    monkeypatch.setattr("blueprint_pipeline.run_e2e.run_end_to_end", fake_run_end_to_end)
+
+    assert (
+        main(
+            [
+                "--capture-root",
+                str(tmp_path),
+                "--provider",
+                "openai",
+                "--skip-evaluation-prep",
+            ]
+        )
+        == 0
+    )
+    assert seen["run_evaluation_prep"] is False
+
+
+def test_run_e2e_cli_accepts_local_no_llm_provider(monkeypatch, tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run_end_to_end(**kwargs: object) -> dict[str, object]:
+        seen.update(kwargs)
+        return {
+            "preflight_status": "passed",
+            "pipeline_status": "completed",
+            "pipeline_lanes": ["current"],
+            "final_memo_path": "memo.md",
+            "final_bundle_path": "bundle.json",
+            "evaluation_prep": {"manifest_path": "evaluation_prep_manifest.json"},
+        }
+
+    monkeypatch.setattr("blueprint_pipeline.run_e2e.run_end_to_end", fake_run_end_to_end)
+
+    assert main(["--capture-root", str(tmp_path), "--provider", "local"]) == 0
+    assert seen["provider"] == "local"
+    assert seen["run_evaluation_prep"] is True

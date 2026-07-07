@@ -944,10 +944,16 @@ def _load_delivery_command_output(output_dir: Path) -> Dict[str, Any]:
                 "blockers": ["delivery_command_output_not_object"],
             }
         signed_urls = payload.get("signed_urls") if isinstance(payload.get("signed_urls"), list) else []
+        signed_url = _string(payload.get("signed_url") or payload.get("signedUrl"))
+        if signed_url:
+            signed_urls = [*signed_urls, signed_url]
         local_access_paths = (
             payload.get("local_access_paths")
             if isinstance(payload.get("local_access_paths"), list)
             else []
+        )
+        buyer_access_check = _mapping(
+            payload.get("buyer_access_check") or payload.get("buyerAccessCheck")
         )
         storage_upload_performed = bool(payload.get("storage_upload_performed"))
         return {
@@ -956,8 +962,20 @@ def _load_delivery_command_output(output_dir: Path) -> Dict[str, Any]:
             "blockers": payload.get("blockers") if isinstance(payload.get("blockers"), list) else [],
             "provider": _string(payload.get("provider")) or None,
             "signed_urls": signed_urls,
+            "signed_access": _string_list(
+                payload.get("signed_access") or payload.get("signedAccess")
+            ),
             "local_access_paths": local_access_paths,
             "storage_upload_performed": storage_upload_performed,
+            "entitlement_verified": bool(
+                payload.get("entitlement_verified")
+                or payload.get("entitlementVerified")
+                or buyer_access_check.get("entitlement_verified")
+                or buyer_access_check.get("entitlementVerified")
+            ),
+            "buyer_access_check": buyer_access_check,
+            "operator_attestation": payload.get("operator_attestation")
+            or payload.get("operatorAttestation"),
             "retention_expires_at": _string(payload.get("retention_expires_at")) or None,
             "delivery_root": _string(payload.get("delivery_root")) or None,
         }
@@ -1447,8 +1465,15 @@ def _build_delivery_artifacts(
                 delivery_command_output = _load_delivery_command_output(output_dir)
                 blockers.extend(delivery_command_output.get("blockers") or [])
     signed_urls = delivery_command_output.get("signed_urls") or []
+    signed_access_entries = delivery_command_output.get("signed_access") or []
     local_access_paths = delivery_command_output.get("local_access_paths") or []
     storage_upload_performed = bool(delivery_command_output.get("storage_upload_performed"))
+    buyer_access_check = _mapping(delivery_command_output.get("buyer_access_check"))
+    entitlement_verified = bool(
+        delivery_command_output.get("entitlement_verified")
+        or buyer_access_check.get("entitlement_verified")
+        or buyer_access_check.get("entitlementVerified")
+    )
     if blockers or not upload_result:
         signed_access_status = "blocked"
         signed_access_blockers = blockers or ["upload_not_requested"]
@@ -1467,11 +1492,23 @@ def _build_delivery_artifacts(
         "status": signed_access_status,
         "blockers": signed_access_blockers,
         "signed_urls": signed_urls,
+        "signed_access": signed_access_entries,
         "local_access_paths": local_access_paths,
+        "entitlement_verified": entitlement_verified,
+        "buyer_access_check": buyer_access_check,
+        "operator_attestation": delivery_command_output.get("operator_attestation"),
         "delivery_command_output": {
             key: value
             for key, value in delivery_command_output.items()
-            if key not in {"signed_urls", "local_access_paths"}
+            if key
+            not in {
+                "signed_urls",
+                "signed_access",
+                "local_access_paths",
+                "entitlement_verified",
+                "buyer_access_check",
+                "operator_attestation",
+            }
         },
         "upload_result": upload_result,
         "storage_upload_performed": storage_upload_performed,

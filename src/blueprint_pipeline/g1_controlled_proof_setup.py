@@ -882,7 +882,7 @@ def _webapp_forwarding_script(paths: Mapping[str, str], context: Mapping[str, An
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
-WEBAPP_ROOT="${{BLUEPRINT_WEBAPP_ROOT:-/Users/nijelhunt_1/workspace/Blueprint-WebApp}}"
+WEBAPP_ROOT="${{BLUEPRINT_WEBAPP_ROOT:-../Blueprint-WebApp}}"
 CAPTURE_ROOT="${{BLUEPRINT_CAPTURE_ROOT:-{paths['capture_root']}}}"
 OUTPUT_PATH="${{BLUEPRINT_WEBAPP_ROUTE_FORWARDING_PROOF_OUTPUT:-{output}}}"
 WEBAPP_PRODUCTION_URL="${{BLUEPRINT_WEBAPP_PRODUCTION_URL:-}}"

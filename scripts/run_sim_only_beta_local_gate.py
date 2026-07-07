@@ -12,7 +12,9 @@ customer delivery.
 from __future__ import annotations
 
 import argparse
+import base64
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -37,6 +39,9 @@ WAM_HANDOFF_ARTIFACTS = {
     "candidate_selection_report": "candidate_selection_report.json",
     "wam_eval_claim_boundary": "wam_eval_claim_boundary.json",
 }
+FIXTURE_BUCKET = "local-blueprint-fixtures"
+FIXTURE_SCENE_ID = "sim-only-beta-fixture-site"
+FIXTURE_CAPTURE_ID = "capture-001"
 
 
 def _repo_root() -> Path:
@@ -47,8 +52,127 @@ def _default_webapp_repo() -> Path:
     return _repo_root().parent / "Blueprint-WebApp"
 
 
-def _default_mujoco_g1_root() -> Path:
+def _default_mujoco_g1_root(capture_root: Path | None = None) -> Path:
+    if capture_root is not None:
+        capture_scoped = (
+            capture_root
+            / "pipeline"
+            / "external_assets"
+            / "mujoco_menagerie"
+            / "unitree_g1"
+        )
+        if (capture_scoped / "g1.xml").is_file():
+            return capture_scoped
     return _repo_root() / "output" / "external_assets" / "mujoco_menagerie" / "unitree_g1"
+
+
+def _committed_fixture_capture_root() -> Path:
+    return (
+        _repo_root()
+        / "tests"
+        / "fixtures"
+        / "sim_only_beta_local_capture"
+        / FIXTURE_BUCKET
+        / "scenes"
+        / FIXTURE_SCENE_ID
+        / "captures"
+        / FIXTURE_CAPTURE_ID
+    )
+
+
+def _default_fixture_work_root() -> Path:
+    return _repo_root() / "output" / "sim_only_beta_local_gate_fixture"
+
+
+def _default_fixture_work_capture_root(work_root: Path) -> Path:
+    return (
+        work_root
+        / FIXTURE_BUCKET
+        / "scenes"
+        / FIXTURE_SCENE_ID
+        / "captures"
+        / FIXTURE_CAPTURE_ID
+    )
+
+
+def _materialize_fixture_capture_root(
+    *,
+    source_capture_root: Path,
+    work_root: Path,
+) -> Path:
+    target_capture_root = _default_fixture_work_capture_root(work_root)
+    if not source_capture_root.is_dir():
+        raise FileNotFoundError(f"committed sim-only fixture capture root missing: {source_capture_root}")
+    if target_capture_root.exists() or target_capture_root.is_symlink():
+        if target_capture_root.is_symlink() or target_capture_root.is_file():
+            target_capture_root.unlink()
+        else:
+            shutil.rmtree(target_capture_root)
+    ensure_dir(target_capture_root.parent)
+    shutil.copytree(source_capture_root, target_capture_root)
+    for encoded_path in target_capture_root.rglob("*.base64"):
+        decoded_path = encoded_path.with_suffix("")
+        encoded = "".join(encoded_path.read_text(encoding="utf-8").split())
+        decoded_path.write_bytes(base64.b64decode(encoded, validate=True))
+    return target_capture_root
+
+
+def _print_gate_blockers(blockers: Sequence[Any]) -> None:
+    for blocker in blockers:
+        print(f"[sim-only-beta-local-gate] blocker={blocker}")
+
+
+def _blocked_gate_report(
+    *,
+    capture_root: Path | None,
+    proof_path: Path | None,
+    stage: str,
+    blockers: Sequence[str],
+    command: Sequence[str] | None = None,
+    exit_code: int | None = None,
+) -> dict[str, Any]:
+    route_proof: dict[str, Any] | None = None
+    if proof_path is not None and proof_path.is_file():
+        try:
+            loaded = read_json_any(proof_path)
+            if isinstance(loaded, Mapping):
+                route_proof = dict(loaded)
+        except Exception:
+            route_proof = None
+    return {
+        "schema_version": "blueprint.sim_only_beta_local_gate_report.v1",
+        "generated_at": utc_now_iso(),
+        "status": "blocked",
+        "blockers": list(blockers),
+        "failed_stage": stage,
+        "failed_command": list(command) if command else None,
+        "failed_exit_code": exit_code,
+        "capture_root": str(capture_root) if capture_root else None,
+        "route_forwarding_proof_path": str(proof_path) if proof_path else None,
+        "route_forwarding_proof": {
+            "status": route_proof.get("status") if route_proof else None,
+            "webapp_http_status": _mapping(route_proof.get("webapp_route")).get("http_status")
+            if route_proof
+            else None,
+            "pipeline_intake": _mapping(route_proof.get("pipeline_intake")) if route_proof else {},
+        },
+        "simulator_execution_proven": False,
+        "sim_only_beta_requirements_satisfied": False,
+        "wam_handoff_artifacts_satisfied": False,
+        "public_claim_upgrade_allowed": False,
+        "proof_boundary": {
+            "local_webapp_route_forwarding_proven": False,
+            "pipeline_intake_staged_request_proven": False,
+            "local_control_plane_processed_staged_request": False,
+            "local_mujoco_simulator_execution_proven": False,
+            "simulator_execution_proven": False,
+            "production_live_webapp_forwarding_proven": False,
+            "production_deployment_proven": False,
+            "remote_cloud_provider_execution_proven": False,
+            "generated_world_rank_fidelity_result_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
 
 
 def _run(
@@ -116,6 +240,29 @@ def _load_mapping(path: Path) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise RuntimeError(f"Expected JSON object at {path}")
     return dict(payload)
+
+
+def _exception_blocker(prefix: str, exc: BaseException) -> str:
+    message = str(exc).replace("\n", " ").strip()
+    if len(message) > 240:
+        message = f"{message[:237]}..."
+    suffix = f":{message}" if message else ""
+    return f"{prefix}:{type(exc).__name__}{suffix}"
+
+
+def _load_mapping_or_blocker(
+    path: Path,
+    blocker: str,
+    blockers: list[str],
+) -> dict[str, Any]:
+    if not path.is_file():
+        blockers.append(blocker)
+        return {}
+    try:
+        return _load_mapping(path)
+    except Exception as exc:
+        blockers.append(_exception_blocker(f"{blocker}_unreadable", exc))
+        return {}
 
 
 def _require(condition: bool, blocker: str, blockers: list[str]) -> None:
@@ -475,11 +622,31 @@ def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[
     if job_root is None or not job_root.is_dir():
         blockers.append("job_root_missing")
     else:
-        job_run_manifest = _load_mapping(job_root / "job_run_manifest.json")
-        scenario_eval_matrix = _load_mapping(job_root / "scenario_eval_matrix.json")
-        simulator_result = _load_mapping(job_root / "simulator_service_result.json")
-        batch_closure = _load_mapping(job_root / "simulator_command_batch_closure_manifest.json")
-        robot_team_closure = _load_mapping(job_root / "robot_team_grade_eval_closure_manifest.json")
+        job_run_manifest = _load_mapping_or_blocker(
+            job_root / "job_run_manifest.json",
+            "job_run_manifest_missing",
+            blockers,
+        )
+        scenario_eval_matrix = _load_mapping_or_blocker(
+            job_root / "scenario_eval_matrix.json",
+            "scenario_eval_matrix_missing",
+            blockers,
+        )
+        simulator_result = _load_mapping_or_blocker(
+            job_root / "simulator_service_result.json",
+            "simulator_service_result_missing",
+            blockers,
+        )
+        batch_closure = _load_mapping_or_blocker(
+            job_root / "simulator_command_batch_closure_manifest.json",
+            "simulator_command_batch_closure_manifest_missing",
+            blockers,
+        )
+        robot_team_closure = _load_mapping_or_blocker(
+            job_root / "robot_team_grade_eval_closure_manifest.json",
+            "robot_team_grade_eval_closure_manifest_missing",
+            blockers,
+        )
 
         _require(
             job_run_manifest.get("status") == "simulator_command_completed",
@@ -608,10 +775,19 @@ def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[
         "public_claim_upgrade_allowed": False,
         "job_run_manifest": {
             "status": job_run_manifest.get("status"),
+            "blockers": _string_list(job_run_manifest.get("blockers")),
+            "missing_inputs": _string_list(job_run_manifest.get("missing_inputs")),
+            "simulator_service_status": job_run_manifest.get("simulator_service_status"),
             "simulator_execution_proven": job_run_manifest.get("simulator_execution_proven"),
         },
         "simulator_service_result": {
             "status": simulator_result.get("status"),
+            "reason": simulator_result.get("reason"),
+            "blockers": _string_list(simulator_result.get("blockers")),
+            "exit_code": simulator_result.get("exit_code"),
+            "command": simulator_result.get("command"),
+            "stderr": simulator_result.get("stderr"),
+            "stdout": simulator_result.get("stdout"),
             "simulator_execution_proven": simulator_result.get("simulator_execution_proven"),
         },
         "scenario_eval_matrix": {
@@ -667,9 +843,35 @@ def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--capture-root", type=Path, required=True)
+    parser.add_argument(
+        "--capture-root",
+        type=Path,
+        help=(
+            "Capture root to exercise. Defaults to a materialized copy of the committed "
+            "sim-only beta fixture under output/."
+        ),
+    )
+    parser.add_argument(
+        "--fixture-source-root",
+        type=Path,
+        default=_committed_fixture_capture_root(),
+        help="Committed fixture capture root used when --capture-root is omitted.",
+    )
+    parser.add_argument(
+        "--fixture-work-root",
+        type=Path,
+        default=_default_fixture_work_root(),
+        help="Generated work root for the committed fixture copy.",
+    )
     parser.add_argument("--webapp-repo", type=Path, default=_default_webapp_repo())
-    parser.add_argument("--mujoco-g1-root", type=Path, default=_default_mujoco_g1_root())
+    parser.add_argument(
+        "--mujoco-g1-root",
+        type=Path,
+        help=(
+            "MuJoCo Unitree G1 asset root. Defaults to a capture-scoped fixture "
+            "asset when present, otherwise output/external_assets/mujoco_menagerie/unitree_g1."
+        ),
+    )
     parser.add_argument("--token", default=DEFAULT_TOKEN)
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--health-timeout-seconds", type=int, default=15)
@@ -678,15 +880,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-path", type=Path)
     args = parser.parse_args(argv)
 
-    capture_root = args.capture_root.resolve()
+    report_path: Path | None = None
+    if args.capture_root is None:
+        try:
+            capture_root = _materialize_fixture_capture_root(
+                source_capture_root=args.fixture_source_root.resolve(),
+                work_root=args.fixture_work_root.resolve(),
+            )
+        except Exception as exc:
+            report_path = (
+                args.output_path
+                or _repo_root() / "output" / "sim_only_beta_local_gate_report.json"
+            ).resolve()
+            report = _blocked_gate_report(
+                capture_root=None,
+                proof_path=None,
+                stage="fixture_materialization",
+                blockers=[_exception_blocker("fixture_materialization_failed", exc)],
+            )
+            ensure_dir(report_path.parent)
+            write_json(report_path, report)
+            print(f"[sim-only-beta-local-gate] report={report_path}")
+            print("[sim-only-beta-local-gate] status=blocked")
+            print("[sim-only-beta-local-gate] blockers=1")
+            _print_gate_blockers(report["blockers"])
+            return 1
+    else:
+        capture_root = args.capture_root.resolve()
     webapp_repo = args.webapp_repo.resolve()
-    mujoco_g1_root = args.mujoco_g1_root.resolve()
-    if not capture_root.is_dir():
-        raise SystemExit(f"capture root does not exist: {capture_root}")
-    if not webapp_repo.is_dir():
-        raise SystemExit(f"WebApp repo does not exist: {webapp_repo}")
-    if not mujoco_g1_root.is_dir():
-        raise SystemExit(f"MuJoCo G1 root does not exist: {mujoco_g1_root}")
+    mujoco_g1_root = (
+        args.mujoco_g1_root.resolve()
+        if args.mujoco_g1_root is not None
+        else _default_mujoco_g1_root(capture_root).resolve()
+    )
 
     gate_dir = capture_root / "pipeline" / "live_pipeline_control_plane" / "sim_only_beta_local_gate"
     ensure_dir(gate_dir)
@@ -698,6 +924,73 @@ def main(argv: Sequence[str] | None = None) -> int:
     proof_path = gate_dir / "local_beta_route_forwarding_proof.json"
     report_path = (args.output_path or gate_dir / "sim_only_beta_local_gate_report.json").resolve()
 
+    def write_blocked(
+        stage: str,
+        blockers: Sequence[str],
+        *,
+        command: Sequence[str] | None = None,
+        exit_code: int | None = None,
+    ) -> int:
+        report = _blocked_gate_report(
+            capture_root=capture_root,
+            proof_path=proof_path,
+            stage=stage,
+            blockers=blockers,
+            command=command,
+            exit_code=exit_code,
+        )
+        ensure_dir(report_path.parent)
+        write_json(report_path, report)
+        print(f"[sim-only-beta-local-gate] report={report_path}")
+        print("[sim-only-beta-local-gate] status=blocked")
+        print(f"[sim-only-beta-local-gate] blockers={len(report['blockers'])}")
+        _print_gate_blockers(report["blockers"])
+        return 1
+
+    def fail_blocked(
+        stage: str,
+        blockers: Sequence[str],
+        *,
+        command: Sequence[str] | None = None,
+        exit_code: int | None = None,
+    ) -> None:
+        raise SystemExit(
+            write_blocked(
+                stage,
+                blockers,
+                command=command,
+                exit_code=exit_code,
+            )
+        )
+
+    def run_stage(
+        stage: str,
+        cmd: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        timeout_seconds: int | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        try:
+            return _run(cmd, cwd=cwd, env=env, timeout_seconds=timeout_seconds)
+        except subprocess.CalledProcessError as exc:
+            fail_blocked(
+                stage,
+                [f"{stage}_command_failed"],
+                command=cmd,
+                exit_code=exc.returncode,
+            )
+        except subprocess.TimeoutExpired:
+            fail_blocked(stage, [f"{stage}_command_timeout"], command=cmd)
+        raise AssertionError("unreachable")
+
+    if not capture_root.is_dir():
+        return write_blocked("preflight", [f"capture_root_missing:{capture_root}"])
+    if not webapp_repo.is_dir():
+        return write_blocked("preflight", [f"webapp_repo_missing:{webapp_repo}"])
+    if not mujoco_g1_root.is_dir():
+        return write_blocked("preflight", [f"mujoco_g1_root_missing:{mujoco_g1_root}"])
+
     beta_env = {
         **os.environ,
         "BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL": "true",
@@ -705,7 +998,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION": "true",
         "BLUEPRINT_MUJOCO_G1_MODEL_ROOT": str(mujoco_g1_root),
     }
-    _run(
+    run_stage(
+        "simulation_automation",
         [
             sys.executable,
             "-m",
@@ -717,7 +1011,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         env=beta_env,
         timeout_seconds=args.command_timeout_seconds,
     )
-    _run(
+    run_stage(
+        "robot_eval_dataset",
         [
             sys.executable,
             "-m",
@@ -730,7 +1025,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout_seconds=args.command_timeout_seconds,
     )
 
-    _run(
+    run_stage(
+        "initial_control_plane_manifest",
         [
             sys.executable,
             "-m",
@@ -747,7 +1043,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         cwd=_repo_root(),
         timeout_seconds=args.command_timeout_seconds,
     )
-    _run(
+    run_stage(
+        "live_pipeline_input_intake_audit",
         [
             sys.executable,
             "-m",
@@ -769,6 +1066,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         **os.environ,
         "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN": args.token,
         "BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE": "true",
+        "BLUEPRINT_LIVE_PIPELINE_ALLOW_PER_REQUEST_CAPTURE_ROOT": "true",
         "BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH": str(manifest_path),
         "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR": str(gate_dir / "incoming"),
         "PORT": str(port),
@@ -780,14 +1078,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         text=True,
     )
     try:
-        _wait_for_health(f"http://127.0.0.1:{port}/health", timeout_seconds=args.health_timeout_seconds)
+        try:
+            _wait_for_health(
+                f"http://127.0.0.1:{port}/health",
+                timeout_seconds=args.health_timeout_seconds,
+            )
+        except RuntimeError as exc:
+            fail_blocked(
+                "live_pipeline_intake_service_health",
+                [f"live_pipeline_intake_service_health_failed:{type(exc).__name__}"],
+            )
         forward_env = {
             **os.environ,
             "ROBOT_EVAL_JOB_REQUEST_FORWARD_URL": forward_url,
             "ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN": args.token,
             "ROBOT_EVAL_JOB_REQUEST_FORWARD_REQUIRED": "true",
+            "ROBOT_EVAL_JOB_REQUEST_ROUTE_AUTH_TOKEN": args.token,
         }
-        _run(
+        run_stage(
+            "forwarding_preflight_before_route_proof",
             [
                 "npm",
                 "run",
@@ -800,7 +1109,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             env=forward_env,
             timeout_seconds=args.command_timeout_seconds,
         )
-        _run(
+        run_stage(
+            "webapp_route_forwarding_proof",
             [
                 "npx",
                 "tsx",
@@ -815,10 +1125,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "sim-only-beta-local-gate",
             ],
             cwd=webapp_repo,
-            env={**os.environ, "ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN": args.token},
+            env={
+                **os.environ,
+                "ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN": args.token,
+                "ROBOT_EVAL_JOB_REQUEST_ROUTE_AUTH_TOKEN": args.token,
+            },
             timeout_seconds=args.command_timeout_seconds,
         )
-        _run(
+        run_stage(
+            "forwarding_preflight_after_route_proof",
             [
                 "npm",
                 "run",
@@ -839,7 +1154,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             process.kill()
             process.wait(timeout=10)
 
-    _run(
+    run_stage(
+        "processed_control_plane_mujoco",
         [
             sys.executable,
             "-m",
@@ -866,12 +1182,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout_seconds=args.command_timeout_seconds,
     )
 
-    report = _validate_sim_only_outputs(capture_root=capture_root, proof_path=proof_path)
+    try:
+        report = _validate_sim_only_outputs(capture_root=capture_root, proof_path=proof_path)
+    except Exception as exc:
+        return write_blocked(
+            "validate_sim_only_outputs",
+            [_exception_blocker("validate_sim_only_outputs_failed", exc)],
+        )
     write_json(report_path, report)
     print(f"[sim-only-beta-local-gate] report={report_path}")
     print(f"[sim-only-beta-local-gate] status={report['status']}")
     if report["blockers"]:
         print(f"[sim-only-beta-local-gate] blockers={len(report['blockers'])}")
+        _print_gate_blockers(report["blockers"])
         return 1
     return 0
 

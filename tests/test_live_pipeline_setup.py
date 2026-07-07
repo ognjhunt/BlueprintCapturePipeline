@@ -249,7 +249,9 @@ def test_live_pipeline_setup_helper_edges(tmp_path: Path, monkeypatch: pytest.Mo
     empty_dir = tmp_path / "empty-results"
     empty_dir.mkdir()
     assert lps._arena_results_status(empty_dir)["blockers"] == ["arena_results_dir_has_no_json_artifacts"]
-    assert lps._capture_upstream_truth(None)["blockers"] == ["capture_root_not_provided"]
+    assert lps._capture_upstream_truth(None)["blockers"] == [
+        "capture_root_or_job_request_inbox_not_provided"
+    ]
     capture_root = _capture_root(tmp_path, with_webapp_ids=False)
     descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
     descriptor["site_submission_id"] = "site-submission-only"
@@ -278,6 +280,48 @@ def test_live_pipeline_setup_helper_edges(tmp_path: Path, monkeypatch: pytest.Mo
     }
     blocked_sections["local_deterministic_lane"] = {"ready": False}
     assert lps._overall_status(blocked_sections) == "blocked"
+
+
+def test_live_pipeline_setup_accepts_per_request_inbox_without_global_capture_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_ffmpeg_available(monkeypatch)
+    inbox = tmp_path / "robot-eval-job-requests"
+    inbox.mkdir()
+
+    result = build_live_pipeline_setup_manifest(
+        job_request_inbox=inbox,
+        load_local_env=False,
+    )
+
+    upstream = result["sections"]["webapp_upstream_truth"]
+    assert upstream["status"] == "ready_for_per_request_capture_roots"
+    assert upstream["ready"] is True
+    assert upstream["blockers"] == []
+    assert upstream["job_request_inbox"]["path"] == str(inbox.resolve())
+    assert not any(
+        blocker.startswith("webapp_upstream_truth:capture_root")
+        for blocker in result["blockers"]
+    )
+
+
+def test_live_pipeline_setup_blocks_missing_per_request_inbox(
+    tmp_path: Path,
+) -> None:
+    missing_inbox = tmp_path / "missing-inbox"
+
+    result = build_live_pipeline_setup_manifest(
+        job_request_inbox=missing_inbox,
+        load_local_env=False,
+    )
+
+    upstream = result["sections"]["webapp_upstream_truth"]
+    assert upstream["status"] == "blocked"
+    assert upstream["ready"] is False
+    assert upstream["job_request_inbox"]["configured"] is True
+    assert upstream["job_request_inbox"]["exists"] is False
+    assert "webapp_upstream_truth:job_request_inbox_missing" in result["blockers"]
 
 
 def test_live_pipeline_setup_digitalocean_read_edges(monkeypatch: pytest.MonkeyPatch) -> None:

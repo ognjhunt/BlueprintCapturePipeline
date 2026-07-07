@@ -13,6 +13,108 @@ def _string_list(value: object) -> list[str]:
     return []
 
 
+def _string(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        key = normalized.lower()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        result.append(normalized)
+    return result
+
+
+def _task_zone_label(task_scope: Mapping[str, Any]) -> str:
+    task_zone = task_scope.get("task_zone") if isinstance(task_scope.get("task_zone"), Mapping) else {}
+    return (
+        _string(task_zone.get("label"))
+        or _string(task_scope.get("zone"))
+        or _string(task_scope.get("task_zone_label"))
+    )
+
+
+def _deterministic_recapture_recommendations(
+    *,
+    scorecard: Mapping[str, Any],
+    readiness_decision: Mapping[str, Any],
+    task_scope: Mapping[str, Any],
+    review_findings: Mapping[str, Any],
+    review_assessments: Mapping[str, Any],
+) -> list[str]:
+    recommendations: list[str] = []
+    zone_label = _task_zone_label(task_scope)
+    zone_phrase = f" around {zone_label}" if zone_label else " through the in-scope task zone"
+    scorecard_gap_active = bool(_string_list(scorecard.get("missing_evidence")))
+    decision_gap_active = bool(_string_list(readiness_decision.get("missing_evidence")))
+    follow_ups: list[str] = []
+    if scorecard_gap_active or decision_gap_active:
+        follow_ups.extend(_string_list(scorecard.get("follow_ups")))
+        follow_ups.extend(_string_list(readiness_decision.get("evidence_gaps")))
+        follow_ups.extend(_string_list(readiness_decision.get("remediation")))
+    combined = " ".join(follow_ups).lower()
+
+    def add(value: str) -> None:
+        recommendations.append(value)
+
+    if any(token in combined for token in ("workflow", "zone", "success criteria", "task scope")):
+        add(
+            f"Recapture a continuous slow pass{zone_phrase}; include the approach path, target objects, and visible success-criteria context."
+        )
+    if any(token in combined for token in ("object index", "indexed object", "object index missing")):
+        add(
+            f"Capture close, steady views of target objects and affordances{zone_phrase} so the object index can ground task cards."
+        )
+    if any(token in combined for token in ("qa", "blur", "motion", "lighting", "capture evidence")):
+        add(
+            f"Repeat the capture{zone_phrase} with slower camera motion, stable exposure, and at least one full-room establishing sweep."
+        )
+    if any(token in combined for token in ("metric", "calibration", "scaffolding", "scale")):
+        add(
+            f"Add a calibration pass{zone_phrase} with visible scale anchors, floor plane, and both start and goal areas."
+        )
+
+    missing_views = _string_list(review_findings.get("missing_views"))
+    if missing_views:
+        add(
+            "Reshoot missing views: "
+            + "; ".join(missing_views[:4])
+            + "."
+        )
+    occlusions = _string_list(review_findings.get("occlusion_observations"))
+    if occlusions:
+        add(
+            f"Revisit occluded or hidden areas{zone_phrase}; specifically clear sightlines around "
+            + "; ".join(occlusions[:3])
+            + "."
+        )
+
+    for key, detail in review_assessments.items():
+        if not isinstance(detail, Mapping):
+            continue
+        status = _string(detail.get("status")).lower()
+        score = float(detail.get("score") or 0.0)
+        if key in {"coverage_completeness", "task_zone_completeness"} and (
+            status in {"poor", "review_required", "failed"} or 0.0 < score < 0.65
+        ):
+            add(
+                f"Capture all edges of the task zone{zone_phrase}, including entrances, target surfaces, and blocked or low-visibility corners."
+            )
+        if key == "occlusion_and_hidden_zone" and (
+            status in {"poor", "review_required", "failed"} or 0.0 < score < 0.65
+        ):
+            add(
+                f"Make a second pass for hidden-zone coverage{zone_phrase}, with angled views behind movable clutter and fixtures."
+            )
+
+    return _unique_strings(recommendations)
+
+
 def build_buyer_trust_score(
     *,
     descriptor: Mapping[str, Any],
@@ -104,7 +206,17 @@ def build_launch_qualification_bundle(
     review_scores = normalized_review.get("scores") if isinstance(normalized_review.get("scores"), Mapping) else {}
     review_findings = normalized_review.get("findings") if isinstance(normalized_review.get("findings"), Mapping) else {}
     review_assessments = normalized_review.get("assessments") if isinstance(normalized_review.get("assessments"), Mapping) else {}
-    recapture_recommendations = _string_list(review_findings.get("recapture_recommendations"))
+    deterministic_recapture_recommendations = _deterministic_recapture_recommendations(
+        scorecard=scorecard,
+        readiness_decision=readiness_decision,
+        task_scope=task_scope,
+        review_findings=review_findings,
+        review_assessments=review_assessments,
+    )
+    recapture_recommendations = _unique_strings(
+        _string_list(review_findings.get("recapture_recommendations"))
+        + deterministic_recapture_recommendations
+    )
     preview_status = provider_run.get("status") or "not_requested"
     normalized_privacy = dict(privacy_processing) if isinstance(privacy_processing, Mapping) else {}
 
@@ -153,6 +265,7 @@ def build_launch_qualification_bundle(
             "required": bool(missing_evidence or recapture_recommendations or normalized_review.get("status") != "succeeded"),
             "missing_evidence": missing_evidence,
             "recommendations": recapture_recommendations,
+            "deterministic_recommendations": deterministic_recapture_recommendations,
         },
         "preview_status": preview_status,
         "provider_preview_status": {

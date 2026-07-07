@@ -45,8 +45,11 @@ def test_configured_image_ref_reads_secret_file(tmp_path):
     assert result["image_ref_file_present"] is True
 
 
-def test_configured_image_ref_generic_fallback():
-    env = {gocl.ROBOT_EVAL_WORKER_IMAGE_REF_ENV: VERSIONED_REF}
+def test_configured_image_ref_generic_fallback(tmp_path):
+    env = {
+        gocl.IMAGE_REF_FILE_ENV: str(tmp_path / "absent"),
+        gocl.ROBOT_EVAL_WORKER_IMAGE_REF_ENV: VERSIONED_REF,
+    }
     result = gocl.configured_image_ref(env=env)
     assert result["image_ref"] == VERSIONED_REF
     assert result["source"] == gocl.ROBOT_EVAL_WORKER_IMAGE_REF_ENV
@@ -212,7 +215,39 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
     assert cmd[cmd.index("--output-dir") + 1] == "/w/out"
     assert cmd[cmd.index("--oscar-height") + 1] == "256"
     assert cmd[cmd.index("--oscar-width") + 1] == "384"
+    assert cmd[cmd.index("--min-coherent-horizon-frames") + 1] == "2"
+    assert cmd[cmd.index("--min-steps") + 1] == "3"
     assert "--require-fresh-learned-policy-requery" in cmd
+    assert "--allow-wam-consistency-scoring" in cmd
+    assert "--require-forward-inverse-consistency" in cmd
+    assert cmd[cmd.index("--wam-consistency-command") + 1] == (
+        gocl.DEFAULT_WAM_CONSISTENCY_COMMAND
+    )
+    assert cmd[cmd.index("--wam-consistency-timeout-seconds") + 1] == "300.0"
+    assert "--require-generated-video-success-label" not in cmd
+    assert plan["episode_length_contract"] == {
+        "episode_length_unit": "closed_loop_control_steps",
+        "stop_condition": "task_completion_or_step_cap",
+        "steps_cap": 5,
+        "min_steps_before_task_completion": 3,
+        "steps_is_safety_cap": True,
+        "oscar_num_frames_scope": "per_generation_clip_not_episode_limit",
+        "episode_not_bound_to_oscar_clip_frames": True,
+    }
+    assert plan["quality_gate_contract"] == {
+        "min_coherent_horizon_frames": 2,
+        "forward_inverse_consistency_required": True,
+        "forward_inverse_consistency_command": gocl.DEFAULT_WAM_CONSISTENCY_COMMAND,
+        "forward_inverse_consistency_allow_scoring": True,
+        "generated_video_success_label_required": False,
+        "generated_video_success_label_command": None,
+        "generated_video_success_label_allow_labeling": False,
+        "claim_boundary": {
+            "forward_inverse_consistency_is_required_for_eval_run_quality": True,
+            "generated_video_success_label_is_separate_semantic_review": True,
+            "generated_video_success_label_is_not_real_world_task_success": True,
+        },
+    }
 
 
 def test_launch_plan_env_bakes_runtime_toggles():
@@ -230,6 +265,48 @@ def test_launch_plan_env_bakes_runtime_toggles():
     assert plan_env["PYTHONPATH"].startswith("/opt/OSCAR")
     assert plan_env["BLUEPRINT_OSCAR_WAM_HF_REVISION"] == OFFICIAL_OSCAR_HF_REVISION
     assert plan["claim_boundary"]
+    assert plan_env["BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING"] == "true"
+    assert plan_env["BLUEPRINT_ALLOW_LOCAL_WAM_EPISODE_CONSISTENCY"] == "true"
+    assert plan_env["BLUEPRINT_WAM_EPISODE_CONSISTENCY_COMMAND"] == (
+        gocl.DEFAULT_WAM_CONSISTENCY_COMMAND
+    )
+
+
+def test_launch_plan_can_make_generated_video_success_label_strict():
+    command = "python -m blueprint_pipeline.wam_generated_video_success_label_openai"
+    plan = gocl.build_sealed_launch_plan(
+        env=_active_env(),
+        start_frame="/w/frame.png",
+        route_file="/w/route.json",
+        steps=3,
+        task_prompt="open the fridge",
+        output_dir="/w/out",
+        require_generated_video_success_label=True,
+        wam_success_label_command=command,
+        allow_wam_success_labeling=True,
+    )
+    cmd = plan["closed_loop_command"]
+    assert "--require-generated-video-success-label" in cmd
+    assert "--allow-wam-success-labeling" in cmd
+    assert cmd[cmd.index("--wam-success-label-command") + 1] == command
+    assert plan["env"]["BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING"] == "true"
+    assert plan["env"]["BLUEPRINT_WAM_SUCCESS_LABEL_COMMAND"] == command
+    assert plan["quality_gate_contract"]["generated_video_success_label_required"] is True
+
+
+def test_launch_plan_blocks_strict_generated_video_success_without_labeler():
+    plan = gocl.build_sealed_launch_plan(
+        env=_active_env(),
+        start_frame="/w/frame.png",
+        route_file="/w/route.json",
+        steps=3,
+        task_prompt="open the fridge",
+        output_dir="/w/out",
+        require_generated_video_success_label=True,
+    )
+    assert plan["sealed_active"] is False
+    assert "wam_success_label_command_required" in plan["blockers"]
+    assert plan["closed_loop_command"] == []
 
 
 # --------------------------------------------------------------------------- #

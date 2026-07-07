@@ -146,10 +146,10 @@ def _world_labs_readiness(
     audit = _as_dict(worldlabs_input.get("audit_payload"))
     labeling = _as_dict(worldlabs_input.get("input_labeling"))
     raw_bypass_used = bool(audit.get("raw_video_bypass_used") or labeling.get("raw_video_bypass_used"))
-    # Raw-bypass exemptions exist only for labeled non-production previews. In
-    # production launch mode the bypass itself is a blocker and never exempts
-    # privacy/rights failures, so unredacted media can't reach a ready package.
-    bypass_exempts = raw_bypass_used and not production_launch_mode()
+    # Raw-bypass media can label a non-production preview, but it never downgrades
+    # privacy or rights failures. Those failures remain blockers in every mode so
+    # unredacted support evidence cannot become buyer-ready by changing env flags.
+    bypass_exempts = False
     if not output_video_uri:
         blockers.append("missing_privacy_safe_world_model_input")
     if status and status != "ready":

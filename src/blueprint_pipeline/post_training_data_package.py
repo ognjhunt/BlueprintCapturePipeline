@@ -23,6 +23,7 @@ from .lerobot_export_validation import (
     round_trip_validation_summary,
     validate_lerobot_export,
 )
+from .launch_proof_policy import production_launch_mode
 from .rl_post_training_handoff import build_rl_post_training_handoff_packet
 
 
@@ -71,7 +72,10 @@ def _measured_state_fraction_floor() -> float:
     raw = str(os.environ.get(MEASURED_STATE_FRACTION_FLOOR_ENV) or "").strip()
     if raw:
         try:
-            return max(0.0, min(1.0, float(raw)))
+            configured = max(0.0, min(1.0, float(raw)))
+            if production_launch_mode():
+                return max(MEASURED_STATE_FRACTION_FLOOR_DEFAULT, configured)
+            return configured
         except ValueError:
             pass
     return MEASURED_STATE_FRACTION_FLOOR_DEFAULT
@@ -4051,6 +4055,11 @@ def build_post_training_data_package_export(
         if resolved_job_dir
         else {}
     )
+    batch_metrics = (
+        _read_optional_mapping(resolved_job_dir / "simulator_command_batch_metrics.json")
+        if resolved_job_dir
+        else {}
+    )
     clips = (
         _read_optional_mapping(resolved_job_dir / "clips_manifest.json")
         if resolved_job_dir
@@ -4522,6 +4531,18 @@ def build_post_training_data_package_export(
                 or 0
             ),
         },
+        "task_success_metrics": {
+            "source_artifact": included_artifacts.get("simulator_command_batch_metrics"),
+            "metric_coverage_complete": batch_metrics.get("metric_coverage_complete")
+            is True,
+            "required_metric_keys": _string_list(batch_metrics.get("required_metric_keys")),
+            "attempt_metric_row_count": int(
+                batch_metrics.get("attempt_metric_row_count") or 0
+            ),
+            "missing_metric_row_count": int(
+                batch_metrics.get("missing_metric_row_count") or 0
+            ),
+        },
         "export_policy": {
             "curated_robot_pov_clips_required_for_richer_exports": True,
             "robot_pov_observations_included": "robot_pov_observation_manifest"
@@ -4716,6 +4737,26 @@ def build_post_training_data_package_export(
     manifest["buyer_package_readout_path"] = "buyer_package_readout.json"
     manifest["buyer_package_summary_path"] = "buyer_package_summary.md"
     manifest["buyer_readout_status"] = buyer_readout["status"]
+    if (
+        manifest["status"] == "export_ready_review_required"
+        and buyer_readout["status"] != "buyer_readout_ready_review_required"
+    ):
+        manifest["status"] = "blocked_buyer_readout_incomplete_package"
+        manifest["blockers"] = sorted(
+            {
+                *_string_list(manifest.get("blockers")),
+                *[
+                    f"buyer_readout:{blocker}"
+                    for blocker in _string_list(buyer_readout.get("blockers"))
+                ],
+            }
+        )
+        manifest["claim_boundary"]["post_training_package_export_ready"] = False
+        manifest["claim_boundary"]["buyer_readout_ready"] = False
+    else:
+        manifest["claim_boundary"]["buyer_readout_ready"] = (
+            buyer_readout["status"] == "buyer_readout_ready_review_required"
+        )
     write_json(resolved_output_dir / "post_training_data_package_export_manifest.json", manifest)
     _annotate_live_closure_with_handoff(
         job_dir=resolved_job_dir,

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Blueprint capture-bridge handoff listener repeatedly
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+RandomizedDelaySec=10s
+Persistent=true
+Unit=blueprint-pubsub-handoff-listener.service
+
+[Install]
+WantedBy=timers.target

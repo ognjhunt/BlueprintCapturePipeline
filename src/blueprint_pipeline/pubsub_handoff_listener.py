@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -147,6 +148,24 @@ def _first_non_empty(*sources: Mapping[str, Any], keys: Sequence[str]) -> str | 
     return None
 
 
+def _first_bool(*sources: Mapping[str, Any], keys: Sequence[str]) -> bool | None:
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, bool):
+                return value
+    return None
+
+
+def _first_list(*sources: Mapping[str, Any], keys: Sequence[str]) -> list[Any]:
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
 def _synthesize_pipeline_handoff(handoff: HandoffMessage, *, capture_root: Path) -> Path:
     """Materialize pipeline_handoff.json from raw sidecars when the iOS bundle omits it.
 
@@ -210,6 +229,93 @@ def _synthesize_pipeline_handoff(handoff: HandoffMessage, *, capture_root: Path)
         },
     )
     return destination
+
+
+def _control_plane_handoff_payload(
+    handoff: HandoffMessage,
+    *,
+    capture_root: Path,
+) -> dict[str, Any]:
+    pipeline_handoff = _read_optional_json_object(capture_root / "pipeline_handoff.json")
+    manifest = _read_optional_json_object(capture_root / "raw" / "manifest.json")
+    context = _read_optional_json_object(capture_root / "raw" / "capture_context.json")
+    owner_system = pipeline_handoff.get("owner_system")
+    owner = dict(owner_system) if isinstance(owner_system, Mapping) else {}
+    sources = (pipeline_handoff, owner, manifest, context)
+    pipeline_handoff_uri = handoff.pipeline_handoff_uri or str(
+        capture_root / "pipeline_handoff.json"
+    )
+    capture_descriptor_uri = (
+        str(capture_root / "capture_descriptor.json")
+        if (capture_root / "capture_descriptor.json").is_file()
+        else None
+    )
+    payload: dict[str, Any] = {
+        "bucket": handoff.bucket,
+        "scene_id": handoff.scene_id,
+        "capture_id": handoff.capture_id,
+        "raw_prefix_uri": handoff.raw_prefix_uri,
+        "pipeline_handoff_uri": pipeline_handoff_uri,
+        "capture_descriptor_uri": capture_descriptor_uri,
+        "capture_root": str(capture_root),
+    }
+    for output_key, keys in (
+        ("site_submission_id", ("site_submission_id", "siteSubmissionId")),
+        ("buyer_request_id", ("buyer_request_id", "buyerRequestId")),
+        ("capture_job_id", ("capture_job_id", "captureJobId")),
+        ("site_slug", ("site_slug", "siteSlug")),
+    ):
+        value = _first_non_empty(*sources, keys=keys)
+        if value:
+            payload[output_key] = value
+    requested_outputs = _first_list(
+        *sources,
+        keys=("requested_outputs", "requestedOutputs"),
+    )
+    if requested_outputs:
+        payload["requested_outputs"] = requested_outputs
+    requested_lanes = _first_list(
+        *sources,
+        keys=("requested_lanes", "requestedLanes"),
+    )
+    if requested_lanes:
+        payload["requested_lanes"] = requested_lanes
+    robot_eval_requested = _first_bool(
+        *sources,
+        keys=("robot_eval_dataset_requested", "robotEvalDatasetRequested"),
+    )
+    if robot_eval_requested is not None:
+        payload["robot_eval_dataset_requested"] = robot_eval_requested
+    return payload
+
+
+def _stage_control_plane_input(
+    *,
+    handoff: HandoffMessage,
+    capture_root: Path,
+    manifest_path: str | Path,
+    work_dir: str | Path | None,
+    staged_inputs_path: str | Path | None,
+    overwrite: bool,
+) -> dict[str, Any]:
+    from .live_pipeline_intake_service import stage_capture_handoff_for_control_plane
+
+    payload = _control_plane_handoff_payload(handoff, capture_root=capture_root)
+    result = stage_capture_handoff_for_control_plane(
+        payload=payload,
+        capture_root=capture_root,
+        manifest_path=manifest_path,
+        work_dir=work_dir,
+        overwrite=overwrite,
+        staged_inputs_path=staged_inputs_path,
+    )
+    if result.get("status") != "staged_for_control_plane":
+        blockers = result.get("input_blockers") or result.get("blockers") or []
+        raise PipelineError(
+            "Pub/Sub handoff could not stage control-plane input: "
+            + ", ".join(str(blocker) for blocker in blockers)
+        )
+    return result
 
 
 JOB_LEDGER_FILENAME = "pipeline_job_ledger.json"
@@ -498,6 +604,12 @@ def process_handoff_payload(
     run_e2e: Callable[..., dict[str, Any]] = run_end_to_end,
     storage_client: storage.Client | None = None,
     run_evaluation_prep: bool = True,
+    run_e2e_enabled: bool = True,
+    stage_control_plane: bool = False,
+    control_plane_manifest_path: str | Path | None = None,
+    control_plane_work_dir: str | Path | None = None,
+    control_plane_staged_inputs_path: str | Path | None = None,
+    overwrite_control_plane_input: bool = False,
 ) -> dict[str, Any]:
     handoff = parse_handoff_payload(payload)
     capture_root = stage_handoff_capture(
@@ -586,14 +698,37 @@ def process_handoff_payload(
                 "allow_robot_eval_simulator_execution": False,
             }
         )
+    control_plane_staging: dict[str, Any] | None = None
+    failure_stage = "run_e2e"
     try:
-        result = run_e2e(**run_kwargs)
+        if stage_control_plane:
+            failure_stage = "control_plane_staging"
+            if control_plane_manifest_path is None:
+                raise PipelineError(
+                    "Pub/Sub handoff control-plane staging requires a manifest path."
+                )
+            control_plane_staging = _stage_control_plane_input(
+                handoff=handoff,
+                capture_root=capture_root,
+                manifest_path=control_plane_manifest_path,
+                work_dir=control_plane_work_dir,
+                staged_inputs_path=control_plane_staged_inputs_path,
+                overwrite=overwrite_control_plane_input,
+            )
+        failure_stage = "run_e2e"
+        if run_e2e_enabled:
+            result = run_e2e(**run_kwargs)
+        else:
+            result = {
+                "status": "skipped",
+                "reason": "run_e2e_disabled_after_control_plane_staging",
+            }
     except Exception as exc:
         failed_at = utc_now_iso()
         failure_record = {
             "attempt_number": attempt_count,
             "status": "failed_retryable",
-            "stage": "run_e2e",
+            "stage": failure_stage,
             "started_at": attempt_started_at,
             "failed_at": failed_at,
             "error_type": type(exc).__name__,
@@ -618,6 +753,17 @@ def process_handoff_payload(
         )
         raise
     completed_at = utc_now_iso()
+    control_plane_staging_status = (
+        str(control_plane_staging.get("status") or "") or None
+        if control_plane_staging
+        else None
+    )
+    control_plane_staging_path = (
+        str((control_plane_staging.get("webapp_staging") or {}).get("target_path") or "")
+        or None
+        if control_plane_staging
+        else None
+    )
     completion_record = {
         "attempt_number": attempt_count,
         "status": "completed",
@@ -626,23 +772,38 @@ def process_handoff_payload(
         "completed_at": completed_at,
         "run_e2e_status": str(result.get("status") or "") or None,
     }
+    if control_plane_staging:
+        completion_record.update(
+            {
+                "control_plane_staging_status": control_plane_staging_status,
+                "control_plane_staging_path": control_plane_staging_path,
+            }
+        )
+    ledger_update = {
+        "schema_version": JOB_LEDGER_SCHEMA_VERSION,
+        "status": "completed",
+        "scene_id": handoff.scene_id,
+        "capture_id": handoff.capture_id,
+        "attempt_count": attempt_count,
+        "started_at": job_started_at,
+        "updated_at": completed_at,
+        "last_attempt_started_at": attempt_started_at,
+        "completed_at": completed_at,
+        "run_e2e_status": str(result.get("status") or "") or None,
+        "last_error_type": None,
+        "last_error": None,
+        "attempt_history": [*previous_history, completion_record],
+    }
+    if control_plane_staging:
+        ledger_update.update(
+            {
+                "control_plane_staging_status": control_plane_staging_status,
+                "control_plane_staging_path": control_plane_staging_path,
+            }
+        )
     _write_job_ledger(
         capture_root,
-        {
-            "schema_version": JOB_LEDGER_SCHEMA_VERSION,
-            "status": "completed",
-            "scene_id": handoff.scene_id,
-            "capture_id": handoff.capture_id,
-            "attempt_count": attempt_count,
-            "started_at": job_started_at,
-            "updated_at": completed_at,
-            "last_attempt_started_at": attempt_started_at,
-            "completed_at": completed_at,
-            "run_e2e_status": str(result.get("status") or "") or None,
-            "last_error_type": None,
-            "last_error": None,
-            "attempt_history": [*previous_history, completion_record],
-        },
+        ledger_update,
     )
     return {
         "schema_version": "v1",
@@ -652,6 +813,7 @@ def process_handoff_payload(
         "capture_id": handoff.capture_id,
         "capture_root": str(capture_root),
         "run_e2e": result,
+        "control_plane_staging": control_plane_staging,
     }
 
 
@@ -662,6 +824,12 @@ def pull_and_process(
     provider: str,
     max_messages: int,
     run_evaluation_prep: bool = True,
+    run_e2e_enabled: bool = True,
+    stage_control_plane: bool = False,
+    control_plane_manifest_path: str | Path | None = None,
+    control_plane_work_dir: str | Path | None = None,
+    control_plane_staged_inputs_path: str | Path | None = None,
+    overwrite_control_plane_input: bool = False,
 ) -> int:
     from google.cloud import pubsub_v1
 
@@ -693,6 +861,12 @@ def pull_and_process(
                 storage_root=storage_root,
                 provider=provider,
                 run_evaluation_prep=run_evaluation_prep,
+                run_e2e_enabled=run_e2e_enabled,
+                stage_control_plane=stage_control_plane,
+                control_plane_manifest_path=control_plane_manifest_path,
+                control_plane_work_dir=control_plane_work_dir,
+                control_plane_staged_inputs_path=control_plane_staged_inputs_path,
+                overwrite_control_plane_input=overwrite_control_plane_input,
             )
         except Exception:
             logger.exception(
@@ -744,6 +918,10 @@ def _optional_number(data: Mapping[str, Any], key: str) -> float | None:
     raise PipelineError(f"Pub/Sub handoff {key} must be a number when present.")
 
 
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_staged_handoff_path(
     value: str | None,
     *,
@@ -780,9 +958,49 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--subscription")
     parser.add_argument("--storage-root", type=Path)
-    parser.add_argument("--provider", default="openai", choices=("claude", "openai"))
+    parser.add_argument(
+        "--provider",
+        default="openai",
+        choices=("local", "claude", "openai"),
+        help=(
+            "Agent-review provider for run_e2e. Production defaults to openai; "
+            "local is a deterministic no-LLM contract lane."
+        ),
+    )
     parser.add_argument("--max-messages", type=int, default=1)
     parser.add_argument("--skip-evaluation-prep", action="store_true")
+    parser.add_argument(
+        "--stage-control-plane",
+        action="store_true",
+        default=_env_truthy("BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE"),
+        help="Stage converted capture handoffs into the live control-plane inbox.",
+    )
+    parser.add_argument(
+        "--control-plane-manifest",
+        default=os.getenv("BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH"),
+        help="Path to live_pipeline_control_plane_manifest.json for inbox staging.",
+    )
+    parser.add_argument(
+        "--control-plane-work-dir",
+        default=os.getenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR"),
+        help="Directory for Pub/Sub-to-control-plane staging candidates.",
+    )
+    parser.add_argument(
+        "--control-plane-staged-inputs-path",
+        default=os.getenv("BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH"),
+        help="Optional live_pipeline_staged_inputs.json path to update during staging.",
+    )
+    parser.add_argument(
+        "--overwrite-control-plane-input",
+        action="store_true",
+        default=_env_truthy("BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE"),
+    )
+    parser.add_argument(
+        "--skip-run-e2e",
+        action="store_true",
+        default=_env_truthy("BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E"),
+        help="Only stage the capture/control-plane input; do not run run_e2e in the listener.",
+    )
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--bucket")
     parser.add_argument("--scene-id")
@@ -817,12 +1035,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not args.subscription:
         parser.error("--subscription is required unless --status is used")
+    if args.stage_control_plane and not args.control_plane_manifest:
+        parser.error("--stage-control-plane requires --control-plane-manifest")
+    if args.skip_run_e2e and not args.stage_control_plane:
+        parser.error("--skip-run-e2e requires --stage-control-plane")
     processed = pull_and_process(
         subscription=args.subscription,
         storage_root=storage_root,
         provider=args.provider,
         max_messages=max(1, args.max_messages),
         run_evaluation_prep=not args.skip_evaluation_prep,
+        run_e2e_enabled=not args.skip_run_e2e,
+        stage_control_plane=args.stage_control_plane,
+        control_plane_manifest_path=args.control_plane_manifest,
+        control_plane_work_dir=args.control_plane_work_dir,
+        control_plane_staged_inputs_path=args.control_plane_staged_inputs_path,
+        overwrite_control_plane_input=args.overwrite_control_plane_input,
     )
     print(json.dumps({"processed": processed, "storage_root": str(storage_root)}, sort_keys=True))
     return 0

@@ -1,6 +1,6 @@
 # Paid Marketplace Beta Launch Gate
 
-Run the automated gate from [run_paid_marketplace_launch_gate.py](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/scripts/run_paid_marketplace_launch_gate.py):
+Run the automated gate from [run_paid_marketplace_launch_gate.py](scripts/run_paid_marketplace_launch_gate.py):
 
 ```bash
 python scripts/run_paid_marketplace_launch_gate.py
@@ -96,6 +96,17 @@ with schema `operator_launch_evidence.v1`. Until every required evidence id is
 verified there, `overall_status` remains
 `automated_contracts_passed_manual_ops_required` even when all automated stage
 checks pass.
+
+Use [operator_launch_evidence.template.json](docs/operator_launch_evidence.template.json)
+as the starting shape. A generic `status=verified` plus `evidence_uri` is not
+enough for live-proof checks: payment evidence must declare live Stripe mode and
+include payment or event identifiers, payout evidence must declare live Stripe
+mode and include payout/transfer identifiers plus reconciliation, Connect
+readiness must include live provider booleans with no blocking requirements,
+device-flow evidence must include a recording and `capture_job_id`, buyer
+artifact access must include an authenticated buyer session plus successful
+executed access/fetch evidence, and finance ownership must name the owner and
+queue.
 
 Truthful launch messaging after the automated gate passes but before operator evidence:
 

@@ -196,6 +196,7 @@ def _audit_webapp_request(
     request_path: Path | None,
     expected_capture_root: Path | None,
     configured_inbox: Path | None,
+    allow_request_capture_root: bool = False,
 ) -> Dict[str, Any]:
     if request_path is None:
         return {
@@ -237,6 +238,10 @@ def _audit_webapp_request(
     )
     site_package = _mapping(request.get("site_package"))
     request_capture_root = _string(site_package.get("capture_root")) or None
+    request_capture_root_path = Path(request_capture_root).resolve() if request_capture_root else None
+    request_capture_root_exists = (
+        request_capture_root_path.is_dir() if request_capture_root_path else False
+    )
     fields_present = {
         field: bool(_field_value(request, field))
         for field in WEBAPP_UPSTREAM_REQUIRED_FIELDS
@@ -248,7 +253,10 @@ def _audit_webapp_request(
     blockers: List[str] = []
     if missing_fields:
         blockers.append("missing_required_webapp_ids")
-    if not capture_root_matches:
+    capture_root_accepted_by_request = (
+        allow_request_capture_root and request_capture_root_exists
+    )
+    if not capture_root_matches and not capture_root_accepted_by_request:
         blockers.append("request_capture_root_does_not_match_control_plane")
     job_id = _string(request.get("job_id")) or request_path.stem
     return {
@@ -261,7 +269,10 @@ def _audit_webapp_request(
         "fields_present": fields_present,
         "missing_fields": missing_fields,
         "request_capture_root_configured": bool(request_capture_root),
+        "request_capture_root": str(request_capture_root_path) if request_capture_root_path else None,
+        "request_capture_root_exists": request_capture_root_exists,
         "request_capture_root_matches_control_plane": capture_root_matches,
+        "request_capture_root_accepted_for_multi_capture_inbox": capture_root_accepted_by_request,
         "configured_capture_root": str(expected_capture_root) if expected_capture_root else None,
         "configured_inbox": str(configured_inbox) if configured_inbox else None,
         "source_kind": source_kind or None,
@@ -1419,6 +1430,7 @@ def build_live_pipeline_input_intake(
     stage_policy_package: bool = False,
     stage_real_robot_pov: bool = False,
     overwrite: bool = False,
+    allow_request_capture_root: bool = False,
     output_path: str | Path | None = None,
     staged_inputs_path: str | Path | None = None,
 ) -> Dict[str, Any]:
@@ -1440,6 +1452,7 @@ def build_live_pipeline_input_intake(
         request_path=request_path,
         expected_capture_root=capture_root,
         configured_inbox=inbox,
+        allow_request_capture_root=allow_request_capture_root,
     )
     arena_audit = _audit_arena_results(results_path)
     live_closure_evidence_audit = _audit_live_closure_evidence(

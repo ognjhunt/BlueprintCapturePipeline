@@ -17,13 +17,17 @@ from .first_gpu_sample_video_preflight import (
     build_first_gpu_sample_video_preflight,
 )
 from .preflight_capture import build_capture_preflight_report
+from .robot_eval_job_request_contract import (
+    ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
+    ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
+)
 from .simulation_automation import build_simulation_automation
 
 
 FIRST_GPU_SAMPLE_VIDEO_STAGE_SCHEMA_VERSION = "first_gpu_sample_video_stage.v1"
 LIVE_PIPELINE_STAGED_INPUTS_SCHEMA_VERSION = "blueprint_live_pipeline_staged_inputs.v1"
-WEBAPP_JOB_REQUEST_QUEUE_CONTRACT = "robot_eval_job_request_inbox.v1"
-WEBAPP_JOB_REQUEST_SCHEMA_VERSION = "robot_eval_job_request.v1"
+WEBAPP_JOB_REQUEST_QUEUE_CONTRACT = ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT
+WEBAPP_JOB_REQUEST_SCHEMA_VERSION = ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION
 LOCAL_WEBAPP_REHEARSAL_SOURCE_KIND = "local_first_gpu_rehearsal_request"
 REQUESTED_OUTPUTS = [
     "qualification",

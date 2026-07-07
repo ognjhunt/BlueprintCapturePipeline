@@ -1955,6 +1955,71 @@ def _merge_evidence(base: Dict[str, Any], incoming: Mapping[str, Any]) -> Dict[s
     return base
 
 
+def _signed_url_list_from_manifest(value: Any) -> List[str]:
+    values = _string_list(value)
+    return [item for item in values if item.startswith("http://") or item.startswith("https://")]
+
+
+def _signed_access_manifest_delivery_evidence(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    command_output = _mapping(
+        _field(payload, "delivery_command_output", "deliveryCommandOutput")
+    )
+    buyer_access_check = _mapping(
+        _field(
+            payload,
+            "buyer_access_check",
+            "buyerAccessCheck",
+            "authenticated_fetch",
+            "authenticatedFetch",
+        )
+    ) or _mapping(
+        _field(
+            command_output,
+            "buyer_access_check",
+            "buyerAccessCheck",
+            "authenticated_fetch",
+            "authenticatedFetch",
+        )
+    )
+    signed_urls = _signed_url_list_from_manifest(
+        _field(payload, "signed_urls", "signedUrls")
+    ) or _signed_url_list_from_manifest(
+        _field(command_output, "signed_urls", "signedUrls")
+    )
+    signed_url = _string(_field(payload, "signed_url", "signedUrl")) or _string(
+        _field(command_output, "signed_url", "signedUrl")
+    )
+    if signed_url.startswith("http://") or signed_url.startswith("https://"):
+        signed_urls = [*signed_urls, signed_url]
+    signed_access = _string_list(
+        _field(payload, "signed_access", "signedAccess")
+        or _field(command_output, "signed_access", "signedAccess")
+    )
+    entitlement_verified = _boolish(
+        _field(payload, "entitlement_verified", "entitlementVerified")
+        or _field(command_output, "entitlement_verified", "entitlementVerified")
+        or _field(buyer_access_check, "entitlement_verified", "entitlementVerified")
+    )
+    storage_upload_performed = _boolish(
+        _field(payload, "storage_upload_performed", "storageUploadPerformed")
+        or _field(command_output, "storage_upload_performed", "storageUploadPerformed")
+    )
+    operator_attestation = (
+        _field(payload, "operator_attestation", "operatorAttestation")
+        or _field(command_output, "operator_attestation", "operatorAttestation")
+    )
+    delivery: Dict[str, Any] = {
+        "storage_upload_performed": storage_upload_performed,
+        "signed_urls": signed_urls,
+        "signed_access": signed_access,
+        "entitlement_verified": entitlement_verified,
+        "buyer_access_check": buyer_access_check,
+        "operator_attestation": operator_attestation,
+        "signed_access_manifest_status": _string(_field(payload, "status")) or None,
+    }
+    return {"delivery": delivery}
+
+
 def _load_live_evidence(
     *,
     capture_root: Path,
@@ -2017,13 +2082,30 @@ def _load_live_evidence(
         "ownerEvidenceManifestUri",
         "rank_fidelity_proof_uri",
         "robotReadinessProofUri",
+        "signed_access_manifest_uri",
+        "signedAccessManifestUri",
+        "delivery_access_manifest_uri",
+        "deliveryAccessManifestUri",
     ):
         payload = _load_reference_mapping(job_request.get(key), capture_root=capture_root, job_dir=job_dir)
         if payload:
-            consume_payload(payload, f"job_request_ref:{key}")
+            normalized_key = key.lower()
+            if (
+                "signed_access" in normalized_key
+                or "signedaccess" in normalized_key
+                or "delivery_access" in normalized_key
+                or "deliveryaccess" in normalized_key
+            ):
+                consume_payload(
+                    _signed_access_manifest_delivery_evidence(payload),
+                    f"job_request_ref:{key}",
+                )
+            else:
+                consume_payload(payload, f"job_request_ref:{key}")
     for path in (
         job_dir / "live_eval_closure_evidence.json",
         job_dir / "owner_rank_fidelity_evidence.json",
+        job_dir / "signed_access_manifest.json",
         capture_root
         / "pipeline"
         / "robot_eval_inputs"
@@ -2034,12 +2116,21 @@ def _load_live_evidence(
         / "robot_eval_inputs"
         / job_id
         / "owner_rank_fidelity_evidence.json",
+        capture_root
+        / "pipeline"
+        / "robot_eval_inputs"
+        / job_id
+        / "signed_access_manifest.json",
         capture_root / "pipeline" / "robot_eval_inputs" / "live_eval_closure_evidence.json",
         capture_root / "pipeline" / "robot_eval_inputs" / "owner_rank_fidelity_evidence.json",
+        capture_root / "pipeline" / "robot_eval_inputs" / "signed_access_manifest.json",
     ):
         payload = _read_optional_mapping(path)
         if payload:
-            consume_payload(payload, str(path))
+            if path.name == "signed_access_manifest.json":
+                consume_payload(_signed_access_manifest_delivery_evidence(payload), str(path))
+            else:
+                consume_payload(payload, str(path))
     evidence.setdefault("schema_version", LIVE_ROBOT_EVAL_EVIDENCE_SCHEMA_VERSION)
     if input_blockers:
         evidence["_input_blockers"] = input_blockers
@@ -2655,6 +2746,43 @@ def _signed_delivery_access_gate(evidence: Mapping[str, Any]) -> Dict[str, Any]:
     entitlement_verified = _boolish(
         _field(section, "entitlement_verified", "entitlementVerified")
     )
+    buyer_access_check = _mapping(
+        _field(
+            section,
+            "buyer_access_check",
+            "buyerAccessCheck",
+            "authenticated_fetch",
+            "authenticatedFetch",
+            "executed_access_check",
+            "executedAccessCheck",
+        )
+    )
+    buyer_access_checked = _boolish(
+        _field(
+            buyer_access_check,
+            "buyer_access_checked",
+            "buyerAccessChecked",
+            "authenticated_fetch_executed",
+            "authenticatedFetchExecuted",
+            "executed",
+        )
+    )
+    buyer_accessible = _boolish(
+        _field(
+            buyer_access_check,
+            "buyer_accessible",
+            "buyerAccessible",
+            "authenticated_fetch_succeeded",
+            "authenticatedFetchSucceeded",
+            "accessible",
+        )
+    )
+    buyer_access_status = _string(
+        _field(buyer_access_check, "status", "fetch_status", "fetchStatus")
+    )
+    if buyer_access_status in {"ok", "passed", "accessible"}:
+        buyer_access_checked = True
+        buyer_accessible = True
     signed_access_ready = bool(signed_url_count or signed_access_count)
     attestation_present = _attestation_ok(
         _field(
@@ -2672,8 +2800,12 @@ def _signed_delivery_access_gate(evidence: Mapping[str, Any]) -> Dict[str, Any]:
         blockers.append("signed_delivery_access_not_proven")
     if signed_access_ready and not attestation_present:
         blockers.append("signed_delivery_operator_attestation_missing")
-    if section and _field(section, "entitlement_verified", "entitlementVerified") is not None and not entitlement_verified:
+    if section and not entitlement_verified:
         blockers.append("signed_delivery_entitlement_not_verified")
+    if signed_access_ready and not buyer_access_checked:
+        blockers.append("signed_delivery_buyer_access_check_not_executed")
+    if signed_access_ready and buyer_access_checked and not buyer_accessible:
+        blockers.append("signed_delivery_buyer_access_fetch_failed")
     return _gate(
         "signed_delivery_access",
         passed=not blockers,
@@ -2685,6 +2817,9 @@ def _signed_delivery_access_gate(evidence: Mapping[str, Any]) -> Dict[str, Any]:
             "signed_access_required": True,
             "storage_upload_alone_proves_signed_access": False,
             "entitlement_verified": entitlement_verified,
+            "buyer_access_checked": buyer_access_checked,
+            "buyer_accessible": buyer_accessible,
+            "buyer_access_check_status": buyer_access_status or None,
             "operator_attestation_present": attestation_present,
         },
     )

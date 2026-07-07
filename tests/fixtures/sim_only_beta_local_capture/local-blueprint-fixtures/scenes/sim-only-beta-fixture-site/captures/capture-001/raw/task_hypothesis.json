@@ -1,0 +1,9 @@
+{
+  "schema_version": "v1",
+  "status": "accepted",
+  "workflowName": "Fixture sim-only local beta gate",
+  "taskSteps": [
+    "navigate from the marked start to the fixture service counter"
+  ],
+  "targetKPI": "sim_only_beta_local_gate_fixture"
+}

@@ -1181,7 +1181,7 @@ def _remediation_for_blocker(blocker: str) -> Dict[str, Any]:
                 ),
                 "safe_command": (
                     "BLUEPRINT_PREVIEW_PROVIDER=world_labs WORLDLABS_API_KEY=<set-in-shell-not-artifact> "
-                    "blueprint-run-e2e --capture-root <capture-root> --provider openai "
+                    "blueprint-run-e2e --capture-root <capture-root> --provider local "
                     "--pipeline-lane current --run-evaluation-prep --evaluation-prep-provider manual"
                 ),
                 "can_be_rehearsed_locally": False,
