@@ -274,3 +274,35 @@ def test_cli_print_sealed_contract_exit_code(capsys, monkeypatch, tmp_path):
     out = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert out["sealed_active"] is True
+
+
+def test_sealed_launch_plan_defaults_to_native_oscar_resolution(monkeypatch):
+    """240x320 was an OOM-era mitigation that degraded quality without saving
+    weight memory; the sealed launch contract must default to native 480x640
+    and carry the lane hardware floor so pods are sized before spend."""
+    plan = gocl.build_sealed_launch_plan(
+        start_frame="/workspace/seed.png",
+        route_file="/workspace/route.json",
+        steps=3,
+        task_prompt="open the fridge",
+        output_dir="/workspace/t4_out",
+        env={},
+    )
+    assert plan["lane"] == "kitchen_g1_groot_sonic_eval"
+    requirements = plan["lane_hardware_requirements"]
+    assert requirements["min_vram_gb"] >= 40.0
+    assert "NVIDIA RTX A6000" in requirements["recommended_gpu_type_ids"]
+
+    active = gocl.build_sealed_launch_plan(
+        start_frame="/workspace/seed.png",
+        route_file="/workspace/route.json",
+        steps=3,
+        task_prompt="open the fridge",
+        output_dir="/workspace/t4_out",
+        env=dict(gocl.SEALED_MARKER_ENV_TRUE) if hasattr(gocl, "SEALED_MARKER_ENV_TRUE") else {"BLUEPRINT_GROOT_OSCAR_SEALED_IMAGE": "true"},
+    )
+    command = active["closed_loop_command"]
+    if command:
+        height = command[command.index("--oscar-height") + 1]
+        width = command[command.index("--oscar-width") + 1]
+        assert (height, width) == ("480", "640")

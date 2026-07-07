@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .lane_hardware_requirements import LANE_HARDWARE_REQUIREMENTS
 from .oscar_official_release import OFFICIAL_OSCAR_HF_REVISION
 
 # --------------------------------------------------------------------------- #
@@ -191,8 +192,11 @@ def build_sealed_launch_plan(
     steps: int,
     task_prompt: str,
     output_dir: str,
-    oscar_height: int = 240,
-    oscar_width: int = 320,
+    # OSCAR's native training resolution. 240x320 was a 2026-07-06 OOM-era
+    # mitigation that bought no memory (weights dominate) while degrading
+    # generation quality — never bake sub-native resolution into a launch plan.
+    oscar_height: int = 480,
+    oscar_width: int = 640,
     device: str = "cuda:0",
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -207,6 +211,12 @@ def build_sealed_launch_plan(
         "schema_version": "groot_oscar_closed_loop_sealed_launch_plan.v1",
         "sealed_active": contract["sealed_active"],
         "blockers": list(contract["blockers"]),
+        # Pod sizing is part of the launch contract: provisioning against this
+        # plan must satisfy the lane floor (see lane_hardware_requirements).
+        "lane": "kitchen_g1_groot_sonic_eval",
+        "lane_hardware_requirements": dict(
+            LANE_HARDWARE_REQUIREMENTS["kitchen_g1_groot_sonic_eval"]
+        ),
         "image_ref": contract["image_ref"],
         "policy_server_url": contract["policy_server_url"],
         "policy_server_port": contract["policy_server_port"],
@@ -322,8 +332,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--steps", type=int, default=3)
     parser.add_argument("--task-prompt", default="open the fridge")
     parser.add_argument("--output-dir", default="/workspace/t4_out")
-    parser.add_argument("--oscar-height", type=int, default=240)
-    parser.add_argument("--oscar-width", type=int, default=320)
+    parser.add_argument("--oscar-height", type=int, default=480)
+    parser.add_argument("--oscar-width", type=int, default=640)
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args(argv)
 

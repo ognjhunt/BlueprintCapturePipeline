@@ -80,6 +80,7 @@ def require_pre_spend_preflight(
     runtime_contract: Mapping[str, Any] | None,
     spend_gate_open: Any = None,
     record_dir: str | Path | None = None,
+    hardware_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The single fail-closed gate every paid launch must pass through.
 
@@ -88,6 +89,11 @@ def require_pre_spend_preflight(
     artifact always exists), and raises :class:`PreSpendPreflightBlocked` unless
     the preflight passed. Lanes must not call provider launch APIs on the
     exception path.
+
+    ``hardware_contract`` (from
+    ``lane_hardware_requirements.build_lane_hardware_contract``) makes GPU
+    sizing part of the chokepoint: a pod below the lane's registered VRAM/disk
+    floor fails here, before any billable request.
     """
     preflight = build_pre_spend_preflight(
         provider=provider,
@@ -96,6 +102,7 @@ def require_pre_spend_preflight(
         image_contract=image_contract,
         runtime_contract=runtime_contract,
         spend_gate_open=spend_gate_open,
+        hardware_contract=hardware_contract,
     )
     lane_name = str(lane or "").strip()
     preflight["lane"] = lane_name or None

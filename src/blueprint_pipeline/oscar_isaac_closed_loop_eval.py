@@ -2344,6 +2344,81 @@ def _score_closed_loop_generated_video_success(
     }
 
 
+GENERATED_CLIP_SEED_CORRELATION_FLOOR = 0.5
+
+
+def generated_clip_coherence(
+    video_path: str | Path | None,
+    *,
+    correlation_floor: float = GENERATED_CLIP_SEED_CORRELATION_FLOOR,
+) -> dict[str, Any]:
+    """Measure how long a generated clip stays visually anchored to its seed.
+
+    2026-07-06 T4 finding: OSCAR clips collapsed to noise within 4-9 of 81
+    frames, and the contrast/edge signal gate could not see it (noise has
+    plenty of edges). Normalized correlation of each frame against frame 0
+    catches drift-to-garbage cheaply and scene-neutrally. ``coherent_horizon``
+    is 1 + the count of leading frames with correlation >= floor; a horizon of
+    1 means not even the frame the loop feeds forward is anchored to the seed.
+    Fail-open to ``not_measured`` (never fabricates a score) when cv2 or the
+    clip is unavailable.
+    """
+    resolved = Path(video_path).expanduser() if video_path else None
+    if resolved is None or not resolved.is_file():
+        return {"status": "not_measured", "blockers": ["generated_video_missing"]}
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return {"status": "not_measured", "blockers": ["cv2_unavailable"]}
+    capture = cv2.VideoCapture(str(resolved))
+    seed = None
+    correlations: list[float] = []
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype("float32")
+            gray = cv2.resize(gray, (80, 60))
+            if seed is None:
+                seed = gray - gray.mean()
+                continue
+            centered = gray - gray.mean()
+            denominator = float(
+                np.sqrt((centered * centered).sum() * (seed * seed).sum())
+            )
+            correlations.append(
+                float((centered * seed).sum() / denominator) if denominator else 0.0
+            )
+    finally:
+        capture.release()
+    if seed is None or not correlations:
+        return {
+            "status": "not_measured",
+            "blockers": ["generated_video_unreadable_or_single_frame"],
+        }
+    horizon = 1
+    for value in correlations:
+        if value < float(correlation_floor):
+            break
+        horizon += 1
+    return {
+        "status": "measured",
+        "frame_count": len(correlations) + 1,
+        "seed_correlation_floor": float(correlation_floor),
+        "coherent_horizon_frames": horizon,
+        "first_frame_correlation": round(correlations[0], 6),
+        "final_frame_correlation": round(correlations[-1], 6),
+        "min_correlation": round(min(correlations), 6),
+        "blockers": [],
+        "claim_boundary": (
+            "Seed-anchored correlation measures visual drift only; it is not "
+            "semantic fidelity, physics plausibility, or task-success evidence."
+        ),
+    }
+
+
 def _score_closed_loop_step_episode_consistency(
     *,
     output_dir: Path,
@@ -2585,6 +2660,7 @@ def run_oscar_isaac_closed_loop(
     allow_wam_success_labeling: bool = False,
     require_generated_video_success_label: bool = False,
     wam_success_label_timeout_seconds: float | None = None,
+    min_coherent_horizon_frames: int = 0,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     resolved_out = Path(output_dir).expanduser().resolve()
@@ -2621,6 +2697,7 @@ def run_oscar_isaac_closed_loop(
     )
     clean_frame_reanchor_events: list[dict[str, Any]] = []
     action_history: list[dict[str, Any]] = []
+    clip_coherence_rows: list[dict[str, Any]] = []
     step_records: list[dict[str, Any]] = []
     adapter_reports: list[dict[str, Any]] = []
     trace_rows: list[dict[str, Any]] = []
@@ -2679,6 +2756,25 @@ def run_oscar_isaac_closed_loop(
         generated_frame = _string(wam_output.get("generated_frame_path"))
         if not generated_frame or not Path(generated_frame).is_file():
             blockers.append(f"blocked_wam_generation_missing_frame_at_step_{step_index}")
+            break
+        clip_coherence = generated_clip_coherence(
+            wam_output.get("generated_video_path")
+        )
+        clip_coherence_rows.append(
+            {"step_index": step_index, **clip_coherence}
+        )
+        if (
+            int(min_coherent_horizon_frames or 0) > 0
+            and clip_coherence.get("status") == "measured"
+            and int(clip_coherence.get("coherent_horizon_frames") or 0)
+            < int(min_coherent_horizon_frames)
+        ):
+            blockers.append(
+                "blocked_generated_clip_coherence_below_floor_at_step_"
+                f"{step_index}:horizon_"
+                f"{clip_coherence.get('coherent_horizon_frames')}"
+                f"_lt_{int(min_coherent_horizon_frames)}"
+            )
             break
         wam_provider_payload = (
             wam_output.get("provider_payload")
@@ -3122,6 +3218,25 @@ def run_oscar_isaac_closed_loop(
             "interval_steps": int(effective_reanchor_interval) or None,
             "source_frame_kind": "initial_policy_observation_clean_frame",
         },
+        "generated_clip_coherence": {
+            "per_step": clip_coherence_rows,
+            "seed_correlation_floor": GENERATED_CLIP_SEED_CORRELATION_FLOOR,
+            "min_coherent_horizon_frames_required": int(
+                min_coherent_horizon_frames or 0
+            ),
+            "min_measured_coherent_horizon_frames": min(
+                (
+                    int(row.get("coherent_horizon_frames") or 0)
+                    for row in clip_coherence_rows
+                    if row.get("status") == "measured"
+                ),
+                default=None,
+            ),
+            "claim_boundary": (
+                "Coherence horizons quantify visual drift of generated clips; "
+                "they are quality floors, never task-success evidence."
+            ),
+        },
         "clean_frame_reanchor_event_count": len(clean_frame_reanchor_events),
         "clean_frame_reanchor_events": clean_frame_reanchor_events,
         "periodic_clean_frame_reanchoring_used": bool(clean_frame_reanchor_events),
@@ -3227,6 +3342,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--oscar-height", type=int, default=480)
     parser.add_argument("--oscar-width", type=int, default=640)
     parser.add_argument("--oscar-fps", type=float, default=15.0)
+    parser.add_argument(
+        "--allow-non-native-oscar-resolution",
+        action="store_true",
+        help=(
+            "Explicitly permit generation below OSCAR's native 480x640. "
+            "Sub-native generation degrades quality and does NOT reduce "
+            "weight-residency OOM (2026-07-06 lesson); without this flag the "
+            "run blocks before any GPU work."
+        ),
+    )
+    parser.add_argument(
+        "--min-coherent-horizon-frames",
+        type=int,
+        default=2,
+        help=(
+            "Fail a step whose generated clip is not seed-anchored for at "
+            "least this many frames (2 = the frame fed forward must be "
+            "coherent). 0 disables the gate."
+        ),
+    )
     parser.add_argument(
         "--wam-backend",
         choices=SUPPORTED_CLOSED_LOOP_WAM_BACKENDS,
@@ -3388,6 +3523,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         wam_backend_readiness["status"] = "blocked"
     else:
         wam_backend_readiness["seed_conditioning_preflight"] = seed_conditioning_preflight
+    native_resolution = (
+        int(args.oscar_height) == 480 and int(args.oscar_width) == 640
+    )
+    wam_backend_readiness["oscar_generation_resolution_contract"] = {
+        "requested_height": int(args.oscar_height),
+        "requested_width": int(args.oscar_width),
+        "native_height": 480,
+        "native_width": 640,
+        "native_match": native_resolution,
+        "override_used": bool(args.allow_non_native_oscar_resolution),
+    }
+    if not native_resolution and not args.allow_non_native_oscar_resolution:
+        wam_backend_readiness["blockers"] = list(
+            wam_backend_readiness.get("blockers") or []
+        ) + ["blocked_non_native_oscar_resolution_requires_explicit_override"]
+        wam_backend_readiness["status"] = "blocked"
     wam_backend_readiness["blockers"] = list(
         dict.fromkeys(str(item) for item in wam_backend_readiness.get("blockers") or [])
     )
@@ -3591,6 +3742,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.require_generated_video_success_label
         ),
         wam_success_label_timeout_seconds=args.wam_success_label_timeout_seconds,
+        min_coherent_horizon_frames=int(args.min_coherent_horizon_frames),
     )
     print(json.dumps({"status": manifest["status"], "steps_executed": manifest.get("steps_executed")}, sort_keys=True))
     return 0 if manifest["status"] == "completed" else 2

@@ -61,6 +61,7 @@ PROVIDER_BILLING_TERMINAL_STATUSES = frozenset(
 BLOCKER_CAPACITY_UNAVAILABLE = "capacity_unavailable"
 BLOCKER_IMAGE_CONTRACT_INVALID = "worker_image_contract_invalid"
 BLOCKER_RUNTIME_CONTRACT_INVALID = "runtime_contract_invalid"
+BLOCKER_HARDWARE_CONTRACT_INVALID = "hardware_contract_invalid"
 BLOCKER_CREDENTIAL_MISSING = "provider_credential_missing"
 BLOCKER_SPEND_GATE_CLOSED = "spend_gate_closed"
 BLOCKER_STARTUP_MARKER_TIMEOUT = "startup_marker_timeout"
@@ -124,6 +125,7 @@ def build_pre_spend_preflight(
     image_contract: Mapping[str, Any] | None,
     runtime_contract: Mapping[str, Any] | None,
     spend_gate_open: Any = None,
+    hardware_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gate that must PASS before any billable provider request is sent.
 
@@ -137,6 +139,10 @@ def build_pre_spend_preflight(
       ``no_progress_timeout_seconds`` > 0). A run without marker/timeout contracts
       cannot be monitored and must not spend.
     - ``spend_gate_open``: the explicit operator spend approval (strict bool).
+    - ``hardware_contract``: optional lane hardware floor evaluation from
+      ``lane_hardware_requirements.build_lane_hardware_contract``. When provided
+      and not PASS, its blockers fail the preflight — an under-provisioned pod
+      (the 4090-vs-OSCAR OOM class of failure) is refused before spend.
     """
     blockers: list[str] = []
     provider_name = str(provider or "").strip().lower()
@@ -164,6 +170,17 @@ def build_pre_spend_preflight(
     pinned = coerce_strict_success(image.get("pinned"))
     if pinned is not True:
         blockers.append(f"{BLOCKER_IMAGE_CONTRACT_INVALID}:image_not_pinned:{image_ref or 'unknown'}")
+
+    hardware = _mapping(hardware_contract)
+    if hardware:
+        if str(hardware.get("status") or "").strip().upper() != "PASS":
+            hardware_blockers = [
+                str(item) for item in hardware.get("blockers") or []
+            ] or ["hardware_contract_status_not_pass"]
+            blockers.extend(
+                f"{BLOCKER_HARDWARE_CONTRACT_INVALID}:{item}"
+                for item in hardware_blockers
+            )
 
     runtime = _mapping(runtime_contract)
     if not str(runtime.get("startup_marker") or "").strip():
@@ -193,6 +210,7 @@ def build_pre_spend_preflight(
         capacity_evidence=capacity or None,
         image_contract=image or None,
         runtime_contract=runtime or None,
+        hardware_contract=hardware or None,
     )
 
 

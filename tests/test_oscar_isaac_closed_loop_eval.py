@@ -2491,3 +2491,143 @@ def test_cli_default_num_frames_is_standard_oscar_clip_length() -> None:
     finally:
         argparse.ArgumentParser.parse_args = real_parse
     assert parser_actions.get("num_frames") == 81
+
+
+def _write_clip(path, frames):
+    import cv2
+    import numpy as np
+
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (64, 48)
+    )
+    for frame in frames:
+        writer.write(np.ascontiguousarray(frame))
+    writer.release()
+
+
+def test_generated_clip_coherence_measures_drift(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    seed = rng.integers(0, 255, size=(48, 64, 3), dtype=np.uint8)
+    # 3 seed-anchored frames (tiny jitter), then pure noise = drift.
+    coherent = [
+        np.clip(seed.astype(np.int16) + rng.integers(-6, 6, seed.shape), 0, 255).astype(
+            np.uint8
+        )
+        for _ in range(3)
+    ]
+    noise = [
+        rng.integers(0, 255, size=seed.shape, dtype=np.uint8) for _ in range(5)
+    ]
+    clip = tmp_path / "clip.mp4"
+    _write_clip(clip, [seed, *coherent, *noise])
+
+    result = L.generated_clip_coherence(clip)
+    assert result["status"] == "measured"
+    assert result["frame_count"] == 9
+    # The 3 jittered frames stay anchored; the noise tail does not.
+    assert 2 <= result["coherent_horizon_frames"] <= 5
+    assert result["min_correlation"] < 0.5
+    assert result["claim_boundary"]
+
+    missing = L.generated_clip_coherence(tmp_path / "nope.mp4")
+    assert missing["status"] == "not_measured"
+
+
+def test_closed_loop_blocks_on_incoherent_generated_clip(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    rng = np.random.default_rng(11)
+    seed_frame = _write_frame(tmp_path / "seed.png", 3)
+    noise_clip = tmp_path / "noise.mp4"
+    seed_img = rng.integers(0, 255, size=(48, 64, 3), dtype=np.uint8)
+    _write_clip(
+        noise_clip,
+        [seed_img]
+        + [rng.integers(0, 255, size=(48, 64, 3), dtype=np.uint8) for _ in range(6)],
+    )
+
+    def wam_with_incoherent_video(frame, action, step, history):
+        generated = tmp_path / f"gen_{step}.png"
+        _write_frame(generated, 40 + step)
+        return {
+            "status": "completed",
+            "generated_frame_path": str(generated),
+            "generated_video_path": str(noise_clip),
+        }
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "out",
+        start_frame_path=seed_frame,
+        route_points=[[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+        wam_generate_next=wam_with_incoherent_video,
+        steps=2,
+        min_coherent_horizon_frames=2,
+    )
+    assert manifest["status"] == "blocked"
+    assert any(
+        blocker.startswith("blocked_generated_clip_coherence_below_floor_at_step_")
+        for blocker in manifest["blockers"]
+    )
+    coherence = manifest["generated_clip_coherence"]
+    assert coherence["min_coherent_horizon_frames_required"] == 2
+    assert coherence["per_step"][0]["status"] == "measured"
+
+    # Gate disabled (0): the same clips only get recorded, never block.
+    relaxed = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "out_relaxed",
+        start_frame_path=seed_frame,
+        route_points=[[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+        wam_generate_next=wam_with_incoherent_video,
+        steps=1,
+        min_coherent_horizon_frames=0,
+    )
+    assert not any(
+        blocker.startswith("blocked_generated_clip_coherence")
+        for blocker in relaxed.get("blockers", [])
+    )
+    assert relaxed["generated_clip_coherence"]["per_step"]
+
+
+def test_cli_blocks_sub_native_oscar_resolution_without_override(tmp_path):
+    seed = _write_frame(tmp_path / "seed.png", 5)
+    route = tmp_path / "route.json"
+    route.write_text(json.dumps({"route_points": [[0, 0, 0.79], [1, 0, 0.79]]}))
+
+    def run_cli(extra):
+        out = tmp_path / f"out_{len(extra)}"
+        L.main(
+            [
+                "--start-frame", str(seed),
+                "--route-file", str(route),
+                "--steps", "1",
+                "--output-dir", str(out),
+                "--dry-run",
+                "--oscar-height", "240",
+                "--oscar-width", "320",
+                *extra,
+            ]
+        )
+        return json.loads(
+            (out / "closed_loop_wam_backend_readiness.json").read_text()
+        )
+
+    blocked = run_cli([])
+    contract = blocked["oscar_generation_resolution_contract"]
+    assert contract["native_match"] is False
+    assert contract["requested_height"] == 240
+    assert (
+        "blocked_non_native_oscar_resolution_requires_explicit_override"
+        in blocked["blockers"]
+    )
+    assert blocked["status"] == "blocked"
+
+    overridden = run_cli(["--allow-non-native-oscar-resolution"])
+    assert (
+        "blocked_non_native_oscar_resolution_requires_explicit_override"
+        not in overridden["blockers"]
+    )
+    assert overridden["oscar_generation_resolution_contract"]["override_used"] is True
