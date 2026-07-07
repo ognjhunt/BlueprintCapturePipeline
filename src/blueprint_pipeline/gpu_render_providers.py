@@ -133,6 +133,14 @@ class GpuRenderProvider:
             "instance_id": instance_id,
         }
 
+    def capacity_preflight(self, request: Mapping[str, Any] | None = None) -> dict:
+        """Optional free provider capacity probe before staging large bundles.
+
+        Providers that do not expose a useful read-only capacity API can leave
+        this as not implemented; callers must treat that as non-blocking.
+        """
+        return {"status": "not_implemented", "provider": self.name}
+
     def terminate(self, instance_id: str) -> dict:
         """Permanently delete the instance (releases its disk too). Defaults to stop(); RunPod
         overrides because a stopped pod keeps billing for its container disk."""
@@ -783,6 +791,114 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             "tags": ["blueprint-isaac-render"],
             "ipv6": False,
             "monitoring": False,
+        }
+
+    def capacity_preflight(self, request: Mapping[str, Any] | None = None) -> dict:
+        """Read-only GPU size/region preflight.
+
+        DigitalOcean's sizes API reports the regions each size can currently be
+        created in for this account. If every requested NVIDIA GPU size has an
+        empty/non-overlapping region list, a paid launch would only fail at
+        ``POST /droplets`` after the caller has staged large bundles. This probe
+        lets higher-level jobs fail before that staging work while still making
+        no billable provider call.
+        """
+        token = self._token()
+        if not token:
+            return {
+                "status": "unknown",
+                "provider": self.name,
+                "blockers": ["digitalocean_token_missing"],
+            }
+        req = _mapping(request)
+        initial_region = str(req.get("region") or DEFAULT_DO_GPU_REGION)
+        initial_size = str(req.get("size") or DEFAULT_DO_GPU_SIZE)
+        size_candidates, budget_policy = _filter_do_size_candidates_by_budget(
+            _do_size_candidates(initial_size)
+        )
+        region_candidates = _do_region_candidates(initial_region)
+        if not size_candidates:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "blockers": ["digitalocean_gpu_size_over_budget"],
+                "budget_policy": budget_policy,
+                "size_candidates": [],
+                "region_candidates": region_candidates,
+                "raw_provider_response_recorded": False,
+            }
+        status, body = _do_call("GET", "/sizes?per_page=200", token=token, timeout=60)
+        if status != 200 or not isinstance(body, dict):
+            return {
+                "status": "unknown",
+                "provider": self.name,
+                "blockers": ["digitalocean_gpu_capacity_probe_failed"],
+                "http": status,
+                "budget_policy": budget_policy,
+                "size_candidates": size_candidates,
+                "region_candidates": region_candidates,
+                "raw_provider_response_recorded": False,
+            }
+        by_slug = {
+            str(item.get("slug") or ""): item
+            for item in body.get("sizes") or []
+            if isinstance(item, Mapping)
+        }
+        considered: list[dict[str, Any]] = []
+        viable: list[dict[str, Any]] = []
+        for size in size_candidates:
+            record = _mapping(by_slug.get(size))
+            available_regions = _string_list(record.get("regions"))
+            matching_regions = [r for r in region_candidates if r in available_regions]
+            row = {
+                "size": size,
+                "provider_available": bool(record.get("available")),
+                "provider_regions": available_regions,
+                "matching_regions": matching_regions,
+                "price_hourly": record.get("price_hourly"),
+                "memory_mb": record.get("memory"),
+                "vcpus": record.get("vcpus"),
+            }
+            if not record:
+                row["blocker"] = "digitalocean_gpu_size_not_listed"
+            elif record.get("available") is not True:
+                row["blocker"] = "digitalocean_gpu_size_not_available"
+            elif not matching_regions:
+                row["blocker"] = "digitalocean_gpu_size_region_unavailable"
+            else:
+                viable.append(row)
+            considered.append(row)
+        if viable:
+            return {
+                "status": "available",
+                "provider": self.name,
+                "blockers": [],
+                "budget_policy": budget_policy,
+                "size_candidates": size_candidates,
+                "region_candidates": region_candidates,
+                "viable_size_regions": viable,
+                "considered_size_regions": considered,
+                "raw_provider_response_recorded": False,
+                "claim_boundary": (
+                    "Capacity preflight is a read-only size/region check. It "
+                    "does not reserve capacity or prove droplet creation will "
+                    "succeed."
+                ),
+            }
+        return {
+            "status": "blocked",
+            "provider": self.name,
+            "blockers": ["digitalocean_gpu_size_region_unavailable"],
+            "budget_policy": budget_policy,
+            "size_candidates": size_candidates,
+            "region_candidates": region_candidates,
+            "considered_size_regions": considered,
+            "raw_provider_response_recorded": False,
+            "claim_boundary": (
+                "Capacity preflight is a read-only size/region check. Empty or "
+                "non-overlapping provider region lists predict a no-allocation "
+                "create failure; no billable droplet was requested."
+            ),
         }
 
     def launch(

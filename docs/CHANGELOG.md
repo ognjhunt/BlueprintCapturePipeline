@@ -1,5 +1,92 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-06
+
+### User-Facing
+
+- Added real policy-family evaluation support for LeRobot-format checkpoints,
+  ACT torch inference, and GR00T/SONIC endpoint integration
+  (`src/blueprint_pipeline/lerobot_policy_family.py`,
+  `src/blueprint_pipeline/lerobot_torch_policy_adapter.py`,
+  `src/blueprint_pipeline/real_policy_family_eval_harness.py`,
+  `src/blueprint_pipeline/real_policy_closed_loop_rollout.py`). The lane
+  records simulator framework, evaluation substrate, SC3-derived measurements,
+  visual-media coverage, and validation-ladder registration without promoting
+  outputs to production-candidate, live-robot, deployment, or field-success
+  proof.
+- Hardened buyer and delivery truth boundaries: live consent is re-read at
+  emit/copy time for webapp status projections, task-eval reports, robot-eval
+  datasets, arena package delivery, qualification, and alpha readiness
+  (`src/blueprint_pipeline/task_eval_run_report.py`,
+  `src/blueprint_pipeline/robot_eval_dataset.py`,
+  `src/blueprint_pipeline/arena_package_delivery_local.py`,
+  `src/blueprint_pipeline/qualification.py`,
+  `src/blueprint_pipeline/alpha_readiness.py`). Task-eval scorecards now
+  withhold success rates when review-task success is insufficient instead of
+  converting media validity into a task-success claim.
+- Added a local Scaniverse support-asset import lane
+  (`src/blueprint_pipeline/scaniverse_asset_import.py`,
+  `docs/SCANIVERSE_ASSET_IMPORT.md`) and CLI entrypoint
+  `blueprint-import-scaniverse-assets`. It stages and checksums Scaniverse
+  USDZ/PLY/SPZ/mesh/USD exports under a capture root with an explicit proof
+  boundary: these assets are optional downstream support artifacts, not raw
+  Blueprint capture truth or simulator/task-success proof.
+- Added `docs/100_BETA_TESTER_LAUNCH_BLOCKER_AUDIT_2026-07-06.md`, which says
+  the service should not launch to 100 external beta testers yet. The audit
+  records local pytest success but blocks external beta on paid marketplace
+  gate failure, missing WebApp->Pipeline forwarding configuration/probe,
+  missing current sim-only gate artifacts, incomplete real-policy closeout,
+  blocked WAM real-provider validation, no paid provider canary proof, no
+  live-robot/device/money/payout/legal/KYC readiness proof, and broad ruff
+  failures.
+
+### Employee-Facing
+
+- Added sealed GR00T x OSCAR worker-image tooling:
+  `deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile`,
+  image healthcheck/requirements files, `blueprint-groot-oscar-closed-loop-image`,
+  `scripts/build_push_groot_oscar_closed_loop_image.sh`,
+  `scripts/snapshot_groot_oscar_eval_pod.sh`, and
+  `docs/runbooks/groot-oscar-closed-loop-sealed-image.md`. A follow-up fix
+  corrected the mutually-exclusive CLI default for
+  `--print-sealed-contract`.
+- Extended `oscar_isaac_closed_loop_eval.py` with GR00T/SONIC policy-server
+  wiring, skeleton-conditioning video support, generated-video success labels,
+  and separate episode-consistency artifacts. WAM rollout execution, visual
+  success labels, and forward/inverse consistency remain separate evidence
+  layers; WAM execution alone does not claim consistency.
+- Strengthened runtime/CI contracts: provider launchers and
+  `runpod_wam_async_runner.py` gained harder failure handling, CI video-codec
+  checks now fail rather than silently skipping, and the command-safety matrix
+  includes the Scaniverse import CLI.
+- Added buyer/PTDP and policy-eval regression coverage across
+  `tests/test_lerobot_policy_family.py`,
+  `tests/test_lerobot_torch_policy_adapter.py`,
+  `tests/test_real_policy_family_eval_harness.py`,
+  `tests/test_post_training_data_package.py`,
+  `tests/test_scaniverse_asset_import.py`,
+  `tests/test_consent_gate_prod_wiring.py`,
+  `tests/test_orchestrator_consent_toctou.py`,
+  `tests/test_task_eval_run_report.py`, and
+  `tests/test_video_codec.py`.
+
+### Future-Agent-Facing
+
+- Keep the July 6 real-policy stack validation-ladder-only unless a later run
+  supplies current live simulator execution, live policy execution, full trace
+  package, task metrics, WebApp lineage, delivery access, and closure audit
+  evidence. Current artifacts do not prove live robot readiness, deployment
+  approval, public beta readiness, or semantic field success.
+- Treat Scaniverse imports as provider-derived support assets behind a
+  replaceable boundary. Do not let imported Scaniverse assets override raw
+  Blueprint capture/provenance authority, and do not claim simulator load,
+  collision/contact/scale validation, policy execution, or task success without
+  separate owner-system proof.
+- Evidence boundary: this entry covers four commits dated 2026-07-06
+  (`201e2531a`, `30488efb3`, `ff82bb5db`, and `64edcc8e6`) and no
+  uncommitted local changes; the working tree was clean during this changelog
+  run.
+
 ## 2026-07-05
 
 ### User-Facing

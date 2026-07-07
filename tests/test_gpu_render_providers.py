@@ -989,6 +989,92 @@ def test_digitalocean_build_request_wraps_worker_in_user_data(monkeypatch, tmp_p
     assert body["tags"] == ["blueprint-isaac-render"]
 
 
+def test_digitalocean_capacity_preflight_blocks_empty_gpu_region_lists(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_SIZES", "gpu-6000adax1-48gb,gpu-l40sx1-48gb")
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_REGIONS", "atl1,nyc2")
+    calls: list[tuple[str, str]] = []
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        calls.append((method, path))
+        assert token == "t-redacted"
+        if method == "GET" and path == "/sizes?per_page=200":
+            return 200, {
+                "sizes": [
+                    {
+                        "slug": "gpu-6000adax1-48gb",
+                        "available": True,
+                        "regions": [],
+                        "memory": 65536,
+                        "price_hourly": 1.57,
+                    },
+                    {
+                        "slug": "gpu-l40sx1-48gb",
+                        "available": True,
+                        "regions": [],
+                        "memory": 65536,
+                        "price_hourly": 1.57,
+                    },
+                ]
+            }
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+
+    res = G.DigitalOceanRenderProvider().capacity_preflight()
+
+    assert res["status"] == "blocked"
+    assert res["blockers"] == ["digitalocean_gpu_size_region_unavailable"]
+    assert res["region_candidates"] == ["atl1", "nyc2"]
+    assert [row["matching_regions"] for row in res["considered_size_regions"]] == [[], []]
+    assert calls == [("GET", "/sizes?per_page=200")]
+
+
+def test_digitalocean_capacity_preflight_reports_viable_size_region(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    tok = tmp_path / "do_token"
+    tok.write_text("t-redacted")
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN_FILE", str(tok))
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_SIZES", "gpu-6000adax1-48gb,gpu-l40sx1-48gb")
+    monkeypatch.setenv("BLUEPRINT_DO_GPU_REGIONS", "atl1,nyc2")
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        assert token == "t-redacted"
+        if method == "GET" and path == "/sizes?per_page=200":
+            return 200, {
+                "sizes": [
+                    {
+                        "slug": "gpu-6000adax1-48gb",
+                        "available": True,
+                        "regions": ["nyc2"],
+                        "memory": 65536,
+                        "price_hourly": 1.57,
+                    }
+                ]
+            }
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+
+    res = G.DigitalOceanRenderProvider().capacity_preflight()
+
+    assert res["status"] == "available"
+    assert res["blockers"] == []
+    assert res["viable_size_regions"][0]["size"] == "gpu-6000adax1-48gb"
+    assert res["viable_size_regions"][0]["matching_regions"] == ["nyc2"]
+
+
 def test_digitalocean_launch_fail_closed_without_token(monkeypatch, tmp_path: Path) -> None:
     from blueprint_pipeline.gpu_render_providers import DigitalOceanRenderProvider
 

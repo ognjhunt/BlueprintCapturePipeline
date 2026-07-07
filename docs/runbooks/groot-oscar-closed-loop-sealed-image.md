@@ -103,3 +103,34 @@ python -m blueprint_pipeline.groot_oscar_closed_loop_image \
 (`missing_image_ref`, `image_ref_must_be_versioned`, `sealed_image_not_confirmed`,
 …) whenever sealed mode is not fully configured — in which case fall back to the
 legacy runtime-bootstrap recipe (`run_t4.sh`).
+
+### Direct DigitalOcean launcher
+
+Use this path when the sealed image has been pushed and the remaining blocker is
+DigitalOcean GPU capacity. Prepared mode is local-only: it validates the sealed
+contract, writes the input bundle and launch plan, and does not stage to object
+store or call the DigitalOcean capacity API.
+
+```bash
+blueprint-run-groot-oscar-digitalocean-closed-loop \
+  --start-frame <initial_policy_frame.png> \
+  --route-file <route.json> \
+  --task-prompt "Open the dishwasher door; if the dishwasher is already open, close the dishwasher door." \
+  --seed-provenance-file <seed_provenance.json> \
+  --out-dir <run_dir>
+```
+
+When capacity should be checked and a real droplet may be launched, add
+`--allow-paid --max-spend-usd <budget>`. The launcher fails closed in this order:
+
+1. sealed image contract and launch plan
+2. spend guard
+3. read-only DigitalOcean GPU size/region capacity preflight
+4. object-store staging
+5. droplet launch with pending-teardown record
+6. worker collection and provider-API teardown proof
+
+The worker runs the baked healthcheck, starts the GR00T policy server, then runs
+`oscar_isaac_closed_loop_eval` at native OSCAR resolution with
+`--require-fresh-learned-policy-requery` and `--stop-on-task-completion`. The
+`--steps` value is a safety cap, not a fixed frame count.

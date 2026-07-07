@@ -986,6 +986,7 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
                    pending_teardown_lane=None, pending_teardown_max_age_seconds=0,
                    sleep=None, monotonic=None):
         assert prelaunch_guard["can_launch"] is True
+        assert prelaunch_guard["required_before_provider_launch"] is True
         assert pending_teardown_lane == J.ISAAC_G1_KITCHEN_PARITY_LANE
         assert pending_teardown_max_age_seconds >= 300
         bodies = []
@@ -1103,6 +1104,7 @@ def test_paid_launch_blocks_before_provider_call_without_max_spend(
     assert "isaac_g1_prelaunch_spend_guard_not_passed" in m["blockers"]
     assert "isaac_g1_max_spend_usd_missing" in m["blockers"]
     assert m["prelaunch_spend_guard"]["can_launch"] is False
+    assert m["prelaunch_spend_guard"]["required_before_provider_launch"] is True
     assert m["prelaunch_spend_guard"]["budget_source"] == "missing"
     assert m["prelaunch_spend_guard"]["claim_boundary"][
         "no_provider_api_call_before_can_launch"
@@ -1177,6 +1179,61 @@ def test_paid_runpod_launch_blocks_before_staging_without_prebuilt_worker_image(
     assert m["worker_image_policy"]["worker_image_ref_file_present"] is False
     assert m["worker_image_policy"]["direct_isaac_base_image_runpod_allowed"] is False
     assert "staging" not in m
+
+
+def test_paid_digitalocean_capacity_preflight_blocks_before_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _set_test_worker_image(monkeypatch)
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
+    )
+
+    class _CapacityBlockedDigitalOceanProvider:
+        name = "digitalocean"
+
+        def available(self):
+            return {"provider": self.name, "available": True, "reason": None}
+
+        def capacity_preflight(self):
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "blockers": ["digitalocean_gpu_size_region_unavailable"],
+                "size_candidates": ["gpu-6000adax1-48gb", "gpu-l40sx1-48gb"],
+                "region_candidates": ["atl1", "nyc2"],
+                "raw_provider_response_recorded": False,
+            }
+
+    def _stage_should_not_run(*_args, **_kwargs):
+        raise AssertionError("DigitalOcean no-capacity preflight should block before staging")
+
+    monkeypatch.setattr(J, "stage_bundle", _stage_should_not_run)
+    monkeypatch.setattr(
+        J,
+        "get_render_provider",
+        lambda name, warm_candidates=(): _CapacityBlockedDigitalOceanProvider(),
+    )
+
+    m = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        provider="digitalocean",
+        allow_paid=True,
+        allow_dirty_paid_launch=True,
+        max_spend_usd=4.0,
+    )
+
+    assert m["status"] == "blocked"
+    assert "digitalocean_gpu_size_region_unavailable" in m["blockers"]
+    assert "provider_capacity_unavailable_before_staging" in m["blockers"]
+    assert m["provider_capacity_preflight"]["status"] == "blocked"
+    assert "kitchen_layout_validation" not in m
+    assert "staging" not in m
+    assert "launch_request_shape" not in m
 
 
 def test_paid_groot_sonic_isaac_parity_blocks_before_staging(

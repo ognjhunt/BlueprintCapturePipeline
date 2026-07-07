@@ -1292,6 +1292,7 @@ def _isaac_g1_prelaunch_spend_guard(
         "status": "passed" if can_launch else "blocked",
         "provider": provider_name,
         "allow_paid": bool(allow_paid),
+        "required_before_provider_launch": True,
         "can_launch": can_launch,
         "requested_budget_usd": requested_budget,
         "budget_source": "argument"
@@ -2185,6 +2186,14 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["provider_available"] = [p.available() for p in providers]
     else:
         manifest["provider_available"] = prov.available()
+        if allow_paid and callable(getattr(prov, "capacity_preflight", None)):
+            capacity = prov.capacity_preflight()
+            manifest["provider_capacity_preflight"] = capacity
+            if capacity.get("status") == "blocked":
+                manifest["blockers"].extend(capacity.get("blockers") or [])
+                manifest["blockers"].append("provider_capacity_unavailable_before_staging")
+                manifest["blockers"] = sorted(set(manifest["blockers"]))
+                return manifest
     # Stage the large kitchen tree ONCE (reused across iterations); keep the code bundle tiny.
     # A caller may pass a previously-staged kitchen_url to skip the 1.2GB re-upload entirely.
     kitchen_main_usd_relative = DEFAULT_KITCHEN_MAIN_USD
