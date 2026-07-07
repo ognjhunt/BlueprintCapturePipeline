@@ -28,6 +28,7 @@ from typing import Any
 from .common import ensure_dir, utc_now_iso, write_json
 from .gpu_render_providers import (
     DEFAULT_DO_GPU_SIZE,
+    DO_GPU_SIZE_VRAM_MB,
     RenderLaunchSpec,
     _do_size_candidates,
     _filter_do_size_candidates_by_gpu_ram,
@@ -42,11 +43,15 @@ from .groot_oscar_closed_loop_image import (
     sealed_image_contract,
 )
 from .isaac_particlefield_render_job import stage_bundle, watch_and_collect
+from .lane_hardware_requirements import build_lane_hardware_contract
 from .paid_lane_guard import (
+    PreSpendPreflightBlocked,
     bind_pending_teardown_instance,
     cancel_pending_teardown,
     close_pending_teardown,
+    image_contract_from_ref,
     open_pending_teardown,
+    require_pre_spend_preflight,
 )
 from .provider_reliability_manifest import (
     TEARDOWN_STATUS_SOURCE_PROVIDER_API,
@@ -1758,6 +1763,106 @@ def _prelaunch_spend_guard(
     }
 
 
+def _runtime_contract_for_pre_spend() -> dict[str, Any]:
+    return {
+        "startup_marker": "container_bash_started",
+        "progress_marker": "bootstrap.json",
+        "startup_timeout_seconds": 900,
+        "no_progress_timeout_seconds": 900,
+        "progress_stall_phases": list(WORKER_PROGRESS_STALL_PHASES),
+    }
+
+
+def _capacity_row_for_pre_spend(capacity: Mapping[str, Any]) -> dict[str, Any]:
+    viable = capacity.get("viable_size_regions")
+    if isinstance(viable, Sequence) and not isinstance(viable, (str, bytes)):
+        for item in viable:
+            if isinstance(item, Mapping):
+                return dict(item)
+    return {}
+
+
+def _gpu_vram_gb_from_do_capacity(row: Mapping[str, Any]) -> float | None:
+    raw = row.get("gpu_ram_mb")
+    try:
+        return float(raw) / 1000.0
+    except (TypeError, ValueError):
+        pass
+    size = _string(row.get("size"))
+    if not size:
+        return None
+    gpu_ram_mb = DO_GPU_SIZE_VRAM_MB.get(size)
+    return (float(gpu_ram_mb) / 1000.0) if gpu_ram_mb is not None else None
+
+
+def _hardware_contract_for_capacity_row(
+    *,
+    plan: Mapping[str, Any],
+    capacity_row: Mapping[str, Any],
+    container_disk_gb: int,
+) -> dict[str, Any]:
+    return build_lane_hardware_contract(
+        lane=_string(plan.get("lane")),
+        gpu_type_id=_string(capacity_row.get("size")) or None,
+        vram_gb=_gpu_vram_gb_from_do_capacity(capacity_row),
+        disk_gb=float(container_disk_gb),
+    )
+
+
+def _pre_spend_capacity_evidence(
+    *,
+    capacity: Mapping[str, Any],
+    capacity_row: Mapping[str, Any],
+) -> dict[str, Any]:
+    row = dict(capacity_row)
+    return {
+        "available": _string(capacity.get("status")) == "available" and bool(row),
+        "detail": row.get("size") or "digitalocean_viable_size_region_missing",
+        "capacity_preflight_status": capacity.get("status"),
+        "selected_size": row.get("size"),
+        "selected_region": (row.get("matching_regions") or [None])[0]
+        if isinstance(row.get("matching_regions"), list)
+        else None,
+        "selected_gpu_ram_mb": row.get("gpu_ram_mb"),
+    }
+
+
+def _run_pre_spend_preflight(
+    *,
+    out: Path,
+    plan: Mapping[str, Any],
+    capacity: Mapping[str, Any],
+    capacity_row: Mapping[str, Any],
+    image_ref: str,
+    provider_available: Mapping[str, Any],
+    prelaunch: Mapping[str, Any],
+    container_disk_gb: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    hardware_contract = _hardware_contract_for_capacity_row(
+        plan=plan,
+        capacity_row=capacity_row,
+        container_disk_gb=container_disk_gb,
+    )
+    try:
+        preflight = require_pre_spend_preflight(
+            lane=_string(plan.get("lane")) or LANE,
+            provider=DEFAULT_PROVIDER,
+            credential_present=provider_available.get("available") is True,
+            capacity_evidence=_pre_spend_capacity_evidence(
+                capacity=capacity,
+                capacity_row=capacity_row,
+            ),
+            image_contract=image_contract_from_ref(image_ref),
+            runtime_contract=_runtime_contract_for_pre_spend(),
+            spend_gate_open=prelaunch.get("can_launch") is True,
+            hardware_contract=hardware_contract,
+            record_dir=out,
+        )
+    except PreSpendPreflightBlocked as blocked_preflight:
+        preflight = blocked_preflight.preflight
+    return hardware_contract, preflight
+
+
 def _teardown_proof_from_watch(*, instance_id: str, watch: Mapping[str, Any]) -> dict[str, Any]:
     teardown = _mapping(watch.get("teardown"))
     reason = _string(watch.get("teardown_reason")).lower()
@@ -2115,6 +2220,27 @@ def run_groot_oscar_digitalocean_closed_loop_job(
         manifest["blockers"].append(
             f"provider_capacity_preflight_status_{capacity_status or 'missing'}"
         )
+        manifest["blockers"] = sorted(set(manifest["blockers"]))
+        return _write_job_manifest(out, manifest)
+    capacity_row = _capacity_row_for_pre_spend(capacity)
+    manifest["selected_digitalocean_capacity"] = capacity_row or None
+    hardware_contract, pre_spend_preflight = _run_pre_spend_preflight(
+        out=out,
+        plan=plan,
+        capacity=capacity,
+        capacity_row=capacity_row,
+        image_ref=str(contract["image_ref"]),
+        provider_available=_mapping(manifest.get("provider_available")),
+        prelaunch=prelaunch,
+        container_disk_gb=int(container_disk_gb),
+    )
+    manifest["lane_hardware_contract"] = hardware_contract
+    manifest["pre_spend_preflight"] = pre_spend_preflight
+    if pre_spend_preflight.get("status") != "PASS":
+        manifest["blockers"].append(
+            "groot_oscar_closed_loop_pre_spend_preflight_not_passed"
+        )
+        manifest["blockers"].extend(pre_spend_preflight.get("blockers") or [])
         manifest["blockers"] = sorted(set(manifest["blockers"]))
         return _write_job_manifest(out, manifest)
     bundle_zip = _write_input_bundle(

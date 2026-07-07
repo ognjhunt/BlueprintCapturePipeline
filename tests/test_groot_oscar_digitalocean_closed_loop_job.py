@@ -94,6 +94,32 @@ def _active_plan() -> dict:
     )
 
 
+def _available_do_capacity(
+    *,
+    size: str = "gpu-6000adax1-48gb",
+    region: str = "atl1",
+    gpu_ram_mb: int = J.DEFAULT_MIN_GPU_RAM_MB,
+) -> dict:
+    return {
+        "status": "available",
+        "provider": "digitalocean",
+        "blockers": [],
+        "viable_size_regions": [
+            {
+                "size": size,
+                "provider_available": True,
+                "provider_regions": [region],
+                "matching_regions": [region],
+                "price_hourly": 1.57,
+                "memory_mb": 65536,
+                "gpu_ram_mb": gpu_ram_mb,
+                "vcpus": 8,
+            }
+        ],
+        "raw_provider_response_recorded": False,
+    }
+
+
 class _PreparedOnlyProvider:
     name = "digitalocean"
 
@@ -532,7 +558,7 @@ def test_capacity_wait_launches_after_capacity_appears_with_paid_teardown_path(
                     "blockers": ["digitalocean_gpu_size_region_unavailable"],
                     "raw_provider_response_recorded": False,
                 }
-            return {"status": "available", "provider": self.name, "blockers": []}
+            return _available_do_capacity()
 
         def build_request(self, spec, job_dir):
             events.append("build_request")
@@ -1070,6 +1096,68 @@ def test_digitalocean_provider_blocks_20gb_fallback_before_create(
     )
 
 
+def test_paid_launcher_blocks_20gb_capacity_row_before_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    start_frame, route = _inputs(tmp_path)
+
+    class _UnderprovisionedCapacityProvider(_PreparedOnlyProvider):
+        def capacity_preflight(self, request=None):
+            assert request["min_gpu_ram_mb"] >= J.DEFAULT_MIN_GPU_RAM_MB
+            assert request["capacity_preflight_before_staging"] is True
+            return _available_do_capacity(
+                size="gpu-4000adax1-20gb",
+                gpu_ram_mb=20000,
+            )
+
+    monkeypatch.setattr(
+        J,
+        "get_render_provider",
+        lambda _name: _UnderprovisionedCapacityProvider(),
+    )
+    monkeypatch.setattr(
+        J,
+        "stage_bundle",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("under-provisioned lane must block before staging")
+        ),
+    )
+
+    manifest = J.run_groot_oscar_digitalocean_closed_loop_job(
+        start_frame=start_frame,
+        route_file=route,
+        task_prompt=TASK_PROMPT,
+        out_dir=tmp_path / "job",
+        image_ref=DIGEST_REF,
+        allow_paid=True,
+        max_spend_usd=10.0,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["selected_digitalocean_capacity"]["size"] == "gpu-4000adax1-20gb"
+    assert manifest["lane_hardware_contract"]["status"] == "FAIL"
+    assert "gpu_vram_below_lane_floor:20gb_lt_40gb" in manifest[
+        "lane_hardware_contract"
+    ]["blockers"]
+    assert manifest["pre_spend_preflight"]["status"] == "FAIL"
+    assert "groot_oscar_closed_loop_pre_spend_preflight_not_passed" in manifest[
+        "blockers"
+    ]
+    assert (
+        "hardware_contract_invalid:gpu_vram_below_lane_floor:20gb_lt_40gb"
+        in manifest["blockers"]
+    )
+    assert "staging" not in manifest
+    persisted_preflight = json.loads(
+        (tmp_path / "job" / "pre_spend_preflight.json").read_text(encoding="utf-8")
+    )
+    assert persisted_preflight["status"] == "FAIL"
+    assert persisted_preflight["hardware_contract"]["gpu_type_id"] == (
+        "gpu-4000adax1-20gb"
+    )
+
+
 def test_paid_launch_uses_capacity_staging_and_teardown_proof(
     tmp_path: Path,
     monkeypatch,
@@ -1082,7 +1170,7 @@ def test_paid_launch_uses_capacity_staging_and_teardown_proof(
             events.append("capacity")
             assert request["min_gpu_ram_mb"] >= J.DEFAULT_MIN_GPU_RAM_MB
             assert request["capacity_preflight_before_staging"] is True
-            return {"status": "available", "provider": self.name, "blockers": []}
+            return _available_do_capacity()
 
         def build_request(self, spec, job_dir):
             events.append("build_request")
@@ -1226,7 +1314,7 @@ def test_objective_readiness_audit_marks_complete_when_semantic_success_passes(
 
     class _LaunchProvider(_PreparedOnlyProvider):
         def capacity_preflight(self, request=None):
-            return {"status": "available", "provider": self.name, "blockers": []}
+            return _available_do_capacity()
 
         def build_request(self, spec, job_dir):
             return {"name": spec.name, "env": dict(spec.env)}
@@ -1311,7 +1399,7 @@ def test_paid_launch_blocks_when_collected_closed_loop_contract_regresses(
     class _LaunchProvider(_PreparedOnlyProvider):
         def capacity_preflight(self, request=None):
             assert request["min_gpu_ram_mb"] >= J.DEFAULT_MIN_GPU_RAM_MB
-            return {"status": "available", "provider": self.name, "blockers": []}
+            return _available_do_capacity()
 
         def build_request(self, spec, job_dir):
             return {"name": spec.name, "env": dict(spec.env)}
@@ -1390,7 +1478,7 @@ def test_paid_launch_blocks_without_forward_inverse_consistency_proof(
 
     class _LaunchProvider(_PreparedOnlyProvider):
         def capacity_preflight(self, request=None):
-            return {"status": "available", "provider": self.name, "blockers": []}
+            return _available_do_capacity()
 
         def build_request(self, spec, job_dir):
             return {"name": spec.name, "env": dict(spec.env)}
