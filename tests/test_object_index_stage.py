@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import subprocess
 from pathlib import Path
@@ -193,6 +194,29 @@ def test_object_index_basic_file_keyframe_and_prompt_helpers(
     assert "sink right handle" in prompt_bank["task_specific"]
     assert "right handle" in prompt_bank["task_specific"]
     assert "water stream" in prompt_bank["task_specific"]
+    unknown_environment = replace(
+        _descriptor(),
+        environment_type_hint="aquarium tunnel",
+        swap_focus=[],
+        metadata={},
+    )
+    notes = oi._environment_resolution_notes(
+        unknown_environment,
+        IOSManifest.from_dict({"intended_space_type": "retail aquarium"}),
+        "default",
+    )
+    assert notes == [
+        {
+            "code": "environment_unrecognized",
+            "detail": (
+                "No deterministic object-index prompt bank matched the capture environment; "
+                "using the generic default prompt bank for review-only grounding."
+            ),
+            "environment": "default",
+            "prompt_bank_source": "default",
+            "candidate_environment_text": ["aquarium tunnel", "retail aquarium"],
+        }
+    ]
 
     raw_root = tmp_path / "capture" / "raw"
     arkit_root = raw_root / "arkit"
@@ -365,6 +389,69 @@ def test_run_object_index_stage_all_backends_skipped_emits_empty_artifacts(
     assert grounding_payload["manipulation_candidates"] == []
     assert grounding_payload["articulation_hints"] == []
     assert grounding_payload["tasks"] == []
+
+
+def test_run_object_index_stage_stamps_unrecognized_environment_default_bank(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root, context = _capture_tree(tmp_path)
+    oi.write_json(
+        context.descriptor_path,
+        replace(
+            _descriptor(context.raw_prefix_uri),
+            environment_type_hint="aquarium tunnel",
+            swap_focus=[],
+            metadata={"task_zone": "reef room"},
+        ).to_dict(),
+    )
+    oi.write_json(
+        context.raw_root / "manifest.json",
+        {
+            "scene_id": "scene",
+            "video_uri": "walkthrough.mp4",
+            "intended_space_type": "retail aquarium",
+            "width": 640,
+            "height": 480,
+        },
+    )
+    arkit_root = context.raw_root / "arkit"
+    arkit_root.mkdir(parents=True)
+    (arkit_root / "frames.jsonl").write_text(
+        json.dumps(
+            {
+                "frameIndex": 0,
+                "timestamp": 0.0,
+                "imageResolution": [16, 12],
+                "intrinsics": [1.0, 1.0],
+                "cameraTransform": list(range(16)),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(oi, "resolve_local_capture_context", lambda _capture_root: context)
+    monkeypatch.setattr(oi, "_command_from_env", lambda _name: "")
+
+    result = oi.run_object_index_stage(capture_root=capture_root, force_rebuild=True)
+    build_report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
+
+    assert build_report["environment"] == "default"
+    assert build_report["environment_notes"] == [
+        {
+            "code": "environment_unrecognized",
+            "detail": (
+                "No deterministic object-index prompt bank matched the capture environment; "
+                "using the generic default prompt bank for review-only grounding."
+            ),
+            "environment": "default",
+            "prompt_bank_source": "default",
+            "candidate_environment_text": [
+                "aquarium tunnel",
+                "retail aquarium",
+                "reef room",
+            ],
+        }
+    ]
 
 
 def test_object_index_subprocess_backend_and_detection_helpers(

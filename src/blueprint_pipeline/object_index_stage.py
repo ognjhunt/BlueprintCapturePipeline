@@ -438,6 +438,37 @@ def _infer_environment(descriptor: CaptureDescriptor, manifest: IOSManifest) -> 
     return "default"
 
 
+def _environment_resolution_notes(
+    descriptor: CaptureDescriptor,
+    manifest: IOSManifest,
+    environment: str,
+) -> List[Dict[str, Any]]:
+    if environment != "default":
+        return []
+    candidates: List[str] = []
+    for candidate in (
+        descriptor.environment_type_hint,
+        *descriptor.swap_focus,
+        manifest.intended_space_type,
+        descriptor.metadata.get("task_zone") if isinstance(descriptor.metadata.get("task_zone"), str) else "",
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            candidates.append(text)
+    return [
+        {
+            "code": "environment_unrecognized" if candidates else "environment_missing",
+            "detail": (
+                "No deterministic object-index prompt bank matched the capture environment; "
+                "using the generic default prompt bank for review-only grounding."
+            ),
+            "environment": "default",
+            "prompt_bank_source": "default",
+            "candidate_environment_text": candidates,
+        }
+    ]
+
+
 def _build_prompt_bank(descriptor: CaptureDescriptor, intake: Mapping[str, Any], capture_context: Mapping[str, Any], environment: str) -> Dict[str, List[str]]:
     broad = list(_PROMPT_BANKS.get(environment, _PROMPT_BANKS["default"]))
     text_fields = _string_list(
@@ -1511,6 +1542,7 @@ def run_object_index_stage(
     masks_dir.mkdir(parents=True, exist_ok=True)
 
     environment = _infer_environment(descriptor, manifest)
+    environment_notes = _environment_resolution_notes(descriptor, manifest, environment)
     prompt_bank = _build_prompt_bank(descriptor, intake_payload, capture_context_payload, environment)
     prompt_expansion = None
     prompt_bank, prompt_expansion = _maybe_expand_prompt_bank(
@@ -1548,6 +1580,7 @@ def run_object_index_stage(
         "raw_root": str(context.raw_root),
         "video_path": str(video_path) if video_path is not None else "",
         "environment": environment,
+        "environment_notes": environment_notes,
         "prompt_bank": prompt_bank,
         "keyframes": keyframe_payload,
         "raw_manifest": raw_manifest_payload,
@@ -1776,6 +1809,7 @@ def run_object_index_stage(
             "capture_root": str(context.capture_root),
             "video_path": str(video_path) if video_path is not None else "",
             "environment": environment,
+            "environment_notes": environment_notes,
             "prompt_bank": prompt_bank,
             "keyframe_count": len(keyframes),
             "object_count": len(objects),
