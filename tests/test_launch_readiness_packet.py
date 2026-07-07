@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from scripts.build_launch_readiness_packet import build_launch_readiness_packet
@@ -14,6 +15,37 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 def _write_text(path: Path, text: str = "artifact") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _git(repo: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return completed.stdout.strip()
+
+
+def _init_repo_with_origin_main(repo: Path, *, dirty: bool = False) -> tuple[str, str]:
+    repo.mkdir(parents=True)
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    _write_text(repo / "tracked.txt", "main")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "main")
+    origin_main = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", origin_main)
+    _git(repo, "checkout", "-b", "feature")
+    _write_text(repo / "feature.txt", "feature")
+    _git(repo, "add", "feature.txt")
+    _git(repo, "commit", "-m", "feature")
+    feature_head = _git(repo, "rev-parse", "HEAD")
+    if dirty:
+        _write_text(repo / "dirty.txt", "dirty")
+    return feature_head, origin_main
 
 
 def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp_path: Path) -> None:
@@ -124,3 +156,30 @@ def test_launch_readiness_packet_blocks_missing_required_artifacts(tmp_path: Pat
     assert packet["status"] == "incomplete_packet"
     assert "missing_artifact:paid_marketplace_launch_gate_json" in packet["artifact_blockers"]
     assert "missing_artifact:webapp_forwarding_preflight" in packet["artifact_blockers"]
+
+
+def test_launch_readiness_packet_records_origin_main_when_local_checkout_is_dirty_feature(
+    tmp_path: Path,
+) -> None:
+    pipeline = tmp_path / "BlueprintCapturePipeline"
+    webapp = tmp_path / "Blueprint-WebApp"
+    contracts = tmp_path / "BlueprintContracts"
+    capture = tmp_path / "BlueprintCapture"
+    for repo in (pipeline, contracts, capture):
+        repo.mkdir()
+    feature_head, origin_main = _init_repo_with_origin_main(webapp, dirty=True)
+
+    packet = build_launch_readiness_packet(
+        pipeline_repo=pipeline,
+        webapp_repo=webapp,
+        contracts_repo=contracts,
+        capture_repo=capture,
+        generated_at="2026-07-07T00:00:00+00:00",
+    )
+
+    webapp_info = packet["repos"]["Blueprint-WebApp"]
+    assert webapp_info["branch"] == "feature"
+    assert webapp_info["head"] == feature_head
+    assert webapp_info["origin_main_head"] == origin_main
+    assert webapp_info["head_matches_origin_main"] is False
+    assert webapp_info["dirty_entry_count"] == 1

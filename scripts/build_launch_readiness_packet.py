@@ -64,11 +64,15 @@ def _run_git(repo: Path, *args: str) -> str | None:
 
 def _repo_info(repo: Path) -> dict[str, Any]:
     status = _run_git(repo, "status", "--short") or ""
+    head = _run_git(repo, "rev-parse", "HEAD")
+    origin_main = _run_git(repo, "rev-parse", "--verify", "origin/main")
     return {
         "path": str(repo),
         "exists": repo.exists(),
         "branch": _run_git(repo, "branch", "--show-current"),
-        "head": _run_git(repo, "rev-parse", "HEAD"),
+        "head": head,
+        "origin_main_head": origin_main,
+        "head_matches_origin_main": bool(head and origin_main and head == origin_main),
         "dirty_entry_count": len([line for line in status.splitlines() if line.strip()]),
     }
 
@@ -237,8 +241,27 @@ def _markdown(packet: Mapping[str, Any]) -> str:
         f"Generated: `{packet.get('generated_at')}`",
         f"Status: `{packet.get('status')}`",
         "",
-        "## Artifact Checksums",
+        "## Repository Evidence",
     ]
+    repos = packet.get("repos")
+    if isinstance(repos, Mapping):
+        for name, info in repos.items():
+            if not isinstance(info, Mapping):
+                continue
+            local = info.get("head") or "unavailable"
+            origin_main = info.get("origin_main_head") or "unavailable"
+            branch = info.get("branch") or "detached_or_unavailable"
+            dirty_count = info.get("dirty_entry_count")
+            lines.append(
+                f"- `{name}`: branch `{branch}`, local `{local}`, origin/main `{origin_main}`, dirty entries `{dirty_count}`"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## Artifact Checksums",
+        ]
+    )
     for artifact in packet.get("artifacts", []):
         if not isinstance(artifact, Mapping):
             continue
