@@ -26,7 +26,7 @@ dependencies = [
     # CI installs the matching BlueprintContracts checkout and runs
     # scripts/verify_robot_eval_job_request_contract.py so the
     # robot_eval_job_request.v1 schema cannot fall back silently.
-    "blueprint-contracts @ git+https://github.com/ognjhunt/BlueprintContracts.git@4c0020205bb2022f713ea795e64bb3c64aaf1c09",
+    "blueprint-contracts @ git+https://github.com/ognjhunt/BlueprintContracts.git@7708a4e4c5dedeeb39cc73d3f6869304de295b81",
     "pyyaml>=6.0",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
