@@ -17,7 +17,7 @@ def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_arena_fixture_smoke_proves_local_package_surface(tmp_path: Path, monkeypatch) -> None:
+def test_arena_fixture_smoke_surfaces_buyer_readout_blockers(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD", "preexisting")
 
     result = build_arena_fixture_smoke(
@@ -36,8 +36,9 @@ def test_arena_fixture_smoke_proves_local_package_surface(tmp_path: Path, monkey
     operators = _read_json(package_dir / "live_operator_ledger.json")
     audit = _read_json(package_dir / "arena_package_proof_boundary_audit.json")
 
-    assert result["status"] == "passed"
+    assert result["status"] == "blocked"
     assert result["ingest_exit_code"] == 0
+    assert "post_training_data_package_not_export_ready_review_required" in result["blockers"]
     assert schedule["scenario_count"] == 20
     assert schedule["shard_count"] == 4
     assert trace["attempt_count"] == 3
@@ -50,7 +51,8 @@ def test_arena_fixture_smoke_proves_local_package_surface(tmp_path: Path, monkey
     assert operators["status"] == "completed"
     assert operators["agents_sdk_operator_performed"] is True
     assert operators["codex_sdk_operator_performed"] is True
-    assert audit["status"] == "passed"
+    assert audit["status"] == "blocked"
+    assert "post_training_data_package_not_export_ready_review_required" in audit["blockers"]
     assert result["proof_boundary"]["simulator_execution_proven"] is False
     assert result["proof_boundary"]["owner_system_arena_execution_proven"] is False
     assert result["proof_boundary"]["webapp_upstream_truth_proven"] is False
@@ -84,9 +86,10 @@ def test_arena_fixture_smoke_module_cli(tmp_path: Path) -> None:
         env=env,
     )
 
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 1, completed.stderr
     manifest = _read_json(output_dir / "arena_fixture_smoke_manifest.json")
-    assert manifest["status"] == "passed"
+    assert manifest["status"] == "blocked"
+    assert "post_training_data_package_not_export_ready_review_required" in manifest["blockers"]
     assert manifest["scenario_count"] == 10
     assert manifest["shard_count"] == 2
 
@@ -109,7 +112,8 @@ def test_arena_fixture_smoke_main_reports_status(tmp_path: Path, capsys) -> None
 
     captured = capsys.readouterr()
     manifest = _read_json(output_dir / "arena_fixture_smoke_manifest.json")
-    assert exit_code == 0
-    assert manifest["status"] == "passed"
+    assert exit_code == 1
+    assert manifest["status"] == "blocked"
+    assert "post_training_data_package_not_export_ready_review_required" in manifest["blockers"]
     assert "[arena-fixture-smoke] manifest=" in captured.out
-    assert "[arena-fixture-smoke] status=passed" in captured.out
+    assert "[arena-fixture-smoke] status=blocked" in captured.out

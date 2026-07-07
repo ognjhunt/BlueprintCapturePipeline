@@ -35,6 +35,41 @@ def _read_mapping(path: Path) -> Dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+def _write_fixture_video(path: Path, *, label: str) -> None:
+    """Write a tiny decodable MP4 so package validators exercise real media checks."""
+
+    import cv2  # type: ignore[import-not-found]
+    import numpy as np
+
+    ensure_dir(path.parent)
+    width = 96
+    height = 64
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 6.0, (width, height))
+    if not writer.isOpened():
+        raise RuntimeError(f"fixture_video_writer_failed:{path}")
+    try:
+        base = sum(label.encode("utf-8")) % 180
+        for index in range(12):
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+            frame[:, :, 0] = (base + index * 9) % 255
+            frame[:, :, 1] = (40 + index * 13) % 255
+            frame[:, :, 2] = (120 + index * 5) % 255
+            cv2.rectangle(frame, (8 + index, 12), (42 + index, 48), (240, 240, 240), -1)
+            cv2.putText(
+                frame,
+                label[:8],
+                (8, 58),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.35,
+                (10, 10, 10),
+                1,
+                cv2.LINE_AA,
+            )
+            writer.write(frame)
+    finally:
+        writer.release()
+
+
 def _write_capture_fixture(capture_root: Path) -> None:
     _write_json(
         capture_root / "capture_descriptor.json",
@@ -120,8 +155,8 @@ def _write_results_fixture(results_dir: Path) -> None:
     logs = results_dir / "logs"
     ensure_dir(videos)
     ensure_dir(logs)
-    (videos / "episode-success.mp4").write_bytes(b"synthetic-success-video")
-    (videos / "episode-failure.mp4").write_bytes(b"synthetic-failure-video")
+    _write_fixture_video(videos / "episode-success.mp4", label="success")
+    _write_fixture_video(videos / "episode-failure.mp4", label="failure")
     (logs / "episode-success.jsonl").write_text('{"event":"success"}\n', encoding="utf-8")
     (logs / "episode-failure.jsonl").write_text('{"event":"occlusion"}\n', encoding="utf-8")
     _write_json(

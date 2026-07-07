@@ -3309,7 +3309,10 @@ def test_oscar_cosmos_wam_evaluator_imports_provider_output_without_fresh_run_cl
     checkpoint = tmp_path / "checkpoints" / "provider-checkpoint-provenance"
     checkpoint.mkdir(parents=True)
     provider_job = tmp_path / "completed-provider-job"
-    _write_provider_output_zip(provider_job / "vast_provider_runtime_output.zip")
+    _write_provider_output_zip(
+        provider_job / "vast_provider_runtime_output.zip",
+        include_runtime_result=True,
+    )
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_PROVIDER_COMPLETED_JOB_DIR", str(provider_job))
 
     summary = evaluator.run_oscar_cosmos_wam_evaluator(
@@ -3327,8 +3330,10 @@ def test_oscar_cosmos_wam_evaluator_imports_provider_output_without_fresh_run_cl
 
     assert summary["wam_generated_rollout_status"] == "completed"
     assert summary["learned_wam_model_output_available"] is True
-    assert summary["learned_wam_model_ran"] is False
     assert summary["provider_output_replay_used"] is True
+    assert summary["fresh_model_command_executed_this_invocation"] is False
+    assert summary["provider_learned_wam_model_ran"] is True
+    assert summary["provider_generated_video_is_model_output"] is True
     assert summary["forward_inverse_consistency_proven"] is False
     assert summary["external_episode_consistency_scorer_ran"] is False
     generated = json.loads(
@@ -3345,7 +3350,9 @@ def test_oscar_cosmos_wam_evaluator_imports_provider_output_without_fresh_run_cl
     )
     assert truth["provider_output_replay_used"] is True
     assert truth["learned_wam_model_output_available"] is True
-    assert truth["learned_wam_model_ran"] is False
+    assert truth["fresh_model_command_executed_this_invocation"] is False
+    assert truth["provider_learned_wam_model_ran"] is True
+    assert truth["provider_generated_video_is_model_output"] is True
     assert truth["forward_inverse_consistency_proven"] is False
     assert truth["external_episode_consistency_scorer_ran"] is False
 

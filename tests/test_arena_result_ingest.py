@@ -11,6 +11,7 @@ import pytest
 import blueprint_pipeline.arena_result_ingest as arena
 from blueprint_pipeline.arena_package_audit import build_arena_package_proof_boundary_audit
 from blueprint_pipeline.arena_package_delivery_local import build_local_delivery_command_manifest
+from blueprint_pipeline.arena_fixture_smoke import _write_fixture_video
 from blueprint_pipeline.arena_result_ingest import build_arena_result_ingest
 from blueprint_pipeline.rollout_vision_label_openai import build_openai_rollout_vision_labels
 
@@ -63,7 +64,7 @@ def _capture_root(tmp_path: Path) -> Path:
 def _arena_results(tmp_path: Path) -> Path:
     results_dir = tmp_path / "arena-results"
     (results_dir / "videos").mkdir(parents=True, exist_ok=True)
-    (results_dir / "videos" / "episode.mp4").write_bytes(b"fake video")
+    _write_fixture_video(results_dir / "videos" / "episode.mp4", label="episode")
     _write_json(
         results_dir / "rollout_manifest.json",
         {
@@ -93,7 +94,9 @@ def _arena_results(tmp_path: Path) -> Path:
     return results_dir
 
 
-def test_arena_result_ingest_writes_package_and_blocks_live_gates(tmp_path: Path) -> None:
+def test_arena_result_ingest_writes_package_and_surfaces_buyer_readout_blockers(
+    tmp_path: Path,
+) -> None:
     capture_root = _capture_root(tmp_path)
     results_dir = _arena_results(tmp_path)
     output_dir = tmp_path / "arena-package"
@@ -136,7 +139,12 @@ def test_arena_result_ingest_writes_package_and_blocks_live_gates(tmp_path: Path
     assert operators["status"] == "blocked"
     assert "missing_env_BLUEPRINT_ALLOW_LIVE_CODEX_SDK_OPERATORS" in operators["blockers"]
     assert "missing_openai_api_key" in operators["blockers"]
-    assert package["status"] == "export_ready_review_required"
+    assert package["status"] == "blocked_buyer_readout_incomplete_package"
+    assert package["buyer_readout_status"] == "blocked_incomplete_package"
+    assert any(
+        str(blocker).startswith("buyer_readout:task_success_criteria:")
+        for blocker in package["blockers"]
+    )
     buyer_report = _read_json(output_dir / "task_eval_run_report.json")
     assert buyer_report["schema_version"] == "task_eval_run_buyer_report.v1"
     # local file ingest carries no layer contracts, so the ledger must
@@ -159,7 +167,8 @@ def test_arena_result_ingest_writes_package_and_blocks_live_gates(tmp_path: Path
         package_dir=output_dir,
         expected_scenario_count=500,
     )
-    assert audit["status"] == "passed"
+    assert audit["status"] == "blocked"
+    assert "post_training_data_package_not_export_ready_review_required" in audit["blockers"]
     assert audit["summary"]["attempt_count"] == 1
     assert audit["summary"]["clip_count"] == 1
     assert audit["proof_boundary_violations"] == []
@@ -193,7 +202,9 @@ def test_arena_package_audit_blocks_illegal_proof_upgrade(tmp_path: Path) -> Non
     ]
 
 
-def test_arena_package_audit_allows_live_closure_backed_proof_upgrade(tmp_path: Path) -> None:
+def test_arena_package_audit_preserves_live_closure_proof_boundary_while_readout_blocked(
+    tmp_path: Path,
+) -> None:
     capture_root = _capture_root(tmp_path)
     results_dir = _arena_results(tmp_path)
     output_dir = tmp_path / "arena-package"
@@ -239,7 +250,8 @@ def test_arena_package_audit_allows_live_closure_backed_proof_upgrade(tmp_path: 
         require_job_artifacts=True,
     )
 
-    assert audit["status"] == "passed"
+    assert audit["status"] == "blocked"
+    assert "post_training_data_package_not_export_ready_review_required" in audit["blockers"]
     assert audit["proof_boundary_violations"] == []
 
 

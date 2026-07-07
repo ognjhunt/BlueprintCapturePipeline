@@ -21,11 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      BLUEPRINT_LAUNCH_PROOF_MODE: production
-      PRIVACY_PIPELINE_ENABLED: "true"
-      PRIVACY_FAIL_CLOSED: "true"
-      PIPELINE_SYNC_REQUIRED: "true"
-      RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO: "true"
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
       # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
       CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
@@ -70,6 +65,21 @@ jobs:
         run: |
           uv run python scripts/verify_robot_eval_job_request_contract.py \
             --contracts-repo BlueprintContracts
+
+      - name: Verify production fail-closed posture
+        env:
+          BLUEPRINT_LAUNCH_PROOF_MODE: production
+          PRIVACY_PIPELINE_ENABLED: "true"
+          PRIVACY_FAIL_CLOSED: "true"
+          PIPELINE_SYNC_REQUIRED: "true"
+          RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO: "true"
+        run: |
+          uv run python -m pytest -q \
+            tests/test_launch_proof_policy.py \
+            tests/test_production_runtime_env_guard.py \
+            tests/test_deploy_systemd_contract.py \
+            tests/test_webapp_sync.py::test_production_sync_is_required_and_disables_placeholder_fallback \
+            tests/test_provider_preview_qa.py::test_provider_preview_qa_blocks_raw_bypass_in_production
 
       - name: Collect full lane
         run: |

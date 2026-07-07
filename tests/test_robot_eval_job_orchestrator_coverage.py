@@ -511,7 +511,11 @@ def test_robot_eval_job_build_guards_and_inbox_dedupe(tmp_path: Path, monkeypatc
     newer = inbox / "z_newer.json"
     identity_request = {
         "source_kind": "webapp_route_forwarding_proof",
-        "site_package": {"capture_root": "/cap", "capture_id": "cap", "site_slug": "slug"},
+        "site_package": {
+            "capture_root": str(capture_root),
+            "capture_id": "cap",
+            "site_slug": "slug",
+        },
     }
     _write_json(older, {**identity_request, "job_id": "older"})
     _write_json(newer, {**identity_request, "job_id": "newer"})

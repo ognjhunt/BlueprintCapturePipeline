@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -219,8 +220,13 @@ def test_harness_fails_closed_without_simulator_execution_optin(
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_full_real_policy_family_eval_end_to_end(tmp_path: Path) -> None:
+def test_full_real_policy_family_eval_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pytest.importorskip("mujoco")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "preexisting")
+    monkeypatch.setenv("MUJOCO_GL", "osmesa")
     checkpoint = create_scripted_baseline_checkpoint(tmp_path / "ckpt")
     family = default_family_config(
         family_id=SCRIPTED_PICK_PLACE_FAMILY_ID, checkpoint_dir=str(checkpoint)
@@ -235,6 +241,8 @@ def test_full_real_policy_family_eval_end_to_end(tmp_path: Path) -> None:
         allow_simulator_execution=True,
         bootstrap_demo_capture_root=True,
     )
+    assert os.environ["BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"] == "preexisting"
+    assert os.environ["MUJOCO_GL"] == "osmesa"
     assert manifest["status"] == "real_closed_loop_eval_completed"
     verification = manifest["verification"]
     assert verification["real_rollout_report"] is True
@@ -251,8 +259,12 @@ def test_full_real_policy_family_eval_end_to_end(tmp_path: Path) -> None:
     assert report["provider_execution"]["simulator_framework"] == "mujoco"
     conditions = report["scorecard"]["conditions"]
     assert conditions and conditions[0]["trials"] > 0
-    # Rates always carry the trial count and interval, never a bare percentage.
-    assert set(conditions[0]["success_rate"]) == {"point", "lower_95", "upper_95"}
+    assert report["scorecard"]["evidence_level"] == "no_claim"
+    assert report["scorecard"]["status"] == "rates_withheld_insufficient_evidence"
+    assert report["success_claim_ledger"]["highest_truthful_claim"] == "no_claim"
+    # The real substrate ran, but task success rates stay withheld until the
+    # success-claim ladder reaches a claimable evidence layer.
+    assert conditions[0]["success_rate"] is None
 
     registry = json.loads(
         (job_dir / "real_policy_family_registry.json").read_text(encoding="utf-8")

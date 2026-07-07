@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -643,8 +644,6 @@ def run_real_policy_family_eval(
     timeout_seconds: int = 600,
     python_executable: str | None = None,
 ) -> dict[str, Any]:
-    import os
-
     from .robot_eval_job_orchestrator import build_robot_eval_job
 
     generated_at = utc_now_iso()
@@ -671,7 +670,6 @@ def run_real_policy_family_eval(
         }
         return manifest
 
-    os.environ["BLUEPRINT_ALLOW_SIMULATOR_EXECUTION"] = "true"
     simulator_command = rollout_simulator_command(
         family=family, python_executable=python_executable
     )
@@ -686,22 +684,40 @@ def run_real_policy_family_eval(
         if policy_execution_command
         else None
     )
+    env_overrides = {
+        "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION": "true",
+        # This harness runs headless with no observation rendering. Earlier
+        # rendering tests may leave MUJOCO_GL set to a backend unsupported by
+        # the active interpreter, which can make MuJoCo fail at import time in
+        # the simulator subprocess.
+        "MUJOCO_GL": "disable",
+    }
     if policy_execution_commands:
-        os.environ["BLUEPRINT_ALLOW_POLICY_EXECUTION"] = "true"
-    result = build_robot_eval_job(
-        capture_root=capture_path,
-        job_request=request,
-        job_id=job_id,
-        provisioner="fixture_local",
-        simulator="mujoco",
-        evaluation_substrate=REAL_SUBSTRATE,
-        allow_simulator_execution=True,
-        allowed_simulators=("mujoco",),
-        simulator_commands={"mujoco": simulator_command},
-        allow_policy_execution=bool(policy_execution_commands),
-        policy_execution_commands=policy_execution_commands,
-        timeout_seconds=timeout_seconds,
-    )
+        env_overrides["BLUEPRINT_ALLOW_POLICY_EXECUTION"] = "true"
+    previous_env = {name: os.environ.get(name) for name in env_overrides}
+    try:
+        for name, value in env_overrides.items():
+            os.environ[name] = value
+        result = build_robot_eval_job(
+            capture_root=capture_path,
+            job_request=request,
+            job_id=job_id,
+            provisioner="fixture_local",
+            simulator="mujoco",
+            evaluation_substrate=REAL_SUBSTRATE,
+            allow_simulator_execution=True,
+            allowed_simulators=("mujoco",),
+            simulator_commands={"mujoco": simulator_command},
+            allow_policy_execution=bool(policy_execution_commands),
+            policy_execution_commands=policy_execution_commands,
+            timeout_seconds=timeout_seconds,
+        )
+    finally:
+        for name, value in previous_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
     job_dir = capture_path / "pipeline" / "robot_eval_jobs" / job_id
     verification = verify_real_substrate_task_eval_report(job_dir)
