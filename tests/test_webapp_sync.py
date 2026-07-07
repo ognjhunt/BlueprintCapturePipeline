@@ -262,6 +262,47 @@ def test_projection_accepts_string_guardrails_and_null_projection(monkeypatch) -
     assert without_projection["attachment_payload"]["robot_eval_status_projection"] is None
 
 
+def test_sync_projection_blocks_readiness_when_buyer_readout_is_not_ready(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_REQUIRED", raising=False)
+
+    result = sync_webapp_pipeline_attachment(
+        **_minimal_payload(),
+        robot_eval_status_projection={
+            "status": "simulator_results_ready_review_required",
+            "closure_audit": {
+                "post_training_data_package_status": "export_ready_review_required",
+                "buyer_readout_status": "blocked_incomplete_package",
+            },
+            "proof_boundary": {
+                "simulator_execution_proven": True,
+                "public_claim_upgrade_allowed": True,
+            },
+        },
+    )
+
+    projection = result["attachment_payload"]["robot_eval_status_projection"]
+    assert (
+        projection["closure_audit"]["post_training_data_package_status"]
+        == "export_ready_review_required"
+    )
+    assert (
+        projection["closure_audit"]["buyer_readout_status"]
+        == "blocked_incomplete_package"
+    )
+    assert projection["closure_audit"]["buyer_readout_ready"] is False
+    assert (
+        projection["buyer_display_guardrails"]["readiness_claim_upgrade_allowed"]
+        is False
+    )
+    assert projection["buyer_display_guardrails"]["readiness_claim_upgrade_blockers"] == [
+        "buyer_readout_not_ready:blocked_incomplete_package"
+    ]
+
+
 def test_env_and_checksum_helpers_cover_invalid_and_falsey_values(monkeypatch) -> None:
     monkeypatch.setenv("PIPELINE_SYNC_MAX_ATTEMPTS", "not-an-int")
     monkeypatch.delenv("PIPELINE_SYNC_FLAG", raising=False)

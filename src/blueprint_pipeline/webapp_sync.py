@@ -168,6 +168,18 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
     revenue_share_review = _mapping(
         product_handoff.get("revenue_share_review") or value.get("revenue_share_review")
     )
+    buyer_readout_status = str(
+        closure_audit.get("buyer_readout_status")
+        or value.get("buyer_readout_status")
+        or "missing"
+    ).strip()
+    buyer_readout_ready = buyer_readout_status == "buyer_readout_ready_review_required"
+    readiness_claim_upgrade_allowed = public_claim_upgrade_allowed and buyer_readout_ready
+    readiness_claim_upgrade_blockers = []
+    if not buyer_readout_ready:
+        readiness_claim_upgrade_blockers.append(
+            f"buyer_readout_not_ready:{buyer_readout_status or 'missing'}"
+        )
     return {
         "schema_version": ROBOT_EVAL_WEBAPP_STATUS_PROJECTION_SCHEMA_VERSION,
         "generated_at": str(value.get("generated_at") or "").strip() or None,
@@ -293,6 +305,9 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "post_training_data_package_status": closure_audit.get(
                 "post_training_data_package_status"
             ),
+            "buyer_readout_status": buyer_readout_status,
+            "buyer_readout_ready": buyer_readout_ready,
+            "buyer_readout_required_for_buyer_visible_delivery": True,
             "no_readiness_claim_upgrade_without_evidence": bool(
                 closure_audit.get("no_readiness_claim_upgrade_without_evidence")
             ),
@@ -448,7 +463,9 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "must_not_display_as": must_not_display_as,
             "provider_commands_exposed": False,
             "provider_credentials_exposed": False,
-            "readiness_claim_upgrade_allowed": public_claim_upgrade_allowed,
+            "readiness_claim_upgrade_allowed": readiness_claim_upgrade_allowed,
+            "readiness_claim_upgrade_blockers": readiness_claim_upgrade_blockers,
+            "buyer_readout_ready": buyer_readout_ready,
         },
     }
 
