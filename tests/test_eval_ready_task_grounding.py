@@ -72,6 +72,9 @@ def test_eval_ready_task_grounding_builds_ready_sink_handle_contract(tmp_path: P
 
     manifest = grounding.build_eval_ready_task_grounding(
         capture_root=capture_root,
+        task_id="turn_on_sink_handle",
+        task_text="turn on the sink right handle",
+        target_label="right sink handle",
         scene_asset=scene,
         initial_frame=initial_frame,
         camera_calibration=camera,
@@ -113,7 +116,12 @@ def test_eval_ready_task_grounding_blocks_parent_sink_without_handle(tmp_path: P
         },
     )
 
-    manifest = grounding.build_eval_ready_task_grounding(capture_root=capture_root)
+    manifest = grounding.build_eval_ready_task_grounding(
+        capture_root=capture_root,
+        task_id="turn_on_sink_handle",
+        task_text="turn on the sink right handle",
+        target_label="right sink handle",
+    )
 
     assert manifest["status"] == "blocked"
     assert manifest["selected_task_target"]["object_id"] == "sink_parent"
@@ -158,6 +166,45 @@ def test_eval_ready_task_grounding_default_does_not_emit_sink_task_for_sinkless_
         "readiness"
     ]["blockers"]
     assert manifest["selected_task_target"]["object_id"] == "rack_01"
+
+
+def test_eval_ready_task_grounding_default_does_not_emit_sink_handle_task_for_site_with_sink(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "mixed_capture"
+    _write_json(
+        capture_root / "raw" / "object_index.json",
+        {
+            "objects": [
+                {
+                    "object_id": "sink_parent",
+                    "label": "sink",
+                    "mean_confidence": 0.86,
+                    "reference_crop": "object_index_artifacts/crops/sink.png",
+                    "all_crops": ["object_index_artifacts/crops/sink.png"],
+                },
+                {
+                    "object_id": "rack_01",
+                    "label": "storage rack",
+                    "mean_confidence": 0.87,
+                    "reference_crop": "object_index_artifacts/crops/rack.png",
+                    "all_crops": ["object_index_artifacts/crops/rack.png"],
+                    "keypoints": {"center": [300, 200]},
+                },
+            ]
+        },
+    )
+
+    manifest = grounding.build_eval_ready_task_grounding(capture_root=capture_root)
+
+    assert manifest["task"]["default_task_replaces_legacy_template"] is True
+    assert manifest["task"]["task_text"] == "inspect the sink"
+    assert manifest["task"]["target_label"] == "sink"
+    assert manifest["task"]["task_text"] != "turn on the sink right handle"
+    assert "right sink handle" not in json.dumps(manifest["task"]).lower()
+    assert "missing_task_specific_handle_label_or_keypoint" not in manifest[
+        "readiness"
+    ]["blockers"]
 
 
 def test_eval_ready_task_grounding_cli_writes_summary(tmp_path: Path, capsys) -> None:
@@ -222,6 +269,9 @@ def _build_ready_manifest(tmp_path: Path) -> dict:
     )
     return grounding.build_eval_ready_task_grounding(
         capture_root=capture_root,
+        task_id="turn_on_sink_handle",
+        task_text="turn on the sink right handle",
+        target_label="right sink handle",
         scene_asset=scene,
         initial_frame=initial_frame,
         camera_calibration=camera,

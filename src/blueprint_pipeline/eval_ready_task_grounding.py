@@ -207,6 +207,15 @@ def _object_has_tokens(entry: Mapping[str, Any], token_set: set[str]) -> bool:
     )
 
 
+def _requires_articulated_handle_target(*, task_text: str, target_label: str) -> bool:
+    tokens = _tokens(task_text, target_label)
+    if tokens & _HANDLE_TOKENS:
+        return True
+    sink_or_faucet = tokens & _SINK_TOKENS
+    manipulation = tokens & {"turn", "toggle", "open", "close", "press", "pull", "push"}
+    return bool(sink_or_faucet and manipulation)
+
+
 def _generic_default_task_from_objects(
     objects: Sequence[Mapping[str, Any]],
 ) -> tuple[str, str, str, dict[str, Any]]:
@@ -1025,9 +1034,9 @@ def _load_task_anchor(capture_root: Path, *, task_id: str, selected_target_id: s
 def build_eval_ready_task_grounding(
     *,
     capture_root: str | Path,
-    task_id: str = "turn_on_sink_handle",
-    task_text: str = DEFAULT_TASK_TEXT,
-    target_label: str = DEFAULT_TARGET_LABEL,
+    task_id: str | None = None,
+    task_text: str | None = None,
+    target_label: str | None = None,
     scene_asset: str | Path | None = None,
     initial_frame: str | Path | None = None,
     camera_calibration: str | Path | None = None,
@@ -1044,18 +1053,37 @@ def build_eval_ready_task_grounding(
     generated_at = utc_now_iso()
     object_index, object_index_path = _read_object_index(resolved_capture_root)
     default_task_metadata: dict[str, Any] = {
-        "default_task_source": "explicit_or_default_template",
+        "default_task_source": "explicit_task_contract",
         "default_task_replaces_legacy_template": False,
     }
-    if task_text == DEFAULT_TASK_TEXT and target_label == DEFAULT_TARGET_LABEL:
-        has_sink_or_handle_target = any(
-            _object_has_tokens(entry, _SINK_TOKENS | _HANDLE_TOKENS)
-            for entry in object_index
+    explicit_task_requested = any(
+        value is not None for value in (task_id, task_text, target_label)
+    )
+    if not explicit_task_requested:
+        task_id, task_text, target_label, default_task_metadata = (
+            _generic_default_task_from_objects(object_index)
         )
-        if not has_sink_or_handle_target:
-            task_id, task_text, target_label, default_task_metadata = (
-                _generic_default_task_from_objects(object_index)
+    else:
+        task_text = _string(task_text)
+        target_label = _string(target_label)
+        if not task_text and target_label:
+            task_text = f"inspect the {target_label}"
+        if not target_label and task_text:
+            target_label = task_text
+        if not task_text:
+            task_text = DEFAULT_TASK_TEXT
+        if not target_label:
+            target_label = DEFAULT_TARGET_LABEL
+        task_id = _string(task_id) or _slug(task_text, fallback="custom_task")
+        if (
+            task_text == DEFAULT_TASK_TEXT
+            and target_label == DEFAULT_TARGET_LABEL
+            and not any(
+                _object_has_tokens(entry, _SINK_TOKENS | _HANDLE_TOKENS)
+                for entry in object_index
             )
+        ):
+            default_task_metadata["explicit_legacy_sink_template_without_site_target"] = True
     selected, candidates, parent_context = _select_task_targets(
         object_index,
         task_text=task_text,
@@ -1137,8 +1165,9 @@ def build_eval_ready_task_grounding(
         blockers.append("missing_task_target_label_or_keypoint")
     else:
         reasons = set(selected.get("match_reasons", []))
-        requires_handle_target = bool(
-            _tokens(task_text, target_label) & (_HANDLE_TOKENS | _SINK_TOKENS)
+        requires_handle_target = _requires_articulated_handle_target(
+            task_text=task_text,
+            target_label=target_label,
         )
         if requires_handle_target and "handle_semantics" not in reasons:
             blockers.append("missing_task_specific_handle_label_or_keypoint")
@@ -1173,8 +1202,9 @@ def build_eval_ready_task_grounding(
 
     learned_rollout_request_ready = not blockers
     robot_projection_ready = bool(fk_projection.get("status") == "completed")
-    requires_handle_target = bool(
-        _tokens(task_text, target_label) & (_HANDLE_TOKENS | _SINK_TOKENS)
+    requires_handle_target = _requires_articulated_handle_target(
+        task_text=task_text,
+        target_label=target_label,
     )
     if requires_handle_target:
         vlm_or_human_review_checks = [
@@ -1301,9 +1331,21 @@ def build_eval_ready_task_grounding(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture-root", required=True)
-    parser.add_argument("--task-id", default="turn_on_sink_handle")
-    parser.add_argument("--task-text", default=DEFAULT_TASK_TEXT)
-    parser.add_argument("--target-label", default=DEFAULT_TARGET_LABEL)
+    parser.add_argument(
+        "--task-id",
+        default=None,
+        help="Explicit task id. Omit to derive a site-grounded default from the object index.",
+    )
+    parser.add_argument(
+        "--task-text",
+        default=None,
+        help="Explicit task text. Omit to derive a site-grounded default from the object index.",
+    )
+    parser.add_argument(
+        "--target-label",
+        default=None,
+        help="Explicit target label. Omit to derive a site-grounded default from the object index.",
+    )
     parser.add_argument("--scene-asset")
     parser.add_argument("--initial-frame")
     parser.add_argument("--camera-calibration")
