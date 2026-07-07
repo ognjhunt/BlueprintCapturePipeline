@@ -2631,3 +2631,62 @@ def test_cli_blocks_sub_native_oscar_resolution_without_override(tmp_path):
         not in overridden["blockers"]
     )
     assert overridden["oscar_generation_resolution_contract"]["override_used"] is True
+
+
+def _route_walking_wam(tmp_path):
+    def wam(frame, action, step, history):
+        generated = tmp_path / f"dyn_gen_{step}.png"
+        _write_frame(generated, 60 + step)
+        return {"status": "completed", "generated_frame_path": str(generated)}
+
+    return wam
+
+
+def test_episode_ends_when_task_target_reached(tmp_path):
+    # Short route: the deterministic walk reaches the target well before the
+    # steps cap, so the episode should terminate early with the task reason.
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "dyn_out",
+        start_frame_path=_write_frame(tmp_path / "dyn_seed.png", 9),
+        route_points=[[0.0, 0.0, 0.79], [0.1, 0.0, 0.79]],
+        wam_generate_next=_route_walking_wam(tmp_path),
+        steps=12,
+        stop_on_task_completion=True,
+    )
+    termination = manifest["episode_termination"]
+    assert termination["stop_on_task_completion"] is True
+    assert termination["task_completed_early"] is True
+    assert termination["reason"].startswith("task_target_reached_at_step_")
+    assert termination["steps_executed"] < 12
+    assert termination["steps_cap"] == 12
+    assert manifest["status"] == "completed"
+    assert "route-geometry" in termination["claim_boundary"]
+
+
+def test_episode_runs_full_cap_without_stop_flag(tmp_path):
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "cap_out",
+        start_frame_path=_write_frame(tmp_path / "cap_seed.png", 9),
+        route_points=[[0.0, 0.0, 0.79], [0.1, 0.0, 0.79]],
+        wam_generate_next=_route_walking_wam(tmp_path),
+        steps=3,
+    )
+    termination = manifest["episode_termination"]
+    assert termination["task_completed_early"] is False
+    assert termination["reason"] == "steps_cap_reached"
+    assert termination["steps_executed"] == 3
+
+
+def test_sealed_plan_and_cli_carry_stop_on_task_completion(tmp_path):
+    from blueprint_pipeline import groot_oscar_closed_loop_image as gocl
+
+    plan = gocl.build_sealed_launch_plan(
+        start_frame="/workspace/seed.png",
+        route_file="/workspace/route.json",
+        steps=12,
+        task_prompt="open the fridge",
+        output_dir="/workspace/t4_out",
+        env={"BLUEPRINT_GROOT_OSCAR_SEALED_IMAGE": "true"},
+    )
+    if plan["closed_loop_command"]:
+        assert "--stop-on-task-completion" in plan["closed_loop_command"]

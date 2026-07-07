@@ -251,6 +251,9 @@ def build_sealed_launch_plan(
         "--groot-sonic-policy-server-url", contract["policy_server_url"],
         "--groot-root", groot_root,
         "--require-fresh-learned-policy-requery",
+        # Episode length is task-adaptive: --steps is the hard cap and the
+        # episode ends when the target-reached criterion fires.
+        "--stop-on-task-completion",
         "--harness-backend-kind", "fixture",
         "--oscar-height", str(int(oscar_height)),
         "--oscar-width", str(int(oscar_width)),

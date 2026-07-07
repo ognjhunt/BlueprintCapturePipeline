@@ -2661,6 +2661,8 @@ def run_oscar_isaac_closed_loop(
     require_generated_video_success_label: bool = False,
     wam_success_label_timeout_seconds: float | None = None,
     min_coherent_horizon_frames: int = 0,
+    stop_on_task_completion: bool = False,
+    min_steps: int = 1,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     resolved_out = Path(output_dir).expanduser().resolve()
@@ -2698,6 +2700,8 @@ def run_oscar_isaac_closed_loop(
     clean_frame_reanchor_events: list[dict[str, Any]] = []
     action_history: list[dict[str, Any]] = []
     clip_coherence_rows: list[dict[str, Any]] = []
+    episode_termination_reason: str | None = None
+    task_completed_early = False
     step_records: list[dict[str, Any]] = []
     adapter_reports: list[dict[str, Any]] = []
     trace_rows: list[dict[str, Any]] = []
@@ -3000,10 +3004,46 @@ def run_oscar_isaac_closed_loop(
                 f"wam_episode_consistency_step_{step_index}:{blocker}"
                 for blocker in step_blockers
             )
+            episode_termination_reason = (
+                f"wam_episode_consistency_early_termination_at_step_{step_index}"
+            )
+            break
+
+        # Dynamic episode length: with stop_on_task_completion the episode runs
+        # until the task-completion criterion fires (the same target-reached
+        # test the final judge applies) and `steps` is only the hard cap —
+        # episodes are as long as the task needs, no longer, no shorter.
+        step_root_position = trace_row.get("root_position") or []
+        target_reached_now = bool(
+            len(step_root_position) >= len(target)
+            and sum(
+                (float(a) - float(b)) ** 2
+                for a, b in zip(step_root_position, target)
+            )
+            ** 0.5
+            < 0.25
+        )
+        if (
+            stop_on_task_completion
+            and target_reached_now
+            and step_index >= max(1, int(min_steps))
+        ):
+            episode_termination_reason = (
+                f"task_target_reached_at_step_{step_index}"
+            )
+            task_completed_early = True
+            # 4. feed forward still records the generated frame as consumed.
+            current_frame = next_policy_frame
             break
 
         # 4. feed forward: the generated frame becomes the next step's observation
         current_frame = next_policy_frame
+
+    if episode_termination_reason is None:
+        if blockers:
+            episode_termination_reason = f"blocked:{blockers[-1]}"
+        else:
+            episode_termination_reason = "steps_cap_reached"
 
     trace_path = resolved_out / "oscar_isaac_closed_loop_trace.jsonl"
     with trace_path.open("w", encoding="utf-8") as handle:
@@ -3218,6 +3258,19 @@ def run_oscar_isaac_closed_loop(
             "interval_steps": int(effective_reanchor_interval) or None,
             "source_frame_kind": "initial_policy_observation_clean_frame",
         },
+        "episode_termination": {
+            "reason": episode_termination_reason,
+            "steps_executed": len(trace_rows),
+            "steps_cap": int(steps),
+            "stop_on_task_completion": bool(stop_on_task_completion),
+            "min_steps": max(1, int(min_steps)),
+            "task_completed_early": bool(task_completed_early),
+            "claim_boundary": (
+                "Early termination on target-reached is a route-geometry "
+                "criterion, not manipulation task-success proof; the "
+                "manipulation success evaluator remains the judge."
+            ),
+        },
         "generated_clip_coherence": {
             "per_step": clip_coherence_rows,
             "seed_correlation_floor": GENERATED_CLIP_SEED_CORRELATION_FLOOR,
@@ -3351,6 +3404,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             "weight-residency OOM (2026-07-06 lesson); without this flag the "
             "run blocks before any GPU work."
         ),
+    )
+    parser.add_argument(
+        "--stop-on-task-completion",
+        action="store_true",
+        help=(
+            "Make episode length task-adaptive: end the episode when the "
+            "target-reached criterion fires (same test the final judge uses); "
+            "--steps then acts only as the hard cap. Without this the episode "
+            "always runs exactly --steps generations regardless of the task."
+        ),
+    )
+    parser.add_argument(
+        "--min-steps",
+        type=int,
+        default=1,
+        help="Minimum steps before task-completion early termination may fire.",
     )
     parser.add_argument(
         "--min-coherent-horizon-frames",
@@ -3743,6 +3812,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         wam_success_label_timeout_seconds=args.wam_success_label_timeout_seconds,
         min_coherent_horizon_frames=int(args.min_coherent_horizon_frames),
+        stop_on_task_completion=bool(args.stop_on_task_completion),
+        min_steps=int(args.min_steps),
     )
     print(json.dumps({"status": manifest["status"], "steps_executed": manifest.get("steps_executed")}, sort_keys=True))
     return 0 if manifest["status"] == "completed" else 2
