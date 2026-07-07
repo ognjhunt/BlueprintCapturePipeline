@@ -135,8 +135,9 @@ def test_sim_only_gate_uses_explicit_webapp_ref_with_launch_fixes():
         encoding="utf-8"
     )
 
-    assert "WEBAPP_REF: ${{ inputs.webapp_ref || 'launch-robot-eval-delivery-forwarding-fixes' }}" in text
+    assert "WEBAPP_REF: ${{ inputs.webapp_ref || 'main' }}" in text
     assert "WEBAPP_REF: ${{ inputs.webapp_ref || github.head_ref || github.ref_name }}" not in text
+    assert "launch-robot-eval-delivery-forwarding-fixes" not in text
 
 
 def test_sim_only_gate_uses_headless_linux_mujoco_rendering():

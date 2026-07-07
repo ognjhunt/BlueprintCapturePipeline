@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       webapp_ref:
-        description: "Blueprint-WebApp ref to check out; defaults to the Pipeline branch name, then main."
+        description: "Blueprint-WebApp ref to check out; defaults to main."
         required: false
         type: string
 
@@ -38,9 +38,10 @@ jobs:
     timeout-minutes: 45
     env:
       WEBAPP_REPOSITORY: ognjhunt/Blueprint-WebApp
-      # Keep this on a WebApp ref that contains the robot-eval forwarding and
-      # buyer-delivery route fixes required by the local gate.
-      WEBAPP_REF: ${{ inputs.webapp_ref || 'launch-robot-eval-delivery-forwarding-fixes' }}
+      # WebApp main contains the robot-eval forwarding and buyer-delivery route
+      # fixes required by the local gate. workflow_dispatch can override this
+      # only for an explicit cross-repo rehearsal.
+      WEBAPP_REF: ${{ inputs.webapp_ref || 'main' }}
       WEBAPP_TOKEN: ${{ secrets.BLUEPRINT_WEBAPP_CHECKOUT_TOKEN || github.token }}
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
       # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
