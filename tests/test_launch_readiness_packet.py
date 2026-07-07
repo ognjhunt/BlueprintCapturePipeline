@@ -68,6 +68,20 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
     capture = tmp_path / "BlueprintCapture"
     for repo in (pipeline, webapp, contracts, capture):
         _init_clean_repo_at_origin_main(repo)
+    tracked_forwarding_preflight = (
+        webapp / "output" / "pipeline" / "robot_eval_job_requests" / "forwarding_preflight.json"
+    )
+    _write_json(
+        tracked_forwarding_preflight,
+        {
+            "schema_version": "blueprint.webapp.robot_eval_forwarding_readiness.v1",
+            "status": "blocked",
+            "blockers": ["placeholder"],
+        },
+    )
+    _git(webapp, "add", str(tracked_forwarding_preflight.relative_to(webapp)))
+    _git(webapp, "commit", "-m", "track forwarding preflight")
+    _git(webapp, "update-ref", "refs/remotes/origin/main", _git(webapp, "rev-parse", "HEAD"))
 
     _write_json(
         pipeline / "output" / "paid_marketplace_launch_gate.json",
@@ -109,7 +123,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         },
     )
     _write_json(
-        webapp / "output" / "pipeline" / "robot_eval_job_requests" / "forwarding_preflight.json",
+        tracked_forwarding_preflight,
         {
             "schema_version": "blueprint.webapp.robot_eval_forwarding_readiness.v1",
             "status": "blocked",

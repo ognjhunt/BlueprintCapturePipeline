@@ -59,7 +59,7 @@ def _run_git(repo: Path, *args: str) -> str | None:
         )
     except (OSError, subprocess.CalledProcessError):
         return None
-    return completed.stdout.strip()
+    return completed.stdout.rstrip()
 
 
 def _repo_info(repo: Path) -> dict[str, Any]:
