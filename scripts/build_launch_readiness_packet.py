@@ -64,16 +64,24 @@ def _run_git(repo: Path, *args: str) -> str | None:
 
 def _repo_info(repo: Path) -> dict[str, Any]:
     status = _run_git(repo, "status", "--short") or ""
+    dirty_entries = [
+        line[3:].split(" -> ")[-1]
+        for line in status.splitlines()
+        if line.strip() and len(line) > 3
+    ]
     head = _run_git(repo, "rev-parse", "HEAD")
     origin_main = _run_git(repo, "rev-parse", "--verify", "origin/main")
+    git_metadata_present = (repo / ".git").exists()
     return {
         "path": str(repo),
         "exists": repo.exists(),
+        "git_metadata_present": git_metadata_present,
         "branch": _run_git(repo, "branch", "--show-current"),
         "head": head,
         "origin_main_head": origin_main,
         "head_matches_origin_main": bool(head and origin_main and head == origin_main),
-        "dirty_entry_count": len([line for line in status.splitlines() if line.strip()]),
+        "dirty_entry_count": len(dirty_entries),
+        "dirty_entries": dirty_entries,
     }
 
 
@@ -137,6 +145,42 @@ def _artifact_blockers(artifacts: list[Mapping[str, Any]]) -> list[str]:
     return [f"missing_artifact:{artifact['id']}" for artifact in artifacts if not artifact.get("exists")]
 
 
+def _is_allowed_dirty_entry(entry: str, prefixes: tuple[str, ...]) -> bool:
+    normalized = entry.lstrip("/")
+    return any(normalized == prefix.rstrip("/") or normalized.startswith(prefix) for prefix in prefixes)
+
+
+def _repository_blockers(
+    repos: Mapping[str, Mapping[str, Any]],
+    *,
+    allowed_dirty_prefixes: Mapping[str, tuple[str, ...]],
+) -> list[str]:
+    blockers: list[str] = []
+    for name, info in repos.items():
+        if not info.get("exists"):
+            blockers.append(f"repo_missing:{name}")
+            continue
+        if not info.get("git_metadata_present"):
+            blockers.append(f"repo_git_metadata_missing:{name}")
+            continue
+        dirty_entries = [
+            str(entry)
+            for entry in info.get("dirty_entries", [])
+            if str(entry).strip()
+        ]
+        allowed_prefixes = allowed_dirty_prefixes.get(name, ())
+        blocking_dirty_entries = [
+            entry
+            for entry in dirty_entries
+            if not _is_allowed_dirty_entry(entry, allowed_prefixes)
+        ]
+        if blocking_dirty_entries:
+            blockers.append(f"repo_dirty:{name}:{len(blocking_dirty_entries)}")
+        if not info.get("head_matches_origin_main"):
+            blockers.append(f"repo_not_at_origin_main:{name}")
+    return blockers
+
+
 def build_launch_readiness_packet(
     *,
     pipeline_repo: Path,
@@ -184,9 +228,22 @@ def build_launch_readiness_packet(
     ]
     external_manual_items = _external_manual_items(external_payload)
     missing_artifacts = _artifact_blockers(artifacts)
+    repos = {
+        "BlueprintCapturePipeline": _repo_info(pipeline_repo),
+        "Blueprint-WebApp": _repo_info(webapp_repo),
+        "BlueprintContracts": _repo_info(contracts_repo),
+        "BlueprintCapture": _repo_info(capture_repo),
+    }
+    repository_blockers = _repository_blockers(
+        repos,
+        allowed_dirty_prefixes={
+            "BlueprintCapturePipeline": ("output/",),
+            "Blueprint-WebApp": ("output/",),
+        },
+    )
 
     status = "ready"
-    if missing_artifacts:
+    if missing_artifacts or repository_blockers:
         status = "incomplete_packet"
     elif manual_evidence_ids or live_setup_blockers or forwarding_blockers or external_manual_items:
         status = "local_ready_live_external_blocked"
@@ -195,14 +252,10 @@ def build_launch_readiness_packet(
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at or _utc_now(),
         "status": status,
-        "repos": {
-            "BlueprintCapturePipeline": _repo_info(pipeline_repo),
-            "Blueprint-WebApp": _repo_info(webapp_repo),
-            "BlueprintContracts": _repo_info(contracts_repo),
-            "BlueprintCapture": _repo_info(capture_repo),
-        },
+        "repos": repos,
         "artifacts": artifacts,
         "artifact_blockers": missing_artifacts,
+        "repository_blockers": repository_blockers,
         "readiness_summary": {
             "paid_marketplace_launch_gate": paid_payload.get("overall_status"),
             "external_alpha_launch_gate": external_payload.get("overall_status"),
@@ -281,6 +334,11 @@ def _markdown(packet: Mapping[str, Any]) -> str:
     if isinstance(artifact_blockers, list) and artifact_blockers:
         lines.append(f"- `artifact_blockers`: {len(artifact_blockers)}")
         for value in artifact_blockers:
+            lines.append(f"  - `{value}`")
+    repository_blockers = packet.get("repository_blockers")
+    if isinstance(repository_blockers, list) and repository_blockers:
+        lines.append(f"- `repository_blockers`: {len(repository_blockers)}")
+        for value in repository_blockers:
             lines.append(f"  - `{value}`")
     if len(lines) > 0 and lines[-1] == "## Remaining Blockers":
         lines.append("- none")

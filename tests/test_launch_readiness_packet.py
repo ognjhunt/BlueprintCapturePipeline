@@ -48,13 +48,26 @@ def _init_repo_with_origin_main(repo: Path, *, dirty: bool = False) -> tuple[str
     return feature_head, origin_main
 
 
+def _init_clean_repo_at_origin_main(repo: Path) -> str:
+    repo.mkdir(parents=True)
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    _write_text(repo / "tracked.txt", "main")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "main")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", head)
+    return head
+
+
 def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp_path: Path) -> None:
     pipeline = tmp_path / "BlueprintCapturePipeline"
     webapp = tmp_path / "Blueprint-WebApp"
     contracts = tmp_path / "BlueprintContracts"
     capture = tmp_path / "BlueprintCapture"
     for repo in (pipeline, webapp, contracts, capture):
-        repo.mkdir()
+        _init_clean_repo_at_origin_main(repo)
 
     _write_json(
         pipeline / "output" / "paid_marketplace_launch_gate.json",
@@ -178,8 +191,11 @@ def test_launch_readiness_packet_records_origin_main_when_local_checkout_is_dirt
     )
 
     webapp_info = packet["repos"]["Blueprint-WebApp"]
+    assert packet["status"] == "incomplete_packet"
     assert webapp_info["branch"] == "feature"
     assert webapp_info["head"] == feature_head
     assert webapp_info["origin_main_head"] == origin_main
     assert webapp_info["head_matches_origin_main"] is False
     assert webapp_info["dirty_entry_count"] == 1
+    assert "repo_dirty:Blueprint-WebApp:1" in packet["repository_blockers"]
+    assert "repo_not_at_origin_main:Blueprint-WebApp" in packet["repository_blockers"]
