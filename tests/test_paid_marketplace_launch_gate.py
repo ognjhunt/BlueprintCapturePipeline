@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 def _load_gate_module():
@@ -233,6 +236,7 @@ def test_should_skip_android_sdk_missing_and_evidence_class(monkeypatch, tmp_pat
     gate = _load_gate_module()
     monkeypatch.delenv("ANDROID_HOME", raising=False)
     monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    monkeypatch.setattr(gate, "android_sdk_root_from_env_or_common_paths", lambda: None)
     spec = gate.CommandSpec(
         id="android_bundle_contracts",
         label="Android bundle contract",
@@ -248,6 +252,45 @@ def test_should_skip_android_sdk_missing_and_evidence_class(monkeypatch, tmp_pat
     assert reason == "ANDROID_HOME or ANDROID_SDK_ROOT is not configured in this shell."
     assert evidence_class == "operator_toolchain_required"
     assert "Android SDK/Gradle unit evidence is unrun" in evidence_note
+
+
+def test_android_sdk_common_path_detection_feeds_paid_gate_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    sdk_root = tmp_path / "Library" / "Android" / "sdk"
+    platform_tools = sdk_root / "platform-tools"
+    platform_tools.mkdir(parents=True)
+    (platform_tools / "adb").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (tmp_path / "gradlew").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setattr(gate.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("ANDROID_HOME", raising=False)
+    monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    captured: dict[str, object] = {}
+
+    def fake_run(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args=["./gradlew"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    spec = gate.CommandSpec(
+        id="android_bundle_contracts",
+        label="Android bundle contract",
+        repo="BlueprintCapture",
+        cwd=tmp_path,
+        command=["./gradlew", "testDebugUnitTest"],
+        source_tags=("android",),
+    )
+
+    assert gate.should_skip(spec) is None
+    result = gate.run_command(spec)
+
+    assert result.status == "passed"
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["ANDROID_HOME"] == str(sdk_root)
+    assert env["ANDROID_SDK_ROOT"] == str(sdk_root)
 
 
 def test_should_skip_ios_xcodebuild_missing_and_evidence_class(monkeypatch, tmp_path: Path) -> None:

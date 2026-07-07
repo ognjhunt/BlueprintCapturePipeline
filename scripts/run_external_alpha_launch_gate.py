@@ -33,6 +33,7 @@ def _desktop_capture_repo() -> Path:
 
 
 DEFAULT_IOS_TEST_TIMEOUT_SECONDS = 900
+ANDROID_SDK_MISSING_REASON = "ANDROID_HOME or ANDROID_SDK_ROOT is not configured in this shell."
 
 
 def _positive_int(value: str) -> int:
@@ -117,9 +118,46 @@ def _pipeline_pytest_command() -> list[str]:
     ]
 
 
+def _android_sdk_root_from_env_or_common_paths() -> Path | None:
+    for key in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        value = str(os.getenv(key) or "").strip()
+        if value:
+            path = Path(value).expanduser()
+            if _looks_like_android_sdk(path):
+                return path
+    for path in (
+        Path.home() / "Library" / "Android" / "sdk",
+        Path.home() / "Android" / "Sdk",
+        Path("/opt/android-sdk"),
+        Path("/usr/local/share/android-sdk"),
+        Path("/opt/homebrew/share/android-sdk"),
+    ):
+        if _looks_like_android_sdk(path):
+            return path
+    return None
+
+
+def _looks_like_android_sdk(path: Path) -> bool:
+    return path.is_dir() and (
+        (path / "platform-tools" / "adb").is_file()
+        or (path / "platform-tools" / "adb.exe").is_file()
+        or (path / "platforms").is_dir()
+        or (path / "cmdline-tools").is_dir()
+    )
+
+
+def _android_subprocess_env(sdk_root: Path | None) -> dict[str, str] | None:
+    if sdk_root is None:
+        return None
+    env = os.environ.copy()
+    env.setdefault("ANDROID_HOME", str(sdk_root))
+    env.setdefault("ANDROID_SDK_ROOT", str(sdk_root))
+    return env
+
+
 def _android_skip_reason(android_dir: Path) -> str | None:
-    if not (os.getenv("ANDROID_HOME") or os.getenv("ANDROID_SDK_ROOT")):
-        return "ANDROID_HOME or ANDROID_SDK_ROOT is not configured in this shell."
+    if _android_sdk_root_from_env_or_common_paths() is None:
+        return ANDROID_SDK_MISSING_REASON
     if not (android_dir / "gradlew").is_file():
         return "Android Gradle wrapper is missing."
     return None
@@ -404,8 +442,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 raise RuntimeError(android_skip_reason)
             else:
-                _run(["./gradlew", "testDebugUnitTest", "assembleDebug"], cwd=android_dir)
-                _record_check(report, check_id="android_capture_contract_tests", status="passed")
+                android_sdk_root = _android_sdk_root_from_env_or_common_paths()
+                _run(
+                    ["./gradlew", "testDebugUnitTest", "assembleDebug"],
+                    cwd=android_dir,
+                    env=_android_subprocess_env(android_sdk_root),
+                )
+                _record_check(
+                    report,
+                    check_id="android_capture_contract_tests",
+                    status="passed",
+                    android_sdk_root=str(android_sdk_root) if android_sdk_root else None,
+                    android_sdk_auto_detected=not (
+                        os.getenv("ANDROID_HOME") or os.getenv("ANDROID_SDK_ROOT")
+                    ),
+                )
 
         if args.skip_pipeline:
             _record_check(report, check_id="pipeline_alpha_contract_tests", status="skipped")

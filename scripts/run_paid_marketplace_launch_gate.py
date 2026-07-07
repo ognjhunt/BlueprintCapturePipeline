@@ -64,6 +64,7 @@ def tail_text(text: str, limit: int = 80) -> str:
 
 DEFAULT_IOS_SIMULATOR_NAME = "iPhone 17 Pro"
 DEFAULT_IOS_TEST_TIMEOUT_SECONDS = 900
+ANDROID_SDK_MISSING_REASON = "ANDROID_HOME or ANDROID_SDK_ROOT is not configured in this shell."
 
 
 def positive_int(value: str) -> int:
@@ -168,6 +169,44 @@ def _timeout_text(value: bytes | str | None) -> str:
     return value
 
 
+def _looks_like_android_sdk(path: Path) -> bool:
+    return path.is_dir() and (
+        (path / "platform-tools" / "adb").is_file()
+        or (path / "platform-tools" / "adb.exe").is_file()
+        or (path / "platforms").is_dir()
+        or (path / "cmdline-tools").is_dir()
+    )
+
+
+def android_sdk_root_from_env_or_common_paths() -> Path | None:
+    for key in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        value = str(os.getenv(key) or "").strip()
+        if value:
+            path = Path(value).expanduser()
+            if _looks_like_android_sdk(path):
+                return path
+    for path in (
+        Path.home() / "Library" / "Android" / "sdk",
+        Path.home() / "Android" / "Sdk",
+        Path("/opt/android-sdk"),
+        Path("/usr/local/share/android-sdk"),
+        Path("/opt/homebrew/share/android-sdk"),
+    ):
+        if _looks_like_android_sdk(path):
+            return path
+    return None
+
+
+def _command_env(spec: CommandSpec) -> dict[str, str]:
+    env = contract_test_env()
+    if spec.id == "android_bundle_contracts":
+        sdk_root = android_sdk_root_from_env_or_common_paths()
+        if sdk_root is not None:
+            env.setdefault("ANDROID_HOME", str(sdk_root))
+            env.setdefault("ANDROID_SDK_ROOT", str(sdk_root))
+    return env
+
+
 def run_command(spec: CommandSpec) -> CommandResult:
     if not spec.cwd.is_dir():
         return unavailable_result(
@@ -182,7 +221,7 @@ def run_command(spec: CommandSpec) -> CommandResult:
             cwd=spec.cwd,
             capture_output=True,
             text=True,
-            env=contract_test_env(),
+            env=_command_env(spec),
             timeout=spec.timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
@@ -406,8 +445,8 @@ def default_specs(
 
 def should_skip(spec: CommandSpec) -> str | None:
     if spec.id == "android_bundle_contracts":
-        if not (os.getenv("ANDROID_HOME") or os.getenv("ANDROID_SDK_ROOT")):
-            return "ANDROID_HOME or ANDROID_SDK_ROOT is not configured in this shell."
+        if android_sdk_root_from_env_or_common_paths() is None:
+            return ANDROID_SDK_MISSING_REASON
         if not spec.cwd.joinpath("gradlew").is_file():
             return "Android Gradle wrapper is missing."
     if spec.id == "ios_launch_contracts" and shutil.which("xcodebuild") is None:

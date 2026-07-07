@@ -87,6 +87,7 @@ def test_android_skip_reason_when_sdk_is_missing(monkeypatch, tmp_path: Path) ->
     gate = _load_gate_module()
     monkeypatch.delenv("ANDROID_HOME", raising=False)
     monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    monkeypatch.setattr(gate, "_android_sdk_root_from_env_or_common_paths", lambda: None)
     android_dir = tmp_path / "android"
     android_dir.mkdir()
     (android_dir / "gradlew").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
@@ -94,6 +95,25 @@ def test_android_skip_reason_when_sdk_is_missing(monkeypatch, tmp_path: Path) ->
     reason = gate._android_skip_reason(android_dir)
 
     assert reason == "ANDROID_HOME or ANDROID_SDK_ROOT is not configured in this shell."
+
+
+def test_android_sdk_common_path_detection_forwards_env(monkeypatch, tmp_path: Path) -> None:
+    gate = _load_gate_module()
+    sdk_root = tmp_path / "Library" / "Android" / "sdk"
+    platform_tools = sdk_root / "platform-tools"
+    platform_tools.mkdir(parents=True)
+    (platform_tools / "adb").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setattr(gate.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("ANDROID_HOME", raising=False)
+    monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+
+    resolved = gate._android_sdk_root_from_env_or_common_paths()
+    env = gate._android_subprocess_env(resolved)
+
+    assert resolved == sdk_root
+    assert env is not None
+    assert env["ANDROID_HOME"] == str(sdk_root)
+    assert env["ANDROID_SDK_ROOT"] == str(sdk_root)
 
 
 def test_run_forwards_timeout_to_subprocess(monkeypatch, tmp_path: Path) -> None:
@@ -179,6 +199,7 @@ def test_main_writes_manual_required_android_artifact(
     gate = _load_gate_module()
     monkeypatch.delenv("ANDROID_HOME", raising=False)
     monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    monkeypatch.setattr(gate, "_android_sdk_root_from_env_or_common_paths", lambda: None)
     json_out = tmp_path / "external_alpha_launch_gate.json"
     markdown_out = tmp_path / "external_alpha_launch_gate.md"
 
