@@ -18,6 +18,7 @@ from typing import Any, Mapping
 
 
 SCHEMA_VERSION = "blueprint.launch_readiness_packet.v1"
+CI_EVIDENCE_SCHEMA_VERSION = "blueprint.github_actions_evidence.v1"
 
 
 def _repo_root() -> Path:
@@ -98,6 +99,24 @@ def _artifact(id_: str, path: Path, *, source_repo: str) -> dict[str, Any]:
         "json_status": status if isinstance(status, str) else None,
         "schema_version": payload.get("schema_version") if isinstance(payload.get("schema_version"), str) else None,
     }
+
+
+def _ci_artifact(id_: str, path: Path, *, repo_name: str, workflow: str) -> dict[str, Any]:
+    artifact = _artifact(id_, path, source_repo="GitHubActions")
+    payload = _read_json(path)
+    artifact["repo_name"] = repo_name
+    artifact["workflow"] = workflow
+    artifact["conclusion"] = payload.get("conclusion") if isinstance(payload.get("conclusion"), str) else None
+    artifact["head_sha"] = payload.get("head_sha") if isinstance(payload.get("head_sha"), str) else None
+    artifact["run_url"] = payload.get("url") if isinstance(payload.get("url"), str) else None
+    test_counts = payload.get("test_counts")
+    if isinstance(test_counts, Mapping):
+        artifact["test_counts"] = {
+            key: test_counts.get(key)
+            for key in ("tests", "failures", "errors", "skipped")
+            if key in test_counts
+        }
+    return artifact
 
 
 def _latest_sim_only_report(pipeline_repo: Path) -> Path:
@@ -201,6 +220,41 @@ def _repository_blockers(
     return blockers
 
 
+def _ci_evidence_blockers(
+    ci_artifacts: list[Mapping[str, Any]],
+    repos: Mapping[str, Mapping[str, Any]],
+) -> list[str]:
+    blockers: list[str] = []
+    for artifact in ci_artifacts:
+        artifact_id = str(artifact.get("id") or "")
+        repo_name = str(artifact.get("repo_name") or "")
+        if not artifact.get("exists"):
+            blockers.append(f"missing_ci_evidence:{artifact_id}")
+            continue
+        if artifact.get("schema_version") != CI_EVIDENCE_SCHEMA_VERSION:
+            blockers.append(f"ci_evidence_schema_mismatch:{artifact_id}")
+        conclusion = str(artifact.get("conclusion") or "")
+        if conclusion != "success":
+            blockers.append(f"ci_evidence_not_success:{artifact_id}:{conclusion or 'unknown'}")
+        repo = repos.get(repo_name)
+        repo_head = str((repo or {}).get("head") or "")
+        head_sha = str(artifact.get("head_sha") or "")
+        if not repo_head:
+            blockers.append(f"ci_evidence_repo_head_unavailable:{artifact_id}:{repo_name}")
+        elif head_sha != repo_head:
+            blockers.append(f"ci_evidence_head_mismatch:{artifact_id}:{head_sha or 'missing'}")
+        test_counts = artifact.get("test_counts")
+        if isinstance(test_counts, Mapping):
+            failures = int(test_counts.get("failures") or 0)
+            errors = int(test_counts.get("errors") or 0)
+            tests = int(test_counts.get("tests") or 0)
+            if failures or errors:
+                blockers.append(f"ci_evidence_test_failures:{artifact_id}")
+            if tests <= 0:
+                blockers.append(f"ci_evidence_empty_test_count:{artifact_id}")
+    return blockers
+
+
 def build_launch_readiness_packet(
     *,
     pipeline_repo: Path,
@@ -218,6 +272,9 @@ def build_launch_readiness_packet(
     forwarding_preflight = (
         webapp_repo / "output" / "pipeline" / "robot_eval_job_requests" / "forwarding_preflight.json"
     )
+    pipeline_ci_evidence = pipeline_repo / "output" / "pipeline_main_ci_evidence.json"
+    pipeline_full_lane_evidence = pipeline_repo / "output" / "pipeline_full_test_lane_ci_evidence.json"
+    webapp_ci_evidence = pipeline_repo / "output" / "webapp_main_ci_evidence.json"
 
     artifacts = [
         _artifact("paid_marketplace_launch_gate_json", paid_gate, source_repo="BlueprintCapturePipeline"),
@@ -228,6 +285,27 @@ def build_launch_readiness_packet(
         _artifact("live_pipeline_setup_audit", live_setup, source_repo="BlueprintCapturePipeline"),
         _artifact("webapp_forwarding_preflight", forwarding_preflight, source_repo="Blueprint-WebApp"),
     ]
+    ci_artifacts = [
+        _ci_artifact(
+            "pipeline_main_ci_evidence",
+            pipeline_ci_evidence,
+            repo_name="BlueprintCapturePipeline",
+            workflow="CI",
+        ),
+        _ci_artifact(
+            "pipeline_full_test_lane_ci_evidence",
+            pipeline_full_lane_evidence,
+            repo_name="BlueprintCapturePipeline",
+            workflow="Full Test Lane",
+        ),
+        _ci_artifact(
+            "webapp_main_ci_evidence",
+            webapp_ci_evidence,
+            repo_name="Blueprint-WebApp",
+            workflow="CI",
+        ),
+    ]
+    all_artifacts = [*artifacts, *ci_artifacts]
 
     paid_payload = _read_json(paid_gate)
     external_payload = _read_json(external_gate)
@@ -247,7 +325,7 @@ def build_launch_readiness_packet(
         if str(item).strip()
     ]
     external_manual_items = _external_manual_items(external_payload)
-    missing_artifacts = _artifact_blockers(artifacts)
+    missing_artifacts = _artifact_blockers(all_artifacts)
     repos = {
         "BlueprintCapturePipeline": _repo_info(pipeline_repo),
         "Blueprint-WebApp": _repo_info(webapp_repo),
@@ -261,10 +339,11 @@ def build_launch_readiness_packet(
             "Blueprint-WebApp": ("output/",),
         },
     )
-    artifact_trust_blockers = _artifact_trust_blockers(artifacts, repository_blockers)
+    artifact_trust_blockers = _artifact_trust_blockers(all_artifacts, repository_blockers)
+    ci_evidence_blockers = _ci_evidence_blockers(ci_artifacts, repos)
 
     status = "ready"
-    if missing_artifacts or repository_blockers or artifact_trust_blockers:
+    if missing_artifacts or repository_blockers or artifact_trust_blockers or ci_evidence_blockers:
         status = "incomplete_packet"
     elif manual_evidence_ids or live_setup_blockers or forwarding_blockers or external_manual_items:
         status = "local_ready_live_external_blocked"
@@ -274,32 +353,41 @@ def build_launch_readiness_packet(
         "generated_at": generated_at or _utc_now(),
         "status": status,
         "repos": repos,
-        "artifacts": artifacts,
+        "artifacts": all_artifacts,
         "artifact_blockers": missing_artifacts,
         "artifact_trust_blockers": artifact_trust_blockers,
         "repository_blockers": repository_blockers,
+        "ci_evidence_blockers": ci_evidence_blockers,
         "readiness_summary": {
             "paid_marketplace_launch_gate": paid_payload.get("overall_status"),
             "external_alpha_launch_gate": external_payload.get("overall_status"),
             "sim_only_beta_local_gate": sim_payload.get("status"),
             "live_pipeline_setup": live_payload.get("status"),
             "webapp_forwarding_preflight": forwarding_payload.get("status"),
+            "pipeline_main_ci": ci_artifacts[0].get("conclusion"),
+            "pipeline_full_test_lane_ci": ci_artifacts[1].get("conclusion"),
+            "webapp_main_ci": ci_artifacts[2].get("conclusion"),
         },
         "remaining_blockers": {
             "manual_live_evidence_ids": manual_evidence_ids,
             "external_alpha_manual_items": external_manual_items,
             "live_pipeline_setup_blockers": live_setup_blockers,
             "webapp_forwarding_blockers": forwarding_blockers,
+            "ci_evidence_blockers": ci_evidence_blockers,
         },
         "commands_to_refresh": [
             "python scripts/run_paid_marketplace_launch_gate.py",
             "python scripts/run_external_alpha_launch_gate.py",
             "python scripts/run_sim_only_beta_local_gate.py",
+            "python scripts/collect_github_actions_evidence.py --repo ognjhunt/BlueprintCapturePipeline --run-id <pipeline-ci-run-id> --evidence-id pipeline_main_ci_evidence --output output/pipeline_main_ci_evidence.json",
+            "python scripts/collect_github_actions_evidence.py --repo ognjhunt/BlueprintCapturePipeline --run-id <full-lane-run-id> --evidence-id pipeline_full_test_lane_ci_evidence --junit <downloaded-junit.xml> --output output/pipeline_full_test_lane_ci_evidence.json",
+            "python scripts/collect_github_actions_evidence.py --repo ognjhunt/Blueprint-WebApp --run-id <webapp-ci-run-id> --evidence-id webapp_main_ci_evidence --output output/webapp_main_ci_evidence.json",
             "python -m blueprint_pipeline.live_pipeline_setup --no-load-env-files --output-path output/launch_audit_live_pipeline_setup_20260707.json",
             "cd ../Blueprint-WebApp && npm run pipeline:forwarding:preflight -- --require-forwarding",
         ],
         "claim_boundary": {
             "packet_links_current_local_artifacts": True,
+            "github_actions_evidence_is_source_control_ci_only": True,
             "sim_only_local_gate_is_not_production_forwarding_proof": True,
             "automated_contracts_do_not_prove_live_payments_or_payouts": True,
             "automated_contracts_do_not_prove_real_pubsub_delivery": True,

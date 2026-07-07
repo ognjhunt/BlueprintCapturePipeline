@@ -17,6 +17,28 @@ def _write_text(path: Path, text: str = "artifact") -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _write_ci_evidence(
+    path: Path,
+    *,
+    evidence_id: str,
+    head_sha: str,
+    workflow: str,
+    test_counts: dict[str, int] | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "schema_version": "blueprint.github_actions_evidence.v1",
+        "evidence_id": evidence_id,
+        "workflow_name": workflow,
+        "status": "completed",
+        "conclusion": "success",
+        "head_sha": head_sha,
+        "url": f"https://github.test/actions/runs/{evidence_id}",
+    }
+    if test_counts is not None:
+        payload["test_counts"] = test_counts
+    _write_json(path, payload)
+
+
 def _git(repo: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
@@ -66,8 +88,12 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
     webapp = tmp_path / "Blueprint-WebApp"
     contracts = tmp_path / "BlueprintContracts"
     capture = tmp_path / "BlueprintCapture"
-    for repo in (pipeline, webapp, contracts, capture):
-        _init_clean_repo_at_origin_main(repo)
+    heads = {
+        "pipeline": _init_clean_repo_at_origin_main(pipeline),
+        "webapp": _init_clean_repo_at_origin_main(webapp),
+        "contracts": _init_clean_repo_at_origin_main(contracts),
+        "capture": _init_clean_repo_at_origin_main(capture),
+    }
     tracked_forwarding_preflight = (
         webapp / "output" / "pipeline" / "robot_eval_job_requests" / "forwarding_preflight.json"
     )
@@ -130,6 +156,25 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
             "blockers": ["missing_env_ROBOT_EVAL_JOB_REQUEST_FORWARD_URL"],
         },
     )
+    _write_ci_evidence(
+        pipeline / "output" / "pipeline_main_ci_evidence.json",
+        evidence_id="pipeline_main_ci_evidence",
+        head_sha=heads["pipeline"],
+        workflow="CI",
+    )
+    _write_ci_evidence(
+        pipeline / "output" / "pipeline_full_test_lane_ci_evidence.json",
+        evidence_id="pipeline_full_test_lane_ci_evidence",
+        head_sha=heads["pipeline"],
+        workflow="Full Test Lane",
+        test_counts={"tests": 3917, "failures": 0, "errors": 0, "skipped": 3},
+    )
+    _write_ci_evidence(
+        pipeline / "output" / "webapp_main_ci_evidence.json",
+        evidence_id="webapp_main_ci_evidence",
+        head_sha=_git(webapp, "rev-parse", "HEAD"),
+        workflow="CI",
+    )
 
     packet = build_launch_readiness_packet(
         pipeline_repo=pipeline,
@@ -149,6 +194,9 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         "sim_only_beta_local_gate": "passed",
         "live_pipeline_setup": "local_ready_live_external_blocked",
         "webapp_forwarding_preflight": "blocked",
+        "pipeline_main_ci": "success",
+        "pipeline_full_test_lane_ci": "success",
+        "webapp_main_ci": "success",
     }
     assert packet["remaining_blockers"]["manual_live_evidence_ids"] == [
         "buyer_payment_settlement"
@@ -162,6 +210,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
     assert packet["remaining_blockers"]["webapp_forwarding_blockers"] == [
         "missing_env_ROBOT_EVAL_JOB_REQUEST_FORWARD_URL"
     ]
+    assert packet["remaining_blockers"]["ci_evidence_blockers"] == []
     assert packet["claim_boundary"]["automated_contracts_do_not_prove_real_pubsub_delivery"] is True
 
 
@@ -184,6 +233,9 @@ def test_launch_readiness_packet_blocks_missing_required_artifacts(tmp_path: Pat
     assert packet["status"] == "incomplete_packet"
     assert "missing_artifact:paid_marketplace_launch_gate_json" in packet["artifact_blockers"]
     assert "missing_artifact:webapp_forwarding_preflight" in packet["artifact_blockers"]
+    assert "missing_ci_evidence:pipeline_full_test_lane_ci_evidence" in packet[
+        "ci_evidence_blockers"
+    ]
 
 
 def test_launch_readiness_packet_records_origin_main_when_local_checkout_is_dirty_feature(
