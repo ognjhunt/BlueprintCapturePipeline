@@ -85,11 +85,12 @@ def _repo_info(repo: Path) -> dict[str, Any]:
     }
 
 
-def _artifact(id_: str, path: Path) -> dict[str, Any]:
+def _artifact(id_: str, path: Path, *, source_repo: str) -> dict[str, Any]:
     payload = _read_json(path) if path.suffix == ".json" else {}
     status = payload.get("overall_status") or payload.get("status")
     return {
         "id": id_,
+        "source_repo": source_repo,
         "path": str(path),
         "exists": path.is_file(),
         "bytes": path.stat().st_size if path.is_file() else 0,
@@ -143,6 +144,25 @@ def _external_manual_items(payload: Mapping[str, Any]) -> list[str]:
 
 def _artifact_blockers(artifacts: list[Mapping[str, Any]]) -> list[str]:
     return [f"missing_artifact:{artifact['id']}" for artifact in artifacts if not artifact.get("exists")]
+
+
+def _artifact_trust_blockers(
+    artifacts: list[Mapping[str, Any]],
+    repository_blockers: list[str],
+) -> list[str]:
+    blocked_repo_names = {
+        blocker.split(":", 2)[1]
+        for blocker in repository_blockers
+        if blocker.startswith(("repo_dirty:", "repo_not_at_origin_main:", "repo_git_metadata_missing:"))
+        and len(blocker.split(":", 2)) >= 2
+    }
+    blockers: list[str] = []
+    for artifact in artifacts:
+        source_repo = str(artifact.get("source_repo") or "")
+        artifact_id = str(artifact.get("id") or "")
+        if artifact.get("exists") and source_repo in blocked_repo_names and artifact_id:
+            blockers.append(f"untrusted_artifact_repo:{artifact_id}:{source_repo}")
+    return blockers
 
 
 def _is_allowed_dirty_entry(entry: str, prefixes: tuple[str, ...]) -> bool:
@@ -200,13 +220,13 @@ def build_launch_readiness_packet(
     )
 
     artifacts = [
-        _artifact("paid_marketplace_launch_gate_json", paid_gate),
-        _artifact("paid_marketplace_launch_gate_markdown", paid_gate_md),
-        _artifact("external_alpha_launch_gate_json", external_gate),
-        _artifact("external_alpha_launch_gate_markdown", external_gate_md),
-        _artifact("sim_only_beta_local_gate_report", sim_only_report),
-        _artifact("live_pipeline_setup_audit", live_setup),
-        _artifact("webapp_forwarding_preflight", forwarding_preflight),
+        _artifact("paid_marketplace_launch_gate_json", paid_gate, source_repo="BlueprintCapturePipeline"),
+        _artifact("paid_marketplace_launch_gate_markdown", paid_gate_md, source_repo="BlueprintCapturePipeline"),
+        _artifact("external_alpha_launch_gate_json", external_gate, source_repo="BlueprintCapturePipeline"),
+        _artifact("external_alpha_launch_gate_markdown", external_gate_md, source_repo="BlueprintCapturePipeline"),
+        _artifact("sim_only_beta_local_gate_report", sim_only_report, source_repo="BlueprintCapturePipeline"),
+        _artifact("live_pipeline_setup_audit", live_setup, source_repo="BlueprintCapturePipeline"),
+        _artifact("webapp_forwarding_preflight", forwarding_preflight, source_repo="Blueprint-WebApp"),
     ]
 
     paid_payload = _read_json(paid_gate)
@@ -241,9 +261,10 @@ def build_launch_readiness_packet(
             "Blueprint-WebApp": ("output/",),
         },
     )
+    artifact_trust_blockers = _artifact_trust_blockers(artifacts, repository_blockers)
 
     status = "ready"
-    if missing_artifacts or repository_blockers:
+    if missing_artifacts or repository_blockers or artifact_trust_blockers:
         status = "incomplete_packet"
     elif manual_evidence_ids or live_setup_blockers or forwarding_blockers or external_manual_items:
         status = "local_ready_live_external_blocked"
@@ -255,6 +276,7 @@ def build_launch_readiness_packet(
         "repos": repos,
         "artifacts": artifacts,
         "artifact_blockers": missing_artifacts,
+        "artifact_trust_blockers": artifact_trust_blockers,
         "repository_blockers": repository_blockers,
         "readiness_summary": {
             "paid_marketplace_launch_gate": paid_payload.get("overall_status"),
@@ -334,6 +356,11 @@ def _markdown(packet: Mapping[str, Any]) -> str:
     if isinstance(artifact_blockers, list) and artifact_blockers:
         lines.append(f"- `artifact_blockers`: {len(artifact_blockers)}")
         for value in artifact_blockers:
+            lines.append(f"  - `{value}`")
+    artifact_trust_blockers = packet.get("artifact_trust_blockers")
+    if isinstance(artifact_trust_blockers, list) and artifact_trust_blockers:
+        lines.append(f"- `artifact_trust_blockers`: {len(artifact_trust_blockers)}")
+        for value in artifact_trust_blockers:
             lines.append(f"  - `{value}`")
     repository_blockers = packet.get("repository_blockers")
     if isinstance(repository_blockers, list) and repository_blockers:

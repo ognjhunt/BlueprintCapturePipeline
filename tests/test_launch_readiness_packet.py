@@ -127,6 +127,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
 
     assert packet["status"] == "local_ready_live_external_blocked"
     assert packet["artifact_blockers"] == []
+    assert packet["artifact_trust_blockers"] == []
     assert all(artifact["sha256"] for artifact in packet["artifacts"])
     assert packet["readiness_summary"] == {
         "paid_marketplace_launch_gate": "automated_contracts_passed_manual_ops_required",
@@ -181,6 +182,14 @@ def test_launch_readiness_packet_records_origin_main_when_local_checkout_is_dirt
     for repo in (pipeline, contracts, capture):
         repo.mkdir()
     feature_head, origin_main = _init_repo_with_origin_main(webapp, dirty=True)
+    _write_json(
+        webapp / "output" / "pipeline" / "robot_eval_job_requests" / "forwarding_preflight.json",
+        {
+            "schema_version": "blueprint.webapp.robot_eval_forwarding_readiness.v1",
+            "status": "ready_for_required_forwarding_with_probe",
+            "blockers": [],
+        },
+    )
 
     packet = build_launch_readiness_packet(
         pipeline_repo=pipeline,
@@ -196,6 +205,10 @@ def test_launch_readiness_packet_records_origin_main_when_local_checkout_is_dirt
     assert webapp_info["head"] == feature_head
     assert webapp_info["origin_main_head"] == origin_main
     assert webapp_info["head_matches_origin_main"] is False
-    assert webapp_info["dirty_entry_count"] == 1
+    assert webapp_info["dirty_entry_count"] == 2
     assert "repo_dirty:Blueprint-WebApp:1" in packet["repository_blockers"]
     assert "repo_not_at_origin_main:Blueprint-WebApp" in packet["repository_blockers"]
+    assert (
+        "untrusted_artifact_repo:webapp_forwarding_preflight:Blueprint-WebApp"
+        in packet["artifact_trust_blockers"]
+    )
