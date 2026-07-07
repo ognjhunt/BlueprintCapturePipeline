@@ -175,6 +175,31 @@ def _external_manual_items(payload: Mapping[str, Any]) -> list[str]:
     return items
 
 
+def _forwarding_packet_blockers(payload: Mapping[str, Any]) -> list[str]:
+    blockers = [
+        str(item)
+        for item in payload.get("blockers", [])
+        if str(item).strip()
+    ]
+    if blockers:
+        return blockers
+
+    status = str(payload.get("status") or "").strip()
+    probe = payload.get("probe") if isinstance(payload.get("probe"), Mapping) else {}
+    if payload.get("forwarding_required") is not True:
+        blockers.append("webapp_forwarding_not_required")
+    if payload.get("endpoint_configured") is not True:
+        blockers.append("webapp_forwarding_endpoint_not_configured")
+    if status != "ready_for_required_forwarding_with_probe":
+        blockers.append(f"webapp_forwarding_status_not_required_probe_ready:{status or 'missing'}")
+    if probe.get("attempted") is not True:
+        blockers.append("webapp_forwarding_probe_not_attempted")
+    probe_status = str(probe.get("status") or "").strip()
+    if probe_status != "reachable":
+        blockers.append(f"webapp_forwarding_probe_not_reachable:{probe_status or 'missing'}")
+    return blockers
+
+
 def _artifact_blockers(artifacts: list[Mapping[str, Any]]) -> list[str]:
     return [f"missing_artifact:{artifact['id']}" for artifact in artifacts if not artifact.get("exists")]
 
@@ -364,11 +389,7 @@ def build_launch_readiness_packet(
         for item in live_payload.get("blockers", [])
         if str(item).strip()
     ]
-    forwarding_blockers = [
-        str(item)
-        for item in forwarding_payload.get("blockers", [])
-        if str(item).strip()
-    ]
+    forwarding_blockers = _forwarding_packet_blockers(forwarding_payload)
     external_manual_items = _external_manual_items(external_payload)
     missing_artifacts = _artifact_blockers(all_artifacts)
     repos = {

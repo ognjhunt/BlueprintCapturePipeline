@@ -4,7 +4,10 @@ import json
 import subprocess
 from pathlib import Path
 
-from scripts.build_launch_readiness_packet import build_launch_readiness_packet
+from scripts.build_launch_readiness_packet import (
+    _forwarding_packet_blockers,
+    build_launch_readiness_packet,
+)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -327,6 +330,26 @@ def test_launch_readiness_packet_filters_verified_operator_evidence_ids(tmp_path
     assert packet["operator_evidence_status"]["remaining_ids"] == ["buyer_artifact_access"]
     assert packet["remaining_blockers"]["manual_live_evidence_ids"] == ["buyer_artifact_access"]
     assert packet["readiness_summary"]["operator_evidence"] == "blocked"
+
+
+def test_forwarding_packet_blockers_reject_false_calm_without_probe() -> None:
+    blockers = _forwarding_packet_blockers(
+        {
+            "status": "not_configured",
+            "blockers": [],
+            "forwarding_required": False,
+            "endpoint_configured": False,
+            "probe": {"attempted": False, "status": "not_requested"},
+        }
+    )
+
+    assert blockers == [
+        "webapp_forwarding_not_required",
+        "webapp_forwarding_endpoint_not_configured",
+        "webapp_forwarding_status_not_required_probe_ready:not_configured",
+        "webapp_forwarding_probe_not_attempted",
+        "webapp_forwarding_probe_not_reachable:not_requested",
+    ]
 
 
 def test_launch_readiness_packet_blocks_missing_required_artifacts(tmp_path: Path) -> None:
