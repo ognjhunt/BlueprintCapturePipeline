@@ -3,7 +3,7 @@
 **Date:** 2026-07-08
 **Scope:** `BlueprintCapture` (capture client + cloud), `BlueprintCapturePipeline` (packaging/eval/runtime), `Blueprint-WebApp` (buyer/ops/payments)
 **Goal framing:** Launch a beta to ~100 external users where the platform can package **any captured location type**, starting with **industrial sites — warehouses and factories** (where humanoids deploy first).
-**Method:** Multi-agent audit across 18 dimensions, each finding adversarially re-verified against the source, then completeness-critiqued. 119 verified gaps. Grounded in current code/docs on branch `claude/pre-beta-launch-audit-1pwvpr`; cross-referenced against the prior `100_BETA_TESTER_LAUNCH_BLOCKER_AUDIT_2026-07-06.md`.
+**Method:** Multi-agent audit across 18 dimensions, each finding adversarially re-verified against the source, then completeness-critiqued. **119 gaps total: 102 confirmed, 7 plausible (not fully confirmed), 10 completeness-critic-proposed (grounded but not independently verified).** Confidence is marked inline on every plausible and critic-proposed finding. Grounded in current code/docs on branch `claude/pre-beta-launch-audit-1pwvpr`; cross-referenced against the prior `100_BETA_TESTER_LAUNCH_BLOCKER_AUDIT_2026-07-06.md`.
 
 ---
 
@@ -17,7 +17,8 @@ What is missing is not vision — it is **the last mile that turns that model in
 
 | | Count |
 |---|---|
-| Total verified gaps | **119** |
+| Total gaps | **119** |
+| — of which confirmed / plausible / critic-proposed | **102 / 7 / 10** |
 | P0 (hard blockers) | **4** |
 | P1 (high) | **55** |
 | P2 (medium) | **48** |
@@ -125,7 +126,7 @@ Make "industrial-first" true, not aspirational.
 
 ## Findings (119)
 
-Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, with `repo · effort · status-vs-prior-audit`. Findings marked _(critic)_ came from the completeness-critic pass. Ordered within each section by severity, location-blockers first.
+Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, with `repo · effort · status-vs-prior-audit`. **Confidence markers:** findings with no marker are CONFIRMED (independently re-verified against the source); _(PLAUSIBLE — not fully confirmed)_ means the verifier could not fully confirm the cited evidence — treat these as leads, not settled blockers; _(critic-proposed …)_ came from the completeness pass and are grounded but not independently verified. Ordered within each section by severity, location-blockers first.
 
 ### Location-type generalization (industrial / warehouse / factory readiness)
 
@@ -172,19 +173,19 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Add committed warehouse/factory capture fixtures and run the success-claim truth tests + sim-only gate against at least one industrial site type as a required check.
 
 **8. [P1 🌐] No site scale / dimensional metadata as capture truth or Site-card field**  
-`cross-repo` _(critic)_ · effort M · new  
+`cross-repo` _(critic-proposed — completeness pass, not independently verified)_ · effort M · new  
 - **Evidence:** The canonical capture manifest dataclass IOSManifest (BlueprintCapturePipeline/src/blueprint_pipeline/ios_manifest.py:13-79) records scene_id, fps, width/height, has_lidar, scale_hint_m_per_unit, intended_space_type — but no site footprint area, ceiling height, aisle width, or floor count. Grep for floor|ceiling|height|area_sq|square_met|dimensions|extent across canonical_site_package.py (724 lines) returns zero matches. Site extent exists nowhere as structured capture truth.
 - **Impact:** Every downstream consumer that must scale to industrial size — pricing, capacity/cost modeling, recapture planning, eval scenario density, coverage targets — has no numeric site-extent to key on. This is the data-model root cause behind the hardcoded 100 sq m coverage target: even if the UI were fixed, the pipeline could not represent that a warehouse is 50,000 sq m vs a 15 sq m kitchen.
 - **Fix:** Add first-class site-extent fields (approx_floor_area_m2, ceiling_height_m, floor_count, dominant_aisle_width_m) to the capture manifest schema and propagate them into the Site card in canonical_site_package.py; treat them as capture-recorded truth, not inferred.
 
 **9. [P1 🌐] Site-type recognition is brittle substring keyword matching over a tiny closed vocabulary with silent 'unknown' degradation — no canonical enumerated site-type set**  
-`pipeline` _(critic)_ · effort M · new  
+`pipeline` _(critic-proposed — completeness pass, not independently verified)_ · effort M · new  
 - **Evidence:** Site type is resolved by ad-hoc substring matching against ~7 hardcoded tokens: episode_spec.py:218-239 (_scene_class_task_hints maps only stockroom/warehouse/grocery/kitchen/factory/lab/hospital) and robot_eval_dataset.py:1074-1126 (_infer_site_type keyword lists). Unmatched text falls to site_type_unrecognized -> 'generic/object-grounded task proposals remain review-only' (episode_spec.py:242-252) or 'unknown_site_type' (robot_eval_dataset.py:1126). No repo defines a canonical enumerated set of supported site types; intended_space_type is a free string defaulting to 'unknown' (ios_manifest.py:49).
 - **Impact:** Common industrial descriptors the founder targets — 'distribution center', 'fulfillment center', 'cold storage', 'manufacturing plant', '3PL', 'cross-dock', 'assembly plant' — match none of the token lists, so real industrial captures silently degrade to review-only generic proposals with no operator signal that the site type was unrecognized. 'Support ANY captured location' is contradicted by a hard-coded 7-word vocabulary.
 - **Fix:** Define one shared, versioned site-type enumeration (with synonym maps) consumed by capture, episode_spec, and robot_eval_dataset; make unrecognized site types an explicit, surfaced state rather than a silent review-only fallback.
 
 **10. [P2 🌐] Industrial hazard ontology (forklift lanes, shared traffic, barriers, human-interaction zones) lives ONLY in the optional qualification trust layer, not in the eval/capture-guidance product core**  
-`pipeline` · effort L · new  
+`pipeline` _(PLAUSIBLE — not fully confirmed)_ · effort L · new  
 - **Evidence:** Confirmed narrowly: industrial_ontology.py defines forklift_lane/traffic_zone/barrier/human_interaction_zone/floor_hazard with route/task/hazard relevance (9-52) and is imported by exactly one module (qualification.py) plus one test. HOWEVER the impact is overstated: eval lanes DO carry forklift/human hazard scenarios independently — mujoco_scene_scenario_packet.py:696 'forklift_nearby', robot_eval_dataset.py:304 forklift_nearby variation and :2979 human_paths/carts/forklifts/doors/blocked_pathways scenario families, policy_autoresearch.py:297 human/forklift/crossing markers, live_robot_eval_closure.py:230.
 - **Impact:** The richest structured hazard model (hazard_relevant entity graph) is confined to an optional trust artifact, but eval scenario grounding is not hazard-blind — it has forklift/human/cart scenario families. Real but partial gap: capture-guidance and scenario grounding do not consume the ontology's structured hazard classification, so hazard coverage is coarse rather than absent.
 - **Fix:** Promote structured hazard classification (hazard_relevant entities, human-interaction/traffic zones) into capture-guidance and scenario grounding so hazards inform eval scenarios/recapture regardless of whether qualification runs.
@@ -208,19 +209,19 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Keep this packet labeled as external-asset research (its claim_boundary already does) and do not let it imply runnable industrial coverage in launch messaging. Convert at least one warehouse asset end-to-end before promising any industrial sim demo.
 
 **14. [P2 🌐] No multi-floor / vertical-structure (mezzanine, multi-level racking) representation in the site model**  
-`pipeline` _(critic)_ · effort L · new  
+`pipeline` _(critic-proposed — completeness pass, not independently verified)_ · effort L · new  
 - **Evidence:** canonical_site_package.py and industrial_ontology.py contain no concept of floor level, mezzanine, or vertical tiering — industrial_ontology.py:9-24 models only planar entities (aisle, rack, forklift_lane, threshold). Grep for floor|mezzanine|multi.?level|ceiling across the site package returns zero matches. The site geometry model is implicitly single-level 2D.
 - **Impact:** Warehouses and factories are routinely multi-level (mezzanines, multi-tier racking, elevated catwalks, dock levels). Without a floor/level dimension, captures of vertically stacked space collapse into one plane, corrupting route/task grounding and making tall-racking tasks unrepresentable — a core industrial deployment case.
 - **Fix:** Introduce an optional level/elevation attribute on captured entities and site cards, and a per-level coverage concept, so multi-floor industrial sites can be represented without forcing a single-plane assumption.
 
 **15. [P2 🌐] Buyer-facing marketplace location taxonomy omits factory / manufacturing despite it being the founder's first-target site class**  
-`webapp` _(critic)_ · effort S · new  
+`webapp` _(critic-proposed — completeness pass, not independently verified)_ · effort S · new  
 - **Evidence:** detectLocationType in Blueprint-WebApp/server/utils/marketplaceQueryParser.ts:88-149 enumerates exactly six buyer facets: Kitchens, Grocery / Retail, Warehouses, Labs, Utility Rooms, Home / Assistive. There is no Factory / Manufacturing / Assembly-plant facet; 'assembly' is only a weak alias under Labs (line 127). The marketplace item taxonomy (client/src/types/marketplace-search.ts:3) is scenes|training only.
 - **Impact:** A buyer searching 'factory', 'manufacturing', 'assembly line', or 'production plant' matches no location facet, so factory capture data — the founder's stated first deployment target — is effectively undiscoverable and unfilterable on the buyer surface even once such captures exist.
 - **Fix:** Add a Factory / Manufacturing location facet (with manufacturing/assembly/production/line-side synonyms) to detectLocationType and the marketplace catalog location taxonomy, aligned with the pipeline site-type enumeration.
 
 **16. [P2 🌐] No structured site environmental / operating-condition metadata (cold storage, floor surface, lighting class, noise, hazards) captured or modeled**  
-`cross-repo` _(critic)_ · effort M · new  
+`cross-repo` _(critic-proposed — completeness pass, not independently verified)_ · effort M · new  
 - **Evidence:** The capture manifest (ios_manifest.py:13-79) and site package carry no environmental-condition fields; the only environment discrimination is fixed profile keys like 'industrial_unknown' in swap_candidates.py:124-147 keyed on object-name keywords, plus a stray 'freezer' object token (swap_candidates.py:31). Grep for cold.?storage|freezer|temperature|floor_material|lighting_class|noise|humidity across src returns no structured metadata field, only render lighting constants and object tokens.
 - **Impact:** Industrial operating conditions (cold-storage/freezer temps, wet or high-friction floors, dust, low light, high noise) materially affect both capture quality guidance and the deployment relevance of the sold eval/data package, yet none are recorded as structured site attributes. Buyers cannot filter for, and the pipeline cannot reason about, the operating envelope of an industrial site.
 - **Fix:** Add an optional structured operating-conditions block (lighting_class, floor_surface, thermal_zone, ambient_noise, wet/dry) to the capture manifest and Site card, surfaced to capture guidance and buyer filtering.
@@ -232,13 +233,13 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Add industrial prompt expansions (pallet -> 'pallet label'/'stringer', tote -> 'tote handle'/'label', rack -> 'upright'/'beam', conveyor -> 'roller'/'belt edge') mirroring the kitchen ones.
 
 **18. [P2] Clip curation's default static-camera constraint rejects mobile-base capture needed for large industrial sites**  
-`pipeline` · effort S · new  
+`pipeline` _(PLAUSIBLE — not fully confirmed)_ · effort S · new  
 - **Evidence:** clip_curation_stage.py:126-127 sets max_static_camera_travel_m=0.05 with enforce_static_camera_for_robot_pov=True by default, and _evaluate_camera_stability (lines 493-507) FAILS any robot_pov clip whose pose travel exceeds 5 cm; novelty is skipped for robot_pov (lines 528-533). No industrial/mobile preset ships. However the constraint is scoped ONLY to clip_kind=='robot_pov' (explicitly OSCAR world-model conditioning data); walkthrough clips instead bound jitter (max_pose_jitter_m, lines 508-522) and permit meters of motion, so moving capture is not wholesale rejected — only egocentric world-model-conditioning clips are, and the bound is tunable via config.
 - **Impact:** Roaming robot-POV conditioning clips from a mobile humanoid are rejected by the default 5 cm bound, so that specific capture class fails closed with no documented industrial preset. Mitigated by the walkthrough path (which accepts motion) and by config tunability, so it degrades a capture class rather than blocking industrial support outright.
 - **Fix:** Add a mobile/industrial curation profile (or make the static-camera constraint contingent on a declared clip mobility mode) so roaming robot-POV capture is not silently rejected, and document the industrial preset.
 
 **19. [P3 🌐] Industrial entity ontology is isolated to the qualification trust layer, not wired into scenario/WAM-eval/render lanes**  
-`pipeline` · effort L · new  
+`pipeline` _(PLAUSIBLE — not fully confirmed)_ · effort L · new  
 - **Evidence:** industrial_ontology.py defines rack/tote/pallet_zone/forklift_lane/traffic_zone/workcell (lines 11-37); `grep -rl industrial_ontology --include=*.py` returns only qualification.py (+ a test). HOWEVER scenario_variation_instantiator.py DOES carry industrial scenario semantics independently: forklift_nearby / forklift_actor (lines 259-262) and human_crossing (l.320), sourced from robot_eval_dataset.SCENARIO_VARIATION_DEFINITIONS.
 - **Impact:** The specific ontology MODULE is only consumed by the optional qualification layer, but the finding's stronger claim — that industrial location-awareness 'never' reaches scenario generation — is contradicted: forklift/human-crossing variations already exist in the primary scenario-variation lane. Residual gap: static scene-structure entities (rack/tote/pallet_zone/aisle) are not flowed into scene/task target resolution. Downgraded to P3 given the partial mitigation.
 - **Fix:** Flow the remaining industrial scene-structure entities (rack/tote/pallet_zone/traffic_zone) into scene/task target resolution so industrial scene semantics are first-class, not only forklift/human-crossing actors plus qualification reports.
@@ -277,7 +278,7 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Segment long recordings into chunks tied to the pass/checkpoint workflow, flush periodically, and warn when a single pass runs unusually long.
 
 **25. [P3 🌐] No LiDAR depth-range guidance for high ceilings, long aisles, and tall racking**  
-`capture` · effort M · new  
+`capture` _(PLAUSIBLE — not fully confirmed)_ · effort M · new  
 - **Evidence:** DeviceCapabilityService.swift exposes hasLiDAR as bool + captureMultiplier=4.0 (line 15, a weighting not a range). VideoCaptureManager.swift:2258-2299 clamps depth to UInt16 mm (values <=0 or non-finite become 0/missing) with no far-plane semantics or ~5 m messaging. No code references iPhone LiDAR's ~5 m range, ceiling height, or aisle length; no capturer-facing prompt about far geometry lacking depth.
 - **Impact:** Industrial spaces have 8-12 m ceilings and 30-100 m aisles; depth beyond ~5 m is absent and the capturer is never told to do slower/closer passes on tall racking, so bundles under-represent the vertical/long-range structure a warehouse world-model needs.
 - **Fix:** Add explicit capturer guidance that LiDAR depth is valid only to ~5 m and prompt slower/closer passes on high racking; optionally flag captures where a large fraction of frames are depth-sparse using the already-computed missing-depth signal.
@@ -409,7 +410,7 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Require the buyer report to surface, per scorecard row, success-label provenance (generated-video VLM vs simulator physics vs recorded trace) and gate any success_rate presentation on disclosing that provenance in customer-facing copy.
 
 **45. [P1] Live simulator execution and live policy execution are unproven by default; honest beta deliverable is a sim/review-grade eval, a P0 only if messaging implies executed policy**  
-`pipeline` · effort M · still-open  
+`pipeline` _(PLAUSIBLE — not fully confirmed)_ · effort M · still-open  
 - **Evidence:** live_robot_eval_closure.py:347-364 CLAIM_BOUNDARY sets simulator_execution_proven=False, robot_policy_execution_proven=False, public_claim_upgrade_allowed=False; _policy_execution_result_audit (1120-1184) emits policy_execution_proof_flag_without_evidence_refs (1166) and policy_execution_missing_proven_executed_modality (1172); LIVE_EXTERNAL_GATES (185-197) list live_simulator_execution and live_policy_execution.
 - **Impact:** Platform is correctly fail-closed, so a scoped sim-only/review-grade Task Evaluation Run is honestly deliverable. It becomes a P0 truthfulness blocker only if buyer-facing copy implies the buyer's policy was executed in a live simulator or on a real robot. The residual missing control is a launch-gate check on marketing/report copy.
 - **Fix:** Pin the beta's buyer-facing claim ceiling to the closure's highest_truthful_claim and add a launch-gate check that fails if marketing/report copy asserts live simulator or live policy execution while those gates are blocked.
@@ -544,7 +545,7 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Add expires_at (and license term) at provisioning, especially for hosted_session_rental, and enforce it in findProvisionedHostedSessionEntitlement and artifact-access (treat expired as non-provisioned), surfacing an 'Expired' access_state in buyerAppData.ts.
 
 **65. [P3] Marketplace browse/search item types do not include the primary sellable outputs (Task Eval Runs / Post-Training Data Packages)**  
-`webapp` · effort M · new  
+`webapp` _(PLAUSIBLE — not fully confirmed)_ · effort M · new  
 - **Evidence:** Verified: marketplace search itemType enum is restricted to ['all','scenes','training'] (marketplace.ts:28) and the retrieval corpus is marketplaceScenes + trainingDatasets only (marketplace.ts:6-7,100-110). Task Evaluation Runs are commissioned via the robot-eval-job-requests flow, not browsable. However 'trainingDatasets' plausibly already serves as the Post-Training Data Package catalog surface, so the real uncovered gap is narrower than stated (primarily eval runs, which are inherently per-buyer/per-robot commissioned work that does not require a browsable SKU catalog).
 - **Impact:** Task Eval Runs have no first-class marketplace discovery surface; buyers reach them only via the separate request console. A positioning/discovery nitpick, acceptable for a commissioned model in beta.
 - **Fix:** Prominently link the request-console path from marketplace results (and/or add an eval-run item type) so the flagship commissioned output is discoverable alongside catalog scenes/datasets.
@@ -589,7 +590,7 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Introduce an explicit payout-funding policy (bounty budget cap or revenue-linked payout) plus a reconciliation report tying disbursed_amount_cents to realized buyer revenue before enabling live payout at scale.
 
 **72. [P2] Capturer payout path has no US tax-reporting compliance (1099-NEC / W-9 collection / backup withholding)**  
-`webapp` _(critic)_ · effort M · new  
+`webapp` _(critic-proposed — completeness pass, not independently verified)_ · effort M · new  
 - **Evidence:** server/routes/stripe.ts creates Connect onboarding links (accountLinks account_onboarding ~L374) and moves money via transfers.create/payouts.create (~L507/L534/L591) but never configures or tracks tax reporting — grep for 1099/w-9/w9/tax/backup withholding/tos_acceptance/business_type in stripe.ts returns nothing; the only 1099 references in the repo are city-launch market-research playbooks.
 - **Impact:** Paying 100 US capturers real money without W-9 capture and 1099-NEC issuance is a finance/legal-compliance exposure the confirmed findings (KYC, disputes, treasury-drain, payout owner) do not cover. Stripe Express can file some 1099s only if explicitly enabled/configured, which is neither done nor verified in-repo.
 - **Fix:** Decide the tax-reporting owner (Stripe 1099 product vs. in-house), enforce W-9/tax-info collection during capturer onboarding, gate payouts on completed tax info, and confirm 1099-NEC issuance for the beta cohort.
@@ -622,7 +623,7 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Author a beta incident runbook (named owner + escalation, rollback SHA/target, takedown/data-deletion drill, buyer/capturer comms templates, degraded-state copy) and add a health-checked rollback path to deploy.sh.
 
 **77. [P1] No mobile crash/error telemetry on the capture clients (the primary data-collection tool is observability-dark)**  
-`capture` _(critic)_ · effort M · new  
+`capture` _(critic-proposed — completeness pass, not independently verified)_ · effort M · new  
 - **Evidence:** iOS uses FirebaseAnalytics/FirebaseMessaging/FirebaseStorage etc. (grep of FirebaseCrashlytics/Crashlytics/NSSetUncaughtExceptionHandler/recordError across BlueprintCapture/*.swift returns nothing); Android has no crashlytics/sentry in any build.gradle. SessionEventManager.swift only emits app-local 'analytics' events, not crash reports.
 - **Impact:** The whole platform depends on the capture app producing intact bundles under stress (the confirmed thermal/memory/OOM/long-capture findings). With zero crash/ANR/error telemetry on iOS and Android, a build that crashes mid-walk at an industrial site produces no signal to ops; the confirmed observability finding only covers the WebApp server, leaving the highest-risk client blind for 100 field users.
 - **Fix:** Add Crashlytics (or Sentry) to iOS and Android with symbolication, wire an uncaught-exception handler and capture-session breadcrumb logging (recording start/stop, thermal state, upload failures), and route crash-rate into the beta alerting plane.
@@ -640,7 +641,7 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Add an upload->package SLA stage, surface sla_tracking in the (to-be-real) /ops queue with at-risk/breach filters, and define customer-facing status copy for each degraded state.
 
 **80. [P2] No transactional lifecycle notifications to buyers/capturers on the money- and data-critical events**  
-`cross-repo` _(critic)_ · effort M · new  
+`cross-repo` _(critic-proposed — completeness pass, not independently verified)_ · effort M · new  
 - **Evidence:** server/utils/email.ts (SendGrid/SMTP) is wired only to growth/outbound and post-signup flows (callers: gtmSendExecutor, cityLaunchSendExecutor, outbound-reply-durability, launch-readiness, post-signup-actions). Grep for order-receipt/delivery-ready/payout-sent/takedown notification across server/routes/*.ts returns nothing; capture app has push infra but no server-driven upload-rejected/processing-failed notification.
 - **Impact:** For a real-money beta, buyers get no receipt or 'your Task Eval Run / Post-Training Data Package is ready' notice, capturers get no payout-sent or capture-rejected notice, and the confirmed consent-revocation/takedown loop has no user-facing notification. Users must poll the app; combined with the confirmed missing download path this erodes trust and generates support load.
 - **Fix:** Add a transactional notification lane (reuse email.ts + push) for order confirmation, delivery-ready, payout sent/failed, capture accepted/rejected, and consent-revocation notices, with per-event audit logging.
@@ -724,7 +725,7 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Produce a capacity+cost model (captures/user, avg media GB, privacy+eval runs/capture, GPU-seconds, storage/egress GB, $ per capture and per 100-user month) and run a scoped load/soak test against the intake path at target concurrency.
 
 **93. [P1] No backup / disaster-recovery / durability strategy for authoritative capture truth (Firestore + storage buckets)**  
-`cross-repo` _(critic)_ · effort M · new  
+`cross-repo` _(critic-proposed — completeness pass, not independently verified)_ · effort M · new  
 - **Evidence:** Blueprint-WebApp/firebase.json declares only firestore rules/indexes, storage rules, and functions — no scheduled Firestore backup/PITR. No object-versioning/soft-delete/retentionPolicy config in storage.rules, cors.json, scripts/ or config/; pipeline docs/scripts have no backup/restore/versioning references. No restore drill exists in any repo.
 - **Impact:** Capture truth is the platform's authoritative, non-regenerable asset (doctrine). An accidental deletion, ransomware, bad migration, or the confirmed last-writer-wins storage-rules clobber has no recovery path — data loss is permanent. This is distinct from the confirmed retention/lifecycle findings, which are about capping cost, not durability/restore.
 - **Fix:** Enable Firestore scheduled backups/PITR, turn on bucket object versioning + soft-delete + a delete-protection/lifecycle policy on the raw-capture and delivered-package buckets, document RPO/RTO, and run one restore drill before beta.
@@ -742,7 +743,7 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Size max_concurrent_jobs and privacy max_instance_count to the modeled 100-user arrival rate, lower/segment the queue-depth alert threshold, add a per-user in-flight limit, and validate with the load test.
 
 **96. [P3] captures Firestore index orders on monotonic createdAt — sequential-key hotspot at scale**  
-`pipeline` · effort S · new  
+`pipeline` _(PLAUSIBLE — not fully confirmed)_ · effort S · new  
 - **Evidence:** deploy/terraform/main.tf:1233 and 1248 both define index fields with field_path='createdAt'. Monotonic timestamp keys concentrate writes on a single index range (documented Firestore hotspot).
 - **Impact:** Negligible at 100-user beta scale (the finding itself concedes 'minor'); could matter only well beyond beta as capture/status-transition volume grows.
 - **Fix:** If write hotspotting appears at higher scale, shard the hot index with a random/hashed prefix or distribute keys; monitor Firestore write latency during the load test.
@@ -769,7 +770,7 @@ Each finding is tagged `[severity 🌐?]` where 🌐 = location-type blocker, wi
 - **Fix:** Tag images/releases with git SHA (+semver), pin Cloud Run to the immutable digest, record the deployed SHA as an artifact, and document a one-command rollback to the prior digest.
 
 **100. [P1] No client version enforcement / force-update / remote kill-switch / maintenance mode for the capture app or its bundle contract**  
-`cross-repo` _(critic)_ · effort M · new  
+`cross-repo` _(critic-proposed — completeness pass, not independently verified)_ · effort M · new  
 - **Evidence:** Capture bundle is versioned (BlueprintCapture/Services/CaptureRawContractV3Validator.swift) but grep for minVersion/force_update/remoteConfig/killSwitch/maintenance/serviceStatus across BlueprintCapture/Services and across Blueprint-WebApp server/ + client/src returns nothing; intake auth is a static bearer with no client-version field. Server never rejects or upgrades a stale client.
 - **Impact:** For a 100-user native-app beta with an evolving raw-capture contract, there is no way to force outdated builds to update, block a build shipping a data-corrupting bug, or put the platform into maintenance. A single bad TestFlight/Play build silently poisons canonical bundles with no remote off-switch — the confirmed 'contract parity' finding covers repo-to-repo drift, not client-version rejection.
 - **Fix:** Serve a min-supported-app-version + kill-switch/maintenance flag (Firebase Remote Config or a /config endpoint), have the capture app check it at launch and refuse capture/upload when below minimum, and have intake reject bundles from unsupported client versions.
@@ -907,7 +908,7 @@ The prior audit's core verdict ("do not launch; six hard clusters") still holds.
 
 ## Appendix — methodology & caveats
 
-**How this was produced.** An 18-dimension fan-out audit read the three repos directly (capture client, cloud functions, pipeline stages/contracts, webapp client/server). Each dimension's findings were passed to an independent adversarial verifier that re-opened the cited files and marked each finding CONFIRMED / PLAUSIBLE / REFUTED — refuted and ungrounded findings were dropped, and severities/scope were corrected (e.g. the industrial-hazard finding was downgraded P1→P2 once the verifier found forklift/human scenario families already exist in `robot_eval_dataset.py`). Two completeness critics then surfaced missing gap classes (site-scale metadata, multi-floor structure, mobile crash telemetry, client force-update/kill-switch, backup/DR, tax compliance, transactional notifications). 88 of 95 primary findings were CONFIRMED; 7 are PLAUSIBLE (flagged where the verifier could not fully confirm).
+**How this was produced.** An 18-dimension fan-out audit read the three repos directly (capture client, cloud functions, pipeline stages/contracts, webapp client/server). Each dimension's findings were passed to an independent adversarial verifier that re-opened the cited files and marked each finding CONFIRMED / PLAUSIBLE / REFUTED — refuted and ungrounded findings were dropped, and severities/scope were corrected (e.g. the industrial-hazard finding was downgraded P1→P2 once the verifier found forklift/human scenario families already exist in `robot_eval_dataset.py`). Two completeness critics then surfaced missing gap classes (site-scale metadata, multi-floor structure, mobile crash telemetry, client force-update/kill-switch, backup/DR, tax compliance, transactional notifications). **Confidence accounting for all 119: 102 CONFIRMED** (88 of the 95 primary dimension findings, plus 14 self-verified backfill findings for the two dimensions re-run after an initial structured-output failure), **7 PLAUSIBLE** (primary findings the verifier could not fully confirm — marked inline), and **10 completeness-critic-proposed** (grounded in cited files but not put through the independent verifier pass — marked inline). Only the 102 confirmed should be treated as settled blockers; the 17 plausible/critic-proposed are leads to validate.
 
 **Caveats / what this audit is not.**
 - **Static, code+doc-grounded.** It did not execute the launch gates, tests, builds, or provider runs — this clone has no `output/` artifacts and running paid/GPU/CI lanes was out of scope. Every "still-open" item that depends on runtime state (payments settlement, teardown proof, gate green/red) needs a live re-run to move from "code path present/absent" to "proven in production."
