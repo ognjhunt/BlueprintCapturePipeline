@@ -168,6 +168,50 @@ def test_eval_ready_task_grounding_default_does_not_emit_sink_task_for_sinkless_
     assert manifest["selected_task_target"]["object_id"] == "rack_01"
 
 
+def test_eval_ready_task_grounding_task_id_only_does_not_emit_legacy_sink_template(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "warehouse_capture"
+    _write_json(
+        capture_root / "raw" / "object_index.json",
+        {
+            "objects": [
+                {
+                    "object_id": "cart_01",
+                    "label": "utility cart",
+                    "mean_confidence": 0.88,
+                    "reference_crop": "object_index_artifacts/crops/cart.png",
+                    "all_crops": ["object_index_artifacts/crops/cart.png"],
+                    "keypoints": {"center": [280, 220]},
+                }
+            ]
+        },
+    )
+
+    manifest = grounding.build_eval_ready_task_grounding(
+        capture_root=capture_root,
+        task_id="operator_supplied_task_id_without_contract",
+    )
+
+    assert manifest["task"]["task_id"] == "operator_supplied_task_id_without_contract"
+    assert manifest["task"]["task_text"] == "inspect the utility cart"
+    assert manifest["task"]["target_label"] == "utility cart"
+    assert manifest["task"]["default_task_replaces_legacy_template"] is True
+    assert (
+        manifest["task"]["partial_explicit_task_contract_defaulted_to_object_index"]
+        is True
+    )
+    assert manifest["task"]["provided_task_id"] == "operator_supplied_task_id_without_contract"
+    assert "sink" not in json.dumps(manifest["task"]).lower()
+    assert "right handle visibly moved in the intended direction" not in manifest[
+        "success_check_plan"
+    ]["vlm_or_human_review_checks"]
+    assert "missing_task_specific_handle_label_or_keypoint" not in manifest[
+        "readiness"
+    ]["blockers"]
+    assert manifest["selected_task_target"]["object_id"] == "cart_01"
+
+
 def test_eval_ready_task_grounding_default_does_not_emit_sink_handle_task_for_site_with_sink(
     tmp_path: Path,
 ) -> None:

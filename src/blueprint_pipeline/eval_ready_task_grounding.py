@@ -1064,17 +1064,24 @@ def build_eval_ready_task_grounding(
             _generic_default_task_from_objects(object_index)
         )
     else:
+        task_id = _string(task_id)
         task_text = _string(task_text)
         target_label = _string(target_label)
+        if not task_text and not target_label:
+            (
+                derived_task_id,
+                task_text,
+                target_label,
+                default_task_metadata,
+            ) = _generic_default_task_from_objects(object_index)
+            default_task_metadata["partial_explicit_task_contract_defaulted_to_object_index"] = True
+            default_task_metadata["provided_task_id"] = task_id or None
+            task_id = task_id or derived_task_id
         if not task_text and target_label:
             task_text = f"inspect the {target_label}"
         if not target_label and task_text:
             target_label = task_text
-        if not task_text:
-            task_text = DEFAULT_TASK_TEXT
-        if not target_label:
-            target_label = DEFAULT_TARGET_LABEL
-        task_id = _string(task_id) or _slug(task_text, fallback="custom_task")
+        task_id = task_id or _slug(task_text, fallback="custom_task")
         if (
             task_text == DEFAULT_TASK_TEXT
             and target_label == DEFAULT_TARGET_LABEL
