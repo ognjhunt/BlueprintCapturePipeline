@@ -488,6 +488,34 @@ def test_forwarding_packet_blockers_reject_false_calm_without_probe() -> None:
     ]
 
 
+def test_forwarding_packet_blockers_reject_localhost_probe_as_production_ready() -> None:
+    blockers = _forwarding_packet_blockers(
+        {
+            "status": "ready_for_required_forwarding_with_probe",
+            "blockers": [],
+            "forwarding_required": True,
+            "endpoint_configured": True,
+            "configured_env": {
+                "forward_url": {
+                    "origin": "http://127.0.0.1:50560",
+                },
+            },
+            "probe": {
+                "attempted": True,
+                "status": "reachable",
+                "intake_audit_url": {
+                    "origin": "http://127.0.0.1:50560",
+                },
+            },
+        }
+    )
+
+    assert blockers == [
+        "webapp_forwarding_forward_url_loopback:http://127.0.0.1:50560",
+        "webapp_forwarding_probe_url_loopback:http://127.0.0.1:50560",
+    ]
+
+
 def test_launch_readiness_packet_blocks_missing_required_artifacts(tmp_path: Path) -> None:
     pipeline = tmp_path / "BlueprintCapturePipeline"
     webapp = tmp_path / "Blueprint-WebApp"

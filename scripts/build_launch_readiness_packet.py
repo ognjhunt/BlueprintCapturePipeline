@@ -214,7 +214,42 @@ def _forwarding_packet_blockers(payload: Mapping[str, Any]) -> list[str]:
     probe_status = str(probe.get("status") or "").strip()
     if probe_status != "reachable":
         blockers.append(f"webapp_forwarding_probe_not_reachable:{probe_status or 'missing'}")
+    configured_env = (
+        payload.get("configured_env")
+        if isinstance(payload.get("configured_env"), Mapping)
+        else {}
+    )
+    forward_url = (
+        configured_env.get("forward_url")
+        if isinstance(configured_env.get("forward_url"), Mapping)
+        else {}
+    )
+    forward_origin = str(forward_url.get("origin") or "").strip()
+    if _origin_is_loopback(forward_origin):
+        blockers.append(f"webapp_forwarding_forward_url_loopback:{forward_origin}")
+    intake_audit_url = (
+        probe.get("intake_audit_url")
+        if isinstance(probe.get("intake_audit_url"), Mapping)
+        else {}
+    )
+    probe_origin = str(intake_audit_url.get("origin") or "").strip()
+    if _origin_is_loopback(probe_origin):
+        blockers.append(f"webapp_forwarding_probe_url_loopback:{probe_origin}")
     return blockers
+
+
+def _origin_is_loopback(origin: str) -> bool:
+    lowered = origin.strip().lower()
+    return (
+        lowered.startswith("http://127.")
+        or lowered.startswith("https://127.")
+        or lowered.startswith("http://localhost")
+        or lowered.startswith("https://localhost")
+        or lowered.startswith("http://[::1]")
+        or lowered.startswith("https://[::1]")
+        or lowered.startswith("http://0.0.0.0")
+        or lowered.startswith("https://0.0.0.0")
+    )
 
 
 def _artifact_blockers(artifacts: list[Mapping[str, Any]]) -> list[str]:
