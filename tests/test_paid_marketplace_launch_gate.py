@@ -51,6 +51,7 @@ def _base_results(gate):
         _result(gate, "webapp_request_sync_contracts"),
         _result(gate, "webapp_creator_payout_contracts"),
         _result(gate, "webapp_marketplace_fulfillment_contracts"),
+        _result(gate, "webapp_buyer_artifact_access_contracts"),
         _result(gate, "capture_bridge_contracts"),
         _result(gate, "pipeline_launch_gate"),
         _result(gate, "android_bundle_contracts", tags=("android",)),
@@ -104,10 +105,22 @@ def test_summarize_sources_blocking_webapp_failure_blocks_all_sources() -> None:
     assert sources["Android"]["status"] == "blocked"
 
 
+def test_summarize_sources_blocking_buyer_artifact_access_failure_blocks_all_sources() -> None:
+    gate = _load_gate_module()
+    results = _base_results(gate)
+    results[3] = _result(gate, "webapp_buyer_artifact_access_contracts", status="failed")
+
+    sources = _source_map(gate.summarize_sources(results))
+
+    assert sources["iPhone"]["status"] == "blocked"
+    assert sources["glasses"]["status"] == "blocked"
+    assert sources["Android"]["status"] == "blocked"
+
+
 def test_summarize_sources_android_operator_toolchain_manual_status() -> None:
     gate = _load_gate_module()
     results = _base_results(gate)
-    results[5] = _result(
+    results[6] = _result(
         gate,
         "android_bundle_contracts",
         status="manual_required",
@@ -128,7 +141,7 @@ def test_summarize_sources_android_operator_toolchain_manual_status() -> None:
 def test_summarize_sources_android_manual_without_toolchain_class() -> None:
     gate = _load_gate_module()
     results = _base_results(gate)
-    results[5] = _result(
+    results[6] = _result(
         gate,
         "android_bundle_contracts",
         status="manual_required",
@@ -252,6 +265,30 @@ def test_closeout_summary_does_not_claim_passed_contracts_on_automation_failure(
             "status": "failed",
             "skip_reason": None,
         }
+    ]
+
+
+def test_default_specs_include_buyer_artifact_access_contracts(tmp_path: Path) -> None:
+    gate = _load_gate_module()
+
+    specs = gate.default_specs(
+        pipeline_repo=tmp_path / "BlueprintCapturePipeline",
+        capture_repo=tmp_path / "BlueprintCapture",
+        webapp_repo=tmp_path / "Blueprint-WebApp",
+        run_ios_tests=False,
+    )
+
+    buyer_access = next(
+        spec for spec in specs if spec.id == "webapp_buyer_artifact_access_contracts"
+    )
+
+    assert buyer_access.command == [
+        "npx",
+        "vitest",
+        "run",
+        "server/tests/marketplace-entitlements.test.ts",
+        "server/tests/pipeline-routes.test.ts",
+        "server/tests/firebase-storage-config.test.ts",
     ]
 
 

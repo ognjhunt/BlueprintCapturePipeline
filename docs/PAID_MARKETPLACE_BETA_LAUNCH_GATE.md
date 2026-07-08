@@ -8,7 +8,7 @@ python scripts/run_paid_marketplace_launch_gate.py
 
 This gate is intentionally contract-first. It proves the paid beta path across the three repos at automation level:
 
-- `Blueprint-WebApp`: inbound request intake, approved capture-job publication, pipeline sync, buyer checkout fulfillment metadata, creator payout-state transitions, and Stripe tests that separate mocked contract readiness from live provider readiness.
+- `Blueprint-WebApp`: inbound request intake, approved capture-job publication, pipeline sync, buyer checkout fulfillment metadata, buyer artifact signed-URL access contracts, creator payout-state transitions, and Stripe tests that separate mocked contract readiness from live provider readiness.
 - `BlueprintCapture`: source-specific bundle and bridge contracts for iPhone, glasses, and Android.
 - `BlueprintCapturePipeline`: qualification, buyer trust, rights/compliance, privacy-safe media, launchable export packaging, source-specific launch-gate summaries, and WebApp sync.
 
@@ -33,6 +33,7 @@ What the automated gate proves:
 - iPhone can be described as externally launchable only at contract level.
 - Glasses and Android remain internal-only for site-faithful launch claims.
 - Buyer fulfillment metadata and creator payout transitions are contract-covered.
+- Buyer artifact access is contract-covered at the route/storage-rule level: a provisioned entitlement can mint a short-lived signed artifact URL, and the internal Pipeline access-check route records buyer-access status.
 - Payout marketing copy and open-capture copy are repo-guarded so backend URL, publishable key, and mocked Stripe tests do not become live payout readiness claims.
 - Missing Android SDK env (`ANDROID_HOME` / `ANDROID_SDK_ROOT`) is classified as operator/toolchain evidence, not product readiness or Android external readiness.
 
@@ -45,7 +46,7 @@ What the automated gate does not prove:
 - Live Stripe Connect payout settlement.
 - Identity/KYC or background-check provider readiness.
 - Real-device discovery, reservation, upload, and `capture_job_id` continuity on iPhone, glasses, or Android.
-- Authenticated buyer artifact access after purchase.
+- A live authenticated buyer session fetching a real purchased artifact after purchase.
 - Human finance ownership or live payout exception monitoring.
 
 What still requires operator evidence before truthful launch:
@@ -58,7 +59,7 @@ What still requires operator evidence before truthful launch:
 - Real-device discovery, reservation, and upload on Android.
 - Live Stripe buyer payment completion.
 - Live Stripe capturer payout completion.
-- Authenticated buyer artifact or fulfillment access after purchase.
+- Live authenticated buyer artifact or fulfillment access after purchase.
 
 Required operator evidence:
 
@@ -89,7 +90,7 @@ Required operator evidence:
 - `human_finance_review_owner`
   Category: finance ops. Evidence: named human finance owner and review queue/route before any live payout execution flag is enabled.
 - `buyer_artifact_access`
-  Category: buyer access. Evidence: authenticated buyer session proving artifact or fulfillment access after purchase.
+  Category: buyer access. Evidence: live authenticated buyer session proving artifact or fulfillment access after purchase.
 
 Per-capture `launch_gate_summary.json` reads `pipeline/operator_launch_evidence.json`
 with schema `operator_launch_evidence.v1`. Until every required evidence id is

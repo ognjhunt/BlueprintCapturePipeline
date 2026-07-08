@@ -374,6 +374,21 @@ def default_specs(
             source_tags=("iphone", "glasses", "android"),
         ),
         CommandSpec(
+            id="webapp_buyer_artifact_access_contracts",
+            label="WebApp buyer artifact access and signed delivery contracts",
+            repo="Blueprint-WebApp",
+            cwd=webapp_repo,
+            command=[
+                "npx",
+                "vitest",
+                "run",
+                "server/tests/marketplace-entitlements.test.ts",
+                "server/tests/pipeline-routes.test.ts",
+                "server/tests/firebase-storage-config.test.ts",
+            ],
+            source_tags=("iphone", "glasses", "android"),
+        ),
+        CommandSpec(
             id="capture_bridge_contracts",
             label="Capture cloud bridge source contracts",
             repo="BlueprintCapture",
@@ -460,6 +475,7 @@ def summarize_sources(results: Sequence[CommandResult]) -> list[dict[str, str]]:
         "webapp_request_sync_contracts",
         "webapp_creator_payout_contracts",
         "webapp_marketplace_fulfillment_contracts",
+        "webapp_buyer_artifact_access_contracts",
     )
     webapp_ok = all(
         by_id.get(check_id, CommandResult("", "", "", [], "", "failed", True, ())).status == "passed"
@@ -628,8 +644,8 @@ def manual_checks() -> list[dict[str, str]]:
             "id": "buyer_artifact_access",
             "category": "buyer_access",
             "status": "manual_live_evidence_required",
-            "required_evidence": "Authenticated buyer session proving artifact or fulfillment access after purchase.",
-            "not_proven_by_automation": "Checkout fulfillment metadata does not prove that a real buyer can access the artifact after purchase.",
+            "required_evidence": "Live authenticated buyer session proving artifact or fulfillment access after purchase.",
+            "not_proven_by_automation": "Route/storage-rule contracts do not prove that a live buyer fetched a real purchased artifact after payment.",
         },
     ]
 
@@ -645,7 +661,7 @@ def build_claims(results: Sequence[CommandResult]) -> dict[str, list[str]]:
         }
     return {
         "justified": [
-            "Inbound request intake, marketplace publication, pipeline sync, checkout fulfillment metadata, and creator payout transitions are covered at contract level.",
+            "Inbound request intake, marketplace publication, pipeline sync, checkout fulfillment metadata, buyer artifact signed-URL access, and creator payout transitions are covered at contract level.",
             "Qualification and readiness records remain enforced support artifacts, and privacy-safe buyer media plus launchable export packaging are required before buyer-facing readiness is declared.",
             "iPhone is externally marketable only at contract level; glasses and Android remain internal-only for site-faithful launch claims.",
             "Repo-safe payout claim guardrails distinguish mocked contract coverage from live Stripe/provider readiness.",
@@ -675,7 +691,7 @@ def evidence_boundary(results: Sequence[CommandResult]) -> dict[str, object]:
         "automated_proof_scope": (
             "This run proves repository contract behavior only. It does not prove live buyer "
             "payments, capturer payouts, identity/KYC, background checks, instant-pay, "
-            "real-device capture flows, or authenticated buyer artifact access."
+            "real-device capture flows, or a live post-purchase buyer artifact fetch."
         ),
         "manual_live_evidence_scope": (
             "Manual and live evidence requirements below remain open until operator artifacts "
@@ -727,7 +743,7 @@ def closeout_summary(report: dict) -> dict[str, object]:
             "live Stripe Connect payout settlement",
             "identity/KYC or background-check provider readiness",
             "real-device discovery, reservation, upload, or capture_job_id continuity",
-            "authenticated buyer artifact access after purchase",
+            "live authenticated buyer artifact fetch after purchase",
             "human finance ownership or live payout exception monitoring",
         ],
         "remaining_manual_evidence_ids": manual_required,
