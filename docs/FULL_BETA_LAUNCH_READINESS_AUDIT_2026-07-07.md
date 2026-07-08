@@ -4,6 +4,8 @@ Scope: everything after capture/upload — autonomous ingest → validate → pa
 
 Old audits (2026-07-03 cross-repo audit, 2026-07-04 remediation status, 2026-07-06 100-tester audit) were treated as hypotheses and re-verified against current code, current commands, and current artifacts.
 
+> **Post-audit addendum (added before merge).** After this audit's snapshot was taken at `7a7db94`, `main` advanced by 22 commits (`df4d64d`..`5e6fa82`, 2026-07-07 evening) that respond to this ledger — including a launch readiness evidence packet with operator-evidence/CI/probed-forwarding/clean-repo requirements (B-04/B-06/B-10/B-26), DO closed-loop hardware preflight enforcement (B-13), site-object-derived default eval grounding (B-09), buyer-readout-gated WebApp readiness (B-17), signed buyer access checks (B-07), multi-root inbox coverage (B-02), full-test-lane fixes (B-19), and object-index fallback flagging (B-24). **None of those commits have been re-verified by this audit**; every finding and status below describes the `7a7db94` snapshot. Re-run the evidence commands against current `main` before treating any ledger item as closed.
+
 ---
 
 ## Verdict: **not ready** for a full "any captured site flows autonomously to buyer-ready outputs" beta.
