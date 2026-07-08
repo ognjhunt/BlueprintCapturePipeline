@@ -15,6 +15,7 @@ import json
 import os
 import shlex
 import shutil
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,7 +34,19 @@ from .safe_env import load_env_files
 
 
 LIVE_PIPELINE_SETUP_SCHEMA_VERSION = "blueprint_live_pipeline_setup.v1"
+CAPTURE_ROOT_ENV = "BLUEPRINT_PIPELINE_CAPTURE_ROOT"
 JOB_REQUEST_INBOX_ENV = "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX"
+PACKAGE_DIR_ENV = "BLUEPRINT_PIPELINE_PACKAGE_DIR"
+ARENA_RESULTS_DIR_ENV = "BLUEPRINT_ARENA_RESULTS_DIR"
+SIMULATOR_AUDIT_COMMAND_ENV = "BLUEPRINT_SIMULATOR_COMMAND"
+DEFAULT_SIMULATOR_COMMAND_ENV = "ROBOT_EVAL_JOB_DEFAULT_SIMULATOR_COMMAND"
+SIM_ONLY_BETA_AUTONOMY_ENV = "BLUEPRINT_SIM_ONLY_BETA_AUTONOMY"
+MUJOCO_G1_MODEL_ROOT_ENV = "BLUEPRINT_MUJOCO_G1_MODEL_ROOT"
+MUJOCO_ALLOW_FETCH_G1_ASSETS_ENV = "BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS"
+MUJOCO_BETA_STEPS_ENV = "BLUEPRINT_MUJOCO_BETA_STEPS"
+MUJOCO_BETA_MAX_RENDERED_EPISODES_ENV = "BLUEPRINT_MUJOCO_BETA_MAX_RENDERED_EPISODES"
+MUJOCO_BETA_MAX_RENDERED_STEPS_ENV = "BLUEPRINT_MUJOCO_BETA_MAX_RENDERED_STEPS"
+MUJOCO_BETA_SKIP_RENDER_ENV = "BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES"
 
 OPENAI_AUTH_FACTS: Dict[str, Any] = {
     "repo_cli_api_auth": {
@@ -96,6 +109,40 @@ def _env_truthy(name: str) -> bool:
     return _truthy(os.getenv(name))
 
 
+def _env_value(name: str, explicit: str | Path | None = None) -> str | None:
+    value = _string(explicit)
+    if value:
+        return value
+    env_value = _string(os.getenv(name))
+    return env_value or None
+
+
+def _env_int(name: str, default: int) -> int:
+    value = _string(os.getenv(name))
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _merge_env_summaries(first: Mapping[str, Any], second: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "files": list(first.get("files") or []) + list(second.get("files") or []),
+        "loaded_keys": sorted(set(first.get("loaded_keys") or []) | set(second.get("loaded_keys") or [])),
+        "skipped_existing_keys": sorted(
+            set(first.get("skipped_existing_keys") or [])
+            | set(second.get("skipped_existing_keys") or [])
+        ),
+        "skipped_placeholder_keys": sorted(
+            set(first.get("skipped_placeholder_keys") or [])
+            | set(second.get("skipped_placeholder_keys") or [])
+        ),
+    }
+
+
 def _module_available(candidates: Sequence[str]) -> bool:
     return any(importlib.util.find_spec(candidate) is not None for candidate in candidates)
 
@@ -150,6 +197,53 @@ def _command_status(command: str | None) -> Dict[str, Any]:
         "executable_found": found,
         "ready": found,
     }
+
+
+def _mujoco_beta_simulator_command(capture_root: Path | None) -> str:
+    explicit = _string(os.getenv(DEFAULT_SIMULATOR_COMMAND_ENV))
+    if explicit:
+        return explicit
+    if capture_root is None:
+        return ""
+    default_rendered_episodes = 11 if _env_truthy(SIM_ONLY_BETA_AUTONOMY_ENV) else 3
+    command = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.mujoco_g1_simulator_command",
+        "--capture-root",
+        str(capture_root),
+        "--steps",
+        str(_env_int(MUJOCO_BETA_STEPS_ENV, 32)),
+        "--max-rendered-episodes",
+        str(_env_int(MUJOCO_BETA_MAX_RENDERED_EPISODES_ENV, default_rendered_episodes)),
+        "--max-rendered-steps",
+        str(_env_int(MUJOCO_BETA_MAX_RENDERED_STEPS_ENV, 24)),
+    ]
+    g1_root = _string(os.getenv(MUJOCO_G1_MODEL_ROOT_ENV))
+    if g1_root:
+        command.extend(["--g1-model-root", g1_root])
+    elif _env_truthy(MUJOCO_ALLOW_FETCH_G1_ASSETS_ENV):
+        command.append("--allow-fetch-g1-assets")
+    else:
+        return ""
+    if _env_truthy(MUJOCO_BETA_SKIP_RENDER_ENV):
+        command.append("--skip-render-frames")
+    return " ".join(shlex.quote(part) for part in command)
+
+
+def _resolved_simulator_command(
+    explicit_command: str | None,
+    *,
+    capture_root: Path | None,
+) -> str | None:
+    resolved = (
+        _string(explicit_command)
+        or _string(os.getenv(SIMULATOR_AUDIT_COMMAND_ENV))
+        or _string(os.getenv(DEFAULT_SIMULATOR_COMMAND_ENV))
+    )
+    if not resolved and _env_truthy(SIM_ONLY_BETA_AUTONOMY_ENV):
+        resolved = _mujoco_beta_simulator_command(capture_root)
+    return resolved or None
 
 
 def _artifact_status(path: Path | None) -> Dict[str, Any]:
@@ -503,13 +597,12 @@ def build_live_pipeline_setup_manifest(
     original_env = dict(os.environ)
     repo_root = Path(__file__).resolve().parents[2]
     try:
-        capture_path = Path(capture_root).resolve() if capture_root else None
-        package_path = Path(package_dir).resolve() if package_dir else None
-        if capture_path and not package_path:
-            context = resolve_local_capture_context(capture_path)
-            package_path = context.pipeline_root / "arena_eval_package"
+        initial_capture_text = _string(capture_root)
+        initial_capture_path = Path(initial_capture_text).resolve() if initial_capture_text else None
         env_roots = _unique_paths(
-            [repo_root, Path.cwd(), capture_path] if capture_path else [repo_root, Path.cwd()]
+            [repo_root, Path.cwd(), initial_capture_path]
+            if initial_capture_path
+            else [repo_root, Path.cwd()]
         )
         env_summary = (
             load_env_files(env_roots)
@@ -521,7 +614,20 @@ def build_live_pipeline_setup_manifest(
                 "skipped_placeholder_keys": [],
             }
         )
-        configured_job_request_inbox = job_request_inbox or os.getenv(JOB_REQUEST_INBOX_ENV)
+        capture_text = _env_value(CAPTURE_ROOT_ENV, capture_root)
+        capture_path = Path(capture_text).expanduser().resolve() if capture_text else None
+        if load_local_env and capture_path and capture_path.resolve() not in set(env_roots):
+            env_summary = _merge_env_summaries(env_summary, load_env_files([capture_path]))
+            capture_text = _env_value(CAPTURE_ROOT_ENV, capture_root)
+            capture_path = Path(capture_text).expanduser().resolve() if capture_text else None
+
+        package_text = _env_value(PACKAGE_DIR_ENV, package_dir)
+        package_path = Path(package_text).expanduser().resolve() if package_text else None
+        if capture_path and not package_path:
+            context = resolve_local_capture_context(capture_path)
+            package_path = context.pipeline_root / "arena_eval_package"
+
+        configured_job_request_inbox = _env_value(JOB_REQUEST_INBOX_ENV, job_request_inbox)
         job_request_inbox_path = (
             Path(configured_job_request_inbox).expanduser().resolve()
             if _string(configured_job_request_inbox)
@@ -577,8 +683,14 @@ def build_live_pipeline_setup_manifest(
             ),
             "codex_cli": _command_status(codex_cli_path() or "codex"),
         }
+        commands["simulator"] = _command_status(
+            _resolved_simulator_command(simulator_command, capture_root=capture_path)
+        )
 
-        arena_results = Path(arena_results_dir).resolve() if arena_results_dir else None
+        arena_results_text = _env_value(ARENA_RESULTS_DIR_ENV, arena_results_dir)
+        arena_results = (
+            Path(arena_results_text).expanduser().resolve() if arena_results_text else None
+        )
         arena_result_artifacts = {
             **_arena_results_status(arena_results),
             "rollout_manifest": _artifact_status(arena_results / "rollout_manifest.json")

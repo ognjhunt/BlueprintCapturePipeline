@@ -122,6 +122,129 @@ def test_live_pipeline_setup_loads_env_without_exposing_values(
     )
 
 
+def test_live_pipeline_setup_honors_deployment_env_fallbacks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_ffmpeg_available(monkeypatch)
+    for name in (
+        "BLUEPRINT_PIPELINE_CAPTURE_ROOT",
+        "BLUEPRINT_PIPELINE_PACKAGE_DIR",
+        "BLUEPRINT_ARENA_RESULTS_DIR",
+        "BLUEPRINT_SIMULATOR_COMMAND",
+        "ROBOT_EVAL_JOB_DEFAULT_SIMULATOR_COMMAND",
+        "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX",
+        "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    capture_root = _capture_root(tmp_path, with_webapp_ids=True)
+    arena_results = tmp_path / "arena-results"
+    _write_json(arena_results / "rollout_manifest.json", {"episodes": []})
+    inbox = tmp_path / "robot-eval-job-requests"
+    inbox.mkdir()
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"BLUEPRINT_PIPELINE_CAPTURE_ROOT={capture_root}",
+                f"BLUEPRINT_ARENA_RESULTS_DIR={arena_results}",
+                f"BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX={inbox}",
+                "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true",
+                f"BLUEPRINT_SIMULATOR_COMMAND={sys.executable} -c 'print(1)'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = build_live_pipeline_setup_manifest()
+
+    assert result["capture_root"] == str(capture_root.resolve())
+    assert result["sections"]["webapp_upstream_truth"]["status"] == "ready"
+    assert result["sections"]["webapp_upstream_truth"]["job_request_inbox"]["path"] == str(
+        inbox.resolve()
+    )
+    assert result["sections"]["real_arena_execution"]["status"] == "ready"
+    assert result["sections"]["real_arena_execution"]["arena_results"]["arena_results_dir"] == str(
+        arena_results.resolve()
+    )
+    assert result["commands"]["simulator"]["configured"] is True
+    assert result["commands"]["simulator"]["executable"] == sys.executable
+    assert "real_arena_execution:missing_simulator_command_or_arena_results_dir" not in result[
+        "blockers"
+    ]
+
+
+def test_live_pipeline_setup_honors_default_simulator_command_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_ffmpeg_available(monkeypatch)
+    capture_root = _capture_root(tmp_path, with_webapp_ids=True)
+    monkeypatch.delenv("BLUEPRINT_SIMULATOR_COMMAND", raising=False)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv("ROBOT_EVAL_JOB_DEFAULT_SIMULATOR_COMMAND", f"{sys.executable} -c 'print(1)'")
+
+    result = build_live_pipeline_setup_manifest(
+        capture_root=capture_root,
+        load_local_env=False,
+    )
+
+    assert result["sections"]["real_arena_execution"]["status"] == "ready"
+    assert result["commands"]["simulator"]["configured"] is True
+    assert result["commands"]["simulator"]["executable"] == sys.executable
+
+
+def test_live_pipeline_setup_honors_arena_results_env_without_simulator_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_ffmpeg_available(monkeypatch)
+    capture_root = _capture_root(tmp_path, with_webapp_ids=True)
+    arena_results = tmp_path / "owner-arena-results"
+    _write_json(arena_results / "rollout_manifest.json", {"episodes": []})
+    monkeypatch.delenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", raising=False)
+    monkeypatch.setenv("BLUEPRINT_ARENA_RESULTS_DIR", str(arena_results))
+
+    result = build_live_pipeline_setup_manifest(
+        capture_root=capture_root,
+        load_local_env=False,
+    )
+
+    assert result["sections"]["real_arena_execution"]["status"] == "ready_for_result_ingest"
+    assert result["sections"]["real_arena_execution"]["ready"] is True
+    assert "real_arena_execution:missing_env_BLUEPRINT_ALLOW_SIMULATOR_EXECUTION" not in result[
+        "blockers"
+    ]
+    assert "real_arena_execution:missing_simulator_command_or_arena_results_dir" not in result[
+        "blockers"
+    ]
+
+
+def test_live_pipeline_setup_synthesizes_mujoco_sim_only_command_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_ffmpeg_available(monkeypatch)
+    capture_root = _capture_root(tmp_path, with_webapp_ids=True)
+    monkeypatch.delenv("BLUEPRINT_SIMULATOR_COMMAND", raising=False)
+    monkeypatch.delenv("ROBOT_EVAL_JOB_DEFAULT_SIMULATOR_COMMAND", raising=False)
+    monkeypatch.setenv("BLUEPRINT_SIM_ONLY_BETA_AUTONOMY", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
+    monkeypatch.setenv("BLUEPRINT_MUJOCO_G1_MODEL_ROOT", str(tmp_path / "mujoco_menagerie" / "unitree_g1"))
+
+    result = build_live_pipeline_setup_manifest(
+        capture_root=capture_root,
+        load_local_env=False,
+    )
+
+    assert result["sections"]["real_arena_execution"]["status"] == "ready"
+    assert result["commands"]["simulator"]["executable"] == sys.executable
+    assert "real_arena_execution:missing_simulator_command_or_arena_results_dir" not in result[
+        "blockers"
+    ]
+
+
 def test_live_pipeline_setup_marks_live_sections_ready_when_explicitly_configured(
     tmp_path: Path, monkeypatch
 ) -> None:
