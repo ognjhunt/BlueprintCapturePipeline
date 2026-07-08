@@ -1,5 +1,102 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-07
+
+### User-Facing
+
+- Closed several no-spend launch-readiness blockers with generated
+  readiness-packet support, sim-only beta local-gate fixtures/CI, live
+  Pipeline intake and Pub/Sub handoff deployment assets, production runtime
+  environment guards, and buyer/package truth gates
+  (`scripts/build_launch_readiness_packet.py`,
+  `scripts/run_sim_only_beta_local_gate.py`,
+  `src/blueprint_pipeline/live_pipeline_intake_service.py`,
+  `src/blueprint_pipeline/pubsub_handoff_listener.py`,
+  `src/blueprint_pipeline/production_runtime_env_guard.py`). These changes
+  improve launch evidence collection and fail-closed gating; they do not by
+  themselves prove public launch readiness, paid provider completion,
+  physical-robot readiness, or deployment approval.
+- Hardened launch/readiness proof boundaries. Readiness packets now record
+  canonical repo heads, reject unclean or blocked evidence repos, require fresh
+  CI and sim-only evidence, consume operator/legal evidence explicitly, require
+  probed non-local WebApp forwarding proof, and reject stale proof artifacts
+  (`scripts/build_launch_readiness_packet.py`,
+  `scripts/collect_github_actions_evidence.py`,
+  `src/blueprint_pipeline/source_metadata.py`). Local forwarding and stale
+  generated artifacts remain blockers rather than launch proof.
+- Added buyer artifact access gating for paid marketplace beta checks and
+  WebApp sync: buyer readout status and signed access-contract checks now feed
+  readiness rather than being assumed from package existence
+  (`scripts/run_paid_marketplace_launch_gate.py`,
+  `src/blueprint_pipeline/webapp_sync.py`,
+  `docs/PAID_MARKETPLACE_BETA_LAUNCH_GATE.md`).
+- Added and hardened a DigitalOcean GR00T/OSCAR closed-loop launcher with
+  region/size capacity checks, direct launch planning, sealed image contracts,
+  and hardware pre-spend preflight
+  (`src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py`,
+  `src/blueprint_pipeline/gpu_render_providers.py`,
+  `docs/runbooks/groot-oscar-closed-loop-sealed-image.md`). Prepared/local
+  launch plans are not live DigitalOcean runtime, artifact quality, or task
+  success proof.
+- Converted the July 6 T4 quality post-mortem into fail-closed contracts:
+  per-lane GPU hardware floors, native OSCAR generation-resolution checks, and
+  generated-clip coherence checks now block under-provisioned or degraded WAM
+  runs before stronger claims can be made
+  (`src/blueprint_pipeline/lane_hardware_requirements.py`,
+  `src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py`,
+  `src/blueprint_pipeline/provider_reliability_manifest.py`).
+
+### Employee-Facing
+
+- Added full-lane and sim-only GitHub Actions workflows plus launch-gate
+  helpers for external alpha, paid marketplace, and sim-only beta local checks
+  (`.github/workflows/full-test-lane.yml`,
+  `.github/workflows/sim-only-local-gate.yml`,
+  `scripts/run_external_alpha_launch_gate.py`,
+  `scripts/run_paid_marketplace_launch_gate.py`).
+- Added live-control-plane/intake deployment assets and validation contracts:
+  systemd units/timers, install/postcheck scripts, Terraform handoff wiring,
+  intake-service freshness checks, manifest alerts, and local agent-provider
+  support (`deploy/systemd/*`, `deploy/scripts/deploy.sh`,
+  `deploy/terraform/main.tf`,
+  `src/blueprint_pipeline/live_pipeline_control_plane.py`,
+  `src/blueprint_pipeline/live_pipeline_manifest_alert.py`,
+  `src/blueprint_pipeline/agent_runtime/providers/local.py`).
+- Added `robot_eval_job_request.v1` schema verification and tighter
+  multi-root robot-eval inbox processing coverage
+  (`src/blueprint_pipeline/robot_eval_job_request_contract.py`,
+  `scripts/verify_robot_eval_job_request_contract.py`,
+  `tests/test_robot_eval_job_request_contract.py`,
+  `tests/test_robot_eval_job_orchestrator.py`).
+- Hardened default task and environment fallbacks: eval-ready grounding derives
+  targets from site objects instead of falling back to legacy sink tasks,
+  manipulation targets fail closed when defaults are unsupported, live setup can
+  honor explicit environment fallbacks, and object-index default-environment
+  fallback is surfaced (`src/blueprint_pipeline/eval_ready_task_grounding.py`,
+  `src/blueprint_pipeline/manipulation_task_stack.py`,
+  `src/blueprint_pipeline/live_pipeline_setup.py`,
+  `src/blueprint_pipeline/object_index_stage.py`).
+- Added focused regression coverage across launch packets, paid/external gates,
+  WebApp sync, live pipeline setup/intake/control plane, DigitalOcean
+  closed-loop jobs, hardware requirements, sim-only local gates, deploy systemd
+  contracts, and manipulation/default-target edges.
+
+### Future-Agent-Facing
+
+- Treat July 7 as launch-readiness automation and proof-boundary hardening, not
+  as final launch approval. Stronger claims still require current CI artifacts,
+  probed production forwarding, operator/legal evidence, buyer access proof,
+  live provider/runtime artifacts, cost/teardown closure, and task-specific
+  evaluation proof as applicable.
+- Keep prepared DigitalOcean plans, WAM coherence checks, and sealed-image
+  manifests separate from live provider execution. They can block bad paid runs
+  before spend, but they do not prove useful generated video, simulator task
+  success, physical robot readiness, or deployment readiness without accepted
+  run artifacts.
+- Evidence boundary: this entry covers committed history dated 2026-07-07 from
+  `1c6175882` through `e0bb4ae5b`. `git status --short` was clean during this
+  changelog run, so no uncommitted July 7 local changes were included.
+
 ## 2026-07-06
 
 ### User-Facing
