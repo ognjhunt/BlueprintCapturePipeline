@@ -13,8 +13,16 @@ navigate_to_object -> pregrasp_stance -> reach -> close_grip -> lift -> verify_g
 blueprint-build-manipulation-task-stack \
   --capture-root <capture-root> \
   --object-class tote \
-  --object-id simready_tote_001
+  --object-id simready_tote_001 \
+  --allow-legacy-default-tote-without-site-index
 ```
+
+Autonomous capture processing must not invent a manipulation target. If a run
+does not provide a job request, object contract, object asset, or site object
+index containing the requested object class, the stack fails closed with a
+site-object-index blocker instead of materializing `simready_tote_001` at the
+historical fixed pose. The legacy tote override is for explicit demo/fixture
+runs only.
 
 To also execute the public Lucky Robots G1 reference assets:
 
@@ -64,10 +72,13 @@ scored task requires an object contract with:
 - lift, carry, drop, tilt, and placement thresholds
 
 Unknown object classes fail closed until a contract or class template exists.
-The current default class template is `tote.v1`. When no external tote asset is
-provided, the stack materializes a local MJCF tote asset plus OBJ visual mesh
-with body/rim contact geoms, mass, friction, center-of-mass metadata, inertia,
-and pose so the default run is not a `simready://` placeholder.
+The current default class template is `tote.v1`, but it is not applied to a
+site by default when the site object index is missing or does not contain a
+tote/bin/container-like object. When a tote task is explicitly requested and no
+external tote asset is provided, the stack materializes a local MJCF tote asset
+plus OBJ visual mesh with body/rim contact geoms, mass, friction,
+center-of-mass metadata, inertia, and pose so the explicit fixture run is not a
+`simready://` placeholder.
 
 ## Policy Tiers
 

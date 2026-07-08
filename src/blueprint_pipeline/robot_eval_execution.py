@@ -242,7 +242,7 @@ def default_test_policy_package_from_request(job_request: Mapping[str, Any]) -> 
     }:
         return {}
     if policy_kind in manipulation_policy_kinds:
-        object_id = _string(raw.get("object_id") or raw.get("objectId")) or "simready_tote_001"
+        object_id = _string(raw.get("object_id") or raw.get("objectId"))
         object_class = _string(raw.get("object_class") or raw.get("objectClass")) or "tote"
         task_id = _string(raw.get("task_id") or raw.get("taskId")) or "mobile_pick_carry_place_tote"
         policy_id = _string(raw.get("policy_id") or raw.get("policyId")) or (
@@ -256,6 +256,7 @@ def default_test_policy_package_from_request(job_request: Mapping[str, Any]) -> 
                 "object_id": object_id,
                 "object_class": object_class,
                 "blueprint_default_test_policy": True,
+                "blockers": [] if object_id else ["default_manipulation_policy_object_id_missing"],
                 "ordered_skill_sequence": [
                     {"skill_id": "navigate_to_object", "name": "navigate_to_object"},
                     {"skill_id": "pregrasp_stance", "name": "pregrasp_stance"},
@@ -2289,8 +2290,30 @@ def _default_test_policy_execution_payload(
         task_id = _string(payload.get("task_id") or payload.get("taskId")) or (
             "mobile_pick_carry_place_tote"
         )
-        object_id = _string(payload.get("object_id") or payload.get("objectId")) or "simready_tote_001"
+        object_id = _string(payload.get("object_id") or payload.get("objectId"))
         object_class = _string(payload.get("object_class") or payload.get("objectClass")) or "tote"
+        if not object_id:
+            return {
+                "schema_version": "blueprint_default_test_policy_execution.v1",
+                "status": "blocked_missing_manipulation_object_id",
+                "policy_id": policy_id,
+                "policy_kind": "mobile_manipulation_pick_carry_place",
+                "task_id": task_id,
+                "object_id": "",
+                "object_class": object_class,
+                "attempts": [],
+                "blockers": ["default_manipulation_policy_object_id_missing"],
+                "claim_boundary": {
+                    "default_test_policy_execution_proven": False,
+                    "default_manipulation_policy": True,
+                    "robot_team_policy_execution_proven": False,
+                    "robot_team_policy_quality_proven": False,
+                    "simulator_physics_execution_proven": False,
+                    "grasp_physics_validated": False,
+                    "rank_fidelity_result_proven": False,
+                    "public_claim_upgrade_allowed": False,
+                },
+            }
         raw_phases = payload.get("ordered_skill_sequence")
         phases = [dict(item) for item in raw_phases if isinstance(item, Mapping)] if isinstance(
             raw_phases, list
@@ -2541,9 +2564,16 @@ def build_policy_execution_bundle(
                 if payload_result.get("status") == "completed"
                 else "blocked_missing_policy_execution_trace"
             )
+            payload_blockers = [
+                _string(item)
+                for item in payload_result.get("blockers", [])
+                if _string(item)
+            ]
             detail = {
                 "adapter": "blueprint_default_walk_to_target_policy",
-                "blockers": [] if status == "completed" else ["default_policy_observations_missing"],
+                "blockers": []
+                if status == "completed"
+                else payload_blockers or ["default_policy_observations_missing"],
             }
             execution_performed = True
         elif command_text:

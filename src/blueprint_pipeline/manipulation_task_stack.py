@@ -761,6 +761,7 @@ def build_manipulation_task_stack(
     fetch_lucky_reference: bool = False,
     run_physics_sim: bool = True,
     allow_template_inference: bool = True,
+    allow_legacy_default_tote_without_site_index: bool = False,
 ) -> dict[str, Any]:
     root = Path(capture_root).expanduser().resolve()
     out_dir = Path(output_dir).expanduser().resolve() if output_dir else root / DEFAULT_OUTPUT_RELATIVE
@@ -803,8 +804,19 @@ def build_manipulation_task_stack(
         "object_index_object_count": len(site_object_index),
         "implicit_default_object": implicit_default_object,
         "template_inference_allowed_by_site_object_index": allow_template_inference,
+        "legacy_default_tote_without_site_index_allowed": (
+            allow_legacy_default_tote_without_site_index
+        ),
     }
-    if (
+    if implicit_default_object and not site_object_index and not allow_legacy_default_tote_without_site_index:
+        allow_template_inference = False
+        site_object_index_policy.update(
+            {
+                "template_inference_allowed_by_site_object_index": False,
+                "blocker": "site_object_index_missing_for_default_manipulation_object",
+            }
+        )
+    elif (
         implicit_default_object
         and site_object_index
         and not _site_index_supports_object_class(site_object_index, object_class)
@@ -1093,6 +1105,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--fetch-lucky-reference", action="store_true")
     parser.add_argument("--no-physics-sim", action="store_true")
     parser.add_argument("--no-template-inference", action="store_true")
+    parser.add_argument(
+        "--allow-legacy-default-tote-without-site-index",
+        action="store_true",
+        help=(
+            "Allow the historical simready_tote_001 template when no site object "
+            "index exists. Intended for explicit demo/fixture runs only."
+        ),
+    )
     args = parser.parse_args(argv)
     start_pose = [args.start_x, args.start_y, args.start_z, args.start_yaw]
     object_pose = [args.object_x, args.object_y, args.object_z, args.object_yaw]
@@ -1120,6 +1140,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         fetch_lucky_reference=args.fetch_lucky_reference,
         run_physics_sim=not args.no_physics_sim,
         allow_template_inference=not args.no_template_inference,
+        allow_legacy_default_tote_without_site_index=(
+            args.allow_legacy_default_tote_without_site_index
+        ),
     )
     print(result["manifest_path"])
     print(result["status"])

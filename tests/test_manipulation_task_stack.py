@@ -48,6 +48,7 @@ def test_tote_template_builds_default_policy_eval_stack(tmp_path: Path) -> None:
         capture_root=tmp_path,
         object_pose=[2.0, 4.0, 0.16, 0.0],
         return_pose=[0.0, 0.0, 0.793, 0.0],
+        allow_legacy_default_tote_without_site_index=True,
     )
 
     assert result["status"] == "complete"
@@ -119,6 +120,24 @@ def test_tote_template_builds_default_policy_eval_stack(tmp_path: Path) -> None:
     ]
 
 
+def test_default_manipulation_stack_blocks_legacy_tote_when_object_index_missing(
+    tmp_path: Path,
+) -> None:
+    result = build_manipulation_task_stack(capture_root=tmp_path, run_physics_sim=False)
+
+    assert result["status"] == "blocked"
+    assert "site_object_index_missing_for_default_manipulation_object" in result["blockers"]
+    assert "mujoco_tote_object_asset" not in result["artifacts"]
+    assert result["site_object_index_policy"] == {
+        "object_index_checked": False,
+        "object_index_object_count": 0,
+        "implicit_default_object": True,
+        "template_inference_allowed_by_site_object_index": False,
+        "legacy_default_tote_without_site_index_allowed": False,
+        "blocker": "site_object_index_missing_for_default_manipulation_object",
+    }
+
+
 def test_default_manipulation_stack_does_not_fabricate_tote_for_sinkless_index(
     tmp_path: Path,
 ) -> None:
@@ -139,6 +158,7 @@ def test_default_manipulation_stack_does_not_fabricate_tote_for_sinkless_index(
         "object_index_object_count": 1,
         "implicit_default_object": True,
         "template_inference_allowed_by_site_object_index": False,
+        "legacy_default_tote_without_site_index_allowed": False,
         "blocker": "site_object_index_does_not_contain_default_tote_object",
     }
 
@@ -539,6 +559,7 @@ def test_manipulation_task_stack_main_dispatch(
             "--fetch-lucky-reference",
             "--no-physics-sim",
             "--no-template-inference",
+            "--allow-legacy-default-tote-without-site-index",
         ]
     ) == 0
     assert stack.main(["--capture-root", str(tmp_path / "capture")]) == 1
@@ -552,7 +573,9 @@ def test_manipulation_task_stack_main_dispatch(
     assert calls[0]["fetch_lucky_reference"] is True
     assert calls[0]["run_physics_sim"] is False
     assert calls[0]["allow_template_inference"] is False
+    assert calls[0]["allow_legacy_default_tote_without_site_index"] is True
     assert calls[1]["return_pose"] == [0.0, 0.0, 0.793, 0.0]
+    assert calls[1]["allow_legacy_default_tote_without_site_index"] is False
 
 
 def test_team_manipulation_policy_endpoint_runs_through_policy_execution_bundle(

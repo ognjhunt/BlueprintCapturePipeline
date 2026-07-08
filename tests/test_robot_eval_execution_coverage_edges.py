@@ -70,6 +70,17 @@ def test_robot_eval_execution_private_helper_edges(
         }
     )
     assert manipulation["high_level_skill_trace"]["object_id"] == "tote-1"
+    missing_target_manipulation = ree.default_test_policy_package_from_request(
+        {
+            "default_test_policy": {
+                "policy_kind": "mobile_manipulation_pick_carry_place",
+            }
+        }
+    )
+    assert missing_target_manipulation["high_level_skill_trace"]["object_id"] == ""
+    assert missing_target_manipulation["high_level_skill_trace"]["blockers"] == [
+        "default_manipulation_policy_object_id_missing"
+    ]
 
     inline_pov, _, inline_source = ree._load_real_robot_pov_payload(
         capture_root=capture_root,
@@ -272,6 +283,26 @@ def test_robot_eval_execution_matrix_policy_and_command_edges(
         generated_at="2026-06-01T00:00:00Z",
     )
     assert completed["manifest"]["modality_results"]["high_level_skill_trace"]["status"] == "completed"
+    missing_manipulation_target = ree.build_policy_execution_bundle(
+        capture_root=capture_root,
+        job_dir=tmp_path / "job-missing-manipulation-target",
+        job_request={
+            "default_test_policy": {
+                "policy_kind": "mobile_manipulation_pick_carry_place",
+            }
+        },
+        observation_manifest=observation_manifest,
+        allow_policy_execution=True,
+        generated_at="2026-06-01T00:00:00Z",
+    )
+    missing_target_result = missing_manipulation_target["manifest"]["modality_results"][
+        "high_level_skill_trace"
+    ]
+    assert missing_target_result["status"] == "blocked_missing_policy_execution_trace"
+    assert missing_target_result["default_test_policy_execution_proven"] is False
+    assert missing_target_result["detail"]["blockers"] == [
+        "default_manipulation_policy_object_id_missing"
+    ]
 
 
 def test_robot_eval_execution_simulator_and_actual_outcome_edges(tmp_path: Path) -> None:
