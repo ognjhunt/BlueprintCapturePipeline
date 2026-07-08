@@ -31,6 +31,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from blueprint_pipeline.common import ensure_dir, read_json_any, utc_now_iso, write_json  # noqa: E402
+from blueprint_pipeline.source_metadata import git_source_metadata  # noqa: E402
 
 
 DEFAULT_TOKEN = "local-sim-only-beta-forwarding-token"
@@ -142,6 +143,10 @@ def _blocked_gate_report(
     return {
         "schema_version": "blueprint.sim_only_beta_local_gate_report.v1",
         "generated_at": utc_now_iso(),
+        "pipeline_source": git_source_metadata(
+            _repo_root(),
+            repo_name="BlueprintCapturePipeline",
+        ),
         "status": "blocked",
         "blockers": list(blockers),
         "failed_stage": stage,
@@ -758,6 +763,10 @@ def _validate_sim_only_outputs(*, capture_root: Path, proof_path: Path) -> dict[
     return {
         "schema_version": "blueprint.sim_only_beta_local_gate_report.v1",
         "generated_at": utc_now_iso(),
+        "pipeline_source": git_source_metadata(
+            _repo_root(),
+            repo_name="BlueprintCapturePipeline",
+        ),
         "status": status,
         "blockers": blockers,
         "capture_root": str(capture_root),

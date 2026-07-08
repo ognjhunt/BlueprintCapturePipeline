@@ -31,6 +31,7 @@ from .agent_operator_runtime import (
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
 from .safe_env import load_env_files
+from .source_metadata import git_source_metadata
 
 
 LIVE_PIPELINE_SETUP_SCHEMA_VERSION = "blueprint_live_pipeline_setup.v1"
@@ -870,6 +871,10 @@ def build_live_pipeline_setup_manifest(
         manifest = {
             "schema_version": LIVE_PIPELINE_SETUP_SCHEMA_VERSION,
             "generated_at": generated_at,
+            "pipeline_source": git_source_metadata(
+                Path(__file__).resolve().parents[2],
+                repo_name="BlueprintCapturePipeline",
+            ),
             "status": _overall_status(sections),
             "capture_root": str(capture_path) if capture_path else None,
             "package_dir": str(package_path) if package_path else None,

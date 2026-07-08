@@ -18,6 +18,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from blueprint_pipeline.safe_env import contract_test_env, load_env_files  # noqa: E402
+from blueprint_pipeline.source_metadata import git_source_metadata  # noqa: E402
 
 
 def _repo_root() -> Path:
@@ -362,6 +363,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     report: dict[str, Any] = {
         "schema_version": "external_alpha_launch_gate.v1",
         "generated_at": _utc_now_iso(),
+        "pipeline_source": git_source_metadata(
+            pipeline_repo,
+            repo_name="BlueprintCapturePipeline",
+        ),
         "capture_repo": str(capture_repo),
         "pipeline_repo": str(pipeline_repo),
         "checks": [],

@@ -20,6 +20,13 @@ def _write_text(path: Path, text: str = "artifact") -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _pipeline_source(head: str) -> dict[str, object]:
+    return {
+        "repo_name": "BlueprintCapturePipeline",
+        "head": head,
+    }
+
+
 def _write_ci_evidence(
     path: Path,
     *,
@@ -117,6 +124,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         {
             "schema_version": "v1",
             "overall_status": "automated_contracts_passed_manual_ops_required",
+            "pipeline_source": _pipeline_source(heads["pipeline"]),
             "closeout_summary": {
                 "remaining_manual_evidence_ids": ["buyer_payment_settlement"],
             },
@@ -128,6 +136,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         {
             "schema_version": "external_alpha_launch_gate.v1",
             "overall_status": "passed_manual_required",
+            "pipeline_source": _pipeline_source(heads["pipeline"]),
             "checks": [{"id": "android_capture_contract_tests", "status": "manual_required"}],
         },
     )
@@ -141,12 +150,17 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         / "live_pipeline_control_plane"
         / "sim_only_beta_local_gate"
         / "sim_only_beta_local_gate_report.json",
-        {"schema_version": "blueprint.sim_only_beta_local_gate_report.v1", "status": "passed"},
+        {
+            "schema_version": "blueprint.sim_only_beta_local_gate_report.v1",
+            "pipeline_source": _pipeline_source(heads["pipeline"]),
+            "status": "passed",
+        },
     )
     _write_json(
         pipeline / "output" / "launch_audit_live_pipeline_setup_20260707.json",
         {
             "schema_version": "blueprint_live_pipeline_setup.v1",
+            "pipeline_source": _pipeline_source(heads["pipeline"]),
             "status": "local_ready_live_external_blocked",
             "blockers": ["delivery_upload:missing_delivery_command"],
         },
@@ -196,6 +210,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
     assert packet["status"] == "local_ready_live_external_blocked"
     assert packet["artifact_blockers"] == []
     assert packet["artifact_trust_blockers"] == []
+    assert packet["artifact_source_blockers"] == []
     assert all(artifact["sha256"] for artifact in packet["artifacts"])
     assert packet["readiness_summary"] == {
         "paid_marketplace_launch_gate": "automated_contracts_passed_manual_ops_required",
@@ -244,6 +259,7 @@ def test_launch_readiness_packet_filters_verified_operator_evidence_ids(tmp_path
         {
             "schema_version": "v1",
             "overall_status": "automated_contracts_passed_manual_ops_required",
+            "pipeline_source": _pipeline_source(heads["pipeline"]),
             "closeout_summary": {
                 "remaining_manual_evidence_ids": [
                     "buyer_payment_settlement",
@@ -255,16 +271,30 @@ def test_launch_readiness_packet_filters_verified_operator_evidence_ids(tmp_path
     _write_text(pipeline / "output" / "paid_marketplace_launch_gate.md")
     _write_json(
         pipeline / "output" / "external_alpha_launch_gate.json",
-        {"schema_version": "external_alpha_launch_gate.v1", "overall_status": "passed", "checks": []},
+        {
+            "schema_version": "external_alpha_launch_gate.v1",
+            "pipeline_source": _pipeline_source(heads["pipeline"]),
+            "overall_status": "passed",
+            "checks": [],
+        },
     )
     _write_text(pipeline / "output" / "external_alpha_launch_gate.md")
     _write_json(
         pipeline / "output" / "sim_only_beta_local_gate_report.json",
-        {"schema_version": "blueprint.sim_only_beta_local_gate_report.v1", "status": "passed"},
+        {
+            "schema_version": "blueprint.sim_only_beta_local_gate_report.v1",
+            "pipeline_source": _pipeline_source(heads["pipeline"]),
+            "status": "passed",
+        },
     )
     _write_json(
         pipeline / "output" / "launch_audit_live_pipeline_setup_20260707.json",
-        {"schema_version": "blueprint_live_pipeline_setup.v1", "status": "ready", "blockers": []},
+        {
+            "schema_version": "blueprint_live_pipeline_setup.v1",
+            "pipeline_source": _pipeline_source(heads["pipeline"]),
+            "status": "ready",
+            "blockers": [],
+        },
     )
     _write_json(
         webapp / "output" / "pipeline" / "robot_eval_job_requests" / "forwarding_preflight.json",
@@ -330,6 +360,112 @@ def test_launch_readiness_packet_filters_verified_operator_evidence_ids(tmp_path
     assert packet["operator_evidence_status"]["remaining_ids"] == ["buyer_artifact_access"]
     assert packet["remaining_blockers"]["manual_live_evidence_ids"] == ["buyer_artifact_access"]
     assert packet["readiness_summary"]["operator_evidence"] == "blocked"
+
+
+def test_launch_readiness_packet_blocks_stale_pipeline_artifact_source_heads(
+    tmp_path: Path,
+) -> None:
+    pipeline = tmp_path / "BlueprintCapturePipeline"
+    webapp = tmp_path / "Blueprint-WebApp"
+    contracts = tmp_path / "BlueprintContracts"
+    capture = tmp_path / "BlueprintCapture"
+    heads = {
+        "pipeline": _init_clean_repo_at_origin_main(pipeline),
+        "webapp": _init_clean_repo_at_origin_main(webapp),
+        "contracts": _init_clean_repo_at_origin_main(contracts),
+        "capture": _init_clean_repo_at_origin_main(capture),
+    }
+    stale_head = "0" * 40
+
+    _write_json(
+        pipeline / "output" / "paid_marketplace_launch_gate.json",
+        {
+            "schema_version": "v1",
+            "pipeline_source": _pipeline_source(stale_head),
+            "overall_status": "automated_contracts_passed_manual_ops_required",
+            "closeout_summary": {"remaining_manual_evidence_ids": []},
+        },
+    )
+    _write_text(pipeline / "output" / "paid_marketplace_launch_gate.md")
+    _write_json(
+        pipeline / "output" / "external_alpha_launch_gate.json",
+        {
+            "schema_version": "external_alpha_launch_gate.v1",
+            "pipeline_source": _pipeline_source(heads["pipeline"]),
+            "overall_status": "passed",
+            "checks": [],
+        },
+    )
+    _write_text(pipeline / "output" / "external_alpha_launch_gate.md")
+    _write_json(
+        pipeline / "output" / "sim_only_beta_local_gate_report.json",
+        {
+            "schema_version": "blueprint.sim_only_beta_local_gate_report.v1",
+            "pipeline_source": _pipeline_source(heads["pipeline"]),
+            "status": "passed",
+        },
+    )
+    _write_json(
+        pipeline / "output" / "launch_audit_live_pipeline_setup_20260707.json",
+        {
+            "schema_version": "blueprint_live_pipeline_setup.v1",
+            "status": "ready",
+            "blockers": [],
+        },
+    )
+    _write_json(
+        webapp / "output" / "pipeline" / "robot_eval_job_requests" / "forwarding_preflight.json",
+        {
+            "schema_version": "blueprint.webapp.robot_eval_forwarding_readiness.v1",
+            "status": "ready_for_required_forwarding_with_probe",
+            "blockers": [],
+            "forwarding_required": True,
+            "endpoint_configured": True,
+            "probe": {"attempted": True, "status": "reachable"},
+        },
+    )
+    _write_ci_evidence(
+        pipeline / "output" / "pipeline_main_ci_evidence.json",
+        evidence_id="pipeline_main_ci_evidence",
+        head_sha=heads["pipeline"],
+        workflow="CI",
+    )
+    _write_ci_evidence(
+        pipeline / "output" / "pipeline_full_test_lane_ci_evidence.json",
+        evidence_id="pipeline_full_test_lane_ci_evidence",
+        head_sha=heads["pipeline"],
+        workflow="Full Test Lane",
+        test_counts={"tests": 3917, "failures": 0, "errors": 0, "skipped": 3},
+    )
+    _write_ci_evidence(
+        pipeline / "output" / "pipeline_sim_only_local_gate_ci_evidence.json",
+        evidence_id="pipeline_sim_only_local_gate_ci_evidence",
+        head_sha=heads["pipeline"],
+        workflow="Sim-Only Local Gate",
+    )
+    _write_ci_evidence(
+        pipeline / "output" / "webapp_main_ci_evidence.json",
+        evidence_id="webapp_main_ci_evidence",
+        head_sha=heads["webapp"],
+        workflow="CI",
+    )
+
+    packet = build_launch_readiness_packet(
+        pipeline_repo=pipeline,
+        webapp_repo=webapp,
+        contracts_repo=contracts,
+        capture_repo=capture,
+        generated_at="2026-07-07T00:00:00+00:00",
+    )
+
+    assert packet["status"] == "incomplete_packet"
+    assert packet["artifact_source_blockers"] == [
+        f"artifact_source_head_mismatch:paid_marketplace_launch_gate_json:{stale_head}",
+        "artifact_source_head_missing:live_pipeline_setup_audit",
+    ]
+    assert packet["remaining_blockers"]["artifact_source_blockers"] == packet[
+        "artifact_source_blockers"
+    ]
 
 
 def test_forwarding_packet_blockers_reject_false_calm_without_probe() -> None:

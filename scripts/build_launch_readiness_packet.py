@@ -21,6 +21,12 @@ from blueprint_pipeline.alpha_readiness import validate_operator_launch_evidence
 
 SCHEMA_VERSION = "blueprint.launch_readiness_packet.v1"
 CI_EVIDENCE_SCHEMA_VERSION = "blueprint.github_actions_evidence.v1"
+PIPELINE_SOURCE_REQUIRED_ARTIFACT_IDS = {
+    "paid_marketplace_launch_gate_json",
+    "external_alpha_launch_gate_json",
+    "sim_only_beta_local_gate_report",
+    "live_pipeline_setup_audit",
+}
 
 
 def _repo_root() -> Path:
@@ -91,6 +97,11 @@ def _repo_info(repo: Path) -> dict[str, Any]:
 def _artifact(id_: str, path: Path, *, source_repo: str) -> dict[str, Any]:
     payload = _read_json(path) if path.suffix == ".json" else {}
     status = payload.get("overall_status") or payload.get("status")
+    pipeline_source = (
+        payload.get("pipeline_source")
+        if isinstance(payload.get("pipeline_source"), Mapping)
+        else {}
+    )
     return {
         "id": id_,
         "source_repo": source_repo,
@@ -100,6 +111,12 @@ def _artifact(id_: str, path: Path, *, source_repo: str) -> dict[str, Any]:
         "sha256": _sha256(path),
         "json_status": status if isinstance(status, str) else None,
         "schema_version": payload.get("schema_version") if isinstance(payload.get("schema_version"), str) else None,
+        "pipeline_source_head": pipeline_source.get("head")
+        if isinstance(pipeline_source.get("head"), str)
+        else None,
+        "pipeline_source_repo_name": pipeline_source.get("repo_name")
+        if isinstance(pipeline_source.get("repo_name"), str)
+        else None,
     }
 
 
@@ -220,6 +237,32 @@ def _artifact_trust_blockers(
         artifact_id = str(artifact.get("id") or "")
         if artifact.get("exists") and source_repo in blocked_repo_names and artifact_id:
             blockers.append(f"untrusted_artifact_repo:{artifact_id}:{source_repo}")
+    return blockers
+
+
+def _artifact_source_blockers(
+    artifacts: list[Mapping[str, Any]],
+    repos: Mapping[str, Mapping[str, Any]],
+) -> list[str]:
+    pipeline_head = str(repos.get("BlueprintCapturePipeline", {}).get("head") or "")
+    blockers: list[str] = []
+    for artifact in artifacts:
+        artifact_id = str(artifact.get("id") or "")
+        if artifact_id not in PIPELINE_SOURCE_REQUIRED_ARTIFACT_IDS:
+            continue
+        if not artifact.get("exists"):
+            continue
+        source_head = str(artifact.get("pipeline_source_head") or "")
+        source_repo = str(artifact.get("pipeline_source_repo_name") or "")
+        if not source_head:
+            blockers.append(f"artifact_source_head_missing:{artifact_id}")
+            continue
+        if source_repo and source_repo != "BlueprintCapturePipeline":
+            blockers.append(f"artifact_source_repo_mismatch:{artifact_id}:{source_repo}")
+        if not pipeline_head:
+            blockers.append(f"artifact_source_repo_head_unavailable:{artifact_id}")
+        elif source_head != pipeline_head:
+            blockers.append(f"artifact_source_head_mismatch:{artifact_id}:{source_head}")
     return blockers
 
 
@@ -406,10 +449,17 @@ def build_launch_readiness_packet(
         },
     )
     artifact_trust_blockers = _artifact_trust_blockers(all_artifacts, repository_blockers)
+    artifact_source_blockers = _artifact_source_blockers(all_artifacts, repos)
     ci_evidence_blockers = _ci_evidence_blockers(ci_artifacts, repos)
 
     status = "ready"
-    if missing_artifacts or repository_blockers or artifact_trust_blockers or ci_evidence_blockers:
+    if (
+        missing_artifacts
+        or repository_blockers
+        or artifact_trust_blockers
+        or artifact_source_blockers
+        or ci_evidence_blockers
+    ):
         status = "incomplete_packet"
     elif manual_evidence_ids or live_setup_blockers or forwarding_blockers or external_manual_items:
         status = "local_ready_live_external_blocked"
@@ -422,6 +472,7 @@ def build_launch_readiness_packet(
         "artifacts": all_artifacts,
         "artifact_blockers": missing_artifacts,
         "artifact_trust_blockers": artifact_trust_blockers,
+        "artifact_source_blockers": artifact_source_blockers,
         "repository_blockers": repository_blockers,
         "ci_evidence_blockers": ci_evidence_blockers,
         "readiness_summary": {
@@ -441,6 +492,7 @@ def build_launch_readiness_packet(
             "external_alpha_manual_items": external_manual_items,
             "live_pipeline_setup_blockers": live_setup_blockers,
             "webapp_forwarding_blockers": forwarding_blockers,
+            "artifact_source_blockers": artifact_source_blockers,
             "ci_evidence_blockers": ci_evidence_blockers,
         },
         "operator_evidence_status": {
@@ -523,6 +575,11 @@ def _markdown(packet: Mapping[str, Any]) -> str:
     if isinstance(artifact_trust_blockers, list) and artifact_trust_blockers:
         lines.append(f"- `artifact_trust_blockers`: {len(artifact_trust_blockers)}")
         for value in artifact_trust_blockers:
+            lines.append(f"  - `{value}`")
+    artifact_source_blockers = packet.get("artifact_source_blockers")
+    if isinstance(artifact_source_blockers, list) and artifact_source_blockers:
+        lines.append(f"- `artifact_source_blockers`: {len(artifact_source_blockers)}")
+        for value in artifact_source_blockers:
             lines.append(f"  - `{value}`")
     repository_blockers = packet.get("repository_blockers")
     if isinstance(repository_blockers, list) and repository_blockers:
