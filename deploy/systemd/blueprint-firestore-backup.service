@@ -1,0 +1,23 @@
+[Unit]
+Description=Blueprint Firestore backup — scheduled managed export of the authoritative control-plane (R053)
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# SCAFFOLD: this unit runs the committed emitter with --execute, which shells out to
+# `gcloud firestore export`. It therefore requires gcloud installed on the host and an
+# authenticated backup service account with roles/datastore.importExportAdmin plus write
+# access to the backup bucket. Until that credential exists this unit fails closed (the
+# export is not silently skipped). See Blueprint-WebApp/docs/runbooks/DATA_BACKUP_AND_DR_RUNBOOK.md.
+Type=oneshot
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python scripts/emit_firestore_backup_command.py --execute; fi; exec env PYTHONPATH=src python3 scripts/emit_firestore_backup_command.py --execute'
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

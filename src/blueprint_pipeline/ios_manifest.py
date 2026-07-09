@@ -10,6 +10,32 @@ from typing import Any, Dict, List, Mapping, Optional
 from .common import join_gs_uri, read_json, read_json_any, resolve_gs_uri_to_path
 
 
+def _optional_float(value: Any) -> Optional[float]:
+    """Parse an optional numeric capture-truth value, tolerating absence/blanks."""
+
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    """Parse an optional integer capture-truth value, tolerating absence/blanks."""
+
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class IOSManifest:
     """Parsed ``raw/manifest.json`` from BlueprintCapture."""
@@ -32,6 +58,14 @@ class IOSManifest:
     capture_schema_version: Optional[str] = None
     capture_source: Optional[str] = None
     capture_tier_hint: Optional[str] = None
+    # Site-extent capture truth (R017): declared/measured site scale inputs.
+    # Optional and nullable; warehouses/factories are defined by scale, so these
+    # let large-site geometry be carried as first-class capture truth rather than
+    # lost. Values are declared or measured inputs, never derived claims.
+    approx_floor_area_m2: Optional[float] = None
+    ceiling_height_m: Optional[float] = None
+    floor_count: Optional[int] = None
+    dominant_aisle_width_m: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "IOSManifest":
@@ -76,6 +110,10 @@ class IOSManifest:
                 if data.get("capture_tier_hint") is not None
                 else None
             ),
+            approx_floor_area_m2=_optional_float(data.get("approx_floor_area_m2")),
+            ceiling_height_m=_optional_float(data.get("ceiling_height_m")),
+            floor_count=_optional_int(data.get("floor_count")),
+            dominant_aisle_width_m=_optional_float(data.get("dominant_aisle_width_m")),
         )
 
     @classmethod

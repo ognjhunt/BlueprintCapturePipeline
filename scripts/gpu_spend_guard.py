@@ -15,7 +15,12 @@ Safety rails (the whole point of the tool is to never kill live work):
   under an ``output/.../pipeline/`` tree **that still has a live owning process**
   is never reaped, no matter how stuck it looks. Only orphans whose launching run
   has died are eligible.
-* Healthy booted pods are never auto-reaped — boot-timeout duds only.
+* Healthy booted pods are never auto-reaped for the boot-timeout case. With
+  ``--orphan-booted-max-age-seconds`` (R056) a *booted* pod is reaped only when it
+  is orphaned — no live owning process AND no live ``warm_serve_pod.json`` serving
+  marker AND not a known warm-candidate id — and has outlived that hard age
+  ceiling. Live warm-serve workers are protected by their marker/allowlist and are
+  never reaped.
 
 Conventions mirror :mod:`blueprint_pipeline.gpu_render_providers`: file-based
 secrets under ``~/.blueprint-secrets`` that are never logged, RunPod REST pods at
@@ -29,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -45,6 +51,15 @@ SECRETS_DIR = Path.home() / ".blueprint-secrets"
 RUNPOD_API = "https://rest.runpod.io/v1"
 VAST_API = "https://console.vast.ai/api/v0"
 DEFAULT_MAX_BOOT_SECONDS = 480
+# R056: a BOOTED pod with no live owning process and no serving warm-serve marker
+# that has outlived this hard age ceiling is a leaked pod (its launching host
+# died) and is reapable. 0 disables booted-orphan reaping (the pre-R056 behavior
+# where only never-booted boot-timeout duds were reaped). Configurable via the
+# --orphan-booted-max-age-seconds flag or the env below.
+ORPHAN_BOOTED_MAX_AGE_ENV = "BLUEPRINT_GPU_ORPHAN_BOOTED_MAX_AGE_SECONDS"
+# Recommended production ceiling for scheduled reaping: 6h is far beyond any
+# healthy render/eval window, so only a truly leaked booted pod trips it.
+RECOMMENDED_ORPHAN_BOOTED_MAX_AGE_SECONDS = 21600
 
 # Vast statuses that mean the instance is no longer billing compute.
 VAST_TERMINAL_STATUSES = frozenset(
@@ -360,6 +375,15 @@ def _warn(message: str) -> None:
     print(f"warning: {message}", file=sys.stderr)
 
 
+def _env_int(name: str, default: int) -> int:
+    """Non-negative int from the environment, tolerant of blanks/garbage."""
+    raw = os.environ.get(name, "")
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
 # ----------------------------- ownership / live owner -----------------------------
 
 
@@ -504,9 +528,23 @@ def is_reapable(
     *,
     max_boot_seconds: int,
     protected_ids: set[str],
+    orphan_booted_max_age_seconds: int = 0,
 ) -> bool:
-    """True only for an orphaned dud: live, never booted, older than the boot
-    threshold, and not protected by a live owning process."""
+    """True for a reapable orphan. Two disjoint cases, both requiring the pod to be
+    live, unprotected, and not a known warm-candidate id:
+
+    * boot-timeout dud — never booted (``runtime`` absent) and older than
+      ``max_boot_seconds``; the classic stuck allocation that keeps billing.
+    * booted orphan (R056) — booted, but its launching host died (no live owning
+      process, no serving ``warm_serve_pod.json`` marker) and it has outlived
+      ``orphan_booted_max_age_seconds`` (a hard age ceiling; ``0`` disables this
+      case, preserving the pre-R056 behavior of never reaping booted pods).
+
+    Protection is fail-safe toward *keep*: warm-candidate ids short-circuit to
+    ``False`` first, and ``protected_ids`` (live owning process + serving warm-serve
+    markers, unioned by :func:`main`) are honored before either reap path — so a
+    healthy warm-serve pod is never reaped even once booted-orphan reaping is on.
+    """
     if inst.provider == "runpod" and inst.id in DEFAULT_WARM_CANDIDATE_IDS:
         return False
     if inst.id in protected_ids:
@@ -514,7 +552,15 @@ def is_reapable(
     if not inst.live:
         return False
     if inst.booted:
-        return False
+        # R056: reap a booted pod only when booted-orphan reaping is enabled and the
+        # pod has outlived the hard age ceiling. Owned/warm-serve pods were already
+        # returned above via protected_ids and the warm-candidate allowlist, so what
+        # reaches here is an unowned booted pod whose launching host is gone.
+        if orphan_booted_max_age_seconds <= 0:
+            return False
+        if inst.age_seconds is None:
+            return False
+        return inst.age_seconds > orphan_booted_max_age_seconds
     if inst.provider == "runpod" and inst.state != "booting":
         return False
     if inst.age_seconds is None:
@@ -568,6 +614,7 @@ def build_report(
     protected_ids: set[str],
     max_boot_seconds: int,
     serve_pod_ids: set[str] | frozenset[str] = frozenset(),
+    orphan_booted_max_age_seconds: int = 0,
 ) -> str:
     live = [i for i in instances if i.live]
     lines: list[str] = []
@@ -594,17 +641,25 @@ def build_report(
     candidates = [
         i
         for i in instances
-        if is_reapable(i, max_boot_seconds=max_boot_seconds, protected_ids=protected_ids)
+        if is_reapable(
+            i,
+            max_boot_seconds=max_boot_seconds,
+            protected_ids=protected_ids,
+            orphan_booted_max_age_seconds=orphan_booted_max_age_seconds,
+        )
     ]
     if candidates:
-        lines.append(
-            f"Orphan reap candidates ({len(candidates)}): "
-            f"not booted past {max_boot_seconds}s, no live owner"
-        )
+        criteria = f"not booted past {max_boot_seconds}s, no live owner"
+        if orphan_booted_max_age_seconds > 0:
+            criteria += (
+                f"; or booted+orphaned older than {orphan_booted_max_age_seconds}s"
+            )
+        lines.append(f"Orphan reap candidates ({len(candidates)}): {criteria}")
         for inst in candidates:
+            tag = " (booted orphan)" if inst.booted else ""
             lines.append(
                 f"  - {inst.provider} {inst.id} ({inst.name}) "
-                f"age={_fmt_age(inst.age_seconds)} ${inst.cost_per_hr:.3f}/hr"
+                f"age={_fmt_age(inst.age_seconds)} ${inst.cost_per_hr:.3f}/hr{tag}"
             )
     else:
         lines.append("Orphan reap candidates: none")
@@ -618,6 +673,8 @@ def build_json_report(
     max_boot_seconds: int,
     reap_mode: bool = False,
     reap_results: Sequence[Mapping[str, Any]] = (),
+    orphan_booted_max_age_seconds: int = 0,
+    credentials_available: bool = True,
 ) -> dict:
     """Machine-readable spend snapshot so ops never re-derives state from stdout.
 
@@ -629,7 +686,12 @@ def build_json_report(
     candidates = [
         i
         for i in instances
-        if is_reapable(i, max_boot_seconds=max_boot_seconds, protected_ids=protected_ids)
+        if is_reapable(
+            i,
+            max_boot_seconds=max_boot_seconds,
+            protected_ids=protected_ids,
+            orphan_booted_max_age_seconds=orphan_booted_max_age_seconds,
+        )
     ]
     candidate_ids = {i.id for i in candidates}
     return {
@@ -638,6 +700,9 @@ def build_json_report(
         "live_instance_count": len(live),
         "total_burn_per_hour_usd": round(total_burn_per_hour(instances), 4),
         "max_boot_seconds": int(max_boot_seconds),
+        "orphan_booted_max_age_seconds": int(orphan_booted_max_age_seconds),
+        "booted_orphan_reaping_enabled": int(orphan_booted_max_age_seconds) > 0,
+        "credentials_available": bool(credentials_available),
         "reap_mode": bool(reap_mode),
         "instances": [
             {
@@ -658,8 +723,10 @@ def build_json_report(
         "reap_results": [dict(r) for r in reap_results],
         "claim_boundary": (
             "This snapshot is billing/allocation state at one moment. It is not run "
-            "success, artifact quality, or task evidence; booted-but-stalled pods are "
-            "reported live and are never auto-reaped by this tool."
+            "success, artifact quality, or task evidence. Booted pods are reaped only "
+            "as orphans (no live owner, no serving warm-serve marker) past the hard "
+            "age ceiling when booted-orphan reaping is enabled; otherwise only "
+            "never-booted boot-timeout duds are reaped."
         ),
     }
 
@@ -698,6 +765,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--orphan-booted-max-age-seconds",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "R056: also reap a BOOTED pod that is orphaned (no live owning process, "
+            "no serving warm-serve marker, not a warm-candidate id) once it is older "
+            "than this hard ceiling. 0 disables booted-orphan reaping. Defaults to "
+            f"the {ORPHAN_BOOTED_MAX_AGE_ENV} env, else 0 (disabled); scheduled "
+            f"deployments set {RECOMMENDED_ORPHAN_BOOTED_MAX_AGE_SECONDS}s (6h)."
+        ),
+    )
+    parser.add_argument(
         "--output-root",
         action="append",
         default=None,
@@ -719,6 +799,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.orphan_booted_max_age_seconds is not None:
+        orphan_booted_max_age = max(0, int(args.orphan_booted_max_age_seconds))
+    else:
+        orphan_booted_max_age = _env_int(ORPHAN_BOOTED_MAX_AGE_ENV, 0)
+
     runpod_key = _read_secret("runpod_api_key")
     vast_key = _read_secret("vast_api_key")
     do_token = _read_secret("digitalocean_api_token")
@@ -727,6 +812,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             "No file-based GPU credentials found in ~/.blueprint-secrets "
             "(runpod_api_key, vast_api_key); nothing to check."
         )
+        if args.json_report:
+            # Still persist durable evidence so a scheduled watchdog's post-check can
+            # distinguish "ran, nothing billing / no creds" from "never ran".
+            snapshot = build_json_report(
+                [],
+                protected_ids=set(),
+                max_boot_seconds=args.max_boot_seconds,
+                reap_mode=bool(args.reap),
+                orphan_booted_max_age_seconds=orphan_booted_max_age,
+                credentials_available=False,
+            )
+            path = Path(args.json_report)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+            print(f"JSON snapshot written: {path}")
         return 0
 
     now = _now()
@@ -751,13 +851,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             protected_ids=protected,
             max_boot_seconds=args.max_boot_seconds,
             serve_pod_ids=serve_pods,
+            orphan_booted_max_age_seconds=orphan_booted_max_age,
         )
     )
 
     candidates = [
         i
         for i in instances
-        if is_reapable(i, max_boot_seconds=args.max_boot_seconds, protected_ids=protected)
+        if is_reapable(
+            i,
+            max_boot_seconds=args.max_boot_seconds,
+            protected_ids=protected,
+            orphan_booted_max_age_seconds=orphan_booted_max_age,
+        )
     ]
     reap_results: list[dict] = []
 
@@ -770,6 +876,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_boot_seconds=args.max_boot_seconds,
             reap_mode=bool(args.reap),
             reap_results=reap_results,
+            orphan_booted_max_age_seconds=orphan_booted_max_age,
         )
         path = Path(args.json_report)
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -232,6 +232,31 @@ def _resume(statuses: Mapping[str, Mapping[str, Any]], retry_stage: str | None) 
     return {"resume_from_stage": None, "next_stage": None}
 
 
+def _quarantine_capture(
+    *,
+    raw_root: str | Path,
+    error: BaseException,
+    capture_id: str | None,
+    site_id: str | None,
+) -> Dict[str, Any]:
+    """Record why a single malformed capture was skipped from the registry build.
+
+    Mirrors the per-request isolation used by the robot-eval job inbox runner: one
+    bad capture is quarantined with a bounded reason instead of aborting the whole
+    batch, so the good captures still make it into the registry.
+    """
+
+    return {
+        "capture_root": str(raw_root),
+        "capture_id": capture_id,
+        "site_id": site_id,
+        "status": "skipped",
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "reason": "skipped_after_capture_build_error",
+    }
+
+
 def update_capture_batch_registry(
     *,
     capture_roots: Sequence[str | Path],
@@ -251,22 +276,52 @@ def update_capture_batch_registry(
         "retry_stage": retry_stage,
         "stage_order": list(STAGE_ORDER),
         "sites": {},
+        "skipped_captures": [],
+        "skipped_capture_count": 0,
+        "skipped_capture_ids": [],
     }
+    skipped_captures: List[Dict[str, Any]] = []
     for raw_root in capture_roots:
-        context = resolve_local_capture_context(raw_root)
-        descriptor = _read_optional_mapping(context.descriptor_path)
-        raw_manifest = _read_optional_mapping(context.raw_root / "manifest.json")
-        site_id = _site_id(context, descriptor, raw_manifest)
-        statuses = _stage_statuses(context.capture_root)
-        if retry_stage:
-            previous_status = statuses[retry_stage]["status"]
-            statuses[retry_stage] = {
-                **statuses[retry_stage],
-                "status": "queued_for_retry",
-                "previous_status": previous_status,
+        resolved_capture_id: str | None = None
+        resolved_site_id: str | None = None
+        try:
+            context = resolve_local_capture_context(raw_root)
+            resolved_capture_id = context.capture_id
+            descriptor = _read_optional_mapping(context.descriptor_path)
+            raw_manifest = _read_optional_mapping(context.raw_root / "manifest.json")
+            site_id = _site_id(context, descriptor, raw_manifest)
+            resolved_site_id = site_id
+            statuses = _stage_statuses(context.capture_root)
+            if retry_stage:
+                previous_status = statuses[retry_stage]["status"]
+                statuses[retry_stage] = {
+                    **statuses[retry_stage],
+                    "status": "queued_for_retry",
+                    "previous_status": previous_status,
+                }
+            previous = _existing_capture(
+                existing, site_id=site_id, capture_id=context.capture_id
+            )
+            attempts = _attempts(
+                previous=previous, statuses=statuses, retry_stage=retry_stage
+            )
+            capture_entry = {
+                "capture_id": context.capture_id,
+                "capture_root": str(context.capture_root),
+                "stage_statuses": statuses,
+                "attempts": attempts,
+                "resume": _resume(statuses, retry_stage),
             }
-        previous = _existing_capture(existing, site_id=site_id, capture_id=context.capture_id)
-        attempts = _attempts(previous=previous, statuses=statuses, retry_stage=retry_stage)
+        except Exception as exc:  # noqa: BLE001 - isolate one malformed capture from the batch
+            skipped_captures.append(
+                _quarantine_capture(
+                    raw_root=raw_root,
+                    error=exc,
+                    capture_id=resolved_capture_id,
+                    site_id=resolved_site_id,
+                )
+            )
+            continue
         site = registry["sites"].setdefault(
             site_id,
             {
@@ -275,13 +330,12 @@ def update_capture_batch_registry(
                 "captures": {},
             },
         )
-        site["captures"][context.capture_id] = {
-            "capture_id": context.capture_id,
-            "capture_root": str(context.capture_root),
-            "stage_statuses": statuses,
-            "attempts": attempts,
-            "resume": _resume(statuses, retry_stage),
-        }
+        site["captures"][context.capture_id] = capture_entry
+    registry["skipped_captures"] = skipped_captures
+    registry["skipped_capture_count"] = len(skipped_captures)
+    registry["skipped_capture_ids"] = [
+        entry["capture_id"] or entry["capture_root"] for entry in skipped_captures
+    ]
     ensure_dir(output_path.parent)
     write_json(output_path, registry)
     return registry
@@ -312,6 +366,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(f"[capture-batch-registry] registry={args.registry_path}")
     print(f"[capture-batch-registry] site_count={len(registry['sites'])}")
+    print(
+        "[capture-batch-registry] skipped_capture_count="
+        f"{registry['skipped_capture_count']}"
+    )
     return 0
 
 

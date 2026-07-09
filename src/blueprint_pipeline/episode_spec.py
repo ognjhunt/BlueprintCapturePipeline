@@ -14,6 +14,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Seque
 from .common import PipelineError, ensure_dir, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
 from .scene_asset_preflight import build_scene_asset_preflight
+from .site_taxonomy import (
+    SITE_TAXONOMY_VERSION,
+    default_task_hint_for_category,
+    resolve_site_type,
+)
 
 
 EPISODE_SPEC_SCHEMA_VERSION = "episode_spec.v1"
@@ -234,6 +239,24 @@ def _scene_class_task_hints(site_text: str) -> List[Dict[str, Any]]:
                     "task_text": task_text,
                     "task_category": category,
                     "source": "capture_site_type_hint",
+                }
+            )
+    # Additive: recognize expanded industrial synonyms (distribution center,
+    # fulfillment, manufacturing, cold storage, ...) via the shared canonical
+    # taxonomy so legitimate industrial sites are not silently left review-only.
+    # Legacy literal-token hints above are preserved and take precedence.
+    resolution = resolve_site_type(site_text)
+    if resolution.recognized:
+        default_hint = default_task_hint_for_category(resolution.category)
+        if default_hint is not None and not any(
+            hint["task_id"] == default_hint["task_id"] for hint in hints
+        ):
+            hints.append(
+                {
+                    **default_hint,
+                    "source": f"capture_site_type_taxonomy_{SITE_TAXONOMY_VERSION}",
+                    "site_category": resolution.category,
+                    "is_industrial_site": resolution.is_industrial,
                 }
             )
     return hints

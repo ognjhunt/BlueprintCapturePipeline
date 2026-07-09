@@ -11,6 +11,7 @@ or promote proof claims.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
@@ -44,8 +45,21 @@ INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV = (
     "BLUEPRINT_LIVE_PIPELINE_ALLOW_PER_REQUEST_CAPTURE_ROOT"
 )
 INTAKE_CAPTURE_ROOT_BY_SITE_ENV = "BLUEPRINT_LIVE_PIPELINE_CAPTURE_ROOT_BY_SITE_JSON"
+INTAKE_REQUIRE_SIGNED_REQUEST_ENV = (
+    "BLUEPRINT_LIVE_PIPELINE_INTAKE_REQUIRE_SIGNED_REQUEST"
+)
+INTAKE_SIGNING_SECRET_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_SIGNING_SECRET"
+INTAKE_NONCE_WINDOW_SECONDS_ENV = (
+    "BLUEPRINT_LIVE_PIPELINE_INTAKE_NONCE_WINDOW_SECONDS"
+)
+DEFAULT_INTAKE_NONCE_WINDOW_SECONDS = 300
 INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_intake_service.v1"
 CAPTURE_HANDOFF_SOURCE_KIND = "capture_pipeline_handoff"
+
+# In-memory replay guard: maps a seen nonce to the request timestamp it arrived
+# with. Entries older than the bounded window are pruned on each check, so a
+# replayed nonce inside the window is rejected while a fresh one passes.
+_SEEN_INTAKE_NONCES: Dict[str, float] = {}
 
 
 def _string(value: Any) -> str:
@@ -938,9 +952,112 @@ def _trigger_control_plane() -> Dict[str, Any]:
     }
 
 
+def _intake_nonce_window_seconds() -> float:
+    raw = _string(os.getenv(INTAKE_NONCE_WINDOW_SECONDS_ENV))
+    if not raw:
+        return float(DEFAULT_INTAKE_NONCE_WINDOW_SECONDS)
+    try:
+        value = float(raw)
+    except ValueError:
+        return float(DEFAULT_INTAKE_NONCE_WINDOW_SECONDS)
+    return value if value > 0 else float(DEFAULT_INTAKE_NONCE_WINDOW_SECONDS)
+
+
+def _parse_intake_timestamp(value: Any) -> float | None:
+    text = _string(value)
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return _parse_timestamp(text)
+
+
+def _prune_seen_nonces(now: float, window: float) -> None:
+    expired = [
+        nonce
+        for nonce, seen_at in _SEEN_INTAKE_NONCES.items()
+        if now - seen_at > window
+    ]
+    for nonce in expired:
+        _SEEN_INTAKE_NONCES.pop(nonce, None)
+
+
+def _reset_intake_replay_cache() -> None:
+    """Clear the in-memory replay guard (used by tests and on process boundaries)."""
+
+    _SEEN_INTAKE_NONCES.clear()
+
+
+def _enforce_intake_replay_protection(
+    *,
+    timestamp_header: str | None,
+    nonce_header: str | None,
+    signature_header: str | None,
+) -> None:
+    """Reject expired or replayed intake requests using a nonce + bounded window.
+
+    Backward-compatible: when signed requests are not required and the caller sends
+    no timestamp/nonce headers, the check is a no-op so the plain-bearer happy path
+    keeps working. Once a request carries replay headers (or the operator opts in
+    via env), the timestamp must be inside the window, the nonce must be unused, and
+    (if a signing secret is configured) an HMAC signature over ``timestamp.nonce``
+    must match with a constant-time compare.
+    """
+
+    required = _truthy(os.getenv(INTAKE_REQUIRE_SIGNED_REQUEST_ENV))
+    provided_ts = _string(timestamp_header)
+    provided_nonce = _string(nonce_header)
+    if not required and not provided_ts and not provided_nonce:
+        return
+    if not provided_ts or not provided_nonce:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="intake request requires timestamp and nonce",
+        )
+    timestamp = _parse_intake_timestamp(provided_ts)
+    if timestamp is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="intake request timestamp is invalid",
+        )
+    window = _intake_nonce_window_seconds()
+    now = datetime.now(timezone.utc).timestamp()
+    if abs(now - timestamp) > window:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="intake request timestamp outside allowed window",
+        )
+    signing_secret = _string(os.getenv(INTAKE_SIGNING_SECRET_ENV))
+    if signing_secret:
+        expected_signature = hmac.new(
+            signing_secret.encode("utf-8"),
+            f"{provided_ts}.{provided_nonce}".encode("utf-8"),
+            sha256,
+        ).hexdigest()
+        provided_signature = _string(signature_header)
+        if not provided_signature or not hmac.compare_digest(
+            provided_signature, expected_signature
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="intake request signature invalid",
+            )
+    _prune_seen_nonces(now, window)
+    if provided_nonce in _SEEN_INTAKE_NONCES:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="intake request nonce already used",
+        )
+    _SEEN_INTAKE_NONCES[provided_nonce] = now
+
+
 def _require_token(
     authorization: str | None = Header(default=None),
     x_blueprint_intake_token: str | None = Header(default=None),
+    x_blueprint_intake_timestamp: str | None = Header(default=None),
+    x_blueprint_intake_nonce: str | None = Header(default=None),
+    x_blueprint_intake_signature: str | None = Header(default=None),
 ) -> None:
     expected = _string(os.getenv(INTAKE_TOKEN_ENV))
     if not expected:
@@ -953,11 +1070,16 @@ def _require_token(
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() == "bearer":
             provided = _string(token)
-    if provided != expected:
+    if not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid intake token",
         )
+    _enforce_intake_replay_protection(
+        timestamp_header=x_blueprint_intake_timestamp,
+        nonce_header=x_blueprint_intake_nonce,
+        signature_header=x_blueprint_intake_signature,
+    )
 
 
 def create_app() -> FastAPI:
@@ -973,6 +1095,12 @@ def create_app() -> FastAPI:
             "manifest_exists": manifest_path.is_file(),
             "token_configured": bool(_string(os.getenv(INTAKE_TOKEN_ENV))),
             "trigger_configured": bool(_string(os.getenv(INTAKE_TRIGGER_ENV))),
+            "signed_request_required": _truthy(
+                os.getenv(INTAKE_REQUIRE_SIGNED_REQUEST_ENV)
+            ),
+            "request_signing_configured": bool(
+                _string(os.getenv(INTAKE_SIGNING_SECRET_ENV))
+            ),
             "per_request_capture_root_enabled": _truthy(
                 os.getenv(INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV)
             ),

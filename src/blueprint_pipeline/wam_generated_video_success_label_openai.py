@@ -18,6 +18,8 @@ from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .wam_generated_video_success_label_gemini import (
+    GENERATED_VIDEO_VLM_PROVENANCE,
+    SUCCESS_RATE_GENERATED_VIDEO_VLM_CLAIM_BOUNDARY,
     _bool_or_none,
     _confidence_or_none,
     _has_task_success_context,
@@ -265,6 +267,9 @@ def _openai_label_one(
         "evidence_refs": [str(video_path.resolve())]
         + [str(frame.get("evidence_ref")) for frame in frames if frame.get("evidence_ref")],
         "label_source": "openai_generated_video_frame_judge",
+        "success_label_provenance": GENERATED_VIDEO_VLM_PROVENANCE,
+        "success_label_claim_boundary": SUCCESS_RATE_GENERATED_VIDEO_VLM_CLAIM_BOUNDARY,
+        "success_label_is_physics_or_captured_truth": False,
         "model": model,
         "visual_evidence_used": bool(frames),
         "sampled_frame_count": len(frames),
@@ -386,10 +391,13 @@ def build_openai_wam_success_labels(
         "visual_evidence_used": bool(labels),
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
+        "success_label_provenance": GENERATED_VIDEO_VLM_PROVENANCE,
         "claim_boundary": {
             "success_label_is_from_generated_video_not_physical_robot": True,
             "success_label_does_not_prove_forward_inverse_consistency": True,
             "generated_world_policy_evaluation_scope_proven": False,
+            "success_label_provenance": GENERATED_VIDEO_VLM_PROVENANCE,
+            "success_rate_from_generated_video_vlm_is_not_physics_or_captured_truth": True,
         },
     }
     write_json(resolved_output, manifest)

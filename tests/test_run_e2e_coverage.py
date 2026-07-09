@@ -208,6 +208,75 @@ def test_run_end_to_end_resumes_completed_stage_snapshots(monkeypatch, tmp_path:
     )
 
 
+def test_run_end_to_end_invalidates_resume_when_upstream_input_changes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # R078: a resumed stage must validate that upstream inputs are unchanged before
+    # replaying its cached snapshot. Unchanged inputs reuse the cache; a changed
+    # descriptor invalidates the cache and forces recompute.
+    capture_root = _capture_root(tmp_path)
+    descriptor = capture_root / "capture_descriptor.json"
+    descriptor.write_text('{"rev": 1}', encoding="utf-8")
+    calls = {"preflight": 0, "pipeline": 0, "review": 0}
+
+    def fake_preflight(_root):
+        calls["preflight"] += 1
+        return {"status": "ready"}
+
+    def fake_pipeline(**kwargs):
+        calls["pipeline"] += 1
+        return {"status": "completed", "lanes": [kwargs["lane"]]}
+
+    def fake_review(**_kwargs):
+        calls["review"] += 1
+        return {
+            "artifacts": {"readiness_report": "ready.md"},
+            "final_memo_path": "memo.md",
+            "final_bundle_path": "bundle.zip",
+        }
+
+    monkeypatch.setattr(run_e2e, "build_capture_preflight_report", fake_preflight)
+    monkeypatch.setattr(run_e2e, "run_capture_pipeline", fake_pipeline)
+    monkeypatch.setattr(run_e2e, "run_agent_review", fake_review)
+
+    # First run populates the ledger (each stage runs once).
+    run_e2e.run_end_to_end(capture_root=str(capture_root), provider="openai")
+    assert calls == {"preflight": 1, "pipeline": 1, "review": 1}
+
+    # Resume with UNCHANGED upstream inputs -> cache is reused (no recompute).
+    second = run_e2e.run_end_to_end(
+        capture_root=str(capture_root),
+        provider="openai",
+        resume_completed_stages=True,
+    )
+    assert calls == {"preflight": 1, "pipeline": 1, "review": 1}
+    ledger_second = json.loads(
+        Path(second["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
+    )
+    assert ledger_second["resume_used_count"] == 3
+    assert "resume_invalidated_stages" not in ledger_second
+
+    # Change the upstream descriptor, then resume again. The stale cache must be
+    # invalidated and every stage recomputed rather than serving stale output.
+    descriptor.write_text('{"rev": 2}', encoding="utf-8")
+    third = run_e2e.run_end_to_end(
+        capture_root=str(capture_root),
+        provider="openai",
+        resume_completed_stages=True,
+    )
+    assert calls == {"preflight": 2, "pipeline": 2, "review": 2}
+    assert third["preflight_status"] == "ready"
+    ledger_third = json.loads(
+        Path(third["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
+    )
+    assert ledger_third["resume_invalidated_count"] == 3
+    for stage in ("preflight", "capture_pipeline", "agent_review"):
+        entry = ledger_third["stages"][stage]
+        assert entry["status"] == "completed"
+        assert entry["resume_invalidated"] is True
+        assert entry["resume_invalidated_reason"] == "upstream_input_fingerprint_changed"
+
+
 def test_run_end_to_end_threads_robot_eval_job_and_provider_race_summary(
     monkeypatch,
     tmp_path: Path,

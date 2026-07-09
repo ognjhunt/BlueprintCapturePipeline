@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 from typing import List, Optional
@@ -32,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 RUN_E2E_STAGE_LEDGER_FILENAME = "run_e2e_stage_ledger.json"
 RUN_E2E_STAGE_LEDGER_SCHEMA_VERSION = "run_e2e_stage_ledger.v1"
+RUN_E2E_UPSTREAM_INPUT_FINGERPRINT_SCHEMA_VERSION = (
+    "run_e2e_upstream_input_fingerprint.v1"
+)
 RUN_E2E_STAGE_RESULT_SNAPSHOT_MAX_BYTES = 512_000
 _SENSITIVE_STAGE_SNAPSHOT_KEY_MARKERS = (
     "api_key",
@@ -204,6 +208,127 @@ def _redact_stage_result_snapshot(value: Any) -> Any:
     return value
 
 
+def _sha256_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _run_e2e_upstream_input_fingerprint(context: Any) -> dict[str, Any]:
+    """Fingerprint the capture-root inputs that feed the run_e2e stages.
+
+    Used to guard ``--resume-completed-stages``: a cached stage snapshot is only
+    reused when the upstream inputs it was produced from are unchanged. The
+    equality-relevant ``digest`` is content-hash based (not mtime), so rewriting a
+    file with identical bytes still counts as unchanged, while any real content
+    change invalidates the cache and forces recompute.
+    """
+
+    capture_root = Path(context.capture_root)
+    candidates = (
+        ("capture_descriptor", Path(context.descriptor_path)),
+        ("raw_capture_upload_complete", Path(context.raw_complete_path)),
+        ("raw_manifest", capture_root / "raw" / "manifest.json"),
+    )
+    inputs: list[dict[str, Any]] = []
+    for label, path in candidates:
+        present = path.is_file()
+        entry: dict[str, Any] = {
+            "label": label,
+            "path": str(path),
+            "present": present,
+        }
+        if present:
+            stat = path.stat()
+            entry["sha256"] = _sha256_file(path)
+            entry["size"] = stat.st_size
+            entry["mtime"] = stat.st_mtime
+        inputs.append(entry)
+    material = [
+        {
+            "label": entry["label"],
+            "present": entry["present"],
+            "sha256": entry.get("sha256"),
+            "size": entry.get("size"),
+        }
+        for entry in inputs
+    ]
+    digest = sha256(
+        json.dumps(material, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    return {
+        "schema_version": RUN_E2E_UPSTREAM_INPUT_FINGERPRINT_SCHEMA_VERSION,
+        "digest": digest,
+        "inputs": inputs,
+    }
+
+
+def _stage_upstream_inputs_unchanged(
+    ledger: Mapping[str, Any],
+    *,
+    stage: str,
+    current_input_fingerprint: Mapping[str, Any] | None,
+) -> bool:
+    """Return True only when the stage's cached snapshot came from the same inputs.
+
+    A missing stored fingerprint (legacy ledger written before this guard existed)
+    cannot be proven fresh, so it is treated as changed and the stage recomputes.
+    """
+
+    stages = ledger.get("stages")
+    if not isinstance(stages, Mapping):
+        return False
+    entry = stages.get(stage)
+    if not isinstance(entry, Mapping):
+        return False
+    stored = entry.get("resume_input_fingerprint")
+    if not isinstance(stored, Mapping):
+        return False
+    stored_digest = stored.get("digest")
+    current_digest = (
+        current_input_fingerprint.get("digest")
+        if isinstance(current_input_fingerprint, Mapping)
+        else None
+    )
+    return bool(stored_digest) and stored_digest == current_digest
+
+
+def _invalidate_stale_resume_stage(
+    ledger: dict[str, Any],
+    *,
+    capture_root: Path,
+    stage: str,
+    current_input_fingerprint: Mapping[str, Any] | None,
+) -> None:
+    """Drop a stale cached snapshot so the stage recomputes with fresh inputs."""
+
+    now = utc_now_iso()
+    stages = ledger.setdefault("stages", {})
+    entry = dict(stages.get(stage) if isinstance(stages.get(stage), Mapping) else {})
+    stale_fingerprint = entry.get("resume_input_fingerprint")
+    entry["status"] = "pending"
+    entry["resume_invalidated"] = True
+    entry["resume_invalidated_reason"] = "upstream_input_fingerprint_changed"
+    entry["resume_invalidated_at"] = now
+    if isinstance(stale_fingerprint, Mapping):
+        entry["stale_resume_input_fingerprint"] = dict(stale_fingerprint)
+    if isinstance(current_input_fingerprint, Mapping):
+        entry["current_upstream_input_fingerprint"] = dict(current_input_fingerprint)
+    entry.pop("result_snapshot", None)
+    entry["resume_result_snapshot_available"] = False
+    stages[stage] = entry
+    invalidated = ledger.setdefault("resume_invalidated_stages", [])
+    if stage not in invalidated:
+        invalidated.append(stage)
+    ledger["resume_invalidated_count"] = (
+        int(ledger.get("resume_invalidated_count") or 0) + 1
+    )
+    ledger["updated_at"] = now
+    _write_run_e2e_stage_ledger(capture_root, ledger)
+
+
 def _completed_stage_resume_snapshot(
     ledger: Mapping[str, Any],
     *,
@@ -234,6 +359,7 @@ def _mark_run_e2e_stage(
     artifacts: Mapping[str, Any] | None = None,
     result_snapshot: Any | None = None,
     resume_used: bool = False,
+    input_fingerprint: Mapping[str, Any] | None = None,
     error: BaseException | None = None,
 ) -> None:
     now = utc_now_iso()
@@ -258,6 +384,11 @@ def _mark_run_e2e_stage(
             entry["resume_result_snapshot_available"] = True
         elif "result_snapshot" not in entry:
             entry["resume_result_snapshot_available"] = False
+        # Record the upstream-input fingerprint a fresh snapshot was produced from so
+        # a later --resume-completed-stages run can prove the inputs are unchanged
+        # before reusing it. Do not overwrite when reusing an existing snapshot.
+        if not resume_used and input_fingerprint is not None:
+            entry["resume_input_fingerprint"] = dict(input_fingerprint)
     elif status == "skipped":
         entry["skipped_at"] = now
     elif status == "failed":
@@ -469,6 +600,7 @@ def run_end_to_end(
         run_cosmos_validation=run_cosmos_validation,
     )
     context = resolve_local_capture_context(capture_root)
+    upstream_input_fingerprint = _run_e2e_upstream_input_fingerprint(context)
     robot_eval_requested = bool(robot_eval_job_request or robot_eval_request_inbox)
     resume_requested = _run_e2e_resume_requested(
         run_evaluation_prep=run_evaluation_prep,
@@ -497,6 +629,7 @@ def run_end_to_end(
         if resume_completed_stages:
             stage_ledger["resume_completed_stages_requested"] = True
             stage_ledger["resume_status"] = "no_compatible_completed_stage_ledger"
+    stage_ledger["upstream_input_fingerprint"] = upstream_input_fingerprint
     _write_run_e2e_stage_ledger(context.capture_root, stage_ledger)
 
     def _run_stage(
@@ -508,20 +641,34 @@ def run_end_to_end(
         if resume_completed_stages:
             resumed_result = _completed_stage_resume_snapshot(stage_ledger, stage=stage)
             if resumed_result is not None:
-                _mark_run_e2e_stage(
+                if _stage_upstream_inputs_unchanged(
+                    stage_ledger,
+                    stage=stage,
+                    current_input_fingerprint=upstream_input_fingerprint,
+                ):
+                    _mark_run_e2e_stage(
+                        stage_ledger,
+                        capture_root=context.capture_root,
+                        stage=stage,
+                        status="completed",
+                        detail=_stage_result_status(resumed_result),
+                        result_snapshot=resumed_result,
+                        resume_used=True,
+                    )
+                    stage_ledger["resume_used_count"] = (
+                        int(stage_ledger.get("resume_used_count") or 0) + 1
+                    )
+                    _write_run_e2e_stage_ledger(context.capture_root, stage_ledger)
+                    return resumed_result
+                # Upstream inputs changed since the snapshot was produced: invalidate
+                # the stale cache and fall through to recompute rather than serve
+                # non-reproducible output.
+                _invalidate_stale_resume_stage(
                     stage_ledger,
                     capture_root=context.capture_root,
                     stage=stage,
-                    status="completed",
-                    detail=_stage_result_status(resumed_result),
-                    result_snapshot=resumed_result,
-                    resume_used=True,
+                    current_input_fingerprint=upstream_input_fingerprint,
                 )
-                stage_ledger["resume_used_count"] = (
-                    int(stage_ledger.get("resume_used_count") or 0) + 1
-                )
-                _write_run_e2e_stage_ledger(context.capture_root, stage_ledger)
-                return resumed_result
         _mark_run_e2e_stage(
             stage_ledger,
             capture_root=context.capture_root,
@@ -552,6 +699,7 @@ def run_end_to_end(
             detail=_stage_result_status(stage_result),
             artifacts=artifacts,
             result_snapshot=_json_safe_stage_result_snapshot(stage_result),
+            input_fingerprint=upstream_input_fingerprint,
         )
         return stage_result
 

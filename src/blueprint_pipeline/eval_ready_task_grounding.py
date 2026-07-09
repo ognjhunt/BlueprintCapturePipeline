@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .common import read_json_any, utc_now_iso, write_json
+from .site_taxonomy import resolve_site_type
 
 
 SCHEMA_VERSION = "eval_ready_task_grounding.v1"
@@ -18,6 +19,8 @@ DEFAULT_TASK_TEXT = "turn on the sink right handle"
 DEFAULT_TARGET_LABEL = "right sink handle"
 DEFAULT_HANDLE_AXIS = [0.0, 0.0, 1.0]
 DEFAULT_HANDLE_ON_THRESHOLD_DEG = 35.0
+DEFAULT_PLACEMENT_TOLERANCE_PX = 40.0
+DEFAULT_ZONE_ARRIVAL_TOLERANCE_PX = 60.0
 
 _HANDLE_TOKENS = {"handle", "knob", "lever", "faucet"}
 _SINK_TOKENS = {"sink", "faucet", "tap"}
@@ -67,6 +70,132 @@ _SPATIAL_TOKENS = {
     "top",
     "upper",
 }
+# Industrial (material-handling / pick-place / transfer / delivery) target and
+# action vocabularies. These parallel _HANDLE_TOKENS / _SINK_TOKENS above so that
+# industrial task families get first-class success proxies instead of falling
+# through to manual review.
+_CONTAINER_TOKENS = {
+    "bin",
+    "tote",
+    "container",
+    "receptacle",
+    "crate",
+    "hopper",
+    "carton",
+    "gaylord",
+}
+_PLACEMENT_TARGET_TOKENS = {
+    "pallet",
+    "shelf",
+    "rack",
+    "staging",
+    "kanban",
+    "footprint",
+    "slot",
+    "marker",
+    "zone",
+    "pose",
+    "pad",
+    "location",
+    "position",
+}
+_TRANSFER_TARGET_TOKENS = {
+    "conveyor",
+    "cart",
+    "dock",
+    "station",
+    "line",
+    "lineside",
+    "belt",
+    "chute",
+    "buffer",
+    "handoff",
+}
+_INDUSTRIAL_TARGET_TOKENS = (
+    _CONTAINER_TOKENS | _PLACEMENT_TARGET_TOKENS | _TRANSFER_TARGET_TOKENS
+)
+_CONTAINMENT_ACTION_TOKENS = {
+    "place",
+    "put",
+    "drop",
+    "load",
+    "deposit",
+    "insert",
+    "pack",
+    "stow",
+}
+_PLACEMENT_ACTION_TOKENS = {
+    "place",
+    "stage",
+    "set",
+    "position",
+    "deliver",
+    "put",
+    "stack",
+    "palletize",
+    "align",
+}
+_TRANSFER_ACTION_TOKENS = {
+    "transfer",
+    "deliver",
+    "delivery",
+    "move",
+    "bring",
+    "transport",
+    "route",
+    "handoff",
+    "feed",
+    "load",
+}
+
+# Industrial affordance expansions for detection-prompt augmentation (audit R073).
+# Parallel to the kitchen/home expansions in ``derive_task_aware_detection_prompts``
+# (sink -> "faucet handle"/"water stream", door/drawer -> "handle"), these give
+# industrial/warehouse task text concrete detector sub-targets (tote handles,
+# pallet stringers, rack uprights, conveyor guards, dock-door tracks, forklift
+# hazard markings) instead of only broad environment labels. Keyed BOTH on task
+# tokens (so they fire on any lane) and on the resolved site_taxonomy category
+# (so recognized industrial sites always seed the core affordances).
+_INDUSTRIAL_AFFORDANCE_EXPANSIONS: tuple[tuple[frozenset[str], tuple[str, ...]], ...] = (
+    (
+        frozenset({"tote", "bin", "container", "crate", "carton", "gaylord"}),
+        ("tote", "tote handle", "tote label", "bin opening"),
+    ),
+    (
+        frozenset({"pallet", "palletize", "palletizing"}),
+        ("pallet", "pallet stringer", "pallet jack", "shrink wrap"),
+    ),
+    (
+        frozenset({"rack", "racking", "shelf", "shelving", "kanban"}),
+        ("rack", "rack upright", "shelf label", "shelf edge"),
+    ),
+    (
+        frozenset({"conveyor", "belt", "chute"}),
+        ("conveyor", "conveyor belt", "conveyor guard", "emergency stop"),
+    ),
+    (
+        frozenset({"dock", "gate", "shutter", "rolling", "rollup", "bay"}),
+        ("dock door", "roll-up door", "dock door track", "gate"),
+    ),
+    (
+        frozenset({"forklift", "agv", "amr", "reach truck"}),
+        ("forklift", "forklift forks", "hazard marking", "floor lane marking"),
+    ),
+    (
+        frozenset({"cage", "locker"}),
+        ("cage door", "locker handle", "latch"),
+    ),
+)
+# Core affordances seeded for any recognized industrial site, even when the task
+# text itself is terse. Ordered for deterministic prompt output.
+_INDUSTRIAL_SITE_CORE_AFFORDANCES: tuple[str, ...] = (
+    "tote",
+    "pallet",
+    "rack",
+    "conveyor",
+    "dock door",
+    "forklift",
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -257,6 +386,7 @@ def derive_task_aware_detection_prompts(
     *,
     task_text: str,
     target_label: str = "",
+    site_type: str | None = None,
     max_prompts: int = 18,
 ) -> list[str]:
     """Build detector prompts directly from customer task text.
@@ -264,6 +394,13 @@ def derive_task_aware_detection_prompts(
     This keeps object extraction scene-unspecific: early customers can provide
     arbitrary tasks, and the object-index backends still get concrete task
     targets instead of only broad environment labels.
+
+    ``site_type`` is optional free-text (e.g. a capture environment hint or a
+    site-type field); when it resolves to an industrial category via
+    ``site_taxonomy.resolve_site_type`` the core industrial affordances are
+    seeded even for terse task text. Industrial affordance expansions (audit
+    R073) also fire directly off task tokens, so they apply regardless of whether
+    a site type is supplied — mirroring the kitchen/home token expansions below.
     """
 
     prompts: list[str] = []
@@ -302,6 +439,19 @@ def derive_task_aware_detection_prompts(
             add(f"{modifier} switch")
     if token_set & {"door", "drawer", "cabinet"}:
         add("handle")
+    # Industrial affordance expansions (audit R073): fire off task tokens so the
+    # detector gets concrete site sub-targets, not just broad environment labels.
+    for trigger_tokens, expansions in _INDUSTRIAL_AFFORDANCE_EXPANSIONS:
+        if token_set & trigger_tokens:
+            for expansion in expansions:
+                add(expansion)
+    # Site-taxonomy-keyed seeding: a recognized industrial site always gets the
+    # core industrial affordances even when the task text alone is terse.
+    if site_type:
+        resolution = resolve_site_type(site_type)
+        if resolution.is_industrial:
+            for affordance in _INDUSTRIAL_SITE_CORE_AFFORDANCES:
+                add(affordance)
     return prompts[:max_prompts]
 
 
@@ -1020,6 +1170,237 @@ def _build_articulated_handle_proxy(
     }
 
 
+def _requires_containment_proxy(*, task_text: str, target_label: str) -> bool:
+    """Route pick-place tasks (e.g. place_object_into_bin) to a containment proxy."""
+    tokens = _tokens(task_text, target_label)
+    container = tokens & _CONTAINER_TOKENS
+    action = tokens & _CONTAINMENT_ACTION_TOKENS
+    return bool(container and action)
+
+
+def _requires_placement_at_target_proxy(*, task_text: str, target_label: str) -> bool:
+    """Route placement/staging tasks to a placement-at-target proxy."""
+    tokens = _tokens(task_text, target_label)
+    placement_target = tokens & _PLACEMENT_TARGET_TOKENS
+    action = tokens & _PLACEMENT_ACTION_TOKENS
+    return bool(placement_target and action)
+
+
+def _requires_transfer_zone_arrival_proxy(*, task_text: str, target_label: str) -> bool:
+    """Route material-handling/transfer/line-side delivery tasks to a zone-arrival proxy."""
+    tokens = _tokens(task_text, target_label)
+    transfer_target = tokens & _TRANSFER_TARGET_TOKENS
+    action = tokens & _TRANSFER_ACTION_TOKENS
+    return bool(transfer_target and action)
+
+
+def _select_industrial_reference(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    token_set: set[str],
+    exclude_object_id: str = "",
+) -> dict[str, Any] | None:
+    """Pick the first candidate whose label/id matches an industrial reference term.
+
+    Candidates are already sorted deterministically by the target selector, so the
+    receptacle/target-zone/destination-zone reference is stable and CPU-only.
+    """
+    for row in candidates:
+        if not isinstance(row, Mapping):
+            continue
+        object_id = _string(row.get("object_id"))
+        if object_id and object_id == exclude_object_id:
+            continue
+        if _tokens(row.get("label"), object_id) & token_set:
+            return dict(row)
+    return None
+
+
+def _build_containment_proxy(
+    *,
+    target: Mapping[str, Any] | None,
+    receptacle: Mapping[str, Any] | None,
+    task_text: str,
+    target_label: str,
+) -> dict[str, Any]:
+    if not _requires_containment_proxy(task_text=task_text, target_label=target_label):
+        return {
+            "available": False,
+            "state_check_configured": False,
+            "reason": "task_does_not_request_containment_proxy",
+        }
+    target_id = _string(target.get("object_id")) if target else "unresolved_placed_object"
+    receptacle_id = _string(receptacle.get("object_id")) if receptacle else "unresolved_receptacle"
+    receptacle_center, receptacle_radius = _bbox_center_and_radius(receptacle)
+    return {
+        "schema_version": "containment_proxy.v1",
+        "available": True,
+        "state_check_configured": True,
+        "proxy_type": "containment_in_receptacle",
+        "target_object_id": target_id,
+        "receptacle_object_id": receptacle_id,
+        "success_rule": "moved_object_centroid_inside_receptacle_aabb",
+        "receptacle_center_px": receptacle_center,
+        "receptacle_radius_px": receptacle_radius,
+        "initial_containment": "outside_or_unknown",
+        "state_success_proven": False,
+        "state_truth_source": "proxy_contract_only_no_measured_containment_state",
+        "claim_boundary": {
+            "proxy_is_not_real_containment_proof": True,
+            "measured_object_and_receptacle_pose_required_for_exact_success": True,
+            "physical_drop_settle_and_stability_not_validated": True,
+        },
+    }
+
+
+def _build_placement_at_target_proxy(
+    *,
+    target: Mapping[str, Any] | None,
+    target_zone: Mapping[str, Any] | None,
+    task_text: str,
+    target_label: str,
+    placement_tolerance_px: float,
+) -> dict[str, Any]:
+    if not _requires_placement_at_target_proxy(task_text=task_text, target_label=target_label):
+        return {
+            "available": False,
+            "state_check_configured": False,
+            "reason": "task_does_not_request_placement_at_target_proxy",
+        }
+    target_id = _string(target.get("object_id")) if target else "unresolved_placed_object"
+    zone_id = _string(target_zone.get("object_id")) if target_zone else "unresolved_target_zone"
+    zone_center, zone_radius = _bbox_center_and_radius(target_zone)
+    tolerance = _safe_float(placement_tolerance_px, DEFAULT_PLACEMENT_TOLERANCE_PX)
+    return {
+        "schema_version": "placement_at_target_proxy.v1",
+        "available": True,
+        "state_check_configured": True,
+        "proxy_type": "placement_at_target_pose",
+        "target_object_id": target_id,
+        "target_zone_object_id": zone_id,
+        "success_rule": "moved_object_within_tolerance_of_target_zone_or_pose",
+        "placement_tolerance_px": tolerance,
+        "target_zone_center_px": zone_center,
+        "target_zone_radius_px": zone_radius,
+        "initial_placement": "unplaced_or_unknown",
+        "state_success_proven": False,
+        "state_truth_source": "proxy_contract_only_no_measured_placement_state",
+        "claim_boundary": {
+            "proxy_is_not_real_placement_proof": True,
+            "measured_object_and_target_pose_required_for_exact_success": True,
+            "physical_placement_and_stability_not_validated": True,
+        },
+    }
+
+
+def _build_transfer_zone_arrival_proxy(
+    *,
+    target: Mapping[str, Any] | None,
+    destination_zone: Mapping[str, Any] | None,
+    task_text: str,
+    target_label: str,
+    arrival_tolerance_px: float,
+) -> dict[str, Any]:
+    if not _requires_transfer_zone_arrival_proxy(task_text=task_text, target_label=target_label):
+        return {
+            "available": False,
+            "state_check_configured": False,
+            "reason": "task_does_not_request_transfer_zone_arrival_proxy",
+        }
+    target_id = _string(target.get("object_id")) if target else "unresolved_transfer_object"
+    destination_id = (
+        _string(destination_zone.get("object_id")) if destination_zone else "unresolved_destination_zone"
+    )
+    zone_center, zone_radius = _bbox_center_and_radius(destination_zone)
+    tolerance = _safe_float(arrival_tolerance_px, DEFAULT_ZONE_ARRIVAL_TOLERANCE_PX)
+    return {
+        "schema_version": "transfer_zone_arrival_proxy.v1",
+        "available": True,
+        "state_check_configured": True,
+        "proxy_type": "transfer_zone_arrival",
+        "target_object_id": target_id,
+        "destination_zone_object_id": destination_id,
+        "success_rule": "moved_object_or_end_effector_reaches_destination_zone",
+        "arrival_tolerance_px": tolerance,
+        "destination_zone_center_px": zone_center,
+        "destination_zone_radius_px": zone_radius,
+        "initial_zone_state": "not_arrived_or_unknown",
+        "state_success_proven": False,
+        "state_truth_source": "proxy_contract_only_no_measured_zone_arrival_state",
+        "claim_boundary": {
+            "proxy_is_not_real_transfer_proof": True,
+            "measured_object_or_end_effector_pose_required_for_exact_success": True,
+            "physical_handoff_and_delivery_not_validated": True,
+        },
+    }
+
+
+def _build_industrial_success_proxies(
+    *,
+    selected: Mapping[str, Any] | None,
+    candidates: Sequence[Mapping[str, Any]],
+    task_text: str,
+    target_label: str,
+    placement_tolerance_px: float = DEFAULT_PLACEMENT_TOLERANCE_PX,
+    zone_arrival_tolerance_px: float = DEFAULT_ZONE_ARRIVAL_TOLERANCE_PX,
+) -> dict[str, Any]:
+    """Build industrial task-success proxies parallel to the articulated handle proxy.
+
+    These give material-handling, pick-place, transfer, and line-side delivery task
+    families first-class success grounding instead of falling through to manual
+    review. Like the handle proxy, they are review-input grounding and never assert
+    physical success (``state_success_proven`` stays ``False``).
+    """
+    selected_id = _string(selected.get("object_id")) if selected else ""
+    receptacle = _select_industrial_reference(
+        candidates, token_set=_CONTAINER_TOKENS, exclude_object_id=selected_id
+    )
+    target_zone = _select_industrial_reference(
+        candidates, token_set=_PLACEMENT_TARGET_TOKENS, exclude_object_id=selected_id
+    )
+    destination_zone = _select_industrial_reference(
+        candidates, token_set=_TRANSFER_TARGET_TOKENS, exclude_object_id=selected_id
+    )
+    containment = _build_containment_proxy(
+        target=selected,
+        receptacle=receptacle,
+        task_text=task_text,
+        target_label=target_label,
+    )
+    placement_at_target = _build_placement_at_target_proxy(
+        target=selected,
+        target_zone=target_zone,
+        task_text=task_text,
+        target_label=target_label,
+        placement_tolerance_px=placement_tolerance_px,
+    )
+    transfer_zone_arrival = _build_transfer_zone_arrival_proxy(
+        target=selected,
+        destination_zone=destination_zone,
+        task_text=task_text,
+        target_label=target_label,
+        arrival_tolerance_px=zone_arrival_tolerance_px,
+    )
+    active = [
+        proxy
+        for proxy in (containment, placement_at_target, transfer_zone_arrival)
+        if proxy.get("available")
+    ]
+    return {
+        "schema_version": "industrial_state_proxies.v1",
+        "any_configured": bool(active),
+        "active_proxy_types": [proxy.get("proxy_type") for proxy in active],
+        "containment": containment,
+        "placement_at_target": placement_at_target,
+        "transfer_zone_arrival": transfer_zone_arrival,
+        "claim_boundary": {
+            "industrial_proxies_are_review_input_grounding_not_physical_success_proof": True,
+            "measured_object_receptacle_and_zone_state_required_for_exact_success": True,
+            "simulator_physics_contact_validated": False,
+        },
+    }
+
+
 def _load_task_anchor(capture_root: Path, *, task_id: str, selected_target_id: str) -> dict[str, Any]:
     manifest = _read_optional_mapping(capture_root / "pipeline" / "evaluation_prep" / "task_anchor_manifest.json")
     for task in manifest.get("tasks", []) if isinstance(manifest.get("tasks"), list) else []:
@@ -1135,6 +1516,12 @@ def build_eval_ready_task_grounding(
         handle_axis=handle_axis,
         on_threshold_deg=handle_on_threshold_deg,
     )
+    industrial_proxies = _build_industrial_success_proxies(
+        selected=selected,
+        candidates=candidates,
+        task_text=task_text,
+        target_label=target_label,
+    )
     output = (
         Path(output_path).expanduser().resolve()
         if output_path is not None
@@ -1237,6 +1624,16 @@ def build_eval_ready_task_grounding(
             "reject skeleton projections that miss the selected target region",
             "reject impossible rollouts with obvious kinematic discontinuities or target mismatch",
         ]
+    if industrial_proxies.get("any_configured"):
+        vlm_or_human_review_checks = vlm_or_human_review_checks + [
+            "moved object visibly ends inside the target bin/tote or at the target zone",
+            "no drop, wrong-object, or wrong-destination event is visible in the rollout",
+        ]
+        deterministic_or_lightweight_checks = deterministic_or_lightweight_checks + [
+            "check the moved object reaches its receptacle, target zone, or destination region in the projected frame",
+            "reject rollouts where the moved object never enters the containment or destination region",
+            "score containment/placement/arrival only from measured object and zone state when available",
+        ]
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -1287,6 +1684,7 @@ def build_eval_ready_task_grounding(
             "projection_confidence": fk_projection.get("projection_confidence"),
         },
         "articulated_state_proxy": proxy,
+        "industrial_state_proxies": industrial_proxies,
         "camera_calibration_quality_gate": calibration_gate,
         "robot_fk_projection": fk_projection,
         "handle_proxy_state_check": handle_proxy_state_check,
@@ -1312,6 +1710,8 @@ def build_eval_ready_task_grounding(
             "state_check_configured": bool(proxy.get("state_check_configured")),
             "handle_proxy_state": handle_proxy_state_check.get("handle_proxy_state"),
             "handle_proxy_on_candidate": bool(handle_proxy_state_check.get("on_candidate")),
+            "industrial_proxy_configured": bool(industrial_proxies.get("any_configured")),
+            "industrial_proxy_types": industrial_proxies.get("active_proxy_types", []),
             "exact_task_success_proven": False,
             "physical_contact_validated": False,
             "real_world_readiness_proven": False,

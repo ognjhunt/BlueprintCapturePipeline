@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from .common import ensure_dir, read_json_any, write_json, write_text
 from .local_capture import resolve_local_capture_context
+from .site_taxonomy import SITE_TAXONOMY_VERSION, resolve_site_type
 
 ROBOT_EVAL_DATASET_SCHEMA_VERSION = "real_site_robot_eval_dataset_manifest.v1"
 ROBOT_EVAL_DATASET_V01_SCHEMA_VERSION = "real_site_robot_eval_dataset_manifest.v0.1"
@@ -331,6 +332,116 @@ SCENARIO_VARIATION_DEFINITIONS: List[Dict[str, Any]] = [
         "default_status": "agent-inferred-needs-review",
     },
 ]
+
+# Factory / manufacturing hazard variation axes (audit R013). Kept SEPARATE from
+# the stable, warehouse/logistics-leaning SCENARIO_VARIATION_DEFINITIONS base so
+# location-type profiles can compose them without changing the base scenario-
+# family contract or the default required-variation set.
+FACTORY_HAZARD_VARIATION_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "variation_id": "conveyor_motion",
+        "label": "Conveyor in motion",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "machine_guarding_state",
+        "label": "Machine guarding state",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "agv_cross_traffic",
+        "label": "AGV cross traffic",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "thermal_surface",
+        "label": "Hot / thermal surface nearby",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "moving_part_on_line",
+        "label": "Moving part on the line",
+        "default_status": "agent-inferred-needs-review",
+    },
+]
+
+_BASE_VARIATION_NAMES: List[str] = [
+    definition["variation_id"] for definition in SCENARIO_VARIATION_DEFINITIONS
+]
+_FACTORY_VARIATION_NAMES: List[str] = [
+    definition["variation_id"] for definition in FACTORY_HAZARD_VARIATION_DEFINITIONS
+]
+_ALL_VARIATION_DEFINITIONS_BY_ID: Dict[str, Dict[str, Any]] = {
+    definition["variation_id"]: definition
+    for definition in (*SCENARIO_VARIATION_DEFINITIONS, *FACTORY_HAZARD_VARIATION_DEFINITIONS)
+}
+
+# Location-type-scoped required-variation profiles keyed on the canonical site
+# category (see blueprint_pipeline.site_taxonomy). A warehouse capture is not
+# forced to cover factory-only hazards, and a factory capture is no longer
+# silently missing conveyor/AGV/guarding/thermal axes. "default"/"warehouse"/
+# "stockroom" preserve the historical full logistics set for backward
+# compatibility with existing scenario-family artifacts.
+SITE_CATEGORY_VARIATION_PROFILES: Dict[str, List[str]] = {
+    "default": list(_BASE_VARIATION_NAMES),
+    "warehouse": list(_BASE_VARIATION_NAMES),
+    "stockroom": list(_BASE_VARIATION_NAMES),
+    "cold_storage": [*_BASE_VARIATION_NAMES, "thermal_surface"],
+    "manufacturing": [
+        "lighting_variation",
+        "object_rotation",
+        "occlusion",
+        "glare",
+        "missing_label",
+        "wrong_object_nearby",
+        "narrow_approach_angle",
+        "blocked_path",
+        "human_crossing",
+        *_FACTORY_VARIATION_NAMES,
+    ],
+    "kitchen": [
+        "lighting_variation",
+        "object_rotation",
+        "occlusion",
+        "glare",
+        "missing_label",
+        "wrong_object_nearby",
+        "narrow_approach_angle",
+        "blocked_path",
+        "human_crossing",
+    ],
+    "residential": [
+        "lighting_variation",
+        "object_rotation",
+        "occlusion",
+        "glare",
+        "narrow_approach_angle",
+        "blocked_path",
+        "human_crossing",
+    ],
+}
+
+
+def required_variation_names_for_site_category(category: Optional[str]) -> List[str]:
+    """Required scenario-variation axes for a canonical site category.
+
+    Falls back to the historical full logistics set for unknown / None /
+    'default' / 'warehouse'. Never raises.
+    """
+
+    key = str(category or "").strip().lower()
+    return list(
+        SITE_CATEGORY_VARIATION_PROFILES.get(
+            key, SITE_CATEGORY_VARIATION_PROFILES["default"]
+        )
+    )
+
+
+def variation_definition_for(variation_id: str) -> Optional[Dict[str, Any]]:
+    """Return the definition (base or factory) for a variation id, if known."""
+
+    return _ALL_VARIATION_DEFINITIONS_BY_ID.get(str(variation_id or "").strip())
+
 
 SCORING_METRIC_DEFINITIONS: List[Dict[str, Any]] = [
     {
@@ -1652,6 +1763,15 @@ def _scenario_family_library(
         "variation_names_required": [
             definition["variation_id"] for definition in SCENARIO_VARIATION_DEFINITIONS
         ],
+        # Additive (audit R013): location-type-scoped required-variation profiles
+        # so the closure/eval can require factory hazards for factory sites and
+        # skip forklift-only axes for home/kitchen sites. The base
+        # variation_names_required above is unchanged for backward compatibility.
+        "site_category_variation_profiles": {
+            category: list(names)
+            for category, names in SITE_CATEGORY_VARIATION_PROFILES.items()
+        },
+        "factory_hazard_variation_names": list(_FACTORY_VARIATION_NAMES),
         "families": sorted(families, key=lambda item: item["family_id"]),
         "cosmos_or_simulator_proof_claim_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
@@ -2824,6 +2944,71 @@ def _collision_backend_labels(
     }
 
 
+_SITE_EXTENT_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("approx_floor_area_m2", "float", "square_meters"),
+    ("ceiling_height_m", "float", "meters"),
+    ("floor_count", "int", "count"),
+    ("dominant_aisle_width_m", "float", "meters"),
+)
+
+
+def _site_extent_value(raw: Any, kind: str) -> Any:
+    """Coerce a declared site-extent value, returning None when absent/blank/invalid."""
+
+    if raw is None:
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        return int(float(raw)) if kind == "int" else float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _site_extent(
+    *,
+    raw_manifest: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Site scale/dimensional capture truth (R017).
+
+    Warehouses/factories are defined by scale (floor area, ceiling height, aisle
+    width, floor count). These values are declared or measured capture inputs,
+    not derived or verified claims. Sourced from the capture manifest first, then
+    operator-supplied site metadata; absent values are marked
+    ``needs_capture_or_operator_input`` rather than fabricated.
+    """
+
+    values: Dict[str, Any] = {}
+    units: Dict[str, str] = {}
+    sources: Dict[str, str] = {}
+    any_present = False
+    for key, kind, unit in _SITE_EXTENT_FIELDS:
+        units[key] = unit
+        value = _site_extent_value(raw_manifest.get(key), kind)
+        source = "capture_manifest"
+        if value is None:
+            value = _site_extent_value(metadata.get(key), kind)
+            source = "site_operator_metadata"
+        if value is None:
+            source = "needs_capture_or_operator_input"
+        else:
+            any_present = True
+        values[key] = value
+        sources[key] = source
+    return {
+        **values,
+        "units": units,
+        "sources": sources,
+        "status": "declared_present" if any_present else "needs_capture_or_operator_input",
+        "label_source": "capture_manifest_or_site_operator_metadata",
+        "claim_boundary": (
+            "site_extent_values_are_declared_or_measured_capture_inputs_"
+            "not_derived_or_verified_claims"
+        ),
+    }
+
+
 def _site_card(
     *,
     context: Any,
@@ -2961,6 +3146,14 @@ def _site_card(
         "capture_id": context.capture_id,
         "site_id": _site_id_from_inputs(descriptor, raw_manifest),
         "site_type": site_type,
+        # Canonical, versioned taxonomy classification (shared with capture and
+        # episode_spec) alongside the free-text descriptor above. Lets buyers/ops
+        # filter by industrial vs non-industrial and makes an unrecognized site
+        # type explicit rather than a silent fallback.
+        "site_category": resolve_site_type(site_type).category,
+        "site_category_recognized": resolve_site_type(site_type).recognized,
+        "is_industrial_site": resolve_site_type(site_type).is_industrial,
+        "site_taxonomy_version": SITE_TAXONOMY_VERSION,
         "site_type_allowed_values": [
             "warehouse aisle",
             "loading dock",
@@ -2970,6 +3163,9 @@ def _site_card(
             "captured indoor scene",
         ],
         "geometry": geometry_summary,
+        # Site scale/dimensional capture truth (R017). Additive block; existing
+        # geometry/scale fields are unchanged. Declared/measured inputs only.
+        "site_extent": _site_extent(raw_manifest=raw_manifest, metadata=metadata),
         "visual_conditions": _condition_cards(
             metadata,
             ["lighting", "glare", "clutter", "signage", "reflective_surfaces"],

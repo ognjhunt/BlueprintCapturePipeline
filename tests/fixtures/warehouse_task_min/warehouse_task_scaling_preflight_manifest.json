@@ -1,0 +1,102 @@
+{
+  "claim_boundary": "A passed local preflight means the task is eligible for the paid WAM pipeline. It is not generated-video success, SAM3/DA3 completion, manipulation success, deployment approval, or physical robot readiness.",
+  "dry_render_command_result": "tests/fixtures/warehouse_task_min/dry_render_command_result.json",
+  "g1_usd": null,
+  "kitchen_asset_materialization": {
+    "handoff_manifest": "tests/fixtures/warehouse_task_min/assets/handoff_manifest.json",
+    "scene_usd_path": "tests/fixtures/warehouse_task_min/assets/WarehouseFloor.usd",
+    "status": "complete"
+  },
+  "kitchen_usd": "tests/fixtures/warehouse_task_min/assets/WarehouseFloor.usd",
+  "local_preflight_status": "passed",
+  "min_scene_objects": 20,
+  "next_step": "eligible_for_tote_to_bin_wam_run",
+  "request_path": "tests/fixtures/warehouse_task_min/warehouse_task_scaling_request.json",
+  "schema_version": "kitchen_task_scaling_preflight.v1",
+  "seed_media_preferences": {
+    "robot_material_mode": "neutral_matte_untextured_g1",
+    "robot_review_material_override": true
+  },
+  "status": "passed_local_preflight",
+  "tasks": [
+    {
+      "artifacts": {
+        "dry_render_preview": "tests/fixtures/warehouse_task_min/dry_render/fixture_warehouse_task_01_tote_to_bin/dry_render_preview.png",
+        "dry_render_summary": "tests/fixtures/warehouse_task_min/dry_render/fixture_warehouse_task_01_tote_to_bin/dry_render_summary.json",
+        "manipulation_pov_geometry": "tests/fixtures/warehouse_task_min/dry_render/fixture_warehouse_task_01_tote_to_bin/manipulation_pov_geometry.json",
+        "placement_validation": "tests/fixtures/warehouse_task_min/dry_render/fixture_warehouse_task_01_tote_to_bin/placement_validation.json",
+        "task_stance_plan": "tests/fixtures/warehouse_task_min/dry_render/fixture_warehouse_task_01_tote_to_bin/task_stance_plan.json"
+      },
+      "claim_boundary": "Local preflight gates placement, target resolution, and manipulation seed framing. Static reach feasibility is USD/sim geometry; SAM3/DA3 can refine target/mask/depth evidence when configured, but it does not prove contact, WAM visual success, manipulation success, deployment readiness, or physical robot safety.",
+      "description": "Stand at the pick shelf and place the tote into the staging bin.",
+      "downstream_gates": [
+        {
+          "evidence": {
+            "reason": "not_run_by_local_no_spend_preflight"
+          },
+          "name": "WAM completes without edge/entropy collapse",
+          "status": "PENDING"
+        },
+        {
+          "evidence": {
+            "reason": "not_run_by_local_no_spend_preflight"
+          },
+          "name": "SAM3/DA3 post-harness completes if configured",
+          "status": "PENDING"
+        }
+      ],
+      "local_gates": [
+        {
+          "evidence": {
+            "path": "tests/fixtures/warehouse_task_min/dry_render/fixture_warehouse_task_01_tote_to_bin/task_stance_plan.json",
+            "status": "accepted"
+          },
+          "name": "task_stance_plan.status = accepted",
+          "status": "PASS"
+        },
+        {
+          "evidence": {
+            "path": "tests/fixtures/warehouse_task_min/dry_render/fixture_warehouse_task_01_tote_to_bin/placement_validation.json",
+            "status": "PASS"
+          },
+          "name": "placement_validation.status = PASS",
+          "status": "PASS"
+        },
+        {
+          "evidence": {
+            "selected_prim_path": "/root/PickShelf042_01/PickShelf042_staging_bin",
+            "target_object_id": "tote"
+          },
+          "name": "target resolves semantically",
+          "status": "PASS"
+        }
+      ],
+      "reachability_evidence": {
+        "affordance_resolution": {
+          "matches_considered": [
+            {
+              "bbox_max_xyz": [2.812331, 1.104922, 0.973858],
+              "bbox_min_xyz": [2.612351, 0.900669, 0.72909],
+              "center_xyz": [2.712341, 1.002795, 0.851474],
+              "match_kind": "ancestor_or_text_match",
+              "prim_path": "/root/PickShelf042_01/PickShelf042_staging_bin",
+              "target_object_id": "tote",
+              "target_object_priority": 0
+            }
+          ],
+          "selected_prim_path": "/root/PickShelf042_01/PickShelf042_staging_bin"
+        },
+        "authority": "usd_static_geometry",
+        "sam3_da3_role": "optional_refinement_only",
+        "status": "PASS"
+      },
+      "scenario_id": "fixture_warehouse_task_01_tote_to_bin",
+      "schema_version": "kitchen_task_scaling_local_gates.v1",
+      "status": "passed",
+      "task_dir": "tests/fixtures/warehouse_task_min/dry_render/fixture_warehouse_task_01_tote_to_bin",
+      "task_id": "tote_to_bin",
+      "zone": "lower_front_manipulation"
+    }
+  ],
+  "wam_pipeline_status": "not_run"
+}

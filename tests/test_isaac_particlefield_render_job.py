@@ -41,6 +41,51 @@ def test_docker_start_cmd_is_robust_and_invokes_runner() -> None:
     assert "while True:" in body and "putout()" in body
 
 
+def test_docker_start_cmd_bakes_pod_side_ttl_self_kill_watchdog() -> None:
+    # R056(b): a booted render pod whose launching host died must self-terminate so
+    # it stops billing. The bootstrap carries an env-gated hard-TTL self-kill.
+    import ast
+
+    body = docker_start_cmd()[1]
+    assert render_job.EXTERNAL_WATCHDOG_TTL_ENV in body
+    assert "os._exit" in body
+    assert "watchdog_self_terminate" in body
+    # The embedded bootstrap python stays syntactically valid with the watchdog added.
+    ast.parse(render_job.BOOTSTRAP)
+
+
+def test_env_sets_watchdog_ttl_by_default_and_can_disable() -> None:
+    env = render_job._env_for(
+        "https://b", "https://p", "cameras.json",
+        width=1280, height=960, subframes=8, rt_subframes=64, warmup=30,
+    )
+    assert env[render_job.EXTERNAL_WATCHDOG_TTL_ENV] == str(
+        render_job.DEFAULT_EXTERNAL_WATCHDOG_TTL_SECONDS
+    )
+    # Sane default: the pod-side TTL is far above the host watch/stall windows, so a
+    # healthy monitored render is never self-killed — only a host-orphaned pod is.
+    assert render_job.DEFAULT_EXTERNAL_WATCHDOG_TTL_SECONDS > (
+        render_job.DEFAULT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS
+    )
+    disabled = render_job._env_for(
+        "https://b", "https://p", "cameras.json",
+        width=1280, height=960, subframes=8, rt_subframes=64, warmup=30,
+        watchdog_ttl_seconds=0,
+    )
+    assert render_job.EXTERNAL_WATCHDOG_TTL_ENV not in disabled
+
+
+def test_build_render_launch_spec_env_carries_watchdog_ttl(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+    spec = render_job.build_render_launch_spec(jd, image="img:tag", cameras_file="cameras.json")
+    assert spec.env[render_job.EXTERNAL_WATCHDOG_TTL_ENV] == str(
+        render_job.DEFAULT_EXTERNAL_WATCHDOG_TTL_SECONDS
+    )
+
+
 def test_build_render_bundle_contains_all_inputs(tmp_path: Path) -> None:
     usdc = tmp_path / "scene_particlefield.usdc"
     usdc.write_bytes(b"#usdc-fake")

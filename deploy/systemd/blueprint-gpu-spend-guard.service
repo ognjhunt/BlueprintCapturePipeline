@@ -1,0 +1,19 @@
+[Unit]
+Description=Blueprint GPU spend guard — reap orphaned GPU pods and snapshot spend
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_GPU_SPEND_GUARD_SNAPSHOT_PATH=/var/lib/blueprint/gpu-spend-guard/gpu_spend_guard_snapshot.json
+Environment=BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOT_SECONDS=480
+Environment=BLUEPRINT_GPU_ORPHAN_BOOTED_MAX_AGE_SECONDS=21600
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && snapshot="$${BLUEPRINT_GPU_SPEND_GUARD_SNAPSHOT_PATH:-/var/lib/blueprint/gpu-spend-guard/gpu_spend_guard_snapshot.json}" && mkdir -p "$$(dirname "$${snapshot}")" && max_boot="$${BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOT_SECONDS:-480}" && orphan_age="$${BLUEPRINT_GPU_ORPHAN_BOOTED_MAX_AGE_SECONDS:-21600}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python scripts/gpu_spend_guard.py --reap --max-boot-seconds "$${max_boot}" --orphan-booted-max-age-seconds "$${orphan_age}" --json-report "$${snapshot}"; fi; exec env PYTHONPATH=src python3 scripts/gpu_spend_guard.py --reap --max-boot-seconds "$${max_boot}" --orphan-booted-max-age-seconds "$${orphan_age}" --json-report "$${snapshot}"'
+ExecStartPost=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && exec /bin/bash deploy/systemd/blueprint-gpu-spend-guard-postchecks.sh'
+Nice=5
+NoNewPrivileges=true
+PrivateTmp=true

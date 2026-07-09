@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping, Sequence
 
 from .common import parse_bool, utc_now_iso
+from .site_taxonomy import resolve_site_type
 
 
 def _string_list(value: object) -> list[str]:
@@ -58,6 +59,53 @@ KNOWN_CONSENT_USE_CLASSES = frozenset(
     }
 )
 
+# R011: access tokens that explicitly mark a site as non-public / restricted.
+# A private-but-not-industrial site (e.g. a gated facility) still requires an
+# operator authorization before a bare "policy_only" consent claim can clear.
+PRIVATE_SITE_ACCESS_TOKENS = frozenset(
+    {"private", "restricted", "non_public", "non-public", "nonpublic", "gated"}
+)
+
+
+def _private_property_signal(
+    rights: Mapping[str, Any], privacy: Mapping[str, Any]
+) -> bool:
+    """True when the packet explicitly flags a non-public / private-property site.
+
+    R011: industrial-ness (warehouses/factories) already forces operator
+    authorization for ``policy_only``, but a site can be private without being
+    industrial. An explicit private/restricted flag — a boolean, a ``site_access``
+    value, or ``publicly_accessible=False`` — is treated as requiring
+    documentation. This is a *positive* signal only: absence of any flag keeps the
+    prior public-site behavior (policy_only self-clears), so it is backward
+    compatible with captures that never declared access.
+    """
+
+    for source in (rights, privacy):
+        if not isinstance(source, Mapping):
+            continue
+        for flag_key in ("private_property", "private_site", "restricted_access"):
+            if parse_bool(source.get(flag_key), default=False):
+                return True
+        access = (
+            str(
+                source.get("site_access")
+                or source.get("access_type")
+                or source.get("access")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        if access in PRIVATE_SITE_ACCESS_TOKENS:
+            return True
+        publicly_accessible = source.get("publicly_accessible")
+        if publicly_accessible is not None and not parse_bool(
+            publicly_accessible, default=True
+        ):
+            return True
+    return False
+
 
 def build_rights_provenance_review(
     *,
@@ -68,6 +116,7 @@ def build_rights_provenance_review(
     adjacent_systems: Sequence[str] | None,
     artifact_uris: Mapping[str, Any] | None = None,
     required_use_classes: Sequence[str] | None = None,
+    site_type: str | None = None,
 ) -> Dict[str, Any]:
     rights = dict(rights_summary or {})
     privacy = dict(privacy_processing or {})
@@ -110,11 +159,42 @@ def build_rights_provenance_review(
         or bool(str(rights.get("consent_revoked_at") or "").strip())
     )
 
-    # A "documented" consent claim without the document itself is an incomplete
-    # rights packet, not documented consent — it must not clear.
-    consent_evidence_complete = consent_status == "policy_only" or (
-        consent_status == "documented" and bool(permission_document_uri)
+    # Resolve site classification once, up front, so both the consent-authorization
+    # gate (R011, below) and the privacy-coverage gate (R010, further down) key off
+    # the same industrial signal. Industrial-ness is derived from the site_type text
+    # and/or the privacy manifest's own ``is_industrial_site`` flag, so both gates
+    # hold whether or not site_type is threaded through the call.
+    site_type_resolution = resolve_site_type(site_type)
+    is_industrial_site = site_type_resolution.is_industrial or parse_bool(
+        privacy.get("is_industrial_site"), default=False
     )
+
+    # R011: a bare "policy_only" consent claim previously self-cleared the
+    # consent-evidence gate with zero operator permission document. That is only
+    # defensible for public / publicly-accessible sites. Industrial sites
+    # (warehouses/factories/cold storage/stockrooms) and any explicitly
+    # private/restricted property require an actual operator authorization — a
+    # permission document OR an explicit lawful-basis attestation — before
+    # policy_only may clear. Public/unknown sites keep clearing on policy_only.
+    private_property_signal = _private_property_signal(rights, privacy)
+    site_requires_operator_authorization = is_industrial_site or private_property_signal
+    lawful_basis_attestation = str(rights.get("lawful_basis_attestation") or "").strip()
+    operator_authorization_present = bool(permission_document_uri) or bool(
+        lawful_basis_attestation
+    )
+    policy_only_insufficient = (
+        consent_status == "policy_only"
+        and site_requires_operator_authorization
+        and not operator_authorization_present
+    )
+
+    # A "documented" consent claim without the document itself is an incomplete
+    # rights packet, not documented consent — it must not clear. A "policy_only"
+    # claim only self-clears for public sites (see R011 above); on industrial or
+    # private/restricted sites it needs operator authorization.
+    consent_evidence_complete = (
+        consent_status == "policy_only" and not policy_only_insufficient
+    ) or (consent_status == "documented" and bool(permission_document_uri))
 
     # Use-class scope enforcement: when the caller declares what the artifact
     # is for (e.g. "robot_evaluation", "model_training", "derived_generation"),
@@ -149,17 +229,27 @@ def build_rights_provenance_review(
         "face_anonymized_fallback",
         "full_frame_redacted_local_proof",
     }
+    # R010: industrial sites (warehouses/factories/cold storage/stockrooms) expose
+    # badges/screens/plates/signage that person-only redaction never targets. For
+    # those sites, privacy may only clear when the industrial-sensitive classes
+    # were actually handled. ``is_industrial_site`` is resolved once, up front (see
+    # the R011 block above), from the site_type text and/or the privacy manifest's
+    # own ``is_industrial_site`` flag, so the gate holds whether or not the site
+    # type is threaded through the call.
+    industrial_sensitive_classes_handled = parse_bool(
+        privacy.get("industrial_sensitive_classes_handled"),
+        default=False,
+    )
+    industrial_sensitive_gap = is_industrial_site and not industrial_sensitive_classes_handled
+    privacy_would_clear = privacy_status in {
+        "no_people_detected",
+        "person_removed",
+    }
     privacy_state = (
-        "cleared"
-        if privacy_status
-        in {
-            "no_people_detected",
-            "person_removed",
-        }
-        else "blocked"
+        "blocked"
         if privacy_status == "failed_closed"
-        else "needs_review"
-        if fallback_redaction_used
+        else "cleared"
+        if privacy_would_clear and not industrial_sensitive_gap
         else "needs_review"
     )
     provenance_state = (
@@ -185,10 +275,17 @@ def build_rights_provenance_review(
         blockers.append("rights_or_consent_requires_review")
         if consent_status == "documented" and not permission_document_uri:
             blockers.append("consent_documented_without_permission_document")
+    # R011: surface the specific reason a policy_only claim did not clear on an
+    # industrial/private site, independent of the coarse rights_state bucket, so the
+    # operator knows a permission document or lawful-basis attestation is required.
+    if policy_only_insufficient:
+        blockers.append("policy_only_insufficient_for_private_or_industrial_site")
     if privacy_state == "blocked":
         blockers.append("privacy_processing_failed_closed")
     elif fallback_redaction_used:
         blockers.append("privacy_fallback_redaction_requires_manual_review")
+    elif industrial_sensitive_gap:
+        blockers.append("industrial_sensitive_classes_not_handled")
     elif privacy_state == "needs_review":
         blockers.append("privacy_processing_incomplete")
     if provenance_state != "grounded":
@@ -204,6 +301,7 @@ def build_rights_provenance_review(
                 "rights_not_sufficient_for_derived_generation",
                 "privacy_processing_failed_closed",
                 "consent_revoked_takedown_required",
+                "industrial_sensitive_classes_not_handled",
             }
             or blocker.startswith("consent_scope_excludes_use_class:")
             for blocker in blockers
@@ -230,6 +328,12 @@ def build_rights_provenance_review(
             "required_use_classes": required_classes,
             "scope_excluded_use_classes": scope_blocked_classes,
             "derived_scene_generation_allowed": derived_generation_allowed,
+            # R011: consent-evidence gate is site-aware. policy_only only self-clears
+            # for public sites; industrial/private sites require operator authorization.
+            "consent_evidence_complete": consent_evidence_complete,
+            "site_requires_operator_authorization": site_requires_operator_authorization,
+            "operator_authorization_present": operator_authorization_present,
+            "policy_only_insufficient_for_site": policy_only_insufficient,
             "data_licensing_allowed": parse_bool(
                 rights.get("data_licensing_allowed"),
                 default=False,
@@ -253,6 +357,15 @@ def build_rights_provenance_review(
             "manual_review_recommended": fallback_redaction_used,
             "external_delivery_allowed": not fallback_redaction_used
             and privacy_state == "cleared",
+            # R010: site-type-aware redaction coverage. For industrial sites the
+            # industrial-sensitive classes (badges/screens/plates/signage) must be
+            # handled before privacy can clear.
+            "is_industrial_site": is_industrial_site,
+            "industrial_sensitive_classes_handled": industrial_sensitive_classes_handled,
+            "industrial_sensitive_classes": _string_list(
+                privacy.get("industrial_sensitive_classes")
+            ),
+            "redaction_classes": _string_list(privacy.get("redaction_classes")),
         },
         "provenance": {
             "status": provenance_state,
