@@ -2,23 +2,23 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 5 fixed · 0 scaffolded · 114 todo · 119 total.**
+**Progress: 8 fixed · 2 scaffolded · 109 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
 | R001 | P0 | 🌐 | cross-repo | Consent/authorization model is retail/public-space framed with no industrial (warehouse/factory) leg | ⬜ todo |  |
-| R002 | P0 |  | cross-repo | Delivery producer is missing: pipeline never uploads packages to cloud, so the WebApp signed-URL han | ⬜ todo |  |
+| R002 | P0 |  | cross-repo | Delivery producer is missing: pipeline never uploads packages to cloud, so the WebApp signed-URL han | 🟡 scaffolded | GCS delivery producer implemented+tested (uploads bundle to marketplace-artifacts/{ent}/, records gs:// URIs + webapp_ingestion contract, fail-closed). PENDING: webapp entitlement  |
 | R003 | P0 |  | cross-repo | Storage rules are disjoint across repos, both deploy to the same project (last-writer-wins), and the | ✅ fixed | Canonical superset storage.rules byte-identical across repos + check-storage-rules-parity.sh + both parity guards wired into webapp CI (RUNNER_TEMP isolation, sibling matching-bran |
 | R004 | P0 |  | cross-repo | Operator DPA / subprocessor list / access-audit terms and legal-EHS consent sign-off are unsigned (o | ⬜ todo |  |
 | R005 | P1 | 🌐 | capture | Capture app hardcodes intended_space_type='industrial_unknown' with no site-type picker — the pipeli | ⬜ todo |  |
-| R006 | P1 | 🌐 | pipeline | Industrial task-success grounding does not exist — eval_ready_task_grounding.py only ships a kitchen | ⬜ todo |  |
+| R006 | P1 | 🌐 | pipeline | Industrial task-success grounding does not exist — eval_ready_task_grounding.py only ships a kitchen | ✅ fixed | Added containment_in_receptacle / placement_at_target_pose / transfer_zone_arrival success proxies parallel to the kitchen handle proxy, routed by material-handling/pick-place/tran |
 | R007 | P1 | 🌐 | pipeline | No industrial simulator scene/scenario catalog or committed truth fixture — the only proven end-to-e | ⬜ todo |  |
 | R008 | P1 | 🌐 | capture | No thermal / memory / disk monitoring during iPhone ARKit recording; storage only checked at upload | ⬜ todo |  |
 | R009 | P1 | 🌐 | capture | extractFrames Cloud Function downloads the entire walkthrough video into a 2GiB memory-backed tmpfs  | ⬜ todo |  |
 | R010 | P1 | 🌐 | pipeline | Privacy redaction is person-only — no badge/ID, screen, whiteboard, signage, or license-plate redact | ⬜ todo |  |
 | R011 | P1 | 🌐 | cross-repo | 'policy_only' consent self-clears the consent-evidence gate with no operator permission document, an | ⬜ todo |  |
 | R012 | P1 | 🌐 | capture | Site-operator authorization (VenuePermission) is demo-only UI: never persisted, uploaded, or enforce | ⬜ todo |  |
-| R013 | P1 | 🌐 | pipeline | Scenario-variation family taxonomy is a single fixed global list, warehouse-flavored and factory-inc | ⬜ todo |  |
+| R013 | P1 | 🌐 | pipeline | Scenario-variation family taxonomy is a single fixed global list, warehouse-flavored and factory-inc | 🟡 scaffolded | Factory hazard axes + per-site-category variation profiles + helpers added and exposed in scenario_family_library; 47 tests pass. PENDING: closure auto-selecting the profile per ca |
 | R014 | P1 | 🌐 | pipeline | No committed industrial task-eval fixture/truth test; industrial hazard variations are template mock | ⬜ todo |  |
 | R015 | P1 | 🌐 | cross-repo | Pipeline->WebApp ops dashboard summary contract is hardcoded to a home/residential task ontology | ⬜ todo |  |
 | R016 | P1 | 🌐 | pipeline | Every merge gate is anchored on kitchen/indoor fixtures — no industrial/warehouse/factory gate exist | ⬜ todo |  |
@@ -33,7 +33,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R025 | P1 |  | pipeline | Headline task success_rate for WAM runs is a VLM judgment over GENERATED video, not physics or captu | ⬜ todo |  |
 | R026 | P1 |  | pipeline | Live simulator execution and live policy execution are unproven by default; honest beta deliverable  | ⬜ todo |  |
 | R027 | P1 |  | cross-repo | Consent revocation is not self-enforcing across the delivery chain: revoked capture != revoked entit | ⬜ todo |  |
-| R028 | P1 |  | webapp | Runtime forwarding defaults to required=false: WebApp returns 202 "queued_for_pipeline" even when no | ⬜ todo |  |
+| R028 | P1 |  | webapp | Runtime forwarding defaults to required=false: WebApp returns 202 "queued_for_pipeline" even when no | ✅ fixed | Production now returns 5xx when pipeline forwarding not performed (not_configured->503, blocked/failed->502) regardless of FORWARD_REQUIRED; non-prod unchanged. tsc clean, 25 tests |
 | R029 | P1 |  | cross-repo | Contract parity gate cannot run — shared BlueprintContracts module is absent; both repos run indepen | ⬜ todo |  |
 | R030 | P1 |  | webapp | No entitlement/authz enforcement on eval-job submission; entitlement.approved is client-supplied and | ⬜ todo |  |
 | R031 | P1 |  | webapp | Buyer cannot download purchased Task Eval Run / Post-Training Data Package artifacts from the app: e | ⬜ todo |  |
@@ -43,7 +43,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R035 | P1 |  | cross-repo | No named human finance-review owner for payout exceptions | ⬜ todo |  |
 | R036 | P1 |  | webapp | Operator console (/ops/*) is entirely mock data with no backend and is publicly routed without auth | ⬜ todo |  |
 | R037 | P1 |  | webapp | No observability alerting for core beta failure classes (uploads, intake, provider, package, buyer-a | ⬜ todo |  |
-| R038 | P1 |  | cross-repo | No beta-ops incident-response runbook (owner, escalation, rollback, takedown, customer-comms) and de | ⬜ todo |  |
+| R038 | P1 |  | cross-repo | No beta-ops incident-response runbook (owner, escalation, rollback, takedown, customer-comms) and de | ✅ fixed | Beta incident-response runbook (ownership/escalation/detection, takedown drill, 4 degraded-state playbooks + comms) + health-checked Render rollback script (shellcheck-clean) + DEP |
 | R039 | P1 |  | cross-repo | capture_submissions.status is client-writable despite rules comment claiming backend-only — a captur | ✅ fixed | capture_submissions.status confined to client lifecycle states; approved/paid remain Admin-SDK-only. [webapp 8e8313d, capture 411ca0f] |
 | R040 | P1 |  | webapp | Firestore scenes collection lets any authenticated user read, update, or delete ANY scene (broken ob | ✅ fixed | scenes locked to admin read + backend-only writes (was world read/update/delete over contact PII). [webapp 8e8313d, capture 411ca0f] |
 | R041 | P1 |  | pipeline | No aggregate/fleet spend budget ceiling — GPU cost guardrails are strictly per-job | ⬜ todo |  |
