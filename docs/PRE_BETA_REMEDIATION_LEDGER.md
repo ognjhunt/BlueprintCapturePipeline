@@ -2,12 +2,12 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 17 fixed · 4 scaffolded · 98 todo · 119 total.**
+**Progress: 22 fixed · 3 scaffolded · 94 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
 | R001 | P0 | 🌐 | cross-repo | Consent/authorization model is retail/public-space framed with no industrial (warehouse/factory) leg | ⬜ todo |  |
-| R002 | P0 |  | cross-repo | Delivery producer is missing: pipeline never uploads packages to cloud, so the WebApp signed-URL han | 🟡 scaffolded | GCS delivery producer implemented+tested (uploads bundle to marketplace-artifacts/{ent}/, records gs:// URIs + webapp_ingestion contract, fail-closed). PENDING: webapp entitlement  |
+| R002 | P0 |  | cross-repo | Delivery producer is missing: pipeline never uploads packages to cloud, so the WebApp signed-URL han | ✅ fixed | End-to-end delivery loop complete: pipeline arena_package_delivery_gcs uploads to gs://marketplace-artifacts/{ent}/; webapp package-delivery ingestion sets the source on the entitl |
 | R003 | P0 |  | cross-repo | Storage rules are disjoint across repos, both deploy to the same project (last-writer-wins), and the | ✅ fixed | Canonical superset storage.rules byte-identical across repos + check-storage-rules-parity.sh + both parity guards wired into webapp CI (RUNNER_TEMP isolation, sibling matching-bran |
 | R004 | P0 |  | cross-repo | Operator DPA / subprocessor list / access-audit terms and legal-EHS consent sign-off are unsigned (o | ⬜ todo |  |
 | R005 | P1 | 🌐 | capture | Capture app hardcodes intended_space_type='industrial_unknown' with no site-type picker — the pipeli | ✅ fixed | SiteType enum + non-blocking picker; VideoCaptureManager/GlassesCaptureManager write the selected token into intended_space_type (was hardcoded industrial_unknown). Tokens match pi |
@@ -16,7 +16,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R008 | P1 | 🌐 | capture | No thermal / memory / disk monitoring during iPhone ARKit recording; storage only checked at upload | ⬜ todo |  |
 | R009 | P1 | 🌐 | capture | extractFrames Cloud Function downloads the entire walkthrough video into a 2GiB memory-backed tmpfs  | ✅ fixed | extractFrames pre-download size guard (EXTRACT_FRAMES_MAX_VIDEO_BYTES default 1.5GiB): oversized industrial videos rejected before download with explicit reason; mem 2->4GiB headro |
 | R010 | P1 | 🌐 | pipeline | Privacy redaction is person-only — no badge/ID, screen, whiteboard, signage, or license-plate redact | ✅ fixed | Redaction class set is site-type-aware (industrial adds badge/screen/plate/signage); privacy_state 'cleared' now requires those handled for industrial sites. 11 new + 21 existing t |
-| R011 | P1 | 🌐 | cross-repo | 'policy_only' consent self-clears the consent-evidence gate with no operator permission document, an | ⬜ todo |  |
+| R011 | P1 | 🌐 | cross-repo | 'policy_only' consent self-clears the consent-evidence gate with no operator permission document, an | ✅ fixed | policy_only consent clears only for public sites; industrial/private require permission_document_uri or lawful-basis attestation, else blocker policy_only_insufficient_for_private_ |
 | R012 | P1 | 🌐 | capture | Site-operator authorization (VenuePermission) is demo-only UI: never persisted, uploaded, or enforce | ⬜ todo |  |
 | R013 | P1 | 🌐 | pipeline | Scenario-variation family taxonomy is a single fixed global list, warehouse-flavored and factory-inc | 🟡 scaffolded | Factory hazard axes + per-site-category variation profiles + helpers added and exposed in scenario_family_library; 47 tests pass. PENDING: closure auto-selecting the profile per ca |
 | R014 | P1 | 🌐 | pipeline | No committed industrial task-eval fixture/truth test; industrial hazard variations are template mock | ⬜ todo |  |
@@ -35,9 +35,9 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R027 | P1 |  | cross-repo | Consent revocation is not self-enforcing across the delivery chain: revoked capture != revoked entit | ✅ fixed | WebApp ingests pipeline takedown notice -> flips linked entitlements to access_state=revoked with audit trail; both mint paths defensively refuse revoked. tsc clean; 3/3 + 22/22 te |
 | R028 | P1 |  | webapp | Runtime forwarding defaults to required=false: WebApp returns 202 "queued_for_pipeline" even when no | ✅ fixed | Production now returns 5xx when pipeline forwarding not performed (not_configured->503, blocked/failed->502) regardless of FORWARD_REQUIRED; non-prod unchanged. tsc clean, 25 tests |
 | R029 | P1 |  | cross-repo | Contract parity gate cannot run — shared BlueprintContracts module is absent; both repos run indepen | ⬜ todo |  |
-| R030 | P1 |  | webapp | No entitlement/authz enforcement on eval-job submission; entitlement.approved is client-supplied and | ⬜ todo |  |
-| R031 | P1 |  | webapp | Buyer cannot download purchased Task Eval Run / Post-Training Data Package artifacts from the app: e | ⬜ todo |  |
-| R032 | P1 |  | webapp | Buyer disputes/chargebacks have no local webhook handler — linked payout is not frozen and order sta | ⬜ todo |  |
+| R030 | P1 |  | webapp | No entitlement/authz enforcement on eval-job submission; entitlement.approved is client-supplied and | ✅ fixed | Eval-job submission now requires a server-verified provisioned marketplace entitlement for (buyer,site); client entitlement.approved stripped/overwritten server-side; internal/admi |
+| R031 | P1 |  | webapp | Buyer cannot download purchased Task Eval Run / Post-Training Data Package artifacts from the app: e | ✅ fixed | marketplaceEntitlements carries package_delivery_base_uri/object_keys; internal package-delivery ingestion route sets the gs:// source; artifact-access mints a signed URL; buyer UI |
+| R032 | P1 |  | webapp | Buyer disputes/chargebacks have no local webhook handler — linked payout is not frozen and order sta | ✅ fixed | charge.dispute.created marks order disputed + holds linked non-in_transit payouts (on_hold, excluded from disbursement); dispute.closed releases/settles; idempotent. tsc clean; tes |
 | R033 | P1 |  | cross-repo | No identity/KYC or background-check provider decision — payout-fraud and physical site-access screen | 🟡 scaffolded | Provider options+recommendation (Stripe Identity KYC, Checkr background) + integration plan + required gate artifacts. PENDING (human): blueprint-cto sign-off, contracts/DPAs, inte |
 | R034 | P1 |  | cross-repo | Live buyer-payment and capturer-payout settlement are unproven — only mock/contract readiness exists | ⬜ todo |  |
 | R035 | P1 |  | cross-repo | No named human finance-review owner for payout exceptions | ⬜ todo |  |
