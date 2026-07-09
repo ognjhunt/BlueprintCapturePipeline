@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 8 fixed · 2 scaffolded · 109 todo · 119 total.**
+**Progress: 8 fixed · 4 scaffolded · 107 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -38,7 +38,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R030 | P1 |  | webapp | No entitlement/authz enforcement on eval-job submission; entitlement.approved is client-supplied and | ⬜ todo |  |
 | R031 | P1 |  | webapp | Buyer cannot download purchased Task Eval Run / Post-Training Data Package artifacts from the app: e | ⬜ todo |  |
 | R032 | P1 |  | webapp | Buyer disputes/chargebacks have no local webhook handler — linked payout is not frozen and order sta | ⬜ todo |  |
-| R033 | P1 |  | cross-repo | No identity/KYC or background-check provider decision — payout-fraud and physical site-access screen | ⬜ todo |  |
+| R033 | P1 |  | cross-repo | No identity/KYC or background-check provider decision — payout-fraud and physical site-access screen | 🟡 scaffolded | Provider options+recommendation (Stripe Identity KYC, Checkr background) + integration plan + required gate artifacts. PENDING (human): blueprint-cto sign-off, contracts/DPAs, inte |
 | R034 | P1 |  | cross-repo | Live buyer-payment and capturer-payout settlement are unproven — only mock/contract readiness exists | ⬜ todo |  |
 | R035 | P1 |  | cross-repo | No named human finance-review owner for payout exceptions | ⬜ todo |  |
 | R036 | P1 |  | webapp | Operator console (/ops/*) is entirely mock data with no backend and is publicly routed without auth | ⬜ todo |  |
@@ -48,7 +48,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R040 | P1 |  | webapp | Firestore scenes collection lets any authenticated user read, update, or delete ANY scene (broken ob | ✅ fixed | scenes locked to admin read + backend-only writes (was world read/update/delete over contact PII). [webapp 8e8313d, capture 411ca0f] |
 | R041 | P1 |  | pipeline | No aggregate/fleet spend budget ceiling — GPU cost guardrails are strictly per-job | ⬜ todo |  |
 | R042 | P1 |  | pipeline | No storage lifecycle/retention on the primary capture bucket — unbounded storage cost | ⬜ todo |  |
-| R043 | P1 |  | cross-repo | No load/soak test, capacity model, or cost-per-capture model in any repo | ⬜ todo |  |
+| R043 | P1 |  | cross-repo | No load/soak test, capacity model, or cost-per-capture model in any repo | 🟡 scaffolded | Quantitative capacity+cost model (~$2.60/capture, ~$3.9-4.5k/100-user-mo, peak ~13 uploads/~16 GPU jobs > current ~10 ceiling) + runnable k6 intake load/soak harness (safe dry defa |
 | R044 | P1 |  | pipeline | Slow/integration/GPU lane never gates a merge or deploy | ⬜ todo |  |
 | R045 | P1 |  | webapp | Render autoDeploy is decoupled from CI — a red build still deploys to production | ⬜ todo |  |
 | R046 | P1 |  | cross-repo | No versioned release artifact, deploy SHA/tag, or rollback target | ⬜ todo |  |
