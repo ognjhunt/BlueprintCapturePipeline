@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 29 fixed · 4 scaffolded · 86 todo · 119 total.**
+**Progress: 30 fixed · 4 scaffolded · 85 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -52,7 +52,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R044 | P1 |  | pipeline | Slow/integration/GPU lane never gates a merge or deploy | ⬜ todo |  |
 | R045 | P1 |  | webapp | Render autoDeploy is decoupled from CI — a red build still deploys to production | ⬜ todo |  |
 | R046 | P1 |  | cross-repo | No versioned release artifact, deploy SHA/tag, or rollback target | ⬜ todo |  |
-| R047 | P1 |  | webapp | Buyers and site operators accept no Terms/Privacy at webapp signup (only the capturer application do | ⬜ todo |  |
+| R047 | P1 |  | webapp | Buyers and site operators accept no Terms/Privacy at webapp signup (only the capturer application do | ✅ fixed | Buyer/operator signup requires + records Terms/Privacy acceptance: UI gate + server-authoritative terms_acceptance on inboundRequests (server-derived versions) + users doc; 400 on  |
 | R048 | P1 |  | cross-repo | Data-retention policy is agent-scoped to WebApp Firestore only, unenforced, and does not reach pipel | ⬜ todo |  |
 | R049 | P1 |  | pipeline | Takedown propagation enumerates but never executes recall, and no takedown drill has been run | ⬜ todo |  |
 | R050 | P1 |  | cross-repo | No cross-border / data-residency or international-transfer handling for non-US testers | ⬜ todo |  |
