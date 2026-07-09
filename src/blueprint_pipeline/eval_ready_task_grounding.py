@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .common import read_json_any, utc_now_iso, write_json
+from .site_taxonomy import resolve_site_type
 
 
 SCHEMA_VERSION = "eval_ready_task_grounding.v1"
@@ -146,6 +147,55 @@ _TRANSFER_ACTION_TOKENS = {
     "feed",
     "load",
 }
+
+# Industrial affordance expansions for detection-prompt augmentation (audit R073).
+# Parallel to the kitchen/home expansions in ``derive_task_aware_detection_prompts``
+# (sink -> "faucet handle"/"water stream", door/drawer -> "handle"), these give
+# industrial/warehouse task text concrete detector sub-targets (tote handles,
+# pallet stringers, rack uprights, conveyor guards, dock-door tracks, forklift
+# hazard markings) instead of only broad environment labels. Keyed BOTH on task
+# tokens (so they fire on any lane) and on the resolved site_taxonomy category
+# (so recognized industrial sites always seed the core affordances).
+_INDUSTRIAL_AFFORDANCE_EXPANSIONS: tuple[tuple[frozenset[str], tuple[str, ...]], ...] = (
+    (
+        frozenset({"tote", "bin", "container", "crate", "carton", "gaylord"}),
+        ("tote", "tote handle", "tote label", "bin opening"),
+    ),
+    (
+        frozenset({"pallet", "palletize", "palletizing"}),
+        ("pallet", "pallet stringer", "pallet jack", "shrink wrap"),
+    ),
+    (
+        frozenset({"rack", "racking", "shelf", "shelving", "kanban"}),
+        ("rack", "rack upright", "shelf label", "shelf edge"),
+    ),
+    (
+        frozenset({"conveyor", "belt", "chute"}),
+        ("conveyor", "conveyor belt", "conveyor guard", "emergency stop"),
+    ),
+    (
+        frozenset({"dock", "gate", "shutter", "rolling", "rollup", "bay"}),
+        ("dock door", "roll-up door", "dock door track", "gate"),
+    ),
+    (
+        frozenset({"forklift", "agv", "amr", "reach truck"}),
+        ("forklift", "forklift forks", "hazard marking", "floor lane marking"),
+    ),
+    (
+        frozenset({"cage", "locker"}),
+        ("cage door", "locker handle", "latch"),
+    ),
+)
+# Core affordances seeded for any recognized industrial site, even when the task
+# text itself is terse. Ordered for deterministic prompt output.
+_INDUSTRIAL_SITE_CORE_AFFORDANCES: tuple[str, ...] = (
+    "tote",
+    "pallet",
+    "rack",
+    "conveyor",
+    "dock door",
+    "forklift",
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -336,6 +386,7 @@ def derive_task_aware_detection_prompts(
     *,
     task_text: str,
     target_label: str = "",
+    site_type: str | None = None,
     max_prompts: int = 18,
 ) -> list[str]:
     """Build detector prompts directly from customer task text.
@@ -343,6 +394,13 @@ def derive_task_aware_detection_prompts(
     This keeps object extraction scene-unspecific: early customers can provide
     arbitrary tasks, and the object-index backends still get concrete task
     targets instead of only broad environment labels.
+
+    ``site_type`` is optional free-text (e.g. a capture environment hint or a
+    site-type field); when it resolves to an industrial category via
+    ``site_taxonomy.resolve_site_type`` the core industrial affordances are
+    seeded even for terse task text. Industrial affordance expansions (audit
+    R073) also fire directly off task tokens, so they apply regardless of whether
+    a site type is supplied — mirroring the kitchen/home token expansions below.
     """
 
     prompts: list[str] = []
@@ -381,6 +439,19 @@ def derive_task_aware_detection_prompts(
             add(f"{modifier} switch")
     if token_set & {"door", "drawer", "cabinet"}:
         add("handle")
+    # Industrial affordance expansions (audit R073): fire off task tokens so the
+    # detector gets concrete site sub-targets, not just broad environment labels.
+    for trigger_tokens, expansions in _INDUSTRIAL_AFFORDANCE_EXPANSIONS:
+        if token_set & trigger_tokens:
+            for expansion in expansions:
+                add(expansion)
+    # Site-taxonomy-keyed seeding: a recognized industrial site always gets the
+    # core industrial affordances even when the task text alone is terse.
+    if site_type:
+        resolution = resolve_site_type(site_type)
+        if resolution.is_industrial:
+            for affordance in _INDUSTRIAL_SITE_CORE_AFFORDANCES:
+                add(affordance)
     return prompts[:max_prompts]
 
 

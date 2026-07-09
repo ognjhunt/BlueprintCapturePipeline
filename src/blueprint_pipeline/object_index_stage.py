@@ -501,6 +501,11 @@ def _build_prompt_bank(descriptor: CaptureDescriptor, intake: Mapping[str, Any],
     task_aware = derive_task_aware_detection_prompts(
         task_text=explicit_task_text or fallback_task_text or joined,
         target_label=target_label,
+        # Pass the resolved environment plus the free-text capture context so an
+        # industrial site (audit R073) seeds core industrial affordances even when
+        # the task text is terse; site_taxonomy.resolve_site_type reads whichever
+        # industrial synonym is present (warehouse/forklift/factory/...).
+        site_type=" ".join(part for part in (environment, joined) if part),
     )
     for prompt in task_aware:
         if prompt not in task_specific:
