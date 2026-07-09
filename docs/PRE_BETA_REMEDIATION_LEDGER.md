@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 25 fixed · 5 scaffolded · 89 todo · 119 total.**
+**Progress: 26 fixed · 5 scaffolded · 88 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -29,7 +29,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R021 | P1 |  | capture | Uploads are single-shot PUTs with no intra-file resume — large captures restart from byte 0 on every | ⬜ todo |  |
 | R022 | P1 |  | cross-repo | No capacity/cost/storage-volume model or bucket retention for large industrial captures at 100 users | ⬜ todo |  |
 | R023 | P1 |  | cross-repo | Consent-revocation/takedown is pushed by the pipeline but not consumed by the webapp buyer-delivery  | ✅ fixed | Duplicate of R027: the WebApp now consumes the pipeline takedown notice and flips entitlements to revoked (consentRevocationTakedown ingestion + defensive mint blocks). Covered by  |
-| R024 | P1 |  | pipeline | Batch inbox runner has no per-request exception isolation, quarantine, or dead-letter — one poison r | ⬜ todo |  |
+| R024 | P1 |  | pipeline | Batch inbox runner has no per-request exception isolation, quarantine, or dead-letter — one poison r | ✅ fixed | Batch inbox runner isolates each request (try/except); poison request writes a quarantine/dead-letter marker (schema v1) and the loop continues; batch reports processed_ok/failed/q |
 | R025 | P1 |  | pipeline | Headline task success_rate for WAM runs is a VLM judgment over GENERATED video, not physics or captu | ✅ fixed | Success-label provenance vocabulary stamped on WAM VLM labels; buyer scorecard discloses generated_video_vlm success_rate is not physics/captured truth. 38 tests pass. [pipeline 98 |
 | R026 | P1 |  | pipeline | Live simulator execution and live policy execution are unproven by default; honest beta deliverable  | ⬜ todo |  |
 | R027 | P1 |  | cross-repo | Consent revocation is not self-enforcing across the delivery chain: revoked capture != revoked entit | ✅ fixed | WebApp ingests pipeline takedown notice -> flips linked entitlements to access_state=revoked with audit trail; both mint paths defensively refuse revoked. tsc clean; 3/3 + 22/22 te |
