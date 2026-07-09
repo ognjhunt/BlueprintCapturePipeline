@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 52 fixed · 4 scaffolded · 63 todo · 119 total.**
+**Progress: 54 fixed · 4 scaffolded · 61 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -63,8 +63,8 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R055 | P1 |  | pipeline | GPU spend guard is a manual, dry-run-by-default tool that is never scheduled or enforced — no automa | ✅ fixed | systemd timer runs gpu_spend_guard --reap on 5min interval; ExecStartPost fails unless a fresh --reap snapshot exists (durable teardown evidence); wired into installer. Enabling on |
 | R056 | P1 |  | pipeline | Booted orphan pods are never auto-reaped and render pods have no pod-side self-terminating watchdog  | ✅ fixed | Booted orphan pods reapable past a 6h hard-age ceiling (warm/owner/fresh guarded); render bootstrap bakes a pod-side TTL self-kill watchdog (2h default). 92 tests pass. [pipeline ( |
 | R057 | P1 |  | pipeline | No platform-wide cumulative spend / GPU concurrency ceiling — spend gate is a per-run manual boolean | ✅ fixed | Duplicate of R041 — platform-wide cumulative/daily/monthly spend + max-concurrent-GPU ceiling implemented by fleet_spend_ledger.py (BLUEPRINT_FLEET_DAILY/MONTHLY_SPEND_USD, MAX_CON |
-| R058 | P1 |  | pipeline | Customer-eval cross-provider failover runtime is not implemented — eval GPU launches are single-prov | ⬜ todo |  |
-| R059 | P1 |  | pipeline | Lambda single-adapter path never confirms teardown — termination is fire-and-forget, leaving open bi | ⬜ todo |  |
+| R058 | P1 |  | pipeline | Customer-eval cross-provider failover runtime is not implemented — eval GPU launches are single-prov | ✅ fixed | Eval cross-provider failover runtime wired via render-proven race_launch+ProviderCircuitBreaker (opt-in run_provider_race); not-implemented block removed; serial override preserved |
+| R059 | P1 |  | pipeline | Lambda single-adapter path never confirms teardown — termination is fire-and-forget, leaving open bi | ✅ fixed | Lambda confirm_termination polls list-instances to billing-terminal + emits provider_api teardown proof (clears open_billing_risk); no false teardown_proven when unconfirmed. Tests |
 | R060 | P2 | 🌐 | pipeline | Industrial hazard ontology (forklift lanes, shared traffic, barriers, human-interaction zones) lives | ✅ fixed | industrial_ontology hazard classification now consumed in scene_eval_autogen (derive_hazard_grounding) + threaded into scenario families; no longer stranded in qualification. Claim |
 | R061 | P2 | 🌐 | pipeline | scene_placement/target_resolver openable + synonym affordance tables are kitchen/home-biased and are | ✅ fixed | scene_placement/target_resolver gains 8 industrial openable groups (dock/rolling door, gate, cage, locker, container, tote_lid, conveyor_guard) so industrial openables become open_ |
 | R062 | P2 | 🌐 | capture | Live 'coverage %' hardcodes a 100 sq m target — false/meaningless for warehouse-scale sites | ⬜ todo |  |
