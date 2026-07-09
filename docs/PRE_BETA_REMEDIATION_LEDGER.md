@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 8 fixed · 4 scaffolded · 107 todo · 119 total.**
+**Progress: 10 fixed · 4 scaffolded · 105 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -12,7 +12,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R004 | P0 |  | cross-repo | Operator DPA / subprocessor list / access-audit terms and legal-EHS consent sign-off are unsigned (o | ⬜ todo |  |
 | R005 | P1 | 🌐 | capture | Capture app hardcodes intended_space_type='industrial_unknown' with no site-type picker — the pipeli | ⬜ todo |  |
 | R006 | P1 | 🌐 | pipeline | Industrial task-success grounding does not exist — eval_ready_task_grounding.py only ships a kitchen | ✅ fixed | Added containment_in_receptacle / placement_at_target_pose / transfer_zone_arrival success proxies parallel to the kitchen handle proxy, routed by material-handling/pick-place/tran |
-| R007 | P1 | 🌐 | pipeline | No industrial simulator scene/scenario catalog or committed truth fixture — the only proven end-to-e | ⬜ todo |  |
+| R007 | P1 | 🌐 | pipeline | No industrial simulator scene/scenario catalog or committed truth fixture — the only proven end-to-e | ✅ fixed | Committed warehouse_task_min industrial truth fixture (identical schema, industrial content). [pipeline 3ff0238] |
 | R008 | P1 | 🌐 | capture | No thermal / memory / disk monitoring during iPhone ARKit recording; storage only checked at upload | ⬜ todo |  |
 | R009 | P1 | 🌐 | capture | extractFrames Cloud Function downloads the entire walkthrough video into a 2GiB memory-backed tmpfs  | ⬜ todo |  |
 | R010 | P1 | 🌐 | pipeline | Privacy redaction is person-only — no badge/ID, screen, whiteboard, signage, or license-plate redact | ⬜ todo |  |
@@ -21,7 +21,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R013 | P1 | 🌐 | pipeline | Scenario-variation family taxonomy is a single fixed global list, warehouse-flavored and factory-inc | 🟡 scaffolded | Factory hazard axes + per-site-category variation profiles + helpers added and exposed in scenario_family_library; 47 tests pass. PENDING: closure auto-selecting the profile per ca |
 | R014 | P1 | 🌐 | pipeline | No committed industrial task-eval fixture/truth test; industrial hazard variations are template mock | ⬜ todo |  |
 | R015 | P1 | 🌐 | cross-repo | Pipeline->WebApp ops dashboard summary contract is hardcoded to a home/residential task ontology | ⬜ todo |  |
-| R016 | P1 | 🌐 | pipeline | Every merge gate is anchored on kitchen/indoor fixtures — no industrial/warehouse/factory gate exist | ⬜ todo |  |
+| R016 | P1 | 🌐 | pipeline | Every merge gate is anchored on kitchen/indoor fixtures — no industrial/warehouse/factory gate exist | ✅ fixed | test_success_claim_contracts parametrized over kitchen+warehouse fixtures; industrial path now a required truth-test gate. Negative control confirms real regression guard. 73 tests |
 | R017 | P1 | 🌐 | cross-repo | No site scale / dimensional metadata as capture truth or Site-card field | ⬜ todo |  |
 | R018 | P1 | 🌐 | pipeline | Site-type recognition is brittle substring keyword matching over a tiny closed vocabulary with silen | ✅ fixed | New shared versioned site_taxonomy.py (canonical categories + synonyms + industrial flag + resolver); episode_spec task hints now recognize expanded industrial synonyms (distributi |
 | R019 | P1 | 🌐 | capture | Launch-city gate hard-blocks capture at any off-launch-city site, and its only recovery button silen | ⬜ todo |  |
