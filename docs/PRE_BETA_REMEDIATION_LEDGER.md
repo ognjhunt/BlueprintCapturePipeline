@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 26 fixed · 5 scaffolded · 88 todo · 119 total.**
+**Progress: 29 fixed · 4 scaffolded · 86 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -18,8 +18,8 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R010 | P1 | 🌐 | pipeline | Privacy redaction is person-only — no badge/ID, screen, whiteboard, signage, or license-plate redact | ✅ fixed | Redaction class set is site-type-aware (industrial adds badge/screen/plate/signage); privacy_state 'cleared' now requires those handled for industrial sites. 11 new + 21 existing t |
 | R011 | P1 | 🌐 | cross-repo | 'policy_only' consent self-clears the consent-evidence gate with no operator permission document, an | ✅ fixed | policy_only consent clears only for public sites; industrial/private require permission_document_uri or lawful-basis attestation, else blocker policy_only_insufficient_for_private_ |
 | R012 | P1 | 🌐 | capture | Site-operator authorization (VenuePermission) is demo-only UI: never persisted, uploaded, or enforce | ⬜ todo |  |
-| R013 | P1 | 🌐 | pipeline | Scenario-variation family taxonomy is a single fixed global list, warehouse-flavored and factory-inc | 🟡 scaffolded | Factory hazard axes + per-site-category variation profiles + helpers added and exposed in scenario_family_library; 47 tests pass. PENDING: closure auto-selecting the profile per ca |
-| R014 | P1 | 🌐 | pipeline | No committed industrial task-eval fixture/truth test; industrial hazard variations are template mock | ⬜ todo |  |
+| R013 | P1 | 🌐 | pipeline | Scenario-variation family taxonomy is a single fixed global list, warehouse-flavored and factory-inc | ✅ fixed | Site-scoped variation profiles (SITE_CATEGORY_VARIATION_PROFILES + required_variation_names_for_site_category) + factory hazard axes; manufacturing requires factory hazards, kitche |
+| R014 | P1 | 🌐 | pipeline | No committed industrial task-eval fixture/truth test; industrial hazard variations are template mock | ✅ fixed | Committed factory_task_min truth fixture; success-claim truth tests now gate kitchen+warehouse+factory; 109 tests pass. [pipeline (this commit)] |
 | R015 | P1 | 🌐 | cross-repo | Pipeline->WebApp ops dashboard summary contract is hardcoded to a home/residential task ontology | ✅ fixed | Ops dashboard Zod contract generalized additively: legacy whole_home preserved + site_type/site_summary open category taxonomy for warehouse/factory groups. tsc clean; 6/6 + 18/18  |
 | R016 | P1 | 🌐 | pipeline | Every merge gate is anchored on kitchen/indoor fixtures — no industrial/warehouse/factory gate exist | ✅ fixed | test_success_claim_contracts parametrized over kitchen+warehouse fixtures; industrial path now a required truth-test gate. Negative control confirms real regression guard. 73 tests |
 | R017 | P1 | 🌐 | cross-repo | No site scale / dimensional metadata as capture truth or Site-card field | ✅ fixed | IOSManifest + site_card gain optional site-extent fields (floor area/ceiling/floor count/aisle width) with provenance + claim boundary; backward-compatible. 17 tests pass. [pipelin |
@@ -47,7 +47,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R039 | P1 |  | cross-repo | capture_submissions.status is client-writable despite rules comment claiming backend-only — a captur | ✅ fixed | capture_submissions.status confined to client lifecycle states; approved/paid remain Admin-SDK-only. [webapp 8e8313d, capture 411ca0f] |
 | R040 | P1 |  | webapp | Firestore scenes collection lets any authenticated user read, update, or delete ANY scene (broken ob | ✅ fixed | scenes locked to admin read + backend-only writes (was world read/update/delete over contact PII). [webapp 8e8313d, capture 411ca0f] |
 | R041 | P1 |  | pipeline | No aggregate/fleet spend budget ceiling — GPU cost guardrails are strictly per-job | ✅ fixed | New fleet_spend_ledger.py: rolling daily+monthly spend + concurrent-GPU ledger with fail-closed caps (BLUEPRINT_FLEET_DAILY/MONTHLY_SPEND_USD, MAX_CONCURRENT_GPU) + kill switch, in |
-| R042 | P1 |  | pipeline | No storage lifecycle/retention on the primary capture bucket — unbounded storage cost | ⬜ todo |  |
+| R042 | P1 |  | pipeline | No storage lifecycle/retention on the primary capture bucket — unbounded storage cost | ✅ fixed | GCS lifecycle policy (NEARLINE@90d/COLDLINE@365d/Delete@3650d, scoped to scenes/) + fail-closed validator (14 tests) enforcing 90d review-window protection + 7y delete floor + tier |
 | R043 | P1 |  | cross-repo | No load/soak test, capacity model, or cost-per-capture model in any repo | 🟡 scaffolded | Quantitative capacity+cost model (~$2.60/capture, ~$3.9-4.5k/100-user-mo, peak ~13 uploads/~16 GPU jobs > current ~10 ceiling) + runnable k6 intake load/soak harness (safe dry defa |
 | R044 | P1 |  | pipeline | Slow/integration/GPU lane never gates a merge or deploy | ⬜ todo |  |
 | R045 | P1 |  | webapp | Render autoDeploy is decoupled from CI — a red build still deploys to production | ⬜ todo |  |
