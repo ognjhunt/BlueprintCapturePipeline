@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 36 fixed · 4 scaffolded · 79 todo · 119 total.**
+**Progress: 41 fixed · 4 scaffolded · 74 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -54,15 +54,15 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R046 | P1 |  | cross-repo | No versioned release artifact, deploy SHA/tag, or rollback target | ✅ fixed | generate-build-info.mjs stamps dist/public/version.json (SHA + release tag vX.Y.Z+sha) at build; served at /version.json; ties into health-gated rollback-deploy.sh + rollback runbo |
 | R047 | P1 |  | webapp | Buyers and site operators accept no Terms/Privacy at webapp signup (only the capturer application do | ✅ fixed | Buyer/operator signup requires + records Terms/Privacy acceptance: UI gate + server-authoritative terms_acceptance on inboundRequests (server-derived versions) + users doc; 400 on  |
 | R048 | P1 |  | cross-repo | Data-retention policy is agent-scoped to WebApp Firestore only, unenforced, and does not reach pipel | ⬜ todo |  |
-| R049 | P1 |  | pipeline | Takedown propagation enumerates but never executes recall, and no takedown drill has been run | ⬜ todo |  |
+| R049 | P1 |  | pipeline | Takedown propagation enumerates but never executes recall, and no takedown drill has been run | ✅ fixed | Takedown now executes recall (quarantine/delete/mark derived deliverables + recall markers + entitlement-revocation handoff + executed audit record) with fail-closed blocked-needs- |
 | R050 | P1 |  | cross-repo | No cross-border / data-residency or international-transfer handling for non-US testers | ⬜ todo |  |
 | R051 | P1 |  | capture | No mobile crash/error telemetry on the capture clients (the primary data-collection tool is observab | ⬜ todo |  |
 | R052 | P1 |  | cross-repo | No client version enforcement / force-update / remote kill-switch / maintenance mode for the capture | ⬜ todo |  |
 | R053 | P1 |  | cross-repo | No backup / disaster-recovery / durability strategy for authoritative capture truth (Firestore + sto | ⬜ todo |  |
-| R054 | P1 |  | cross-repo | No tester-facing beta cohort onboarding / what-to-expect / support-escalation doc exists | ⬜ todo |  |
-| R055 | P1 |  | pipeline | GPU spend guard is a manual, dry-run-by-default tool that is never scheduled or enforced — no automa | ⬜ todo |  |
-| R056 | P1 |  | pipeline | Booted orphan pods are never auto-reaped and render pods have no pod-side self-terminating watchdog  | ⬜ todo |  |
-| R057 | P1 |  | pipeline | No platform-wide cumulative spend / GPU concurrency ceiling — spend gate is a per-run manual boolean | ⬜ todo |  |
+| R054 | P1 |  | cross-repo | No tester-facing beta cohort onboarding / what-to-expect / support-escalation doc exists | ✅ fixed | docs/beta/ README + capturer + buyer onboarding guides, code-grounded + honest (cites real proof boundaries, no overclaiming). [webapp (this commit)] |
+| R055 | P1 |  | pipeline | GPU spend guard is a manual, dry-run-by-default tool that is never scheduled or enforced — no automa | ✅ fixed | systemd timer runs gpu_spend_guard --reap on 5min interval; ExecStartPost fails unless a fresh --reap snapshot exists (durable teardown evidence); wired into installer. Enabling on |
+| R056 | P1 |  | pipeline | Booted orphan pods are never auto-reaped and render pods have no pod-side self-terminating watchdog  | ✅ fixed | Booted orphan pods reapable past a 6h hard-age ceiling (warm/owner/fresh guarded); render bootstrap bakes a pod-side TTL self-kill watchdog (2h default). 92 tests pass. [pipeline ( |
+| R057 | P1 |  | pipeline | No platform-wide cumulative spend / GPU concurrency ceiling — spend gate is a per-run manual boolean | ✅ fixed | Duplicate of R041 — platform-wide cumulative/daily/monthly spend + max-concurrent-GPU ceiling implemented by fleet_spend_ledger.py (BLUEPRINT_FLEET_DAILY/MONTHLY_SPEND_USD, MAX_CON |
 | R058 | P1 |  | pipeline | Customer-eval cross-provider failover runtime is not implemented — eval GPU launches are single-prov | ⬜ todo |  |
 | R059 | P1 |  | pipeline | Lambda single-adapter path never confirms teardown — termination is fire-and-forget, leaving open bi | ⬜ todo |  |
 | R060 | P2 | 🌐 | pipeline | Industrial hazard ontology (forklift lanes, shared traffic, barriers, human-interaction zones) lives | ⬜ todo |  |
