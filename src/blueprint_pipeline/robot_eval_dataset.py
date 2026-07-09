@@ -333,6 +333,116 @@ SCENARIO_VARIATION_DEFINITIONS: List[Dict[str, Any]] = [
     },
 ]
 
+# Factory / manufacturing hazard variation axes (audit R013). Kept SEPARATE from
+# the stable, warehouse/logistics-leaning SCENARIO_VARIATION_DEFINITIONS base so
+# location-type profiles can compose them without changing the base scenario-
+# family contract or the default required-variation set.
+FACTORY_HAZARD_VARIATION_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "variation_id": "conveyor_motion",
+        "label": "Conveyor in motion",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "machine_guarding_state",
+        "label": "Machine guarding state",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "agv_cross_traffic",
+        "label": "AGV cross traffic",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "thermal_surface",
+        "label": "Hot / thermal surface nearby",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "moving_part_on_line",
+        "label": "Moving part on the line",
+        "default_status": "agent-inferred-needs-review",
+    },
+]
+
+_BASE_VARIATION_NAMES: List[str] = [
+    definition["variation_id"] for definition in SCENARIO_VARIATION_DEFINITIONS
+]
+_FACTORY_VARIATION_NAMES: List[str] = [
+    definition["variation_id"] for definition in FACTORY_HAZARD_VARIATION_DEFINITIONS
+]
+_ALL_VARIATION_DEFINITIONS_BY_ID: Dict[str, Dict[str, Any]] = {
+    definition["variation_id"]: definition
+    for definition in (*SCENARIO_VARIATION_DEFINITIONS, *FACTORY_HAZARD_VARIATION_DEFINITIONS)
+}
+
+# Location-type-scoped required-variation profiles keyed on the canonical site
+# category (see blueprint_pipeline.site_taxonomy). A warehouse capture is not
+# forced to cover factory-only hazards, and a factory capture is no longer
+# silently missing conveyor/AGV/guarding/thermal axes. "default"/"warehouse"/
+# "stockroom" preserve the historical full logistics set for backward
+# compatibility with existing scenario-family artifacts.
+SITE_CATEGORY_VARIATION_PROFILES: Dict[str, List[str]] = {
+    "default": list(_BASE_VARIATION_NAMES),
+    "warehouse": list(_BASE_VARIATION_NAMES),
+    "stockroom": list(_BASE_VARIATION_NAMES),
+    "cold_storage": [*_BASE_VARIATION_NAMES, "thermal_surface"],
+    "manufacturing": [
+        "lighting_variation",
+        "object_rotation",
+        "occlusion",
+        "glare",
+        "missing_label",
+        "wrong_object_nearby",
+        "narrow_approach_angle",
+        "blocked_path",
+        "human_crossing",
+        *_FACTORY_VARIATION_NAMES,
+    ],
+    "kitchen": [
+        "lighting_variation",
+        "object_rotation",
+        "occlusion",
+        "glare",
+        "missing_label",
+        "wrong_object_nearby",
+        "narrow_approach_angle",
+        "blocked_path",
+        "human_crossing",
+    ],
+    "residential": [
+        "lighting_variation",
+        "object_rotation",
+        "occlusion",
+        "glare",
+        "narrow_approach_angle",
+        "blocked_path",
+        "human_crossing",
+    ],
+}
+
+
+def required_variation_names_for_site_category(category: Optional[str]) -> List[str]:
+    """Required scenario-variation axes for a canonical site category.
+
+    Falls back to the historical full logistics set for unknown / None /
+    'default' / 'warehouse'. Never raises.
+    """
+
+    key = str(category or "").strip().lower()
+    return list(
+        SITE_CATEGORY_VARIATION_PROFILES.get(
+            key, SITE_CATEGORY_VARIATION_PROFILES["default"]
+        )
+    )
+
+
+def variation_definition_for(variation_id: str) -> Optional[Dict[str, Any]]:
+    """Return the definition (base or factory) for a variation id, if known."""
+
+    return _ALL_VARIATION_DEFINITIONS_BY_ID.get(str(variation_id or "").strip())
+
+
 SCORING_METRIC_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "metric_id": "success_rate",
@@ -1653,6 +1763,15 @@ def _scenario_family_library(
         "variation_names_required": [
             definition["variation_id"] for definition in SCENARIO_VARIATION_DEFINITIONS
         ],
+        # Additive (audit R013): location-type-scoped required-variation profiles
+        # so the closure/eval can require factory hazards for factory sites and
+        # skip forklift-only axes for home/kitchen sites. The base
+        # variation_names_required above is unchanged for backward compatibility.
+        "site_category_variation_profiles": {
+            category: list(names)
+            for category, names in SITE_CATEGORY_VARIATION_PROFILES.items()
+        },
+        "factory_hazard_variation_names": list(_FACTORY_VARIATION_NAMES),
         "families": sorted(families, key=lambda item: item["family_id"]),
         "cosmos_or_simulator_proof_claim_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
