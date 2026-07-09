@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 10 fixed · 4 scaffolded · 105 todo · 119 total.**
+**Progress: 13 fixed · 4 scaffolded · 102 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -10,7 +10,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R002 | P0 |  | cross-repo | Delivery producer is missing: pipeline never uploads packages to cloud, so the WebApp signed-URL han | 🟡 scaffolded | GCS delivery producer implemented+tested (uploads bundle to marketplace-artifacts/{ent}/, records gs:// URIs + webapp_ingestion contract, fail-closed). PENDING: webapp entitlement  |
 | R003 | P0 |  | cross-repo | Storage rules are disjoint across repos, both deploy to the same project (last-writer-wins), and the | ✅ fixed | Canonical superset storage.rules byte-identical across repos + check-storage-rules-parity.sh + both parity guards wired into webapp CI (RUNNER_TEMP isolation, sibling matching-bran |
 | R004 | P0 |  | cross-repo | Operator DPA / subprocessor list / access-audit terms and legal-EHS consent sign-off are unsigned (o | ⬜ todo |  |
-| R005 | P1 | 🌐 | capture | Capture app hardcodes intended_space_type='industrial_unknown' with no site-type picker — the pipeli | ⬜ todo |  |
+| R005 | P1 | 🌐 | capture | Capture app hardcodes intended_space_type='industrial_unknown' with no site-type picker — the pipeli | ✅ fixed | SiteType enum + non-blocking picker; VideoCaptureManager/GlassesCaptureManager write the selected token into intended_space_type (was hardcoded industrial_unknown). Tokens match pi |
 | R006 | P1 | 🌐 | pipeline | Industrial task-success grounding does not exist — eval_ready_task_grounding.py only ships a kitchen | ✅ fixed | Added containment_in_receptacle / placement_at_target_pose / transfer_zone_arrival success proxies parallel to the kitchen handle proxy, routed by material-handling/pick-place/tran |
 | R007 | P1 | 🌐 | pipeline | No industrial simulator scene/scenario catalog or committed truth fixture — the only proven end-to-e | ✅ fixed | Committed warehouse_task_min industrial truth fixture (identical schema, industrial content). [pipeline 3ff0238] |
 | R008 | P1 | 🌐 | capture | No thermal / memory / disk monitoring during iPhone ARKit recording; storage only checked at upload | ⬜ todo |  |
@@ -32,7 +32,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R024 | P1 |  | pipeline | Batch inbox runner has no per-request exception isolation, quarantine, or dead-letter — one poison r | ⬜ todo |  |
 | R025 | P1 |  | pipeline | Headline task success_rate for WAM runs is a VLM judgment over GENERATED video, not physics or captu | ⬜ todo |  |
 | R026 | P1 |  | pipeline | Live simulator execution and live policy execution are unproven by default; honest beta deliverable  | ⬜ todo |  |
-| R027 | P1 |  | cross-repo | Consent revocation is not self-enforcing across the delivery chain: revoked capture != revoked entit | ⬜ todo |  |
+| R027 | P1 |  | cross-repo | Consent revocation is not self-enforcing across the delivery chain: revoked capture != revoked entit | ✅ fixed | WebApp ingests pipeline takedown notice -> flips linked entitlements to access_state=revoked with audit trail; both mint paths defensively refuse revoked. tsc clean; 3/3 + 22/22 te |
 | R028 | P1 |  | webapp | Runtime forwarding defaults to required=false: WebApp returns 202 "queued_for_pipeline" even when no | ✅ fixed | Production now returns 5xx when pipeline forwarding not performed (not_configured->503, blocked/failed->502) regardless of FORWARD_REQUIRED; non-prod unchanged. tsc clean, 25 tests |
 | R029 | P1 |  | cross-repo | Contract parity gate cannot run — shared BlueprintContracts module is absent; both repos run indepen | ⬜ todo |  |
 | R030 | P1 |  | webapp | No entitlement/authz enforcement on eval-job submission; entitlement.approved is client-supplied and | ⬜ todo |  |
@@ -46,7 +46,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R038 | P1 |  | cross-repo | No beta-ops incident-response runbook (owner, escalation, rollback, takedown, customer-comms) and de | ✅ fixed | Beta incident-response runbook (ownership/escalation/detection, takedown drill, 4 degraded-state playbooks + comms) + health-checked Render rollback script (shellcheck-clean) + DEP |
 | R039 | P1 |  | cross-repo | capture_submissions.status is client-writable despite rules comment claiming backend-only — a captur | ✅ fixed | capture_submissions.status confined to client lifecycle states; approved/paid remain Admin-SDK-only. [webapp 8e8313d, capture 411ca0f] |
 | R040 | P1 |  | webapp | Firestore scenes collection lets any authenticated user read, update, or delete ANY scene (broken ob | ✅ fixed | scenes locked to admin read + backend-only writes (was world read/update/delete over contact PII). [webapp 8e8313d, capture 411ca0f] |
-| R041 | P1 |  | pipeline | No aggregate/fleet spend budget ceiling — GPU cost guardrails are strictly per-job | ⬜ todo |  |
+| R041 | P1 |  | pipeline | No aggregate/fleet spend budget ceiling — GPU cost guardrails are strictly per-job | ✅ fixed | New fleet_spend_ledger.py: rolling daily+monthly spend + concurrent-GPU ledger with fail-closed caps (BLUEPRINT_FLEET_DAILY/MONTHLY_SPEND_USD, MAX_CONCURRENT_GPU) + kill switch, in |
 | R042 | P1 |  | pipeline | No storage lifecycle/retention on the primary capture bucket — unbounded storage cost | ⬜ todo |  |
 | R043 | P1 |  | cross-repo | No load/soak test, capacity model, or cost-per-capture model in any repo | 🟡 scaffolded | Quantitative capacity+cost model (~$2.60/capture, ~$3.9-4.5k/100-user-mo, peak ~13 uploads/~16 GPU jobs > current ~10 ceiling) + runnable k6 intake load/soak harness (safe dry defa |
 | R044 | P1 |  | pipeline | Slow/integration/GPU lane never gates a merge or deploy | ⬜ todo |  |
