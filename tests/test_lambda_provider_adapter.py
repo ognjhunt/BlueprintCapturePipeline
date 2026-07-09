@@ -386,6 +386,134 @@ def test_terminate_instances_writes_teardown_manifest(
     assert teardown["continuing_spend_requires_followup_list_instances"] is True
 
 
+class _FakeResponse:
+    status = 200
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def test_terminate_with_confirmation_polls_to_billing_terminal_and_proves_teardown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_file = tmp_path / "lambda_api_key"
+    key_file.write_text("secret_file_value\n", encoding="utf-8")
+    monkeypatch.setenv(LAMBDA_API_KEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(LAMBDA_API_GATE_ENV, "true")
+    request_path = _ready_lambda_request(tmp_path / "request.json")
+
+    calls: list[str] = []
+    list_state = {"n": 0}
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        url = request.full_url
+        calls.append(url)
+        if url.endswith("/instances"):
+            list_state["n"] += 1
+            if list_state["n"] == 1:
+                # first poll: instance still winding down (not billing-terminal)
+                body = b'{"data":[{"id":"lambda-instance-1","status":"terminating"}]}'
+            else:
+                # subsequent poll: instance is gone from the list -> not_found (API 404)
+                body = b'{"data":[]}'
+            return _FakeResponse(body)
+        # the terminate POST
+        return _FakeResponse(
+            b'{"data":{"terminated_instances":[{"id":"lambda-instance-1",'
+            b'"status":"terminating"}]}}'
+        )
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
+
+    result = run_lambda_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "out.json",
+        mode="terminate-instances",
+        allow_lambda_api_call=True,
+        instance_ids=["lambda-instance-1"],
+        confirm_termination=True,
+        confirmation_poll_interval_seconds=0.0,
+        confirmation_max_polls=5,
+        sleep=lambda *_a, **_k: None,
+    )
+
+    assert result["status"] == "termination_confirmed"
+    assert result["teardown_proven"] is True
+    assert result["provider_teardown_confirmed"] is True
+    # the terminate POST plus at least two list-instances confirmation polls happened
+    assert any(u.endswith("/instance-operations/terminate") for u in calls)
+    assert sum(1 for u in calls if u.endswith("/instances")) >= 2
+    proof = result["provider_teardown_proof"]
+    assert proof["billing_stopped"] is True
+    assert proof["open_billing_risk"] is False
+    assert proof["provider_terminal_status"] == "not_found"
+    assert proof["provider_terminal_status_source"] == "provider_api"
+    teardown = _read_json(tmp_path / "lambda_provider_teardown_manifest.json")
+    assert teardown["status"] == "teardown_confirmed"
+    assert teardown["billing_terminal_confirmed"] is True
+    assert teardown["continuing_spend_requires_followup_list_instances"] is False
+    assert teardown["instance_terminal_status"]["lambda-instance-1"] == "not_found"
+
+
+def test_terminate_with_confirmation_stays_pending_when_never_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_file = tmp_path / "lambda_api_key"
+    key_file.write_text("secret_file_value\n", encoding="utf-8")
+    monkeypatch.setenv(LAMBDA_API_KEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(LAMBDA_API_GATE_ENV, "true")
+    request_path = _ready_lambda_request(tmp_path / "request.json")
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        url = request.full_url
+        if url.endswith("/instances"):
+            # instance never leaves 'active' -> confirmation must NOT fabricate proof
+            return _FakeResponse(
+                b'{"data":[{"id":"lambda-instance-1","status":"active"}]}'
+            )
+        return _FakeResponse(
+            b'{"data":{"terminated_instances":[{"id":"lambda-instance-1",'
+            b'"status":"terminating"}]}}'
+        )
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
+
+    result = run_lambda_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "out.json",
+        mode="terminate-instances",
+        allow_lambda_api_call=True,
+        instance_ids=["lambda-instance-1"],
+        confirm_termination=True,
+        confirmation_poll_interval_seconds=0.0,
+        confirmation_max_polls=3,
+        sleep=lambda *_a, **_k: None,
+    )
+
+    assert result["status"] == "termination_requested"
+    assert result["teardown_proven"] is False
+    assert result["provider_teardown_confirmed"] is False
+    proof = result["provider_teardown_proof"]
+    assert proof["billing_stopped"] is False
+    assert proof["open_billing_risk"] is True
+    teardown = _read_json(tmp_path / "lambda_provider_teardown_manifest.json")
+    assert teardown["status"] == "termination_requested"
+    assert teardown["billing_terminal_confirmed"] is False
+    assert teardown["continuing_spend_requires_followup_list_instances"] is True
+    assert teardown["teardown_proven"] is False
+
+
 def test_cli_main_dry_run_returns_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
