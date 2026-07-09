@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from .common import ensure_dir, read_json_any, write_json, write_text
 from .local_capture import resolve_local_capture_context
+from .site_taxonomy import SITE_TAXONOMY_VERSION, resolve_site_type
 
 ROBOT_EVAL_DATASET_SCHEMA_VERSION = "real_site_robot_eval_dataset_manifest.v1"
 ROBOT_EVAL_DATASET_V01_SCHEMA_VERSION = "real_site_robot_eval_dataset_manifest.v0.1"
@@ -2961,6 +2962,14 @@ def _site_card(
         "capture_id": context.capture_id,
         "site_id": _site_id_from_inputs(descriptor, raw_manifest),
         "site_type": site_type,
+        # Canonical, versioned taxonomy classification (shared with capture and
+        # episode_spec) alongside the free-text descriptor above. Lets buyers/ops
+        # filter by industrial vs non-industrial and makes an unrecognized site
+        # type explicit rather than a silent fallback.
+        "site_category": resolve_site_type(site_type).category,
+        "site_category_recognized": resolve_site_type(site_type).recognized,
+        "is_industrial_site": resolve_site_type(site_type).is_industrial,
+        "site_taxonomy_version": SITE_TAXONOMY_VERSION,
         "site_type_allowed_values": [
             "warehouse aisle",
             "loading dock",

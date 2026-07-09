@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 4 fixed · 0 scaffolded · 115 todo · 119 total.**
+**Progress: 5 fixed · 0 scaffolded · 114 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -23,7 +23,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R015 | P1 | 🌐 | cross-repo | Pipeline->WebApp ops dashboard summary contract is hardcoded to a home/residential task ontology | ⬜ todo |  |
 | R016 | P1 | 🌐 | pipeline | Every merge gate is anchored on kitchen/indoor fixtures — no industrial/warehouse/factory gate exist | ⬜ todo |  |
 | R017 | P1 | 🌐 | cross-repo | No site scale / dimensional metadata as capture truth or Site-card field | ⬜ todo |  |
-| R018 | P1 | 🌐 | pipeline | Site-type recognition is brittle substring keyword matching over a tiny closed vocabulary with silen | ⬜ todo |  |
+| R018 | P1 | 🌐 | pipeline | Site-type recognition is brittle substring keyword matching over a tiny closed vocabulary with silen | ✅ fixed | New shared versioned site_taxonomy.py (canonical categories + synonyms + industrial flag + resolver); episode_spec task hints now recognize expanded industrial synonyms (distributi |
 | R019 | P1 | 🌐 | capture | Launch-city gate hard-blocks capture at any off-launch-city site, and its only recovery button silen | ⬜ todo |  |
 | R020 | P1 | 🌐 | capture | Venue-permission provenance is a read-only retail demo with no creation flow — industrial capturers  | ⬜ todo |  |
 | R021 | P1 |  | capture | Uploads are single-shot PUTs with no intra-file resume — large captures restart from byte 0 on every | ⬜ todo |  |
