@@ -245,7 +245,15 @@ def test_industrial_review_blocks_person_only_removal() -> None:
 
 def test_industrial_review_clears_when_classes_handled() -> None:
     review = build_rights_provenance_review(
-        rights_summary=_cleared_rights_summary(),
+        # R011: an industrial site that clears must carry operator authorization
+        # (permission document or lawful-basis attestation). This test isolates the
+        # R010 privacy-class concern, so supply a permission document to satisfy the
+        # site-aware consent-evidence gate; the assertions below still verify that
+        # privacy clears only when the industrial-sensitive classes were handled.
+        rights_summary={
+            **_cleared_rights_summary(),
+            "permission_document_uri": "gs://bucket/rights/operator-permission.pdf",
+        },
         privacy_processing={
             "status": "person_removed",
             "is_industrial_site": True,
