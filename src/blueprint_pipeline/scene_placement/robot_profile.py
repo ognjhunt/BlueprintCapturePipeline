@@ -137,6 +137,62 @@ UNITREE_G1_PROFILE = RobotProfile(
     action_interface={
         "schema_ref": "blueprint://schemas/robot_eval_action_trace.v1",
         "preferred_action_chunk": "unitree_g1_normalized_action_chunk",
+        "lerobot_export": {
+            "schema_version": "robot_profile_lerobot_action_layout.v1",
+            "layout_id": "unitree_g1_whole_body_arm_hand_chunks_v1",
+            "action_dim": 78,
+            "vector_keys": [
+                "unitree_g1_normalized_action_chunk",
+                "unitree_g1_sonic_action_chunk",
+                "unitree_g1_sonic_latent_action_chunk",
+                "whole_body_action_chunk",
+                "whole_body_action_vector",
+                "action_chunk",
+            ],
+            "segments": [
+                {
+                    "name": "base_velocity_xy_yaw",
+                    "start": 0,
+                    "end": 3,
+                    "source_keys": ["base_velocity_xy_yaw", "base_velocity"],
+                },
+                {
+                    "name": "left_arm_joint_delta",
+                    "start": 3,
+                    "end": 10,
+                    "source_keys": ["left_arm_joint_delta", "left_arm_joints"],
+                },
+                {
+                    "name": "left_hand_joint_delta",
+                    "start": 10,
+                    "end": 17,
+                    "source_keys": ["left_hand_joint_delta", "left_hand_joints"],
+                },
+                {
+                    "name": "right_arm_joint_delta",
+                    "start": 17,
+                    "end": 24,
+                    "source_keys": ["right_arm_joint_delta", "right_arm_joints"],
+                },
+                {
+                    "name": "right_hand_joint_delta",
+                    "start": 24,
+                    "end": 31,
+                    "source_keys": ["right_hand_joint_delta", "right_hand_joints"],
+                },
+                {
+                    "name": "whole_body_residual_or_policy_latent",
+                    "start": 31,
+                    "end": 78,
+                    "source_keys": ["whole_body_residual_or_policy_latent"],
+                },
+            ],
+            "legacy_supported_layouts": ["sc3_7d_delta_end_effector_pose"],
+            "claim_boundary": (
+                "Layout declares profile-compatible export vector shape; it does not "
+                "prove Unitree policy execution, safety validation, or physical readiness."
+            ),
+        },
         "claim_boundary": "Unitree-native policy required for G1 policy-execution claims.",
     },
     camera_rigs=(

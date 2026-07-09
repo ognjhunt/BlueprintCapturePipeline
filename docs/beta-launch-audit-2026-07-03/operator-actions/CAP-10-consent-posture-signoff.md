@@ -10,6 +10,7 @@ The **code** side of CAP-10 is complete and verified. This record states the enf
 
 ## What the legal/EHS owner must sign off on
 - [ ] The consent model above is adequate for the sites in the beta cohort (operator permission for approved jobs; review-required + downstream redaction for open captures).
+- [ ] Industrial sites (warehouse, manufacturing, fulfillment, factory, brownfield, or `industrial_unknown`) have a separate site-authorization packet before capture: named authorizer and role, EHS/safety sign-off, worker-PII/works-council posture, NDA/proprietary-data terms, PPE and escort conditions, and restricted-zone controls for forklift lanes, LOTO, machine guards, and other non-public areas.
 - [ ] The downstream redaction guarantee (faces/PII removed before any buyer-facing/hosted artifact) meets the applicable privacy obligations.
 - [ ] Any additional consent-capture UX required (e.g. an explicit operator-permission attestation step for open captures) is either not required for beta or is scoped as a follow-up.
 

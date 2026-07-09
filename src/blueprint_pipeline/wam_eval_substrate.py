@@ -181,13 +181,11 @@ def build_evaluation_substrate_registry(*, generated_at: str | None = None) -> D
             "default_learned_backend": True,
             "backbone": "Cosmos3-Nano",
             "model_id": "nvidia/Cosmos3-Nano",
-            "adapter_id": "deepinfra_cosmos3_nano_api",
             "provider_command_env": "BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND",
-            "api_gate_env": "BLUEPRINT_ALLOW_DEEPINFRA_API_CALLS",
-            "command_surface": (
-                "blueprint-run-oscar-wam-provider-command-adapter "
-                "--provider deepinfra --allow-paid-provider-launch"
-            ),
+            "provider_adapter_config_scope": "external_command_or_adapter_config",
+            "provider_specific_adapter_id_in_registry": False,
+            "provider_specific_api_gate_in_registry": False,
+            "command_surface": "configured_provider_command_from_BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND",
             "rollout_artifact_family": "wam_rollout_manifest",
             "success_judge": "vision_success_labeler_adapter",
             "proof_ceiling": "model_derived_support_artifact_until_real_validation",

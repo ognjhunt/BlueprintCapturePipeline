@@ -57,6 +57,102 @@ KNOWN_CONSENT_USE_CLASSES = frozenset(
         "commercial_licensing",
     }
 )
+PUBLIC_POLICY_ONLY_SITE_TYPES = frozenset(
+    {
+        "public",
+        "public_space",
+        "publicly_accessible",
+        "public_retail",
+        "street",
+        "sidewalk",
+        "park",
+    }
+)
+PRIVATE_OR_INDUSTRIAL_SITE_TYPES = frozenset(
+    {
+        "warehouse",
+        "factory",
+        "manufacturing",
+        "manufacturing_plant",
+        "fulfillment",
+        "fulfillment_center",
+        "distribution_center",
+        "industrial",
+        "industrial_unknown",
+        "brownfield_site",
+        "lab",
+        "hospital",
+        "office",
+        "retail_back_of_house",
+    }
+)
+INDUSTRIAL_PRIVACY_REDACTION_CLASSES = (
+    "person",
+    "face",
+    "badge_id",
+    "screen",
+    "whiteboard",
+    "signage",
+    "license_plate",
+    "shipping_label",
+)
+
+
+def _normalized_site_type(
+    *,
+    rights: Mapping[str, Any],
+    site_identity: Mapping[str, Any] | None,
+) -> str:
+    identity = dict(site_identity or {})
+    candidates = (
+        rights.get("site_type"),
+        rights.get("intended_space_type"),
+        rights.get("site_class"),
+        rights.get("site_access_class"),
+        identity.get("site_type"),
+        identity.get("intended_space_type"),
+        identity.get("facility_template"),
+        identity.get("location_type"),
+    )
+    for candidate in candidates:
+        value = str(candidate or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if value:
+            return value
+    return "unknown"
+
+
+def _requires_operator_permission(site_type: str, rights: Mapping[str, Any]) -> bool:
+    access_class = str(
+        rights.get("site_access_class")
+        or rights.get("property_access_class")
+        or rights.get("capture_access_class")
+        or ""
+    ).strip().lower().replace("-", "_").replace(" ", "_")
+    if site_type in PUBLIC_POLICY_ONLY_SITE_TYPES or access_class in PUBLIC_POLICY_ONLY_SITE_TYPES:
+        return False
+    if site_type in PRIVATE_OR_INDUSTRIAL_SITE_TYPES:
+        return True
+    if access_class in {"private", "controlled", "restricted", "employee_only"}:
+        return True
+    return False
+
+
+def _lawful_basis_attestation_uri(rights: Mapping[str, Any]) -> str:
+    return str(
+        rights.get("lawful_basis_attestation_uri")
+        or rights.get("authorization_attestation_uri")
+        or rights.get("industrial_authorization_uri")
+        or ""
+    ).strip()
+
+
+def _redaction_classes(privacy: Mapping[str, Any]) -> list[str]:
+    classes = (
+        _string_list(privacy.get("redaction_target_classes"))
+        or _string_list(privacy.get("redaction_classes"))
+        or _string_list(privacy.get("redaction_class_set"))
+    )
+    return sorted({item.strip().lower().replace("-", "_").replace(" ", "_") for item in classes})
 
 
 def build_rights_provenance_review(
@@ -78,6 +174,9 @@ def build_rights_provenance_review(
         default=False,
     )
     permission_document_uri = str(rights.get("permission_document_uri") or "").strip()
+    lawful_basis_uri = _lawful_basis_attestation_uri(rights)
+    site_type = _normalized_site_type(rights=rights, site_identity=site_identity)
+    operator_permission_required = _requires_operator_permission(site_type, rights)
     privacy_status = str(privacy.get("status") or "not_run").strip().lower()
     provenance_status = str(provenance.get("status") or "missing").strip().lower()
     commercialization_terms = _mapping(
@@ -112,7 +211,18 @@ def build_rights_provenance_review(
 
     # A "documented" consent claim without the document itself is an incomplete
     # rights packet, not documented consent — it must not clear.
-    consent_evidence_complete = consent_status == "policy_only" or (
+    policy_only_evidence_complete = consent_status == "policy_only" and (
+        bool(permission_document_uri)
+        or bool(lawful_basis_uri)
+        or not operator_permission_required
+    )
+    policy_only_requires_permission = (
+        consent_status == "policy_only"
+        and operator_permission_required
+        and not permission_document_uri
+        and not lawful_basis_uri
+    )
+    consent_evidence_complete = policy_only_evidence_complete or (
         consent_status == "documented" and bool(permission_document_uri)
     )
 
@@ -138,7 +248,7 @@ def build_rights_provenance_review(
 
     rights_state = (
         "blocked"
-        if consent_revoked or scope_blocked_classes
+        if consent_revoked or scope_blocked_classes or policy_only_requires_permission
         else "cleared"
         if derived_generation_allowed and consent_evidence_complete and not scope_unspecified
         else "blocked"
@@ -149,6 +259,19 @@ def build_rights_provenance_review(
         "face_anonymized_fallback",
         "full_frame_redacted_local_proof",
     }
+    redaction_classes = _redaction_classes(privacy)
+    required_redaction_classes = (
+        list(INDUSTRIAL_PRIVACY_REDACTION_CLASSES)
+        if operator_permission_required
+        else []
+    )
+    missing_redaction_classes = [
+        item for item in required_redaction_classes if item not in redaction_classes
+    ]
+    industrial_redaction_scope_incomplete = bool(
+        missing_redaction_classes
+        and privacy_status in {"no_people_detected", "person_removed"}
+    )
     privacy_state = (
         "cleared"
         if privacy_status
@@ -156,8 +279,9 @@ def build_rights_provenance_review(
             "no_people_detected",
             "person_removed",
         }
+        and not industrial_redaction_scope_incomplete
         else "blocked"
-        if privacy_status == "failed_closed"
+        if privacy_status == "failed_closed" or industrial_redaction_scope_incomplete
         else "needs_review"
         if fallback_redaction_used
         else "needs_review"
@@ -181,12 +305,26 @@ def build_rights_provenance_review(
         )
     if rights_state == "blocked" and not consent_revoked and not scope_blocked_classes:
         blockers.append("rights_not_sufficient_for_derived_generation")
+        if policy_only_requires_permission:
+            blockers.append(
+                "policy_only_requires_operator_permission_for_private_or_industrial_site"
+            )
     elif rights_state == "needs_review":
         blockers.append("rights_or_consent_requires_review")
         if consent_status == "documented" and not permission_document_uri:
             blockers.append("consent_documented_without_permission_document")
+        if policy_only_requires_permission:
+            blockers.append(
+                "policy_only_requires_operator_permission_for_private_or_industrial_site"
+            )
     if privacy_state == "blocked":
-        blockers.append("privacy_processing_failed_closed")
+        if industrial_redaction_scope_incomplete:
+            blockers.append(
+                "privacy_industrial_redaction_scope_incomplete:"
+                + ",".join(missing_redaction_classes)
+            )
+        else:
+            blockers.append("privacy_processing_failed_closed")
     elif fallback_redaction_used:
         blockers.append("privacy_fallback_redaction_requires_manual_review")
     elif privacy_state == "needs_review":
@@ -204,8 +342,10 @@ def build_rights_provenance_review(
                 "rights_not_sufficient_for_derived_generation",
                 "privacy_processing_failed_closed",
                 "consent_revoked_takedown_required",
+                "policy_only_requires_operator_permission_for_private_or_industrial_site",
             }
             or blocker.startswith("consent_scope_excludes_use_class:")
+            or blocker.startswith("privacy_industrial_redaction_scope_incomplete:")
             for blocker in blockers
         )
         else "needs_review"
@@ -225,6 +365,10 @@ def build_rights_provenance_review(
             "consent_revoked": consent_revoked,
             "consent_revoked_at": rights.get("consent_revoked_at"),
             "permission_document_uri": rights.get("permission_document_uri"),
+            "lawful_basis_attestation_uri": lawful_basis_uri or None,
+            "site_type": site_type,
+            "operator_permission_required": operator_permission_required,
+            "policy_only_evidence_complete": policy_only_evidence_complete,
             "consent_scope": _string_list(rights.get("consent_scope")),
             "consent_use_classes": consent_use_classes,
             "required_use_classes": required_classes,
@@ -246,6 +390,9 @@ def build_rights_provenance_review(
             "mode": privacy.get("mode"),
             "fail_closed": parse_bool(privacy.get("fail_closed"), default=False),
             "raw_retained": parse_bool(privacy.get("raw_retained"), default=False),
+            "redaction_target_classes": redaction_classes,
+            "required_redaction_classes": required_redaction_classes,
+            "missing_required_redaction_classes": missing_redaction_classes,
             # Fallback redactions cleared the gate mechanically but were not
             # verified removals; they require human review before external
             # delivery or hosted review surfaces can clear.

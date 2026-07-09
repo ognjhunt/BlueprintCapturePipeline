@@ -524,6 +524,11 @@ matches the configured control-plane capture root, and the request source
 identifies the WebApp. Otherwise the closure gate requires those IDs to be
 grounded in persisted capture/WebApp handoff artifacts and blocks conflicting
 source values.
+If the request uses WebApp's public `/synced-artifacts/sites/<slug>` capture
+root, set `ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON` for that
+slug or the single-site `ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT` fallback;
+the Pipeline inbox runner quarantines public roots without an explicit local
+capture-root override.
 The proof-boundary audit exits zero for a healthy waiting state and records
 remaining external blockers separately from internal artifact or overclaim
 failures. It also checks `live_pipeline_staged_inputs.json` when present, so a

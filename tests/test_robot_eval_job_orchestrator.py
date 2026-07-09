@@ -6,6 +6,7 @@ import struct
 import subprocess
 import sys
 import zipfile
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from blueprint_pipeline.robot_eval_job_orchestrator import (
     _apply_live_closure_to_proof_boundary,
     _build_scheduler_decision,
     _proof_boundary,
+    _provider_prelaunch_spend_guard,
     _remote_cloud_execution_closure_manifest,
     _robot_team_grade_eval_closure_manifest,
     _attempt_task_success,
@@ -862,8 +864,19 @@ def test_webapp_projection_surfaces_consent_revocation_takedown(tmp_path: Path) 
 def test_webapp_projection_proof_boundary_uses_strict_booleans(
     tmp_path: Path,
 ) -> None:
+    job_dir = tmp_path / "job"
+    _write_json(
+        job_dir / "task_eval_run_report.json",
+        {
+            "status": "ready_review_required",
+            "success_claim_ledger": {
+                "highest_truthful_claim": "review_task_success",
+            },
+            "marketing_copy": "Live policy execution is verified.",
+        },
+    )
     projection = _webapp_robot_eval_status_projection(
-        job_dir=tmp_path / "job",
+        job_dir=job_dir,
         job_id="job-string-proof",
         scene_id="scene-1",
         capture_id="capture-1",
@@ -902,6 +915,16 @@ def test_webapp_projection_proof_boundary_uses_strict_booleans(
     assert boundary["non_ranking_operational_claim_validated"] is False
     assert boundary["rank_fidelity_result_proven"] is False
     assert boundary["public_claim_upgrade_allowed"] is False
+    ceiling = projection["buyer_claim_ceiling"]
+    assert ceiling["highest_truthful_claim"] == "review_task_success"
+    assert ceiling["live_policy_execution_claim_allowed"] is False
+    assert (
+        "buyer_copy_claims_live_policy_execution_without_live_gate"
+        in ceiling["blockers"]
+    )
+    assert projection["buyer_display_guardrails"][
+        "buyer_facing_claim_ceiling_pinned_to_highest_truthful_claim"
+    ] is True
 
 
 def test_proof_boundary_uses_strict_booleans_for_claim_inputs() -> None:
@@ -3686,6 +3709,11 @@ def test_live_robot_eval_closure_blocks_missing_robot_eval_report(
     assert gate["passed"] is False
     assert "missing_robot_eval_report" in gate["blockers"]
     assert "missing_robot_eval_report_markdown" in gate["blockers"]
+    assert manifest["highest_truthful_claim"] == "no_claim"
+    assert manifest["buyer_claim_ceiling"]["highest_truthful_claim"] == "no_claim"
+    assert manifest["buyer_claim_ceiling"][
+        "buyer_facing_claim_ceiling_pinned_to_highest_truthful_claim"
+    ] is True
 
 
 def test_live_robot_eval_closure_blocks_unlinked_robot_eval_report_stub(
@@ -7585,6 +7613,101 @@ def test_robot_eval_job_request_inbox_uses_request_capture_root(
     ).exists()
 
 
+def test_robot_eval_job_request_inbox_applies_webapp_public_capture_root_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_capture_root = _build_capture_root(tmp_path / "control")
+    request_capture_root = _build_capture_root(tmp_path / "request")
+    _write_robot_eval_cards(request_capture_root)
+    _write_fixture_attempts(request_capture_root, success=True)
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+    request = _full_job_request(request_capture_root)
+    request["job_id"] = "public-root-job"
+    request["site_package"] = {
+        **request["site_package"],
+        "capture_root": "/synced-artifacts/sites/site-one",
+        "site_slug": "site-one",
+    }
+    monkeypatch.setenv(
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON",
+        json.dumps({"site-one": str(request_capture_root)}),
+    )
+    _write_json(inbox_dir / "public-root-job.json", request)
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=control_capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    queued_request = _read_json(
+        request_capture_root
+        / "pipeline"
+        / "robot_eval_job_requests"
+        / "public-root-job"
+        / "job_request.json"
+    )
+    assert result["processed_count"] == 1
+    assert result["jobs"][0]["request_capture_root"] == str(request_capture_root)
+    assert queued_request["site_package"]["capture_root"] == str(request_capture_root)
+    assert queued_request["site_package"]["webapp_capture_root"] == (
+        "/synced-artifacts/sites/site-one"
+    )
+    assert queued_request["site_package"]["capture_root_override_source"] == (
+        "env:ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON"
+    )
+    assert queued_request["owner_system"]["pipeline_control_plane_capture_root"] == str(
+        request_capture_root
+    )
+    assert not (
+        control_capture_root / "pipeline" / "robot_eval_jobs" / "public-root-job"
+    ).exists()
+
+
+def test_robot_eval_job_request_inbox_quarantines_webapp_public_root_without_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_capture_root = _build_capture_root(tmp_path / "control")
+    request_capture_root = _build_capture_root(tmp_path / "request")
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+    request = _full_job_request(request_capture_root)
+    request["job_id"] = "missing-public-root-override"
+    request["site_package"] = {
+        **request["site_package"],
+        "capture_root": "/synced-artifacts/sites/site-one",
+        "site_slug": "site-one",
+    }
+    monkeypatch.delenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON", raising=False)
+    monkeypatch.delenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT", raising=False)
+    _write_json(inbox_dir / "missing-public-root-override.json", request)
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=control_capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    assert result["status"] == "blocked_all_requests_quarantined"
+    assert result["processed_count"] == 0
+    assert result["quarantined_request_count"] == 1
+    assert result["quarantined_requests"][0]["phase"] == "process"
+    assert result["quarantined_requests"][0]["error_message"] == (
+        "missing_pipeline_capture_root_override_for_webapp_synced_artifact"
+    )
+    assert not (
+        control_capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "missing-public-root-override"
+    ).exists()
+
+
 def test_robot_eval_job_request_inbox_processes_two_request_capture_roots_in_one_pass(
     tmp_path: Path,
 ) -> None:
@@ -7717,6 +7840,96 @@ def test_robot_eval_job_request_inbox_accepts_webapp_queue_envelope(
     assert result["jobs"][0]["job_id"] == "webapp-envelope-job-1"
     assert queued_request["schema_version"] == "robot_eval_job_request.v1"
     assert "queue_contract" not in queued_request
+
+
+def test_robot_eval_job_request_inbox_quarantines_bad_request_and_continues(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+    good_request = _full_job_request(capture_root)
+    good_request["job_id"] = "good-webapp-job"
+    _write_json(inbox_dir / "good-webapp-job.json", good_request)
+    bad_path = inbox_dir / "bad-webapp-job.json"
+    bad_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_path.write_text("{not valid json", encoding="utf-8")
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+    second = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    assert result["status"] == "completed_with_quarantined_requests"
+    assert result["discovered_request_count"] == 2
+    assert result["input_request_count"] == 1
+    assert result["processed_count"] == 1
+    assert result["jobs"][0]["job_id"] == "good-webapp-job"
+    assert result["quarantined_request_count"] == 1
+    quarantine = result["quarantined_requests"][0]
+    assert quarantine["phase"] == "load"
+    assert quarantine["reason"] == "request_json_or_contract_invalid"
+    assert quarantine["dead_letter_copy_succeeded"] is True
+    assert Path(quarantine["path"]).is_file()
+    assert Path(quarantine["dead_letter_request_path"]).is_file()
+    assert any(marker["status"] == "quarantined" for marker in result["processed_markers"])
+    assert second["status"] == "empty"
+    assert second["skipped_processed_request_count"] == 2
+
+
+def test_robot_eval_job_request_inbox_quarantines_processing_failure_and_continues(
+    tmp_path: Path,
+) -> None:
+    control_capture_root = _build_capture_root(tmp_path / "control")
+    good_capture_root = _build_capture_root(tmp_path / "good")
+    _write_robot_eval_cards(good_capture_root)
+    _write_fixture_attempts(good_capture_root, success=True)
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+    good_request = _full_job_request(good_capture_root)
+    good_request["job_id"] = "good-request-root-job"
+    bad_request = _full_job_request(good_capture_root)
+    bad_request["job_id"] = "bad-request-root-job"
+    bad_request["site_package"] = {
+        **bad_request["site_package"],
+        "capture_root": str(tmp_path / "not-a-capture-root"),
+    }
+    _write_json(inbox_dir / "good-request-root-job.json", good_request)
+    _write_json(inbox_dir / "bad-request-root-job.json", bad_request)
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=control_capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    assert result["status"] == "completed_with_quarantined_requests"
+    assert result["processed_count"] == 1
+    assert result["jobs"][0]["job_id"] == "good-request-root-job"
+    assert result["quarantined_request_count"] == 1
+    quarantine = result["quarantined_requests"][0]
+    assert quarantine["phase"] == "process"
+    assert quarantine["job_id"] == "bad-request-root-job"
+    assert quarantine["reason"] == "robot_eval_job_request_processing_failed"
+    assert Path(quarantine["path"]).is_file()
+    assert not (
+        control_capture_root
+        / "pipeline"
+        / "robot_eval_jobs"
+        / "bad-request-root-job"
+    ).exists()
 
 
 def test_robot_eval_job_request_inbox_processes_latest_webapp_identity_once(
@@ -10252,6 +10465,103 @@ def test_live_provider_launch_blocks_without_versioned_worker_image_ref(
     assert cost_ledger["gpu_time"]["estimated_gpu_seconds"] == 0  # type: ignore[index]
 
 
+def test_provider_prelaunch_spend_guard_requires_fresh_fleet_budget_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "gpu_spend_guard.json"
+    _write_json(
+        snapshot_path,
+        {
+            "schema_version": "gpu_spend_guard.v1",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "live_instance_count": 1,
+            "total_burn_per_hour_usd": 0.79,
+            "reap_candidate_ids": [],
+            "fleet_budget": {
+                "schema_version": "gpu_fleet_budget_guard.v1",
+                "status": "passed",
+                "blockers": [],
+            },
+        },
+    )
+    monkeypatch.setenv("BLUEPRINT_GPU_SPEND_GUARD_SNAPSHOT_PATH", str(snapshot_path))
+
+    guard = _provider_prelaunch_spend_guard(
+        provider="runpod",
+        request_manifest={"requested_budget_usd": 1.0, "timeout_seconds": 120},
+        scheduler_decision={"gpu_allocation": {"requested_budget_usd": 1.0}},
+        worker_launch_plan={
+            "launch_mode": {
+                "hard_timeout_seconds": 120,
+                "max_active_workers": 1,
+                "idle_shutdown_required": True,
+                "external_watchdog_ttl_required": True,
+                "external_watchdog_ttl_seconds": 240,
+            },
+            "cost_controls": {
+                "requested_budget_usd": 1.0,
+                "finalizer_must_upload_artifacts_before_shutdown": True,
+            },
+            "artifact_upload_contract": {
+                "upload_before_shutdown_required": True,
+            },
+        },
+        startup_pipeline={},
+        local_sim_only_prerequisite={"required_before_provider_spend": False},
+        approval_blockers=[],
+        request_blockers=[],
+        env_allowed=True,
+        allow_gpu_provisioning=True,
+    )
+
+    assert guard["status"] == "passed"
+    assert guard["can_launch"] is True
+    assert guard["fleet_budget_guard"]["status"] == "passed"
+
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    payload["fleet_budget"]["status"] = "blocked"
+    payload["fleet_budget"]["blockers"] = ["fleet_burn_rate_limit_exceeded"]
+    snapshot_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    blocked = _provider_prelaunch_spend_guard(
+        provider="runpod",
+        request_manifest={"requested_budget_usd": 1.0, "timeout_seconds": 120},
+        scheduler_decision={"gpu_allocation": {"requested_budget_usd": 1.0}},
+        worker_launch_plan={
+            "launch_mode": {
+                "hard_timeout_seconds": 120,
+                "max_active_workers": 1,
+                "idle_shutdown_required": True,
+                "external_watchdog_ttl_required": True,
+                "external_watchdog_ttl_seconds": 240,
+            },
+            "cost_controls": {
+                "requested_budget_usd": 1.0,
+                "finalizer_must_upload_artifacts_before_shutdown": True,
+            },
+            "artifact_upload_contract": {
+                "upload_before_shutdown_required": True,
+            },
+        },
+        startup_pipeline={},
+        local_sim_only_prerequisite={"required_before_provider_spend": False},
+        approval_blockers=[],
+        request_blockers=[],
+        env_allowed=True,
+        allow_gpu_provisioning=True,
+    )
+
+    assert blocked["status"] == "blocked"
+    assert blocked["can_launch"] is False
+    assert "prelaunch_fleet_budget_guard_not_passed" in blocked["blockers"]
+    assert "fleet_budget_guard:fleet_budget_not_passed" in blocked["blockers"]
+    assert (
+        "fleet_budget_guard:fleet_budget:fleet_burn_rate_limit_exceeded"
+        in blocked["blockers"]
+    )
+
+
 def test_live_provider_launch_blocks_without_worker_manifest_uri(
     tmp_path: Path,
     monkeypatch,
@@ -10683,7 +10993,7 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     assert prelaunch_guard["provider_race"]["race_required_for_customer_path"] is True
     assert (
         prelaunch_guard["provider_race"]["customer_path_provider_failover_wired"]
-        is False
+        is True
     )
     assert (
         prelaunch_guard["provider_race"][
@@ -10695,25 +11005,27 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
         prelaunch_guard["provider_race"][
             "customer_path_provider_failover_runtime_wired"
         ]
-        is False
+        is True
     )
     assert prelaunch_guard["provider_race"][
         "customer_path_provider_failover_runtime_status"
-    ] == "blocked_pending_teardown_owned_race_launcher"
-    assert (
-        "runpod_provider_race_teardown_owned_allocation_contract_missing"
-        in prelaunch_guard["provider_race"][
-            "customer_path_provider_failover_runtime_blockers"
-        ]
-    )
+    ] == "serial_failover_runtime_ready"
+    assert prelaunch_guard["provider_race"][
+        "customer_path_provider_failover_runtime_blockers"
+    ] == []
     runtime_readiness = prelaunch_guard["provider_race"]["runtime_readiness"]
     assert runtime_readiness["schema_version"] == (
         "robot_eval_provider_race_runtime_readiness.v1"
     )
-    assert runtime_readiness["customer_path_provider_failover_runtime_wired"] is False
+    assert runtime_readiness["customer_path_provider_failover_runtime_wired"] is True
+    assert runtime_readiness["status"] == "serial_failover_runtime_ready"
+    assert runtime_readiness["runtime_eligible_candidate_count"] >= 2
     assert runtime_readiness["claim_boundary"][
         "serial_provider_launch_must_remain_blocked_until_runtime_wired"
-    ] is True
+    ] is False
+    assert runtime_readiness["claim_boundary"][
+        "parallel_provider_race_runtime_claimed"
+    ] is False
     assert prelaunch_guard["provider_race"]["provider_race_handoff_path"] == (
         "gpu_provider_race_handoff.json"
     )
@@ -10745,34 +11057,39 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     )
     assert (
         provider_race_handoff["customer_path_provider_failover_runtime_wired"]
-        is False
+        is True
     )
     assert provider_race_handoff["customer_path_provider_failover_runtime_status"] == (
-        "blocked_pending_teardown_owned_race_launcher"
+        "serial_failover_runtime_ready"
     )
     assert (
         "customer_path_provider_failover_runtime_not_wired"
-        in provider_race_handoff["blockers"]
+        not in provider_race_handoff["blockers"]
     )
     assert (
         "provider_race_runtime_launcher_not_implemented"
         not in provider_race_handoff["blockers"]
     )
     assert (
-        "runpod_provider_race_teardown_owned_allocation_contract_missing"
-        in provider_race_handoff["customer_path_provider_failover_runtime_blockers"]
+        provider_race_handoff["customer_path_provider_failover_runtime_blockers"] == []
     )
     assert provider_race_handoff["provider_race_runtime_readiness"][
         "runtime_eligible_candidate_count"
-    ] < 2
+    ] >= 2
     assert provider_race_handoff["execution_contract"][
         "teardown_owned_loser_cleanup_required"
+    ] is False
+    assert provider_race_handoff["execution_contract"]["runtime_mode"] == (
+        "serial_adapter_failover"
+    )
+    assert provider_race_handoff["execution_contract"][
+        "failed_adapter_must_emit_teardown_or_open_billing_risk"
     ] is True
     assert provider_race_handoff["execution_contract"][
         "provider_race_runtime_launcher_available"
     ] is True
     assert provider_race_handoff["execution_contract"][
-        "live_race_execution_proven"
+        "live_failover_execution_proven"
     ] is False
     assert provider_race_handoff["provider_race_runtime_launcher_available"] is True
     assert provider_race_handoff["provider_race_runtime_launcher_blockers"] == []
@@ -10784,7 +11101,7 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     )
     assert provider_race_handoff["claim_boundary"][
         "provider_race_handoff_is_not_customer_runtime_failover"
-    ] is True
+    ] is False
     assert provider_race_handoff["claim_boundary"][
         "provider_race_runtime_launcher_not_implemented"
     ] is False
@@ -13141,6 +13458,17 @@ def test_robot_eval_job_can_run_fixture_wam_evaluation_substrate(tmp_path: Path)
     )
     assert task_eval_report["wam_evaluation"]["bare_score_forbidden"] is True
     assert task_eval_report["wam_evaluation"]["calibration_anchor_set"] == []
+    wam_provenance = task_eval_report["wam_evaluation"]["success_label_provenance"]
+    assert wam_provenance["success_rate_requires_provenance_disclosure"] is True
+    assert wam_provenance["success_rate_provenance_disclosed"] is True
+    assert wam_provenance["rows"]
+    assert all(row["buyer_disclosure"] for row in wam_provenance["rows"])
+    assert task_eval_report["claim_boundary"][
+        "wam_success_rate_requires_label_provenance_disclosure"
+    ] is True
+    assert task_eval_report["claim_boundary"][
+        "wam_success_label_provenance_disclosed"
+    ] is True
     assert "score" not in task_eval_report["wam_evaluation"]
     assert task_eval_report["claim_boundary"][
         "generated_wam_rollouts_are_model_derived_support_artifacts"

@@ -11,10 +11,12 @@ or promote proof claims.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -36,6 +38,8 @@ DEFAULT_MANIFEST_PATH = (
     "/var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json"
 )
 INTAKE_TOKEN_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN"
+INTAKE_ALLOW_LEGACY_BEARER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER"
+INTAKE_MAX_CLOCK_SKEW_SECONDS_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_MAX_CLOCK_SKEW_SECONDS"
 INTAKE_WORK_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR"
 INTAKE_TRIGGER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND"
 INTAKE_ALLOW_TRIGGER_ENV = "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER"
@@ -46,6 +50,8 @@ INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV = (
 INTAKE_CAPTURE_ROOT_BY_SITE_ENV = "BLUEPRINT_LIVE_PIPELINE_CAPTURE_ROOT_BY_SITE_JSON"
 INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_intake_service.v1"
 CAPTURE_HANDOFF_SOURCE_KIND = "capture_pipeline_handoff"
+DEFAULT_INTAKE_MAX_CLOCK_SKEW_SECONDS = 5 * 60
+_INTAKE_NONCE_CACHE: Dict[str, float] = {}
 
 
 def _string(value: Any) -> str:
@@ -187,6 +193,92 @@ def _parse_timestamp(value: Any) -> float | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.timestamp()
+
+
+def _intake_max_clock_skew_seconds() -> float:
+    configured = _string(os.getenv(INTAKE_MAX_CLOCK_SKEW_SECONDS_ENV))
+    if not configured:
+        return float(DEFAULT_INTAKE_MAX_CLOCK_SKEW_SECONDS)
+    try:
+        parsed = float(configured)
+    except ValueError:
+        return float(DEFAULT_INTAKE_MAX_CLOCK_SKEW_SECONDS)
+    return parsed if parsed > 0 else float(DEFAULT_INTAKE_MAX_CLOCK_SKEW_SECONDS)
+
+
+def _strip_sha256_prefix(value: str) -> str:
+    return re.sub(r"^sha256=", "", _string(value), flags=re.IGNORECASE)
+
+
+def _valid_intake_nonce(value: str) -> bool:
+    nonce = _string(value)
+    return bool(8 <= len(nonce) <= 160 and re.fullmatch(r"[A-Za-z0-9_.:-]+", nonce))
+
+
+def _prune_intake_nonce_cache(now: float, max_age_seconds: float) -> None:
+    cutoff = now - max(max_age_seconds * 2, max_age_seconds + 60)
+    for nonce, seen_at in list(_INTAKE_NONCE_CACHE.items()):
+        if seen_at < cutoff:
+            _INTAKE_NONCE_CACHE.pop(nonce, None)
+
+
+def _claim_intake_nonce(nonce: str, now: float, max_age_seconds: float) -> bool:
+    _prune_intake_nonce_cache(now, max_age_seconds)
+    if nonce in _INTAKE_NONCE_CACHE:
+        return False
+    _INTAKE_NONCE_CACHE[nonce] = now
+    return True
+
+
+def _build_intake_signature(*, secret: str, timestamp: str, nonce: str, body: bytes) -> str:
+    canonical = f"{timestamp}.{nonce}.".encode("utf-8") + body
+    return hmac.new(secret.encode("utf-8"), canonical, "sha256").hexdigest()
+
+
+def _verify_intake_signature(
+    *,
+    secret: str,
+    timestamp: str,
+    nonce: str,
+    signature: str,
+    body: bytes,
+    now: float | None = None,
+) -> None:
+    parsed_timestamp = _parse_timestamp(timestamp)
+    if parsed_timestamp is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid intake signature timestamp",
+        )
+    max_skew = _intake_max_clock_skew_seconds()
+    current = time.time() if now is None else now
+    if abs(current - parsed_timestamp) > max_skew:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="intake signature timestamp outside replay window",
+        )
+    if not _valid_intake_nonce(nonce):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid intake signature nonce",
+        )
+    expected = _build_intake_signature(
+        secret=secret,
+        timestamp=_string(timestamp),
+        nonce=_string(nonce),
+        body=body,
+    )
+    provided = _strip_sha256_prefix(signature)
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid intake signature",
+        )
+    if not _claim_intake_nonce(_string(nonce), current, max_skew):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="replayed intake signature nonce",
+        )
 
 
 def _capture_upload_complete_freshness(capture_root: Path) -> Dict[str, Any]:
@@ -938,9 +1030,13 @@ def _trigger_control_plane() -> Dict[str, Any]:
     }
 
 
-def _require_token(
+async def _require_token(
+    request: Request,
     authorization: str | None = Header(default=None),
     x_blueprint_intake_token: str | None = Header(default=None),
+    x_blueprint_pipeline_timestamp: str | None = Header(default=None),
+    x_blueprint_pipeline_signature: str | None = Header(default=None),
+    x_blueprint_pipeline_nonce: str | None = Header(default=None),
 ) -> None:
     expected = _string(os.getenv(INTAKE_TOKEN_ENV))
     if not expected:
@@ -948,12 +1044,36 @@ def _require_token(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"{INTAKE_TOKEN_ENV} is not configured",
         )
+    timestamp_header = _string(x_blueprint_pipeline_timestamp)
+    signature_header = _string(x_blueprint_pipeline_signature)
+    nonce_header = _string(x_blueprint_pipeline_nonce)
+    if timestamp_header or signature_header or nonce_header:
+        if not (timestamp_header and signature_header and nonce_header):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="intake signature requires timestamp, signature, and nonce headers",
+            )
+        _verify_intake_signature(
+            secret=expected,
+            timestamp=timestamp_header,
+            nonce=nonce_header,
+            signature=signature_header,
+            body=await request.body(),
+        )
+        return
+
+    if not _truthy(os.getenv(INTAKE_ALLOW_LEGACY_BEARER_ENV)):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="intake requires HMAC signature and nonce headers",
+        )
+
     provided = _string(x_blueprint_intake_token)
     if not provided and authorization:
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() == "bearer":
             provided = _string(token)
-    if provided != expected:
+    if not provided or not hmac.compare_digest(provided, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid intake token",
@@ -972,6 +1092,9 @@ def create_app() -> FastAPI:
             "manifest_path": str(manifest_path),
             "manifest_exists": manifest_path.is_file(),
             "token_configured": bool(_string(os.getenv(INTAKE_TOKEN_ENV))),
+            "signed_intake_required": not _truthy(os.getenv(INTAKE_ALLOW_LEGACY_BEARER_ENV)),
+            "legacy_bearer_enabled": _truthy(os.getenv(INTAKE_ALLOW_LEGACY_BEARER_ENV)),
+            "signature_replay_window_seconds": _intake_max_clock_skew_seconds(),
             "trigger_configured": bool(_string(os.getenv(INTAKE_TRIGGER_ENV))),
             "per_request_capture_root_enabled": _truthy(
                 os.getenv(INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV)

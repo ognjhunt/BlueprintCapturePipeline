@@ -251,6 +251,117 @@ def test_eval_ready_task_grounding_default_does_not_emit_sink_handle_task_for_si
     ]["blockers"]
 
 
+def test_eval_ready_task_grounding_builds_industrial_containment_proxy(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "warehouse_capture"
+    _write_json(
+        capture_root / "raw" / "object_index.json",
+        {
+            "objects": [
+                {
+                    "object_id": "target_bin_01",
+                    "label": "target bin",
+                    "source_prompt": "target bin",
+                    "mean_confidence": 0.9,
+                    "reference_crop": "object_index_artifacts/crops/bin.png",
+                    "all_crops": ["object_index_artifacts/crops/bin.png"],
+                    "keypoints": {"center": [310, 210]},
+                    "mean_box_px": {"x": 280, "y": 180, "width": 60, "height": 60},
+                }
+            ]
+        },
+    )
+    _write_json(
+        capture_root / "pipeline" / "evaluation_prep" / "task_anchor_manifest.json",
+        {
+            "tasks": [
+                {
+                    "task_id": "place_object_into_bin",
+                    "target_object_ids": ["target_bin_01"],
+                    "target_bin_id": "target_bin_01",
+                    "destination_zone_id": "warehouse_packout_bin_zone",
+                    "anchor_source": "operator_reviewed_detection",
+                }
+            ]
+        },
+    )
+    camera = capture_root / "pipeline" / "geometry" / "camera" / "intrinsics.json"
+    _write_json(camera, {"fx": 800, "fy": 800, "cx": 320, "cy": 240, "width": 640, "height": 480})
+    scene = tmp_path / "warehouse.splat"
+    scene.write_text("static warehouse 3dgs placeholder", encoding="utf-8")
+    initial_frame = tmp_path / "initial.png"
+    initial_frame.write_bytes(b"png")
+    robot_model = tmp_path / "unitree_g1.xml"
+    robot_model.write_text("<mujoco/>", encoding="utf-8")
+    robot_state = tmp_path / "robot_state.json"
+    _write_json(
+        robot_state,
+        {
+            "right_arm": [0.0] * 7,
+            "right_hand": [0.0] * 7,
+            "right_end_effector_xyz": [0.2, -0.1, 2.0],
+            "payload_center_xyz": [1.0, 2.0, 0.55],
+            "target_zone_center_xyz": [1.02, 2.01, 0.55],
+            "target_zone_aabb": {
+                "min": [0.8, 1.8, 0.25],
+                "max": [1.2, 2.2, 0.85],
+            },
+            "placement_tolerance_m": 0.2,
+        },
+    )
+
+    manifest = grounding.build_eval_ready_task_grounding(
+        capture_root=capture_root,
+        task_id="place_object_into_bin",
+        task_text="place the tote into the target bin",
+        target_label="target bin",
+        scene_asset=scene,
+        initial_frame=initial_frame,
+        camera_calibration=camera,
+        robot_model=robot_model,
+        robot_state=robot_state,
+    )
+
+    assert manifest["status"] == "ready_for_learned_wam_rollout_request"
+    assert manifest["industrial_state_proxy"]["proxy_type"] == "industrial_containment"
+    assert manifest["industrial_proxy_state_check"]["status"] == "completed"
+    assert manifest["industrial_proxy_state_check"]["containment_candidate"] is True
+    assert manifest["industrial_proxy_state_check"]["proxy_success_candidate"] is True
+    assert manifest["readiness"]["industrial_proxy_configured"] is True
+    assert manifest["readiness"]["industrial_proxy_success_candidate"] is True
+    assert manifest["readiness"]["exact_task_success_proven"] is False
+    assert manifest["industrial_proxy_state_check"]["state_success_proven"] is False
+    assert Path(manifest["generated_artifacts"]["industrial_proxy_state_check"]).is_file()
+
+
+def test_committed_warehouse_fixture_exercises_industrial_grounding_gate(
+    tmp_path: Path,
+) -> None:
+    fixture = Path("tests/fixtures/warehouse_task_min").resolve()
+    output_path = tmp_path / "warehouse_fixture_grounding.json"
+
+    manifest = grounding.build_eval_ready_task_grounding(
+        capture_root=fixture,
+        task_id="fixture_warehouse_place_tote_into_bin",
+        task_text="place the tote into the target bin",
+        target_label="target bin",
+        scene_asset=fixture / "assets" / "warehouse_min.splat",
+        initial_frame=fixture / "assets" / "initial_policy_observation.jpg",
+        camera_calibration=fixture / "pipeline" / "geometry" / "camera" / "intrinsics.json",
+        robot_model=fixture / "assets" / "unitree_g1.xml",
+        robot_state=fixture / "assets" / "robot_state.json",
+        output_path=output_path,
+    )
+
+    assert manifest["status"] == "ready_for_learned_wam_rollout_request"
+    assert manifest["selected_task_target"]["object_id"] == "target_bin_01"
+    assert manifest["industrial_state_proxy"]["available"] is True
+    assert manifest["industrial_proxy_state_check"]["proxy_success_candidate"] is True
+    assert manifest["claim_boundary"]["learned_wam_rollout_is_not_physical_success_proof"] is True
+    assert manifest["readiness"]["exact_task_success_proven"] is False
+
+
 def test_eval_ready_task_grounding_cli_writes_summary(tmp_path: Path, capsys) -> None:
     capture_root = tmp_path / "capture"
     (capture_root / "raw").mkdir(parents=True)
@@ -351,9 +462,11 @@ def test_eval_ready_task_grounding_schema_contract_lock(tmp_path: Path) -> None:
         "scene_and_observation_refs",
         "robot_conditioning_refs",
         "articulated_state_proxy",
+        "industrial_state_proxy",
         "camera_calibration_quality_gate",
         "robot_fk_projection",
         "handle_proxy_state_check",
+        "industrial_proxy_state_check",
         "generated_artifacts",
         "success_check_plan",
         "readiness",
@@ -392,6 +505,7 @@ def test_eval_ready_task_grounding_schema_contract_lock(tmp_path: Path) -> None:
             "robot_fk_projection_manifest",
             "robot_fk_projected_skeleton_trace",
             "handle_proxy_state_check",
+            "industrial_proxy_state_check",
         ):
             assert isinstance(artifacts.get(key), str) and artifacts[key]
 
@@ -430,6 +544,14 @@ def test_derive_task_aware_detection_prompts() -> None:
     )
     assert "handle" in door_prompts
     assert len(door_prompts) == len(set(door_prompts))
+
+    industrial_prompts = grounding.derive_task_aware_detection_prompts(
+        task_text="place the tote on the conveyor",
+        target_label="tote conveyor",
+    )
+    assert "tote handle" in industrial_prompts
+    assert "container interior" in industrial_prompts
+    assert "conveyor belt edge" in industrial_prompts
 
     # Button/switch/panel spatial expansion.
     button_prompts = grounding.derive_task_aware_detection_prompts(

@@ -5,9 +5,9 @@ Two deliverables, both fail-closed:
 1. ``build_modality_config`` — a GR00T ``modality.json`` generated from a
    :class:`RobotProfile`: named index slices into the concatenated action
    (and, when available, state) vectors, plus video keys from the profile's
-   camera rigs. The action layout is the SC3 7D delta end-effector pose the
-   pipeline already validates (``delta_position_m`` [0:3],
-   ``delta_rotation_axis_angle`` [3:6], ``gripper`` [6:7]).
+   camera rigs. The preferred action layout comes from the robot profile. A
+   legacy SC3 7D delta end-effector layout remains available only as an
+   explicit compatibility fallback.
 
 2. ``build_lerobot_episode_export`` — maps
    ``simulator_command_batch_control_stream.jsonl`` (+ the attempt trace) into
@@ -20,7 +20,8 @@ Fail-closed rules (never zero-filled, never synthesized):
 
 - missing control stream file -> export status ``blocked``;
 - an attempt with no control rows, or any action that does not parse as a
-  valid SC3 7D vector -> that episode is EXCLUDED with a per-episode blocker;
+  valid vector for the selected robot-profile action layout -> that episode is
+  EXCLUDED with a per-episode blocker;
 - per-step state or timestamps absent from the stream -> the fields are
   omitted (not zero-filled) and the episode is flagged; ``gr00t_ready`` stays
   False until state, timestamps, and materialized video all exist;
@@ -41,8 +42,9 @@ from typing import Any, Dict, List, Mapping, Sequence
 from .common import ensure_dir, utc_now_iso, write_json
 from .scene_placement.robot_profile import RobotProfile, get_robot_profile
 
-LEROBOT_EPISODE_EXPORT_SCHEMA_VERSION = "lerobot_episode_export.v1"
-MODALITY_CONFIG_SCHEMA_VERSION = "gr00t_modality_config.v1"
+LEROBOT_EPISODE_EXPORT_SCHEMA_VERSION = "lerobot_episode_export.v2"
+MODALITY_CONFIG_SCHEMA_VERSION = "gr00t_modality_config.v2"
+ACTION_LAYOUT_SCHEMA_VERSION = "blueprint_lerobot_action_layout.v1"
 
 CONTROL_STREAM_FILENAME = "simulator_command_batch_control_stream.jsonl"
 ATTEMPT_TRACE_FILENAME = "simulator_command_batch_attempt_trace.jsonl"
@@ -55,6 +57,13 @@ SC3_ACTION_LAYOUT: tuple[tuple[str, int, int], ...] = (
     ("gripper", 6, 7),
 )
 SC3_ACTION_DIM = 7
+SC3_ACTION_LAYOUT_ID = "sc3_7d_delta_end_effector_pose"
+GENERIC_ACTION_VECTOR_KEYS = (
+    "action_vector",
+    "actions",
+    "action_values",
+    "policy_action_vector",
+)
 
 # Default per-step state layout when a stream carries robot state. Base pose
 # as position + wxyz quaternion. States are only exported when the stream rows
@@ -115,6 +124,167 @@ def _float_vector(value: Any, dim: int) -> List[float] | None:
     return None
 
 
+def _non_negative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _sc3_action_layout(*, source: str = "legacy_sc3_default") -> Dict[str, Any]:
+    return {
+        "schema_version": ACTION_LAYOUT_SCHEMA_VERSION,
+        "layout_id": SC3_ACTION_LAYOUT_ID,
+        "action_dim": SC3_ACTION_DIM,
+        "absolute": False,
+        "segments": [
+            {
+                "name": name,
+                "start": start,
+                "end": end,
+                "source_keys": [name],
+            }
+            for name, start, end in SC3_ACTION_LAYOUT
+        ],
+        "vector_keys": [
+            "sc3_7d_delta_ee_pose",
+            "sc3_action_vector",
+            "action_vector_7d",
+            "delta_end_effector_pose_7d",
+            "delta_ee_pose_7d",
+        ],
+        "layout_source": source,
+        "claim_boundary": (
+            "Legacy single-end-effector SC3 adapter layout; it does not claim "
+            "bimanual, whole-body, mobile-base, or physical robot policy coverage."
+        ),
+    }
+
+
+def _segments_from_layout_payload(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    segments: List[Dict[str, Any]] = []
+    raw_segments = payload.get("segments")
+    if isinstance(raw_segments, Sequence) and not isinstance(raw_segments, (str, bytes, bytearray)):
+        for raw in raw_segments:
+            segment = _mapping(raw)
+            name = _string(segment.get("name"))
+            start = _non_negative_int(segment.get("start"))
+            end = _non_negative_int(segment.get("end"))
+            if not name or start is None or end is None or end <= start:
+                continue
+            source_keys = [
+                _string(key)
+                for key in (
+                    segment.get("source_keys")
+                    if isinstance(segment.get("source_keys"), Sequence)
+                    and not isinstance(segment.get("source_keys"), (str, bytes, bytearray))
+                    else []
+                )
+                if _string(key)
+            ]
+            segments.append(
+                {
+                    "name": name,
+                    "start": start,
+                    "end": end,
+                    "source_keys": source_keys or [name],
+                }
+            )
+    return sorted(segments, key=lambda item: int(item["start"]))
+
+
+def _layout_dim(layout: Mapping[str, Any]) -> int:
+    value = _non_negative_int(layout.get("action_dim"))
+    if value:
+        return value
+    segments = _segments_from_layout_payload(layout)
+    return max((int(segment["end"]) for segment in segments), default=0)
+
+
+def _layout_id(layout: Mapping[str, Any]) -> str:
+    return _string(layout.get("layout_id")) or SC3_ACTION_LAYOUT_ID
+
+
+def _profile_action_layout(profile: RobotProfile) -> Dict[str, Any]:
+    profile_payload = _mapping(profile.action_interface.get("lerobot_export"))
+    if not profile_payload:
+        return _sc3_action_layout()
+    layout_id = _string(profile_payload.get("layout_id"))
+    action_dim = _non_negative_int(profile_payload.get("action_dim"))
+    segments = _segments_from_layout_payload(profile_payload)
+    max_segment_end = max((int(segment["end"]) for segment in segments), default=0)
+    if not layout_id or not action_dim or not segments or max_segment_end != action_dim:
+        return _sc3_action_layout(source="legacy_sc3_default_profile_layout_invalid")
+    vector_keys = [
+        _string(key)
+        for key in (
+            profile_payload.get("vector_keys")
+            if isinstance(profile_payload.get("vector_keys"), Sequence)
+            and not isinstance(profile_payload.get("vector_keys"), (str, bytes, bytearray))
+            else []
+        )
+        if _string(key)
+    ]
+    legacy_supported_layouts = [
+        _string(key)
+        for key in (
+            profile_payload.get("legacy_supported_layouts")
+            if isinstance(profile_payload.get("legacy_supported_layouts"), Sequence)
+            and not isinstance(profile_payload.get("legacy_supported_layouts"), (str, bytes, bytearray))
+            else []
+        )
+        if _string(key)
+    ]
+    return {
+        "schema_version": ACTION_LAYOUT_SCHEMA_VERSION,
+        "layout_id": layout_id,
+        "action_dim": action_dim,
+        "absolute": bool(profile_payload.get("absolute", False)),
+        "segments": segments,
+        "vector_keys": vector_keys,
+        "legacy_supported_layouts": legacy_supported_layouts,
+        "layout_source": "robot_profile.action_interface.lerobot_export",
+        "claim_boundary": profile_payload.get("claim_boundary"),
+    }
+
+
+def _candidate_action_layouts(profile: RobotProfile) -> List[Dict[str, Any]]:
+    preferred = _profile_action_layout(profile)
+    layouts = [preferred]
+    legacy_supported = set(preferred.get("legacy_supported_layouts") or [])
+    if _layout_id(preferred) != SC3_ACTION_LAYOUT_ID and SC3_ACTION_LAYOUT_ID in legacy_supported:
+        layouts.append(_sc3_action_layout(source="robot_profile.legacy_supported_layouts"))
+    return layouts
+
+
+def _layout_segments(layout: Mapping[str, Any]) -> tuple[tuple[str, int, int], ...]:
+    return tuple(
+        (
+            _string(segment.get("name")),
+            int(segment.get("start")),
+            int(segment.get("end")),
+        )
+        for segment in _segments_from_layout_payload(layout)
+    )
+
+
+def _manifest_action_layout(layout: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "schema_version": ACTION_LAYOUT_SCHEMA_VERSION,
+        "layout_id": _layout_id(layout),
+        "action_dim": _layout_dim(layout),
+        "absolute": bool(layout.get("absolute", False)),
+        "segments": _segments_from_layout_payload(layout),
+        "vector_keys": list(layout.get("vector_keys") or []),
+        "layout_source": layout.get("layout_source"),
+        "legacy_supported_layouts": list(layout.get("legacy_supported_layouts") or []),
+        "claim_boundary": layout.get("claim_boundary"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # 1. modality.json from RobotProfile
 # ---------------------------------------------------------------------------
@@ -128,18 +298,24 @@ def build_modality_config(
     profile: RobotProfile,
     *,
     state_layout: Sequence[tuple[str, int, int]] | None = None,
+    action_layout: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """GR00T-style modality config: named slices into state/action vectors.
 
-    The action block is always emitted (the SC3 7D contract is validated
-    elsewhere in the pipeline). The state block is a declared layout; whether
-    episodes actually carry state is reported per-episode by the export.
+    The action block is emitted from the robot profile's LeRobot export layout
+    unless the caller selects a compatibility layout for a specific stream. The
+    state block is a declared layout; whether episodes actually carry state is
+    reported per-episode by the export.
     """
     resolved_state_layout = tuple(
         state_layout
         if state_layout is not None
         else DEFAULT_STATE_LAYOUTS.get(profile.embodiment_type, ())
     )
+    resolved_action_layout = dict(action_layout or _profile_action_layout(profile))
+    action_layout_id = _layout_id(resolved_action_layout)
+    action_dim = _layout_dim(resolved_action_layout)
+    action_segments = _layout_segments(resolved_action_layout)
     video = {}
     for rig in profile.camera_rigs:
         rig_map = _mapping(rig)
@@ -157,14 +333,19 @@ def build_modality_config(
         "state": _slices(resolved_state_layout),
         "state_dim": max((end for _, _, end in resolved_state_layout), default=0),
         "action": {
-            "sc3_7d_delta_end_effector_pose": {
+            action_layout_id: {
                 "start": 0,
-                "end": SC3_ACTION_DIM,
-                "absolute": False,
-                "fields": _slices(SC3_ACTION_LAYOUT),
+                "end": action_dim,
+                "absolute": bool(resolved_action_layout.get("absolute", False)),
+                "fields": _slices(action_segments),
+                "vector_keys": list(resolved_action_layout.get("vector_keys") or []),
+                "layout_source": resolved_action_layout.get("layout_source"),
             }
         },
-        "action_dim": SC3_ACTION_DIM,
+        "action_dim": action_dim,
+        "action_layout_id": action_layout_id,
+        "action_layout_schema_version": ACTION_LAYOUT_SCHEMA_VERSION,
+        "action_layout": _manifest_action_layout(resolved_action_layout),
         "video": video,
         "annotation": {"human.task_description": {"original_key": "task"}},
         "source_action_interface": dict(profile.action_interface),
@@ -229,6 +410,121 @@ def _sc3_vector_from_action(action: Any) -> List[float] | None:
     if position is not None and rotation is not None and gripper is not None:
         return [*position, *rotation, gripper]
     return None
+
+
+def _segment_vector_from_payload(
+    payload: Mapping[str, Any],
+    segment: Mapping[str, Any],
+) -> List[float] | None:
+    dim = int(segment.get("end") or 0) - int(segment.get("start") or 0)
+    if dim <= 0:
+        return None
+    candidate_keys = [
+        _string(key)
+        for key in (
+            segment.get("source_keys")
+            if isinstance(segment.get("source_keys"), Sequence)
+            and not isinstance(segment.get("source_keys"), (str, bytes, bytearray))
+            else []
+        )
+        if _string(key)
+    ]
+    segment_name = _string(segment.get("name"))
+    if segment_name and segment_name not in candidate_keys:
+        candidate_keys.append(segment_name)
+    for key in candidate_keys:
+        vector = _float_vector(payload.get(key), dim)
+        if vector is not None:
+            return vector
+    return None
+
+
+def _segment_vector_from_action(
+    action: Mapping[str, Any],
+    layout: Mapping[str, Any],
+) -> List[float] | None:
+    segments = _segments_from_layout_payload(layout)
+    if not segments:
+        return None
+    values: List[float] = []
+    cursor = 0
+    for segment in segments:
+        start = int(segment["start"])
+        end = int(segment["end"])
+        if start != cursor:
+            return None
+        segment_values = _segment_vector_from_payload(action, segment)
+        if segment_values is None or len(segment_values) != end - start:
+            return None
+        values.extend(segment_values)
+        cursor = end
+    return values if len(values) == _layout_dim(layout) else None
+
+
+def _action_vector_from_action(
+    action: Any,
+    layout: Mapping[str, Any],
+) -> List[float] | None:
+    layout_id = _layout_id(layout)
+    action_dim = _layout_dim(layout)
+    if layout_id == SC3_ACTION_LAYOUT_ID:
+        return _sc3_vector_from_action(action)
+    if action_dim <= 0:
+        return None
+    vector = _float_vector(action, action_dim)
+    if vector is not None:
+        return vector
+    payload = _mapping(action)
+    if not payload:
+        return None
+    vector_keys = [
+        _string(key)
+        for key in (
+            layout.get("vector_keys")
+            if isinstance(layout.get("vector_keys"), Sequence)
+            and not isinstance(layout.get("vector_keys"), (str, bytes, bytearray))
+            else []
+        )
+        if _string(key)
+    ]
+    for key in [*vector_keys, *GENERIC_ACTION_VECTOR_KEYS]:
+        vector = _float_vector(payload.get(key), action_dim)
+        if vector is not None:
+            return vector
+    normalized = _mapping(payload.get("normalized_action"))
+    if normalized:
+        vector = _action_vector_from_action(normalized, layout)
+        if vector is not None:
+            return vector
+    nested_action = _mapping(payload.get("action"))
+    if nested_action:
+        vector = _action_vector_from_action(nested_action, layout)
+        if vector is not None:
+            return vector
+    return _segment_vector_from_action(payload, layout)
+
+
+def _select_action_layout(
+    *,
+    profile: RobotProfile,
+    control_rows: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    layouts = _candidate_action_layouts(profile)
+    for layout in layouts:
+        for control_row in control_rows:
+            if control_row.get("stream_type") != "control_action":
+                continue
+            payload = _mapping(control_row.get("action"))
+            action = control_row.get("action") if not payload else payload
+            if _action_vector_from_action(action, layout) is not None:
+                return layout
+    return layouts[0]
+
+
+def _invalid_action_blocker(layout: Mapping[str, Any], index: Any) -> str:
+    if _layout_id(layout) == SC3_ACTION_LAYOUT_ID:
+        return f"sc3_7d_action_invalid_at_index:{index}"
+    return f"{_layout_id(layout)}_action_invalid_at_index:{index}"
 
 
 def _state_from_payload(payload: Mapping[str, Any], state_dim: int) -> List[float] | None:
@@ -430,8 +726,8 @@ def build_lerobot_episode_export(
 
     One episode per attempt in the attempt trace. Episodes fail closed: a
     missing control stream blocks the export; an attempt whose control rows
-    are missing or whose actions do not parse as SC3 7D vectors is excluded
-    with a blocker, never padded.
+    are missing or whose actions do not parse as the selected robot-profile
+    action layout is excluded with a blocker, never padded.
     """
     resolved_job_dir = Path(job_dir).expanduser().resolve()
     export_root = Path(output_dir).expanduser().resolve() / "lerobot_episode_export"
@@ -439,14 +735,6 @@ def build_lerobot_episode_export(
     profile = robot_profile
     if profile is None and robot_id:
         profile = get_robot_profile(robot_id)
-    modality = build_modality_config(profile) if profile else None
-    state_dim = int(modality["state_dim"]) if modality else 0
-    video_key = _episode_video_key(modality)
-    video_sources = {
-        _string(attempt_id): _video_source_from_mapping(value, job_dir=resolved_job_dir)
-        for attempt_id, value in _mapping(materialized_video_by_attempt).items()
-        if _string(attempt_id)
-    }
 
     blockers: List[str] = []
     control_path = resolved_job_dir / CONTROL_STREAM_FILENAME
@@ -458,12 +746,35 @@ def build_lerobot_episode_export(
     if profile is None:
         blockers.append("robot_profile_missing")
 
+    control_rows = _read_jsonl(control_path) if control_path.is_file() else []
+    selected_action_layout = (
+        _select_action_layout(profile=profile, control_rows=control_rows)
+        if profile is not None
+        else _sc3_action_layout()
+    )
+    modality = (
+        build_modality_config(profile, action_layout=selected_action_layout)
+        if profile
+        else None
+    )
+    state_dim = int(modality["state_dim"]) if modality else 0
+    action_dim = _layout_dim(selected_action_layout)
+    video_key = _episode_video_key(modality)
+    video_sources = {
+        _string(attempt_id): _video_source_from_mapping(value, job_dir=resolved_job_dir)
+        for attempt_id, value in _mapping(materialized_video_by_attempt).items()
+        if _string(attempt_id)
+    }
+
     manifest: Dict[str, Any] = {
         "schema_version": LEROBOT_EPISODE_EXPORT_SCHEMA_VERSION,
         "generated_at": stamp,
         "job_dir": str(resolved_job_dir),
         "export_dir": str(export_root),
         "robot_id": profile.robot_id if profile else None,
+        "action_layout_id": _layout_id(selected_action_layout),
+        "action_dim": action_dim,
+        "action_layout": _manifest_action_layout(selected_action_layout),
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     if blockers:
@@ -479,7 +790,6 @@ def build_lerobot_episode_export(
         write_json(export_root / "lerobot_episode_export_manifest.json", manifest)
         return manifest
 
-    control_rows = _read_jsonl(control_path)
     attempts = _read_jsonl(trace_path)
     actions_by_attempt: Dict[str, List[Dict[str, Any]]] = {}
     for row in control_rows:
@@ -532,12 +842,16 @@ def build_lerobot_episode_export(
             payload = _mapping(control_row.get("action"))
             stream_payload = dict(control_row)
             stream_payload.update(payload)
-            vector = _sc3_vector_from_action(
-                control_row.get("action") if not payload else payload
+            vector = _action_vector_from_action(
+                control_row.get("action") if not payload else payload,
+                selected_action_layout,
             )
             if vector is None:
                 episode_blockers.append(
-                    f"sc3_7d_action_invalid_at_index:{control_row.get('action_index')}"
+                    _invalid_action_blocker(
+                        selected_action_layout,
+                        control_row.get("action_index"),
+                    )
                 )
                 continue
             source = _observation_source_metadata(
@@ -552,6 +866,7 @@ def build_lerobot_episode_export(
                 "task_index": task_indices[task_text],
                 "task": task_text,
                 "action": vector,
+                "action_layout_id": _layout_id(selected_action_layout),
                 "attempt_id": attempt_id,
                 "episode_id": attempt.get("episode_id"),
                 "scenario_id": attempt.get("scenario_id"),
@@ -721,7 +1036,7 @@ def build_lerobot_episode_export(
             "total_episodes": len(episodes_meta),
             "total_frames": global_index,
             "features": {
-                "action": {"dtype": "float32", "shape": [SC3_ACTION_DIM]},
+                "action": {"dtype": "float32", "shape": [action_dim]},
                 **(
                     {"observation.state": {"dtype": "float32", "shape": [state_dim]}}
                     if state_dim
@@ -758,6 +1073,9 @@ def build_lerobot_episode_export(
             "blockers": sorted(blockers),
             "episode_count": len(episodes_meta),
             "total_frame_count": global_index,
+            "action_layout_id": _layout_id(selected_action_layout),
+            "action_dim": action_dim,
+            "action_layout": _manifest_action_layout(selected_action_layout),
             "excluded_episode_count": len(excluded),
             "excluded_episodes": excluded,
             "fps": fps,

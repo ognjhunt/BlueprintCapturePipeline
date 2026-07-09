@@ -21,7 +21,8 @@ docker_image = "gcr.io/blueprint-8c1ca/blueprint-pipeline:latest"
 video_to_world_image = "gcr.io/blueprint-8c1ca/video-to-world:latest"
 
 # Maximum concurrent privacy-service instances
-max_concurrent_jobs = 10
+max_concurrent_jobs = 25
+additional_privacy_runner_invoker_members = []
 
 # Preview + World Labs request-manifest generation
 blueprint_preview_provider = "world_labs"

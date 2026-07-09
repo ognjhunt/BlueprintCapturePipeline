@@ -7,6 +7,7 @@ from pathlib import Path
 
 from blueprint_pipeline.lerobot_episode_export import (
     SC3_ACTION_DIM,
+    SC3_ACTION_LAYOUT_ID,
     build_lerobot_episode_export,
     build_modality_config,
 )
@@ -83,17 +84,27 @@ def _seed_job_dir(
 # ---------------------------------------------------------------------------
 
 
-def test_modality_config_declares_sc3_action_slices_from_profile() -> None:
+def test_modality_config_declares_profile_action_slices_from_profile() -> None:
     config = build_modality_config(UNITREE_G1_PROFILE)
-    action = config["action"]["sc3_7d_delta_end_effector_pose"]
+    action = config["action"]["unitree_g1_whole_body_arm_hand_chunks_v1"]
     assert action["start"] == 0
-    assert action["end"] == SC3_ACTION_DIM
+    assert action["end"] == 78
     assert action["absolute"] is False
     fields = action["fields"]
-    assert fields["delta_position_m"] == {"start": 0, "end": 3}
-    assert fields["delta_rotation_axis_angle"] == {"start": 3, "end": 6}
-    assert fields["gripper"] == {"start": 6, "end": 7}
-    assert config["action_dim"] == 7
+    assert fields["base_velocity_xy_yaw"] == {"start": 0, "end": 3}
+    assert fields["left_arm_joint_delta"] == {"start": 3, "end": 10}
+    assert fields["left_hand_joint_delta"] == {"start": 10, "end": 17}
+    assert fields["right_arm_joint_delta"] == {"start": 17, "end": 24}
+    assert fields["right_hand_joint_delta"] == {"start": 24, "end": 31}
+    assert fields["whole_body_residual_or_policy_latent"] == {
+        "start": 31,
+        "end": 78,
+    }
+    assert config["action_dim"] == 78
+    assert config["action_layout_id"] == "unitree_g1_whole_body_arm_hand_chunks_v1"
+    assert config["action_layout"]["legacy_supported_layouts"] == [
+        SC3_ACTION_LAYOUT_ID
+    ]
     # humanoid default state layout: base pose (pos + wxyz quat)
     assert config["state"]["base_position_m"] == {"start": 0, "end": 3}
     assert config["state"]["base_orientation_quat_wxyz"] == {"start": 3, "end": 7}
@@ -133,6 +144,8 @@ def test_export_writes_episode_rows_meta_and_stats(tmp_path: Path) -> None:
     assert manifest["status"] == "completed_review_required"
     assert manifest["episode_count"] == 1
     assert manifest["total_frame_count"] == 2
+    assert manifest["action_layout_id"] == SC3_ACTION_LAYOUT_ID
+    assert manifest["action_dim"] == SC3_ACTION_DIM
 
     export_root = tmp_path / "out" / "lerobot_episode_export"
     rows = [
@@ -143,6 +156,7 @@ def test_export_writes_episode_rows_meta_and_stats(tmp_path: Path) -> None:
     ]
     assert len(rows) == 2
     assert rows[0]["action"] == [0.01, 0.0, 0.0, 0.0, 0.0, 0.02, 0.0]
+    assert rows[0]["action_layout_id"] == SC3_ACTION_LAYOUT_ID
     assert rows[0]["observation.state"][2] == 0.79
     assert rows[1]["frame_index"] == 1
     assert rows[1]["timestamp"] == 0.1
@@ -180,6 +194,53 @@ def test_export_writes_episode_rows_meta_and_stats(tmp_path: Path) -> None:
     assert manifest["observation_source_columns_written"] is True
     assert manifest["simulator_trace_frame_count"] == 2
     assert manifest["model_derived_frame_count"] == 0
+
+
+def test_export_accepts_profile_whole_body_action_chunk_without_7d_exclusion(
+    tmp_path: Path,
+) -> None:
+    action_chunk = [round((index - 39) / 100.0, 4) for index in range(78)]
+    job_dir = _seed_job_dir(
+        tmp_path,
+        attempts=[_attempt("a1")],
+        control_rows=[
+            _control_row(
+                "a1",
+                0,
+                action={
+                    "action_chunk": action_chunk,
+                    "base_pose_7d": [0.0, 0.0, 0.79, 1.0, 0.0, 0.0, 0.0],
+                    "sim_time_s": 0.0,
+                },
+                with_state=False,
+                with_timestamp=False,
+            ),
+        ],
+    )
+
+    manifest = build_lerobot_episode_export(
+        job_dir=job_dir, output_dir=tmp_path / "out", robot_id="unitree_g1"
+    )
+
+    assert manifest["status"] == "completed_review_required"
+    assert manifest["episode_count"] == 1
+    assert manifest["excluded_episode_count"] == 0
+    assert manifest["action_layout_id"] == "unitree_g1_whole_body_arm_hand_chunks_v1"
+    assert manifest["action_dim"] == 78
+    export_root = tmp_path / "out" / "lerobot_episode_export"
+    row = json.loads(
+        (export_root / "data" / "episode_000000.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    assert row["action"] == action_chunk
+    assert row["action_layout_id"] == "unitree_g1_whole_body_arm_hand_chunks_v1"
+    stats = json.loads((export_root / "meta" / "stats.json").read_text())
+    assert len(stats["action"]["mean"]) == 78
+    info = json.loads((export_root / "meta" / "info.json").read_text())
+    assert info["features"]["action"]["shape"] == [78]
+    modality = json.loads((export_root / "meta" / "modality.json").read_text())
+    assert "unitree_g1_whole_body_arm_hand_chunks_v1" in modality["action"]
 
 
 def test_export_marks_episode_gr00t_ready_when_materialized_video_present(

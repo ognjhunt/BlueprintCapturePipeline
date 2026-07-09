@@ -135,7 +135,11 @@ def test_deployment_parity_proof_passes_with_health_and_commit_parity() -> None:
     assert readiness_key not in report["proof_boundary"]
     assert report["blockers"] == []
     assert any(
-        headers and headers.get("Authorization") == "Bearer secret-token"
+        headers
+        and headers.get("Authorization") is None
+        and str(headers.get("X-Blueprint-Pipeline-Signature") or "").startswith("sha256=")
+        and headers.get("X-Blueprint-Pipeline-Timestamp")
+        and headers.get("X-Blueprint-Pipeline-Nonce")
         for headers in seen_headers
     )
     assert "secret-token" not in str(report)
@@ -205,7 +209,11 @@ def test_deployment_parity_proof_accepts_authenticated_intake_audit_health() -> 
                 "error": None,
             }
         if url.endswith("/api/live-pipeline/intake-audit"):
-            assert headers and headers.get("Authorization") == "Bearer secret-token"
+            assert headers
+            assert headers.get("Authorization") is None
+            assert str(headers.get("X-Blueprint-Pipeline-Signature") or "").startswith("sha256=")
+            assert headers.get("X-Blueprint-Pipeline-Timestamp")
+            assert headers.get("X-Blueprint-Pipeline-Nonce")
             return {
                 "ok": True,
                 "http_status": 200,

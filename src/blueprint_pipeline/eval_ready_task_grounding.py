@@ -22,6 +22,44 @@ DEFAULT_HANDLE_ON_THRESHOLD_DEG = 35.0
 _HANDLE_TOKENS = {"handle", "knob", "lever", "faucet"}
 _SINK_TOKENS = {"sink", "faucet", "tap"}
 _RIGHT_TOKENS = {"right", "rightmost"}
+_INDUSTRIAL_CONTAINER_TOKENS = {"bin", "box", "container", "crate", "carton", "tote"}
+_INDUSTRIAL_DESTINATION_TOKENS = {
+    "area",
+    "bay",
+    "cell",
+    "conveyor",
+    "dock",
+    "lane",
+    "line",
+    "pallet",
+    "station",
+    "zone",
+}
+_INDUSTRIAL_OBJECT_TOKENS = {
+    "cart",
+    "carton",
+    "case",
+    "crate",
+    "load",
+    "package",
+    "part",
+    "payload",
+    "pallet",
+    "tote",
+}
+_INDUSTRIAL_PROXY_ACTION_TOKENS = {
+    "deliver",
+    "delivery",
+    "handoff",
+    "insert",
+    "load",
+    "move",
+    "place",
+    "put",
+    "stack",
+    "transfer",
+    "transport",
+}
 _ACTION_TOKENS = {
     "close",
     "deliver",
@@ -94,6 +132,14 @@ def _string_list(value: Any) -> list[str]:
             seen.add(text)
             out.append(text)
     return out
+
+
+def _first_text(*values: Any, fallback: str = "") -> str:
+    for value in values:
+        text = _string(value)
+        if text:
+            return text
+    return fallback
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -302,6 +348,22 @@ def derive_task_aware_detection_prompts(
             add(f"{modifier} switch")
     if token_set & {"door", "drawer", "cabinet"}:
         add("handle")
+    if token_set & {"pallet"}:
+        add("pallet label")
+        add("pallet stringer")
+        add("pallet pocket")
+    if token_set & {"tote", "bin", "crate", "container", "carton"}:
+        add("tote handle")
+        add("bin rim")
+        add("container interior")
+        add("container label")
+    if token_set & {"rack", "shelf", "shelving"}:
+        add("rack upright")
+        add("rack beam")
+        add("shelf face")
+    if token_set & {"conveyor"}:
+        add("conveyor belt edge")
+        add("conveyor roller")
     return prompts[:max_prompts]
 
 
@@ -980,6 +1042,184 @@ def _build_handle_proxy_state_check(
     return payload
 
 
+def _industrial_proxy_kind(*, task_text: str, target_label: str) -> str | None:
+    tokens = _tokens(task_text, target_label)
+    if not tokens & (_INDUSTRIAL_PROXY_ACTION_TOKENS | _INDUSTRIAL_OBJECT_TOKENS | _INDUSTRIAL_DESTINATION_TOKENS):
+        return None
+    if tokens & _INDUSTRIAL_CONTAINER_TOKENS and tokens & {"place", "put", "insert", "load", "stack"}:
+        return "containment"
+    if tokens & {"conveyor", "line", "station"} or tokens & {"transfer", "handoff", "delivery", "deliver"}:
+        return "zone_arrival_or_transfer"
+    if tokens & {"place", "placement", "pallet", "rack", "shelf"}:
+        return "placement_at_target"
+    if tokens & {"move", "transport", "tote", "cart", "pallet"}:
+        return "zone_arrival_or_transfer"
+    return None
+
+
+def _build_industrial_success_proxy(
+    *,
+    target: Mapping[str, Any] | None,
+    task_text: str,
+    target_label: str,
+    task_anchor: Mapping[str, Any],
+) -> dict[str, Any]:
+    kind = _industrial_proxy_kind(task_text=task_text, target_label=target_label)
+    if kind is None:
+        return {
+            "available": False,
+            "state_check_configured": False,
+            "reason": "task_does_not_request_industrial_success_proxy",
+        }
+    target_id = _string(target.get("object_id")) if target else _slug(target_label, fallback="unresolved_target")
+    target_zone_ref = _first_text(
+        task_anchor.get("target_zone_id"),
+        task_anchor.get("destination_zone_id"),
+        task_anchor.get("line_station_id"),
+        task_anchor.get("target_bin_id"),
+        task_anchor.get("goal_zone_id"),
+    )
+    return {
+        "schema_version": "industrial_task_success_proxy.v1",
+        "available": True,
+        "state_check_configured": True,
+        "proxy_type": f"industrial_{kind}",
+        "proxy_kind": kind,
+        "target_object_id": target_id,
+        "target_label": target_label,
+        "target_zone_ref": target_zone_ref,
+        "state_success_proven": False,
+        "state_truth_source": "proxy_contract_only_requires_measured_payload_or_zone_state",
+        "claim_boundary": {
+            "proxy_is_not_physical_task_success_proof": True,
+            "measured_payload_pose_or_zone_membership_required_for_exact_success": True,
+            "manual_review_required_when_zone_geometry_missing": True,
+        },
+    }
+
+
+def _first_point(payload: Mapping[str, Any], *keys: str) -> list[float] | None:
+    for key in keys:
+        point = _point3(payload.get(key))
+        if point is not None:
+            return point
+    return None
+
+
+def _aabb(payload: Mapping[str, Any], *keys: str) -> tuple[list[float], list[float]] | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            min_point = _first_point(value, "min", "min_xyz", "minimum", "lower")
+            max_point = _first_point(value, "max", "max_xyz", "maximum", "upper")
+            if min_point is not None and max_point is not None:
+                return min_point, max_point
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) and len(value) >= 2:
+            min_point = _point3(value[0])
+            max_point = _point3(value[1])
+            if min_point is not None and max_point is not None:
+                return min_point, max_point
+    return None
+
+
+def _point_inside_aabb(point: Sequence[float], bounds: tuple[list[float], list[float]], *, margin_m: float = 0.05) -> bool:
+    low, high = bounds
+    return all(
+        min(low[index], high[index]) - margin_m <= float(point[index]) <= max(low[index], high[index]) + margin_m
+        for index in range(3)
+    )
+
+
+def _distance(a: Sequence[float] | None, b: Sequence[float] | None) -> float | None:
+    if a is None or b is None:
+        return None
+    return math.sqrt(sum((float(a[index]) - float(b[index])) ** 2 for index in range(3)))
+
+
+def _build_industrial_proxy_state_check(
+    *,
+    proxy: Mapping[str, Any],
+    robot_state_ref: Mapping[str, Any],
+    output_dir: Path,
+    generated_at: str,
+) -> dict[str, Any]:
+    if not proxy.get("state_check_configured"):
+        payload = {
+            "schema_version": "industrial_proxy_state_check.v1",
+            "generated_at": generated_at,
+            "status": "skipped",
+            "state_check_configured": False,
+            "blockers": ["industrial_success_proxy_not_configured"],
+        }
+        write_json(output_dir / "industrial_proxy_state_check.json", payload)
+        return payload
+
+    robot_state_path = Path(_string(robot_state_ref.get("path"))) if robot_state_ref.get("path") else None
+    state = _read_optional_mapping(robot_state_path) if robot_state_path else {}
+    payload_center = _first_point(
+        state,
+        "payload_center_xyz",
+        "object_center_xyz",
+        "moved_object_center_xyz",
+        "tote_center_xyz",
+        "target_object_center_xyz",
+    )
+    target_center = _first_point(
+        state,
+        "target_zone_center_xyz",
+        "destination_zone_center_xyz",
+        "goal_zone_center_xyz",
+        "bin_center_xyz",
+        "placement_target_center_xyz",
+    )
+    target_bounds = _aabb(
+        state,
+        "target_zone_aabb",
+        "destination_zone_aabb",
+        "goal_zone_aabb",
+        "bin_aabb",
+        "container_aabb",
+        "placement_target_aabb",
+    )
+    tolerance_m = _first_number(state, "placement_tolerance_m", "zone_arrival_tolerance_m") or 0.3
+    center_distance_m = _distance(payload_center, target_center)
+    containment_candidate = bool(payload_center is not None and target_bounds is not None and _point_inside_aabb(payload_center, target_bounds))
+    placement_candidate = bool(center_distance_m is not None and center_distance_m <= tolerance_m)
+    kind = _string(proxy.get("proxy_kind"))
+    candidate = containment_candidate if kind == "containment" else placement_candidate or containment_candidate
+    blockers = []
+    if payload_center is None:
+        blockers.append("missing_payload_or_object_center_xyz")
+    if target_center is None and target_bounds is None:
+        blockers.append("missing_target_zone_center_or_aabb")
+    payload = {
+        "schema_version": "industrial_proxy_state_check.v1",
+        "generated_at": generated_at,
+        "status": "completed" if not blockers else "blocked",
+        "state_check_configured": True,
+        "proxy_type": proxy.get("proxy_type"),
+        "proxy_kind": kind,
+        "payload_center_xyz": payload_center,
+        "target_center_xyz": target_center,
+        "target_zone_aabb": {"min": target_bounds[0], "max": target_bounds[1]} if target_bounds else None,
+        "center_distance_m": round(center_distance_m, 6) if center_distance_m is not None else None,
+        "tolerance_m": tolerance_m,
+        "containment_candidate": containment_candidate,
+        "placement_candidate": placement_candidate,
+        "zone_arrival_candidate": placement_candidate or containment_candidate,
+        "proxy_success_candidate": candidate,
+        "state_success_proven": False,
+        "blockers": blockers,
+        "claim_boundary": {
+            "proxy_success_candidate_is_review_signal_not_exact_success": True,
+            "physics_contact_validated": False,
+            "measured_final_payload_pose_required_for_exact_success": True,
+        },
+    }
+    write_json(output_dir / "industrial_proxy_state_check.json", payload)
+    return payload
+
+
 def _build_articulated_handle_proxy(
     *,
     target: Mapping[str, Any] | None,
@@ -1135,6 +1375,12 @@ def build_eval_ready_task_grounding(
         handle_axis=handle_axis,
         on_threshold_deg=handle_on_threshold_deg,
     )
+    industrial_proxy = _build_industrial_success_proxy(
+        target=selected,
+        task_text=task_text,
+        target_label=target_label,
+        task_anchor=task_anchor,
+    )
     output = (
         Path(output_path).expanduser().resolve()
         if output_path is not None
@@ -1160,6 +1406,12 @@ def build_eval_ready_task_grounding(
         selected=selected,
         robot_state_ref=robot_state_ref,
         fk_projection=fk_projection,
+        output_dir=output_dir,
+        generated_at=generated_at,
+    )
+    industrial_proxy_state_check = _build_industrial_proxy_state_check(
+        proxy=industrial_proxy,
+        robot_state_ref=robot_state_ref,
         output_dir=output_dir,
         generated_at=generated_at,
     )
@@ -1206,6 +1458,11 @@ def build_eval_ready_task_grounding(
             f"handle_proxy_state_check:{blocker}"
             for blocker in _string_list(handle_proxy_state_check.get("blockers"))
         )
+    if industrial_proxy.get("state_check_configured") and industrial_proxy_state_check.get("status") == "blocked":
+        warnings.extend(
+            f"industrial_proxy_state_check:{blocker}"
+            for blocker in _string_list(industrial_proxy_state_check.get("blockers"))
+        )
 
     learned_rollout_request_ready = not blockers
     robot_projection_ready = bool(fk_projection.get("status") == "completed")
@@ -1226,6 +1483,30 @@ def build_eval_ready_task_grounding(
             "reject impossible rollouts with obvious kinematic discontinuities or target mismatch",
             "score handle-on only from measured/proxy joint angle when that state is available",
         ]
+    elif industrial_proxy.get("state_check_configured"):
+        proxy_kind = _string(industrial_proxy.get("proxy_kind"))
+        if proxy_kind == "containment":
+            vlm_or_human_review_checks = [
+                "payload is visibly inside the requested bin, tote, or container at final state",
+                "wrong-object, drop, and spill cases are labeled before success is credited",
+                "generated rollout preserves rack/bin geometry and is not visually inconsistent",
+            ]
+            deterministic_or_lightweight_checks = [
+                "compare measured payload centroid against the target container or zone AABB",
+                "reject success candidates when the payload center or target zone geometry is missing",
+                "route exact success to measured outcome records, not the proxy contract alone",
+            ]
+        else:
+            vlm_or_human_review_checks = [
+                "payload or robot reaches the requested dock, conveyor, line station, or placement zone",
+                "human crossing, blocked path, and wrong-zone cases are labeled before success is credited",
+                "generated rollout preserves industrial traffic-zone geometry and is not visually inconsistent",
+            ]
+            deterministic_or_lightweight_checks = [
+                "compare measured payload centroid against target zone center or AABB",
+                "reject success candidates when zone geometry or payload pose is missing",
+                "route exact success to measured outcome records, not the proxy contract alone",
+            ]
     else:
         vlm_or_human_review_checks = [
             "selected target remains the same object throughout the rollout",
@@ -1287,14 +1568,17 @@ def build_eval_ready_task_grounding(
             "projection_confidence": fk_projection.get("projection_confidence"),
         },
         "articulated_state_proxy": proxy,
+        "industrial_state_proxy": industrial_proxy,
         "camera_calibration_quality_gate": calibration_gate,
         "robot_fk_projection": fk_projection,
         "handle_proxy_state_check": handle_proxy_state_check,
+        "industrial_proxy_state_check": industrial_proxy_state_check,
         "generated_artifacts": {
             "camera_calibration_quality_gate": str(output_dir / "camera_calibration_quality_gate.json"),
             "robot_fk_projection_manifest": str(output_dir / "robot_fk_projection_manifest.json"),
             "robot_fk_projected_skeleton_trace": str(output_dir / "robot_fk_projected_skeleton_trace.jsonl"),
             "handle_proxy_state_check": str(output_dir / "handle_proxy_state_check.json"),
+            "industrial_proxy_state_check": str(output_dir / "industrial_proxy_state_check.json"),
         },
         "success_check_plan": {
             "vlm_or_human_review_checks": vlm_or_human_review_checks,
@@ -1312,6 +1596,11 @@ def build_eval_ready_task_grounding(
             "state_check_configured": bool(proxy.get("state_check_configured")),
             "handle_proxy_state": handle_proxy_state_check.get("handle_proxy_state"),
             "handle_proxy_on_candidate": bool(handle_proxy_state_check.get("on_candidate")),
+            "industrial_proxy_configured": bool(industrial_proxy.get("state_check_configured")),
+            "industrial_proxy_success_candidate": bool(
+                industrial_proxy_state_check.get("proxy_success_candidate")
+            ),
+            "industrial_proxy_state_status": industrial_proxy_state_check.get("status"),
             "exact_task_success_proven": False,
             "physical_contact_validated": False,
             "real_world_readiness_proven": False,

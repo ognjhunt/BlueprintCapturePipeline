@@ -103,6 +103,20 @@ def test_privacy_command_templates_accept_privacy_prefixed_env(monkeypatch) -> N
     assert _deepprivacy_command_template() == "deepprivacy2-runner --input {INPUT_VIDEO}"
 
 
+def test_default_privacy_redaction_prompt_covers_industrial_pii_classes(monkeypatch) -> None:
+    monkeypatch.delenv("PRIVACY_REDACTION_TARGET_CLASSES", raising=False)
+
+    classes = pp._privacy_redaction_target_classes()
+
+    assert "person" in classes
+    assert "badge_id" in classes
+    assert "screen" in classes
+    assert "whiteboard" in classes
+    assert "license_plate" in classes
+    assert "shipping_label" in classes
+    assert "badge_id" in pp._privacy_redaction_prompt()
+
+
 def test_privacy_postprocess_non_arkit_passthrough_still_generates_depth(monkeypatch, tmp_path: Path) -> None:
     capture_root = tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "cap-1"
     pipeline_dir = capture_root / "pipeline"
@@ -143,6 +157,8 @@ def test_privacy_postprocess_non_arkit_passthrough_still_generates_depth(monkeyp
     manifest = json.loads((pipeline_dir / "privacy_processing_manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "no_people_detected"
     assert manifest["depth_source"] == "depth_anything"
+    assert "badge_id" in manifest["redaction_target_classes"]
+    assert "screen" in manifest["redaction_target_classes"]
 
 
 def test_privacy_postprocess_placeholder_runner_url_fails_closed(
@@ -518,6 +534,43 @@ def test_privacy_processing_private_helper_edges(monkeypatch, tmp_path: Path) ->
     assert pp._run_http_json(url="https://runner.example", body={}, timeout_seconds=1)[
         "reason"
     ] == "http_non_object_json"
+
+
+def test_privacy_http_runner_preserves_runner_token_and_adds_cloud_run_id_token(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"status":"ok"}'
+
+    def fake_urlopen(request: object, **_kwargs: object) -> FakeResponse:
+        captured["headers"] = dict(request.headers)  # type: ignore[attr-defined]
+        return FakeResponse()
+
+    def add_cloud_run_header(headers: dict[str, str], *, url: str) -> dict[str, str]:
+        assert url == "https://runner.example/run"
+        merged = dict(headers)
+        merged["X-Serverless-Authorization"] = "Bearer google-id-token"
+        return merged
+
+    monkeypatch.setenv("PRIVACY_RUNNER_TOKEN", "runner-token")
+    monkeypatch.setattr(pp, "cloud_run_id_token_headers", add_cloud_run_header)
+    monkeypatch.setattr(pp.urllib_request, "urlopen", fake_urlopen)
+
+    assert pp._run_http_json(url="https://runner.example/run", body={}, timeout_seconds=1) == {
+        "status": "ok"
+    }
+    headers = captured["headers"]
+    assert headers["Authorization"] == "Bearer runner-token"  # type: ignore[index]
+    assert headers["X-serverless-authorization"] == "Bearer google-id-token"  # type: ignore[index]
 
 
 def test_privacy_processing_runner_wrapper_edges(monkeypatch, tmp_path: Path) -> None:

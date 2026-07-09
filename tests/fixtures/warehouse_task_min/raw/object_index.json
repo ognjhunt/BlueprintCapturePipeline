@@ -1,0 +1,24 @@
+{
+  "objects": [
+    {
+      "object_id": "target_bin_01",
+      "label": "target bin",
+      "source_prompt": "target bin",
+      "mean_confidence": 0.91,
+      "reference_crop": "object_index_artifacts/crops/target_bin_01.png",
+      "all_crops": ["object_index_artifacts/crops/target_bin_01.png"],
+      "keypoints": {"center": [310, 210]},
+      "mean_box_px": {"x": 280, "y": 180, "width": 60, "height": 60}
+    },
+    {
+      "object_id": "tote_01",
+      "label": "blue tote",
+      "source_prompt": "warehouse tote",
+      "mean_confidence": 0.88,
+      "reference_crop": "object_index_artifacts/crops/tote_01.png",
+      "all_crops": ["object_index_artifacts/crops/tote_01.png"],
+      "keypoints": {"center": [220, 210]},
+      "mean_box_px": {"x": 195, "y": 185, "width": 50, "height": 50}
+    }
+  ]
+}

@@ -81,6 +81,13 @@ def test_complete_manifest_produces_buyer_readable_summary_without_overclaim() -
     assert boundary["success_claim_ledger_present"] is False
     assert boundary["physical_deployment_ready"] is False
     assert boundary["package_purchase_is_not_deployment_approval"] is True
+    assert boundary["accepted_real_world_calibration_anchor_count"] == 0
+    assert boundary["sim_vs_real_calibration_claim_allowed"] is False
+    assert boundary["no_real_world_calibration_anchors_present"] is True
+    assert boundary["results_are_not_real_world_performance_predictions"] is True
+    calibration = readout["sections"]["calibration"]
+    assert calibration["no_real_world_calibration_anchors_present"] is True
+    assert calibration["results_are_not_real_world_performance_predictions"] is True
     rights_section = readout["sections"]["rights_privacy_provenance"]
     assert rights_section["operator_revenue_terms_present"] is False
     assert rights_section["commercialization_terms_present"] is False
@@ -96,6 +103,33 @@ def test_complete_manifest_produces_buyer_readable_summary_without_overclaim() -
     assert "Highest truthful claim: no_claim" in markdown
     assert "not deployment approval" in markdown
     assert "Simulator results are not real-world outcomes." in markdown
+    assert "not real-world performance predictions" in markdown
+
+
+def test_readout_surfaces_calibration_anchor_claim_boundary() -> None:
+    manifest = _complete_export_manifest()
+    manifest["calibration_report"] = {
+        "schema_version": "sim_vs_real_calibration_report.v1",
+        "status": "completed",
+        "accepted_anchor_count": 4,
+        "sim_vs_real_calibration_score": 0.75,
+    }
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+
+    calibration = readout["sections"]["calibration"]
+    boundary = readout["claim_boundary"]
+    assert calibration["accepted_real_world_calibration_anchor_count"] == 4
+    assert calibration["sim_vs_real_calibration_score"] == 0.75
+    assert calibration["sim_vs_real_calibration_claim_allowed"] is True
+    assert calibration["no_real_world_calibration_anchors_present"] is False
+    assert boundary["accepted_real_world_calibration_anchor_count"] == 4
+    assert boundary["sim_vs_real_calibration_score"] == 0.75
+    assert boundary["sim_vs_real_calibration_claim_allowed"] is True
+    assert boundary["results_are_not_real_world_performance_predictions"] is False
+
+    markdown = render_buyer_package_readout_markdown(readout)
+    assert "bounded by the included calibration report" in markdown
 
 
 def test_failure_evidence_requires_label_count_or_reviewed_zero_attestation() -> None:

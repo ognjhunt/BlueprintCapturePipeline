@@ -446,11 +446,46 @@ def build_buyer_package_readout(
     )
 
     calibration_present = "calibration_report" in included
+    calibration_report = _mapping(
+        manifest.get("calibration_report")
+        or manifest.get("sim_vs_real_calibration_report")
+    )
+    accepted_calibration_anchor_count = (
+        _int_or_none(calibration_report.get("accepted_anchor_count")) or 0
+    )
+    sim_vs_real_calibration_score = _float_or_none(
+        calibration_report.get("sim_vs_real_calibration_score")
+    )
+    sim_vs_real_calibration_claim_allowed = bool(
+        calibration_report.get("status") == "completed"
+        and accepted_calibration_anchor_count > 0
+        and sim_vs_real_calibration_score is not None
+    )
     sections["calibration"] = _presence_section(
         present=calibration_present,
         missing_blocker="calibration_report_missing",
         calibration_report_included=calibration_present,
         camera_calibration_metadata_included="camera_calibration_metadata" in included,
+        calibration_report_status=calibration_report.get("status"),
+        accepted_real_world_calibration_anchor_count=accepted_calibration_anchor_count,
+        sim_vs_real_calibration_score=sim_vs_real_calibration_score,
+        sim_vs_real_calibration_claim_allowed=sim_vs_real_calibration_claim_allowed,
+        no_real_world_calibration_anchors_present=(
+            accepted_calibration_anchor_count == 0
+        ),
+        results_are_not_real_world_performance_predictions=(
+            not sim_vs_real_calibration_claim_allowed
+        ),
+        buyer_disclosure=(
+            "No accepted real-world calibration anchors are included; simulator or "
+            "generated results must not be presented as real-world performance "
+            "predictions."
+            if accepted_calibration_anchor_count == 0
+            else (
+                "Calibration anchors are present; use only the report's stated "
+                "calibration score and claim boundary."
+            )
+        ),
     )
 
     media_blockers: list[str] = []
@@ -565,6 +600,17 @@ def build_buyer_package_readout(
         "package_purchase_is_not_deployment_approval": True,
         "generated_media_is_not_physical_proof": True,
         "simulator_results_are_not_real_world_outcomes": True,
+        "accepted_real_world_calibration_anchor_count": (
+            accepted_calibration_anchor_count
+        ),
+        "sim_vs_real_calibration_score": sim_vs_real_calibration_score,
+        "sim_vs_real_calibration_claim_allowed": sim_vs_real_calibration_claim_allowed,
+        "no_real_world_calibration_anchors_present": (
+            accepted_calibration_anchor_count == 0
+        ),
+        "results_are_not_real_world_performance_predictions": (
+            not sim_vs_real_calibration_claim_allowed
+        ),
         "scaniverse_assets_are_raw_capture_evidence": False,
         "scaniverse_assets_are_task_success_evidence": False,
         "scaniverse_assets_are_physics_contact_evidence": False,
@@ -641,6 +687,15 @@ def render_buyer_package_readout_markdown(readout: Mapping[str, Any]) -> str:
             "- Purchasing or reviewing this package is not deployment approval.",
             "- Generated or simulator media in this package is not physical proof.",
             "- Simulator results are not real-world outcomes.",
+            (
+                "- No accepted sim-vs-real calibration anchors are included; "
+                "results are not real-world performance predictions."
+                if boundary.get("no_real_world_calibration_anchors_present") is True
+                else (
+                    "- Sim-vs-real calibration is bounded by the included calibration "
+                    "report and does not approve deployment."
+                )
+            ),
             (
                 "- The highest claim this package supports is: "
                 f"{boundary.get('highest_truthful_claim') or 'no_claim'}."

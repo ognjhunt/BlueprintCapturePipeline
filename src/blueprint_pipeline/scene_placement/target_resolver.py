@@ -65,6 +65,13 @@ _SYNONYM_GROUPS: tuple[tuple[str, ...], ...] = (
     ("cabinet", "cupboard", "cabinetry"),
     ("drawer",),
     ("door",),
+    ("dock_door", "dock", "bay", "loading", "rollup", "overhead"),
+    ("rolling_door", "rolling", "rollup", "shutter"),
+    ("gate", "barrier"),
+    ("cage_gate", "cage", "enclosure"),
+    ("tote_lid", "tote", "lid"),
+    ("locker", "lockbox"),
+    ("container", "crate", "case"),
     ("window",),
     ("light", "lamp", "lightswitch"),
     ("switch", "toggle", "lightswitch"),
@@ -92,6 +99,13 @@ _OPENABLE_TARGET_GROUPS = frozenset(
         "cabinet",
         "drawer",
         "door",
+        "dock_door",
+        "rolling_door",
+        "gate",
+        "cage_gate",
+        "tote_lid",
+        "locker",
+        "container",
     }
 )
 
@@ -143,7 +157,8 @@ _TASK_STOPWORDS = frozenset(
         # tries "kitchen" before "faucet"/"sink" and resolves to the wrong object.
         "kitchen", "kitchenette", "bathroom", "bedroom", "garage", "office",
         "hallway", "pantry", "basement", "closet", "room", "scene", "area", "here",
-        "there", "side",
+        "there", "side", "warehouse", "factory", "manufacturing", "fulfillment",
+        "distribution", "station", "line",
     }
 )
 

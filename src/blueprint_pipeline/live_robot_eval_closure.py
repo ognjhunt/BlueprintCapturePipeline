@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 from urllib.parse import urlparse
 
+from .buyer_claim_ceiling import build_buyer_claim_ceiling
 from .common import ensure_dir, read_json_any, resolve_gs_uri_to_path, utc_now_iso, write_json
 from .failure_diagnosis_contract import build_failure_diagnosis_audit
 from .local_capture import resolve_local_capture_context
@@ -4639,6 +4640,26 @@ def build_live_robot_eval_closure_manifest(
         "rank_fidelity_result_proven": all_ready,
         "public_claim_upgrade_allowed": all_ready and bool(gates["rights_privacy_scope"]["passed"]),
     }
+    task_eval_run_report = _read_optional_mapping(
+        resolved_job_dir / "task_eval_run_report.json"
+    )
+    success_claim_ledger = _mapping(task_eval_run_report.get("success_claim_ledger"))
+    buyer_claim_ceiling = build_buyer_claim_ceiling(
+        success_claim_ledger=success_claim_ledger,
+        proof_boundary={
+            "live_simulator_execution_proven": bool(
+                gates["live_simulator_execution"]["passed"]
+            ),
+            "live_policy_execution_proven": bool(
+                gates["live_policy_execution"]["passed"]
+            ),
+        },
+        live_closure={
+            "status": status,
+            "proof_boundary": proof_boundary,
+            "success_claim_ledger": success_claim_ledger,
+        },
+    )
     robot_team_beta_readiness = _robot_team_beta_readiness_summary(
         gates=gates,
         job_dir=resolved_job_dir,
@@ -4680,6 +4701,8 @@ def build_live_robot_eval_closure_manifest(
         "sc3_eval_protocol": sc3_eval_protocol_summary,
         "blockers": blockers,
         "evidence_sources": evidence_sources,
+        "highest_truthful_claim": buyer_claim_ceiling["highest_truthful_claim"],
+        "buyer_claim_ceiling": buyer_claim_ceiling,
         "proof_boundary": proof_boundary,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }

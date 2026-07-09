@@ -158,10 +158,42 @@ def test_report_scopes_success_language_to_ledger_claim() -> None:
     )
     assert report["evidence_level"] == "review_task_success"
     assert report["scorecard"]["evidence_level"] == "review_task_success"
+    assert report["claim_boundary"]["buyer_claim_ceiling"]["highest_truthful_claim"] == (
+        "review_task_success"
+    )
+    assert report["claim_boundary"]["buyer_claim_ceiling"][
+        "buyer_facing_claim_ceiling_pinned_to_highest_truthful_claim"
+    ] is True
     # no top-level bare success boolean is ever exposed
     assert "success" not in report
     assert "task_success" not in report
     assert report["status"] == "ready_review_required"
+
+
+def test_report_blocks_live_policy_copy_without_live_gate() -> None:
+    ledger = build_success_claim_ledger(
+        task_metadata={"task_id": "move-tote"},
+        media_validity={"status": "PASS", "blockers": []},
+        review_task_success={"status": "PASS", "blockers": []},
+    )
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _attempts(20, 0)},
+        success_claim_ledger=ledger,
+        rights_privacy_gate={"status": "cleared"},
+        buyer_claim_copy={
+            "report_copy": "The robot policy execution completed in live simulator."
+        },
+    )
+
+    assert report["status"] == "blocked"
+    assert (
+        "buyer_claim_ceiling:buyer_copy_claims_live_policy_execution_without_live_gate"
+        in report["blockers"]
+    )
+    ceiling = report["claim_boundary"]["buyer_claim_ceiling"]
+    assert ceiling["live_policy_execution_claim_allowed"] is False
+    assert ceiling["highest_truthful_claim"] == "review_task_success"
 
 
 def test_report_refuses_provider_task_success_claims() -> None:

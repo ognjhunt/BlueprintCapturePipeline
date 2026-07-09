@@ -331,6 +331,46 @@ def test_robot_pov_static_camera_constraint(tmp_path: Path) -> None:
     assert static_result["status"] == "accepted"
 
 
+def test_industrial_mobile_robot_pov_profile_allows_smooth_roaming_pov(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    rel = _write_image(bundle, "frames/sharp.npy", _sharp_image())
+    clip = {
+        "clip_id": "clip_industrial_mobile_pov",
+        "clip_kind": "robot_pov",
+        "frames": _frames(80, step_x=0.02, image_path=rel),
+    }
+    _write_bundle(bundle, [clip])
+
+    default_result = evaluate_clip(clip, config=ClipCurationConfig(), bundle_dir=bundle)
+    assert default_result["gate_results"][GATE_CAMERA_STABILITY]["status"] == GATE_STATUS_FAILED
+
+    industrial_config = ClipCurationConfig.industrial_mobile_robot_pov()
+    mobile_result = evaluate_clip(clip, config=industrial_config, bundle_dir=bundle)
+    assert mobile_result["gate_results"][GATE_CAMERA_STABILITY]["status"] == GATE_STATUS_PASSED
+    assert mobile_result["status"] == "accepted"
+
+    stage_result = run_clip_curation_stage(
+        bundle_dir=bundle,
+        profile="industrial_mobile_robot_pov",
+        output_dir=tmp_path / "out",
+    )
+    manifest = json.loads(Path(stage_result["manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest["config"]["profile_name"] == "industrial_mobile_robot_pov"
+    assert manifest["config"]["enforce_static_camera_for_robot_pov"] is False
+    assert stage_result["accepted_clip_ids"] == ["clip_industrial_mobile_pov"]
+
+    with pytest.raises(PipelineError, match="Pass only one of config"):
+        run_clip_curation_stage(
+            bundle_dir=bundle,
+            config=industrial_config,
+            profile="industrial_mobile_robot_pov",
+            output_dir=tmp_path / "out_conflict",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Gate: content novelty
 # ---------------------------------------------------------------------------

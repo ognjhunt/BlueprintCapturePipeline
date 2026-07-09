@@ -21,6 +21,7 @@ from .common import (
     utc_now_iso,
     write_json,
 )
+from .industrial_ontology import classify_industrial_entities
 from .ios_manifest import IOSManifest
 from .swap_candidates import build_swap_candidates_payload
 
@@ -44,6 +45,28 @@ _RESIDENTIAL_DEFAULT_CLASS_CAPS: Dict[str, int] = {
     "cabinet": 8,
     "box": 10,
 }
+_INDUSTRIAL_ENVIRONMENTS = {
+    "industrial",
+    "industrial_unknown",
+    "warehouse",
+    "factory",
+    "manufacturing",
+    "fulfillment",
+    "distribution",
+    "logistics",
+    "cold_storage",
+    "freezer",
+    "plant",
+}
+_INDUSTRIAL_DEFAULT_CLASS_CAPS: Dict[str, int] = {
+    "box": 32,
+    "pallet": 20,
+    "rack": 24,
+    "door": 12,
+    "cabinet": 12,
+    "conveyor": 12,
+    "cart": 16,
+}
 
 _SEMANTIC_LABEL_BUCKETS = {
     "door": (
@@ -57,6 +80,10 @@ _SEMANTIC_LABEL_BUCKETS = {
     "drawer": ("drawer",),
     "cabinet": ("cabinet", "cupboard", "closet", "locker", "wardrobe"),
     "box": ("box", "package", "parcel", "carton", "container", "crate", "tote", "bin", "shipment"),
+    "pallet": ("pallet", "skid"),
+    "rack": ("rack", "racking", "shelf", "shelving"),
+    "conveyor": ("conveyor", "belt", "roller"),
+    "cart": ("cart", "dolly", "trolley"),
 }
 
 
@@ -421,6 +448,11 @@ def _resolve_default_class_caps_for_descriptor(
     for hint in hints:
         if hint in _RESIDENTIAL_ENVIRONMENTS:
             return dict(_RESIDENTIAL_DEFAULT_CLASS_CAPS), hint
+    for hint in hints:
+        if hint in _INDUSTRIAL_ENVIRONMENTS or any(
+            token in hint for token in _INDUSTRIAL_ENVIRONMENTS
+        ):
+            return dict(_INDUSTRIAL_DEFAULT_CLASS_CAPS), hint
     return dict(_DEFAULT_CLASS_CAPS), hints[0] if hints else "industrial_unknown"
 
 
@@ -585,6 +617,55 @@ def _apply_per_class_caps(
         "explicit_bypass_kept_count": explicit_bypass_kept_count,
     }
     return kept, report
+
+
+def _industrial_context_for_candidate(
+    candidate: Mapping[str, Any],
+    source_entry: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    values: List[Any] = [
+        candidate.get("object_id"),
+        candidate.get("label"),
+        candidate.get("category"),
+    ]
+    if source_entry is not None:
+        values.extend(
+            [
+                source_entry.get("id"),
+                source_entry.get("instance_id"),
+                source_entry.get("label"),
+                source_entry.get("category"),
+                source_entry.get("class_name"),
+                source_entry.get("name"),
+            ]
+        )
+    entities = [entity.to_dict() for entity in classify_industrial_entities(values)]
+    entity_types = [str(entity.get("entity_type")) for entity in entities if entity.get("entity_type")]
+    return {
+        "schema_version": "industrial_task_target_context.v1",
+        "status": "detected" if entities else "not_detected",
+        "entities": entities,
+        "entity_types": entity_types,
+        "route_relevant_entity_types": [
+            str(entity.get("entity_type"))
+            for entity in entities
+            if bool(entity.get("route_relevant"))
+        ],
+        "task_relevant_entity_types": [
+            str(entity.get("entity_type"))
+            for entity in entities
+            if bool(entity.get("task_relevant"))
+        ],
+        "hazard_relevant_entity_types": [
+            str(entity.get("entity_type"))
+            for entity in entities
+            if bool(entity.get("hazard_relevant"))
+        ],
+        "claim_boundary": (
+            "industrial_task_target_context_is_object_index_semantic_context_"
+            "not_physical_truth_or_deployment_clearance"
+        ),
+    }
 
 
 def _normalize_hint_entry(
@@ -1409,6 +1490,9 @@ def build_task_aware_swap_candidates_payload(
             "rank_score": score,
         }
         candidate["selection"] = selection_meta
+        industrial_context = _industrial_context_for_candidate(candidate, source_entry)
+        if industrial_context["status"] == "detected":
+            candidate["industrial_task_target_context"] = industrial_context
         annotated.append(candidate)
 
     if mode == "explicit_only":
@@ -1453,6 +1537,28 @@ def build_task_aware_swap_candidates_payload(
     )
     out["task_targets_attached"] = bool(task_targets)
     out["task_target_object_ids"] = sorted(all_explicit_ids)
+    industrial_contexts = [
+        item.get("industrial_task_target_context")
+        for item in selected
+        if isinstance(item.get("industrial_task_target_context"), Mapping)
+    ]
+    industrial_entity_types: List[str] = []
+    for context in industrial_contexts:
+        context_entity_types = context.get("entity_types")
+        for entity_type in context_entity_types if isinstance(context_entity_types, list) else []:
+            text = str(entity_type or "").strip()
+            if text and text not in industrial_entity_types:
+                industrial_entity_types.append(text)
+    out["industrial_task_target_context_summary"] = {
+        "schema_version": "industrial_task_target_context_summary.v1",
+        "status": "detected" if industrial_entity_types else "not_detected",
+        "candidate_context_count": len(industrial_contexts),
+        "entity_types": industrial_entity_types,
+        "claim_boundary": (
+            "industrial_task_target_context_is_object_index_semantic_context_"
+            "not_physical_truth_or_deployment_clearance"
+        ),
+    }
     out["index_preprocessing"] = {
         "dedupe": dedupe_summary,
         "detection_support": support_summary,

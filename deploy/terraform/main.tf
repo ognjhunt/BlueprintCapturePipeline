@@ -89,9 +89,14 @@ variable "video_to_world_image" {
 }
 
 variable "max_concurrent_jobs" {
-  description = "Maximum concurrent privacy service instances"
+  description = "Maximum concurrent pipeline dispatches and GPU privacy/video-to-world service instances. External beta target requires at least 25."
   type        = number
-  default     = 10
+  default     = 25
+
+  validation {
+    condition     = var.max_concurrent_jobs >= 25
+    error_message = "max_concurrent_jobs must be at least 25 for the external beta capacity target."
+  }
 }
 
 variable "pipeline_job_timeout_seconds" {
@@ -174,6 +179,20 @@ variable "privacy_runner_token" {
   sensitive   = true
 }
 
+variable "additional_privacy_runner_invoker_members" {
+  description = "Additional non-public IAM members allowed to invoke GPU privacy runner Cloud Run services, for example serviceAccount:runner@example.iam.gserviceaccount.com."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for member in var.additional_privacy_runner_invoker_members :
+      !contains(["allUsers", "allAuthenticatedUsers"], member)
+    ])
+    error_message = "Privacy runner invokers must be named principals, not allUsers or allAuthenticatedUsers."
+  }
+}
+
 variable "video_to_world_runner_token" {
   description = "Auth token for the video_to_world HTTP service; falls back to privacy_runner_token when empty"
   type        = string
@@ -230,6 +249,23 @@ provider "google-beta" {
 locals {
   all_regions                 = concat([var.primary_region], var.secondary_regions)
   video_to_world_runner_token = var.video_to_world_runner_token != "" ? var.video_to_world_runner_token : var.privacy_runner_token
+  privacy_runner_service_names = {
+    sam3           = google_cloud_run_v2_service.privacy_sam3.name
+    vip            = google_cloud_run_v2_service.privacy_vip.name
+    deepprivacy2   = google_cloud_run_v2_service.privacy_deepprivacy2.name
+    video_to_world = google_cloud_run_v2_service.video_to_world.name
+  }
+  privacy_runner_invoker_members = toset(concat(
+    ["serviceAccount:${google_service_account.pipeline_runner.email}"],
+    var.additional_privacy_runner_invoker_members,
+  ))
+  privacy_runner_invoker_bindings = {
+    for pair in setproduct(keys(local.privacy_runner_service_names), local.privacy_runner_invoker_members) :
+    "${pair[0]}-${substr(sha1(pair[1]), 0, 12)}" => {
+      service = local.privacy_runner_service_names[pair[0]]
+      member  = pair[1]
+    }
+  }
 
   # Common labels for all resources
   common_labels = {
@@ -622,6 +658,11 @@ resource "google_cloud_run_v2_job" "pipeline" {
         env {
           name  = "PRIVACY_FAIL_CLOSED"
           value = var.privacy_fail_closed ? "true" : "false"
+        }
+
+        env {
+          name  = "BLUEPRINT_CLOUD_RUN_IAM_AUTH_ENABLED"
+          value = "true"
         }
 
         env {
@@ -1033,19 +1074,14 @@ resource "google_cloud_run_v2_service" "video_to_world" {
   }
 }
 
-resource "google_cloud_run_service_iam_member" "privacy_runner_public_invoker" {
-  for_each = {
-    sam3           = google_cloud_run_v2_service.privacy_sam3.name
-    vip            = google_cloud_run_v2_service.privacy_vip.name
-    deepprivacy2   = google_cloud_run_v2_service.privacy_deepprivacy2.name
-    video_to_world = google_cloud_run_v2_service.video_to_world.name
-  }
+resource "google_cloud_run_service_iam_member" "privacy_runner_invoker" {
+  for_each = local.privacy_runner_invoker_bindings
 
   location = var.primary_region
   project  = var.project_id
-  service  = each.value
+  service  = each.value.service
   role     = "roles/run.invoker"
-  member   = "allUsers"
+  member   = each.value.member
 }
 
 # =============================================================================

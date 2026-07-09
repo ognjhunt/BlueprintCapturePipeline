@@ -675,10 +675,28 @@ def test_projection_labels_success_rate_substrate_from_proof_boundary() -> None:
     )
     assert unproven["task_metrics"]["success_rate_is_real_world_proof"] is False
     assert unproven["task_metrics"]["success_rate_is_simulator_only"] is False
+    assert unproven["task_metrics"]["success_rate_buyer_display_allowed"] is False
+    assert "success_rate_provenance_disclosure_missing" in unproven["task_metrics"][
+        "success_rate_buyer_display_blockers"
+    ]
 
     sim_only = _safe_robot_eval_status_projection(
         {
-            "task_metrics": {"task_success_rate": 0.8},
+            "task_metrics": {
+                "task_success_rate": 0.8,
+                "task_success_label_provenance_counts": {
+                    "generated_video_vlm_judge": 2
+                },
+                "task_success_label_provenance_disclosures": {
+                    "generated_video_vlm_judge": (
+                        "Success labels are judgments over model-derived generated video."
+                    )
+                },
+                "generated_video_vlm_judged_attempt_count": 2,
+                "success_rate_requires_provenance_disclosure": True,
+                "success_rate_provenance_disclosed": True,
+                "success_rate_buyer_display_allowed": True,
+            },
             "proof_boundary": {"simulator_execution_proven": True},
         }
     )
@@ -686,6 +704,11 @@ def test_projection_labels_success_rate_substrate_from_proof_boundary() -> None:
         "simulator_execution"
     )
     assert sim_only["task_metrics"]["success_rate_is_simulator_only"] is True
+    assert sim_only["task_metrics"]["success_rate_buyer_display_allowed"] is True
+    assert sim_only["task_metrics"]["task_success_label_provenance_counts"] == {
+        "generated_video_vlm_judge": 2
+    }
+    assert sim_only["task_metrics"]["generated_video_vlm_judged_attempt_count"] == 2
 
     real = _safe_robot_eval_status_projection(
         {

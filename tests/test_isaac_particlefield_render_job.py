@@ -37,7 +37,12 @@ def test_docker_start_cmd_is_robust_and_invokes_runner() -> None:
     assert "run_isaac_splat_nurec_render.py" in body
     assert "--usdc" in body
     assert "/isaac-sim/python.sh /workspace/boot.py" in body
-    assert 'mark("runner_done", rc=rc)' in body
+    assert 'mark("runner_done", rc=rc, idle_ttl_seconds=IDLE_TTL)' in body
+    assert render_job.RENDER_POD_HARD_TTL_ENV in body
+    assert render_job.RENDER_POD_IDLE_TTL_ENV in body
+    assert "pod_hard_ttl_exceeded" in body
+    assert "pod_idle_ttl_exceeded" in body
+    assert "pkill -TERM -P $$" in body
     assert "while True:" in body and "putout()" in body
 
 
@@ -66,6 +71,12 @@ def test_build_launch_request_shape(tmp_path: Path) -> None:
     assert req["env"]["BLUEPRINT_EVAL_MANIFEST_URI"].endswith("sig=A")
     assert req["env"]["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"].endswith("sig=B")
     assert req["env"]["CAMERAS_FILE"] == "cameras_canary.json"
+    assert req["env"][render_job.RENDER_POD_HARD_TTL_ENV] == str(
+        render_job.DEFAULT_RENDER_POD_HARD_TTL_SECONDS
+    )
+    assert req["env"][render_job.RENDER_POD_IDLE_TTL_ENV] == str(
+        render_job.DEFAULT_RENDER_POD_IDLE_TTL_SECONDS
+    )
     assert req["containerDiskInGb"] >= 120  # must hold the 10.7GB image + outputs
     assert "NVIDIA L40S" in req["gpuTypeIds"]
 

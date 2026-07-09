@@ -110,6 +110,8 @@ class ClipCurationConfig:
     (:meth:`from_file` / :meth:`from_dict`).
     """
 
+    profile_name: str = "oscar_static_robot_pov"
+
     # --- min clip length --------------------------------------------------
     # OSCAR: clips shorter than 70 frames are rejected outright.
     min_clip_frames: int = 70
@@ -186,6 +188,28 @@ class ClipCurationConfig:
         if not isinstance(payload, Mapping):
             raise PipelineError(f"Clip curation config at {path} must be a mapping")
         return cls.from_dict(payload)
+
+    @classmethod
+    def industrial_mobile_robot_pov(cls) -> "ClipCurationConfig":
+        """Preset for roaming industrial humanoid/mobile-base robot POV clips."""
+
+        return cls(
+            profile_name="industrial_mobile_robot_pov",
+            enforce_static_camera_for_robot_pov=False,
+            max_pose_jitter_m=0.05,
+        )
+
+    @classmethod
+    def from_profile(cls, profile: str | None) -> "ClipCurationConfig":
+        normalized = (profile or "").strip().lower().replace("-", "_")
+        if not normalized or normalized in {"default", "oscar", "oscar_static_robot_pov"}:
+            return cls()
+        if normalized in {"industrial_mobile_robot_pov", "industrial_mobile", "mobile_robot_pov"}:
+            return cls.industrial_mobile_robot_pov()
+        raise PipelineError(
+            "Unknown clip curation profile "
+            f"{profile!r}; known profiles: oscar_static_robot_pov, industrial_mobile_robot_pov"
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -763,6 +787,7 @@ def run_clip_curation_stage(
     bundle_dir: str | Path,
     config: Optional[ClipCurationConfig] = None,
     config_path: Optional[str | Path] = None,
+    profile: str | None = None,
     output_dir: Optional[str | Path] = None,
 ) -> Dict[str, Any]:
     """Curate the clips of a bundle directory and write derived manifests.
@@ -772,10 +797,12 @@ def run_clip_curation_stage(
     ``<bundle_dir>/derived/clip_curation`` (or ``output_dir``).
     """
     bundle_dir = Path(bundle_dir)
-    if config is not None and config_path is not None:
-        raise PipelineError("Pass either config or config_path, not both")
+    if len([item for item in (config, config_path, profile) if item is not None]) > 1:
+        raise PipelineError("Pass only one of config, config_path, or profile")
     if config_path is not None:
         config = ClipCurationConfig.from_file(config_path)
+    elif profile is not None:
+        config = ClipCurationConfig.from_profile(profile)
     config = config or ClipCurationConfig()
 
     clips = load_clip_records(bundle_dir)
@@ -830,12 +857,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument("bundle_dir", type=Path, help="Bundle directory with clips_manifest.json")
     parser.add_argument("--config", type=Path, default=None, help="YAML/JSON threshold overrides")
+    parser.add_argument(
+        "--profile",
+        choices=("oscar_static_robot_pov", "industrial_mobile_robot_pov"),
+        default=None,
+        help="Built-in curation profile; mutually exclusive with --config",
+    )
     parser.add_argument("--output-dir", type=Path, default=None, help="Derived artifact directory")
     args = parser.parse_args(argv)
 
     result = run_clip_curation_stage(
         bundle_dir=args.bundle_dir,
         config_path=args.config,
+        profile=args.profile,
         output_dir=args.output_dir,
     )
     print(json.dumps(result, indent=2))

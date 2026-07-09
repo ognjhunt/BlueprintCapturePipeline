@@ -53,6 +53,7 @@ What still requires operator evidence before truthful launch:
 
 - Legal/EHS sign-off on the capture consent posture.
 - Operator DPA/data-processing terms covering retention, subprocessors, and access-audit obligations.
+- Industrial site authorization and EHS/safety sign-off when capture truth marks the site as warehouse, manufacturing, fulfillment, factory, brownfield, or industrial.
 - Paperclip ops relay secret rotation and redeploy evidence.
 - Real-device discovery, reservation, and upload on iPhone.
 - Real-device discovery, reservation, and upload on glasses.
@@ -67,6 +68,8 @@ Required operator evidence:
   Category: legal/EHS. Evidence: signature over the current capture consent, rights, redaction, and delivery posture.
 - `operator_dpa_data_processing_terms`
   Category: legal/privacy ops. Evidence: operator DPA or equivalent data-processing terms covering retention policy, subprocessor list, and access-audit terms for delivered packages and hosted review access.
+- `industrial_site_authorization_ehs_signoff`
+  Category: legal/EHS industrial-site authorization. Required when the capture descriptor or raw manifest marks the site as warehouse, manufacturing, fulfillment, factory, brownfield, `industrial_unknown`, or another industrial category. Evidence: signed site authorization by a named authorizer/role, EHS or safety sign-off, worker-PII or works-council posture, NDA/proprietary-data terms, PPE and escort acknowledgements, and restricted-zone controls for forklift lanes, LOTO, machine guards, and other non-public areas.
 - `paperclip_ops_relay_secret_rotation`
   Category: ops security. Evidence: Cloud Secret Manager version or equivalent rotation record, plus redeploy evidence for the Paperclip ops relay secret.
 - `iphone_real_device_claim_flow`
@@ -92,6 +95,12 @@ Required operator evidence:
 - `buyer_artifact_access`
   Category: buyer access. Evidence: live authenticated buyer session proving artifact or fulfillment access after purchase.
 
+Current repo decision record: `docs/runbooks/identity-kyc-background-provider-decisions-2026-07-09.md`.
+Copyable operator evidence for the two decision checks lives at
+`docs/examples/operator_launch_evidence.identity_kyc_background_decisions.json`.
+This decision record does not prove live connected-account readiness,
+background-check readiness, or physical-site screening readiness.
+
 Per-capture `launch_gate_summary.json` reads `pipeline/operator_launch_evidence.json`
 with schema `operator_launch_evidence.v1`. Until every required evidence id is
 verified there, `overall_status` remains
@@ -104,6 +113,9 @@ enough for live-proof checks: payment evidence must declare live Stripe mode and
 include payment or event identifiers, payout evidence must declare live Stripe
 mode and include payout/transfer identifiers plus reconciliation, Connect
 readiness must include live provider booleans with no blocking requirements,
+industrial authorization evidence must include explicit site authorization,
+EHS/safety, worker-PII/works-council, NDA/proprietary-data, PPE/escort, and
+restricted-zone fields,
 device-flow evidence must include a recording and `capture_job_id`, buyer
 artifact access must include an authenticated buyer session plus successful
 executed access/fetch evidence, and finance ownership must name the owner and

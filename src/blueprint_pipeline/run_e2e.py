@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from hashlib import sha256
 import json
 import logging
 from pathlib import Path
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 RUN_E2E_STAGE_LEDGER_FILENAME = "run_e2e_stage_ledger.json"
 RUN_E2E_STAGE_LEDGER_SCHEMA_VERSION = "run_e2e_stage_ledger.v1"
+RUN_E2E_INPUT_FINGERPRINT_SCHEMA_VERSION = "run_e2e_capture_input_fingerprint.v1"
 RUN_E2E_STAGE_RESULT_SNAPSHOT_MAX_BYTES = 512_000
 _SENSITIVE_STAGE_SNAPSHOT_KEY_MARKERS = (
     "api_key",
@@ -71,6 +73,54 @@ def _run_e2e_stage_ledger_path(capture_root: Path) -> Path:
     return capture_root / "pipeline" / RUN_E2E_STAGE_LEDGER_FILENAME
 
 
+def _sha_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _capture_input_fingerprint_source(
+    *,
+    capture_root: Path,
+    role: str,
+    path: Path,
+) -> dict[str, Any]:
+    relative_path = path.relative_to(capture_root) if path.is_relative_to(capture_root) else path
+    exists = path.is_file()
+    return {
+        "role": role,
+        "relative_path": str(relative_path),
+        "exists": exists,
+        "size_bytes": path.stat().st_size if exists else None,
+        "sha256": _sha_file(path) if exists else None,
+    }
+
+
+def _capture_input_fingerprint(context: Any) -> dict[str, Any]:
+    capture_root = Path(context.capture_root)
+    raw_root = Path(getattr(context, "raw_root", capture_root / "raw"))
+    sources = [
+        _capture_input_fingerprint_source(
+            capture_root=capture_root,
+            role="capture_descriptor",
+            path=Path(context.descriptor_path),
+        ),
+        _capture_input_fingerprint_source(
+            capture_root=capture_root,
+            role="raw_manifest",
+            path=raw_root / "manifest.json",
+        ),
+    ]
+    payload = {
+        "schema_version": RUN_E2E_INPUT_FINGERPRINT_SCHEMA_VERSION,
+        "sources": sources,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {**payload, "fingerprint_sha256": sha256(encoded).hexdigest()}
+
+
 def _new_run_e2e_stage_ledger(
     *,
     capture_root: Path,
@@ -79,6 +129,7 @@ def _new_run_e2e_stage_ledger(
     run_evaluation_prep: bool,
     run_cosmos_validation: bool,
     robot_eval_requested: bool,
+    capture_input_fingerprint: Mapping[str, Any],
 ) -> dict[str, Any]:
     generated_at = utc_now_iso()
     return {
@@ -89,6 +140,7 @@ def _new_run_e2e_stage_ledger(
         "capture_root": str(capture_root),
         "provider": provider,
         "pipeline_lane": pipeline_lane,
+        "capture_input_fingerprint": dict(capture_input_fingerprint),
         "requested": {
             "evaluation_prep": run_evaluation_prep,
             "cosmos_validation": run_cosmos_validation,
@@ -135,6 +187,7 @@ def _resume_compatible_run_e2e_stage_ledger(
     provider: str,
     pipeline_lane: str,
     requested: Mapping[str, bool],
+    capture_input_fingerprint: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     existing = _read_run_e2e_stage_ledger(capture_root)
     if not existing:
@@ -146,6 +199,8 @@ def _resume_compatible_run_e2e_stage_ledger(
     if existing.get("provider") != provider:
         return None
     if existing.get("pipeline_lane") != pipeline_lane:
+        return None
+    if existing.get("capture_input_fingerprint") != dict(capture_input_fingerprint):
         return None
     if existing.get("requested") != dict(requested):
         return None
@@ -469,6 +524,7 @@ def run_end_to_end(
         run_cosmos_validation=run_cosmos_validation,
     )
     context = resolve_local_capture_context(capture_root)
+    capture_input_fingerprint = _capture_input_fingerprint(context)
     robot_eval_requested = bool(robot_eval_job_request or robot_eval_request_inbox)
     resume_requested = _run_e2e_resume_requested(
         run_evaluation_prep=run_evaluation_prep,
@@ -481,6 +537,7 @@ def run_end_to_end(
             provider=provider,
             pipeline_lane=pipeline_lane,
             requested=resume_requested,
+            capture_input_fingerprint=capture_input_fingerprint,
         )
         if resume_completed_stages
         else None
@@ -493,6 +550,7 @@ def run_end_to_end(
             run_evaluation_prep=run_evaluation_prep,
             run_cosmos_validation=run_cosmos_validation,
             robot_eval_requested=robot_eval_requested,
+            capture_input_fingerprint=capture_input_fingerprint,
         )
         if resume_completed_stages:
             stage_ledger["resume_completed_stages_requested"] = True

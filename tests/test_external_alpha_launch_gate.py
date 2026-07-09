@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -176,6 +177,7 @@ def test_main_writes_failure_artifacts_when_capture_repo_is_missing(tmp_path: Pa
             "--skip-ios",
             "--skip-android",
             "--skip-pipeline",
+            "--skip-spend-guard",
             "--json-out",
             str(json_out),
             "--markdown-out",
@@ -212,6 +214,7 @@ def test_main_writes_manual_required_android_artifact(
             "--skip-capture-cloud",
             "--skip-ios",
             "--skip-pipeline",
+            "--skip-spend-guard",
             "--json-out",
             str(json_out),
             "--markdown-out",
@@ -230,3 +233,88 @@ def test_main_writes_manual_required_android_artifact(
     markdown = markdown_out.read_text(encoding="utf-8")
     assert "Overall status: `passed_manual_required`" in markdown
     assert "Manual-required rows are intentionally not counted as proof" in markdown
+
+
+def test_main_blocks_when_spend_guard_snapshots_are_missing(tmp_path: Path) -> None:
+    gate = _load_gate_module()
+    json_out = tmp_path / "external_alpha_launch_gate.json"
+    markdown_out = tmp_path / "external_alpha_launch_gate.md"
+
+    exit_code = gate.main(
+        [
+            "--capture-repo",
+            str(tmp_path),
+            "--pipeline-repo",
+            str(tmp_path),
+            "--skip-capture-cloud",
+            "--skip-ios",
+            "--skip-android",
+            "--skip-pipeline",
+            "--json-out",
+            str(json_out),
+            "--markdown-out",
+            str(markdown_out),
+        ]
+    )
+
+    assert exit_code == 1
+    report = json.loads(json_out.read_text(encoding="utf-8"))
+    assert report["overall_status"] == "automation_failed"
+    pre = next(
+        check for check in report["checks"] if check["id"] == "gpu_spend_guard_pre_snapshot"
+    )
+    post = next(
+        check for check in report["checks"] if check["id"] == "gpu_spend_guard_post_snapshot"
+    )
+    assert pre["status"] == "failed"
+    assert post["status"] == "failed"
+    assert pre["blockers"] == ["spend_guard_snapshot_path_missing"]
+    assert post["blockers"] == ["spend_guard_snapshot_path_missing"]
+
+
+def test_spend_guard_snapshot_check_requires_fresh_passed_fleet_budget(
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    now = datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc)
+    snapshot = tmp_path / "gpu_spend_guard.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "schema_version": "gpu_spend_guard.v1",
+                "generated_at": "2026-07-09T11:59:00+00:00",
+                "reap_mode": True,
+                "live_instance_count": 0,
+                "total_burn_per_hour_usd": 0.0,
+                "reap_candidate_ids": [],
+                "fleet_budget": {
+                    "schema_version": "gpu_fleet_budget_guard.v1",
+                    "status": "passed",
+                    "blockers": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    check = gate._spend_guard_snapshot_check(
+        path=snapshot,
+        snapshot_label="pre",
+        max_age_seconds=300,
+        now=now,
+    )
+    assert check["status"] == "passed"
+
+    payload = json.loads(snapshot.read_text(encoding="utf-8"))
+    payload["fleet_budget"]["status"] = "blocked"
+    payload["fleet_budget"]["blockers"] = ["fleet_burn_rate_limit_exceeded"]
+    snapshot.write_text(json.dumps(payload), encoding="utf-8")
+
+    blocked = gate._spend_guard_snapshot_check(
+        path=snapshot,
+        snapshot_label="pre",
+        max_age_seconds=300,
+        now=now,
+    )
+    assert blocked["status"] == "failed"
+    assert "spend_guard_snapshot_fleet_budget_not_passed" in blocked["blockers"]

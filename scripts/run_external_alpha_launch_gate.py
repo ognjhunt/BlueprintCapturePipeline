@@ -35,6 +35,8 @@ def _desktop_capture_repo() -> Path:
 
 DEFAULT_IOS_TEST_TIMEOUT_SECONDS = 900
 ANDROID_SDK_MISSING_REASON = "ANDROID_HOME or ANDROID_SDK_ROOT is not configured in this shell."
+SPEND_GUARD_SCHEMA_VERSION = "gpu_spend_guard.v1"
+DEFAULT_SPEND_GUARD_SNAPSHOT_MAX_AGE_SECONDS = 15 * 60
 
 
 def _positive_int(value: str) -> int:
@@ -252,6 +254,21 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def _record_check(
     report: dict[str, Any],
     *,
@@ -262,6 +279,73 @@ def _record_check(
     row = {"id": check_id, "status": status}
     row.update(extra)
     report["checks"].append(row)
+
+
+def _spend_guard_snapshot_check(
+    *,
+    path: Path | None,
+    snapshot_label: str,
+    max_age_seconds: int,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    payload: dict[str, Any] = {}
+    if path is None:
+        blockers.append("spend_guard_snapshot_path_missing")
+    elif not path.is_file():
+        blockers.append("spend_guard_snapshot_file_missing")
+    else:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, Mapping):
+                payload = dict(raw)
+            else:
+                blockers.append("spend_guard_snapshot_not_json_object")
+        except (OSError, json.JSONDecodeError):
+            blockers.append("spend_guard_snapshot_parse_failed")
+
+    generated_at = _parse_iso(payload.get("generated_at")) if payload else None
+    age_seconds: float | None = None
+    if payload:
+        if payload.get("schema_version") != SPEND_GUARD_SCHEMA_VERSION:
+            blockers.append("spend_guard_snapshot_schema_invalid")
+        if generated_at is None:
+            blockers.append("spend_guard_snapshot_generated_at_invalid")
+        else:
+            age_seconds = ((now or datetime.now(timezone.utc)) - generated_at).total_seconds()
+            if age_seconds < 0 or age_seconds > max_age_seconds:
+                blockers.append("spend_guard_snapshot_stale")
+        if payload.get("reap_mode") is not True:
+            blockers.append("spend_guard_snapshot_reap_mode_not_true")
+        if payload.get("reap_candidate_ids"):
+            blockers.append("spend_guard_snapshot_has_reap_candidates")
+        fleet_budget = payload.get("fleet_budget")
+        if not isinstance(fleet_budget, Mapping):
+            blockers.append("spend_guard_snapshot_fleet_budget_missing")
+        elif fleet_budget.get("status") != "passed":
+            blockers.append("spend_guard_snapshot_fleet_budget_not_passed")
+        failed_reaps = [
+            item
+            for item in payload.get("reap_results") or []
+            if isinstance(item, Mapping)
+            and item.get("status") not in {None, "terminated", "deleted", "stopped"}
+        ]
+        if failed_reaps:
+            blockers.append("spend_guard_snapshot_has_failed_reap_results")
+
+    return {
+        "id": f"gpu_spend_guard_{snapshot_label}_snapshot",
+        "status": "passed" if not blockers else "failed",
+        "path": str(path) if path else None,
+        "blockers": sorted(set(blockers)),
+        "generated_at": payload.get("generated_at"),
+        "age_seconds": age_seconds,
+        "live_instance_count": payload.get("live_instance_count"),
+        "total_burn_per_hour_usd": payload.get("total_burn_per_hour_usd"),
+        "fleet_budget": payload.get("fleet_budget"),
+        "reap_candidate_ids": payload.get("reap_candidate_ids") or [],
+        "max_age_seconds": max_age_seconds,
+    }
 
 
 def _write_report(
@@ -337,6 +421,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--skip-android", action="store_true")
     parser.add_argument("--skip-capture-cloud", action="store_true")
     parser.add_argument("--skip-pipeline", action="store_true")
+    parser.add_argument("--skip-spend-guard", action="store_true")
+    parser.add_argument("--spend-guard-pre-snapshot", type=Path)
+    parser.add_argument("--spend-guard-post-snapshot", type=Path)
+    parser.add_argument(
+        "--spend-guard-max-age-seconds",
+        type=_positive_int,
+        default=DEFAULT_SPEND_GUARD_SNAPSHOT_MAX_AGE_SECONDS,
+    )
     parser.add_argument("--require-android", action="store_true")
     parser.add_argument("--ios-simulator-udid", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_UDID"))
     parser.add_argument("--ios-simulator-name", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_NAME", "iPhone 17 Pro"))
@@ -381,6 +473,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     try:
+        if args.skip_spend_guard:
+            _record_check(
+                report,
+                check_id="gpu_spend_guard_snapshots",
+                status="skipped",
+                detail=(
+                    "Spend-guard snapshot proof skipped; this is not production "
+                    "provider-spend readiness evidence."
+                ),
+            )
+        else:
+            failed_spend_checks: list[dict[str, Any]] = []
+            for label, path in (
+                ("pre", args.spend_guard_pre_snapshot),
+                ("post", args.spend_guard_post_snapshot),
+            ):
+                check = _spend_guard_snapshot_check(
+                    path=path.resolve() if path else None,
+                    snapshot_label=label,
+                    max_age_seconds=args.spend_guard_max_age_seconds,
+                )
+                check_id = str(check.pop("id"))
+                status = str(check.pop("status"))
+                _record_check(report, check_id=check_id, status=status, **check)
+                if status != "passed":
+                    failed_spend_checks.append({"id": check_id, **check})
+            if failed_spend_checks:
+                summary = "; ".join(
+                    f"{check['id']}:{','.join(check.get('blockers') or [])}"
+                    for check in failed_spend_checks
+                )
+                raise RuntimeError(f"GPU spend guard snapshot gate failed: {summary}")
+
         if args.skip_capture_cloud:
             _record_check(report, check_id="capture_cloud_extract_frames", status="skipped")
         else:

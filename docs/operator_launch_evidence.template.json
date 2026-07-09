@@ -15,6 +15,21 @@
       "verified_at": "",
       "verified_by": ""
     },
+    "industrial_site_authorization_ehs_signoff": {
+      "status": "manual_live_evidence_required",
+      "signed_record_uri": "",
+      "industrial_authorization_record_uri": "",
+      "site_authorizer_name": "",
+      "site_authorizer_role": "",
+      "ehs_signoff_uri": "",
+      "worker_pii_consent_posture_uri": "",
+      "nda_or_proprietary_data_terms_uri": "",
+      "ppe_requirements_acknowledged": false,
+      "escort_requirements_acknowledged": false,
+      "restricted_zone_controls_uri": "",
+      "verified_at": "",
+      "verified_by": ""
+    },
     "paperclip_ops_relay_secret_rotation": {
       "status": "manual_live_evidence_required",
       "secret_version_ref": "",

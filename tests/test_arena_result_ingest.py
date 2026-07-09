@@ -444,6 +444,65 @@ def test_local_delivery_command_fails_closed_without_gate_or_bundle(
     assert (tmp_path / "delivery_upload.command.json").is_file()
 
 
+def test_delivery_command_gcs_artifact_uri_surfaces_in_signed_access(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    results_dir = _arena_results(tmp_path)
+    output_dir = tmp_path / "arena-package"
+    writer = tmp_path / "write_gcs_delivery.py"
+    writer.write_text(
+        "\n".join(
+            [
+                "import json",
+                "payload = {",
+                "  'schema_version': 'arena_delivery_command_manifest.v1',",
+                "  'status': 'cloud_delivery_artifact_ready_review_required',",
+                "  'provider': 'gcs',",
+                "  'artifact_uri': 'gs://buyer-artifacts/pkg/post_training_data_package.tar.gz',",
+                "  'artifact_uris': {",
+                "    'post_training_data_package_uri': 'gs://buyer-artifacts/pkg/post_training_data_package.tar.gz'",
+                "  },",
+                "  'uploaded_objects': [{'gcs_uri': 'gs://buyer-artifacts/pkg/post_training_data_package.tar.gz'}],",
+                "  'marketplace_entitlement_patch': {",
+                "    'status': 'ready_for_webapp_patch',",
+                "    'entitlement_id': 'ent-1',",
+                "    'fields': {",
+                "      'post_training_data_package_uri': 'gs://buyer-artifacts/pkg/post_training_data_package.tar.gz'",
+                "    }",
+                "  },",
+                "  'storage_upload_performed': True,",
+                "}",
+                "with open('delivery_upload.command.json', 'w', encoding='utf-8') as f:",
+                "    json.dump(payload, f)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD", "true")
+
+    build_arena_result_ingest(
+        capture_root=capture_root,
+        arena_results_dir=results_dir,
+        output_dir=output_dir,
+        scenario_count=500,
+        shard_size=100,
+        allow_delivery_upload=True,
+        delivery_command=f"{sys.executable} {writer}",
+    )
+
+    signed_access = _read_json(output_dir / "signed_access_manifest.json")
+    delivery_manifest = _read_json(output_dir / "delivery_manifest.json")
+
+    assert signed_access["status"] == "cloud_artifact_ready_review_required"
+    assert signed_access["artifact_uri"] == "gs://buyer-artifacts/pkg/post_training_data_package.tar.gz"
+    assert signed_access["storage_upload_performed"] is True
+    assert signed_access["marketplace_entitlement_patch"]["status"] == "ready_for_webapp_patch"
+    assert delivery_manifest["artifact_uri"] == signed_access["artifact_uri"]
+    assert delivery_manifest["claim_boundary"]["cloud_storage_delivery_source_present"] is True
+
+
 def test_arena_result_ingest_small_helper_edges(tmp_path: Path) -> None:
     assert arena._string_list(None) == []
     assert arena._string_list("one") == ["one"]

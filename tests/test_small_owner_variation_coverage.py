@@ -168,14 +168,29 @@ def test_scenario_variation_instantiator_helper_edges(tmp_path: Path) -> None:
 
     (robot_eval_dir / "scenario_family_library.json").unlink()
     (robot_eval_dir / "scenario_cards.json").write_text(
-        json.dumps({"cards": [{"scenario_id": "scenario-card-1", "task_id": "inspect"}]}),
+        json.dumps(
+            {
+                "cards": [
+                    {
+                        "scenario_id": "warehouse_rack_tote_pallet_zone_traffic_zone",
+                        "task_id": "move_tote_from_rack_to_pallet_zone",
+                    }
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     card_rows = variations._scenario_family_rows(
         pipeline_dir=pipeline_dir,
         generated_at="2026-06-20T00:00:00Z",
     )
-    assert card_rows[0]["scenario_id"] == "scenario-card-1"
+    assert card_rows[0]["scenario_id"] == "warehouse_rack_tote_pallet_zone_traffic_zone"
+    assert set(card_rows[0]["industrial_scene_context"]["static_scene_structure_entity_types"]) >= {
+        "rack",
+        "tote",
+        "pallet_zone",
+        "traffic_zone",
+    }
 
     manifest = variations.build_scenario_variation_instances(
         capture_root=tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1",

@@ -1,0 +1,23 @@
+[Unit]
+Description=Blueprint GPU spend guard and orphan reaper
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_GPU_SPEND_GUARD_REPORT=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/latest.json
+Environment=BLUEPRINT_GPU_SPEND_LEDGER=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/spend_ledger.json
+Environment=BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOT_SECONDS=480
+Environment=BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOTED_ORPHAN_SECONDS=14400
+Environment=BLUEPRINT_GPU_FLEET_MAX_LIVE_INSTANCES=10
+Environment=BLUEPRINT_GPU_FLEET_MAX_BURN_USD_PER_HOUR=10.0
+Environment=BLUEPRINT_GPU_FLEET_MAX_DAILY_SPEND_USD=100.0
+Environment=BLUEPRINT_GPU_FLEET_MAX_TOTAL_SPEND_USD=500.0
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && mkdir -p "$$(dirname "$${BLUEPRINT_GPU_SPEND_GUARD_REPORT}")" "$$(dirname "$${BLUEPRINT_GPU_SPEND_LEDGER}")" && ARGS=(scripts/gpu_spend_guard.py --reap --max-boot-seconds "$${BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOT_SECONDS}" --max-booted-orphan-seconds "$${BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOTED_ORPHAN_SECONDS}" --max-live-instances "$${BLUEPRINT_GPU_FLEET_MAX_LIVE_INSTANCES}" --max-burn-usd-per-hour "$${BLUEPRINT_GPU_FLEET_MAX_BURN_USD_PER_HOUR}" --spend-ledger "$${BLUEPRINT_GPU_SPEND_LEDGER}" --max-daily-spend-usd "$${BLUEPRINT_GPU_FLEET_MAX_DAILY_SPEND_USD}" --max-total-spend-usd "$${BLUEPRINT_GPU_FLEET_MAX_TOTAL_SPEND_USD}" --json-report "$${BLUEPRINT_GPU_SPEND_GUARD_REPORT}") && if [ -x .venv/bin/python ]; then exec .venv/bin/python "$${ARGS[@]}"; fi; exec env PYTHONPATH=src python3 "$${ARGS[@]}"'
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true

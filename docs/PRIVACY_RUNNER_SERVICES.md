@@ -32,6 +32,14 @@ The main `blueprint-pipeline` Cloud Run job remains CPU-only.
 ## HTTP Contract
 
 All services accept `POST /run` with `Authorization: Bearer $PRIVACY_RUNNER_TOKEN`.
+Terraform deploys these GPU-backed services as private Cloud Run services. The
+pipeline job is granted `roles/run.invoker`; public `allUsers` or
+`allAuthenticatedUsers` invoker bindings are not valid for these runners.
+
+When `BLUEPRINT_CLOUD_RUN_IAM_AUTH_ENABLED=true`, clients also add
+`X-Serverless-Authorization: Bearer <Google ID token>` for the target service
+URL. `Authorization` remains reserved for the runner token that the service
+validates after Cloud Run IAM accepts the request.
 
 Shared input fields:
 
@@ -76,6 +84,7 @@ Pipeline-level controls (read directly by `privacy_processing.py`):
 | `PRIVACY_PIPELINE_ENABLED` | gate that turns privacy post-processing on |
 | `PRIVACY_FAIL_CLOSED` | fail-closed policy flag, defaults to true |
 | `PRIVACY_RUNNER_TOKEN` | bearer token added as `Authorization` on runner HTTP calls |
+| `BLUEPRINT_CLOUD_RUN_IAM_AUTH_ENABLED` | add `X-Serverless-Authorization` ID-token auth for private Cloud Run runners |
 | `PRIVACY_LOCAL_FULL_FRAME_REDACTION_ENABLED` | enable the local, full-frame redaction proof path (legacy alias `BLUEPRINT_PRIVACY_LOCAL_FULL_FRAME_REDACTION`) |
 
 `sam3-detect` request fields:

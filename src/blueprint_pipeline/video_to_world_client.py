@@ -9,6 +9,8 @@ from typing import Any, Dict, Mapping
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from .cloud_run_iam_auth import CloudRunIamAuthError, cloud_run_id_token_headers
+
 
 def _runner_url() -> str:
     return str(os.getenv("VIDEO_TO_WORLD_URL") or "").strip()
@@ -64,7 +66,12 @@ def run_video_to_world_provider(
         "video_probe": dict(video_probe),
     }
     raw = json.dumps(request_payload).encode("utf-8")
-    req = urllib_request.Request(url.rstrip("/") + "/run", data=raw, headers=_headers(), method="POST")
+    endpoint = url.rstrip("/") + "/run"
+    try:
+        headers = cloud_run_id_token_headers(_headers(), url=url)
+    except CloudRunIamAuthError as exc:
+        raise RuntimeError(str(exc)) from exc
+    req = urllib_request.Request(endpoint, data=raw, headers=headers, method="POST")
     try:
         with urllib_request.urlopen(req, timeout=_timeout_seconds()) as response:
             body = response.read().decode("utf-8")

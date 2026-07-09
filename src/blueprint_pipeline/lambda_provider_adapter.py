@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import shlex
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -78,6 +79,14 @@ READ_ONLY_API_MODES = {
 }
 TERMINATE_MODE = "terminate-instances"
 API_MODES = LIVE_LAUNCH_MODES | READ_ONLY_API_MODES | {TERMINATE_MODE}
+LAMBDA_TERMINAL_INSTANCE_STATUSES = {
+    "deleted",
+    "destroyed",
+    "exited",
+    "not_found",
+    "stopped",
+    "terminated",
+}
 LAMBDA_DOC_SOURCES = [
     {
         "label": "Lambda Cloud API OpenAPI spec",
@@ -926,6 +935,157 @@ def _http_json(
     return status_code, dict(parsed) if isinstance(parsed, Mapping) else {"response": parsed}
 
 
+def _lambda_instance_records(response: Mapping[str, Any]) -> list[dict[str, Any]]:
+    data = response.get("data")
+    raw_instances: Any = []
+    if isinstance(data, Mapping):
+        raw_instances = (
+            data.get("instances")
+            or data.get("instance_list")
+            or data.get("items")
+            or data.get("results")
+            or []
+        )
+    elif isinstance(data, Sequence) and not isinstance(data, (str, bytes, bytearray)):
+        raw_instances = data
+    elif isinstance(response.get("instances"), Sequence) and not isinstance(
+        response.get("instances"),
+        (str, bytes, bytearray),
+    ):
+        raw_instances = response.get("instances")
+    if not isinstance(raw_instances, Sequence) or isinstance(
+        raw_instances,
+        (str, bytes, bytearray),
+    ):
+        return []
+    return [dict(item) for item in raw_instances if isinstance(item, Mapping)]
+
+
+def _lambda_instance_id(record: Mapping[str, Any]) -> str:
+    return _string(
+        record.get("id")
+        or record.get("instance_id")
+        or record.get("instanceId")
+        or record.get("name")
+    )
+
+
+def _lambda_instance_status(record: Mapping[str, Any]) -> str:
+    return _string(
+        record.get("status")
+        or record.get("state")
+        or record.get("instance_status")
+        or record.get("lifecycle_state")
+    ).lower()
+
+
+def _lambda_teardown_verification_from_list_response(
+    *,
+    target_instance_ids: Sequence[str],
+    response: Mapping[str, Any],
+    http_status_code: int,
+) -> dict[str, Any]:
+    targets = [item for item in (_string(item) for item in target_instance_ids) if item]
+    records = _lambda_instance_records(response)
+    by_id = {_lambda_instance_id(record): record for record in records if _lambda_instance_id(record)}
+    active: list[dict[str, Any]] = []
+    terminal: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for instance_id in targets:
+        record = by_id.get(instance_id)
+        if record is None:
+            missing.append(instance_id)
+            terminal.append({"id": instance_id, "status": "not_found"})
+            continue
+        status = _lambda_instance_status(record)
+        summary = {"id": instance_id, "status": status or "unknown"}
+        if status in LAMBDA_TERMINAL_INSTANCE_STATUSES:
+            terminal.append(summary)
+        else:
+            active.append(summary)
+    api_confirmed = bool(targets) and not active
+    return {
+        "schema_version": "lambda_provider_teardown_verification.v1",
+        "checked_at": utc_now_iso(),
+        "status": "completed" if api_confirmed else "blocked",
+        "api_confirmed": api_confirmed,
+        "status_source": "provider_api",
+        "http_status_code": http_status_code,
+        "target_instance_ids": targets,
+        "terminal_instances": terminal,
+        "active_instances": active,
+        "missing_instance_ids_treated_as_terminal": missing,
+        "instance_count_returned": len(records),
+        "blockers": [] if api_confirmed else ["lambda_instances_still_active_after_terminate"],
+    }
+
+
+def _verify_lambda_teardown(
+    *,
+    instance_ids: Sequence[str],
+    api_key: str,
+    timeout_seconds: int,
+    attempts: int,
+    poll_interval_seconds: float,
+) -> dict[str, Any]:
+    observations: list[dict[str, Any]] = []
+    max_attempts = max(1, int(attempts))
+    for attempt in range(max_attempts):
+        try:
+            status_code, response = _http_json(
+                url=f"{_lambda_api_base()}/instances",
+                payload=None,
+                api_key=api_key,
+                timeout_seconds=timeout_seconds,
+                method="GET",
+            )
+            verification = _lambda_teardown_verification_from_list_response(
+                target_instance_ids=instance_ids,
+                response=response,
+                http_status_code=status_code,
+            )
+            verification["attempt"] = attempt + 1
+            observations.append(verification)
+            if verification.get("api_confirmed") is True:
+                return {
+                    **verification,
+                    "attempts": observations,
+                }
+        except Exception as exc:  # noqa: BLE001 - teardown verification must fail closed
+            observations.append(
+                {
+                    "schema_version": "lambda_provider_teardown_verification.v1",
+                    "checked_at": utc_now_iso(),
+                    "status": "blocked",
+                    "api_confirmed": False,
+                    "status_source": "provider_api",
+                    "attempt": attempt + 1,
+                    "error_type": type(exc).__name__,
+                    "error": _redact_text(str(exc), api_key=api_key),
+                    "blockers": ["lambda_list_instances_followup_failed"],
+                }
+            )
+        if attempt < max_attempts - 1 and poll_interval_seconds > 0:
+            time.sleep(float(poll_interval_seconds))
+    last = observations[-1] if observations else {}
+    blockers = _string_list(last.get("blockers")) or [
+        "lambda_teardown_verification_missing"
+    ]
+    return {
+        **{k: v for k, v in last.items() if k != "attempts"},
+        "schema_version": "lambda_provider_teardown_verification.v1",
+        "checked_at": utc_now_iso(),
+        "status": "blocked",
+        "api_confirmed": False,
+        "status_source": "provider_api",
+        "target_instance_ids": [
+            item for item in (_string(item) for item in instance_ids) if item
+        ],
+        "blockers": blockers,
+        "attempts": observations,
+    }
+
+
 def _readiness_manifest_path(output_path: Path) -> Path:
     return output_path.with_name(LAMBDA_PROVIDER_READINESS_MANIFEST_NAME)
 
@@ -1089,6 +1249,8 @@ def run_lambda_provider_adapter(
     user_data_file: str | None = None,
     instance_ids: Sequence[str] | None = None,
     timeout_seconds: int = 30,
+    teardown_poll_attempts: int = 3,
+    teardown_poll_interval_seconds: float = 2.0,
 ) -> Dict[str, Any]:
     request_path = Path(provider_launch_request_path).resolve()
     resolved_output = (
@@ -1375,30 +1537,48 @@ def run_lambda_provider_adapter(
         )
         return _persist_result(resolved_output, result)
     if mode == TERMINATE_MODE:
+        verification = _verify_lambda_teardown(
+            instance_ids=terminate_ids,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+            attempts=teardown_poll_attempts,
+            poll_interval_seconds=teardown_poll_interval_seconds,
+        )
+        teardown_proven = verification.get("api_confirmed") is True
         teardown = {
             "schema_version": LAMBDA_TEARDOWN_MANIFEST_SCHEMA_VERSION,
             "generated_at": utc_now_iso(),
-            "status": "termination_requested",
+            "status": "completed" if teardown_proven else "termination_unverified",
             "provider": LAMBDA_PROVIDER_NAME,
             "job_id": _string(request.get("job_id")),
             "instance_ids": terminate_ids,
             "api_call_performed": True,
             "http_status_code": status_code,
             "termination_response": redacted_response,
-            "continuing_spend_requires_followup_list_instances": True,
+            "teardown_verification": verification,
+            "provider_api_terminal_status_confirmed": teardown_proven,
+            "continuing_spend_requires_followup_list_instances": not teardown_proven,
+            "open_billing_risk": not teardown_proven,
             "claim_boundary": {
-                "termination_request_is_not_full_cost_reconciliation": True,
-                "list_instances_followup_required_for_zero_live_instance_proof": True,
+                "termination_request_is_not_full_cost_reconciliation": not teardown_proven,
+                "list_instances_followup_required_for_zero_live_instance_proof": not teardown_proven,
+                "provider_api_terminal_status_required_for_teardown_proof": True,
             },
         }
         write_json(_teardown_manifest_path(resolved_output), teardown)
         result.update(
             {
-                "status": "termination_requested",
-                "reason": "lambda_termination_request_completed",
-                "blockers": [],
+                "status": "completed" if teardown_proven else "termination_unverified",
+                "reason": (
+                    "lambda_termination_verified"
+                    if teardown_proven
+                    else "lambda_termination_request_completed_without_terminal_proof"
+                ),
+                "blockers": [] if teardown_proven else _string_list(verification.get("blockers")),
                 "lambda_side_effects_may_have_occurred": True,
                 "provider_teardown_requested": True,
+                "provider_teardown_proven": teardown_proven,
+                "open_billing_risk": not teardown_proven,
                 "provider_teardown_manifest_path": str(
                     _teardown_manifest_path(resolved_output)
                 ),
@@ -1475,6 +1655,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--lambda-user-data-file")
     parser.add_argument("--instance-id", action="append", default=[])
     parser.add_argument("--timeout-seconds", type=int, default=30)
+    parser.add_argument("--teardown-poll-attempts", type=int, default=3)
+    parser.add_argument("--teardown-poll-interval-seconds", type=float, default=2.0)
     parser.add_argument(
         "--allow-lambda-api-call",
         action="store_true",
@@ -1502,6 +1684,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         user_data_file=args.lambda_user_data_file,
         instance_ids=args.instance_id,
         timeout_seconds=args.timeout_seconds,
+        teardown_poll_attempts=args.teardown_poll_attempts,
+        teardown_poll_interval_seconds=args.teardown_poll_interval_seconds,
     )
     print(f"[lambda-provider-adapter] result={result['output_path']}")
     print(f"[lambda-provider-adapter] status={result['status']}")

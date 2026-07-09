@@ -955,6 +955,25 @@ def _load_delivery_command_output(output_dir: Path) -> Dict[str, Any]:
         buyer_access_check = _mapping(
             payload.get("buyer_access_check") or payload.get("buyerAccessCheck")
         )
+        artifact_uri = _string(
+            payload.get("artifact_uri")
+            or payload.get("artifactUri")
+            or payload.get("post_training_data_package_uri")
+            or payload.get("postTrainingDataPackageUri")
+        )
+        raw_artifact_uris = payload.get("artifact_uris") or payload.get("artifactUris")
+        artifact_uris = dict(raw_artifact_uris) if isinstance(raw_artifact_uris, Mapping) else {}
+        if artifact_uri and not artifact_uris.get("post_training_data_package_uri"):
+            artifact_uris["post_training_data_package_uri"] = artifact_uri
+        uploaded_objects = (
+            payload.get("uploaded_objects")
+            if isinstance(payload.get("uploaded_objects"), list)
+            else []
+        )
+        marketplace_entitlement_patch = _mapping(
+            payload.get("marketplace_entitlement_patch")
+            or payload.get("marketplaceEntitlementPatch")
+        )
         storage_upload_performed = bool(payload.get("storage_upload_performed"))
         return {
             "status": _string(payload.get("status")) or "completed",
@@ -966,6 +985,10 @@ def _load_delivery_command_output(output_dir: Path) -> Dict[str, Any]:
                 payload.get("signed_access") or payload.get("signedAccess")
             ),
             "local_access_paths": local_access_paths,
+            "artifact_uri": artifact_uri or None,
+            "artifact_uris": artifact_uris,
+            "uploaded_objects": uploaded_objects,
+            "marketplace_entitlement_patch": marketplace_entitlement_patch,
             "storage_upload_performed": storage_upload_performed,
             "entitlement_verified": bool(
                 payload.get("entitlement_verified")
@@ -985,6 +1008,10 @@ def _load_delivery_command_output(output_dir: Path) -> Dict[str, Any]:
         "blockers": ["delivery_command_output_missing"],
         "signed_urls": [],
         "local_access_paths": [],
+        "artifact_uri": None,
+        "artifact_uris": {},
+        "uploaded_objects": [],
+        "marketplace_entitlement_patch": {},
         "storage_upload_performed": False,
     }
 
@@ -1414,6 +1441,14 @@ def _build_delivery_artifacts(
             target = bundle_dir / name
             shutil.copy2(source, target)
             bundle_files.append(_artifact_ref(output_dir, target))
+    archives_dir = output_dir / "archives"
+    if archives_dir.is_dir():
+        for source in sorted(path for path in archives_dir.rglob("*") if path.is_file()):
+            relative = source.relative_to(archives_dir)
+            target = bundle_dir / "archives" / relative
+            ensure_dir(target.parent)
+            shutil.copy2(source, target)
+            bundle_files.append(_artifact_ref(output_dir, target))
     entitlement = {
         "schema_version": "arena_delivery_entitlement_check.v1",
         "generated_at": generated_at,
@@ -1467,6 +1502,20 @@ def _build_delivery_artifacts(
     signed_urls = delivery_command_output.get("signed_urls") or []
     signed_access_entries = delivery_command_output.get("signed_access") or []
     local_access_paths = delivery_command_output.get("local_access_paths") or []
+    artifact_uri = _string(delivery_command_output.get("artifact_uri")) or None
+    artifact_uris = (
+        delivery_command_output.get("artifact_uris")
+        if isinstance(delivery_command_output.get("artifact_uris"), Mapping)
+        else {}
+    )
+    uploaded_objects = (
+        delivery_command_output.get("uploaded_objects")
+        if isinstance(delivery_command_output.get("uploaded_objects"), list)
+        else []
+    )
+    marketplace_entitlement_patch = _mapping(
+        delivery_command_output.get("marketplace_entitlement_patch")
+    )
     storage_upload_performed = bool(delivery_command_output.get("storage_upload_performed"))
     buyer_access_check = _mapping(delivery_command_output.get("buyer_access_check"))
     entitlement_verified = bool(
@@ -1480,6 +1529,9 @@ def _build_delivery_artifacts(
     elif signed_urls:
         signed_access_status = "signed_access_ready"
         signed_access_blockers = []
+    elif storage_upload_performed and artifact_uri:
+        signed_access_status = "cloud_artifact_ready_review_required"
+        signed_access_blockers = ["signed_urls_not_requested_webapp_must_sign_gs_uri"]
     elif local_access_paths:
         signed_access_status = "local_delivery_ready_review_required"
         signed_access_blockers = ["signed_urls_not_provided_by_local_delivery_command"]
@@ -1494,6 +1546,10 @@ def _build_delivery_artifacts(
         "signed_urls": signed_urls,
         "signed_access": signed_access_entries,
         "local_access_paths": local_access_paths,
+        "artifact_uri": artifact_uri,
+        "artifact_uris": dict(artifact_uris),
+        "uploaded_objects": uploaded_objects,
+        "marketplace_entitlement_patch": marketplace_entitlement_patch,
         "entitlement_verified": entitlement_verified,
         "buyer_access_check": buyer_access_check,
         "operator_attestation": delivery_command_output.get("operator_attestation"),
@@ -1505,6 +1561,10 @@ def _build_delivery_artifacts(
                 "signed_urls",
                 "signed_access",
                 "local_access_paths",
+                "artifact_uri",
+                "artifact_uris",
+                "uploaded_objects",
+                "marketplace_entitlement_patch",
                 "entitlement_verified",
                 "buyer_access_check",
                 "operator_attestation",
@@ -1533,10 +1593,17 @@ def _build_delivery_artifacts(
         "retention_policy": "retention_policy.json",
         "egress_estimate": "egress_estimate.json",
         "signed_access_manifest": "signed_access_manifest.json",
+        "artifact_uri": artifact_uri,
+        "artifact_uris": dict(artifact_uris),
+        "uploaded_object_count": len(uploaded_objects),
+        "marketplace_entitlement_patch": marketplace_entitlement_patch,
         "storage_upload_performed": signed_access["storage_upload_performed"],
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "signed_delivery_access_proven": signed_access_status == "signed_access_ready",
+            "cloud_storage_delivery_source_present": bool(
+                storage_upload_performed and artifact_uri
+            ),
             "delivery_access_is_deployment_approval": False,
             "package_delivery_is_deployment_approval": False,
             "deployment_approval_proven": False,

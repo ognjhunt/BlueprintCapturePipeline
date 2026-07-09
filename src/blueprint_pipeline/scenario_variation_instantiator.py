@@ -8,8 +8,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .industrial_ontology import classify_industrial_entities
 from .local_capture import resolve_local_capture_context
-from .robot_eval_dataset import SCENARIO_VARIATION_DEFINITIONS
+from .robot_eval_dataset import (
+    DEFAULT_SCENARIO_VARIATION_NAMES,
+    KNOWN_SCENARIO_VARIATION_DEFINITIONS,
+)
 
 
 SCENARIO_VARIATION_INSTANCES_SCHEMA_VERSION = "scenario_variation_instances.v1"
@@ -22,7 +26,7 @@ SCENARIO_VARIATION_ENGINE_TARGETS = (
     "newton",
 )
 SCENARIO_VARIATION_NAMES = tuple(
-    str(definition["variation_id"]) for definition in SCENARIO_VARIATION_DEFINITIONS
+    str(definition["variation_id"]) for definition in KNOWN_SCENARIO_VARIATION_DEFINITIONS
 )
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
@@ -36,6 +40,19 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "physics_contact_validated": False,
     "non_ranking_operational_claim_validated": False,
     "public_claim_upgrade_allowed": False,
+}
+
+_STATIC_INDUSTRIAL_SCENE_ENTITY_TYPES = {
+    "aisle",
+    "rack",
+    "tote",
+    "pallet_zone",
+    "traffic_zone",
+    "barrier",
+    "workcell",
+    "handoff_point",
+    "door_type",
+    "threshold",
 }
 
 
@@ -98,6 +115,16 @@ def _canonical_variation_name(value: Any) -> str:
         "wrong_object_nearby": "wrong_object_nearby",
         "narrow_approach": "narrow_approach_angle",
         "narrow_approach_angle": "narrow_approach_angle",
+        "conveyor_motion": "conveyor_motion",
+        "machine_guarding": "machine_guarding_state",
+        "machine_guarding_state": "machine_guarding_state",
+        "loto": "machine_guarding_state",
+        "agv_cross_traffic": "agv_cross_traffic",
+        "agv": "agv_cross_traffic",
+        "thermal_surface": "thermal_surface",
+        "hot_surface": "thermal_surface",
+        "moving_part": "moving_part_on_line",
+        "moving_part_on_line": "moving_part_on_line",
     }
     return aliases.get(text, text)
 
@@ -132,6 +159,143 @@ def _normal_variations(variations: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def _string_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        raw: Iterable[Any] = [value]
+    elif isinstance(value, Iterable):
+        raw = value
+    else:
+        raw = []
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = _canonical_variation_name(item)
+        if text and text not in seen and text in SCENARIO_VARIATION_NAMES:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def _source_variation_values(variation: Mapping[str, Any]) -> List[Any]:
+    values: List[Any] = [
+        variation.get("variation_id"),
+        variation.get("variation_name"),
+        variation.get("label"),
+    ]
+    source = variation.get("source_variation")
+    if isinstance(source, Mapping):
+        values.extend(
+            [
+                source.get("variation_id"),
+                source.get("variation_name"),
+                source.get("label"),
+            ]
+        )
+    return values
+
+
+def _industrial_scene_context(values: Iterable[Any]) -> Dict[str, Any]:
+    entities = [entity.to_dict() for entity in classify_industrial_entities(values)]
+    entity_types = _unique(_string(entity.get("entity_type")) for entity in entities)
+    return {
+        "schema_version": "industrial_scene_context.v1",
+        "status": "detected" if entities else "not_detected",
+        "entities": entities,
+        "entity_types": entity_types,
+        "static_scene_structure_entity_types": [
+            entity_type
+            for entity_type in entity_types
+            if entity_type in _STATIC_INDUSTRIAL_SCENE_ENTITY_TYPES
+        ],
+        "route_relevant_entity_types": [
+            _string(entity.get("entity_type"))
+            for entity in entities
+            if bool(entity.get("route_relevant"))
+        ],
+        "task_relevant_entity_types": [
+            _string(entity.get("entity_type"))
+            for entity in entities
+            if bool(entity.get("task_relevant"))
+        ],
+        "hazard_relevant_entity_types": [
+            _string(entity.get("entity_type"))
+            for entity in entities
+            if bool(entity.get("hazard_relevant"))
+        ],
+        "claim_boundary": (
+            "industrial_scene_context_is_text_and_capture_derived_semantic_context_"
+            "not_simulator_execution_or_physical_deployment_proof"
+        ),
+    }
+
+
+def _family_context_values(
+    *,
+    family_id: Any,
+    scenario_id: Any,
+    task_id: Any,
+    robot_profile_id: Any,
+    variations: Sequence[Mapping[str, Any]],
+    required_variation_names: Iterable[Any],
+    source: str,
+) -> List[Any]:
+    values: List[Any] = [
+        family_id,
+        scenario_id,
+        task_id,
+        robot_profile_id,
+        source,
+        *list(required_variation_names),
+    ]
+    for variation in variations:
+        values.extend(_source_variation_values(variation))
+    return values
+
+
+def _merge_industrial_scene_contexts(
+    contexts: Iterable[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    entity_by_type: Dict[str, Dict[str, Any]] = {}
+    for context in contexts:
+        entities = context.get("entities")
+        for entity in entities if isinstance(entities, list) else []:
+            if not isinstance(entity, Mapping):
+                continue
+            entity_type = _string(entity.get("entity_type"))
+            if entity_type and entity_type not in entity_by_type:
+                entity_by_type[entity_type] = dict(entity)
+    return _industrial_scene_context(entity_by_type) if not entity_by_type else {
+        "schema_version": "industrial_scene_context.v1",
+        "status": "detected",
+        "entities": list(entity_by_type.values()),
+        "entity_types": list(entity_by_type),
+        "static_scene_structure_entity_types": [
+            entity_type
+            for entity_type in entity_by_type
+            if entity_type in _STATIC_INDUSTRIAL_SCENE_ENTITY_TYPES
+        ],
+        "route_relevant_entity_types": [
+            entity_type
+            for entity_type, entity in entity_by_type.items()
+            if bool(entity.get("route_relevant"))
+        ],
+        "task_relevant_entity_types": [
+            entity_type
+            for entity_type, entity in entity_by_type.items()
+            if bool(entity.get("task_relevant"))
+        ],
+        "hazard_relevant_entity_types": [
+            entity_type
+            for entity_type, entity in entity_by_type.items()
+            if bool(entity.get("hazard_relevant"))
+        ],
+        "claim_boundary": (
+            "industrial_scene_context_is_text_and_capture_derived_semantic_context_"
+            "not_simulator_execution_or_physical_deployment_proof"
+        ),
+    }
+
+
 def _scenario_family_rows(
     *,
     pipeline_dir: Path,
@@ -142,6 +306,9 @@ def _scenario_family_rows(
     )
     families = family_library.get("families")
     if isinstance(families, list) and families:
+        library_required = _string_list(family_library.get("variation_names_required")) or list(
+            DEFAULT_SCENARIO_VARIATION_NAMES
+        )
         rows: List[Dict[str, Any]] = []
         for family_index, family in enumerate(families, start=1):
             if not isinstance(family, Mapping):
@@ -151,7 +318,8 @@ def _scenario_family_rows(
             task_id = _string(family.get("task_id")) or None
             normal = _normal_variations(family.get("variations"))
             seen = {item["variation_name"] for item in normal}
-            for required in SCENARIO_VARIATION_NAMES:
+            family_required = _string_list(family.get("variation_names_required")) or library_required
+            for required in family_required:
                 if required not in seen:
                     normal.append(
                         {
@@ -165,6 +333,18 @@ def _scenario_family_rows(
                             },
                         }
                     )
+            source = "robot_eval_dataset/scenario_family_library.json"
+            industrial_context = _industrial_scene_context(
+                _family_context_values(
+                    family_id=family_id,
+                    scenario_id=scenario_id,
+                    task_id=task_id,
+                    robot_profile_id=family.get("robot_profile_id"),
+                    variations=normal,
+                    required_variation_names=family_required,
+                    source=source,
+                )
+            )
             rows.append(
                 {
                     "family_id": family_id,
@@ -172,7 +352,9 @@ def _scenario_family_rows(
                     "task_id": task_id,
                     "robot_profile_id": _string(family.get("robot_profile_id")) or None,
                     "variations": normal,
-                    "source": "robot_eval_dataset/scenario_family_library.json",
+                    "required_variation_names": family_required,
+                    "industrial_scene_context": industrial_context,
+                    "source": source,
                 }
             )
         return rows
@@ -184,23 +366,43 @@ def _scenario_family_rows(
     for index, scenario in enumerate(scenario_cards, start=1):
         scenario_id = _string(scenario.get("scenario_id") or scenario.get("id")) or f"scenario_{index}"
         task_id = _string(scenario.get("task_id")) or None
+        card_required = [
+            name
+            for name in _string_list(scenario.get("scenario_family_variation_ids"))
+            if name != "capture_observed_layout"
+        ] or list(DEFAULT_SCENARIO_VARIATION_NAMES)
+        normal = [
+            {
+                "variation_id": name,
+                "variation_name": name,
+                "label": name.replace("_", " ").title(),
+                "scenario_status": "generated_from_scenario_card",
+                "source_variation": {"variation_id": name},
+            }
+            for name in card_required
+        ]
+        source = "robot_eval_dataset/scenario_cards.json"
+        industrial_context = _industrial_scene_context(
+            _family_context_values(
+                family_id=f"family_{_safe_id(scenario_id, fallback=str(index))}",
+                scenario_id=scenario_id,
+                task_id=task_id,
+                robot_profile_id=scenario.get("robot_profile_id"),
+                variations=normal,
+                required_variation_names=card_required,
+                source=source,
+            )
+        )
         rows.append(
             {
                 "family_id": f"family_{_safe_id(scenario_id, fallback=str(index))}",
                 "scenario_id": scenario_id,
                 "task_id": task_id,
                 "robot_profile_id": _string(scenario.get("robot_profile_id")) or None,
-                "variations": [
-                    {
-                        "variation_id": name,
-                        "variation_name": name,
-                        "label": name.replace("_", " ").title(),
-                        "scenario_status": "generated_from_scenario_card",
-                        "source_variation": {"variation_id": name},
-                    }
-                    for name in SCENARIO_VARIATION_NAMES
-                ],
-                "source": "robot_eval_dataset/scenario_cards.json",
+                "variations": normal,
+                "required_variation_names": card_required,
+                "industrial_scene_context": industrial_context,
+                "source": source,
             }
         )
     return rows
@@ -309,6 +511,51 @@ def _concrete_mutation(variation_name: str, *, ordinal: int) -> Dict[str, Any]:
                 "requires_precise_base_alignment": True,
             }
         }
+    if variation_name == "conveyor_motion":
+        return {
+            "conveyor_motion": {
+                "belt_speed_mps": 0.35,
+                "motion_direction": "line_flow",
+                "start_delay_s": 0.6,
+                "requires_timing_review": True,
+            }
+        }
+    if variation_name == "machine_guarding_state":
+        return {
+            "machine_guarding": {
+                "guard_state": "closed_loto_required",
+                "restricted_zone_margin_m": 0.5,
+                "requires_operator_ehs_review": True,
+            }
+        }
+    if variation_name == "agv_cross_traffic":
+        return {
+            "dynamic_actor": {
+                "actor_type": "agv",
+                "route": [
+                    {"x": -1.0, "y": 0.55, "z": 0.0},
+                    {"x": 1.2, "y": 0.55, "z": 0.0},
+                ],
+                "speed_mps": 0.8,
+                "trigger": "robot_entering_shared_traffic_zone",
+            }
+        }
+    if variation_name == "thermal_surface":
+        return {
+            "thermal_hazard_zone": {
+                "surface_type": "hot_machine_or_process_surface",
+                "keepout_margin_m": 0.45,
+                "requires_contact_avoidance_review": True,
+            }
+        }
+    if variation_name == "moving_part_on_line":
+        return {
+            "moving_part_on_line": {
+                "part_speed_mps": 0.25,
+                "part_spacing_m": 0.6,
+                "requires_pick_timing_review": True,
+            }
+        }
     return {"review_mutation": {"variation_name": variation_name, "requires_owner_mapping": True}}
 
 
@@ -317,8 +564,12 @@ def _operation_kind(variation_name: str) -> str:
         return "lighting_or_sensor_mutation"
     if variation_name in {"object_rotation", "cart_shifted"}:
         return "rigid_body_pose_mutation"
-    if variation_name in {"human_crossing", "forklift_nearby"}:
+    if variation_name in {"human_crossing", "forklift_nearby", "agv_cross_traffic"}:
         return "dynamic_actor_mutation"
+    if variation_name in {"conveyor_motion", "moving_part_on_line"}:
+        return "industrial_process_motion_mutation"
+    if variation_name in {"machine_guarding_state", "thermal_surface"}:
+        return "industrial_hazard_zone_mutation"
     if variation_name in {"blocked_path", "occlusion", "wrong_object_nearby"}:
         return "spawn_static_obstacle_or_distractor"
     if variation_name == "missing_label":
@@ -440,6 +691,21 @@ def build_scenario_variation_instances(
                 f"variation_{_safe_id(task_id)}_{_safe_id(scenario_id)}_{variation_name}"
             )
             mutation = _concrete_mutation(variation_name, ordinal=len(instances))
+            industrial_context = _merge_industrial_scene_contexts(
+                [
+                    _mapping(family.get("industrial_scene_context")),
+                    _industrial_scene_context(
+                        [
+                            family_id,
+                            scenario_id,
+                            task_id,
+                            variation_name,
+                            variation.get("label"),
+                            *list(_mapping(mutation).keys()),
+                        ]
+                    ),
+                ]
+            )
             engine_mutations = {
                 framework: _engine_mutation(
                     framework=framework,
@@ -462,6 +728,7 @@ def build_scenario_variation_instances(
                     "scenario_status": _string(variation.get("scenario_status"))
                     or "review_required",
                     "source": family.get("source"),
+                    "industrial_scene_context": industrial_context,
                     "concrete_mutation": mutation,
                     "engine_mutations": engine_mutations,
                     "review_required": True,
@@ -476,13 +743,21 @@ def build_scenario_variation_instances(
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
         "status": "completed" if instances else "blocked_missing_scenario_families",
-        "required_variation_names": list(SCENARIO_VARIATION_NAMES),
+        "required_variation_names": _unique(
+            name
+            for family in families
+            for name in _string_list(family.get("required_variation_names"))
+        )
+        or list(DEFAULT_SCENARIO_VARIATION_NAMES),
         "variation_names_instantiated": _unique(
             _string(instance.get("variation_name")) for instance in instances
         ),
         "engine_targets": list(SCENARIO_VARIATION_ENGINE_TARGETS),
         "family_count": len(families),
         "instance_count": len(instances),
+        "industrial_scene_context": _merge_industrial_scene_contexts(
+            _mapping(instance.get("industrial_scene_context")) for instance in instances
+        ),
         "instances": instances,
         "engine_mutation_plan": _engine_mutation_plan(instances),
         "source_artifacts": {

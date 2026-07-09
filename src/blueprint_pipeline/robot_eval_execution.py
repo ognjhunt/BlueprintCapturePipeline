@@ -2785,6 +2785,124 @@ def _records_from_payload(payload: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def _task_success_label_provenance(
+    *,
+    record: Mapping[str, Any],
+    task_outcome: Mapping[str, Any],
+    simulator: str,
+) -> Dict[str, Any]:
+    explicit = _mapping(
+        record.get("task_success_label_provenance")
+        or record.get("success_label_provenance")
+        or task_outcome.get("task_success_label_provenance")
+        or task_outcome.get("success_label_provenance")
+    )
+    if explicit:
+        return {
+            "schema_version": "task_success_label_provenance.v1",
+            "provenance_type": _string(explicit.get("provenance_type"))
+            or _string(explicit.get("type"))
+            or "declared_by_simulator_output",
+            "label_source": _string(explicit.get("label_source") or explicit.get("source"))
+            or "declared_by_simulator_output",
+            "evidence_artifact_type": _string(explicit.get("evidence_artifact_type"))
+            or _string(explicit.get("evidence_type"))
+            or "declared",
+            "buyer_disclosure": _string(explicit.get("buyer_disclosure"))
+            or "Task success uses the provenance declared by the simulator output.",
+            "generated_video_vlm_judge": bool(explicit.get("generated_video_vlm_judge")),
+            "simulator_physics_or_trace": bool(explicit.get("simulator_physics_or_trace")),
+            "real_world_outcome": bool(explicit.get("real_world_outcome")),
+            "success_label_disclosed_to_buyer": True,
+            "public_claim_upgrade_allowed": False,
+        }
+
+    success_label = _mapping(
+        record.get("wam_success_label")
+        or record.get("generated_video_success_label")
+        or task_outcome.get("wam_success_label")
+        or task_outcome.get("generated_video_success_label")
+    )
+    label_source = (
+        _string(record.get("success_label_source"))
+        or _string(record.get("label_source"))
+        or _string(task_outcome.get("success_label_source"))
+        or _string(task_outcome.get("label_source"))
+        or _string(success_label.get("label_source"))
+        or _string(success_label.get("labeler"))
+    )
+    generated_video = bool(
+        record.get("wam_success_label_from_generated_video")
+        or record.get("success_label_from_generated_video")
+        or record.get("generated_video_success_label_passed") is not None
+        or task_outcome.get("wam_success_label_from_generated_video")
+        or task_outcome.get("success_label_from_generated_video")
+        or success_label.get("success_label_from_generated_video")
+        or success_label.get("wam_success_label_from_generated_video")
+        or "generated_video" in label_source
+        or "video_frame_judge" in label_source
+        or "vlm" in label_source
+    )
+    artifact_paths = _mapping(record.get("artifact_paths") or record.get("artifactPaths"))
+    has_trace_or_physics = bool(
+        task_outcome.get("goal_reached") is not None
+        or task_outcome.get("final_target_error_m") is not None
+        or task_outcome.get("min_clearance_m") is not None
+        or record.get("contact_trace")
+        or record.get("actions")
+        or artifact_paths.get("scene_trace")
+        or artifact_paths.get("policy_trace")
+    )
+    if generated_video:
+        return {
+            "schema_version": "task_success_label_provenance.v1",
+            "provenance_type": "generated_video_vlm_judge",
+            "label_source": label_source or "generated_video_success_label",
+            "evidence_artifact_type": "model_derived_generated_video",
+            "buyer_disclosure": (
+                "Success labels are semantic judgments over model-derived generated "
+                "rollout video, not measured physical robot success or simulator "
+                "contact-state proof."
+            ),
+            "generated_video_vlm_judge": True,
+            "simulator_physics_or_trace": False,
+            "real_world_outcome": False,
+            "success_label_disclosed_to_buyer": True,
+            "public_claim_upgrade_allowed": False,
+        }
+    if has_trace_or_physics:
+        return {
+            "schema_version": "task_success_label_provenance.v1",
+            "provenance_type": "simulator_trace_or_physics",
+            "label_source": label_source or f"{simulator}_command_output",
+            "evidence_artifact_type": "simulator_state_contact_or_route_trace",
+            "buyer_disclosure": (
+                "Success labels are derived from simulator trace/state outputs; "
+                "they are not physical robot or live-site success proof."
+            ),
+            "generated_video_vlm_judge": False,
+            "simulator_physics_or_trace": True,
+            "real_world_outcome": False,
+            "success_label_disclosed_to_buyer": True,
+            "public_claim_upgrade_allowed": False,
+        }
+    return {
+        "schema_version": "task_success_label_provenance.v1",
+        "provenance_type": "legacy_success_boolean",
+        "label_source": label_source or f"{simulator}_command_output",
+        "evidence_artifact_type": "legacy_boolean_without_detailed_trace",
+        "buyer_disclosure": (
+            "Success labels come from a legacy simulator/provider boolean without "
+            "detailed trace provenance; display only with this limitation."
+        ),
+        "generated_video_vlm_judge": False,
+        "simulator_physics_or_trace": False,
+        "real_world_outcome": False,
+        "success_label_disclosed_to_buyer": True,
+        "public_claim_upgrade_allowed": False,
+    }
+
+
 def _simulator_attempts_from_payload(
     *,
     payload: Any,
@@ -2830,6 +2948,11 @@ def _simulator_attempts_from_payload(
                     else "simulator_failure"
                 )
             ]
+        label_provenance = _task_success_label_provenance(
+            record=record,
+            task_outcome=task_outcome,
+            simulator=simulator,
+        )
         attempts.append(
             {
                 "attempt_id": _string(record.get("attempt_id") or record.get("attemptId"))
@@ -2860,6 +2983,7 @@ def _simulator_attempts_from_payload(
                 "success": bool(success and task_success),
                 "task_success": bool(task_success),
                 "task_success_explicit": bool(task_success_explicit),
+                "task_success_label_provenance": label_provenance,
                 "task_status": _string(
                     record.get("task_status")
                     or record.get("taskStatus")
@@ -2907,9 +3031,28 @@ def _task_success_summary_from_attempts(attempts: Sequence[Mapping[str, Any]]) -
     failed = [attempt for attempt in attempts if not bool(attempt.get("task_success"))]
     failure_mode_counts: Dict[str, int] = {}
     task_outcomes = [_mapping(attempt.get("task_outcome")) for attempt in attempts]
+    provenance_counts: Dict[str, int] = {}
+    provenance_disclosures: Dict[str, str] = {}
+    generated_video_vlm_judged_attempt_count = 0
+    undisclosed_attempt_ids: List[str] = []
 
     def outcome_has(key: str) -> bool:
         return any(key in outcome for outcome in task_outcomes)
+
+    for attempt in attempts:
+        provenance = _mapping(attempt.get("task_success_label_provenance"))
+        provenance_type = _string(provenance.get("provenance_type")) or "missing"
+        provenance_counts[provenance_type] = provenance_counts.get(provenance_type, 0) + 1
+        disclosure = _string(provenance.get("buyer_disclosure"))
+        if disclosure:
+            provenance_disclosures.setdefault(provenance_type, disclosure)
+        if provenance.get("generated_video_vlm_judge") is True:
+            generated_video_vlm_judged_attempt_count += 1
+        if not disclosure:
+            undisclosed_attempt_ids.append(
+                _string(attempt.get("attempt_id"))
+                or f"attempt_{len(undisclosed_attempt_ids) + 1}"
+            )
 
     for attempt in failed:
         for failure_mode in _string_list(attempt.get("failure_mode_ids")):
@@ -2938,6 +3081,14 @@ def _task_success_summary_from_attempts(attempts: Sequence[Mapping[str, Any]]) -
         )
         if value is not None
     ]
+    success_rate_provenance_disclosed = bool(attempts) and not undisclosed_attempt_ids
+    success_rate_buyer_display_blockers = (
+        []
+        if success_rate_provenance_disclosed
+        else ["task_success_label_provenance_missing"]
+        if attempts
+        else ["task_success_attempts_not_available"]
+    )
     return {
         "schema_version": "robot_eval_task_success_summary.v1",
         "status": "completed" if attempts else "not_available",
@@ -2947,6 +3098,16 @@ def _task_success_summary_from_attempts(attempts: Sequence[Mapping[str, Any]]) -
         "task_success_rate": round(len(successful) / len(attempts), 6)
         if attempts
         else None,
+        "task_success_label_provenance_counts": dict(sorted(provenance_counts.items())),
+        "task_success_label_provenance_disclosures": dict(
+            sorted(provenance_disclosures.items())
+        ),
+        "generated_video_vlm_judged_attempt_count": generated_video_vlm_judged_attempt_count,
+        "success_rate_requires_provenance_disclosure": True,
+        "success_rate_provenance_disclosed": success_rate_provenance_disclosed,
+        "success_rate_buyer_display_allowed": success_rate_provenance_disclosed,
+        "success_rate_buyer_display_blockers": success_rate_buyer_display_blockers,
+        "undisclosed_success_label_attempt_ids": undisclosed_attempt_ids,
         "failed_scenario_eval_run_ids": sorted(
             _string(attempt.get("scenario_eval_run_id"))
             for attempt in failed
@@ -3139,6 +3300,24 @@ def build_simulator_command_artifacts(
         "successful_task_attempt_count": task_success_summary["successful_attempt_count"],
         "failed_task_attempt_count": task_success_summary["failed_attempt_count"],
         "task_success_rate": task_success_summary["task_success_rate"],
+        "task_success_label_provenance_counts": task_success_summary[
+            "task_success_label_provenance_counts"
+        ],
+        "generated_video_vlm_judged_attempt_count": task_success_summary[
+            "generated_video_vlm_judged_attempt_count"
+        ],
+        "success_rate_requires_provenance_disclosure": task_success_summary[
+            "success_rate_requires_provenance_disclosure"
+        ],
+        "success_rate_provenance_disclosed": task_success_summary[
+            "success_rate_provenance_disclosed"
+        ],
+        "success_rate_buyer_display_allowed": task_success_summary[
+            "success_rate_buyer_display_allowed"
+        ],
+        "success_rate_buyer_display_blockers": task_success_summary[
+            "success_rate_buyer_display_blockers"
+        ],
         "attempts": attempts,
         "result_ingested": bool(attempts),
         "simulator_execution_proven": simulator_execution_proven,

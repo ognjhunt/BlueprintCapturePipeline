@@ -234,6 +234,118 @@ def test_robot_eval_dataset_uses_simulation_automation_task_proposals_when_eval_
     )
 
 
+def test_robot_eval_dataset_site_card_surfaces_capture_declared_site_extent(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_json(
+        capture_root / "raw" / "manifest.json",
+        {
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "site_identity": {"site_id": "site-1"},
+            "site_type": "warehouse",
+            "site_extent": {
+                "approx_floor_area_m2": 4650.0,
+                "ceiling_height_m": 9.5,
+                "floor_count": 2,
+                "dominant_aisle_width_m": 3.2,
+                "site_scale_class": "multi_zone",
+                "site_levels": [
+                    {"level_id": "floor_1", "label": "main warehouse floor", "approx_floor_area_m2": 4300.0},
+                    {"level_id": "mezzanine", "label": "maintenance mezzanine", "approx_floor_area_m2": 350.0},
+                ],
+                "coverage_by_level": [
+                    {"level_id": "floor_1", "coverage_status": "captured_primary_route"},
+                    {"level_id": "mezzanine", "coverage_status": "not_captured_restricted"},
+                ],
+                "vertical_structure_notes": ["mezzanine above packout station"],
+                "status": "capturer_declared_review_required",
+                "source": "capturer_declared",
+            },
+            "site_operating_conditions": {
+                "lighting_class": "dim_mixed_led",
+                "floor_surface": "sealed_concrete",
+                "thermal_zone": "cold_storage",
+                "ambient_noise": "high",
+                "wet_dry_state": "wet_patches_present",
+                "ppe_required": ["hi_vis_vest", "safety_shoes"],
+                "environmental_hazards": ["condensation", "forklift_cross_traffic"],
+                "operational_hazards": ["forklift_lane", "restricted_freezer"],
+                "status": "capture_recorded_review_required",
+                "source": "capturer_declared",
+            },
+        },
+    )
+    _write_eval_inputs(capture_root)
+    _write_review_sources(capture_root)
+
+    result = build_real_site_robot_eval_dataset(capture_root=capture_root)
+
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    site_card = json.loads((robot_eval_root / "site_card.json").read_text())
+
+    assert result["status"] == "capture_grounded_review_ready"
+    assert site_card["site_type"] == "warehouse"
+    assert site_card["site_extent"] == {
+        "approx_floor_area_m2": 4650.0,
+        "ceiling_height_m": 9.5,
+        "floor_count": 2,
+        "dominant_aisle_width_m": 3.2,
+        "site_scale_class": "multi_zone",
+        "site_levels": [
+            {"level_id": "floor_1", "label": "main warehouse floor", "approx_floor_area_m2": 4300.0},
+            {"level_id": "mezzanine", "label": "maintenance mezzanine", "approx_floor_area_m2": 350.0},
+        ],
+        "coverage_by_level": [
+            {"level_id": "floor_1", "coverage_status": "captured_primary_route"},
+            {"level_id": "mezzanine", "coverage_status": "not_captured_restricted"},
+        ],
+        "multi_level_structure_present": True,
+        "vertical_structure_notes": ["mezzanine above packout station"],
+        "status": "capturer_declared_review_required",
+        "source": "capturer_declared",
+        "declared_dimension_fields": [
+            "approx_floor_area_m2",
+            "ceiling_height_m",
+            "floor_count",
+            "dominant_aisle_width_m",
+        ],
+        "has_numeric_site_extent": True,
+        "claim_boundary": "site_extent_is_capture_recorded_context_not_verified_survey_or_capacity_claim",
+        "vertical_structure_claim_boundary": (
+            "site_levels_and_per_level_coverage_are_capture_recorded_context_not_verified_route_or_survey_proof"
+        ),
+    }
+    assert site_card["site_operating_conditions"] == {
+        "lighting_class": "dim_mixed_led",
+        "floor_surface": "sealed_concrete",
+        "thermal_zone": "cold_storage",
+        "ambient_noise": "high",
+        "wet_dry_state": "wet_patches_present",
+        "dust_or_air_quality": None,
+        "ppe_required": ["hi_vis_vest", "safety_shoes"],
+        "environmental_hazards": ["condensation", "forklift_cross_traffic"],
+        "operational_hazards": ["forklift_lane", "restricted_freezer"],
+        "status": "capture_recorded_review_required",
+        "source": "capturer_declared",
+        "declared_condition_fields": [
+            "lighting_class",
+            "floor_surface",
+            "thermal_zone",
+            "ambient_noise",
+            "wet_dry_state",
+            "ppe_required",
+            "environmental_hazards",
+            "operational_hazards",
+        ],
+        "has_structured_operating_conditions": True,
+        "claim_boundary": (
+            "operating_conditions_are_capture_recorded_context_not_verified_ehs_or_deployment_envelope"
+        ),
+    }
+
+
 def test_robot_eval_dataset_grounded_capture_manifest_navigation_task(
     tmp_path: Path,
 ) -> None:
@@ -876,6 +988,83 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     assert "No live provider jobs" in methodology
 
 
+def test_robot_eval_dataset_uses_manufacturing_variation_profile(tmp_path: Path) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_eval_inputs(capture_root)
+    _write_json(
+        capture_root / "pipeline" / "evaluation_prep" / "site_world_spec.json",
+        {
+            "schema_version": "v1",
+            "site_type": "manufacturing plant",
+            "robot_profiles": [
+                {
+                    "id": "mobile_manipulator_rgb_v1",
+                    "display_name": "Mobile manipulator",
+                    "embodiment_type": "mobile_manipulator",
+                    "action_space": {"name": "ee_delta_pose_gripper", "dim": 7},
+                }
+            ],
+        },
+    )
+
+    build_real_site_robot_eval_dataset(capture_root=capture_root)
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    site_card = json.loads((robot_eval_root / "site_card.json").read_text())
+    scenario_families = json.loads(
+        (robot_eval_root / "scenario_family_library.json").read_text()
+    )
+    scenario_cards = json.loads((robot_eval_root / "scenario_cards.json").read_text())
+
+    assert site_card["canonical_site_type"] == "manufacturing"
+    assert scenario_families["variation_profile"]["profile_name"] == "manufacturing"
+    assert {
+        "conveyor_motion",
+        "machine_guarding_state",
+        "agv_cross_traffic",
+        "thermal_surface",
+        "moving_part_on_line",
+    } <= set(scenario_families["variation_names_required"])
+    assert "forklift_nearby" not in scenario_families["variation_names_required"]
+    assert "conveyor_motion" in scenario_cards["cards"][0]["scenario_family_variation_ids"]
+
+
+def test_robot_eval_dataset_kitchen_profile_does_not_require_forklift_or_cart(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_eval_inputs(capture_root)
+    _write_json(
+        capture_root / "pipeline" / "evaluation_prep" / "site_world_spec.json",
+        {
+            "schema_version": "v1",
+            "site_type": "kitchen",
+            "robot_profiles": [
+                {
+                    "id": "mobile_manipulator_rgb_v1",
+                    "display_name": "Mobile manipulator",
+                    "embodiment_type": "mobile_manipulator",
+                    "action_space": {"name": "ee_delta_pose_gripper", "dim": 7},
+                }
+            ],
+        },
+    )
+
+    build_real_site_robot_eval_dataset(capture_root=capture_root)
+    scenario_families = json.loads(
+        (
+            capture_root
+            / "pipeline"
+            / "robot_eval_dataset"
+            / "scenario_family_library.json"
+        ).read_text()
+    )
+
+    assert scenario_families["variation_profile"]["profile_name"] == "kitchen"
+    assert "forklift_nearby" not in scenario_families["variation_names_required"]
+    assert "cart_shifted" not in scenario_families["variation_names_required"]
+    assert "lighting_variation" in scenario_families["variation_names_required"]
+
+
 def test_robot_eval_dataset_blocks_missing_rights_privacy_and_keeps_ledger_empty(
     tmp_path: Path,
 ) -> None:
@@ -949,7 +1138,26 @@ def test_robot_eval_dataset_uses_canonical_metrics_and_site_task_threshold_templ
         "recovery_success",
         "world_model_uncertainty",
         "sim_vs_real_calibration_score",
+        "placement_tolerance",
+        "insertion_success",
+        "peak_contact_force",
+        "dimensional_error",
     }.issubset(metric_ids)
+    industrial_metric = {
+        metric["metric_id"]: metric
+        for metric in scoring["metrics"]
+        if metric["metric_id"] in {
+            "placement_tolerance",
+            "insertion_success",
+            "peak_contact_force",
+            "dimensional_error",
+        }
+    }
+    assert all(
+        metric["metric_scope"] == "optional_industrial_assembly"
+        for metric in industrial_metric.values()
+    )
+    assert all(metric["required_by_default"] is False for metric in industrial_metric.values())
     assert "uncertainty" not in metric_ids
     assert "sim_vs_real_calibration_placeholder" not in metric_ids
     assert threshold["threshold_profile_id"] == "pick_place_default_v1"
@@ -960,6 +1168,63 @@ def test_robot_eval_dataset_uses_canonical_metrics_and_site_task_threshold_templ
     assert threshold["thresholds"]["max_cycle_time_seconds"] is not None
     assert threshold["thresholds"]["max_intervention_count"] == 0
     assert thresholds["threshold_policy"]["buyer_override_allowed"] is True
+
+
+def test_robot_eval_dataset_supports_optional_industrial_assembly_metrics(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_eval_inputs(capture_root)
+    _write_review_sources(capture_root)
+    eval_dir = capture_root / "pipeline" / "evaluation_prep"
+    _write_json(
+        eval_dir / "task_anchor_manifest.json",
+        {
+            "schema_version": "v1",
+            "updated_at": "2026-07-09T00:00:00Z",
+            "tasks": [
+                {
+                    "task_id": "insert_pin_fixture",
+                    "task_text": "Insert the alignment pin into the fixture",
+                    "task_category": "assembly",
+                    "ontology_task_id": "insert_part_into_fixture",
+                    "target_object_ids": ["fixture_0001"],
+                    "start_zone": [0.0, 0.0, 0.0],
+                    "goal_zone": [0.2, 0.0, 0.1],
+                    "task_critical": True,
+                }
+            ],
+        },
+    )
+
+    build_real_site_robot_eval_dataset(capture_root=capture_root)
+
+    robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
+    task_cards = json.loads((robot_eval_root / "task_cards.json").read_text())
+    thresholds = json.loads((robot_eval_root / "task_thresholds.json").read_text())
+    card_metrics = set(task_cards["cards"][0]["required_metrics"])
+    threshold = thresholds["task_thresholds"][0]
+
+    assert {
+        "placement_tolerance",
+        "insertion_success",
+        "peak_contact_force",
+        "dimensional_error",
+    }.issubset(card_metrics)
+    assert threshold["threshold_profile_id"] == "industrial_assembly_default_v1"
+    assert threshold["thresholds"]["recommended_optional_metrics"] == [
+        "placement_tolerance",
+        "insertion_success",
+        "peak_contact_force",
+        "dimensional_error",
+    ]
+    assert threshold["thresholds"]["min_placement_tolerance_rate"] == 0.95
+    assert threshold["thresholds"]["min_insertion_success_rate"] == 0.9
+    assert threshold["thresholds"]["max_peak_contact_force_n"] == 80.0
+    assert threshold["thresholds"]["max_dimensional_error_m"] == 0.01
+    assert threshold["buyer_override_schema"]["max_peak_contact_force_n"] == (
+        "positive_number_or_null"
+    )
 
 
 def test_robot_eval_dataset_publication_readiness_names_worldlabs_simready_blocker(

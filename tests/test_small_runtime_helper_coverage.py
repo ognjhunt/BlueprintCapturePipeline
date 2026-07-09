@@ -104,6 +104,46 @@ def test_video_to_world_client_payload_success_and_runner_helpers(monkeypatch, t
     }
 
 
+def test_video_to_world_client_adds_cloud_run_iam_header(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req, timeout):
+        del timeout
+        captured["headers"] = dict(req.headers)
+        return _Response(json.dumps({"status": "succeeded"}))
+
+    def add_cloud_run_header(headers: dict[str, str], *, url: str) -> dict[str, str]:
+        assert url == "https://runner.example"
+        merged = dict(headers)
+        merged["X-Serverless-Authorization"] = "Bearer google-id-token"
+        return merged
+
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "https://runner.example")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "video-token")
+    monkeypatch.setattr(
+        "blueprint_pipeline.video_to_world_client.cloud_run_id_token_headers",
+        add_cloud_run_header,
+    )
+    monkeypatch.setattr("blueprint_pipeline.video_to_world_client.urllib_request.urlopen", fake_urlopen)
+
+    payload = run_video_to_world_provider(
+        video_path=tmp_path / "raw.mov",
+        video_uri="gs://bucket/raw.mov",
+        geometry_root=tmp_path / "geometry",
+        dynamic_mask_manifest_path=tmp_path / "masks" / "manifest.json",
+        dynamic_mask_manifest_uri="gs://bucket/capture/masks/manifest.json",
+        provider="da3",
+        model="depth-anything-3",
+        execution_mode="remote",
+        video_probe={},
+    )
+
+    assert payload["status"] == "succeeded"
+    headers = captured["headers"]
+    assert headers["Authorization"] == "Bearer video-token"  # type: ignore[index]
+    assert headers["X-serverless-authorization"] == "Bearer google-id-token"  # type: ignore[index]
+
+
 @pytest.mark.parametrize(
     ("body", "error_match"),
     [

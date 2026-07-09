@@ -164,7 +164,7 @@ def test_arena_package_delivery_local_success_blockers_and_cli(
     )
 
     assert delivery.main(["--output-dir", str(output_dir), "--delivery-root", str(delivery_root)]) == 0
-    assert "[arena-local-delivery] status=local_delivery_ready_review_required" in capsys.readouterr().out
+    assert "[arena-delivery] status=local_delivery_ready_review_required" in capsys.readouterr().out
 
     empty_output = tmp_path / "empty-package"
     (empty_output / "delivery_bundle").mkdir(parents=True)
@@ -180,7 +180,81 @@ def test_arena_package_delivery_local_success_blockers_and_cli(
     blocked_exit = delivery.main(["--output-dir", str(tmp_path / "missing-package")])
     blocked_output = capsys.readouterr().out
     assert blocked_exit == 1
-    assert "[arena-local-delivery] blockers=3" in blocked_output
+    assert "[arena-delivery] blockers=3" in blocked_output
+
+
+class _FakeBlob:
+    def __init__(self, bucket: "_FakeBucket", name: str) -> None:
+        self.bucket = bucket
+        self.name = name
+
+    def upload_from_filename(self, filename: str, content_type: str | None = None) -> None:
+        self.bucket.uploads[self.name] = {
+            "filename": filename,
+            "content_type": content_type,
+            "bytes": Path(filename).read_bytes(),
+        }
+
+    def generate_signed_url(self, *, expiration: int, method: str) -> str:
+        return f"https://signed.example/{self.bucket.name}/{self.name}?ttl={expiration}&method={method}"
+
+
+class _FakeBucket:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.uploads: dict[str, dict[str, object]] = {}
+
+    def blob(self, name: str) -> _FakeBlob:
+        return _FakeBlob(self, name)
+
+
+class _FakeStorageClient:
+    def __init__(self) -> None:
+        self.buckets: dict[str, _FakeBucket] = {}
+
+    def bucket(self, name: str) -> _FakeBucket:
+        self.buckets.setdefault(name, _FakeBucket(name))
+        return self.buckets[name]
+
+
+def test_arena_package_delivery_gcs_upload_prepares_webapp_patch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_dir = tmp_path / "arena-package"
+    bundle = output_dir / "delivery_bundle"
+    archive = bundle / "archives" / "post_training_data_package.tar.gz"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"package")
+    (bundle / "delivery_manifest.json").write_text("{}", encoding="utf-8")
+    storage_client = _FakeStorageClient()
+
+    monkeypatch.setenv(delivery.GATE_ENV, "true")
+    monkeypatch.setenv(delivery.ENTITLEMENT_ID_ENV, "ent-1")
+    monkeypatch.setenv(delivery.BUYER_USER_ID_ENV, "buyer-1")
+    monkeypatch.setenv(delivery.SIGNED_URLS_ENV, "true")
+
+    manifest = delivery.build_local_delivery_command_manifest(
+        output_dir=output_dir,
+        gcs_prefix="gs://buyer-artifacts/post-training",
+        storage_client=storage_client,
+    )
+
+    assert manifest["status"] == "signed_cloud_delivery_ready"
+    assert manifest["provider"] == "gcs"
+    assert manifest["storage_upload_performed"] is True
+    assert manifest["artifact_uri"] == (
+        "gs://buyer-artifacts/post-training/arena-package/archives/"
+        "post_training_data_package.tar.gz"
+    )
+    assert manifest["marketplace_entitlement_patch"]["status"] == "ready_for_webapp_patch"
+    assert manifest["marketplace_entitlement_patch"]["fields"][
+        "post_training_data_package_uri"
+    ] == manifest["artifact_uri"]
+    assert manifest["signed_urls"][0].startswith("https://signed.example/")
+    assert "post-training/arena-package/archives/post_training_data_package.tar.gz" in (
+        storage_client.buckets["buyer-artifacts"].uploads
+    )
 
 
 def _delivery_capture(tmp_path: Path, *, revoked: bool) -> Path:

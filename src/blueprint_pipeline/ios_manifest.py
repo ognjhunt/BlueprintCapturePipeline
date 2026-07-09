@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
@@ -32,9 +33,30 @@ class IOSManifest:
     capture_schema_version: Optional[str] = None
     capture_source: Optional[str] = None
     capture_tier_hint: Optional[str] = None
+    approx_floor_area_m2: Optional[float] = None
+    ceiling_height_m: Optional[float] = None
+    floor_count: Optional[int] = None
+    dominant_aisle_width_m: Optional[float] = None
+    site_scale_class: Optional[str] = None
+    site_extent_status: Optional[str] = None
+    site_extent_source: Optional[str] = None
+    site_levels: List[Dict[str, Any]] = field(default_factory=list)
+    coverage_by_level: List[Dict[str, Any]] = field(default_factory=list)
+    vertical_structure_notes: List[str] = field(default_factory=list)
+    site_operating_conditions: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "IOSManifest":
+        site_extent = data.get("site_extent") if isinstance(data.get("site_extent"), Mapping) else {}
+        site_operating_conditions = (
+            data.get("site_operating_conditions")
+            if isinstance(data.get("site_operating_conditions"), Mapping)
+            else data.get("operating_conditions")
+            if isinstance(data.get("operating_conditions"), Mapping)
+            else data.get("environmental_conditions")
+            if isinstance(data.get("environmental_conditions"), Mapping)
+            else {}
+        )
         return cls(
             scene_id=str(data.get("scene_id", "")),
             video_uri=str(data.get("video_uri", "")),
@@ -62,8 +84,8 @@ class IOSManifest:
             ),
             object_point_cloud_count=int(data.get("object_point_cloud_count", 0) or 0),
             capture_schema_version=(
-                str(data.get("capture_schema_version")).strip()
-                if data.get("capture_schema_version") is not None
+                str(data.get("capture_schema_version") or data.get("schema_version")).strip()
+                if data.get("capture_schema_version") is not None or data.get("schema_version") is not None
                 else None
             ),
             capture_source=(
@@ -76,6 +98,37 @@ class IOSManifest:
                 if data.get("capture_tier_hint") is not None
                 else None
             ),
+            approx_floor_area_m2=_positive_float(
+                data.get("approx_floor_area_m2") or site_extent.get("approx_floor_area_m2")
+            ),
+            ceiling_height_m=_positive_float(
+                data.get("ceiling_height_m") or site_extent.get("ceiling_height_m")
+            ),
+            floor_count=_positive_int(data.get("floor_count") or site_extent.get("floor_count")),
+            dominant_aisle_width_m=_positive_float(
+                data.get("dominant_aisle_width_m") or site_extent.get("dominant_aisle_width_m")
+            ),
+            site_scale_class=_optional_text(
+                data.get("site_scale_class") or site_extent.get("site_scale_class")
+            ),
+            site_extent_status=_optional_text(
+                data.get("site_extent_status") or site_extent.get("status")
+            ),
+            site_extent_source=_optional_text(
+                data.get("site_extent_source") or site_extent.get("source")
+            ),
+            site_levels=_mapping_list(
+                data.get("site_levels") or site_extent.get("site_levels") or site_extent.get("levels")
+            ),
+            coverage_by_level=_mapping_list(
+                data.get("coverage_by_level") or site_extent.get("coverage_by_level")
+            ),
+            vertical_structure_notes=_string_list(
+                data.get("vertical_structure_notes")
+                or site_extent.get("vertical_structure_notes")
+                or site_extent.get("multi_level_notes")
+            ),
+            site_operating_conditions=dict(site_operating_conditions),
         )
 
     @classmethod
@@ -85,6 +138,49 @@ class IOSManifest:
     @classmethod
     def from_path(cls, path: Path) -> "IOSManifest":
         return cls.from_dict(read_json(path))
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _positive_float(value: Any) -> Optional[float]:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _mapping_list(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [
+        {str(key): item_value for key, item_value in item.items() if item_value not in (None, "")}
+        for item in value
+        if isinstance(item, Mapping)
+    ]
+
+
+def _string_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+    return [str(item).strip() for item in values if str(item).strip()]
 
 
 def load_ios_manifest_from_uri(raw_manifest_uri: str, *, gcs_root: Path) -> IOSManifest:
@@ -177,10 +273,131 @@ def load_object_index(index_uri: str, *, gcs_root: Path) -> list[dict[str, Any]]
     return _normalize_crop_paths(entries, index_dir=path.parent)
 
 
-def load_raw_manifest(raw_prefix_uri: str, *, gcs_root: Path) -> IOSManifest:
+def _sha256_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _bundle_hash(artifact_hashes: Mapping[str, str]) -> str:
+    canonical = "\n".join(
+        f"{path}:{artifact_hashes[path]}" for path in sorted(artifact_hashes)
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _regular_file_relative_paths(raw_prefix_path: Path) -> list[str]:
+    paths: list[str] = []
+    for path in sorted(raw_prefix_path.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name.startswith(".") or path.name == "hashes.json":
+            continue
+        paths.append(path.relative_to(raw_prefix_path).as_posix())
+    return paths
+
+
+def verify_raw_bundle_hashes_path(raw_prefix_path: Path) -> Dict[str, Any]:
+    """Recompute and compare the BlueprintCapture v3 ``hashes.json`` manifest."""
+
+    hashes_path = raw_prefix_path / "hashes.json"
+    errors: list[str] = []
+    if not hashes_path.is_file():
+        errors.append("missing_hash_manifest")
+        return {
+            "schema_version": "raw_bundle_hash_verification.v1",
+            "valid": False,
+            "status": "failed",
+            "errors": errors,
+            "artifact_count": 0,
+            "bundle_sha256_expected": None,
+            "bundle_sha256_actual": None,
+            "bundle_sha256_matches": False,
+            "claim_boundary": "hash_verification_checks_local_raw_bundle_bytes_not_capture_semantic_quality",
+        }
+
+    payload = read_json_any(hashes_path)
+    artifacts_raw = payload.get("artifacts") if isinstance(payload, Mapping) else None
+    if not isinstance(artifacts_raw, Mapping):
+        errors.append("missing_hash_manifest")
+        artifacts: Dict[str, str] = {}
+    else:
+        artifacts = {
+            str(path).strip(): str(digest).strip().lower()
+            for path, digest in artifacts_raw.items()
+            if str(path).strip() and str(digest).strip()
+        }
+
+    actual_hashes: Dict[str, str] = {}
+    for relative_path, expected_hash in sorted(artifacts.items()):
+        target = raw_prefix_path / relative_path
+        if not target.is_file():
+            errors.append(f"hash_target_missing:{relative_path}")
+            continue
+        actual_hash = _sha256_file(target)
+        actual_hashes[relative_path] = actual_hash
+        if actual_hash != expected_hash:
+            errors.append(f"hash_mismatch:{relative_path}")
+
+    for relative_path in _regular_file_relative_paths(raw_prefix_path):
+        if relative_path not in artifacts:
+            errors.append(f"hash_coverage_missing:{relative_path}")
+            actual_hashes[relative_path] = _sha256_file(raw_prefix_path / relative_path)
+
+    expected_bundle_hash = (
+        str(payload.get("bundle_sha256")).strip().lower()
+        if isinstance(payload, Mapping) and payload.get("bundle_sha256") is not None
+        else None
+    )
+    actual_bundle_hash = _bundle_hash(actual_hashes) if actual_hashes else None
+    bundle_matches = bool(expected_bundle_hash and actual_bundle_hash == expected_bundle_hash)
+    if expected_bundle_hash and actual_bundle_hash and not bundle_matches:
+        errors.append("bundle_sha256_mismatch")
+    elif not expected_bundle_hash:
+        errors.append("bundle_sha256_missing")
+
+    return {
+        "schema_version": "raw_bundle_hash_verification.v1",
+        "valid": not errors,
+        "status": "verified" if not errors else "failed",
+        "errors": errors,
+        "artifact_count": len(artifacts),
+        "bundle_sha256_expected": expected_bundle_hash,
+        "bundle_sha256_actual": actual_bundle_hash,
+        "bundle_sha256_matches": bundle_matches,
+        "claim_boundary": "hash_verification_checks_local_raw_bundle_bytes_not_capture_semantic_quality",
+    }
+
+
+def verify_raw_bundle_hashes(raw_prefix_uri: str, *, gcs_root: Path) -> Dict[str, Any]:
+    raw_prefix_path = resolve_gs_uri_to_path(raw_prefix_uri, gcs_root)
+    return verify_raw_bundle_hashes_path(raw_prefix_path)
+
+
+def load_raw_manifest(
+    raw_prefix_uri: str,
+    *,
+    gcs_root: Path,
+    verify_hashes: bool | None = None,
+) -> IOSManifest:
     manifest_uri = join_gs_uri(raw_prefix_uri, "manifest.json")
     manifest_path = resolve_gs_uri_to_path(manifest_uri, gcs_root)
-    return IOSManifest.from_path(manifest_path)
+    manifest = IOSManifest.from_path(manifest_path)
+    should_verify_hashes = (
+        str(manifest.capture_schema_version or "").strip().lower() == "v3"
+        if verify_hashes is None
+        else bool(verify_hashes)
+    )
+    if should_verify_hashes:
+        report = verify_raw_bundle_hashes(raw_prefix_uri, gcs_root=gcs_root)
+        if not report["valid"]:
+            raise ValueError(
+                "raw_bundle_hash_verification_failed:"
+                + ",".join(str(error) for error in report.get("errors", []))
+            )
+    return manifest
 
 
 def object_index_path(raw_prefix_path: Path, manifest: IOSManifest) -> Optional[Path]:

@@ -224,9 +224,10 @@ def _cleared_rights_summary(**overrides: object) -> dict:
 
 
 def _review_with_rights(rights_summary: dict, **kwargs: object) -> dict:
+    privacy_processing = kwargs.pop("privacy_processing", {"status": "person_removed"})
     return build_rights_provenance_review(
         rights_summary=rights_summary,
-        privacy_processing={"status": "person_removed"},
+        privacy_processing=privacy_processing,
         provenance_summary={"status": "grounded", "record": {"canonical_truth": True}},
         site_identity={"site_id": "site-1"},
         adjacent_systems=None,
@@ -296,6 +297,76 @@ def test_consent_scope_covering_required_use_classes_clears() -> None:
     )
     assert review["status"] == "cleared"
     assert review["rights"]["status"] == "cleared"
+
+
+def test_policy_only_without_operator_permission_blocks_private_industrial_sites() -> None:
+    review = _review_with_rights(
+        {
+            "derived_scene_generation_allowed": True,
+            "consent_status": "policy_only",
+            "site_type": "warehouse",
+        },
+        privacy_processing={"status": "person_removed"},
+    )
+
+    assert review["status"] == "blocked"
+    assert review["rights"]["status"] == "blocked"
+    assert review["rights"]["operator_permission_required"] is True
+    assert (
+        "policy_only_requires_operator_permission_for_private_or_industrial_site"
+        in review["blockers"]
+    )
+
+
+def test_policy_only_can_clear_public_site_only_when_site_scope_allows_it() -> None:
+    review = _review_with_rights(
+        {
+            "derived_scene_generation_allowed": True,
+            "consent_status": "policy_only",
+            "site_type": "public_space",
+        }
+    )
+
+    assert review["status"] == "cleared"
+    assert review["rights"]["operator_permission_required"] is False
+    assert review["rights"]["policy_only_evidence_complete"] is True
+
+
+def test_industrial_privacy_clearance_requires_non_person_pii_redaction_scope() -> None:
+    review = _review_with_rights(
+        _cleared_rights_summary(site_type="warehouse"),
+        privacy_processing={"status": "person_removed", "redaction_target_classes": ["person"]},
+    )
+
+    assert review["status"] == "blocked"
+    assert review["privacy"]["status"] == "blocked"
+    assert "badge_id" in review["privacy"]["missing_required_redaction_classes"]
+    assert any(
+        blocker.startswith("privacy_industrial_redaction_scope_incomplete:")
+        for blocker in review["blockers"]
+    )
+
+
+def test_industrial_privacy_clearance_accepts_explicit_pii_redaction_scope() -> None:
+    review = _review_with_rights(
+        _cleared_rights_summary(site_type="warehouse"),
+        privacy_processing={
+            "status": "person_removed",
+            "redaction_target_classes": [
+                "person",
+                "face",
+                "badge_id",
+                "screen",
+                "whiteboard",
+                "signage",
+                "license_plate",
+                "shipping_label",
+            ],
+        },
+    )
+
+    assert review["status"] == "cleared"
+    assert review["privacy"]["missing_required_redaction_classes"] == []
 
 
 def test_rights_review_carries_operator_revenue_terms_without_payout_claim() -> None:

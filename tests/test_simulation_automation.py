@@ -753,6 +753,66 @@ def test_simulation_automation_instantiates_scenario_variations_for_all_engine_t
     assert episode_binding["engine_mutation_plan_path"] == "scenario_variation_instances.json"
 
 
+def test_simulation_automation_respects_site_profile_required_variations(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_worldlabs_and_marble_artifacts(capture_root)
+    _write_robot_eval_cards(capture_root)
+    _write_json(
+        capture_root / "pipeline" / "robot_eval_dataset" / "scenario_family_library.json",
+        {
+            "schema_version": "real_site_robot_eval_scenario_family_library.v1",
+            "variation_profile": {
+                "profile_name": "manufacturing",
+                "canonical_site_type": "manufacturing",
+            },
+            "variation_names_required": [
+                "conveyor_motion",
+                "machine_guarding_state",
+            ],
+            "families": [
+                {
+                    "family_id": "family_factory_line_side",
+                    "task_id": "line_side_delivery",
+                    "scenario_id": "scenario_factory_line_side",
+                    "robot_profile_id": "mobile_manipulator_rgb_v1",
+                    "variations": [
+                        {"variation_id": "conveyor_motion"},
+                        {"variation_id": "machine_guarding_state"},
+                    ],
+                }
+            ],
+        },
+    )
+
+    build_simulation_automation(capture_root=capture_root)
+
+    variation_instances = _read_json(
+        capture_root
+        / "pipeline"
+        / "simulation_automation"
+        / "scenario_variation_instances.json"
+    )
+
+    assert variation_instances["required_variation_names"] == [
+        "conveyor_motion",
+        "machine_guarding_state",
+    ]
+    assert set(variation_instances["variation_names_instantiated"]) == {
+        "conveyor_motion",
+        "machine_guarding_state",
+    }
+    assert variation_instances["instance_count"] == 2
+    by_name = {
+        instance["variation_name"]: instance
+        for instance in variation_instances["instances"]
+    }
+    assert "conveyor_motion" in by_name["conveyor_motion"]["concrete_mutation"]
+    assert "machine_guarding" in by_name["machine_guarding_state"]["concrete_mutation"]
+    assert "forklift_nearby" not in variation_instances["variation_names_instantiated"]
+
+
 def test_missing_simulator_dependency_produces_blocked_result(
     tmp_path: Path,
     monkeypatch,

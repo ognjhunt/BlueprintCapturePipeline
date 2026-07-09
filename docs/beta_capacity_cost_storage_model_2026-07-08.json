@@ -1,0 +1,76 @@
+{
+  "schema_version": "blueprint.beta_capacity_cost_storage_model.v1",
+  "model_date": "2026-07-08",
+  "status": "capacity_model_and_local_contract",
+  "launch_claim_boundary": "This model bounds beta storage and ingest assumptions. It is not live soak proof until scripts/run_beta_intake_soak_test.py is run against the target intake endpoint and its report is archived.",
+  "beta_target": {
+    "external_users": 100,
+    "captures_per_user_per_month": 3,
+    "modeled_captures_per_month": 300,
+    "target_concurrent_uploaders": 25,
+    "intake_soak_duration_seconds": 900
+  },
+  "per_capture_limits": {
+    "max_upload_payload_bytes": 21474836480,
+    "max_upload_payload_gib": 20,
+    "max_duration_seconds": 2700,
+    "max_duration_minutes": 45,
+    "inline_extract_frames_max_video_bytes": 1500000000,
+    "oversize_inline_extract_action": "block_inline_function_and_route_to_large_video_cloud_run_ingest"
+  },
+  "media_assumptions": {
+    "p50_raw_capture_gib": 1.2,
+    "p95_raw_capture_gib": 8,
+    "p99_raw_capture_gib": 20,
+    "derived_artifact_multiplier": 2.5,
+    "provider_fanout_per_capture": {
+      "extract_frames": 1,
+      "privacy_redaction": 1,
+      "robot_eval_runs_average": 0.25,
+      "hosted_session_runs_average": 0.1
+    }
+  },
+  "monthly_projection": {
+    "raw_storage_gib_p50": 360,
+    "derived_storage_gib_p50": 900,
+    "total_new_storage_gib_p50": 1260,
+    "raw_storage_gib_p95_if_all_captures_p95": 2400,
+    "total_new_storage_gib_p95_if_all_captures_p95": 8400,
+    "absolute_raw_ingest_cap_gib_if_all_captures_hit_cap": 6000
+  },
+  "budget_guardrails": {
+    "cohort_storage_review_threshold_gib": 2000,
+    "cohort_provider_spend_review_threshold_usd": 2500,
+    "cohort_hard_stop_threshold_usd": 5000,
+    "requires_gpu_spend_guard": true,
+    "requires_storage_lifecycle_policy": true
+  },
+  "runtime_capacity": {
+    "target_concurrent_jobs": 25,
+    "terraform_variable": "max_concurrent_jobs",
+    "task_queue_max_concurrent_dispatches": 25,
+    "cloud_run_request_concurrency_per_instance": 1,
+    "cloud_run_max_instances_per_privacy_runner": 25,
+    "validated_by": "scripts/validate_beta_capacity_storage.py"
+  },
+  "storage_lifecycle": {
+    "policy_file": "deploy/storage/primary-capture-bucket-lifecycle.json",
+    "apply_script": "scripts/apply_primary_capture_bucket_lifecycle.sh",
+    "raw_capture_prefixes": ["scenes/", "targets/"],
+    "raw_nearline_after_days": 30,
+    "raw_coldline_after_days": 90,
+    "raw_delete_after_days": 180,
+    "temporary_delete_after_days": 14,
+    "buyer_eval_hosted_delete_after_days": 365
+  },
+  "verification": {
+    "validator": "scripts/validate_beta_capacity_storage.py",
+    "soak_harness": "scripts/run_beta_intake_soak_test.py",
+    "required_before_external_beta": [
+      "run validator on the committed model and lifecycle file",
+      "apply lifecycle policy to the primary capture bucket",
+      "run intake soak harness against staging or production target at target_concurrent_uploaders",
+      "archive soak JSON report under output/beta_capacity/"
+    ]
+  }
+}

@@ -26,6 +26,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
+from .buyer_claim_ceiling import build_buyer_claim_ceiling
 from .success_claim_contracts import (
     CLAIM_LADDER,
     LEDGER_SCHEMA_VERSION,
@@ -419,6 +420,9 @@ def build_task_eval_run_report(
     policy_binding: Mapping[str, Any] | None = None,
     rights_privacy_gate: Mapping[str, Any] | None = None,
     wam_evaluation: Mapping[str, Any] | None = None,
+    buyer_claim_proof_boundary: Mapping[str, Any] | None = None,
+    live_closure: Mapping[str, Any] | None = None,
+    buyer_claim_copy: Any = None,
     capture_root: str | Path | None = None,
     generated_at: str | None = None,
 ) -> Dict[str, Any]:
@@ -497,6 +501,16 @@ def build_task_eval_run_report(
 
     wam_section, wam_blockers = summarize_wam_evaluation_for_report(wam_evaluation)
     blockers.extend(wam_blockers)
+    buyer_claim_ceiling = build_buyer_claim_ceiling(
+        success_claim_ledger=ledger,
+        proof_boundary=buyer_claim_proof_boundary,
+        live_closure=live_closure,
+        buyer_copy_inputs=buyer_claim_copy,
+    )
+    blockers.extend(
+        f"buyer_claim_ceiling:{blocker}"
+        for blocker in buyer_claim_ceiling.get("blockers", [])
+    )
 
     status = "ready_review_required" if not blockers else "blocked"
     return {
@@ -519,6 +533,7 @@ def build_task_eval_run_report(
             "bare_success_booleans_forbidden": True,
             "provider_runtime_success_is_not_task_success": True,
             "generated_or_rendered_media_is_not_physical_proof": True,
+            "buyer_claim_ceiling": buyer_claim_ceiling,
             "safety": dict(SAFETY_CLAIM_BOUNDARY),
         },
     }

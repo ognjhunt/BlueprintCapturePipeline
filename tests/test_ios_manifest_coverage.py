@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,15 @@ from blueprint_pipeline import ios_manifest
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _sha_file(path: Path) -> str:
+    return sha256(path.read_bytes()).hexdigest()
+
+
+def _bundle_hash(artifacts: dict[str, str]) -> str:
+    canonical = "\n".join(f"{path}:{artifacts[path]}" for path in sorted(artifacts))
+    return sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def test_ios_manifest_parses_defaults_and_resolves_uris(tmp_path: Path) -> None:
@@ -31,6 +41,29 @@ def test_ios_manifest_parses_defaults_and_resolves_uris(tmp_path: Path) -> None:
         "capture_schema_version": " v2 ",
         "capture_source": " IOS ",
         "capture_tier_hint": " beta ",
+        "site_extent": {
+            "approx_floor_area_m2": "2500.5",
+            "ceiling_height_m": "8.2",
+            "floor_count": "2",
+            "dominant_aisle_width_m": "3.1",
+            "site_scale_class": "multi_zone",
+            "site_levels": [
+                {"level_id": "floor_1", "label": "main floor"},
+                {"level_id": "mezzanine", "label": "mezzanine"},
+            ],
+            "coverage_by_level": [
+                {"level_id": "floor_1", "coverage_status": "captured_primary_route"},
+                {"level_id": "mezzanine", "coverage_status": "not_captured_restricted"},
+            ],
+            "vertical_structure_notes": ["mezzanine above packout station"],
+            "status": "capturer_declared_review_required",
+            "source": "capturer_declared",
+        },
+        "site_operating_conditions": {
+            "lighting_class": "dim_mixed_led",
+            "floor_surface": "sealed_concrete",
+            "thermal_zone": "cold_storage",
+        },
     }
     manifest = ios_manifest.IOSManifest.from_json(json.dumps(raw_manifest))
 
@@ -45,6 +78,27 @@ def test_ios_manifest_parses_defaults_and_resolves_uris(tmp_path: Path) -> None:
     assert manifest.exposure_samples == [{"iso": 100}]
     assert manifest.object_index_uri == "objects/index.json"
     assert manifest.capture_source == "ios"
+    assert manifest.approx_floor_area_m2 == 2500.5
+    assert manifest.ceiling_height_m == 8.2
+    assert manifest.floor_count == 2
+    assert manifest.dominant_aisle_width_m == 3.1
+    assert manifest.site_scale_class == "multi_zone"
+    assert manifest.site_extent_status == "capturer_declared_review_required"
+    assert manifest.site_extent_source == "capturer_declared"
+    assert manifest.site_levels == [
+        {"level_id": "floor_1", "label": "main floor"},
+        {"level_id": "mezzanine", "label": "mezzanine"},
+    ]
+    assert manifest.coverage_by_level == [
+        {"level_id": "floor_1", "coverage_status": "captured_primary_route"},
+        {"level_id": "mezzanine", "coverage_status": "not_captured_restricted"},
+    ]
+    assert manifest.vertical_structure_notes == ["mezzanine above packout station"]
+    assert manifest.site_operating_conditions == {
+        "lighting_class": "dim_mixed_led",
+        "floor_surface": "sealed_concrete",
+        "thermal_zone": "cold_storage",
+    }
 
     gcs_root = tmp_path / "gcs"
     manifest_path = gcs_root / "bucket" / "raw" / "manifest.json"
@@ -100,3 +154,41 @@ def test_load_raw_manifest_and_object_index_payload_shapes(tmp_path: Path) -> No
     _write_json(index_dir / "unsupported_scalar.json", "bad")
     with pytest.raises(ValueError, match="Unsupported object index payload"):
         ios_manifest.load_object_index("gs://bucket/raw/objects/unsupported_scalar.json", gcs_root=gcs_root)
+
+
+def test_v3_raw_manifest_verifies_hashes_and_fails_mismatch(tmp_path: Path) -> None:
+    gcs_root = tmp_path / "gcs"
+    raw = gcs_root / "bucket" / "raw"
+    _write_json(raw / "manifest.json", {"schema_version": "v3", "scene_id": "site"})
+    (raw / "walkthrough.mov").write_bytes(b"video")
+    _write_json(raw / "capture_upload_complete.json", {"status": "complete"})
+    artifacts = {
+        "capture_upload_complete.json": _sha_file(raw / "capture_upload_complete.json"),
+        "manifest.json": _sha_file(raw / "manifest.json"),
+        "walkthrough.mov": _sha_file(raw / "walkthrough.mov"),
+    }
+    _write_json(
+        raw / "hashes.json",
+        {
+            "schema_version": "v1",
+            "bundle_sha256": _bundle_hash(artifacts),
+            "artifacts": artifacts,
+        },
+    )
+
+    report = ios_manifest.verify_raw_bundle_hashes("gs://bucket/raw", gcs_root=gcs_root)
+    assert report["valid"] is True
+    assert report["bundle_sha256_matches"] is True
+    assert ios_manifest.load_raw_manifest("gs://bucket/raw", gcs_root=gcs_root).capture_schema_version == "v3"
+
+    (raw / "walkthrough.mov").write_bytes(b"corrupted")
+    mismatch = ios_manifest.verify_raw_bundle_hashes_path(raw)
+    assert mismatch["valid"] is False
+    assert "hash_mismatch:walkthrough.mov" in mismatch["errors"]
+    assert "bundle_sha256_mismatch" in mismatch["errors"]
+    with pytest.raises(ValueError, match="hash_mismatch:walkthrough.mov"):
+        ios_manifest.load_raw_manifest("gs://bucket/raw", gcs_root=gcs_root)
+
+    _write_json(raw / "hashes.json", {"schema_version": "v1", "bundle_sha256": "abc", "artifacts": {}})
+    missing_coverage = ios_manifest.verify_raw_bundle_hashes_path(raw)
+    assert "hash_coverage_missing:manifest.json" in missing_coverage["errors"]

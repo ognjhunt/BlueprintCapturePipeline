@@ -43,7 +43,23 @@ def test_evaluation_substrate_registry_preserves_wam_and_sim_aliases(tmp_path: P
     assert registry["entries"]["cosmos3_wam"]["learned_model_backend"] is True
     assert registry["entries"]["cosmos3_wam"]["backbone"] == "Cosmos3-Nano"
     assert registry["entries"]["cosmos3_wam"]["model_id"] == "nvidia/Cosmos3-Nano"
-    assert registry["entries"]["cosmos3_wam"]["adapter_id"] == "deepinfra_cosmos3_nano_api"
+    assert registry["entries"]["cosmos3_wam"]["provider_command_env"] == (
+        "BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND"
+    )
+    assert registry["entries"]["cosmos3_wam"]["provider_adapter_config_scope"] == (
+        "external_command_or_adapter_config"
+    )
+    assert (
+        registry["entries"]["cosmos3_wam"]["provider_specific_adapter_id_in_registry"]
+        is False
+    )
+    assert (
+        registry["entries"]["cosmos3_wam"]["provider_specific_api_gate_in_registry"]
+        is False
+    )
+    assert "adapter_id" not in registry["entries"]["cosmos3_wam"]
+    assert "api_gate_env" not in registry["entries"]["cosmos3_wam"]
+    assert "deepinfra" not in registry["entries"]["cosmos3_wam"]["command_surface"]
     assert registry["entries"]["classical_sim_mujoco"]["family"] == "classical_simulation"
     assert registry["contract"]["generated_rollouts_are_model_derived_support_artifacts"] is True
     assert registry["contract"]["deterministic_fixture_is_not_learned_model_backend"] is True

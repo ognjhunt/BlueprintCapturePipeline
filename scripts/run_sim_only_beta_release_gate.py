@@ -19,6 +19,7 @@ SRC_ROOT = ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from blueprint_pipeline.buyer_claim_ceiling import build_buyer_claim_ceiling  # noqa: E402
 from blueprint_pipeline.common import ensure_dir, read_json_any, utc_now_iso, write_json  # noqa: E402
 
 
@@ -29,6 +30,16 @@ READY_FORWARDING_STATUSES = {
 READY_DEPLOYMENT_STATUSES = {"passed", "ready", "healthy", "verified"}
 NON_BLOCKING_FORWARDING_WARNINGS = {
     "capture_root_override_not_configured",
+}
+BUYER_CLAIM_COPY_FIELDS = {
+    "buyer_facing_copy",
+    "buyer_copy",
+    "marketing_copy",
+    "report_copy",
+    "public_copy",
+    "public_claims",
+    "claim_copy",
+    "copy_claims",
 }
 
 
@@ -97,6 +108,29 @@ def _gate(gate_id: str, *, passed: bool, blockers: list[str], evidence: dict[str
         "blockers": blockers,
         "evidence": evidence,
     }
+
+
+def _nested_mapping(*values: Any) -> dict[str, Any]:
+    for value in values:
+        mapped = _mapping(value)
+        if mapped:
+            return mapped
+    return {}
+
+
+def _claim_copy_inputs_from_surface(
+    surface: Mapping[str, Any],
+    *,
+    source: str,
+) -> dict[str, Any]:
+    copy_inputs: dict[str, Any] = {}
+    for key, value in surface.items():
+        if key in BUYER_CLAIM_COPY_FIELDS:
+            copy_inputs[f"{source}.{key}"] = value
+        elif isinstance(value, Mapping):
+            nested = _claim_copy_inputs_from_surface(value, source=f"{source}.{key}")
+            copy_inputs.update(nested)
+    return copy_inputs
 
 
 def _sim_only_beta_requirement_summary(
@@ -414,6 +448,69 @@ def _deployment_gate(deployment_proof: Mapping[str, Any], load_error: str | None
     )
 
 
+def _buyer_claim_ceiling_gate(
+    *,
+    local_gate: Mapping[str, Any],
+    route_proof: Mapping[str, Any],
+    deployment_proof: Mapping[str, Any],
+) -> dict[str, Any]:
+    live_closure = _nested_mapping(
+        local_gate.get("live_eval_closure"),
+        local_gate.get("live_eval_closure_manifest"),
+        local_gate.get("live_robot_eval_closure"),
+        route_proof.get("live_eval_closure"),
+        route_proof.get("live_eval_closure_manifest"),
+        route_proof.get("live_robot_eval_closure"),
+    )
+    live_boundary = _mapping(live_closure.get("proof_boundary"))
+    task_eval_run_report = _nested_mapping(
+        local_gate.get("task_eval_run_report"),
+        route_proof.get("task_eval_run_report"),
+        live_closure.get("task_eval_run_report"),
+    )
+    success_claim_ledger = _nested_mapping(
+        task_eval_run_report.get("success_claim_ledger"),
+        local_gate.get("success_claim_ledger"),
+        route_proof.get("success_claim_ledger"),
+        live_closure.get("success_claim_ledger"),
+    )
+    copy_inputs: dict[str, Any] = {}
+    for source, surface in (
+        ("local_gate", local_gate),
+        ("route_proof", route_proof),
+        ("deployment_proof", deployment_proof),
+        ("task_eval_run_report", task_eval_run_report),
+        ("live_closure", live_closure),
+    ):
+        copy_inputs.update(_claim_copy_inputs_from_surface(surface, source=source))
+
+    buyer_claim_ceiling = build_buyer_claim_ceiling(
+        success_claim_ledger=success_claim_ledger,
+        proof_boundary={
+            "live_simulator_execution_proven": (
+                live_boundary.get("live_simulator_execution_proven") is True
+                or live_boundary.get("simulator_execution_proven") is True
+            ),
+            "live_policy_execution_proven": (
+                live_boundary.get("live_policy_execution_proven") is True
+                or live_boundary.get("robot_policy_execution_proven") is True
+            ),
+        },
+        live_closure=live_closure,
+        buyer_copy_inputs=copy_inputs,
+    )
+    blockers = _string_list(buyer_claim_ceiling.get("blockers"))
+    return _gate(
+        "buyer_claim_ceiling_and_copy",
+        passed=not blockers,
+        blockers=blockers,
+        evidence={
+            "buyer_claim_ceiling": buyer_claim_ceiling,
+            "copy_input_sources": sorted(copy_inputs),
+        },
+    )
+
+
 def build_release_gate_report(
     *,
     capture_root: Path,
@@ -446,6 +543,11 @@ def build_release_gate_report(
         ),
         _route_proof_gate(route_proof, route_error, production_route_forwarding_proof_path, capture_root),
         _deployment_gate(deployment_proof, deployment_error, production_deployment_proof_path),
+        _buyer_claim_ceiling_gate(
+            local_gate=local_gate,
+            route_proof=route_proof,
+            deployment_proof=deployment_proof,
+        ),
     ]
     blockers = [
         f"{gate['id']}:{blocker}"
@@ -474,6 +576,7 @@ def build_release_gate_report(
         "git_parity_proven": deployment_gate_evidence.get("git_parity_proven"),
         "simulator_execution_proven": simulator_execution_proven,
         "public_claim_upgrade_allowed": False,
+        "buyer_claim_ceiling": gates[4]["evidence"]["buyer_claim_ceiling"],
         "gates": gates,
         "proof_boundary": {
             "local_sim_only_post_upload_autonomy_checked": True,
@@ -484,6 +587,7 @@ def build_release_gate_report(
             "generated_world_rank_fidelity_required_for_this_gate": False,
             "remote_cloud_provider_execution_required_for_this_gate": False,
             "public_claim_upgrade_allowed": False,
+            "buyer_facing_claim_ceiling_pinned_to_highest_truthful_claim": True,
         },
     }
 

@@ -107,6 +107,19 @@ def test_terraform_alert_policies_require_notification_channels_or_explicit_waiv
     assert "Set allow_empty_monitoring_notification_channels=true only for dry-run plans." in text
 
 
+def test_terraform_privacy_runners_are_private_and_invoked_by_named_principals():
+    text = TERRAFORM_MAIN.read_text(encoding="utf-8")
+
+    assert "privacy_runner_public_invoker" not in text
+    assert 'member   = "allUsers"' not in text
+    assert 'member   = "allAuthenticatedUsers"' not in text
+    assert 'resource "google_cloud_run_service_iam_member" "privacy_runner_invoker"' in text
+    assert "serviceAccount:${google_service_account.pipeline_runner.email}" in text
+    assert 'variable "additional_privacy_runner_invoker_members"' in text
+    assert 'name  = "BLUEPRINT_CLOUD_RUN_IAM_AUTH_ENABLED"' in text
+    assert 'value = "true"' in text
+
+
 def test_main_deploy_image_includes_ffmpeg_for_clip_and_keyframe_lanes():
     text = ROOT_DOCKERFILE.read_text(encoding="utf-8")
 

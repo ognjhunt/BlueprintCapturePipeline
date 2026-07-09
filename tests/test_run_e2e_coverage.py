@@ -208,6 +208,69 @@ def test_run_end_to_end_resumes_completed_stage_snapshots(monkeypatch, tmp_path:
     )
 
 
+def test_run_end_to_end_invalidates_resume_when_capture_inputs_change(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    (capture_root / "capture_descriptor.json").write_text(
+        '{"version": 1}',
+        encoding="utf-8",
+    )
+    raw_root = capture_root / "raw"
+    raw_root.mkdir()
+    (raw_root / "manifest.json").write_text('{"input": 1}', encoding="utf-8")
+    calls = {"preflight": 0, "pipeline": 0, "review": 0}
+
+    def fake_preflight(_root):
+        calls["preflight"] += 1
+        return {"status": "ready", "probe": calls["preflight"]}
+
+    def fake_pipeline(**kwargs):
+        calls["pipeline"] += 1
+        return {"status": "completed", "lanes": [kwargs["lane"]], "probe": calls["pipeline"]}
+
+    def fake_review(**_kwargs):
+        calls["review"] += 1
+        return {
+            "artifacts": {"readiness_report": f"ready-{calls['review']}.md"},
+            "final_memo_path": f"memo-{calls['review']}.md",
+            "final_bundle_path": f"bundle-{calls['review']}.zip",
+        }
+
+    monkeypatch.setattr(run_e2e, "build_capture_preflight_report", fake_preflight)
+    monkeypatch.setattr(run_e2e, "run_capture_pipeline", fake_pipeline)
+    monkeypatch.setattr(run_e2e, "run_agent_review", fake_review)
+
+    first = run_e2e.run_end_to_end(capture_root=str(capture_root), provider="openai")
+    first_ledger = json.loads(
+        Path(first["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
+    )
+    first_fingerprint = first_ledger["capture_input_fingerprint"]["fingerprint_sha256"]
+
+    (raw_root / "manifest.json").write_text('{"input": 2}', encoding="utf-8")
+    second = run_e2e.run_end_to_end(
+        capture_root=str(capture_root),
+        provider="openai",
+        resume_completed_stages=True,
+    )
+
+    assert calls == {"preflight": 2, "pipeline": 2, "review": 2}
+    assert second["preflight_status"] == "ready"
+    assert second["pipeline_status"] == "completed"
+    assert second["pipeline_summary"] == "ready-2.md"
+    stage_ledger = json.loads(
+        Path(second["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
+    )
+    assert stage_ledger["resume_completed_stages_requested"] is True
+    assert stage_ledger["resume_status"] == "no_compatible_completed_stage_ledger"
+    assert stage_ledger.get("resume_used_count", 0) == 0
+    assert (
+        stage_ledger["capture_input_fingerprint"]["fingerprint_sha256"]
+        != first_fingerprint
+    )
+
+
 def test_run_end_to_end_threads_robot_eval_job_and_provider_race_summary(
     monkeypatch,
     tmp_path: Path,

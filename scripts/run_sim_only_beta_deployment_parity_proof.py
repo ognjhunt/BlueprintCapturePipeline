@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
@@ -45,6 +47,21 @@ def _normalize_base_url(value: str) -> str:
     if parsed.path.startswith("/api/live-pipeline/"):
         return f"{parsed.scheme}://{parsed.netloc}"
     return url
+
+
+def _signed_intake_headers(token: str, body: str = "") -> dict[str, str]:
+    timestamp = utc_now_iso()
+    nonce = str(uuid.uuid4())
+    signature = hmac.new(
+        token.encode("utf-8"),
+        f"{timestamp}.{nonce}.{body}".encode("utf-8"),
+        "sha256",
+    ).hexdigest()
+    return {
+        "X-Blueprint-Pipeline-Timestamp": timestamp,
+        "X-Blueprint-Pipeline-Nonce": nonce,
+        "X-Blueprint-Pipeline-Signature": f"sha256={signature}",
+    }
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -292,7 +309,7 @@ def build_deployment_parity_proof(
     if pipeline_base_url and pipeline_intake_token:
         result = fetcher(
             str(intake_audit["url"]),
-            {"Authorization": f"Bearer {pipeline_intake_token}"},
+            _signed_intake_headers(pipeline_intake_token),
             timeout_seconds,
         )
         payload = result.get("json") if isinstance(result.get("json"), Mapping) else {}

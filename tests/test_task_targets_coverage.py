@@ -124,7 +124,10 @@ def test_task_targets_helper_ranking_filtering_and_grounding(
     residential = _descriptor(environment_type_hint="kitchen", swap_focus=["warehouse"])
     assert tt._descriptor_environment_hints(residential) == ["kitchen", "warehouse"]
     assert tt._resolve_default_class_caps_for_descriptor(residential)[0]["drawer"] == 8
-    assert tt._resolve_default_class_caps_for_descriptor(_descriptor())[1] == "warehouse"
+    industrial_caps, industrial_source = tt._resolve_default_class_caps_for_descriptor(_descriptor())
+    assert industrial_source == "warehouse"
+    assert industrial_caps["box"] == 32
+    assert industrial_caps["rack"] == 24
     caps, diagnostics = tt._resolve_per_class_caps(
         descriptor=residential,
         override_caps=None,
@@ -486,6 +489,27 @@ def test_task_aware_swap_candidate_selection_and_write(
     assert "box-1" in payload["task_target_object_ids"]
     assert payload["index_preprocessing"]["detection_support"]["explicit_override_kept_count"] >= 1
     assert payload["selection_summary"]["explicit_count"] >= 1
+    assert payload["industrial_task_target_context_summary"]["status"] == "detected"
+    assert any(
+        "industrial_task_target_context" in candidate
+        for candidate in payload["candidates"]
+    )
+
+    high_repetition_entries = [
+        _entry(f"tote-{index}", "Tote", [float(index) * 2.0, 0, 0], detections=3)
+        for index in range(40)
+    ]
+    industrial_payload = tt.build_task_aware_swap_candidates_payload(
+        descriptor=_descriptor(environment_type_hint="warehouse"),
+        object_index_entries=high_repetition_entries,
+        task_targets={},
+        selection_mode="policy_only",
+        max_candidates=100,
+        per_class_caps=None,
+    )
+    assert industrial_payload["index_preprocessing"]["class_caps"]["caps"]["box"] == 32
+    assert industrial_payload["index_preprocessing"]["class_caps"]["kept_by_label"]["box"] == 32
+    assert len(industrial_payload["candidates"]) == 32
 
     explicit_only = tt.build_task_aware_swap_candidates_payload(
         descriptor=descriptor,

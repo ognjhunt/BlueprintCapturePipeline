@@ -151,3 +151,44 @@ def test_capture_batch_registry_handles_pending_complete_and_cli_paths(
     assert "[capture-batch-registry] site_count=1" in captured.out
     with pytest.raises(SystemExit, match="provide at least one"):
         main(["--registry-path", str(tmp_path / "empty.json")])
+
+
+def test_capture_batch_registry_quarantines_malformed_capture_and_continues(
+    tmp_path: Path,
+) -> None:
+    good_root = _capture_root(tmp_path / "good")
+    _write_stage_artifacts(good_root)
+    bad_root = (
+        tmp_path
+        / "bad"
+        / "local-blueprint"
+        / "scenes"
+        / "scene-bad"
+        / "captures"
+        / "capture-bad"
+    )
+    bad_root.mkdir(parents=True)
+    (bad_root / "capture_descriptor.json").write_text("{not valid json", encoding="utf-8")
+    _write_json(
+        bad_root / "raw" / "manifest.json",
+        {"scene_id": "scene-bad", "capture_id": "capture-bad"},
+    )
+    registry_path = tmp_path / "registry.json"
+
+    registry = update_capture_batch_registry(
+        capture_roots=[bad_root, good_root],
+        registry_path=registry_path,
+    )
+
+    assert registry["status"] == "completed_with_quarantined_captures"
+    assert registry["input_capture_count"] == 2
+    assert registry["processed_capture_count"] == 1
+    assert registry["quarantined_capture_count"] == 1
+    assert "site-1" in registry["sites"]
+    quarantine = registry["quarantined_captures"][0]
+    assert quarantine["phase"] == "capture_root_load"
+    assert quarantine["reason"] == "capture_root_registry_update_failed"
+    assert quarantine["raw_capture_root"] == str(bad_root)
+    assert Path(quarantine["path"]).is_file()
+    assert Path(quarantine["dead_letter_path"]).is_file()
+    assert _read_json(registry_path)["quarantined_capture_count"] == 1

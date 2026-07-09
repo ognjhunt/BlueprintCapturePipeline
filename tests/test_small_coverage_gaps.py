@@ -232,6 +232,16 @@ def test_industrial_ontology_and_wam_vision_judge_edges() -> None:
     assert entity.entity_type == "forklift_lane"
     assert entity.to_dict()["hazard_relevant"] is True
     assert "hazard_relevant" in industrial_ontology.industrial_tags_for_label("wet floor")
+    multi = industrial_ontology.classify_industrial_entities(
+        ["rack tote pallet_zone traffic_zone workcell"]
+    )
+    assert {entity.entity_type for entity in multi} >= {
+        "rack",
+        "tote",
+        "pallet_zone",
+        "traffic_zone",
+        "workcell",
+    }
     assert industrial_ontology.derive_capture_plan_tags(["", None, "rack", "rack", "charger"]) == [
         "rack",
         "charger_candidate",

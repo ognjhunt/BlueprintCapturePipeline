@@ -373,6 +373,43 @@ def test_robot_eval_execution_simulator_and_actual_outcome_edges(tmp_path: Path)
     assert artifacts["simulator_command_batch_trace_package_manifest"]["job_artifact_copy_status"] == "partial_or_missing"
     assert artifacts["simulator_command_batch_trace_package_manifest"]["job_artifact_copy_records"]["attempt_trace_jsonl"]["status"] == "copied"
     assert artifacts["manifest"]["simulator_command_digital_twin_fidelity_qa_copy_record"]["status"] == "remote_source_not_copied"
+    trace = artifacts["normalized_attempt_trace"]
+    assert trace["task_success_label_provenance_counts"] == {
+        "simulator_trace_or_physics": 1
+    }
+    assert trace["success_rate_provenance_disclosed"] is True
+    assert trace["success_rate_buyer_display_allowed"] is True
+    assert trace["attempts"][0]["task_success_label_provenance"][
+        "provenance_type"
+    ] == "simulator_trace_or_physics"
+
+    generated_video_label = ree.build_simulator_command_artifacts(
+        job_dir=tmp_path / "job-generated-video-label",
+        simulator="wam",
+        simulator_output={
+            "attempts": [
+                {
+                    "attempt_id": "wam-attempt-1",
+                    "status": "completed",
+                    "success": True,
+                    "task_success": True,
+                    "success_label_source": "openai_generated_video_frame_judge",
+                    "wam_success_label_from_generated_video": True,
+                    "artifact_paths": {"video_path": "generated-rollout.mp4"},
+                }
+            ],
+        },
+        generated_at="2026-06-01T00:00:00Z",
+    )
+    generated_trace = generated_video_label["normalized_attempt_trace"]
+    assert generated_trace["task_success_label_provenance_counts"] == {
+        "generated_video_vlm_judge": 1
+    }
+    assert generated_trace["generated_video_vlm_judged_attempt_count"] == 1
+    assert generated_trace["success_rate_buyer_display_allowed"] is True
+    assert "model-derived generated rollout video" in generated_trace[
+        "attempts"
+    ][0]["task_success_label_provenance"]["buyer_disclosure"]
 
     blocked_coverage = ree.build_simulator_command_artifacts(
         job_dir=tmp_path / "job-blocked-coverage",

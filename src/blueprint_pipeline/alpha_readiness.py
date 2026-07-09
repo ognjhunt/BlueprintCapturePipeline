@@ -54,6 +54,18 @@ _OPERATOR_EVIDENCE_VERIFIED_STATUSES = {
     "signed",
     "verified",
 }
+_INDUSTRIAL_SITE_TYPE_MARKERS = {
+    "warehouse",
+    "manufacturing",
+    "factory",
+    "fulfillment",
+    "industrial",
+    "industrial_unknown",
+    "brownfield",
+    "plant",
+    "distribution_center",
+}
+_INDUSTRIAL_AUTHORIZATION_CHECK_ID = "industrial_site_authorization_ehs_signoff"
 
 
 def _read_json_object(path: Path) -> Dict[str, Any]:
@@ -123,6 +135,90 @@ def _present_value(payload: Mapping[str, Any], *keys: str) -> Optional[str]:
         if text:
             return text
     return None
+
+
+def _text_from_mapping(payload: Mapping[str, Any], *keys: str) -> List[str]:
+    values: List[str] = []
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+        elif isinstance(value, (list, tuple)):
+            values.extend(str(item).strip() for item in value if str(item).strip())
+        elif isinstance(value, Mapping):
+            values.extend(
+                str(item).strip()
+                for item in value.values()
+                if isinstance(item, str) and str(item).strip()
+            )
+    return values
+
+
+def _site_type_candidates(
+    *,
+    descriptor: CaptureDescriptor,
+    raw_manifest: Mapping[str, Any],
+    rights_review: Mapping[str, Any],
+) -> List[str]:
+    candidates: List[str] = []
+    descriptor_metadata = descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
+    for payload in (raw_manifest, descriptor_metadata, descriptor.quality, rights_review):
+        if not isinstance(payload, Mapping):
+            continue
+        candidates.extend(
+            _text_from_mapping(
+                payload,
+                "site_type",
+                "siteType",
+                "intended_space_type",
+                "intendedSpaceType",
+                "environment_type_hint",
+                "environmentTypeHint",
+                "scene_class",
+                "sceneClass",
+                "location_type",
+                "locationType",
+                "site_category",
+                "siteCategory",
+            )
+        )
+        nested = payload.get("metadata")
+        if isinstance(nested, Mapping):
+            candidates.extend(
+                _text_from_mapping(
+                    nested,
+                    "site_type",
+                    "siteType",
+                    "intended_space_type",
+                    "intendedSpaceType",
+                    "environment_type_hint",
+                    "environmentTypeHint",
+                    "site_category",
+                    "siteCategory",
+                )
+            )
+    if descriptor.environment_type_hint:
+        candidates.append(descriptor.environment_type_hint)
+    return candidates
+
+
+def _industrial_authorization_required(
+    *,
+    descriptor: CaptureDescriptor,
+    raw_manifest: Mapping[str, Any],
+    rights_review: Mapping[str, Any],
+) -> bool:
+    for value in _site_type_candidates(
+        descriptor=descriptor,
+        raw_manifest=raw_manifest,
+        rights_review=rights_review,
+    ):
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized in _INDUSTRIAL_SITE_TYPE_MARKERS:
+            return True
+        if any(marker in normalized for marker in _INDUSTRIAL_SITE_TYPE_MARKERS):
+            return True
+    return False
 
 
 def _uri(bucket: str, pipeline_prefix: str, relative_path: str) -> str:
@@ -245,6 +341,16 @@ def _operator_evidence_has_ref(entry: Mapping[str, Any]) -> bool:
         "buyer_session_ref",
         "recording_uri",
         "decision_record_uri",
+        "industrial_authorization_record_uri",
+        "site_authorization_record_uri",
+        "ehs_signoff_uri",
+        "safety_signoff_uri",
+        "worker_pii_consent_posture_uri",
+        "worker_consent_posture_uri",
+        "works_council_review_uri",
+        "nda_or_proprietary_data_terms_uri",
+        "nda_attestation_uri",
+        "restricted_zone_controls_uri",
     ):
         return True
     for key in ("evidence", "artifacts", "refs", "metadata"):
@@ -336,6 +442,43 @@ def _operator_evidence_specific_failures(check_id: str, entry: Mapping[str, Any]
     if check_id in {"legal_consent_posture_signoff", "operator_dpa_data_processing_terms"}:
         if not _entry_has_any(entry, "signed_record_uri", "document_uri"):
             failures.append("missing_signed_legal_or_dpa_record")
+    elif check_id == _INDUSTRIAL_AUTHORIZATION_CHECK_ID:
+        if not _entry_has_any(
+            entry,
+            "signed_record_uri",
+            "industrial_authorization_record_uri",
+            "site_authorization_record_uri",
+        ):
+            failures.append("missing_industrial_site_authorization_record")
+        if not _entry_has_any(entry, "site_authorizer_name", "authorizer_name"):
+            failures.append("missing_site_authorizer_name")
+        if not _entry_has_any(entry, "site_authorizer_role", "authorizer_role"):
+            failures.append("missing_site_authorizer_role")
+        if not _entry_has_any(entry, "ehs_signoff_uri", "safety_signoff_uri"):
+            failures.append("missing_ehs_safety_signoff")
+        if not _entry_has_any(
+            entry,
+            "worker_pii_consent_posture_uri",
+            "worker_consent_posture_uri",
+            "works_council_review_uri",
+        ):
+            failures.append("missing_worker_pii_or_works_council_posture")
+        if not _entry_has_any(
+            entry,
+            "nda_or_proprietary_data_terms_uri",
+            "nda_attestation_uri",
+        ):
+            failures.append("missing_nda_or_proprietary_data_terms")
+        if not _entry_bool(entry, "ppe_requirements_acknowledged"):
+            failures.append("ppe_requirements_not_acknowledged")
+        if not _entry_bool(entry, "escort_requirements_acknowledged"):
+            failures.append("escort_requirements_not_acknowledged")
+        if not _entry_has_any(
+            entry,
+            "restricted_zone_controls_uri",
+            "loto_forklift_restricted_zone_policy_uri",
+        ):
+            failures.append("missing_restricted_zone_controls")
     elif check_id == "paperclip_ops_relay_secret_rotation":
         if not _entry_has_any(entry, "secret_version_ref"):
             failures.append("missing_secret_version_ref")
@@ -418,6 +561,9 @@ def _operator_evidence_verified(entry: Mapping[str, Any], check_id: str) -> bool
             "owner",
             "finance_owner",
             "legal_owner",
+            "ehs_owner",
+            "site_authorizer_name",
+            "authorizer_name",
             "security_owner",
         )
     )
@@ -1113,6 +1259,7 @@ def build_launch_gate_summary(
 ) -> Dict[str, Any]:
     resolved_env = dict(os.environ if env is None else env)
     descriptor = CaptureDescriptor.from_dict(_read_json_object(capture_root / "capture_descriptor.json"))
+    raw_manifest = _read_json_object(capture_root / "raw" / "manifest.json")
     pipeline_root = capture_root / "pipeline"
     eval_root = pipeline_root / "evaluation_prep"
 
@@ -1379,6 +1526,11 @@ def build_launch_gate_summary(
         contract_status = "blocked"
 
     operator_evidence_file_errors = _operator_evidence_file_errors(operator_evidence)
+    industrial_authorization_required = _industrial_authorization_required(
+        descriptor=descriptor,
+        raw_manifest=raw_manifest,
+        rights_review=rights_review,
+    )
     operator_required_checks = [
         _operator_required_check(
             check_id="legal_consent_posture_signoff",
@@ -1398,6 +1550,25 @@ def build_launch_gate_summary(
                 "for delivered packages and hosted review access."
             ),
             operator_evidence=operator_evidence,
+        ),
+        *(
+            [
+                _operator_required_check(
+                    check_id=_INDUSTRIAL_AUTHORIZATION_CHECK_ID,
+                    scope="legal_ehs_industrial_site",
+                    required_evidence=(
+                        "Industrial site authorization signed by a site "
+                        "authorizer, EHS/safety sign-off, worker-PII or works "
+                        "council posture, NDA/proprietary-data terms, PPE and "
+                        "escort acknowledgement, and restricted-zone controls "
+                        "for forklift lanes, LOTO, machine guards, and other "
+                        "non-public industrial areas."
+                    ),
+                    operator_evidence=operator_evidence,
+                )
+            ]
+            if industrial_authorization_required
+            else []
         ),
         _operator_required_check(
             check_id="paperclip_ops_relay_secret_rotation",
@@ -1583,6 +1754,12 @@ def build_launch_gate_summary(
             "status": source_status,
             "contract_status": contract_status,
             "operator_evidence_status": operator_evidence_status["status"],
+            "industrial_authorization_required": industrial_authorization_required,
+            "industrial_site_type_candidates": _site_type_candidates(
+                descriptor=descriptor,
+                raw_manifest=raw_manifest,
+                rights_review=rights_review,
+            ),
             "external_alpha_status": external_alpha.get("status"),
             "internal_alpha_status": internal_alpha.get("status"),
             "alpha_reason": external_alpha.get("reason") or internal_alpha.get("reason"),
@@ -1631,6 +1808,8 @@ def sync_webapp_evaluation_prep(
     proof_pack_manifest = optional_read_json(eval_root / "proof_pack_manifest.json") or {}
     hosted_review_readiness = optional_read_json(eval_root / "hosted_review_readiness.json") or {}
     proof_path_status = optional_read_json(eval_root / "proof_path_status.json") or {}
+    delivery_manifest = optional_read_json(pipeline_root / "delivery_manifest.json") or {}
+    signed_access_manifest = optional_read_json(pipeline_root / "signed_access_manifest.json") or {}
     alpha_summary = write_alpha_readiness_summary(capture_root=capture_root, env=resolved_env)
     launch_gate_summary = write_launch_gate_summary(capture_root=capture_root, env=resolved_env)
     site_submission_id = (
@@ -1658,6 +1837,22 @@ def sync_webapp_evaluation_prep(
             return _uri(bucket, pipeline_prefix, relative_path)
         return None
 
+    delivery_artifact_uri = (
+        _present_value(
+            signed_access_manifest,
+            "artifact_uri",
+            "post_training_data_package_uri",
+            "package_uri",
+        )
+        or _present_value(
+            delivery_manifest,
+            "artifact_uri",
+            "post_training_data_package_uri",
+            "package_uri",
+        )
+        or _artifact_if_exists("archives/post_training_data_package.tar.gz")
+    )
+
     artifacts = {
         "qualification_summary_uri": _artifact_if_exists("qualification_summary.json"),
         "capture_quality_summary_uri": _artifact_if_exists("capture_quality_summary.json"),
@@ -1671,6 +1866,9 @@ def sync_webapp_evaluation_prep(
         "privacy_verification_report_uri": _artifact_if_exists("privacy_verification_report.json"),
         "webapp_sync_result_uri": _artifact_if_exists("webapp_sync_result.json"),
         "launch_gate_summary_uri": _artifact_if_exists("launch_gate_summary.json"),
+        "post_training_data_package_uri": delivery_artifact_uri,
+        "delivery_manifest_uri": _artifact_if_exists("delivery_manifest.json"),
+        "signed_access_manifest_uri": _artifact_if_exists("signed_access_manifest.json"),
         "preview_manifest_uri": _artifact_if_exists("preview_manifest.json"),
         "worldlabs_request_manifest_uri": _artifact_if_exists("worldlabs_request_manifest.json"),
         "worldlabs_operation_manifest_uri": _artifact_if_exists("worldlabs_operation_manifest.json"),

@@ -213,9 +213,26 @@ def test_label_fallback_synonym_fridge_to_refrigerator():
     assert target.id == "r"
 
 
+def test_label_fallback_resolves_industrial_openables():
+    objs = [
+        _obj("rack", "pallet rack upright"),
+        _obj("dock", "loading dock door"),
+        _obj("tote", "blue tote lid"),
+    ]
+
+    dock_target = tr.resolve_target_by_label("open the dock door", objs)
+    tote_target = tr.resolve_target_by_label("open the tote lid", objs)
+
+    assert dock_target is not None
+    assert dock_target.id == "dock"
+    assert tote_target is not None
+    assert tote_target.id == "tote"
+
+
 def test_multi_target_detector_preserves_distinct_fixture_groups():
     assert tr.detect_multi_target("turn on the faucet and the stove") is True
     assert tr.task_target_groups("turn the tap and faucet") == ["faucet"]
+    assert tr.detect_multi_target("open the dock door and cage gate") is True
     assert tr.detect_multi_target("turn the tap and faucet") is False
 
 
@@ -232,6 +249,11 @@ def test_target_kind_classifies_openable_vs_static():
     assert tr.classify_target_kind(_obj("drawer", "drawer_pull")) == "openable"
     assert tr.classify_target_kind(_obj("faucet", "kitchen_faucet")) == "static"
     assert tr.is_openable_target(_obj("door", "cabinet door")) is True
+    assert tr.is_openable_target(_obj("dock", "loading dock door")) is True
+    assert tr.is_openable_target(_obj("roll", "rolling shutter")) is True
+    assert tr.is_openable_target(_obj("gate", "safety cage gate")) is True
+    assert tr.is_openable_target(_obj("tote", "tote lid")) is True
+    assert tr.classify_target_kind(_obj("rack", "pallet rack upright")) == "static"
 
 
 def test_label_fallback_prefers_shortest_label():

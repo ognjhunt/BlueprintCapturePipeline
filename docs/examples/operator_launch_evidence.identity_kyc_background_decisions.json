@@ -1,0 +1,38 @@
+{
+  "schema_version": "operator_launch_evidence.v1",
+  "generated_at": "2026-07-09T00:00:00+00:00",
+  "checks": {
+    "identity_kyc_provider_decision": {
+      "status": "verified",
+      "decision_record_uri": "repo://docs/runbooks/identity-kyc-background-provider-decisions-2026-07-09.md#identitykyc-decision",
+      "decided_at": "2026-07-09T00:00:00+00:00",
+      "verified_by": "blueprint-ops",
+      "metadata": {
+        "decision": "stripe_connect_near_term_kyc_only",
+        "buyer_checkout_provider": "stripe_checkout",
+        "capturer_payout_provider": "stripe_connect",
+        "kyc_account_requirements_path": "stripe_connect_onboarding",
+        "persona_integrated": false,
+        "stripe_identity_integrated": false,
+        "onfido_integrated": false,
+        "separate_identity_provider_integrated": false,
+        "claim_boundary": "decision_record_only_not_live_connected_account_or_identity_completion_proof"
+      }
+    },
+    "background_check_provider_decision": {
+      "status": "verified",
+      "decision_record_uri": "repo://docs/runbooks/identity-kyc-background-provider-decisions-2026-07-09.md#background-check-decision",
+      "decided_at": "2026-07-09T00:00:00+00:00",
+      "verified_by": "blueprint-ops",
+      "metadata": {
+        "decision": "no_background_check_provider_integrated_for_repo_safe_beta",
+        "checkr_integrated": false,
+        "consumer_reporting_agency_integrated": false,
+        "background_check_claims_allowed": false,
+        "physical_site_access_screening_claims_allowed": false,
+        "external_blocker_if_physical_site_screening_required": "provider_account_consent_adverse_action_policy_and_launch_gate_evidence_required",
+        "claim_boundary": "decision_record_only_not_background_check_readiness_or_site_access_screening_proof"
+      }
+    }
+  }
+}

@@ -171,6 +171,25 @@ def test_booted_pod_is_not_reapable() -> None:
     assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is False
 
 
+def test_booted_orphan_past_hard_ttl_is_reapable() -> None:
+    inst = _runpod_inst(booted=True, state="running", age_seconds=18_000.0)
+    assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is True
+    assert guard.reap_candidate_reason(
+        inst,
+        max_boot_seconds=480,
+        protected_ids=set(),
+    ) == "booted_orphan_past_hard_ttl"
+
+
+def test_booted_owned_pod_past_hard_ttl_is_not_reapable() -> None:
+    inst = _runpod_inst(id="pod-owned", booted=True, state="running", age_seconds=18_000.0)
+    assert guard.is_reapable(
+        inst,
+        max_boot_seconds=480,
+        protected_ids={"pod-owned"},
+    ) is False
+
+
 def test_unbooted_dud_past_threshold_is_reapable() -> None:
     inst = _runpod_inst(booted=False, age_seconds=600.0)
     assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is True
@@ -196,10 +215,15 @@ def test_protected_dud_is_never_reapable() -> None:
     assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids={"pod-owned"}) is False
 
 
-def test_default_warm_candidate_ids_are_never_reapable_without_owner_process() -> None:
+def test_historical_warm_candidate_ids_do_not_bypass_dynamic_protection() -> None:
     for pod_id in guard.DEFAULT_WARM_CANDIDATE_IDS:
         inst = _runpod_inst(id=pod_id, booted=False, age_seconds=99999.0)
-        assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is False
+        assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is True
+        assert guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids={pod_id},
+        ) is False
 
 
 # --------------------------- ownership / live owner ---------------------------
@@ -299,6 +323,103 @@ def test_collect_instances_and_total_burn() -> None:
     assert guard.total_burn_per_hour(instances) == pytest.approx(1.50)
 
 
+def test_fleet_budget_guard_blocks_live_count_and_burn() -> None:
+    instances = [
+        guard.GpuInstance(
+            provider="runpod",
+            id="pod-a",
+            name="a",
+            state="running",
+            booted=True,
+            live=True,
+            cost_per_hr=1.25,
+            age_seconds=10.0,
+        ),
+        guard.GpuInstance(
+            provider="vast",
+            id="vast-b",
+            name="b",
+            state="running",
+            booted=True,
+            live=True,
+            cost_per_hr=0.75,
+            age_seconds=10.0,
+        ),
+    ]
+
+    budget = guard.build_fleet_budget_guard(
+        instances,
+        max_live_instances=1,
+        max_burn_usd_per_hour=1.0,
+    )
+
+    assert budget["status"] == "blocked"
+    assert budget["live_instance_count"] == 2
+    assert budget["total_burn_per_hour_usd"] == pytest.approx(2.0)
+    assert budget["blockers"] == [
+        "fleet_live_gpu_instance_limit_exceeded",
+        "fleet_burn_rate_limit_exceeded",
+    ]
+
+
+def test_spend_ledger_accumulates_daily_total_and_blocks_budget(
+    tmp_path: Path,
+) -> None:
+    now = _epoch(2026, 7, 9, 12, 0, 0)
+    ledger_path = tmp_path / "gpu_spend_ledger.json"
+    instances = [
+        guard.GpuInstance(
+            provider="runpod",
+            id="pod-a",
+            name="a",
+            state="running",
+            booted=True,
+            live=True,
+            cost_per_hr=2.0,
+            age_seconds=3600.0,
+        )
+    ]
+
+    first = guard.update_spend_ledger(
+        instances,
+        ledger_path=ledger_path,
+        now=now,
+    )
+    assert first["schema_version"] == guard.SPEND_LEDGER_SCHEMA_VERSION
+    assert first["daily_spend_usd"] == pytest.approx(2.0)
+    assert first["total_spend_usd"] == pytest.approx(2.0)
+
+    second = guard.update_spend_ledger(
+        instances,
+        ledger_path=ledger_path,
+        now=now + 1800,
+    )
+    assert second["daily_spend_usd"] == pytest.approx(3.0)
+    assert second["total_spend_usd"] == pytest.approx(3.0)
+
+    budget = guard.build_fleet_budget_guard(
+        instances,
+        spend_ledger=second,
+        max_daily_spend_usd=2.5,
+        max_total_spend_usd=2.5,
+    )
+    assert budget["status"] == "blocked"
+    assert budget["daily_spend_usd"] == pytest.approx(3.0)
+    assert budget["total_spend_usd"] == pytest.approx(3.0)
+    assert "fleet_daily_spend_limit_exceeded" in budget["blockers"]
+    assert "fleet_total_spend_limit_exceeded" in budget["blockers"]
+
+
+def test_fleet_budget_guard_requires_ledger_for_cumulative_limits() -> None:
+    budget = guard.build_fleet_budget_guard(
+        [],
+        max_daily_spend_usd=1.0,
+    )
+
+    assert budget["status"] == "blocked"
+    assert budget["blockers"] == ["fleet_cumulative_spend_ledger_missing"]
+
+
 # --------------------------- no secret in output ---------------------------
 
 
@@ -325,6 +446,7 @@ def patched_guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     recording terminate path so the three reap scenarios run without any network."""
     now = _epoch(2026, 6, 27, 0, 10, 0)  # 600s after the pods' start
     started = "2026-06-27T00:00:00Z"
+    booted_orphan_started = "2026-06-26T19:00:00Z"
 
     out_dir = _make_started_pod_id_file(tmp_path, "pod-owned")
 
@@ -338,6 +460,10 @@ def patched_guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         # 3) stuck dud past threshold BUT owned by a live process -> kept
         {"id": "pod-owned", "name": "owned", "desiredStatus": "RUNNING",
          "runtime": None, "costPerHr": 0.79, "lastStartedAt": started},
+        # 4) booted orphan past hard TTL -> reaped with --reap
+        {"id": "pod-booted-orphan", "name": "booted-orphan",
+         "desiredStatus": "RUNNING", "runtime": {"uptimeInSeconds": 18_000},
+         "costPerHr": 0.79, "lastStartedAt": booted_orphan_started},
     ]
 
     monkeypatch.setattr(guard, "_now", lambda: now)
@@ -385,14 +511,15 @@ def test_main_dry_run_reports_but_never_terminates(patched_guard, capsys) -> Non
     assert "rp-super-secret" not in out and "va-super-secret" not in out
 
 
-def test_main_reap_terminates_only_unowned_dud(patched_guard, capsys) -> None:
+def test_main_reap_terminates_only_unowned_orphans(patched_guard, capsys) -> None:
     tmp_path, terminated = patched_guard
     rc = guard.main(["--reap", "--output-root", str(tmp_path), "--max-boot-seconds", "480"])
     out = capsys.readouterr().out
     assert rc == 0
-    # Exactly one DELETE, and it is the unowned dud.
-    assert len(terminated) == 1
-    assert "pod-dud" in terminated[0]
+    # The unbooted dud and the booted hard-TTL orphan are deleted.
+    assert len(terminated) == 2
+    assert any("pod-dud" in url for url in terminated)
+    assert any("pod-booted-orphan" in url for url in terminated)
     # Healthy booted pod and owned dud are never deleted.
     assert all("pod-healthy" not in u for u in terminated)
     assert all("pod-owned" not in u for u in terminated)
@@ -446,6 +573,11 @@ def test_main_json_report_persists_snapshot_on_dry_run(patched_guard, capsys) ->
     assert snapshot["reap_results"] == []
     ids = {i["id"]: i for i in snapshot["instances"]}
     assert ids["pod-dud"]["reap_candidate"] is True
+    assert ids["pod-dud"]["reap_candidate_reason"] == "unbooted_dud_past_boot_ttl"
+    assert ids["pod-booted-orphan"]["reap_candidate"] is True
+    assert ids["pod-booted-orphan"]["reap_candidate_reason"] == (
+        "booted_orphan_past_hard_ttl"
+    )
     assert ids["pod-healthy"]["reap_candidate"] is False
     assert ids["pod-owned"]["protected"] is True
     assert snapshot["total_burn_per_hour_usd"] > 0
@@ -466,9 +598,36 @@ def test_main_json_report_records_reap_results(patched_guard) -> None:
         "--json-report", str(report_path),
     ])
     assert rc == 0
-    assert len(terminated) == 1
+    assert len(terminated) == 2
     snapshot = _json.loads(report_path.read_text())
     assert snapshot["reap_mode"] is True
     assert snapshot["reap_results"] == [
-        {"provider": "runpod", "id": "pod-dud", "status": "terminated", "http": 200}
+        {"provider": "runpod", "id": "pod-dud", "status": "terminated", "http": 200},
+        {
+            "provider": "runpod",
+            "id": "pod-booted-orphan",
+            "status": "terminated",
+            "http": 200,
+        },
     ]
+
+
+def test_main_returns_exit_2_when_fleet_budget_is_blocked(patched_guard) -> None:
+    import json as _json
+
+    tmp_path, terminated = patched_guard
+    report_path = tmp_path / "budget_snapshot.json"
+    rc = guard.main([
+        "--output-root", str(tmp_path),
+        "--max-boot-seconds", "480",
+        "--max-live-instances", "1",
+        "--max-burn-usd-per-hour", "1.0",
+        "--json-report", str(report_path),
+    ])
+
+    assert rc == 2
+    assert terminated == []
+    snapshot = _json.loads(report_path.read_text())
+    assert snapshot["fleet_budget"]["status"] == "blocked"
+    assert "fleet_live_gpu_instance_limit_exceeded" in snapshot["fleet_budget"]["blockers"]
+    assert "fleet_burn_rate_limit_exceeded" in snapshot["fleet_budget"]["blockers"]

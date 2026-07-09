@@ -74,6 +74,75 @@ pipeline/live_pipeline_control_plane/live_pipeline_input_intake_audit.json
 pipeline/live_pipeline_control_plane/live_pipeline_staged_inputs.json
 ```
 
+### GPU Spend Watchdog
+
+Install and enable the companion spend guard timer alongside the control plane:
+
+```bash
+sudo cp deploy/systemd/blueprint-gpu-spend-guard.service /etc/systemd/system/
+sudo cp deploy/systemd/blueprint-gpu-spend-guard.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now blueprint-gpu-spend-guard.timer
+```
+
+The timer runs `scripts/gpu_spend_guard.py --reap` every few minutes and writes:
+
+```text
+/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/latest.json
+```
+
+That `gpu_spend_guard.v1` snapshot is spend/allocation evidence only. It records
+live provider allocations, reap candidates, reap results, and the aggregate
+`gpu_fleet_budget_guard.v1` ceiling. Launch gates should pass that file as both
+`--spend-guard-pre-snapshot` and `--spend-guard-post-snapshot` around paid
+canaries, or use two copied snapshots if preserving before/after state:
+
+```bash
+python scripts/run_external_alpha_launch_gate.py \
+  --spend-guard-pre-snapshot /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/pre-canary.json \
+  --spend-guard-post-snapshot /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/post-canary.json
+```
+
+The gate fails when snapshots are missing, stale, not generated with `--reap`,
+still contain reap candidates, or carry a blocked fleet budget. This is a cost
+and teardown guard, not provider runtime, artifact quality, or task-success proof.
+
+Render workers add pod-side containment on top of that host watchdog:
+`BLUEPRINT_RENDER_POD_HARD_TTL_SECONDS` defaults to 7200 seconds and terminates
+the worker command if the launcher/control plane dies, while
+`BLUEPRINT_RENDER_POD_IDLE_TTL_SECONDS` defaults to 1800 seconds after
+`runner_done`. Provider API teardown is still required for billing proof; these
+limits only prevent an in-container render process from running forever.
+
+Customer robot-eval failover uses the generated
+`gpu_provider_race_handoff.json` plus:
+
+```bash
+BLUEPRINT_ALLOW_GPU_PROVIDER_RACE_LAUNCH=true \
+blueprint-run-robot-eval-provider-race \
+  --job-dir /path/to/capture-root/pipeline/robot_eval_jobs/<job_id> \
+  --allow-live-provider-race
+```
+
+The launcher runs provider adapter commands serially until one succeeds. It is a
+runtime failover path, not proof that the remote worker completed the simulator
+or produced valid task evidence.
+
+Lambda teardown should use the adapter's verification loop:
+
+```bash
+BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true \
+blueprint-run-lambda-provider-adapter \
+  --mode terminate-instances \
+  --instance-id <lambda-instance-id> \
+  --allow-lambda-api-call \
+  --teardown-poll-attempts 3
+```
+
+`lambda_provider_teardown_manifest.json` must be `completed` before treating
+the allocation as closed. `termination_unverified` means the provider list still
+showed an active id or verification failed, so billing risk remains open.
+
 ### Sim-Only Beta Profile
 
 Use this profile when the beta surface is intentionally simulator-only and every
@@ -148,6 +217,13 @@ In fleet mode, configure `--job-request-inbox` or
 readiness only: the control plane still resolves and validates
 `site_package.capture_root` per request, and requests for another capture are
 reported in `webapp_inbox_truth` rather than silently accepted.
+When a queued WebApp request carries the public library path
+`/synced-artifacts/sites/<slug>`, configure
+`ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON` to map that slug to
+the local Pipeline capture root. `ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT`
+is a narrower single-root fallback for one-site rehearsals. Without one of
+those overrides, the inbox runner quarantines the request instead of treating
+the public WebApp path as local capture truth.
 
 The proof-boundary audit can also be run directly:
 
@@ -213,8 +289,8 @@ BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN=<redacted> \
 blueprint-live-pipeline-intake-service --host 127.0.0.1 --port 8765
 ```
 
-The intake token is intentionally not a default. It is the bearer secret that
-lets WebApp forwarding and the Pipeline intake service trust each other, so it
+The intake token is intentionally not a default. It is the shared HMAC secret
+used to sign WebApp forwarding requests and Pipeline intake-audit probes, so it
 must live in local/deployment secrets instead of source control. Generate a
 local env file with matching WebApp and Pipeline variables:
 
@@ -243,9 +319,10 @@ npm run pipeline:forwarding:preflight -- \
 
 For production deployment, copy the same generated token into the WebApp secret
 store as `ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN` and the Pipeline intake service
-secret store as `BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN`. The helper does not make
-the remote endpoint authenticate by itself; both deployed services must receive
-the same secret.
+secret store as `BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN`. WebApp sends
+`X-Blueprint-Pipeline-Timestamp`, `X-Blueprint-Pipeline-Nonce`, and
+`X-Blueprint-Pipeline-Signature: sha256=<hmac>` over `timestamp.nonce.body`; it
+does not send the shared value as a bearer credential.
 
 The service exposes:
 
@@ -257,8 +334,9 @@ The service exposes:
 - `POST /api/live-pipeline/live-closure-evidence`
 - `GET /api/live-pipeline/intake-audit`
 
-Send the token with `Authorization: Bearer ...` or
-`X-Blueprint-Intake-Token`. The POST body can be either a direct
+Signed intake headers are required by default. Temporary legacy bearer support
+exists only when `BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER=true` is
+set on the Pipeline service. The POST body can be either a direct
 `robot_eval_job_request.v1` or a `robot_eval_job_request_inbox.v1` queue
 envelope. A staged request is still only handoff proof; the control plane must
 process it and the proof audit must remain clean. Keep the service bound to
@@ -357,10 +435,25 @@ BLUEPRINT_PACKAGE_DELIVERY_UPLOAD_COMMAND="blueprint-deliver-arena-package-local
 ```
 
 `blueprint-deliver-arena-package-local` copies the delivery bundle into the
-local delivery root and returns local access paths. It does not create signed
-URLs, upload to cloud storage, verify entitlement, or upgrade proof claims.
-Cloud signed-access delivery still requires a provider-specific command that
-returns signed URLs and explicit owner review.
+local delivery root and returns local access paths.
+
+Built-in GCS delivery source for WebApp signed-URL handoff:
+
+```bash
+BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD=true
+BLUEPRINT_PACKAGE_DELIVERY_GCS_PREFIX=gs://blueprint-buyer-artifacts/post-training-packages
+BLUEPRINT_PACKAGE_DELIVERY_ENTITLEMENT_ID=<marketplaceEntitlements doc id>
+BLUEPRINT_PACKAGE_DELIVERY_UPLOAD_COMMAND="blueprint-deliver-arena-package-local --output-dir ."
+```
+
+With `BLUEPRINT_PACKAGE_DELIVERY_GCS_PREFIX`, the command uploads the
+`delivery_bundle/` plus package archive to GCS, writes
+`artifact_uri` / `post_training_data_package_uri`, and prepares a
+`marketplace_entitlement_patch` payload for the WebApp entitlement record. Set
+`BLUEPRINT_PACKAGE_DELIVERY_SIGNED_URLS=true` only for an owner-reviewed proof
+run that should mint short-lived signed URLs locally. Entitlement authorization
+and buyer access remain WebApp responsibilities; a cloud object URI is delivery
+source proof, not buyer authorization or deployment approval.
 
 ## DigitalOcean Droplet Boundary
 

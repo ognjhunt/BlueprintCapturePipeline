@@ -16,6 +16,7 @@ import importlib.util
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from .agent_operator_runtime import (
     run_agents_sdk_operator,
 )
 from .arena_result_ingest import build_arena_result_ingest
+from .buyer_claim_ceiling import build_buyer_claim_ceiling
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
@@ -134,6 +136,8 @@ PROOF_BOUNDARY_SCHEMA_VERSION = "robot_eval_job_proof_boundary.v1"
 JOB_RUN_MANIFEST_SCHEMA_VERSION = "robot_eval_job_run_manifest.v1"
 BLOCKED_MANIFEST_SCHEMA_VERSION = "robot_eval_job_blocked_manifest.v1"
 JOB_REQUEST_INBOX_RUN_SCHEMA_VERSION = "robot_eval_job_request_inbox_run.v1"
+WEBAPP_FORWARD_CAPTURE_ROOT_ENV = "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT"
+WEBAPP_FORWARD_CAPTURE_ROOT_BY_SITE_ENV = "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON"
 REAL_WORLD_VALIDATION_FOLLOWUP_REQUEST_QUEUE_SCHEMA_VERSION = (
     "real_world_validation_followup_request_queue.v1"
 )
@@ -2100,14 +2104,13 @@ def _provider_adapter_command(provisioner: str) -> str | None:
 def _provider_race_runtime_readiness(
     candidates: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Any]:
-    """Describe whether the customer path can execute a live provider race safely.
+    """Describe whether the customer path can execute provider failover safely.
 
-    The generic handoff packet is useful, but it is not enough to execute a live
-    customer race unless each contender has a launcher contract that both starts
-    the allocation and owns teardown for losers. RunPod's current robot-eval
-    adapter submits work but does not give this in-process race a teardown-owned
-    allocation contract, so the customer path must remain blocked rather than
-    silently falling back to serial launch.
+    Robot-eval adapters expose command launchers, not in-process provider objects
+    with loser teardown hooks. The customer path therefore wires serial adapter
+    failover: try runnable providers in priority order, stop on the first
+    successful adapter result, and leave parallel racing to render lanes that
+    have provider objects with teardown-owned loser cleanup.
     """
 
     race_candidates = [
@@ -2124,47 +2127,49 @@ def _provider_race_runtime_readiness(
         blockers: List[str] = []
         if not adapter_command:
             blockers.append(f"{provider}_provider_race_adapter_command_missing")
-        teardown_owned = provider == "vast"
-        if provider == "runpod":
-            blockers.append(
-                "runpod_provider_race_teardown_owned_allocation_contract_missing"
-            )
-        elif not teardown_owned:
-            blockers.append(
-                f"{provider}_provider_race_teardown_owned_allocation_contract_missing"
-            )
-        runtime_blockers.extend(blockers)
+        if blockers:
+            runtime_blockers.extend(blockers)
         runtime_candidates.append(
             {
                 "provider": provider,
                 "adapter_command_present": bool(adapter_command),
-                "teardown_owned_allocation_contract_present": teardown_owned,
-                "customer_path_race_runtime_eligible": not blockers,
+                "teardown_owned_allocation_contract_present": provider == "vast",
+                "customer_path_race_runtime_eligible": False,
+                "customer_path_serial_failover_runtime_eligible": not blockers,
                 "blockers": blockers,
             }
         )
     eligible_count = sum(
         1
         for candidate in runtime_candidates
-        if candidate.get("customer_path_race_runtime_eligible") is True
+        if candidate.get("customer_path_serial_failover_runtime_eligible") is True
     )
-    ready = len(race_candidates) > 1 and eligible_count > 1 and not runtime_blockers
+    ready = len(race_candidates) > 1 and eligible_count > 1
     return {
         "schema_version": "robot_eval_provider_race_runtime_readiness.v1",
-        "status": "runtime_ready"
+        "status": "serial_failover_runtime_ready"
         if ready
-        else "blocked_pending_teardown_owned_race_launcher",
+        else "blocked_pending_runnable_provider_adapters",
         "customer_path_provider_failover_runtime_wired": ready,
         "runtime_candidate_count": len(race_candidates),
         "runtime_eligible_candidate_count": eligible_count,
         "runtime_candidates": runtime_candidates,
-        "blockers": _dedupe(runtime_blockers)
-        if runtime_blockers
-        else ([] if ready else ["provider_race_requires_two_runtime_eligible_candidates"]),
+        "blockers": []
+        if ready
+        else (
+            _dedupe(runtime_blockers)
+            or ["provider_race_requires_two_runtime_eligible_candidates"]
+        ),
+        "diagnostic_blockers": _dedupe(runtime_blockers),
         "claim_boundary": {
             "provider_race_handoff_is_not_live_runtime_failover": not ready,
+            "customer_provider_failover_runtime_mode": "serial_adapter_failover"
+            if ready
+            else None,
+            "parallel_provider_race_runtime_claimed": False,
             "serial_provider_launch_must_remain_blocked_until_runtime_wired": not ready,
-            "teardown_owned_loser_cleanup_required_before_customer_runtime": True,
+            "teardown_owned_loser_cleanup_required_before_customer_runtime": False,
+            "failed_adapter_must_emit_teardown_or_open_billing_risk": True,
         },
     }
 
@@ -2243,10 +2248,14 @@ def _provider_race_contract(
             if race_required
             else None,
             "launch_every_candidate_requires_prelaunch_can_launch_true": True,
-            "terminate_losers_required": True,
+            "runtime_mode": "serial_adapter_failover" if runtime_readiness.get(
+                "customer_path_provider_failover_runtime_wired"
+            ) is True else "blocked",
+            "terminate_losers_required": False,
             "circuit_breaker_state_required": True,
-            "boot_marker_required_before_winner": True,
-            "teardown_owned_loser_cleanup_required": True,
+            "boot_marker_required_before_winner": False,
+            "teardown_owned_loser_cleanup_required": False,
+            "failed_adapter_must_emit_teardown_or_open_billing_risk": True,
             "handoff_packet_path": "gpu_provider_race_handoff.json"
             if race_required
             else None,
@@ -2257,6 +2266,82 @@ def _provider_race_contract(
             ]
             if race_required
             else [],
+        },
+    }
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _fleet_budget_guard_from_spend_snapshot() -> Dict[str, Any]:
+    path_text = _string(
+        os.getenv("BLUEPRINT_GPU_SPEND_GUARD_SNAPSHOT_PATH")
+        or os.getenv("BLUEPRINT_GPU_SPEND_GUARD_REPORT")
+    )
+    max_age_seconds = int(
+        _number(os.getenv("BLUEPRINT_GPU_SPEND_GUARD_MAX_AGE_SECONDS"), 15 * 60)
+        or 15 * 60
+    )
+    blockers: List[str] = []
+    snapshot: Dict[str, Any] = {}
+    path: Path | None = Path(path_text).expanduser() if path_text else None
+    if path is None:
+        blockers.append("fleet_budget_spend_guard_snapshot_path_missing")
+    elif not path.is_file():
+        blockers.append("fleet_budget_spend_guard_snapshot_missing")
+    else:
+        snapshot = _read_optional_mapping(path)
+        if not snapshot:
+            blockers.append("fleet_budget_spend_guard_snapshot_parse_failed")
+
+    generated_at = _parse_iso_datetime(snapshot.get("generated_at")) if snapshot else None
+    age_seconds: float | None = None
+    fleet_budget = _mapping(snapshot.get("fleet_budget"))
+    if snapshot:
+        if snapshot.get("schema_version") != "gpu_spend_guard.v1":
+            blockers.append("fleet_budget_spend_guard_snapshot_schema_invalid")
+        if generated_at is None:
+            blockers.append("fleet_budget_spend_guard_snapshot_generated_at_invalid")
+        else:
+            age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
+            if age_seconds < 0 or age_seconds > max_age_seconds:
+                blockers.append("fleet_budget_spend_guard_snapshot_stale")
+        if snapshot.get("reap_candidate_ids"):
+            blockers.append("fleet_budget_spend_guard_snapshot_has_reap_candidates")
+        if fleet_budget.get("status") != "passed":
+            blockers.append("fleet_budget_not_passed")
+            blockers.extend(
+                f"fleet_budget:{blocker}"
+                for blocker in _string_list(fleet_budget.get("blockers"))
+            )
+
+    return {
+        "schema_version": "robot_eval_provider_fleet_budget_guard.v1",
+        "status": "passed" if not blockers else "blocked",
+        "snapshot_path": str(path) if path else None,
+        "snapshot_generated_at": snapshot.get("generated_at"),
+        "snapshot_age_seconds": age_seconds,
+        "max_age_seconds": max_age_seconds,
+        "fleet_budget": fleet_budget or None,
+        "live_instance_count": snapshot.get("live_instance_count"),
+        "total_burn_per_hour_usd": snapshot.get("total_burn_per_hour_usd"),
+        "blockers": _dedupe(blockers),
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "fleet_budget_is_cost_gate_only": True,
+            "fleet_budget_is_not_provider_runtime_proof": True,
         },
     }
 
@@ -2317,6 +2402,9 @@ def _provider_prelaunch_spend_guard(
             and local_sim_only_prerequisite.get("local_sim_only_evidence_clean") is True
         )
     )
+    fleet_budget_guard = (
+        _fleet_budget_guard_from_spend_snapshot() if external_provider else {}
+    )
     blockers: List[str] = []
     if external_provider:
         if requested_budget is None:
@@ -2338,6 +2426,12 @@ def _provider_prelaunch_spend_guard(
             blockers.extend(
                 f"local_sim_only_prerequisite:{blocker}"
                 for blocker in _string_list(local_sim_only_prerequisite.get("blockers"))
+            )
+        if fleet_budget_guard.get("status") != "passed":
+            blockers.append("prelaunch_fleet_budget_guard_not_passed")
+            blockers.extend(
+                f"fleet_budget_guard:{blocker}"
+                for blocker in _string_list(fleet_budget_guard.get("blockers"))
             )
         if approval_blockers:
             blockers.extend(f"approval:{blocker}" for blocker in approval_blockers)
@@ -2366,8 +2460,14 @@ def _provider_prelaunch_spend_guard(
             ),
             "artifact_upload_before_shutdown_required": upload_before_shutdown_required,
             "local_sim_only_prerequisite_ready": local_sim_ready,
+            "fleet_budget_guard_passed": (
+                fleet_budget_guard.get("status") == "passed"
+                if external_provider
+                else None
+            ),
         },
         "blockers": _dedupe(blockers),
+        "fleet_budget_guard": fleet_budget_guard or None,
         "provider_race": _provider_race_contract(
             selected_provider=provider,
             gpu_selection=gpu_selection,
@@ -3765,32 +3865,40 @@ def _build_gpu_provider_race_handoff(
         "launcher_command": (
             f"{PROVIDER_RACE_LAUNCHER_COMMAND} "
             "--provider-launch-request gpu_provider_launch_request.json "
-            "--handoff gpu_provider_race_handoff.json"
+            "--handoff gpu_provider_race_handoff.json "
+            "--allow-live-provider-race"
             if runtime_launcher_available
             else None
         ),
         "execution_contract": {
             "launch_every_candidate_requires_prelaunch_can_launch_true": True,
-            "terminate_losers_required": True,
-            "boot_marker_required_before_winner": True,
+            "runtime_mode": "serial_adapter_failover" if runtime_wired else "blocked",
+            "terminate_losers_required": False,
+            "boot_marker_required_before_winner": False,
             "circuit_breaker_state_required": True,
-            "teardown_owned_loser_cleanup_required": True,
+            "teardown_owned_loser_cleanup_required": False,
+            "failed_adapter_must_emit_teardown_or_open_billing_risk": True,
             "write_provider_launcher_result_required": True,
             "provider_race_runtime_launcher_required": race_required,
             "provider_race_runtime_launcher_available": runtime_launcher_available,
             "provider_race_launcher_result_path": PROVIDER_RACE_LAUNCHER_RESULT_NAME
             if runtime_launcher_available
             else None,
-            "live_race_execution_proven": False,
+            "live_failover_execution_proven": False,
         },
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "race_handoff_is_not_provider_execution": True,
             "provider_race_module_exists_but_live_race_not_executed": True,
-            "provider_race_handoff_is_not_customer_runtime_failover": not ready,
+            "provider_race_handoff_is_not_customer_runtime_failover": not runtime_wired,
+            "provider_race_handoff_blocked_by_prelaunch_guard": (
+                prelaunch_guard.get("required_before_provider_launch") is True
+                and prelaunch_guard.get("can_launch") is not True
+            ),
             "provider_race_runtime_launcher_not_implemented": not runtime_launcher_available,
             "provider_race_launcher_command_available": runtime_launcher_available,
-            "teardown_owned_loser_cleanup_not_proven": not runtime_wired,
+            "parallel_provider_race_runtime_claimed": False,
+            "teardown_owned_loser_cleanup_not_proven": False,
             "live_provider_calls_performed": False,
             "remote_cloud_execution_proven": False,
         },
@@ -6987,6 +7095,96 @@ def _wam_score_claim_payload_for_buyer_report(
     }
 
 
+def _wam_success_label_provenance_for_buyer_report(
+    *,
+    wam_eval: Mapping[str, Any],
+    wam_scorecard: Mapping[str, Any],
+) -> Dict[str, Any]:
+    score_source = _string(
+        wam_scorecard.get("score_source")
+        or wam_scorecard.get("ranking_basis")
+        or wam_eval.get("score_source")
+    )
+    generated_video_judge = bool(
+        wam_scorecard.get("score_source_is_generated_video_judge")
+        or _mapping(wam_scorecard.get("claim_boundary")).get(
+            "score_source_is_generated_video_judge"
+        )
+        or "generated_video" in score_source
+        or "vlm" in score_source
+    )
+    disclosure = (
+        "WAM success labels and score rates are judgments over model-derived generated "
+        "rollout video; they are not measured physical robot success, simulator "
+        "contact-state proof, or rank-fidelity proof."
+        if generated_video_judge
+        else "WAM score provenance is evaluator-bounded and must be displayed with its source."
+    )
+    raw_rows = (
+        wam_scorecard.get("scorecard_rows")
+        or wam_scorecard.get("policy_scores")
+        or wam_scorecard.get("ranked_policies")
+        or wam_scorecard.get("per_policy_coverage")
+        or []
+    )
+    rows: List[Dict[str, Any]] = []
+    if isinstance(raw_rows, Sequence) and not isinstance(raw_rows, (str, bytes, bytearray)):
+        for index, row in enumerate(raw_rows, start=1):
+            if not isinstance(row, Mapping):
+                continue
+            rows.append(
+                {
+                    "row_id": _string(row.get("row_id") or row.get("policy_id"))
+                    or f"policy_score_row_{index:04d}",
+                    "policy_id": _string(row.get("policy_id") or row.get("policyId")) or None,
+                    "success_rate": row.get("success_rate")
+                    if row.get("success_rate") is not None
+                    else row.get("score"),
+                    "score_source": score_source or None,
+                    "success_label_provenance_type": "generated_video_vlm_judge"
+                    if generated_video_judge
+                    else "evaluator_bounded",
+                    "buyer_disclosure": disclosure,
+                    "generated_video_vlm_judge": generated_video_judge,
+                    "real_world_task_success_proven": False,
+                    "rank_fidelity_result_proven": False,
+                }
+            )
+    if not rows:
+        rows.append(
+            {
+                "row_id": "wam_scorecard_summary",
+                "policy_id": _string(wam_scorecard.get("top_policy_id")) or None,
+                "success_rate": wam_scorecard.get("success_rate"),
+                "score_source": score_source or None,
+                "success_label_provenance_type": "generated_video_vlm_judge"
+                if generated_video_judge
+                else "evaluator_bounded",
+                "buyer_disclosure": disclosure,
+                "generated_video_vlm_judge": generated_video_judge,
+                "real_world_task_success_proven": False,
+                "rank_fidelity_result_proven": False,
+            }
+        )
+    return {
+        "schema_version": "wam_success_label_provenance_disclosure.v1",
+        "status": "disclosed" if rows else "not_available",
+        "score_source": score_source or None,
+        "generated_video_vlm_judge": generated_video_judge,
+        "success_rate_requires_provenance_disclosure": True,
+        "success_rate_provenance_disclosed": bool(rows),
+        "success_rate_buyer_display_allowed": bool(rows),
+        "buyer_disclosure": disclosure,
+        "rows": rows,
+        "claim_boundary": {
+            "generated_video_success_labels_are_support_evidence": generated_video_judge,
+            "real_world_task_success_proven": False,
+            "rank_fidelity_result_proven": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+
+
 def _write_task_eval_run_buyer_report(
     *,
     job_dir: Path,
@@ -7136,6 +7334,10 @@ def _write_task_eval_run_buyer_report(
         wam_scorecard=wam_scorecard,
         generated_at=generated_at,
     )
+    wam_success_label_provenance = _wam_success_label_provenance_for_buyer_report(
+        wam_eval=wam_eval,
+        wam_scorecard=wam_scorecard,
+    ) if wam_eval else {}
     provider_execution: Dict[str, Any] = {
         "gpu_provisioning_status": gpu_result.get("status"),
         "gpu_cost_control_ledger_status": gpu_cost_ledger.get("status"),
@@ -7198,6 +7400,25 @@ def _write_task_eval_run_buyer_report(
         policy_binding=policy_binding_payload,
         rights_privacy_gate=rights_privacy_gate,
         wam_evaluation=wam_score_claim_payload,
+        buyer_claim_proof_boundary={
+            "live_simulator_execution_proven": _mapping(
+                live_closure.get("proof_boundary")
+            ).get("simulator_execution_proven")
+            is True,
+            "live_policy_execution_proven": _mapping(
+                live_closure.get("proof_boundary")
+            ).get("robot_policy_execution_proven")
+            is True,
+        },
+        live_closure=live_closure,
+        buyer_claim_copy={
+            "request": {
+                "buyer_facing_copy": request.get("buyer_facing_copy"),
+                "marketing_copy": request.get("marketing_copy"),
+                "report_copy": request.get("report_copy"),
+                "public_claims": request.get("public_claims"),
+            },
+        },
         # Live consent re-read at buyer-report emit closes the revoke-after-manifest window.
         capture_root=_capture_root_from_job_dir(job_dir),
         generated_at=generated_at,
@@ -7215,6 +7436,7 @@ def _write_task_eval_run_buyer_report(
                     wam_provider_execution.get("provider_command_used")
                 ),
                 "policy_ranking_scorecard_status": wam_scorecard.get("status"),
+                "success_label_provenance": wam_success_label_provenance,
                 "claim_boundary_path": "wam_eval_claim_boundary.json"
                 if wam_claim_boundary
                 else None,
@@ -7230,6 +7452,10 @@ def _write_task_eval_run_buyer_report(
                 **_mapping(report.get("claim_boundary")),
                 "generated_wam_rollouts_are_model_derived_support_artifacts": True,
                 "wam_evaluator_bounded_policy_ranking_is_not_task_success": True,
+                "wam_success_rate_requires_label_provenance_disclosure": True,
+                "wam_success_label_provenance_disclosed": bool(
+                    wam_success_label_provenance.get("success_rate_provenance_disclosed")
+                ),
                 "wam_policy_ranking_is_not_evaluation_readiness": True,
                 "wam_outputs_do_not_prove_physical_readiness": True,
             },
@@ -7876,6 +8102,35 @@ def _webapp_robot_eval_status_projection(
     )
     proof_public_claim = proof_boundary.get("public_claim_upgrade_allowed") is True
     rank_fidelity_result_proven = proof_boundary.get("rank_fidelity_result_proven") is True
+    success_claim_ledger = _mapping(task_eval_run_report.get("success_claim_ledger"))
+    buyer_claim_ceiling = build_buyer_claim_ceiling(
+        success_claim_ledger=success_claim_ledger,
+        proof_boundary={
+            "live_simulator_execution_proven": _mapping(
+                live_closure.get("proof_boundary")
+            ).get("simulator_execution_proven")
+            is True,
+            "live_policy_execution_proven": _mapping(
+                live_closure.get("proof_boundary")
+            ).get("robot_policy_execution_proven")
+            is True,
+        },
+        live_closure=live_closure,
+        buyer_copy_inputs={
+            "request": {
+                "buyer_facing_copy": request.get("buyer_facing_copy"),
+                "marketing_copy": request.get("marketing_copy"),
+                "report_copy": request.get("report_copy"),
+                "public_claims": request.get("public_claims"),
+            },
+            "task_eval_run_report": {
+                "buyer_facing_copy": task_eval_run_report.get("buyer_facing_copy"),
+                "marketing_copy": task_eval_run_report.get("marketing_copy"),
+                "report_copy": task_eval_run_report.get("report_copy"),
+                "public_claims": task_eval_run_report.get("public_claims"),
+            },
+        },
+    )
     machine_trace_complete = bool(
         batch_closure.get("machine_trace_package_complete")
         or simulator_result.get("machine_trace_package_complete")
@@ -7962,13 +8217,43 @@ def _webapp_robot_eval_status_projection(
         },
         "task_metrics": {
             "evaluation_status": evaluation_result.get("status"),
-            "task_success_rate": task_success_summary.get("success_rate")
+            "task_success_rate": task_success_summary.get("task_success_rate")
+            or task_success_summary.get("success_rate")
             or trace.get("task_success_rate"),
             "successful_attempt_count": task_success_summary.get("successful_attempt_count")
             or trace.get("successful_task_attempt_count"),
             "failed_attempt_count": task_success_summary.get("failed_attempt_count")
             or trace.get("failed_task_attempt_count")
             or labels.get("failed_attempt_count"),
+            "task_success_label_provenance_counts": task_success_summary.get(
+                "task_success_label_provenance_counts"
+            )
+            or trace.get("task_success_label_provenance_counts")
+            or {},
+            "task_success_label_provenance_disclosures": task_success_summary.get(
+                "task_success_label_provenance_disclosures"
+            )
+            or {},
+            "generated_video_vlm_judged_attempt_count": task_success_summary.get(
+                "generated_video_vlm_judged_attempt_count"
+            )
+            or 0,
+            "success_rate_requires_provenance_disclosure": bool(
+                task_success_summary.get("success_rate_requires_provenance_disclosure")
+                or trace.get("success_rate_requires_provenance_disclosure")
+            ),
+            "success_rate_provenance_disclosed": bool(
+                task_success_summary.get("success_rate_provenance_disclosed")
+                or trace.get("success_rate_provenance_disclosed")
+            ),
+            "success_rate_buyer_display_allowed": bool(
+                task_success_summary.get("success_rate_buyer_display_allowed")
+                or trace.get("success_rate_buyer_display_allowed")
+            ),
+            "success_rate_buyer_display_blockers": _string_list(
+                task_success_summary.get("success_rate_buyer_display_blockers")
+                or trace.get("success_rate_buyer_display_blockers")
+            ),
             "metric_coverage_complete": bool(
                 batch_closure.get("metric_coverage_complete")
                 or simulator_result.get("metric_coverage_complete")
@@ -7990,9 +8275,7 @@ def _webapp_robot_eval_status_projection(
         "task_eval_run_report": {
             "status": task_eval_run_report.get("status") or "not_available",
             "evidence_level": task_eval_run_report.get("evidence_level"),
-            "highest_truthful_claim": _mapping(
-                task_eval_run_report.get("success_claim_ledger")
-            ).get("highest_truthful_claim"),
+            "highest_truthful_claim": buyer_claim_ceiling["highest_truthful_claim"],
             "blockers": _string_list(task_eval_run_report.get("blockers")),
             "report_path": artifact_paths.get("task_eval_run_report"),
             "bare_success_booleans_forbidden": bool(
@@ -8001,6 +8284,7 @@ def _webapp_robot_eval_status_projection(
                 )
             ),
         },
+        "buyer_claim_ceiling": buyer_claim_ceiling,
         "batch_closure": {
             "status": batch_closure.get("status") or "not_available",
             "batch_execution_status": batch_closure.get("batch_execution_status"),
@@ -8210,6 +8494,17 @@ def _webapp_robot_eval_status_projection(
             "provider_commands_exposed": False,
             "provider_credentials_exposed": False,
             "readiness_claim_upgrade_allowed": proof_public_claim,
+            "buyer_facing_claim_ceiling_pinned_to_highest_truthful_claim": (
+                buyer_claim_ceiling[
+                    "buyer_facing_claim_ceiling_pinned_to_highest_truthful_claim"
+                ]
+            ),
+            "live_simulator_execution_claim_allowed": buyer_claim_ceiling[
+                "live_simulator_execution_claim_allowed"
+            ],
+            "live_policy_execution_claim_allowed": buyer_claim_ceiling[
+                "live_policy_execution_claim_allowed"
+            ],
             "signed_delivery_access_is_package_access_only": True,
             "consent_revocation_blocks_downstream_use": revocation_required,
             "webapp_or_hosted_takedown_execution_proven": bool(
@@ -11024,10 +11319,77 @@ def _webapp_request_identity(request: Mapping[str, Any]) -> tuple[str, ...] | No
     return identity
 
 
-def _request_capture_root(request: Mapping[str, Any], default: Path) -> Path:
+def _site_slug_from_request(request: Mapping[str, Any]) -> str:
     site_package = _mapping(request.get("site_package") or request.get("sitePackage"))
+    source = _mapping(request.get("source"))
+    selection = _mapping(source.get("selection_state") or source.get("selectionState"))
+    return _string(
+        site_package.get("site_slug")
+        or site_package.get("siteSlug")
+        or selection.get("site_slug")
+        or selection.get("siteSlug")
+    )
+
+
+def _is_webapp_synced_artifact_capture_root(value: str) -> bool:
+    normalized = value.strip().replace("\\", "/")
+    return (
+        normalized == "/synced-artifacts"
+        or normalized.startswith("/synced-artifacts/")
+        or normalized == "synced-artifacts"
+        or normalized.startswith("synced-artifacts/")
+    )
+
+
+def _capture_root_by_site_overrides() -> Dict[str, str]:
+    raw = _string(os.getenv(WEBAPP_FORWARD_CAPTURE_ROOT_BY_SITE_ENV))
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid_env_{WEBAPP_FORWARD_CAPTURE_ROOT_BY_SITE_ENV}") from exc
+    if not isinstance(parsed, Mapping):
+        raise ValueError(f"invalid_env_{WEBAPP_FORWARD_CAPTURE_ROOT_BY_SITE_ENV}")
+    return {
+        _string(site_slug): _string(capture_root)
+        for site_slug, capture_root in parsed.items()
+        if _string(site_slug) and _string(capture_root)
+    }
+
+
+def _capture_root_override_for_request(request: Mapping[str, Any]) -> tuple[str, str] | None:
+    site_slug = _site_slug_from_request(request)
+    if site_slug:
+        site_override = _capture_root_by_site_overrides().get(site_slug)
+        if site_override:
+            return site_override, WEBAPP_FORWARD_CAPTURE_ROOT_BY_SITE_ENV
+    global_override = _string(os.getenv(WEBAPP_FORWARD_CAPTURE_ROOT_ENV))
+    if global_override:
+        return global_override, WEBAPP_FORWARD_CAPTURE_ROOT_ENV
+    return None
+
+
+def _request_capture_root(request: Dict[str, Any], default: Path) -> Path:
+    site_package = dict(_mapping(request.get("site_package") or request.get("sitePackage")))
     value = _string(site_package.get("capture_root") or site_package.get("captureRoot"))
-    return Path(value).expanduser().resolve() if value else default
+    if not value:
+        return default
+    if not _is_webapp_synced_artifact_capture_root(value):
+        return Path(value).expanduser().resolve()
+    override = _capture_root_override_for_request(request)
+    if override is None:
+        raise ValueError("missing_pipeline_capture_root_override_for_webapp_synced_artifact")
+    override_value, override_env = override
+    resolved = Path(override_value).expanduser().resolve()
+    site_package["capture_root"] = str(resolved)
+    site_package["webapp_capture_root"] = value
+    site_package["capture_root_override_source"] = f"env:{override_env}"
+    request["site_package"] = site_package
+    owner_system = dict(_mapping(request.get("owner_system") or request.get("ownerSystem")))
+    owner_system["pipeline_control_plane_capture_root"] = str(resolved)
+    request["owner_system"] = owner_system
+    return resolved
 
 
 def _inbox_request_sort_key(path: Path) -> tuple[int, str]:
@@ -11039,11 +11401,22 @@ def _inbox_request_sort_key(path: Path) -> tuple[int, str]:
 
 
 def _processed_request_marker_path(processed_dir: Path, request_path: Path, digest: str) -> Path:
-    safe_name = "".join(
+    safe_name = _safe_inbox_request_name(request_path)
+    return processed_dir / f"{safe_name}.{digest[:16]}.processed.json"
+
+
+def _safe_inbox_request_name(request_path: Path) -> str:
+    return "".join(
         char if char.isalnum() or char in {"-", "_", "."} else "-"
         for char in request_path.name
     ).strip(".-") or "request"
-    return processed_dir / f"{safe_name}.{digest[:16]}.processed.json"
+
+
+def _exception_record(exc: BaseException) -> Dict[str, str]:
+    return {
+        "error_class": type(exc).__name__,
+        "error_message": str(exc),
+    }
 
 
 def _write_processed_request_marker(
@@ -11055,6 +11428,7 @@ def _write_processed_request_marker(
     job_id: str,
     generated_at: str,
     reason: str,
+    extra: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     ensure_dir(processed_dir)
     marker = {
@@ -11066,9 +11440,79 @@ def _write_processed_request_marker(
         "job_id": job_id,
         "reason": reason,
     }
+    if extra:
+        marker.update(dict(extra))
     marker_path = _processed_request_marker_path(processed_dir, request_path, digest)
     write_json(marker_path, marker)
     return {"path": str(marker_path), **marker}
+
+
+def _write_inbox_quarantine_record(
+    *,
+    request_path: Path,
+    digest: str,
+    generated_at: str,
+    phase: str,
+    reason: str,
+    exc: BaseException,
+    quarantine_dir: Path,
+    dead_letter_dir: Path,
+    processed_dir: Path,
+    job_id: str | None = None,
+    request_capture_root: Path | None = None,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    ensure_dir(quarantine_dir)
+    ensure_dir(dead_letter_dir)
+    safe_name = _safe_inbox_request_name(request_path)
+    dead_letter_path = dead_letter_dir / f"{safe_name}.{digest[:16]}.json"
+    copy_error: Dict[str, str] | None = None
+    try:
+        shutil.copyfile(request_path, dead_letter_path)
+    except Exception as copy_exc:  # noqa: BLE001 - dead-letter recording must not abort the batch
+        copy_error = _exception_record(copy_exc)
+    record = {
+        "schema_version": "robot_eval_job_request_quarantine.v1",
+        "generated_at": generated_at,
+        "status": "quarantined",
+        "phase": phase,
+        "reason": reason,
+        "source_request_path": str(request_path),
+        "source_request_sha256": digest,
+        "dead_letter_request_path": str(dead_letter_path) if copy_error is None else None,
+        "dead_letter_copy_succeeded": copy_error is None,
+        "job_id": job_id,
+        "request_capture_root": str(request_capture_root) if request_capture_root else None,
+        **_exception_record(exc),
+        "copy_error": copy_error,
+        "operator_action": (
+            "Inspect the dead-letter request, fix or remove the source inbox file, "
+            "and resubmit changed content before retrying."
+        ),
+        "public_claim_upgrade_allowed": False,
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "quarantine_is_operational_failure_evidence_not_eval_result": True,
+            "dead_letter_request_is_for_operator_triage_only": True,
+        },
+    }
+    record_path = quarantine_dir / f"{safe_name}.{digest[:16]}.quarantine.json"
+    write_json(record_path, record)
+    marker = _write_processed_request_marker(
+        processed_dir=processed_dir,
+        request_path=request_path,
+        digest=digest,
+        status="quarantined",
+        job_id=job_id or _safe_inbox_request_name(request_path),
+        generated_at=generated_at,
+        reason=reason,
+        extra={
+            "phase": phase,
+            "quarantine_record_path": str(record_path),
+            "dead_letter_request_path": str(dead_letter_path) if copy_error is None else None,
+            **_exception_record(exc),
+        },
+    )
+    return {"path": str(record_path), **record}, marker
 
 
 def run_robot_eval_job_request_inbox(
@@ -11118,6 +11562,8 @@ def run_robot_eval_job_request_inbox(
     ensure_dir(queue_root)
     generated_at = utc_now_iso()
     processed_dir = inbox_path / ".processed"
+    quarantine_dir = inbox_path / ".quarantine"
+    dead_letter_dir = inbox_path / ".dead_letter"
     request_paths = sorted(
         path
         for path in inbox_path.glob("*.json")
@@ -11125,8 +11571,33 @@ def run_robot_eval_job_request_inbox(
     )
     loaded_requests: List[Dict[str, Any]] = []
     skipped_processed_requests: List[Dict[str, Any]] = []
+    quarantined_requests: List[Dict[str, Any]] = []
+    quarantine_markers: List[Dict[str, Any]] = []
     for request_path in request_paths:
-        request_digest = _sha_file(request_path)
+        try:
+            request_digest = _sha_file(request_path)
+        except Exception as exc:  # noqa: BLE001 - one unreadable inbox file must not abort the batch
+            fallback_digest = _sha_payload(
+                {
+                    "source_request_path": str(request_path),
+                    "phase": "hash",
+                    "error_class": type(exc).__name__,
+                }
+            )
+            quarantine, marker = _write_inbox_quarantine_record(
+                request_path=request_path,
+                digest=fallback_digest,
+                generated_at=generated_at,
+                phase="hash",
+                reason="request_file_unreadable",
+                exc=exc,
+                quarantine_dir=quarantine_dir,
+                dead_letter_dir=dead_letter_dir,
+                processed_dir=processed_dir,
+            )
+            quarantined_requests.append(quarantine)
+            quarantine_markers.append(marker)
+            continue
         marker_path = _processed_request_marker_path(
             processed_dir,
             request_path,
@@ -11142,15 +11613,32 @@ def run_robot_eval_job_request_inbox(
                 }
             )
             continue
-        request = _read_job_request(request_path)
-        request.setdefault("schema_version", JOB_REQUEST_SCHEMA_VERSION)
+        try:
+            request = _read_job_request(request_path)
+            request.setdefault("schema_version", JOB_REQUEST_SCHEMA_VERSION)
+            identity = _webapp_request_identity(request)
+        except Exception as exc:  # noqa: BLE001 - malformed request is quarantined per request
+            quarantine, marker = _write_inbox_quarantine_record(
+                request_path=request_path,
+                digest=request_digest,
+                generated_at=generated_at,
+                phase="load",
+                reason="request_json_or_contract_invalid",
+                exc=exc,
+                quarantine_dir=quarantine_dir,
+                dead_letter_dir=dead_letter_dir,
+                processed_dir=processed_dir,
+            )
+            quarantined_requests.append(quarantine)
+            quarantine_markers.append(marker)
+            continue
         loaded_requests.append(
             {
                 "path": request_path,
                 "request": request,
                 "sha256": request_digest,
                 "processed_marker_path": marker_path,
-                "identity": _webapp_request_identity(request),
+                "identity": identity,
                 "sort_key": _inbox_request_sort_key(request_path),
             }
         )
@@ -11178,61 +11666,81 @@ def run_robot_eval_job_request_inbox(
     for item in selected_requests:
         request_path = item["path"]
         request = dict(item["request"])
-        job_id = _job_id_from_request(request_path, request)
-        request_capture_root = _request_capture_root(request, context.capture_root)
-        request_context = (
-            resolve_local_capture_context(request_capture_root)
-            if request_capture_root != context.capture_root
-            else context
-        )
-        request["job_id"] = job_id
-        request["capture_root"] = str(request_context.capture_root)
-        job_queue_root = request_context.pipeline_root / "robot_eval_job_requests"
-        ensure_dir(job_queue_root)
-        queued_dir = job_queue_root / job_id
-        ensure_dir(queued_dir)
-        write_json(queued_dir / "job_request.json", request)
-        result = build_robot_eval_job(
-            capture_root=request_context.capture_root,
-            job_request=request,
-            job_id=job_id,
-            agent_adapter=agent_adapter,
-            provisioner=provisioner,
-            simulator=simulator,
-            evaluation_substrate=evaluation_substrate,
-            allow_wam_provider=allow_wam_provider,
-            wam_provider_command=wam_provider_command,
-            wam_provider_commands=wam_provider_commands or {},
-            wam_artifact_output_uri=wam_artifact_output_uri,
-            wam_provider_max_retries=wam_provider_max_retries,
-            wam_provider_timeout_seconds=wam_provider_timeout_seconds,
-            allow_gpu_provisioning=allow_gpu_provisioning,
-            allow_simulator_execution=allow_simulator_execution,
-            allowed_simulators=allowed_simulators,
-            simulator_commands=simulator_commands or {},
-            allow_cpu_simulator_preflight=allow_cpu_simulator_preflight,
-            cpu_preflight_backends=cpu_preflight_backends,
-            cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
-            allow_cpu_preflight_render=allow_cpu_preflight_render,
-            allow_training=allow_training,
-            training_command=training_command,
-            allow_policy_execution=allow_policy_execution,
-            policy_execution_commands=policy_execution_commands or {},
-            timeout_seconds=timeout_seconds,
-            budget_usd=budget_usd,
-            arena_results_dir=arena_results_dir,
-            arena_scenario_count=arena_scenario_count,
-            arena_shard_size=arena_shard_size,
-            arena_num_envs=arena_num_envs,
-            arena_retry_budget=arena_retry_budget,
-            allow_rollout_vision_labeling=allow_rollout_vision_labeling,
-            vision_labeling_command=vision_labeling_command,
-            allow_delivery_upload=allow_delivery_upload,
-            delivery_command=delivery_command,
-            arena_operator_mode=arena_operator_mode,
-            allow_live_agents_sdk=allow_live_agents_sdk,
-            allow_live_codex_sdk=allow_live_codex_sdk,
-        )
+        job_id = _safe_inbox_request_name(request_path)
+        request_capture_root = context.capture_root
+        try:
+            job_id = _job_id_from_request(request_path, request)
+            request_capture_root = _request_capture_root(request, context.capture_root)
+            request_context = (
+                resolve_local_capture_context(request_capture_root)
+                if request_capture_root != context.capture_root
+                else context
+            )
+            request["job_id"] = job_id
+            request["capture_root"] = str(request_context.capture_root)
+            job_queue_root = request_context.pipeline_root / "robot_eval_job_requests"
+            ensure_dir(job_queue_root)
+            queued_dir = job_queue_root / job_id
+            ensure_dir(queued_dir)
+            write_json(queued_dir / "job_request.json", request)
+            result = build_robot_eval_job(
+                capture_root=request_context.capture_root,
+                job_request=request,
+                job_id=job_id,
+                agent_adapter=agent_adapter,
+                provisioner=provisioner,
+                simulator=simulator,
+                evaluation_substrate=evaluation_substrate,
+                allow_wam_provider=allow_wam_provider,
+                wam_provider_command=wam_provider_command,
+                wam_provider_commands=wam_provider_commands or {},
+                wam_artifact_output_uri=wam_artifact_output_uri,
+                wam_provider_max_retries=wam_provider_max_retries,
+                wam_provider_timeout_seconds=wam_provider_timeout_seconds,
+                allow_gpu_provisioning=allow_gpu_provisioning,
+                allow_simulator_execution=allow_simulator_execution,
+                allowed_simulators=allowed_simulators,
+                simulator_commands=simulator_commands or {},
+                allow_cpu_simulator_preflight=allow_cpu_simulator_preflight,
+                cpu_preflight_backends=cpu_preflight_backends,
+                cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
+                allow_cpu_preflight_render=allow_cpu_preflight_render,
+                allow_training=allow_training,
+                training_command=training_command,
+                allow_policy_execution=allow_policy_execution,
+                policy_execution_commands=policy_execution_commands or {},
+                timeout_seconds=timeout_seconds,
+                budget_usd=budget_usd,
+                arena_results_dir=arena_results_dir,
+                arena_scenario_count=arena_scenario_count,
+                arena_shard_size=arena_shard_size,
+                arena_num_envs=arena_num_envs,
+                arena_retry_budget=arena_retry_budget,
+                allow_rollout_vision_labeling=allow_rollout_vision_labeling,
+                vision_labeling_command=vision_labeling_command,
+                allow_delivery_upload=allow_delivery_upload,
+                delivery_command=delivery_command,
+                arena_operator_mode=arena_operator_mode,
+                allow_live_agents_sdk=allow_live_agents_sdk,
+                allow_live_codex_sdk=allow_live_codex_sdk,
+            )
+        except Exception as exc:  # noqa: BLE001 - quarantine this request and continue the batch
+            quarantine, marker = _write_inbox_quarantine_record(
+                request_path=request_path,
+                digest=str(item["sha256"]),
+                generated_at=generated_at,
+                phase="process",
+                reason="robot_eval_job_request_processing_failed",
+                exc=exc,
+                quarantine_dir=quarantine_dir,
+                dead_letter_dir=dead_letter_dir,
+                processed_dir=processed_dir,
+                job_id=job_id,
+                request_capture_root=request_capture_root,
+            )
+            quarantined_requests.append(quarantine)
+            quarantine_markers.append(marker)
+            continue
         jobs.append(
             {
                 "job_id": job_id,
@@ -11268,7 +11776,16 @@ def run_robot_eval_job_request_inbox(
                 reason="superseded_by_newer_webapp_request_for_same_identity",
             )
         )
-    status = "completed" if jobs else "empty"
+    processed_markers.extend(quarantine_markers)
+    status = (
+        "completed_with_quarantined_requests"
+        if jobs and quarantined_requests
+        else "completed"
+        if jobs
+        else "blocked_all_requests_quarantined"
+        if quarantined_requests
+        else "empty"
+    )
     manifest = {
         "schema_version": JOB_REQUEST_INBOX_RUN_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -11276,10 +11793,15 @@ def run_robot_eval_job_request_inbox(
         "capture_root": str(context.capture_root),
         "inbox_dir": str(inbox_path),
         "queue_root": str(queue_root),
+        "discovered_request_count": len(request_paths),
         "input_request_count": len(loaded_requests),
         "skipped_processed_request_count": len(skipped_processed_requests),
         "skipped_processed_requests": skipped_processed_requests,
         "processed_count": len(jobs),
+        "quarantined_request_count": len(quarantined_requests),
+        "quarantined_requests": quarantined_requests,
+        "quarantine_dir": str(quarantine_dir),
+        "dead_letter_dir": str(dead_letter_dir),
         "superseded_request_count": len(superseded_requests),
         "superseded_requests": [
             {

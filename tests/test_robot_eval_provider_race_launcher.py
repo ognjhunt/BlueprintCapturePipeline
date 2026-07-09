@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 from pathlib import Path
 
 from blueprint_pipeline.robot_eval_provider_race_launcher import (
+    ALLOW_PROVIDER_RACE_LAUNCH_ENV,
     main as provider_race_launcher_main,
     run_robot_eval_provider_race_launcher,
 )
@@ -16,6 +19,10 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _python_command(code: str) -> str:
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
 def _launch_request(path: Path, *, can_launch: bool = True) -> Path:
@@ -57,6 +64,8 @@ def _launch_request(path: Path, *, can_launch: bool = True) -> Path:
 
 
 def _handoff(path: Path, *, ready: bool = True) -> Path:
+    first_marker = path.parent / "runpod-attempt"
+    second_marker = path.parent / "vast-attempt"
     _write_json(
         path,
         {
@@ -97,6 +106,28 @@ def _handoff(path: Path, *, ready: bool = True) -> Path:
             "live_provider_calls_performed": False,
             "race_candidate_count": 2,
             "runnable_candidate_count": 2,
+            "runnable_candidates": [
+                {
+                    "provider": "runpod",
+                    "operation": "enqueue_runpod_serverless_or_on_demand_worker",
+                    "adapter_command": _python_command(
+                        f"from pathlib import Path; Path({str(first_marker)!r}).write_text('failed'); raise SystemExit(7)"
+                    ),
+                    "selected": True,
+                    "launch_request_path": "gpu_provider_launch_request.json",
+                    "adapter_result_path": "runpod_provider_adapter_result.json",
+                },
+                {
+                    "provider": "vast",
+                    "operation": "create_vast_instance_and_run_worker",
+                    "adapter_command": _python_command(
+                        f"from pathlib import Path; Path({str(second_marker)!r}).write_text('won')"
+                    ),
+                    "selected": False,
+                    "launch_request_path": "gpu_provider_launch_request.json",
+                    "adapter_result_path": "vast_provider_adapter_result.json",
+                },
+            ],
             "claim_boundary": {
                 "provider_race_handoff_is_not_customer_runtime_failover": not ready,
                 "live_provider_calls_performed": False,
@@ -128,6 +159,40 @@ def test_provider_race_launcher_validates_ready_handoff_without_live_calls(
     ] is True
     persisted = _read_json(tmp_path / "gpu_provider_race_launcher_result.json")
     assert persisted["status"] == "ready_for_live_provider_race"
+
+
+def test_provider_race_launcher_executes_live_gated_serial_failover(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _launch_request(tmp_path / "gpu_provider_launch_request.json")
+    handoff_path = _handoff(tmp_path / "gpu_provider_race_handoff.json")
+    monkeypatch.setenv(ALLOW_PROVIDER_RACE_LAUNCH_ENV, "true")
+
+    result = run_robot_eval_provider_race_launcher(
+        provider_launch_request_path=request_path,
+        handoff_path=handoff_path,
+        allow_live_provider_race=True,
+        timeout_seconds=5,
+    )
+
+    assert result["status"] == "completed"
+    assert result["provider_race_execution_performed"] is True
+    assert result["provider_race_execution_proven"] is True
+    assert result["live_provider_calls_performed"] is True
+    assert result["winning_provider"] == "vast"
+    assert [attempt["provider"] for attempt in result["failover_attempts"]] == [
+        "runpod",
+        "vast",
+    ]
+    assert result["failover_attempts"][0]["status"] == "failed"
+    assert result["failover_attempts"][1]["status"] == "completed"
+    assert (tmp_path / "runpod-attempt").read_text(encoding="utf-8") == "failed"
+    assert (tmp_path / "vast-attempt").read_text(encoding="utf-8") == "won"
+    assert result["remote_cloud_execution_proven"] is False
+    persisted = _read_json(tmp_path / "gpu_provider_race_launcher_result.json")
+    assert persisted["status"] == "completed"
+    assert persisted["winning_provider"] == "vast"
 
 
 def test_provider_race_launcher_blocks_on_blocked_handoff(tmp_path: Path) -> None:

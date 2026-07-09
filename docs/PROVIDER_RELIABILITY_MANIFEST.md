@@ -78,6 +78,13 @@ non-boolean evidence fails closed.
 In `isaac_particlefield_render_job`, the post-marker watchdog is now ON by
 default (`BLUEPRINT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS`, default 900s) and
 a stalled pod is terminated with `teardown_reason=post_marker_progress_timeout_terminated`.
+The render bootstrap also carries pod-side backstops:
+`BLUEPRINT_RENDER_POD_HARD_TTL_SECONDS` (default 7200s) kills the worker command
+even if the host collector dies before teardown, and
+`BLUEPRINT_RENDER_POD_IDLE_TTL_SECONDS` (default 1800s) exits the keep-alive loop
+after `runner_done` so result-collection grace cannot become an infinite billable
+container. These pod-side exits are only runtime-cost containment; provider API
+teardown proof still comes from the host watch loop or scheduled spend guard.
 
 ### `provider_teardown_proof.v1` — billing must end in evidence
 
@@ -106,6 +113,24 @@ explicit `skip_reason`; skips are recorded, never silent.
 - `scripts/gpu_spend_guard.py --json-report <path>` persists a
   `gpu_spend_guard.v1` snapshot (live allocations, burn/hr, protected ids, reap
   candidates, reap results) so watchdog runs leave durable teardown evidence.
+  Use `--max-live-instances` and `--max-burn-usd-per-hour` to persist the
+  `gpu_fleet_budget_guard.v1` aggregate ceiling in the same snapshot; a blocked
+  fleet budget exits with code 2 and must not be treated as launch-ready.
+  Booted orphan allocations are eligible only after
+  `--max-booted-orphan-seconds`, while expected warm workers remain protected by
+  live `warm_serve_pod.json` markers rather than a static provider id allowlist.
+- `blueprint-run-lambda-provider-adapter --mode terminate-instances` now follows
+  the terminate request with bounded `GET /instances` verification. The teardown
+  manifest is `completed` only when every requested id is absent from the
+  provider list or reports a terminal status; otherwise it remains
+  `termination_unverified` with `open_billing_risk=true`.
+- Customer robot-eval provider failover is wired through
+  `blueprint-run-robot-eval-provider-race` as live-gated serial adapter failover:
+  the handoff requires at least two runnable provider adapter commands, and live
+  execution additionally requires `BLUEPRINT_ALLOW_GPU_PROVIDER_RACE_LAUNCH=true`
+  plus `--allow-live-provider-race`. This is not parallel provider racing and a
+  completed launcher result still does not prove simulator execution, artifact
+  quality, task success, or generated-world/rank fidelity.
 
 ## Claim boundaries
 

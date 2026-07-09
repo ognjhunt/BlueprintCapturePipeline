@@ -6,7 +6,8 @@ A standalone cost watchdog. It reads file-based credentials from
 pod/instance with its id, name, age, runtime/boot state and ``$/hr`` (plus a total
 burn estimate), and — only with ``--reap`` — terminates pods that are clearly
 orphaned: allocated but never booted (``runtime`` absent) past
-``--max-boot-seconds`` (default 480s), the classic "stuck dud that keeps billing".
+``--max-boot-seconds`` (default 480s), the classic "stuck dud that keeps billing",
+or booted allocations with no live owner past ``--max-booted-orphan-seconds``.
 
 Safety rails (the whole point of the tool is to never kill live work):
 
@@ -15,7 +16,9 @@ Safety rails (the whole point of the tool is to never kill live work):
   under an ``output/.../pipeline/`` tree **that still has a live owning process**
   is never reaped, no matter how stuck it looks. Only orphans whose launching run
   has died are eligible.
-* Healthy booted pods are never auto-reaped — boot-timeout duds only.
+* Healthy booted pods with a live owning process are never auto-reaped.
+* Booted pods without a live owner are only eligible after a separate hard-age
+  TTL, so a crashed launcher cannot leave a billing allocation running forever.
 
 Conventions mirror :mod:`blueprint_pipeline.gpu_render_providers`: file-based
 secrets under ``~/.blueprint-secrets`` that are never logged, RunPod REST pods at
@@ -29,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -41,10 +45,12 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = "gpu_spend_guard.v1"
+SPEND_LEDGER_SCHEMA_VERSION = "gpu_spend_ledger.v1"
 SECRETS_DIR = Path.home() / ".blueprint-secrets"
 RUNPOD_API = "https://rest.runpod.io/v1"
 VAST_API = "https://console.vast.ai/api/v0"
 DEFAULT_MAX_BOOT_SECONDS = 480
+DEFAULT_MAX_BOOTED_ORPHAN_SECONDS = 4 * 60 * 60
 
 # Vast statuses that mean the instance is no longer billing compute.
 VAST_TERMINAL_STATUSES = frozenset(
@@ -53,8 +59,8 @@ VAST_TERMINAL_STATUSES = frozenset(
 # RunPod desired-states that mean the pod is no longer a live compute allocation.
 RUNPOD_TERMINAL_STATUSES = frozenset({"EXITED", "TERMINATED", "TERMINATING"})
 RUNPOD_STOPPED_STATUSES = frozenset({"STOPPED", "PAUSED"})
-# Keep this local so the standalone guard does not import render-job modules while running as a
-# cost watchdog. Source of truth: isaac_particlefield_render_job.DEFAULT_WARM_CANDIDATES.
+# Historical warm-candidate ids remain visible for diagnostics only. Reap protection
+# now comes from live warm_serve_pod.json markers, not this static list.
 DEFAULT_WARM_CANDIDATE_IDS = frozenset(
     {
         "pwbu7wxsvxpr0x",
@@ -274,6 +280,165 @@ def collect_instances(
 
 def total_burn_per_hour(instances: Iterable[GpuInstance]) -> float:
     return sum(i.cost_per_hr for i in instances if i.live)
+
+
+def _load_json_mapping(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return dict(raw) if isinstance(raw, Mapping) else {}
+
+
+def _utc_day_bounds(now: float) -> tuple[str, float]:
+    current = datetime.fromtimestamp(now, timezone.utc)
+    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    return current.date().isoformat(), start.timestamp()
+
+
+def update_spend_ledger(
+    instances: Sequence[GpuInstance],
+    *,
+    ledger_path: Path,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Persist cumulative fleet spend estimates for daily/total budget gates.
+
+    First observation of a live allocation conservatively counts the instance's
+    known age. Later guard runs add only the elapsed time since last observation,
+    so a scheduled timer can enforce aggregate spend without provider-specific
+    billing exports.
+    """
+    observed_at = _now() if now is None else float(now)
+    previous = _load_json_mapping(ledger_path) if ledger_path.is_file() else {}
+    previous_instances = (
+        dict(previous.get("instances"))
+        if isinstance(previous.get("instances"), Mapping)
+        else {}
+    )
+    day, day_start = _utc_day_bounds(observed_at)
+    previous_day = str(previous.get("daily_budget_day") or "")
+    previous_daily = (
+        _coerce_float(previous.get("daily_spend_usd")) if previous_day == day else 0.0
+    ) or 0.0
+    previous_total = _coerce_float(previous.get("total_spend_usd")) or 0.0
+    daily_increment = 0.0
+    total_increment = 0.0
+    active_instances: dict[str, dict[str, Any]] = {}
+    for inst in instances:
+        if not inst.live:
+            continue
+        key = f"{inst.provider}:{inst.id}"
+        prior = (
+            dict(previous_instances.get(key))
+            if isinstance(previous_instances.get(key), Mapping)
+            else {}
+        )
+        last_seen = _coerce_float(prior.get("last_seen_epoch"))
+        inferred_start = (
+            max(0.0, observed_at - float(inst.age_seconds))
+            if inst.age_seconds is not None
+            else observed_at
+        )
+        total_start = last_seen if last_seen is not None else inferred_start
+        daily_start = max(total_start, day_start)
+        total_seconds = max(0.0, observed_at - total_start)
+        daily_seconds = max(0.0, observed_at - daily_start)
+        total_increment += inst.cost_per_hr * total_seconds / 3600.0
+        daily_increment += inst.cost_per_hr * daily_seconds / 3600.0
+        active_instances[key] = {
+            "provider": inst.provider,
+            "id": inst.id,
+            "name": inst.name,
+            "last_seen_epoch": observed_at,
+            "last_seen_at": datetime.fromtimestamp(
+                observed_at, timezone.utc
+            ).isoformat(),
+            "cost_per_hr_usd": inst.cost_per_hr,
+        }
+    ledger = {
+        "schema_version": SPEND_LEDGER_SCHEMA_VERSION,
+        "status": "updated",
+        "generated_at": datetime.fromtimestamp(observed_at, timezone.utc).isoformat(),
+        "daily_budget_day": day,
+        "daily_spend_usd": round(previous_daily + daily_increment, 4),
+        "total_spend_usd": round(previous_total + total_increment, 4),
+        "daily_increment_usd": round(daily_increment, 4),
+        "total_increment_usd": round(total_increment, 4),
+        "active_instance_count": len(active_instances),
+        "instances": active_instances,
+        "claim_boundary": (
+            "Spend ledger is a conservative allocation-cost estimate from guard "
+            "polling. It is a budget gate, not provider invoice reconciliation."
+        ),
+    }
+    try:
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
+    except OSError as exc:
+        ledger["status"] = "blocked"
+        ledger["blockers"] = [f"spend_ledger_write_failed:{type(exc).__name__}"]
+    return ledger
+
+
+def build_fleet_budget_guard(
+    instances: Sequence[GpuInstance],
+    *,
+    max_live_instances: int | None = None,
+    max_burn_usd_per_hour: float | None = None,
+    spend_ledger: Mapping[str, Any] | None = None,
+    max_daily_spend_usd: float | None = None,
+    max_total_spend_usd: float | None = None,
+) -> dict[str, Any]:
+    live_count = sum(1 for inst in instances if inst.live)
+    burn = total_burn_per_hour(instances)
+    blockers: list[str] = []
+    if max_live_instances is not None and live_count > max_live_instances:
+        blockers.append("fleet_live_gpu_instance_limit_exceeded")
+    if max_burn_usd_per_hour is not None and burn > max_burn_usd_per_hour:
+        blockers.append("fleet_burn_rate_limit_exceeded")
+    ledger = dict(spend_ledger) if isinstance(spend_ledger, Mapping) else {}
+    if max_daily_spend_usd is not None or max_total_spend_usd is not None:
+        if not ledger:
+            blockers.append("fleet_cumulative_spend_ledger_missing")
+        elif ledger.get("status") != "updated":
+            blockers.append("fleet_cumulative_spend_ledger_not_updated")
+            blockers.extend(
+                f"spend_ledger:{blocker}"
+                for blocker in ledger.get("blockers") or []
+                if isinstance(blocker, str)
+            )
+    daily_spend = _coerce_float(ledger.get("daily_spend_usd")) if ledger else None
+    total_spend = _coerce_float(ledger.get("total_spend_usd")) if ledger else None
+    if (
+        max_daily_spend_usd is not None
+        and daily_spend is not None
+        and daily_spend > max_daily_spend_usd
+    ):
+        blockers.append("fleet_daily_spend_limit_exceeded")
+    if (
+        max_total_spend_usd is not None
+        and total_spend is not None
+        and total_spend > max_total_spend_usd
+    ):
+        blockers.append("fleet_total_spend_limit_exceeded")
+    return {
+        "schema_version": "gpu_fleet_budget_guard.v1",
+        "status": "passed" if not blockers else "blocked",
+        "live_instance_count": live_count,
+        "total_burn_per_hour_usd": round(burn, 4),
+        "max_live_instances": max_live_instances,
+        "max_burn_usd_per_hour": max_burn_usd_per_hour,
+        "daily_spend_usd": daily_spend,
+        "total_spend_usd": total_spend,
+        "max_daily_spend_usd": max_daily_spend_usd,
+        "max_total_spend_usd": max_total_spend_usd,
+        "blockers": blockers,
+        "claim_boundary": (
+            "Fleet budget status is a cost/allocation gate only. It is not provider "
+            "runtime proof, task success, or artifact quality evidence."
+        ),
+    }
 
 
 # ----------------------------- HTTP -----------------------------
@@ -504,22 +669,39 @@ def is_reapable(
     *,
     max_boot_seconds: int,
     protected_ids: set[str],
+    max_booted_orphan_seconds: int = DEFAULT_MAX_BOOTED_ORPHAN_SECONDS,
 ) -> bool:
-    """True only for an orphaned dud: live, never booted, older than the boot
-    threshold, and not protected by a live owning process."""
-    if inst.provider == "runpod" and inst.id in DEFAULT_WARM_CANDIDATE_IDS:
-        return False
+    """True only for unprotected live allocations past their orphan TTL."""
     if inst.id in protected_ids:
         return False
     if not inst.live:
         return False
-    if inst.booted:
-        return False
-    if inst.provider == "runpod" and inst.state != "booting":
-        return False
     if inst.age_seconds is None:
         return False
+    if inst.booted:
+        return inst.age_seconds > max_booted_orphan_seconds
+    if inst.provider == "runpod" and inst.state != "booting":
+        return False
     return inst.age_seconds > max_boot_seconds
+
+
+def reap_candidate_reason(
+    inst: GpuInstance,
+    *,
+    max_boot_seconds: int,
+    protected_ids: set[str],
+    max_booted_orphan_seconds: int = DEFAULT_MAX_BOOTED_ORPHAN_SECONDS,
+) -> str | None:
+    if not is_reapable(
+        inst,
+        max_boot_seconds=max_boot_seconds,
+        protected_ids=protected_ids,
+        max_booted_orphan_seconds=max_booted_orphan_seconds,
+    ):
+        return None
+    if inst.booted:
+        return "booted_orphan_past_hard_ttl"
+    return "unbooted_dud_past_boot_ttl"
 
 
 def terminate_instance(
@@ -567,7 +749,9 @@ def build_report(
     *,
     protected_ids: set[str],
     max_boot_seconds: int,
+    max_booted_orphan_seconds: int = DEFAULT_MAX_BOOTED_ORPHAN_SECONDS,
     serve_pod_ids: set[str] | frozenset[str] = frozenset(),
+    fleet_budget: Mapping[str, Any] | None = None,
 ) -> str:
     live = [i for i in instances if i.live]
     lines: list[str] = []
@@ -590,21 +774,44 @@ def build_report(
             )
     burn = total_burn_per_hour(instances)
     lines.append(f"Total burn estimate: ${burn:.3f}/hr (${burn * 24:.2f}/day)")
+    budget = dict(fleet_budget) if isinstance(fleet_budget, Mapping) else None
+    if budget:
+        lines.append(
+            "Fleet budget guard: "
+            f"{budget.get('status')} "
+            f"(live={budget.get('live_instance_count')}/"
+            f"{budget.get('max_live_instances')}, "
+            f"burn=${budget.get('total_burn_per_hour_usd')}/hr/"
+            f"{budget.get('max_burn_usd_per_hour')})"
+        )
 
     candidates = [
         i
         for i in instances
-        if is_reapable(i, max_boot_seconds=max_boot_seconds, protected_ids=protected_ids)
+        if is_reapable(
+            i,
+            max_boot_seconds=max_boot_seconds,
+            protected_ids=protected_ids,
+            max_booted_orphan_seconds=max_booted_orphan_seconds,
+        )
     ]
     if candidates:
         lines.append(
             f"Orphan reap candidates ({len(candidates)}): "
-            f"not booted past {max_boot_seconds}s, no live owner"
+            f"unbooted past {max_boot_seconds}s or booted past "
+            f"{max_booted_orphan_seconds}s, no live owner"
         )
         for inst in candidates:
+            reason = reap_candidate_reason(
+                inst,
+                max_boot_seconds=max_boot_seconds,
+                protected_ids=protected_ids,
+                max_booted_orphan_seconds=max_booted_orphan_seconds,
+            )
             lines.append(
                 f"  - {inst.provider} {inst.id} ({inst.name}) "
-                f"age={_fmt_age(inst.age_seconds)} ${inst.cost_per_hr:.3f}/hr"
+                f"age={_fmt_age(inst.age_seconds)} ${inst.cost_per_hr:.3f}/hr "
+                f"reason={reason}"
             )
     else:
         lines.append("Orphan reap candidates: none")
@@ -616,6 +823,9 @@ def build_json_report(
     *,
     protected_ids: set[str],
     max_boot_seconds: int,
+    max_booted_orphan_seconds: int = DEFAULT_MAX_BOOTED_ORPHAN_SECONDS,
+    fleet_budget: Mapping[str, Any] | None = None,
+    spend_ledger: Mapping[str, Any] | None = None,
     reap_mode: bool = False,
     reap_results: Sequence[Mapping[str, Any]] = (),
 ) -> dict:
@@ -629,7 +839,12 @@ def build_json_report(
     candidates = [
         i
         for i in instances
-        if is_reapable(i, max_boot_seconds=max_boot_seconds, protected_ids=protected_ids)
+        if is_reapable(
+            i,
+            max_boot_seconds=max_boot_seconds,
+            protected_ids=protected_ids,
+            max_booted_orphan_seconds=max_booted_orphan_seconds,
+        )
     ]
     candidate_ids = {i.id for i in candidates}
     return {
@@ -638,6 +853,13 @@ def build_json_report(
         "live_instance_count": len(live),
         "total_burn_per_hour_usd": round(total_burn_per_hour(instances), 4),
         "max_boot_seconds": int(max_boot_seconds),
+        "max_booted_orphan_seconds": int(max_booted_orphan_seconds),
+        "fleet_budget": dict(fleet_budget)
+        if isinstance(fleet_budget, Mapping)
+        else build_fleet_budget_guard(instances),
+        "spend_ledger": dict(spend_ledger)
+        if isinstance(spend_ledger, Mapping)
+        else None,
         "reap_mode": bool(reap_mode),
         "instances": [
             {
@@ -651,6 +873,12 @@ def build_json_report(
                 "cost_per_hr_usd": inst.cost_per_hr,
                 "protected": inst.id in protected_ids,
                 "reap_candidate": inst.id in candidate_ids,
+                "reap_candidate_reason": reap_candidate_reason(
+                    inst,
+                    max_boot_seconds=max_boot_seconds,
+                    protected_ids=protected_ids,
+                    max_booted_orphan_seconds=max_booted_orphan_seconds,
+                ),
             }
             for inst in instances
         ],
@@ -659,7 +887,7 @@ def build_json_report(
         "claim_boundary": (
             "This snapshot is billing/allocation state at one moment. It is not run "
             "success, artifact quality, or task evidence; booted-but-stalled pods are "
-            "reported live and are never auto-reaped by this tool."
+            "reported live and are only auto-reaped after the booted-orphan hard TTL."
         ),
     }
 
@@ -698,6 +926,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--max-booted-orphan-seconds",
+        type=int,
+        default=DEFAULT_MAX_BOOTED_ORPHAN_SECONDS,
+        help=(
+            "a booted live allocation with no live owner older than this is an "
+            "orphan eligible for --reap "
+            f"(default {DEFAULT_MAX_BOOTED_ORPHAN_SECONDS})"
+        ),
+    )
+    parser.add_argument(
         "--output-root",
         action="append",
         default=None,
@@ -708,6 +946,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--timeout", type=int, default=30, help="per-request timeout seconds")
+    parser.add_argument(
+        "--max-live-instances",
+        type=int,
+        default=None,
+        help="exit 2 when live GPU allocations exceed this fleet ceiling",
+    )
+    parser.add_argument(
+        "--max-burn-usd-per-hour",
+        type=float,
+        default=None,
+        help="exit 2 when estimated live GPU burn exceeds this hourly fleet ceiling",
+    )
+    parser.add_argument(
+        "--spend-ledger",
+        default=os.getenv("BLUEPRINT_GPU_SPEND_LEDGER"),
+        metavar="PATH",
+        help=(
+            "persist a gpu_spend_ledger.v1 daily/total spend estimate and include "
+            "it in the fleet budget guard"
+        ),
+    )
+    parser.add_argument(
+        "--max-daily-spend-usd",
+        type=float,
+        default=None,
+        help="exit 2 when the spend ledger's daily estimate exceeds this ceiling",
+    )
+    parser.add_argument(
+        "--max-total-spend-usd",
+        type=float,
+        default=None,
+        help="exit 2 when the spend ledger's total estimate exceeds this ceiling",
+    )
     parser.add_argument(
         "--json-report",
         default=None,
@@ -744,20 +1015,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     protected = find_protected_pod_ids(roots, process_cmdlines=list_process_cmdlines())
     serve_pods = find_expected_serve_pod_ids(roots)
     protected = protected | serve_pods
+    spend_ledger = (
+        update_spend_ledger(instances, ledger_path=Path(args.spend_ledger), now=now)
+        if args.spend_ledger
+        else None
+    )
+    fleet_budget = build_fleet_budget_guard(
+        instances,
+        max_live_instances=args.max_live_instances,
+        max_burn_usd_per_hour=args.max_burn_usd_per_hour,
+        spend_ledger=spend_ledger,
+        max_daily_spend_usd=args.max_daily_spend_usd,
+        max_total_spend_usd=args.max_total_spend_usd,
+    )
 
     print(
         build_report(
             instances,
             protected_ids=protected,
             max_boot_seconds=args.max_boot_seconds,
+            max_booted_orphan_seconds=args.max_booted_orphan_seconds,
             serve_pod_ids=serve_pods,
+            fleet_budget=fleet_budget,
         )
     )
 
     candidates = [
         i
         for i in instances
-        if is_reapable(i, max_boot_seconds=args.max_boot_seconds, protected_ids=protected)
+        if is_reapable(
+            i,
+            max_boot_seconds=args.max_boot_seconds,
+            protected_ids=protected,
+            max_booted_orphan_seconds=args.max_booted_orphan_seconds,
+        )
     ]
     reap_results: list[dict] = []
 
@@ -768,6 +1059,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             instances,
             protected_ids=protected,
             max_boot_seconds=args.max_boot_seconds,
+            max_booted_orphan_seconds=args.max_booted_orphan_seconds,
+            fleet_budget=fleet_budget,
+            spend_ledger=spend_ledger,
             reap_mode=bool(args.reap),
             reap_results=reap_results,
         )
@@ -778,14 +1072,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not candidates:
         _write_json_report()
-        return 0
+        return 2 if fleet_budget.get("status") == "blocked" else 0
     if not args.reap:
         print(
             f"\n(dry-run) {len(candidates)} orphan(s) would be reaped. "
             "Re-run with --reap to terminate."
         )
         _write_json_report()
-        return 0
+        return 2 if fleet_budget.get("status") == "blocked" else 0
 
     print(f"\nReaping {len(candidates)} orphan(s)...")
     for inst in candidates:
@@ -798,7 +1092,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{result.get('status')} (http={result.get('http')})"
         )
     _write_json_report()
-    return 0
+    return 2 if fleet_budget.get("status") == "blocked" else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

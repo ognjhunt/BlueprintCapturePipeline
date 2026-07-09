@@ -70,6 +70,10 @@ workspace/
 tmp/
 live_pipeline_setup_manifest.json
 
+# Terraform local provider/cache data
+.terraform/
+**/.terraform/
+
 # Pipeline run data
 runs/
 local_runs/

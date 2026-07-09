@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -21,6 +22,7 @@ from .common import (
     utc_now_iso,
     write_json,
 )
+from .cloud_run_iam_auth import CloudRunIamAuthError, cloud_run_id_token_headers
 from .launch_proof_policy import production_forces_true
 
 
@@ -129,10 +131,14 @@ def _run_http_json(
     invalid_reason = _runner_url_invalid_reason(url)
     if invalid_reason:
         return {"status": "failed", "reason": invalid_reason}
+    try:
+        headers = cloud_run_id_token_headers(_http_runner_headers(), url=url)
+    except CloudRunIamAuthError as exc:
+        return {"status": "failed", "reason": str(exc)}
     request = urllib_request.Request(
         url,
         data=json.dumps(dict(body)).encode("utf-8"),
-        headers=_http_runner_headers(),
+        headers=headers,
         method="POST",
     )
     try:
@@ -287,6 +293,34 @@ def _deepprivacy_runner_url() -> str:
     return str(os.getenv("PRIVACY_DEEPPRIVACY2_URL") or "").strip()
 
 
+DEFAULT_PRIVACY_REDACTION_TARGET_CLASSES = (
+    "person",
+    "face",
+    "badge_id",
+    "screen",
+    "whiteboard",
+    "signage",
+    "license_plate",
+    "shipping_label",
+)
+
+
+def _privacy_redaction_target_classes() -> list[str]:
+    raw = str(os.getenv("PRIVACY_REDACTION_TARGET_CLASSES") or "").strip()
+    if not raw:
+        return list(DEFAULT_PRIVACY_REDACTION_TARGET_CLASSES)
+    parsed = [
+        item.strip().lower().replace("-", "_").replace(" ", "_")
+        for item in re.split(r"[,;\n]+", raw)
+        if item.strip()
+    ]
+    return parsed or list(DEFAULT_PRIVACY_REDACTION_TARGET_CLASSES)
+
+
+def _privacy_redaction_prompt() -> str:
+    return ", ".join(_privacy_redaction_target_classes())
+
+
 def _run_sam3(
     *,
     input_video: Path,
@@ -299,6 +333,7 @@ def _run_sam3(
 ) -> Dict[str, Any]:
     timeout_seconds = _timeout_env("PRIVACY_SAM3_TIMEOUT_SECONDS", default=3600)
     ensure_dir(masks_dir)
+    redaction_prompt = _privacy_redaction_prompt()
     runner_url = _sam3_runner_url()
     if runner_url:
         payload = _run_http_json(
@@ -310,7 +345,8 @@ def _run_sam3(
                 "output_json_path": str(output_json),
                 "masks_prefix_uri": masks_prefix_uri,
                 "masks_dir_path": str(masks_dir),
-                "prompt": "person",
+                "prompt": redaction_prompt,
+                "target_redaction_classes": _privacy_redaction_target_classes(),
                 "stage_name": stage_name,
                 "sam3_weights_path": str(os.getenv("SAM3_WEIGHTS_PATH") or ""),
             },
@@ -329,7 +365,7 @@ def _run_sam3(
                 "OUTPUT_JSON_URI": output_json_uri,
                 "MASKS_DIR": masks_dir,
                 "MASKS_PREFIX_URI": masks_prefix_uri,
-                "PROMPT": "person",
+                "PROMPT": redaction_prompt,
                 "STAGE_NAME": stage_name,
                 "SAM3_WEIGHTS_PATH": str(os.getenv("SAM3_WEIGHTS_PATH") or ""),
             },
@@ -341,6 +377,8 @@ def _run_sam3(
         people_detected = True
     payload["people_detected"] = people_detected
     payload["people_count"] = people_count
+    payload["redaction_prompt"] = redaction_prompt
+    payload["redaction_target_classes"] = _privacy_redaction_target_classes()
     payload["mask_paths"] = _string_list(payload.get("mask_paths"))
     return payload
 
@@ -720,6 +758,8 @@ def run_privacy_postprocess(
         "world_model_video_uri": None,
         "privacy_manifest_uri": manifest_uri,
         "privacy_verification_report_uri": verification_uri,
+        "redaction_prompt": _privacy_redaction_prompt(),
+        "redaction_target_classes": _privacy_redaction_target_classes(),
         "steps": [],
     }
 

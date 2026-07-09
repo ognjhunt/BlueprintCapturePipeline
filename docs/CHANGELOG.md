@@ -1,5 +1,80 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-08
+
+### User-Facing
+
+- **Uncommitted local changes:** Added buyer-claim-ceiling safeguards that pin
+  task-evaluation and sim-only beta release language to the highest truthful
+  success claim and block buyer-facing copy that asserts live simulator or live
+  policy execution without matching gates
+  (`src/blueprint_pipeline/buyer_claim_ceiling.py`,
+  `src/blueprint_pipeline/task_eval_run_report.py`,
+  `src/blueprint_pipeline/live_robot_eval_closure.py`,
+  `scripts/run_sim_only_beta_release_gate.py`). This is a copy/proof-boundary
+  gate, not live runtime or task-success proof.
+- **Uncommitted local changes:** Added industrial-site launch controls for
+  warehouse/manufacturing/fulfillment/factory/brownfield captures, including
+  legal/EHS authorization evidence, worker-PII/proprietary-data posture, PPE
+  and escort acknowledgements, restricted-zone controls, and stricter
+  industrial privacy redaction requirements
+  (`src/blueprint_pipeline/alpha_readiness.py`,
+  `src/blueprint_pipeline/proof_contracts.py`,
+  `docs/operator_launch_evidence.template.json`,
+  `docs/PAID_MARKETPLACE_BETA_LAUNCH_GATE.md`).
+- **Uncommitted local changes:** Added a 100-user beta capacity/storage model,
+  primary bucket lifecycle policy, dry-run soak harness, and capture-truth
+  backup/DR runbook/scripts
+  (`docs/BETA_CAPACITY_COST_STORAGE_MODEL_2026-07-08.md`,
+  `docs/beta_capacity_cost_storage_model_2026-07-08.json`,
+  `deploy/storage/primary-capture-bucket-lifecycle.json`,
+  `scripts/validate_beta_capacity_storage.py`,
+  `scripts/run_beta_intake_soak_test.py`,
+  `docs/CAPTURE_TRUTH_BACKUP_DR_RUNBOOK_2026-07-08.md`,
+  `scripts/apply_capture_truth_backup_policy.sh`). These artifacts document
+  and validate intended controls; they do not prove the real production bucket,
+  Firestore backup, restore drill, or live soak run was completed.
+
+### Employee-Facing
+
+- **Uncommitted local changes:** Extended Arena/PTDP delivery from local-copy
+  only toward GCS-backed package artifacts and WebApp entitlement patch inputs
+  while keeping signed access and entitlement verification separate
+  (`src/blueprint_pipeline/arena_package_delivery_local.py`,
+  `src/blueprint_pipeline/arena_result_ingest.py`,
+  `src/blueprint_pipeline/webapp_sync.py`).
+- **Uncommitted local changes:** Hardened provider reliability and spend-control
+  surfaces: provider-reliability manifests now name ordered phases and first
+  failing phase, Lambda termination verifies terminal state through the
+  provider API, provider-race launch can perform live-gated serial failover,
+  render pods carry hard/idle TTLs, and `scripts/gpu_spend_guard.py` can persist
+  spend-ledger and fleet-budget reports
+  (`docs/PROVIDER_RELIABILITY_MANIFEST.md`,
+  `src/blueprint_pipeline/lambda_provider_adapter.py`,
+  `src/blueprint_pipeline/robot_eval_provider_race_launcher.py`,
+  `src/blueprint_pipeline/isaac_particlefield_render_job.py`,
+  `scripts/gpu_spend_guard.py`).
+- **Uncommitted local changes:** Added industrial task-grounding support and a
+  minimal warehouse fixture for containment/zone-arrival proxy checks, plus
+  capture-batch registry quarantine/dead-letter behavior so one malformed
+  capture does not abort the whole registry update
+  (`src/blueprint_pipeline/eval_ready_task_grounding.py`,
+  `tests/fixtures/warehouse_task_min/`,
+  `src/blueprint_pipeline/capture_batch_registry.py`).
+
+### Future-Agent-Facing
+
+- Treat this entry as a snapshot of uncommitted local work attributable to
+  2026-07-08 by file modification time, not as merged `main` history. The only
+  commit dated 2026-07-08 in the review window was the prior changelog commit
+  (`2e7abbf03`) for July 7.
+- Keep proof layers separate: buyer copy ceilings, industrial/EHS evidence
+  templates, storage lifecycle docs, backup scripts, GCS delivery URIs, provider
+  reliability ledgers, and spend-guard snapshots are support contracts. They do
+  not by themselves prove public beta readiness, live provider execution,
+  generated-world rank fidelity, physical robot readiness, backup readiness, or
+  deployment approval.
+
 ## 2026-07-07
 
 ### User-Facing

@@ -14,7 +14,7 @@ import os
 import re
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .common import ensure_dir, read_json_any, write_json, write_text
 from .local_capture import resolve_local_capture_context
@@ -332,6 +332,136 @@ SCENARIO_VARIATION_DEFINITIONS: List[Dict[str, Any]] = [
     },
 ]
 
+FACTORY_SCENARIO_VARIATION_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "variation_id": "conveyor_motion",
+        "label": "Conveyor motion",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "machine_guarding_state",
+        "label": "Machine guarding / LOTO state",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "agv_cross_traffic",
+        "label": "AGV cross-traffic",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "thermal_surface",
+        "label": "Thermal or hot-surface zone",
+        "default_status": "agent-inferred-needs-review",
+    },
+    {
+        "variation_id": "moving_part_on_line",
+        "label": "Moving part on production line",
+        "default_status": "agent-inferred-needs-review",
+    },
+]
+
+KNOWN_SCENARIO_VARIATION_DEFINITIONS: List[Dict[str, Any]] = [
+    *SCENARIO_VARIATION_DEFINITIONS,
+    *FACTORY_SCENARIO_VARIATION_DEFINITIONS,
+]
+_SCENARIO_VARIATION_DEFINITION_BY_ID: Dict[str, Dict[str, Any]] = {
+    str(definition["variation_id"]): definition
+    for definition in KNOWN_SCENARIO_VARIATION_DEFINITIONS
+}
+DEFAULT_SCENARIO_VARIATION_NAMES: Tuple[str, ...] = tuple(
+    str(definition["variation_id"]) for definition in SCENARIO_VARIATION_DEFINITIONS
+)
+
+CANONICAL_SITE_TYPE_VALUES: Tuple[str, ...] = (
+    "warehouse",
+    "manufacturing",
+    "fulfillment",
+    "distribution_center",
+    "loading_dock",
+    "stockroom",
+    "kitchen",
+    "retail",
+    "lab",
+    "hospital",
+    "office",
+    "indoor_navigation",
+    "captured_indoor_scene",
+    "other",
+    "unknown",
+)
+SITE_TYPE_ALIASES: Dict[str, str] = {
+    "warehouse aisle": "warehouse",
+    "warehouse": "warehouse",
+    "fulfillment center": "fulfillment",
+    "fulfillment": "fulfillment",
+    "distribution center": "distribution_center",
+    "distribution": "distribution_center",
+    "cross dock": "distribution_center",
+    "loading dock": "loading_dock",
+    "stockroom": "stockroom",
+    "factory": "manufacturing",
+    "factory line side station": "manufacturing",
+    "factory line-side station": "manufacturing",
+    "manufacturing": "manufacturing",
+    "manufacturing plant": "manufacturing",
+    "assembly plant": "manufacturing",
+    "production plant": "manufacturing",
+    "kitchen": "kitchen",
+    "grocery": "retail",
+    "retail": "retail",
+    "lab": "lab",
+    "laboratory": "lab",
+    "hospital": "hospital",
+    "hospital hallway": "hospital",
+    "office": "office",
+    "indoor navigation route": "indoor_navigation",
+    "captured indoor scene": "captured_indoor_scene",
+    "unknown site type": "unknown",
+    "unknown": "unknown",
+}
+SCENARIO_VARIATION_PROFILE_DEFINITIONS: Dict[str, Tuple[str, ...]] = {
+    "legacy_default": DEFAULT_SCENARIO_VARIATION_NAMES,
+    "warehouse": DEFAULT_SCENARIO_VARIATION_NAMES,
+    "fulfillment": DEFAULT_SCENARIO_VARIATION_NAMES,
+    "distribution_center": DEFAULT_SCENARIO_VARIATION_NAMES,
+    "loading_dock": DEFAULT_SCENARIO_VARIATION_NAMES,
+    "stockroom": DEFAULT_SCENARIO_VARIATION_NAMES,
+    "manufacturing": (
+        "lighting_variation",
+        "object_rotation",
+        "blocked_path",
+        "human_crossing",
+        "occlusion",
+        "glare",
+        "wrong_object_nearby",
+        "narrow_approach_angle",
+        "conveyor_motion",
+        "machine_guarding_state",
+        "agv_cross_traffic",
+        "thermal_surface",
+        "moving_part_on_line",
+    ),
+    "kitchen": (
+        "lighting_variation",
+        "object_rotation",
+        "occlusion",
+        "glare",
+        "wrong_object_nearby",
+        "narrow_approach_angle",
+    ),
+    "retail": (
+        "lighting_variation",
+        "object_rotation",
+        "blocked_path",
+        "human_crossing",
+        "occlusion",
+        "glare",
+        "missing_label",
+        "wrong_object_nearby",
+        "narrow_approach_angle",
+    ),
+}
+
 SCORING_METRIC_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "metric_id": "success_rate",
@@ -391,6 +521,41 @@ SCORING_METRIC_DEFINITIONS: List[Dict[str, Any]] = [
         ),
         "higher_is_better": False,
     },
+    {
+        "metric_id": "placement_tolerance",
+        "aggregation": (
+            "placement attempts within task-declared position/orientation tolerance "
+            "/ placement attempt count"
+        ),
+        "higher_is_better": True,
+        "metric_scope": "optional_industrial_assembly",
+        "task_categories": ["industrial_assembly", "assembly", "kitting", "pick_place"],
+        "required_by_default": False,
+    },
+    {
+        "metric_id": "insertion_success",
+        "aggregation": "successful insertions / insertion attempt count",
+        "higher_is_better": True,
+        "metric_scope": "optional_industrial_assembly",
+        "task_categories": ["industrial_assembly", "assembly", "insertion"],
+        "required_by_default": False,
+    },
+    {
+        "metric_id": "peak_contact_force",
+        "aggregation": "maximum contact force in newtons relative to task-declared limit",
+        "higher_is_better": False,
+        "metric_scope": "optional_industrial_assembly",
+        "task_categories": ["industrial_assembly", "assembly", "insertion"],
+        "required_by_default": False,
+    },
+    {
+        "metric_id": "dimensional_error",
+        "aggregation": "mean or max dimensional error from task-declared target fit",
+        "higher_is_better": False,
+        "metric_scope": "optional_industrial_assembly",
+        "task_categories": ["industrial_assembly", "assembly", "kitting", "insertion"],
+        "required_by_default": False,
+    },
 ]
 
 DEFAULT_TASK_THRESHOLD_TEMPLATES: Dict[str, Dict[str, Any]] = {
@@ -416,6 +581,27 @@ DEFAULT_TASK_THRESHOLD_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "max_wrong_object_count": 0,
         "max_timeout_count": 0,
     },
+    "industrial_assembly": {
+        "threshold_profile_id": "industrial_assembly_default_v1",
+        "min_success_rate": 0.9,
+        "max_cycle_time_seconds": 60.0,
+        "max_intervention_count": 0,
+        "max_safety_event_count": 0,
+        "max_collision_event_count": 0,
+        "max_object_drop_count": 0,
+        "max_wrong_object_count": 0,
+        "max_timeout_count": 0,
+        "min_placement_tolerance_rate": 0.95,
+        "min_insertion_success_rate": 0.9,
+        "max_peak_contact_force_n": 80.0,
+        "max_dimensional_error_m": 0.01,
+        "recommended_optional_metrics": [
+            "placement_tolerance",
+            "insertion_success",
+            "peak_contact_force",
+            "dimensional_error",
+        ],
+    },
     "general": {
         "threshold_profile_id": "general_task_default_v1",
         "min_success_rate": 0.8,
@@ -429,6 +615,13 @@ DEFAULT_TASK_THRESHOLD_TEMPLATES: Dict[str, Dict[str, Any]] = {
     },
 }
 
+INDUSTRIAL_ASSEMBLY_OPTIONAL_METRICS: Tuple[str, ...] = (
+    "placement_tolerance",
+    "insertion_success",
+    "peak_contact_force",
+    "dimensional_error",
+)
+
 TASK_THRESHOLD_BUYER_OVERRIDE_SCHEMA: Dict[str, str] = {
     "min_success_rate": "number_0_to_1",
     "max_cycle_time_seconds": "positive_number_or_null",
@@ -438,6 +631,10 @@ TASK_THRESHOLD_BUYER_OVERRIDE_SCHEMA: Dict[str, str] = {
     "max_object_drop_count": "non_negative_integer",
     "max_wrong_object_count": "non_negative_integer",
     "max_timeout_count": "non_negative_integer",
+    "min_placement_tolerance_rate": "number_0_to_1",
+    "min_insertion_success_rate": "number_0_to_1",
+    "max_peak_contact_force_n": "positive_number_or_null",
+    "max_dimensional_error_m": "positive_number_or_null",
 }
 
 PREDICTION_SOURCES = [
@@ -610,11 +807,41 @@ def _number(value: Any, *, default: float = 0.0) -> float:
         return default
 
 
+def _positive_number_or_none(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed <= 0:
+        return None
+    return parsed
+
+
 def _int(value: Any, *, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _positive_int_or_none(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _mapping_list(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, Iterable) or isinstance(value, (str, bytes, bytearray, Mapping)):
+        return []
+    rows: List[Dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            row = {str(key): val for key, val in item.items() if val not in (None, "")}
+            if row:
+                rows.append(row)
+    return rows
 
 
 def _bool(value: Any) -> bool:
@@ -1126,6 +1353,255 @@ def _infer_site_type(
     return "unknown_site_type"
 
 
+def canonical_site_type(value: Any) -> str:
+    text = re.sub(r"[^a-z0-9]+", " ", _string(value).lower()).strip()
+    if not text:
+        return "unknown"
+    if text in SITE_TYPE_ALIASES:
+        return SITE_TYPE_ALIASES[text]
+    underscored = text.replace(" ", "_")
+    if underscored in CANONICAL_SITE_TYPE_VALUES:
+        return underscored
+    if any(token in text for token in ("fulfillment", "3pl")):
+        return "fulfillment"
+    if any(token in text for token in ("distribution", "cross dock")):
+        return "distribution_center"
+    if any(token in text for token in ("manufactur", "factory", "assembly", "production plant")):
+        return "manufacturing"
+    if any(token in text for token in ("warehouse", "pallet", "forklift", "rack")):
+        return "warehouse"
+    if any(token in text for token in ("kitchen", "sink", "stove")):
+        return "kitchen"
+    if any(token in text for token in ("grocery", "retail", "store")):
+        return "retail"
+    return "other"
+
+
+def scenario_variation_profile_for_site_type(site_type: Any) -> str:
+    canonical = canonical_site_type(site_type)
+    return canonical if canonical in SCENARIO_VARIATION_PROFILE_DEFINITIONS else "legacy_default"
+
+
+def scenario_variation_names_for_site_type(site_type: Any) -> Tuple[str, ...]:
+    profile = scenario_variation_profile_for_site_type(site_type)
+    return SCENARIO_VARIATION_PROFILE_DEFINITIONS[profile]
+
+
+def scenario_variation_definitions_for_site_type(site_type: Any) -> List[Dict[str, Any]]:
+    return [
+        dict(_SCENARIO_VARIATION_DEFINITION_BY_ID[name])
+        for name in scenario_variation_names_for_site_type(site_type)
+        if name in _SCENARIO_VARIATION_DEFINITION_BY_ID
+    ]
+
+
+def _site_extent_summary(
+    *,
+    raw_manifest: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    site_world_spec: Mapping[str, Any],
+) -> Dict[str, Any]:
+    raw_extent = _mapping(raw_manifest.get("site_extent"))
+    metadata_extent = _mapping(metadata.get("site_extent"))
+    site_world_extent = _mapping(site_world_spec.get("site_extent"))
+
+    def first_value(field: str) -> Any:
+        for source in (
+            raw_extent,
+            raw_manifest,
+            metadata_extent,
+            metadata,
+            site_world_extent,
+            site_world_spec,
+        ):
+            if field in source and source.get(field) not in (None, ""):
+                return source.get(field)
+        return None
+
+    def first_mapping_list(*fields: str) -> List[Dict[str, Any]]:
+        for field in fields:
+            rows = _mapping_list(first_value(field))
+            if rows:
+                return rows
+        return []
+
+    floor_area_m2 = _positive_number_or_none(first_value("approx_floor_area_m2"))
+    ceiling_height_m = _positive_number_or_none(first_value("ceiling_height_m"))
+    floor_count = _positive_int_or_none(first_value("floor_count"))
+    dominant_aisle_width_m = _positive_number_or_none(first_value("dominant_aisle_width_m"))
+    site_levels = first_mapping_list("site_levels", "levels", "floor_levels")
+    coverage_by_level = first_mapping_list("coverage_by_level", "per_level_coverage")
+    vertical_structure_notes = _string_list(
+        first_value("vertical_structure_notes")
+        or first_value("multi_level_notes")
+        or first_value("mezzanine_notes")
+    )
+    multi_level_structure_present = bool(
+        (floor_count is not None and floor_count > 1)
+        or site_levels
+        or coverage_by_level
+        or _bool(first_value("multi_level_structure_present"))
+        or _bool(first_value("mezzanine_present"))
+        or _bool(first_value("vertical_structure_present"))
+    )
+    site_scale_class = _first_text(
+        first_value("site_scale_class"),
+        first_value("site_world_scale"),
+        first_value("scale_class"),
+    )
+    status = _first_text(
+        first_value("site_extent_status"),
+        raw_extent.get("status"),
+        metadata_extent.get("status"),
+        site_world_extent.get("status"),
+    )
+    source = _first_text(
+        first_value("site_extent_source"),
+        raw_extent.get("source"),
+        metadata_extent.get("source"),
+        site_world_extent.get("source"),
+    )
+    declared_fields = [
+        field
+        for field, value in (
+            ("approx_floor_area_m2", floor_area_m2),
+            ("ceiling_height_m", ceiling_height_m),
+            ("floor_count", floor_count),
+            ("dominant_aisle_width_m", dominant_aisle_width_m),
+        )
+        if value is not None
+    ]
+    if not status:
+        if declared_fields:
+            status = "capturer_declared_review_required"
+        elif site_scale_class:
+            status = "coarse_site_scale_class_only_review_required"
+        else:
+            status = "not_provided"
+    if not source:
+        if declared_fields:
+            source = "capture_manifest"
+        elif site_scale_class:
+            source = "capture_manifest_site_scale_class"
+        else:
+            source = "not_provided"
+    return {
+        "approx_floor_area_m2": floor_area_m2,
+        "ceiling_height_m": ceiling_height_m,
+        "floor_count": floor_count,
+        "dominant_aisle_width_m": dominant_aisle_width_m,
+        "site_scale_class": site_scale_class or None,
+        "site_levels": site_levels,
+        "coverage_by_level": coverage_by_level,
+        "multi_level_structure_present": multi_level_structure_present,
+        "vertical_structure_notes": vertical_structure_notes,
+        "status": status,
+        "source": source,
+        "declared_dimension_fields": declared_fields,
+        "has_numeric_site_extent": bool(declared_fields),
+        "claim_boundary": "site_extent_is_capture_recorded_context_not_verified_survey_or_capacity_claim",
+        "vertical_structure_claim_boundary": (
+            "site_levels_and_per_level_coverage_are_capture_recorded_context_not_verified_route_or_survey_proof"
+        ),
+    }
+
+
+def _site_operating_conditions_summary(
+    *,
+    raw_manifest: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    site_world_spec: Mapping[str, Any],
+) -> Dict[str, Any]:
+    raw_conditions = _mapping(
+        raw_manifest.get("site_operating_conditions")
+        or raw_manifest.get("operating_conditions")
+        or raw_manifest.get("environmental_conditions")
+    )
+    metadata_conditions = _mapping(
+        metadata.get("site_operating_conditions")
+        or metadata.get("operating_conditions")
+        or metadata.get("environmental_conditions")
+    )
+    site_world_conditions = _mapping(
+        site_world_spec.get("site_operating_conditions")
+        or site_world_spec.get("operating_conditions")
+        or site_world_spec.get("environmental_conditions")
+    )
+
+    def first_value(field: str) -> Any:
+        for source in (
+            raw_conditions,
+            raw_manifest,
+            metadata_conditions,
+            metadata,
+            site_world_conditions,
+            site_world_spec,
+        ):
+            if field in source and source.get(field) not in (None, ""):
+                return source.get(field)
+        return None
+
+    lighting_class = _first_text(first_value("lighting_class"), first_value("lighting"))
+    floor_surface = _first_text(first_value("floor_surface"), first_value("floor_material"))
+    thermal_zone = _first_text(
+        first_value("thermal_zone"),
+        first_value("temperature_class"),
+        first_value("cold_storage_class"),
+    )
+    ambient_noise = _first_text(first_value("ambient_noise"), first_value("noise_class"))
+    wet_dry_state = _first_text(first_value("wet_dry_state"), first_value("floor_wet_dry_state"))
+    dust_or_air_quality = _first_text(
+        first_value("dust_or_air_quality"),
+        first_value("air_quality_class"),
+    )
+    ppe_required = _string_list(first_value("ppe_required") or first_value("required_ppe"))
+    environmental_hazards = _string_list(
+        first_value("environmental_hazards") or first_value("hazards")
+    )
+    operational_hazards = _string_list(
+        first_value("operational_hazards") or first_value("restricted_zone_types")
+    )
+    declared_fields = [
+        field
+        for field, value in (
+            ("lighting_class", lighting_class),
+            ("floor_surface", floor_surface),
+            ("thermal_zone", thermal_zone),
+            ("ambient_noise", ambient_noise),
+            ("wet_dry_state", wet_dry_state),
+            ("dust_or_air_quality", dust_or_air_quality),
+            ("ppe_required", ppe_required),
+            ("environmental_hazards", environmental_hazards),
+            ("operational_hazards", operational_hazards),
+        )
+        if value
+    ]
+    status = _first_text(first_value("operating_conditions_status"), first_value("status"))
+    source = _first_text(first_value("operating_conditions_source"), first_value("source"))
+    if not status:
+        status = "capture_recorded_review_required" if declared_fields else "not_provided"
+    if not source:
+        source = "capture_manifest" if declared_fields else "not_provided"
+    return {
+        "lighting_class": lighting_class or None,
+        "floor_surface": floor_surface or None,
+        "thermal_zone": thermal_zone or None,
+        "ambient_noise": ambient_noise or None,
+        "wet_dry_state": wet_dry_state or None,
+        "dust_or_air_quality": dust_or_air_quality or None,
+        "ppe_required": ppe_required,
+        "environmental_hazards": environmental_hazards,
+        "operational_hazards": operational_hazards,
+        "status": status,
+        "source": source,
+        "declared_condition_fields": declared_fields,
+        "has_structured_operating_conditions": bool(declared_fields),
+        "claim_boundary": (
+            "operating_conditions_are_capture_recorded_context_not_verified_ehs_or_deployment_envelope"
+        ),
+    }
+
+
 def _success_criteria(task_category: str) -> List[str]:
     category = task_category.strip().lower()
     base = [
@@ -1574,6 +2050,7 @@ def _scenario_library(
 def _scenario_family_library(
     *,
     scenario_library: Mapping[str, Any],
+    site_type: str | None = None,
     generated_at: str,
 ) -> Dict[str, Any]:
     allowed_statuses = [
@@ -1590,6 +2067,11 @@ def _scenario_family_library(
         for scenario in scenario_library.get("scenarios", [])
         if isinstance(scenario, Mapping)
     ]
+    variation_definitions = scenario_variation_definitions_for_site_type(site_type)
+    required_variation_names = [
+        _string(definition.get("variation_id")) for definition in variation_definitions
+    ]
+    profile_name = scenario_variation_profile_for_site_type(site_type)
     for scenario in scenarios:
         scenario_id = _string(scenario.get("scenario_id"))
         task_id = _string(scenario.get("task_id"))
@@ -1605,7 +2087,7 @@ def _scenario_family_library(
                 "claim_boundary": "capture_layout_is_context_not_robot_outcome",
             }
         ]
-        for definition in SCENARIO_VARIATION_DEFINITIONS:
+        for definition in variation_definitions:
             status = _string(definition.get("default_status")) or "review-only"
             variations.append(
                 {
@@ -1649,9 +2131,14 @@ def _scenario_family_library(
         "schema_version": SCENARIO_FAMILY_LIBRARY_SCHEMA_VERSION,
         "generated_at": generated_at,
         "family_count": len(families),
-        "variation_names_required": [
-            definition["variation_id"] for definition in SCENARIO_VARIATION_DEFINITIONS
-        ],
+        "variation_profile": {
+            "profile_name": profile_name,
+            "site_type": site_type or "unknown",
+            "canonical_site_type": canonical_site_type(site_type),
+            "default_profile_used": profile_name == "legacy_default",
+            "known_variation_count": len(KNOWN_SCENARIO_VARIATION_DEFINITIONS),
+        },
+        "variation_names_required": required_variation_names,
         "families": sorted(families, key=lambda item: item["family_id"]),
         "cosmos_or_simulator_proof_claim_allowed": False,
         "claim_boundary": dict(CLAIM_BOUNDARY),
@@ -2067,11 +2554,33 @@ def _scoring_methodology(*, generated_at: str) -> Dict[str, Any]:
     }
 
 
+def _is_industrial_assembly_task(task: Mapping[str, Any]) -> bool:
+    task_category = _string(task.get("task_category")).lower()
+    ontology_task_id = _string(task.get("ontology_task_id")).lower()
+    if task_category in {"industrial_assembly", "assembly", "kitting", "insertion", "industrial"}:
+        return True
+    return any(
+        token in ontology_task_id
+        for token in (
+            "assembly",
+            "assemble",
+            "insert",
+            "insertion",
+            "kit",
+            "kitting",
+            "part_fit",
+            "fixture",
+        )
+    )
+
+
 def _threshold_template_for_task(task: Mapping[str, Any]) -> Dict[str, Any]:
     task_category = _string(task.get("task_category")).lower()
     ontology_task_id = _string(task.get("ontology_task_id")).lower()
     if task_category in DEFAULT_TASK_THRESHOLD_TEMPLATES:
         return dict(DEFAULT_TASK_THRESHOLD_TEMPLATES[task_category])
+    if _is_industrial_assembly_task(task):
+        return dict(DEFAULT_TASK_THRESHOLD_TEMPLATES["industrial_assembly"])
     if any(token in ontology_task_id for token in ("pick", "place", "bin")):
         return dict(DEFAULT_TASK_THRESHOLD_TEMPLATES["pick_place"])
     if any(token in ontology_task_id for token in ("navigate", "delivery", "move")):
@@ -2952,6 +3461,17 @@ def _site_card(
     if not isinstance(restricted_zones, list):
         restricted_zones = []
 
+    canonical = canonical_site_type(site_type)
+    site_extent = _site_extent_summary(
+        raw_manifest=raw_manifest,
+        metadata=metadata,
+        site_world_spec=site_world_spec,
+    )
+    site_operating_conditions = _site_operating_conditions_summary(
+        raw_manifest=raw_manifest,
+        metadata=metadata,
+        site_world_spec=site_world_spec,
+    )
     return {
         "schema_version": SITE_CARD_SCHEMA_VERSION,
         "dataset_version": ROBOT_EVAL_DATASET_VERSION,
@@ -2961,14 +3481,15 @@ def _site_card(
         "capture_id": context.capture_id,
         "site_id": _site_id_from_inputs(descriptor, raw_manifest),
         "site_type": site_type,
-        "site_type_allowed_values": [
-            "warehouse aisle",
-            "loading dock",
-            "hospital hallway",
-            "factory line-side station",
-            "stockroom",
-            "captured indoor scene",
-        ],
+        "canonical_site_type": canonical,
+        "site_type_recognition_status": "recognized"
+        if canonical != "other"
+        else "unrecognized_explicit_review_required",
+        "site_type_allowed_values": list(CANONICAL_SITE_TYPE_VALUES),
+        "site_type_aliases": dict(sorted(SITE_TYPE_ALIASES.items())),
+        "scenario_variation_profile": scenario_variation_profile_for_site_type(canonical),
+        "site_extent": site_extent,
+        "site_operating_conditions": site_operating_conditions,
         "geometry": geometry_summary,
         "visual_conditions": _condition_cards(
             metadata,
@@ -3017,6 +3538,26 @@ def _task_cards(*, task_library: Mapping[str, Any], generated_at: str) -> Dict[s
             item for item in task.get("target_objects", []) if isinstance(item, Mapping)
         ]
         zone_candidates = _mapping(task.get("site_zone_candidates"))
+        required_metrics = [
+            "success_rate",
+            "cycle_time",
+            "intervention_rate",
+            "unsafe_proximity",
+            "collision_risk",
+            "object_drop",
+            "wrong_object",
+            "timeout",
+            "recovery_success",
+            "world_model_uncertainty",
+            "sim_vs_real_calibration_score",
+            "placement_accuracy",
+        ]
+        if _is_industrial_assembly_task(task):
+            required_metrics.extend(
+                metric
+                for metric in INDUSTRIAL_ASSEMBLY_OPTIONAL_METRICS
+                if metric not in required_metrics
+            )
         cards.append(
             {
                 "schema_version": "real_site_robot_eval_task_card.v0.1",
@@ -3069,20 +3610,7 @@ def _task_cards(*, task_library: Mapping[str, Any], generated_at: str) -> Dict[s
                     ],
                     "label_source": "failure_taxonomy",
                 },
-                "required_metrics": [
-                    "success_rate",
-                    "cycle_time",
-                    "intervention_rate",
-                    "unsafe_proximity",
-                    "collision_risk",
-                    "object_drop",
-                    "wrong_object",
-                    "timeout",
-                    "recovery_success",
-                    "world_model_uncertainty",
-                    "sim_vs_real_calibration_score",
-                    "placement_accuracy",
-                ],
+                "required_metrics": required_metrics,
                 "task_evidence_source": _string(task.get("source_artifact"))
                 or "pipeline/evaluation_prep/task_anchor_manifest.json",
                 "confidence": "capture_grounded_task_anchor_present",
@@ -3125,9 +3653,14 @@ def _engine_for_prediction_source(source: str) -> str:
 def _scenario_cards(
     *,
     scenario_library: Mapping[str, Any],
+    site_type: str | None = None,
     generated_at: str,
 ) -> Dict[str, Any]:
     cards: List[Dict[str, Any]] = []
+    variation_definitions = scenario_variation_definitions_for_site_type(site_type)
+    variation_names = [
+        _string(definition.get("variation_id")) for definition in variation_definitions
+    ]
     for scenario in scenario_library.get("scenarios", []):
         if not isinstance(scenario, Mapping):
             continue
@@ -3210,11 +3743,13 @@ def _scenario_cards(
                 },
                 "scenario_family_variation_ids": [
                     "capture_observed_layout",
-                    *[
-                        _string(definition.get("variation_id"))
-                        for definition in SCENARIO_VARIATION_DEFINITIONS
-                    ],
+                    *variation_names,
                 ],
+                "variation_profile": {
+                    "profile_name": scenario_variation_profile_for_site_type(site_type),
+                    "site_type": site_type or "unknown",
+                    "canonical_site_type": canonical_site_type(site_type),
+                },
                 "required_missing_annotations": scenario.get("missing_evidence_statuses") or [],
                 "claim_boundary": "scenario_card_is_review_scope_not_simulator_or_pilot_result",
             }
@@ -3985,6 +4520,20 @@ def build_real_site_robot_eval_dataset(
         object_geometry_manifest=object_geometry,
         generated_at=generated_at,
     )
+    metadata = _metadata_from(descriptor, raw_manifest)
+    explicit_site_type = _first_text(
+        site_world.get("site_type"),
+        site_world.get("target_site_type"),
+        metadata.get("site_type"),
+        metadata.get("target_site_type"),
+        raw_manifest.get("site_type"),
+    )
+    task_rows = [task for task in task_library.get("tasks", []) if isinstance(task, Mapping)]
+    resolved_site_type = explicit_site_type or _infer_site_type(
+        metadata=metadata,
+        tasks=task_rows,
+        object_geometry_manifest=object_geometry,
+    )
     robot_profiles = _robot_profiles(
         site_world_spec=site_world,
         hosted_session_runtime_manifest=hosted_manifest,
@@ -4002,6 +4551,7 @@ def build_real_site_robot_eval_dataset(
     )
     scenario_family_library = _scenario_family_library(
         scenario_library=scenario_library,
+        site_type=resolved_site_type,
         generated_at=generated_at,
     )
     source_artifacts = _source_artifacts(
@@ -4100,6 +4650,7 @@ def build_real_site_robot_eval_dataset(
     task_cards = _task_cards(task_library=task_library, generated_at=generated_at)
     scenario_cards = _scenario_cards(
         scenario_library=scenario_library,
+        site_type=resolved_site_type,
         generated_at=generated_at,
     )
     eval_cards = _eval_cards(ledger=ledger, generated_at=generated_at)

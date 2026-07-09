@@ -348,10 +348,13 @@ def test_terminate_instances_writes_teardown_manifest(
     monkeypatch.setenv(LAMBDA_API_KEY_FILE_ENV, str(key_file))
     monkeypatch.setenv(LAMBDA_API_GATE_ENV, "true")
     request_path = _ready_lambda_request(tmp_path / "request.json")
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"urls": []}
 
     class FakeResponse:
         status = 200
+
+        def __init__(self, body: bytes) -> None:
+            self._body = body
 
         def __enter__(self) -> "FakeResponse":
             return self
@@ -360,12 +363,17 @@ def test_terminate_instances_writes_teardown_manifest(
             return None
 
         def read(self) -> bytes:
-            return b'{"data":{"terminated_instances":[{"id":"lambda-instance-1","status":"terminating"}]}}'
+            return self._body
 
     def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
-        captured["url"] = request.full_url
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse()
+        captured["urls"].append(request.full_url)  # type: ignore[union-attr]
+        if request.full_url.endswith("/instance-operations/terminate"):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(
+                b'{"data":{"terminated_instances":[{"id":"lambda-instance-1","status":"terminating"}]}}'
+            )
+        assert request.full_url.endswith("/instances")
+        return FakeResponse(b'{"data":{"instances":[]}}')
 
     monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
 
@@ -375,15 +383,86 @@ def test_terminate_instances_writes_teardown_manifest(
         mode="terminate-instances",
         allow_lambda_api_call=True,
         instance_ids=["lambda-instance-1"],
+        teardown_poll_attempts=1,
+        teardown_poll_interval_seconds=0,
     )
 
-    assert result["status"] == "termination_requested"
+    assert result["status"] == "completed"
     assert result["provider_teardown_requested"] is True
-    assert captured["url"] == "https://cloud.lambda.ai/api/v1/instance-operations/terminate"
+    assert result["provider_teardown_proven"] is True
+    assert result["open_billing_risk"] is False
+    assert captured["urls"] == [
+        "https://cloud.lambda.ai/api/v1/instance-operations/terminate",
+        "https://cloud.lambda.ai/api/v1/instances",
+    ]
     assert captured["body"] == {"instance_ids": ["lambda-instance-1"]}
     teardown = _read_json(tmp_path / "lambda_provider_teardown_manifest.json")
-    assert teardown["status"] == "termination_requested"
+    assert teardown["status"] == "completed"
+    assert teardown["provider_api_terminal_status_confirmed"] is True
+    assert teardown["continuing_spend_requires_followup_list_instances"] is False
+    assert teardown["open_billing_risk"] is False
+    assert teardown["teardown_verification"]["api_confirmed"] is True
+
+
+def test_terminate_instances_stays_unverified_when_instance_is_still_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_file = tmp_path / "lambda_api_key"
+    key_file.write_text("secret_file_value\n", encoding="utf-8")
+    monkeypatch.setenv(LAMBDA_API_KEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(LAMBDA_API_GATE_ENV, "true")
+    request_path = _ready_lambda_request(tmp_path / "request.json")
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self._body
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        if request.full_url.endswith("/instance-operations/terminate"):
+            return FakeResponse(
+                b'{"data":{"terminated_instances":[{"id":"lambda-instance-1","status":"terminating"}]}}'
+            )
+        assert request.full_url.endswith("/instances")
+        return FakeResponse(
+            b'{"data":{"instances":[{"id":"lambda-instance-1","status":"active"}]}}'
+        )
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
+
+    result = run_lambda_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "out.json",
+        mode="terminate-instances",
+        allow_lambda_api_call=True,
+        instance_ids=["lambda-instance-1"],
+        teardown_poll_attempts=1,
+        teardown_poll_interval_seconds=0,
+    )
+
+    assert result["status"] == "termination_unverified"
+    assert result["provider_teardown_requested"] is True
+    assert result["provider_teardown_proven"] is False
+    assert result["open_billing_risk"] is True
+    assert "lambda_instances_still_active_after_terminate" in result["blockers"]
+    teardown = _read_json(tmp_path / "lambda_provider_teardown_manifest.json")
+    assert teardown["status"] == "termination_unverified"
+    assert teardown["provider_api_terminal_status_confirmed"] is False
     assert teardown["continuing_spend_requires_followup_list_instances"] is True
+    assert teardown["teardown_verification"]["active_instances"] == [
+        {"id": "lambda-instance-1", "status": "active"}
+    ]
 
 
 def test_cli_main_dry_run_returns_zero(

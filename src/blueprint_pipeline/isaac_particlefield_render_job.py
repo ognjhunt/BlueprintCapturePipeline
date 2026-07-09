@@ -51,9 +51,16 @@ SCHEMA_VERSION = "isaac_particlefield_render_job.v1"
 RENDER_LANE = "isaac_particlefield_render"
 RELIABILITY_MANIFEST_NAME = "provider_reliability_manifest.json"
 POST_MARKER_NO_PROGRESS_TIMEOUT_ENV = "BLUEPRINT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS"
+RENDER_POD_HARD_TTL_ENV = "BLUEPRINT_RENDER_POD_HARD_TTL_SECONDS"
+RENDER_POD_IDLE_TTL_ENV = "BLUEPRINT_RENDER_POD_IDLE_TTL_SECONDS"
 # A booted worker that stops changing bootstrap phase for this long is a stall,
 # not patience — it gets terminated instead of billing until max_seconds.
 DEFAULT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS = 900
+# Independent pod-side backstops. The host watch loop and spend guard should still
+# terminate pods first; these limits keep the worker command from running forever if
+# the launching/control-plane process dies.
+DEFAULT_RENDER_POD_HARD_TTL_SECONDS = 7200
+DEFAULT_RENDER_POD_IDLE_TTL_SECONDS = 1800
 SECRETS = Path.home() / ".blueprint-secrets"
 DEFAULT_WARM_CANDIDATES = (
     "pwbu7wxsvxpr0x", "9zxerj0nm3ow76", "qzgtsh4t27hi7f", "v4bd9u2qhwivb8",
@@ -91,6 +98,7 @@ CAMS=os.environ.get("CAMERAS_FILE","cameras.json")
 W=os.environ.get("RENDER_WIDTH","1280"); H=os.environ.get("RENDER_HEIGHT","960")
 SUB=os.environ.get("RENDER_SUBFRAMES","8"); RTS=os.environ.get("RENDER_RT_SUBFRAMES","64")
 WARM=os.environ.get("RENDER_WARMUP_FRAMES","30")
+IDLE_TTL=int(os.environ.get("BLUEPRINT_RENDER_POD_IDLE_TTL_SECONDS","1800") or 0)
 def putout():
     try:
         buf=io.BytesIO()
@@ -120,10 +128,14 @@ cmd=["/isaac-sim/python.sh", BUNDLE+"/run_isaac_splat_nurec_render.py",
      "--warmup-frames", WARM, "--subframes", SUB, "--rt-subframes", RTS]
 mark("runner_starting", cmd=cmd)
 rc=subprocess.call(cmd)
-mark("runner_done", rc=rc)
+mark("runner_done", rc=rc, idle_ttl_seconds=IDLE_TTL)
 # Keep the container process alive after runner completion so RunPod does not restart it and
 # clobber the final output object before the parent collector observes runner_done.
+idle_deadline = time.time()+IDLE_TTL if IDLE_TTL > 0 else None
 while True:
+    if idle_deadline is not None and time.time() >= idle_deadline:
+        mark("pod_idle_ttl_exceeded", idle_ttl_seconds=IDLE_TTL)
+        sys.exit(rc if rc else 0)
     time.sleep(30); putout()
 '''
 
@@ -161,6 +173,19 @@ def docker_start_cmd() -> list[str]:
     script = (
         "set +e\n"
         "mkdir -p /workspace/out\n"
+        f"export {RENDER_POD_HARD_TTL_ENV}=${{{RENDER_POD_HARD_TTL_ENV}:-{DEFAULT_RENDER_POD_HARD_TTL_SECONDS}}}\n"
+        f"export {RENDER_POD_IDLE_TTL_ENV}=${{{RENDER_POD_IDLE_TTL_ENV}:-{DEFAULT_RENDER_POD_IDLE_TTL_SECONDS}}}\n"
+        f"if [ \"${{{RENDER_POD_HARD_TTL_ENV}}}\" -gt 0 ] 2>/dev/null; then\n"
+        "  (\n"
+        f"    sleep \"${{{RENDER_POD_HARD_TTL_ENV}}}\"\n"
+        "    printf '%s\\n' '{\"phase\":\"pod_hard_ttl_exceeded\",\"source\":\"bash_watchdog\"}' > /workspace/out/bootstrap.json\n"
+        "    pkill -TERM -P $$ 2>/dev/null || true\n"
+        "    sleep 10\n"
+        "    pkill -KILL -P $$ 2>/dev/null || true\n"
+        "    kill -TERM $$ 2>/dev/null || true\n"
+        "  ) &\n"
+        "  BLUEPRINT_RENDER_POD_WATCHDOG_PID=$!\n"
+        "fi\n"
         "cat > /workspace/early.py <<'EARLYEOF'\n" + _EARLY_MARKER + "\nEARLYEOF\n"
         "(python3 /workspace/early.py 2>/dev/null || /isaac-sim/python.sh /workspace/early.py 2>/dev/null) || true\n"
         "cat > /workspace/boot.py <<'PYEOF'\n" + BOOTSTRAP + "\nPYEOF\n"
@@ -313,8 +338,19 @@ def stage_bundle(bundle_zip: Path, job_dir: Path, *, key_prefix: str = "blueprin
 
 # ----------------------------- provider-agnostic launch spec -----------------------------
 
-def _env_for(bundle_url: str, put_url: str, cameras_file: str, *, width: int, height: int,
-             subframes: int, rt_subframes: int, warmup: int) -> dict:
+def _env_for(
+    bundle_url: str,
+    put_url: str,
+    cameras_file: str,
+    *,
+    width: int,
+    height: int,
+    subframes: int,
+    rt_subframes: int,
+    warmup: int,
+    render_pod_hard_ttl_seconds: int = DEFAULT_RENDER_POD_HARD_TTL_SECONDS,
+    render_pod_idle_ttl_seconds: int = DEFAULT_RENDER_POD_IDLE_TTL_SECONDS,
+) -> dict:
     return {
         "ACCEPT_EULA": "Y", "PRIVACY_CONSENT": "Y", "CUDA_VISIBLE_DEVICES": "0",
         "BLUEPRINT_EVAL_MANIFEST_URI": bundle_url,
@@ -323,6 +359,8 @@ def _env_for(bundle_url: str, put_url: str, cameras_file: str, *, width: int, he
         "RENDER_WIDTH": str(width), "RENDER_HEIGHT": str(height),
         "RENDER_SUBFRAMES": str(subframes), "RENDER_RT_SUBFRAMES": str(rt_subframes),
         "RENDER_WARMUP_FRAMES": str(warmup),
+        RENDER_POD_HARD_TTL_ENV: str(max(0, int(render_pod_hard_ttl_seconds))),
+        RENDER_POD_IDLE_TTL_ENV: str(max(0, int(render_pod_idle_ttl_seconds))),
     }
 
 
@@ -331,13 +369,25 @@ def build_render_launch_spec(
     subframes: int = 8, rt_subframes: int = 64, warmup: int = 30, container_disk_gb: int = 140,
     volume_gb: int = 80, gpu_types: Sequence[str] = ("NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation"),
     max_hourly_rate_usd: float = 2.0, min_gpu_ram_mb: int = 24000,
+    render_pod_hard_ttl_seconds: int = DEFAULT_RENDER_POD_HARD_TTL_SECONDS,
+    render_pod_idle_ttl_seconds: int = DEFAULT_RENDER_POD_IDLE_TTL_SECONDS,
 ) -> RenderLaunchSpec:
     """Provider-neutral render launch spec (image + env + bootstrap + GPU sizing). The
     env carries the signed bundle GET + output PUT URLs, so any provider just forwards it."""
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
-    env = _env_for(bundle_url, put_url, cameras_file, width=width, height=height,
-                   subframes=subframes, rt_subframes=rt_subframes, warmup=warmup)
+    env = _env_for(
+        bundle_url,
+        put_url,
+        cameras_file,
+        width=width,
+        height=height,
+        subframes=subframes,
+        rt_subframes=rt_subframes,
+        warmup=warmup,
+        render_pod_hard_ttl_seconds=render_pod_hard_ttl_seconds,
+        render_pod_idle_ttl_seconds=render_pod_idle_ttl_seconds,
+    )
     return RenderLaunchSpec(
         name="blueprint-isaac-splat-render", image=image, env=env,
         bootstrap_argv=docker_start_cmd(), entrypoint=["bash"],
@@ -620,7 +670,12 @@ def _phase(passed: bool, blockers: Sequence[str] = (), **fields: Any) -> dict:
     }
 
 
-def _render_runtime_contract(progress_timeout_seconds: int) -> dict[str, Any]:
+def _render_runtime_contract(
+    progress_timeout_seconds: int,
+    *,
+    render_pod_hard_ttl_seconds: int = DEFAULT_RENDER_POD_HARD_TTL_SECONDS,
+    render_pod_idle_ttl_seconds: int = DEFAULT_RENDER_POD_IDLE_TTL_SECONDS,
+) -> dict[str, Any]:
     timeout = max(0, int(progress_timeout_seconds or 0))
     return {
         "startup_marker": "container_bash_started",
@@ -628,6 +683,13 @@ def _render_runtime_contract(progress_timeout_seconds: int) -> dict[str, Any]:
         "startup_timeout_seconds": timeout,
         "no_progress_timeout_seconds": timeout,
         "progress_stall_phases": list(DEFAULT_POST_MARKER_STALL_PHASES),
+        "pod_side_watchdog": {
+            "hard_ttl_env": RENDER_POD_HARD_TTL_ENV,
+            "hard_ttl_seconds": max(0, int(render_pod_hard_ttl_seconds)),
+            "idle_ttl_env": RENDER_POD_IDLE_TTL_ENV,
+            "idle_ttl_seconds": max(0, int(render_pod_idle_ttl_seconds)),
+            "owner": "render_worker_bootstrap",
+        },
     }
 
 

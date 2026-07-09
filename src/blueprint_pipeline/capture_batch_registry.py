@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -41,6 +42,62 @@ def _mapping(value: Any) -> Dict[str, Any]:
 
 def _string(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _safe_batch_name(value: str | Path) -> str:
+    raw = str(value)
+    digest = sha256(raw.encode("utf-8")).hexdigest()[:16]
+    tail = Path(raw).name or "capture"
+    safe_tail = "".join(
+        char if char.isalnum() or char in {"-", "_", "."} else "-"
+        for char in tail
+    ).strip(".-") or "capture"
+    return f"{safe_tail}.{digest}"
+
+
+def _exception_record(exc: BaseException) -> Dict[str, str]:
+    return {
+        "error_class": type(exc).__name__,
+        "error_message": str(exc),
+    }
+
+
+def _write_capture_quarantine_record(
+    *,
+    raw_capture_root: str | Path,
+    generated_at: str,
+    phase: str,
+    reason: str,
+    exc: BaseException,
+    quarantine_dir: Path,
+    dead_letter_dir: Path,
+) -> Dict[str, Any]:
+    ensure_dir(quarantine_dir)
+    ensure_dir(dead_letter_dir)
+    safe_name = _safe_batch_name(raw_capture_root)
+    dead_letter_path = dead_letter_dir / f"{safe_name}.dead_letter.json"
+    record = {
+        "schema_version": "site_capture_batch_registry_quarantine.v1",
+        "generated_at": generated_at,
+        "status": "quarantined",
+        "phase": phase,
+        "reason": reason,
+        "raw_capture_root": str(raw_capture_root),
+        **_exception_record(exc),
+        "operator_action": (
+            "Inspect the capture root, repair the malformed or missing capture artifacts, "
+            "and rerun the registry after the capture root changes."
+        ),
+        "public_claim_upgrade_allowed": False,
+        "claim_boundary": {
+            "quarantine_is_operational_failure_evidence_not_capture_success": True,
+            "registry_continues_for_other_capture_roots": True,
+        },
+    }
+    write_json(dead_letter_path, record)
+    quarantine_path = quarantine_dir / f"{safe_name}.quarantine.json"
+    write_json(quarantine_path, record)
+    return {"path": str(quarantine_path), "dead_letter_path": str(dead_letter_path), **record}
 
 
 def _read_optional_mapping(path: Path) -> Dict[str, Any]:
@@ -244,44 +301,73 @@ def update_capture_batch_registry(
     output_path = Path(registry_path)
     existing = _read_optional_mapping(output_path) if resume else {}
     generated_at = utc_now_iso()
+    quarantine_dir = output_path.parent / "site_capture_batch_registry_quarantine"
+    dead_letter_dir = output_path.parent / "site_capture_batch_registry_dead_letter"
     registry: Dict[str, Any] = {
         "schema_version": SITE_CAPTURE_BATCH_REGISTRY_SCHEMA_VERSION,
         "generated_at": generated_at,
+        "status": "completed",
         "resume_enabled": resume,
         "retry_stage": retry_stage,
         "stage_order": list(STAGE_ORDER),
+        "input_capture_count": len(capture_roots),
+        "processed_capture_count": 0,
+        "quarantined_capture_count": 0,
+        "quarantine_dir": str(quarantine_dir),
+        "dead_letter_dir": str(dead_letter_dir),
+        "quarantined_captures": [],
         "sites": {},
     }
     for raw_root in capture_roots:
-        context = resolve_local_capture_context(raw_root)
-        descriptor = _read_optional_mapping(context.descriptor_path)
-        raw_manifest = _read_optional_mapping(context.raw_root / "manifest.json")
-        site_id = _site_id(context, descriptor, raw_manifest)
-        statuses = _stage_statuses(context.capture_root)
-        if retry_stage:
-            previous_status = statuses[retry_stage]["status"]
-            statuses[retry_stage] = {
-                **statuses[retry_stage],
-                "status": "queued_for_retry",
-                "previous_status": previous_status,
+        try:
+            context = resolve_local_capture_context(raw_root)
+            descriptor = _read_optional_mapping(context.descriptor_path)
+            raw_manifest = _read_optional_mapping(context.raw_root / "manifest.json")
+            site_id = _site_id(context, descriptor, raw_manifest)
+            statuses = _stage_statuses(context.capture_root)
+            if retry_stage:
+                previous_status = statuses[retry_stage]["status"]
+                statuses[retry_stage] = {
+                    **statuses[retry_stage],
+                    "status": "queued_for_retry",
+                    "previous_status": previous_status,
+                }
+            previous = _existing_capture(existing, site_id=site_id, capture_id=context.capture_id)
+            attempts = _attempts(previous=previous, statuses=statuses, retry_stage=retry_stage)
+            site = registry["sites"].setdefault(
+                site_id,
+                {
+                    "site_id": site_id,
+                    "scene_id": context.scene_id,
+                    "captures": {},
+                },
+            )
+            site["captures"][context.capture_id] = {
+                "capture_id": context.capture_id,
+                "capture_root": str(context.capture_root),
+                "stage_statuses": statuses,
+                "attempts": attempts,
+                "resume": _resume(statuses, retry_stage),
             }
-        previous = _existing_capture(existing, site_id=site_id, capture_id=context.capture_id)
-        attempts = _attempts(previous=previous, statuses=statuses, retry_stage=retry_stage)
-        site = registry["sites"].setdefault(
-            site_id,
-            {
-                "site_id": site_id,
-                "scene_id": context.scene_id,
-                "captures": {},
-            },
-        )
-        site["captures"][context.capture_id] = {
-            "capture_id": context.capture_id,
-            "capture_root": str(context.capture_root),
-            "stage_statuses": statuses,
-            "attempts": attempts,
-            "resume": _resume(statuses, retry_stage),
-        }
+            registry["processed_capture_count"] += 1
+        except Exception as exc:  # noqa: BLE001 - one malformed capture must not abort the registry
+            registry["quarantined_captures"].append(
+                _write_capture_quarantine_record(
+                    raw_capture_root=raw_root,
+                    generated_at=generated_at,
+                    phase="capture_root_load",
+                    reason="capture_root_registry_update_failed",
+                    exc=exc,
+                    quarantine_dir=quarantine_dir,
+                    dead_letter_dir=dead_letter_dir,
+                )
+            )
+            registry["quarantined_capture_count"] += 1
+            continue
+    if registry["quarantined_capture_count"] and registry["processed_capture_count"]:
+        registry["status"] = "completed_with_quarantined_captures"
+    elif registry["quarantined_capture_count"]:
+        registry["status"] = "blocked_all_captures_quarantined"
     ensure_dir(output_path.parent)
     write_json(output_path, registry)
     return registry

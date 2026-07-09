@@ -152,6 +152,19 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
         success_rate_substrate = "simulator_execution"
     else:
         success_rate_substrate = "unproven_pipeline_output"
+    success_rate_provenance_disclosed = (
+        task_metrics.get("success_rate_provenance_disclosed") is True
+    )
+    success_rate_buyer_display_blockers = _string_list(
+        task_metrics.get("success_rate_buyer_display_blockers")
+    )
+    if task_metrics.get("task_success_rate") is not None and not success_rate_provenance_disclosed:
+        success_rate_buyer_display_blockers.append(
+            "success_rate_provenance_disclosure_missing"
+        )
+    success_rate_buyer_display_allowed = bool(
+        task_metrics.get("success_rate_buyer_display_allowed")
+    ) and success_rate_provenance_disclosed
     rights_status = str(rights_privacy.get("rights_status") or "").strip().lower() or "missing"
     privacy_status = str(rights_privacy.get("privacy_status") or "").strip().lower() or "missing"
     _CLEARED_RIGHTS_STATUSES = {"approved", "verified", "cleared"}
@@ -250,6 +263,23 @@ def _safe_robot_eval_status_projection(value: Optional[Mapping[str, Any]]) -> Di
             "success_rate_evaluation_substrate": success_rate_substrate,
             "success_rate_is_real_world_proof": real_world_proven,
             "success_rate_is_simulator_only": simulator_proven and not real_world_proven,
+            "task_success_label_provenance_counts": _mapping(
+                task_metrics.get("task_success_label_provenance_counts")
+            ),
+            "task_success_label_provenance_disclosures": _mapping(
+                task_metrics.get("task_success_label_provenance_disclosures")
+            ),
+            "generated_video_vlm_judged_attempt_count": task_metrics.get(
+                "generated_video_vlm_judged_attempt_count"
+            ),
+            "success_rate_requires_provenance_disclosure": bool(
+                task_metrics.get("success_rate_requires_provenance_disclosure")
+            ),
+            "success_rate_provenance_disclosed": success_rate_provenance_disclosed,
+            "success_rate_buyer_display_allowed": success_rate_buyer_display_allowed,
+            "success_rate_buyer_display_blockers": sorted(
+                set(success_rate_buyer_display_blockers)
+            ),
         },
         "batch_closure": {
             "status": batch_closure.get("status"),

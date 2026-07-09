@@ -648,8 +648,12 @@ export BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN="<same-token>"
 blueprint-live-pipeline-intake-service --host 127.0.0.1 --port 8765
 ```
 
-The intake service stages validated WebApp requests. It does not run a simulator
-or upgrade proof claims.
+The intake service stages validated WebApp requests. WebApp signs requests with
+`X-Blueprint-Pipeline-Timestamp`, `X-Blueprint-Pipeline-Nonce`, and
+`X-Blueprint-Pipeline-Signature` using that shared secret; bearer fallback is
+off unless the Pipeline host explicitly sets
+`BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER=true`. Intake does not run a
+simulator or upgrade proof claims.
 
 After submitting from WebApp, verify the request was staged or queued:
 

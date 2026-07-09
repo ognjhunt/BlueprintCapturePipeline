@@ -6,7 +6,11 @@ from pathlib import Path
 import numpy as np
 
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
-from blueprint_pipeline.alpha_readiness import build_alpha_readiness_summary, build_launch_gate_summary
+from blueprint_pipeline.alpha_readiness import (
+    build_alpha_readiness_summary,
+    build_launch_gate_summary,
+    validate_operator_launch_evidence,
+)
 from blueprint_pipeline.evaluation_prep_stage import run_evaluation_prep_stage
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
@@ -333,6 +337,25 @@ def _operator_launch_evidence_fields(check_id: str) -> dict[str, object]:
     base_uri = f"gs://local-blueprint/operator-evidence/{check_id}.json"
     if check_id in {"legal_consent_posture_signoff", "operator_dpa_data_processing_terms"}:
         return {"signed_record_uri": base_uri}
+    if check_id == "industrial_site_authorization_ehs_signoff":
+        return {
+            "signed_record_uri": base_uri,
+            "industrial_authorization_record_uri": base_uri,
+            "site_authorizer_name": "Plant Manager",
+            "site_authorizer_role": "plant_manager",
+            "ehs_signoff_uri": "gs://local-blueprint/operator-evidence/ehs-signoff.pdf",
+            "worker_pii_consent_posture_uri": (
+                "gs://local-blueprint/operator-evidence/worker-pii-posture.pdf"
+            ),
+            "nda_or_proprietary_data_terms_uri": (
+                "gs://local-blueprint/operator-evidence/industrial-nda.pdf"
+            ),
+            "ppe_requirements_acknowledged": True,
+            "escort_requirements_acknowledged": True,
+            "restricted_zone_controls_uri": (
+                "gs://local-blueprint/operator-evidence/restricted-zones.pdf"
+            ),
+        }
     if check_id == "paperclip_ops_relay_secret_rotation":
         return {
             "secret_version_ref": "projects/blueprint/secrets/paperclip-ops-relay/versions/7",
@@ -409,6 +432,7 @@ def _build_capture(
     capture_source: str,
     capture_modality: str,
     include_arkit: bool | None = None,
+    site_type: str | None = None,
 ) -> tuple[Path, str]:
     bucket = "local-blueprint"
     scene_id = "scene-1"
@@ -440,6 +464,9 @@ def _build_capture(
             "consent_notes": [],
         },
     }
+    if site_type:
+        manifest_payload["site_type"] = site_type
+        manifest_payload["intended_space_type"] = site_type
     arkit_enabled = include_arkit if include_arkit is not None else capture_modality == "iphone_arkit_lidar"
     manifest_payload["has_lidar"] = arkit_enabled
     (raw_root / "manifest.json").write_text(json.dumps(manifest_payload), encoding="utf-8")
@@ -536,6 +563,72 @@ def test_launch_gate_requires_buyer_request_id(tmp_path: Path) -> None:
     assert checks["buyer_request_linked"]["detail"] == "buyer_request_id is missing from the buyer request linkage"
 
 
+def test_launch_gate_requires_industrial_authorization_for_warehouse_capture(
+    tmp_path: Path,
+) -> None:
+    capture_root, _descriptor_uri = _build_capture(
+        tmp_path,
+        capture_source="iphone",
+        capture_modality="iphone_arkit_lidar",
+        site_type="warehouse",
+    )
+
+    summary = build_launch_gate_summary(capture_root=capture_root, env={})
+    required = {check["id"]: check for check in summary["operator_required_checks"]}
+
+    assert summary["source_acceptance"]["industrial_authorization_required"] is True
+    assert "warehouse" in summary["source_acceptance"]["industrial_site_type_candidates"]
+    assert "industrial_site_authorization_ehs_signoff" in required
+    assert required["industrial_site_authorization_ehs_signoff"]["passed"] is False
+    assert "industrial_site_authorization_ehs_signoff_evidence_missing_or_unverified" in (
+        summary["operator_evidence_status"]["blockers"]
+    )
+
+
+def test_industrial_authorization_evidence_requires_specific_legal_ehs_fields() -> None:
+    incomplete = {
+        "schema_version": "operator_launch_evidence.v1",
+        "checks": {
+            "industrial_site_authorization_ehs_signoff": {
+                "status": "verified",
+                "evidence_uri": "gs://local-blueprint/operator-evidence/industrial.json",
+                "verified_at": "2026-07-04T00:00:00+00:00",
+                "verified_by": "ops-owner",
+            }
+        },
+    }
+    blocked = validate_operator_launch_evidence(
+        incomplete,
+        ["industrial_site_authorization_ehs_signoff"],
+    )
+
+    assert blocked["status"] == "blocked"
+    failures = blocked["checks"][0]["evidence_validation_errors"]
+    assert "missing_industrial_site_authorization_record" in failures
+    assert "missing_ehs_safety_signoff" in failures
+    assert "missing_nda_or_proprietary_data_terms" in failures
+
+    complete = {
+        "schema_version": "operator_launch_evidence.v1",
+        "checks": {
+            "industrial_site_authorization_ehs_signoff": {
+                "status": "verified",
+                "evidence_uri": "gs://local-blueprint/operator-evidence/industrial.json",
+                "verified_at": "2026-07-04T00:00:00+00:00",
+                "verified_by": "ops-owner",
+                **_operator_launch_evidence_fields("industrial_site_authorization_ehs_signoff"),
+            }
+        },
+    }
+    verified = validate_operator_launch_evidence(
+        complete,
+        ["industrial_site_authorization_ehs_signoff"],
+    )
+
+    assert verified["status"] == "verified"
+    assert verified["remaining_ids"] == []
+
+
 def test_launch_gate_does_not_treat_blocked_bundle_file_as_ready(tmp_path: Path) -> None:
     capture_root, _descriptor_uri = _build_capture(
         tmp_path,
@@ -606,6 +699,23 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
         lane="scene_memory",
         config=PipelineConfig(gcs_root=tmp_path),
     )
+    (capture_root / "pipeline" / "signed_access_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "arena_signed_access_manifest.v1",
+                "status": "cloud_artifact_ready_review_required",
+                "artifact_uri": (
+                    "gs://local-blueprint/scenes/scene-1/captures/capture-1/"
+                    "pipeline/archives/post_training_data_package.tar.gz"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (capture_root / "pipeline" / "delivery_manifest.json").write_text(
+        json.dumps({"schema_version": "arena_delivery_manifest.v1"}),
+        encoding="utf-8",
+    )
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
     alpha_summary = json.loads((capture_root / "pipeline" / "alpha_readiness_summary.json").read_text(encoding="utf-8"))
@@ -653,6 +763,13 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
         "/capturer_payout_recommendation.json"
     )
     assert sync_calls[1]["artifacts"]["launch_gate_summary_uri"].endswith("/launch_gate_summary.json")
+    assert sync_calls[1]["artifacts"]["post_training_data_package_uri"].endswith(
+        "/pipeline/archives/post_training_data_package.tar.gz"
+    )
+    assert sync_calls[1]["artifacts"]["delivery_manifest_uri"].endswith("/delivery_manifest.json")
+    assert sync_calls[1]["artifacts"]["signed_access_manifest_uri"].endswith(
+        "/signed_access_manifest.json"
+    )
     assert sync_calls[1]["artifacts"]["site_package_manifest_uri"].endswith(
         "/evaluation_prep/site_package_manifest.json"
     )

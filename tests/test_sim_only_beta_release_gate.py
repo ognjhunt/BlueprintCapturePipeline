@@ -21,6 +21,7 @@ def _local_gate_report(
     sim_only_beta_requirements_satisfied: bool = True,
     sim_only_beta_blocked_requirement_ids: list[str] | None = None,
     requirements: list[dict[str, object]] | None = None,
+    marketing_copy: str | None = None,
 ) -> None:
     _write_json(
         path,
@@ -66,6 +67,12 @@ def _local_gate_report(
                 "robot_team_grade_evaluation_complete": False,
                 "evaluation_readiness_complete": False,
             },
+            "task_eval_run_report": {
+                "success_claim_ledger": {
+                    "highest_truthful_claim": "review_task_success",
+                },
+            },
+            "marketing_copy": marketing_copy,
         },
     )
 
@@ -229,11 +236,60 @@ def test_release_gate_passes_with_local_sim_core_and_production_proofs(tmp_path:
     readiness_key = "physical_robot_" "readiness_proven"
     assert readiness_key not in report
     assert readiness_key not in report["proof_boundary"]
-    assert [gate["status"] for gate in report["gates"]] == ["passed", "passed", "passed", "passed"]
+    assert [gate["status"] for gate in report["gates"]] == [
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+    ]
+    assert report["buyer_claim_ceiling"]["highest_truthful_claim"] == (
+        "review_task_success"
+    )
+    assert report["buyer_claim_ceiling"][
+        "buyer_facing_claim_ceiling_pinned_to_highest_truthful_claim"
+    ] is True
     assert report["gates"][0]["evidence"]["visual_review_accepted_count"] == 11
     assert report["gates"][3]["evidence"]["webapp_health_ready"] is True
     assert report["gates"][3]["evidence"]["pipeline_intake_health_ready"] is True
     assert report["gates"][3]["evidence"]["git_parity_proven"] is True
+
+
+def test_release_gate_blocks_live_policy_marketing_copy_without_live_gate(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    local_gate = capture_root / "local_gate.json"
+    forwarding = tmp_path / "forwarding.json"
+    route = tmp_path / "route.json"
+    deployment = tmp_path / "deployment.json"
+    _local_gate_report(
+        local_gate,
+        marketing_copy="Live simulator execution and live policy execution are verified.",
+    )
+    _forwarding_report(forwarding)
+    _route_proof(route, capture_root)
+    _deployment_proof(deployment)
+
+    report = build_release_gate_report(
+        capture_root=capture_root,
+        local_gate_report_path=local_gate,
+        forwarding_preflight_report_path=forwarding,
+        production_route_forwarding_proof_path=route,
+        production_deployment_proof_path=deployment,
+    )
+
+    assert report["status"] == "blocked"
+    assert "buyer_claim_ceiling_and_copy:buyer_copy_claims_live_simulator_execution_without_live_gate" in report[
+        "blockers"
+    ]
+    assert "buyer_claim_ceiling_and_copy:buyer_copy_claims_live_policy_execution_without_live_gate" in report[
+        "blockers"
+    ]
+    claim_gate = report["gates"][4]
+    assert claim_gate["id"] == "buyer_claim_ceiling_and_copy"
+    assert claim_gate["status"] == "blocked"
+    assert report["buyer_claim_ceiling"]["live_policy_execution_claim_allowed"] is False
 
 
 def test_release_gate_passes_when_local_gate_has_stale_core_false_but_requirements_pass(

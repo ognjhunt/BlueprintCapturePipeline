@@ -19,11 +19,11 @@ def _find_contracts_repo() -> Path | None:
 def test_robot_eval_job_request_contract_adapter_exposes_shared_constants() -> None:
     assert contract.ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION == "robot_eval_job_request.v1"
     assert contract.ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT == "robot_eval_job_request_inbox.v1"
-    assert contract.ROBOT_EVAL_JOB_REQUEST_CONTRACT_SOURCE in {
-        "blueprint_contracts",
-        "pipeline_fallback",
-    }
-    if contract.ROBOT_EVAL_JOB_REQUEST_CONTRACT_SOURCE == "blueprint_contracts":
+    assert (
+        contract.ROBOT_EVAL_JOB_REQUEST_CONTRACT_SOURCE.startswith("blueprint_contracts")
+        or contract.ROBOT_EVAL_JOB_REQUEST_CONTRACT_SOURCE == "pipeline_fallback"
+    )
+    if contract.ROBOT_EVAL_JOB_REQUEST_CONTRACT_SOURCE.startswith("blueprint_contracts"):
         assert (
             contract.robot_eval_job_request_schema().get("$id")
             == "https://schemas.tryblueprint.io/robot_eval_job_request.v1.schema.json"
@@ -81,5 +81,5 @@ def test_robot_eval_job_request_contract_verifier_uses_blueprint_contracts() -> 
         pytest.skip("BlueprintContracts checkout with robot-eval contract is unavailable")
     report = verify_contract(str(contracts_repo))
     assert report["status"] == "passed"
-    assert report["contract_source"] == "blueprint_contracts"
+    assert report["contract_source"].startswith("blueprint_contracts")
     assert report["errors"] == []

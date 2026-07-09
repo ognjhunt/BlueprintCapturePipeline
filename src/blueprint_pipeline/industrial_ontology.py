@@ -52,6 +52,10 @@ _HAZARD_RELEVANT = {
 }
 
 
+def _normalized_entity_text(text: Any) -> str:
+    return str(text or "").strip().lower().replace("-", " ").replace("_", " ")
+
+
 @dataclass(frozen=True)
 class IndustrialEntity:
     entity_type: str
@@ -71,14 +75,14 @@ class IndustrialEntity:
 
 
 def _normalized_tokens(text: str) -> List[str]:
-    lowered = str(text or "").strip().lower().replace("-", " ")
+    lowered = _normalized_entity_text(text)
     if not lowered:
         return []
     return [token for token in lowered.split() if token]
 
 
 def classify_industrial_entity(label: Any) -> IndustrialEntity:
-    normalized = str(label or "").strip().lower()
+    normalized = _normalized_entity_text(label)
     tokens = _normalized_tokens(normalized)
     matched_type = "object"
     matched_tokens: List[str] = []
@@ -99,6 +103,37 @@ def classify_industrial_entity(label: Any) -> IndustrialEntity:
     )
 
 
+def classify_industrial_entities(values: Iterable[Any]) -> List[IndustrialEntity]:
+    """Return every ontology entity matched across labels or ids.
+
+    ``classify_industrial_entity`` intentionally returns one best label for
+    legacy qualification call sites. Scenario and task-target lanes need the
+    full static scene structure context, such as rack + tote + pallet zone.
+    """
+
+    entities: List[IndustrialEntity] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = _normalized_entity_text(value)
+        if not normalized:
+            continue
+        for entity_type, candidates in _ENTITY_RULES.items():
+            found = [candidate for candidate in candidates if candidate in normalized]
+            if not found or entity_type in seen:
+                continue
+            seen.add(entity_type)
+            entities.append(
+                IndustrialEntity(
+                    entity_type=entity_type,
+                    matched_tokens=found,
+                    route_relevant=entity_type in _ROUTE_RELEVANT,
+                    task_relevant=entity_type in _TASK_RELEVANT,
+                    hazard_relevant=entity_type in _HAZARD_RELEVANT,
+                )
+            )
+    return entities
+
+
 def industrial_tags_for_label(label: Any) -> List[str]:
     entity = classify_industrial_entity(label)
     tags = [entity.entity_type]
@@ -117,7 +152,7 @@ def derive_capture_plan_tags(values: Iterable[Any]) -> List[str]:
         text = str(value or "").strip()
         if not text:
             continue
-        entity = classify_industrial_entity(text)
-        if entity.entity_type not in tags:
-            tags.append(entity.entity_type)
+        for entity in classify_industrial_entities([text]) or [classify_industrial_entity(text)]:
+            if entity.entity_type not in tags:
+                tags.append(entity.entity_type)
     return tags

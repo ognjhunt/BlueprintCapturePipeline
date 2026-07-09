@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hmac
 import json
 import sys
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -22,6 +24,33 @@ from blueprint_pipeline.live_pipeline_intake_service import (
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _allow_legacy_bearer_for_existing_intake_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, "true")
+    service._INTAKE_NONCE_CACHE.clear()
+
+
+def _signed_intake_headers(
+    token: str,
+    body: str,
+    *,
+    timestamp: str | None = None,
+    nonce: str = "nonce-valid-1",
+) -> dict[str, str]:
+    resolved_timestamp = timestamp or datetime.now(timezone.utc).isoformat()
+    signature = hmac.new(
+        token.encode("utf-8"),
+        f"{resolved_timestamp}.{nonce}.{body}".encode("utf-8"),
+        "sha256",
+    ).hexdigest()
+    return {
+        "content-type": "application/json",
+        "x-blueprint-pipeline-timestamp": resolved_timestamp,
+        "x-blueprint-pipeline-nonce": nonce,
+        "x-blueprint-pipeline-signature": f"sha256={signature}",
+    }
 
 
 def _capture_root(tmp_path: Path) -> Path:
@@ -463,6 +492,93 @@ def test_live_pipeline_intake_service_requires_token(tmp_path: Path, monkeypatch
     response = client.post("/api/live-pipeline/job-requests", json=_webapp_request(capture_root))
 
     assert response.status_code == 503
+
+
+def test_live_pipeline_intake_service_rejects_legacy_bearer_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = tmp_path / "missing-manifest.json"
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/live-pipeline/job-requests",
+        json={},
+        headers={"authorization": "Bearer test-intake-token"},
+    )
+
+    assert response.status_code == 401
+    assert "HMAC signature" in response.text
+
+
+def test_live_pipeline_intake_service_accepts_signed_request_and_rejects_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = tmp_path / "missing-manifest.json"
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
+    client = TestClient(create_app())
+    body = "{}"
+    headers = _signed_intake_headers("test-intake-token", body, nonce="nonce-valid-2")
+
+    first = client.post("/api/live-pipeline/job-requests", data=body, headers=headers)
+    replay = client.post("/api/live-pipeline/job-requests", data=body, headers=headers)
+
+    assert first.status_code == 503
+    assert replay.status_code == 401
+    assert "replayed intake signature nonce" in replay.text
+
+
+def test_live_pipeline_intake_service_rejects_stale_signed_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = tmp_path / "missing-manifest.json"
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
+    client = TestClient(create_app())
+    body = "{}"
+
+    response = client.post(
+        "/api/live-pipeline/job-requests",
+        data=body,
+        headers=_signed_intake_headers(
+            "test-intake-token",
+            body,
+            timestamp="2000-01-01T00:00:00+00:00",
+            nonce="nonce-valid-3",
+        ),
+    )
+
+    assert response.status_code == 401
+    assert "replay window" in response.text
+
+
+def test_live_pipeline_intake_service_rejects_tampered_signed_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = tmp_path / "missing-manifest.json"
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
+    client = TestClient(create_app())
+    signed_body = "{}"
+
+    response = client.post(
+        "/api/live-pipeline/job-requests",
+        data='{"tampered":true}',
+        headers=_signed_intake_headers(
+            "test-intake-token",
+            signed_body,
+            nonce="nonce-valid-4",
+        ),
+    )
+
+    assert response.status_code == 401
+    assert "invalid intake signature" in response.text
 
 
 def test_live_pipeline_intake_service_stages_webapp_request(

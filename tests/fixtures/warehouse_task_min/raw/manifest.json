@@ -1,0 +1,11 @@
+{
+  "schema_version": "v3",
+  "scene_id": "fixture_warehouse_task_min",
+  "capture_id": "fixture_warehouse_capture_001",
+  "site_type": "warehouse",
+  "site_type_source": "fixture_capture_truth",
+  "intended_space_type": "warehouse",
+  "capture_source": "fixture",
+  "has_lidar": true,
+  "scale_hint_m_per_unit": 1.0
+}
