@@ -2,14 +2,14 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 22 fixed · 3 scaffolded · 94 todo · 119 total.**
+**Progress: 25 fixed · 5 scaffolded · 89 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
-| R001 | P0 | 🌐 | cross-repo | Consent/authorization model is retail/public-space framed with no industrial (warehouse/factory) leg | ⬜ todo |  |
+| R001 | P0 | 🌐 | cross-repo | Consent/authorization model is retail/public-space framed with no industrial (warehouse/factory) leg | 🟡 scaffolded | Industrial consent/authorization legal framework; CODE enforcement already landed (R011/R012/R020/R010/R005). PENDING (human): counsel drafts operator agreement + worker-privacy/ND |
 | R002 | P0 |  | cross-repo | Delivery producer is missing: pipeline never uploads packages to cloud, so the WebApp signed-URL han | ✅ fixed | End-to-end delivery loop complete: pipeline arena_package_delivery_gcs uploads to gs://marketplace-artifacts/{ent}/; webapp package-delivery ingestion sets the source on the entitl |
 | R003 | P0 |  | cross-repo | Storage rules are disjoint across repos, both deploy to the same project (last-writer-wins), and the | ✅ fixed | Canonical superset storage.rules byte-identical across repos + check-storage-rules-parity.sh + both parity guards wired into webapp CI (RUNNER_TEMP isolation, sibling matching-bran |
-| R004 | P0 |  | cross-repo | Operator DPA / subprocessor list / access-audit terms and legal-EHS consent sign-off are unsigned (o | ⬜ todo |  |
+| R004 | P0 |  | cross-repo | Operator DPA / subprocessor list / access-audit terms and legal-EHS consent sign-off are unsigned (o | 🟡 scaffolded | DPA/data-processing terms + stack-grounded subprocessor list + access-audit + retention scaffold wired to paid-gate operator_dpa_data_processing_terms. PENDING (human): counsel rev |
 | R005 | P1 | 🌐 | capture | Capture app hardcodes intended_space_type='industrial_unknown' with no site-type picker — the pipeli | ✅ fixed | SiteType enum + non-blocking picker; VideoCaptureManager/GlassesCaptureManager write the selected token into intended_space_type (was hardcoded industrial_unknown). Tokens match pi |
 | R006 | P1 | 🌐 | pipeline | Industrial task-success grounding does not exist — eval_ready_task_grounding.py only ships a kitchen | ✅ fixed | Added containment_in_receptacle / placement_at_target_pose / transfer_zone_arrival success proxies parallel to the kitchen handle proxy, routed by material-handling/pick-place/tran |
 | R007 | P1 | 🌐 | pipeline | No industrial simulator scene/scenario catalog or committed truth fixture — the only proven end-to-e | ✅ fixed | Committed warehouse_task_min industrial truth fixture (identical schema, industrial content). [pipeline 3ff0238] |
@@ -28,13 +28,13 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R020 | P1 | 🌐 | capture | Venue-permission provenance is a read-only retail demo with no creation flow — industrial capturers  | ⬜ todo |  |
 | R021 | P1 |  | capture | Uploads are single-shot PUTs with no intra-file resume — large captures restart from byte 0 on every | ⬜ todo |  |
 | R022 | P1 |  | cross-repo | No capacity/cost/storage-volume model or bucket retention for large industrial captures at 100 users | ⬜ todo |  |
-| R023 | P1 |  | cross-repo | Consent-revocation/takedown is pushed by the pipeline but not consumed by the webapp buyer-delivery  | ⬜ todo |  |
+| R023 | P1 |  | cross-repo | Consent-revocation/takedown is pushed by the pipeline but not consumed by the webapp buyer-delivery  | ✅ fixed | Duplicate of R027: the WebApp now consumes the pipeline takedown notice and flips entitlements to revoked (consentRevocationTakedown ingestion + defensive mint blocks). Covered by  |
 | R024 | P1 |  | pipeline | Batch inbox runner has no per-request exception isolation, quarantine, or dead-letter — one poison r | ⬜ todo |  |
-| R025 | P1 |  | pipeline | Headline task success_rate for WAM runs is a VLM judgment over GENERATED video, not physics or captu | ⬜ todo |  |
+| R025 | P1 |  | pipeline | Headline task success_rate for WAM runs is a VLM judgment over GENERATED video, not physics or captu | ✅ fixed | Success-label provenance vocabulary stamped on WAM VLM labels; buyer scorecard discloses generated_video_vlm success_rate is not physics/captured truth. 38 tests pass. [pipeline 98 |
 | R026 | P1 |  | pipeline | Live simulator execution and live policy execution are unproven by default; honest beta deliverable  | ⬜ todo |  |
 | R027 | P1 |  | cross-repo | Consent revocation is not self-enforcing across the delivery chain: revoked capture != revoked entit | ✅ fixed | WebApp ingests pipeline takedown notice -> flips linked entitlements to access_state=revoked with audit trail; both mint paths defensively refuse revoked. tsc clean; 3/3 + 22/22 te |
 | R028 | P1 |  | webapp | Runtime forwarding defaults to required=false: WebApp returns 202 "queued_for_pipeline" even when no | ✅ fixed | Production now returns 5xx when pipeline forwarding not performed (not_configured->503, blocked/failed->502) regardless of FORWARD_REQUIRED; non-prod unchanged. tsc clean, 25 tests |
-| R029 | P1 |  | cross-repo | Contract parity gate cannot run — shared BlueprintContracts module is absent; both repos run indepen | ⬜ todo |  |
+| R029 | P1 |  | cross-repo | Contract parity gate cannot run — shared BlueprintContracts module is absent; both repos run indepen | ✅ fixed | Fail-closed shared-contract gate via BLUEPRINT_REQUIRE_SHARED_ROBOT_EVAL_CONTRACT (both repos); webapp verify script + ci.yml set the flag; dual-pin doc. tsc 0; contract tests pass |
 | R030 | P1 |  | webapp | No entitlement/authz enforcement on eval-job submission; entitlement.approved is client-supplied and | ✅ fixed | Eval-job submission now requires a server-verified provisioned marketplace entitlement for (buyer,site); client entitlement.approved stripped/overwritten server-side; internal/admi |
 | R031 | P1 |  | webapp | Buyer cannot download purchased Task Eval Run / Post-Training Data Package artifacts from the app: e | ✅ fixed | marketplaceEntitlements carries package_delivery_base_uri/object_keys; internal package-delivery ingestion route sets the gs:// source; artifact-access mints a signed URL; buyer UI |
 | R032 | P1 |  | webapp | Buyer disputes/chargebacks have no local webhook handler — linked payout is not frozen and order sta | ✅ fixed | charge.dispute.created marks order disputed + holds linked non-in_transit payouts (on_hold, excluded from disbursement); dispute.closed releases/settles; idempotent. tsc clean; tes |
