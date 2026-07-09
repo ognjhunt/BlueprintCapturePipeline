@@ -2944,6 +2944,71 @@ def _collision_backend_labels(
     }
 
 
+_SITE_EXTENT_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("approx_floor_area_m2", "float", "square_meters"),
+    ("ceiling_height_m", "float", "meters"),
+    ("floor_count", "int", "count"),
+    ("dominant_aisle_width_m", "float", "meters"),
+)
+
+
+def _site_extent_value(raw: Any, kind: str) -> Any:
+    """Coerce a declared site-extent value, returning None when absent/blank/invalid."""
+
+    if raw is None:
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        return int(float(raw)) if kind == "int" else float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _site_extent(
+    *,
+    raw_manifest: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Site scale/dimensional capture truth (R017).
+
+    Warehouses/factories are defined by scale (floor area, ceiling height, aisle
+    width, floor count). These values are declared or measured capture inputs,
+    not derived or verified claims. Sourced from the capture manifest first, then
+    operator-supplied site metadata; absent values are marked
+    ``needs_capture_or_operator_input`` rather than fabricated.
+    """
+
+    values: Dict[str, Any] = {}
+    units: Dict[str, str] = {}
+    sources: Dict[str, str] = {}
+    any_present = False
+    for key, kind, unit in _SITE_EXTENT_FIELDS:
+        units[key] = unit
+        value = _site_extent_value(raw_manifest.get(key), kind)
+        source = "capture_manifest"
+        if value is None:
+            value = _site_extent_value(metadata.get(key), kind)
+            source = "site_operator_metadata"
+        if value is None:
+            source = "needs_capture_or_operator_input"
+        else:
+            any_present = True
+        values[key] = value
+        sources[key] = source
+    return {
+        **values,
+        "units": units,
+        "sources": sources,
+        "status": "declared_present" if any_present else "needs_capture_or_operator_input",
+        "label_source": "capture_manifest_or_site_operator_metadata",
+        "claim_boundary": (
+            "site_extent_values_are_declared_or_measured_capture_inputs_"
+            "not_derived_or_verified_claims"
+        ),
+    }
+
+
 def _site_card(
     *,
     context: Any,
@@ -3098,6 +3163,9 @@ def _site_card(
             "captured indoor scene",
         ],
         "geometry": geometry_summary,
+        # Site scale/dimensional capture truth (R017). Additive block; existing
+        # geometry/scale fields are unchanged. Declared/measured inputs only.
+        "site_extent": _site_extent(raw_manifest=raw_manifest, metadata=metadata),
         "visual_conditions": _condition_cards(
             metadata,
             ["lighting", "glare", "clutter", "signage", "reflective_surfaces"],
