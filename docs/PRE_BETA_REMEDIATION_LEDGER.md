@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 30 fixed · 4 scaffolded · 85 todo · 119 total.**
+**Progress: 32 fixed · 4 scaffolded · 83 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -17,7 +17,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R009 | P1 | 🌐 | capture | extractFrames Cloud Function downloads the entire walkthrough video into a 2GiB memory-backed tmpfs  | ✅ fixed | extractFrames pre-download size guard (EXTRACT_FRAMES_MAX_VIDEO_BYTES default 1.5GiB): oversized industrial videos rejected before download with explicit reason; mem 2->4GiB headro |
 | R010 | P1 | 🌐 | pipeline | Privacy redaction is person-only — no badge/ID, screen, whiteboard, signage, or license-plate redact | ✅ fixed | Redaction class set is site-type-aware (industrial adds badge/screen/plate/signage); privacy_state 'cleared' now requires those handled for industrial sites. 11 new + 21 existing t |
 | R011 | P1 | 🌐 | cross-repo | 'policy_only' consent self-clears the consent-evidence gate with no operator permission document, an | ✅ fixed | policy_only consent clears only for public sites; industrial/private require permission_document_uri or lawful-basis attestation, else blocker policy_only_insufficient_for_private_ |
-| R012 | P1 | 🌐 | capture | Site-operator authorization (VenuePermission) is demo-only UI: never persisted, uploaded, or enforce | ⬜ todo |  |
+| R012 | P1 | 🌐 | capture | Site-operator authorization (VenuePermission) is demo-only UI: never persisted, uploaded, or enforce | ✅ fixed | Real Codable VenuePermission authorization record + in-app creation form (industrial vocabulary: dock/aisle/PPE/escort/LOTO) + persistence into capture rights; badge wired to viewM |
 | R013 | P1 | 🌐 | pipeline | Scenario-variation family taxonomy is a single fixed global list, warehouse-flavored and factory-inc | ✅ fixed | Site-scoped variation profiles (SITE_CATEGORY_VARIATION_PROFILES + required_variation_names_for_site_category) + factory hazard axes; manufacturing requires factory hazards, kitche |
 | R014 | P1 | 🌐 | pipeline | No committed industrial task-eval fixture/truth test; industrial hazard variations are template mock | ✅ fixed | Committed factory_task_min truth fixture; success-claim truth tests now gate kitchen+warehouse+factory; 109 tests pass. [pipeline (this commit)] |
 | R015 | P1 | 🌐 | cross-repo | Pipeline->WebApp ops dashboard summary contract is hardcoded to a home/residential task ontology | ✅ fixed | Ops dashboard Zod contract generalized additively: legacy whole_home preserved + site_type/site_summary open category taxonomy for warehouse/factory groups. tsc clean; 6/6 + 18/18  |
@@ -25,7 +25,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R017 | P1 | 🌐 | cross-repo | No site scale / dimensional metadata as capture truth or Site-card field | ✅ fixed | IOSManifest + site_card gain optional site-extent fields (floor area/ceiling/floor count/aisle width) with provenance + claim boundary; backward-compatible. 17 tests pass. [pipelin |
 | R018 | P1 | 🌐 | pipeline | Site-type recognition is brittle substring keyword matching over a tiny closed vocabulary with silen | ✅ fixed | New shared versioned site_taxonomy.py (canonical categories + synonyms + industrial flag + resolver); episode_spec task hints now recognize expanded industrial synonyms (distributi |
 | R019 | P1 | 🌐 | capture | Launch-city gate hard-blocks capture at any off-launch-city site, and its only recovery button silen | ⬜ todo |  |
-| R020 | P1 | 🌐 | capture | Venue-permission provenance is a read-only retail demo with no creation flow — industrial capturers  | ⬜ todo |  |
+| R020 | P1 | 🌐 | capture | Venue-permission provenance is a read-only retail demo with no creation flow — industrial capturers  | ✅ fixed | Onboarding/provenance half of the VenuePermission work: creation flow replaces the retail read-only demo; same commit as R012. [capture a9f61e3, de47609] |
 | R021 | P1 |  | capture | Uploads are single-shot PUTs with no intra-file resume — large captures restart from byte 0 on every | ⬜ todo |  |
 | R022 | P1 |  | cross-repo | No capacity/cost/storage-volume model or bucket retention for large industrial captures at 100 users | ⬜ todo |  |
 | R023 | P1 |  | cross-repo | Consent-revocation/takedown is pushed by the pipeline but not consumed by the webapp buyer-delivery  | ✅ fixed | Duplicate of R027: the WebApp now consumes the pipeline takedown notice and flips entitlements to revoked (consentRevocationTakedown ingestion + defensive mint blocks). Covered by  |
