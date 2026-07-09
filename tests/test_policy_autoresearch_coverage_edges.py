@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import runpy
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +9,7 @@ from typing import Any
 import pytest
 
 from blueprint_pipeline import policy_autoresearch as pa
+from tests.runpy_entrypoint import run_module_as_main
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -874,7 +874,7 @@ def test_policy_autoresearch_module_guard_runs_main(
     )
 
     with pytest.raises(SystemExit) as exc:
-        runpy.run_module("blueprint_pipeline.policy_autoresearch", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.policy_autoresearch")
 
     assert exc.value.code == 0
     assert json.loads(capsys.readouterr().out)["status"] == "promoted"

@@ -56,6 +56,13 @@ def test_prepare_vast_bundle_staging_writes_redacted_manifest_and_secret_env(
     persisted_manifest = (tmp_path / "vast_bundle_staging_manifest.json").read_text(
         encoding="utf-8"
     )
+    assert manifest["token_file"]["path_redacted"] is True
+    assert manifest["secret_env_file"]["path_redacted"] is True
+    assert "path" not in manifest["token_file"]
+    assert "path" not in manifest["secret_env_file"]
+    assert manifest["secret_artifact_policy"]["local_secret_file_paths_recorded"] is False
+    assert str(token_file) not in persisted_manifest
+    assert str(secret_env) not in persisted_manifest
     assert raw_token not in persisted_manifest
     assert raw_token in secret_env.read_text(encoding="utf-8")
 
@@ -172,6 +179,10 @@ def test_vast_bundle_staging_self_test_writes_manifest_without_token(tmp_path: P
     persisted = (tmp_path / "vast_bundle_staging_self_test.json").read_text(
         encoding="utf-8"
     )
+    assert result["token_file"]["path_redacted"] is True
+    assert "path" not in result["token_file"]
+    assert result["secret_artifact_policy"]["local_secret_file_paths_recorded"] is False
+    assert str(token_file) not in persisted
     assert token_file.read_text(encoding="utf-8").strip() not in persisted
     written = _read_json(tmp_path / "vast_bundle_staging_self_test.json")
     assert written["status"] == "passed"

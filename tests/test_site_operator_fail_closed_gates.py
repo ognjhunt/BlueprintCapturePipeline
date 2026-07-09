@@ -77,6 +77,10 @@ def test_operator_launch_evidence_template_is_parseable_and_non_verified() -> No
     ):
         assert checks[check_id]["status"] == "manual_live_evidence_required"
     assert checks["buyer_artifact_access"]["buyer_session_ref"] == ""
+    assert checks["operator_dpa_data_processing_terms"]["subprocessors"] == []
+    assert checks["operator_dpa_data_processing_terms"]["access_audit_terms_uri"] == ""
+    assert checks["cross_border_data_residency_posture"]["allowed_tester_countries"] == ["US"]
+    assert checks["cross_border_data_residency_posture"]["non_us_participants_blocked"] is False
     assert checks["stripe_connected_account_live_readiness"]["provider_state_checked"] is False
     assert checks["buyer_payment_settlement"]["stripe_mode"] == ""
     assert checks["capturer_payout_settlement"]["stripe_mode"] == ""
@@ -747,10 +751,25 @@ def test_buyer_artifact_access_operator_evidence_requires_executed_authenticated
     ("check_id", "expected_errors"),
     [
         ("legal_consent_posture_signoff", ["missing_signed_legal_or_dpa_record"]),
-        ("operator_dpa_data_processing_terms", ["missing_signed_legal_or_dpa_record"]),
+        (
+            "operator_dpa_data_processing_terms",
+            [
+                "missing_signed_legal_or_dpa_record",
+                "missing_retention_policy_terms",
+                "missing_subprocessor_list",
+                "missing_access_audit_terms",
+            ],
+        ),
         (
             "paperclip_ops_relay_secret_rotation",
             ["missing_secret_version_ref", "missing_redeploy_evidence"],
+        ),
+        (
+            "cross_border_data_residency_posture",
+            [
+                "missing_data_residency_or_transfer_record",
+                "missing_us_only_scope_or_signed_transfer_terms",
+            ],
         ),
         (
             "iphone_real_device_claim_flow",

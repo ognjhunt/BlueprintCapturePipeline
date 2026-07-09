@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import runpy
 import sys
 from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline.scaniverse_asset_import import build_scaniverse_asset_import, main
+from tests.runpy_entrypoint import run_module_as_main
 
 
 def _read_json(path: Path) -> dict:
@@ -171,5 +171,5 @@ def test_scaniverse_import_blocks_missing_assets_and_cli_edges(
         ],
     )
     with pytest.raises(SystemExit) as exc:
-        runpy.run_module("blueprint_pipeline.scaniverse_asset_import", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.scaniverse_asset_import")
     assert exc.value.code == 0

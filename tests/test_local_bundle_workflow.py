@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import runpy
 import sys
 from pathlib import Path
 
@@ -17,6 +16,7 @@ from blueprint_pipeline.local_bundle_workflow import (
 )
 from blueprint_pipeline.materialization import capture_materialization_readiness
 from blueprint_pipeline.preflight_capture import build_capture_preflight_report
+from tests.runpy_entrypoint import run_module_as_main
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -498,6 +498,6 @@ def test_preflight_capture_module_entrypoint_runs(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr(sys, "argv", ["preflight_capture", "--capture-root", str(capture_root)])
 
     with pytest.raises(SystemExit) as exc_info:
-        runpy.run_module("blueprint_pipeline.preflight_capture", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.preflight_capture")
 
     assert exc_info.value.code == 0

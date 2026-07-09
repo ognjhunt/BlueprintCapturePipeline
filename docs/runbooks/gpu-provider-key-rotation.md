@@ -92,6 +92,10 @@ Required before a beta/provider launch:
   `rotation_record_uri`.
 - `days_since_rotation` is less than or equal to `max_age_days`.
 - `secret_values_recorded` is `false`.
+- Local credential file paths are redacted from publishable artifacts. The
+  manifest may record presence, mode, path source, and rotation metadata, but not
+  `~/.blueprint-secrets/...` or operator-specific absolute credential paths. See
+  `docs/SECRET_ARTIFACT_DISCLOSURE_POLICY.md`.
 
 Keep this artifact separate from spend-guard, startup, teardown, review-media,
 and semantic-success proof. It is credential-rotation evidence only.

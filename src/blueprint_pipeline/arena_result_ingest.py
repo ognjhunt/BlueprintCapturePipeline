@@ -73,6 +73,10 @@ DELIVERY_COMMAND_OUTPUT_CANDIDATES = (
     "signed_access.command.json",
     "delivery_access.json",
 )
+PRIMARY_CAPTURE_BUCKET_LIFECYCLE_POLICY_FILE = "deploy/storage/primary-capture-bucket-lifecycle.json"
+PRIMARY_CAPTURE_BUCKET_LIFECYCLE_APPLY_SCRIPT = (
+    "scripts/apply_primary_capture_bucket_lifecycle.sh"
+)
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "arena_eval_ingest_and_post_training_package_support",
@@ -1460,10 +1464,52 @@ def _build_delivery_artifacts(
     retention = {
         "schema_version": "arena_delivery_retention_policy.v1",
         "generated_at": generated_at,
-        "status": "draft_review_required",
+        "status": "policy_declared_apply_required",
+        "default_review_retention_days": 30,
         "default_retention_days": 30,
         "requires_contract_confirmation": True,
-        "claim_boundary": dict(CLAIM_BOUNDARY),
+        "contract_hold_supersedes_lifecycle": True,
+        "primary_capture_bucket_lifecycle": {
+            "enforcement_layer": "gcs_bucket_lifecycle",
+            "policy_file": PRIMARY_CAPTURE_BUCKET_LIFECYCLE_POLICY_FILE,
+            "apply_script": PRIMARY_CAPTURE_BUCKET_LIFECYCLE_APPLY_SCRIPT,
+            "applies_to_primary_capture_bucket": True,
+            "enforced_after_apply": True,
+            "apply_proof_required_before_external_beta": True,
+            "live_bucket_policy_apply_proven": False,
+        },
+        "data_classes": {
+            "raw_capture_truth": {
+                "prefixes": ["scenes/", "targets/"],
+                "nearline_after_days": 30,
+                "coldline_after_days": 90,
+                "delete_after_days": 180,
+                "enforcement_layer": "gcs_bucket_lifecycle",
+            },
+            "temporary_processing": {
+                "prefixes": ["tmp/", "staging/", "debug/"],
+                "delete_after_days": 14,
+                "enforcement_layer": "gcs_bucket_lifecycle",
+            },
+            "buyer_eval_hosted_artifacts": {
+                "prefixes": [
+                    "buyer_delivery/",
+                    "marketplace/",
+                    "hosted_sessions/",
+                    "robot_eval_jobs/",
+                ],
+                "delete_after_days": 365,
+                "enforcement_layer": "gcs_bucket_lifecycle",
+                "contract_specific_hold_may_override": True,
+            },
+        },
+        "blockers": ["primary_capture_bucket_lifecycle_apply_proof_missing"],
+        "claim_boundary": {
+            **dict(CLAIM_BOUNDARY),
+            "gcs_lifecycle_policy_declared": True,
+            "live_bucket_lifecycle_apply_proven": False,
+            "retention_policy_is_legal_deletion_workflow": False,
+        },
     }
     total_bytes = sum(item.get("size_bytes", 0) or 0 for item in bundle_files)
     egress = {

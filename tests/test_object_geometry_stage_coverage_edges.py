@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import runpy
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +9,7 @@ import pytest
 
 from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline import object_geometry_stage as ogs
+from tests.runpy_entrypoint import run_module_as_main
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -544,5 +544,5 @@ def test_object_geometry_surfaces_views_support_and_run_edges(
 
     monkeypatch.setattr(sys, "argv", ["object_geometry_stage", "--capture-root", str(root)])
     with pytest.raises(SystemExit) as exc_info:
-        runpy.run_module("blueprint_pipeline.object_geometry_stage", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.object_geometry_stage")
     assert exc_info.value.code == 0

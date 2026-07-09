@@ -252,6 +252,8 @@ def test_runpod_wam_direct_url_files_block_on_launch_gates_without_leaking_urls(
         "HUGGING_FACE_HUB_TOKEN",
     ]
     assert manifest["model_secret_env_status"]["selected_file"]["mode_is_0600"] is True
+    assert manifest["model_secret_env_status"]["selected_file"]["path_redacted"] is True
+    assert "path" not in manifest["model_secret_env_status"]["selected_file"]
     assert manifest["provider_runtime_config_env_status"]["status"] == "configured"
     assert manifest["provider_runtime_config_env_status"]["values"] == {
         "BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS": "1200",
@@ -268,6 +270,7 @@ def test_runpod_wam_direct_url_files_block_on_launch_gates_without_leaking_urls(
     assert "output-get-secret" not in persisted
     assert "runpod-secret-not-persisted" not in persisted
     assert "hf-secret-not-persisted" not in persisted
+    assert str(hf_token_file) not in persisted
     assert "bundle-secret" not in direct_manifest
     assert "output-secret" not in direct_manifest
     assert "output-get-secret" not in direct_manifest

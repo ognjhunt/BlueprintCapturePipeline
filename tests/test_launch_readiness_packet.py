@@ -27,6 +27,20 @@ def _pipeline_source(head: str) -> dict[str, object]:
     }
 
 
+def _beta_data_retention_policy_payload() -> dict[str, object]:
+    return {
+        "schema_version": "blueprint.beta_data_retention_policy.v1",
+        "status": "declared_validator_enforced_operator_signoff_required",
+    }
+
+
+def _beta_data_residency_transfer_policy_payload() -> dict[str, object]:
+    return {
+        "schema_version": "blueprint.beta_data_residency_transfer_policy.v1",
+        "status": "declared_us_only_scope_operator_signoff_required",
+    }
+
+
 def _write_ci_evidence(
     path: Path,
     *,
@@ -80,17 +94,47 @@ def _init_repo_with_origin_main(repo: Path, *, dirty: bool = False) -> tuple[str
     return feature_head, origin_main
 
 
-def _init_clean_repo_at_origin_main(repo: Path) -> str:
+def _init_clean_repo_at_origin_main(
+    repo: Path,
+    *,
+    tracked_files: dict[str, str] | None = None,
+) -> str:
     repo.mkdir(parents=True)
     _git(repo, "init")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test User")
     _write_text(repo / "tracked.txt", "main")
+    for relative_path, content in (tracked_files or {}).items():
+        _write_text(repo / relative_path, content)
     _git(repo, "add", "tracked.txt")
+    for relative_path in tracked_files or {}:
+        _git(repo, "add", relative_path)
     _git(repo, "commit", "-m", "main")
     head = _git(repo, "rev-parse", "HEAD")
     _git(repo, "update-ref", "refs/remotes/origin/main", head)
     return head
+
+
+def _init_clean_pipeline_repo_at_origin_main(repo: Path) -> str:
+    return _init_clean_repo_at_origin_main(
+        repo,
+        tracked_files={
+            "docs/beta_data_retention_policy_2026-07-09.json": json.dumps(
+                _beta_data_retention_policy_payload()
+            ),
+            "docs/BETA_DATA_RETENTION_POLICY_2026-07-09.md": (
+                "# Beta Data Retention Policy\n"
+                "Status: `declared_validator_enforced_operator_signoff_required`\n"
+            ),
+            "docs/beta_data_residency_transfer_policy_2026-07-09.json": json.dumps(
+                _beta_data_residency_transfer_policy_payload()
+            ),
+            "docs/BETA_DATA_RESIDENCY_TRANSFER_POLICY_2026-07-09.md": (
+                "# Beta Data Residency And Transfer Policy\n"
+                "Status: `declared_us_only_scope_operator_signoff_required`\n"
+            ),
+        },
+    )
 
 
 def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp_path: Path) -> None:
@@ -99,7 +143,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
     contracts = tmp_path / "BlueprintContracts"
     capture = tmp_path / "BlueprintCapture"
     heads = {
-        "pipeline": _init_clean_repo_at_origin_main(pipeline),
+        "pipeline": _init_clean_pipeline_repo_at_origin_main(pipeline),
         "webapp": _init_clean_repo_at_origin_main(webapp),
         "contracts": _init_clean_repo_at_origin_main(contracts),
         "capture": _init_clean_repo_at_origin_main(capture),
@@ -222,6 +266,10 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         "pipeline_full_test_lane_ci": "success",
         "pipeline_sim_only_local_gate_ci": "success",
         "webapp_main_ci": "success",
+        "beta_data_retention_policy": "declared_validator_enforced_operator_signoff_required",
+        "beta_data_residency_transfer_policy": (
+            "declared_us_only_scope_operator_signoff_required"
+        ),
         "operator_evidence": "blocked",
     }
     assert packet["remaining_blockers"]["manual_live_evidence_ids"] == [
@@ -238,6 +286,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
     ]
     assert packet["remaining_blockers"]["ci_evidence_blockers"] == []
     assert packet["claim_boundary"]["automated_contracts_do_not_prove_real_pubsub_delivery"] is True
+    assert packet["claim_boundary"]["beta_data_retention_policy_is_declared_contract_not_signed_dpa"] is True
     assert packet["operator_evidence_status"]["evidence_file_present"] is False
     assert packet["operator_evidence_status"]["remaining_ids"] == ["buyer_payment_settlement"]
 
@@ -248,7 +297,7 @@ def test_launch_readiness_packet_filters_verified_operator_evidence_ids(tmp_path
     contracts = tmp_path / "BlueprintContracts"
     capture = tmp_path / "BlueprintCapture"
     heads = {
-        "pipeline": _init_clean_repo_at_origin_main(pipeline),
+        "pipeline": _init_clean_pipeline_repo_at_origin_main(pipeline),
         "webapp": _init_clean_repo_at_origin_main(webapp),
         "contracts": _init_clean_repo_at_origin_main(contracts),
         "capture": _init_clean_repo_at_origin_main(capture),
@@ -370,7 +419,7 @@ def test_launch_readiness_packet_blocks_stale_pipeline_artifact_source_heads(
     contracts = tmp_path / "BlueprintContracts"
     capture = tmp_path / "BlueprintCapture"
     heads = {
-        "pipeline": _init_clean_repo_at_origin_main(pipeline),
+        "pipeline": _init_clean_pipeline_repo_at_origin_main(pipeline),
         "webapp": _init_clean_repo_at_origin_main(webapp),
         "contracts": _init_clean_repo_at_origin_main(contracts),
         "capture": _init_clean_repo_at_origin_main(capture),
@@ -535,6 +584,10 @@ def test_launch_readiness_packet_blocks_missing_required_artifacts(tmp_path: Pat
     assert packet["status"] == "incomplete_packet"
     assert "missing_artifact:paid_marketplace_launch_gate_json" in packet["artifact_blockers"]
     assert "missing_artifact:webapp_forwarding_preflight" in packet["artifact_blockers"]
+    assert "missing_artifact:beta_data_retention_policy_json" in packet["artifact_blockers"]
+    assert "missing_artifact:beta_data_residency_transfer_policy_json" in packet[
+        "artifact_blockers"
+    ]
     assert "missing_ci_evidence:pipeline_full_test_lane_ci_evidence" in packet[
         "ci_evidence_blockers"
     ]

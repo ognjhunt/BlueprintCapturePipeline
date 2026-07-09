@@ -178,6 +178,9 @@ def test_main_writes_failure_artifacts_when_capture_repo_is_missing(tmp_path: Pa
             "--skip-android",
             "--skip-pipeline",
             "--skip-spend-guard",
+            "--skip-storage-rules-parity",
+            "--skip-storage-lifecycle",
+            "--skip-backup-drill",
             "--json-out",
             str(json_out),
             "--markdown-out",
@@ -215,6 +218,9 @@ def test_main_writes_manual_required_android_artifact(
             "--skip-ios",
             "--skip-pipeline",
             "--skip-spend-guard",
+            "--skip-storage-rules-parity",
+            "--skip-storage-lifecycle",
+            "--skip-backup-drill",
             "--json-out",
             str(json_out),
             "--markdown-out",
@@ -250,6 +256,9 @@ def test_main_blocks_when_spend_guard_snapshots_are_missing(tmp_path: Path) -> N
             "--skip-ios",
             "--skip-android",
             "--skip-pipeline",
+            "--skip-storage-rules-parity",
+            "--skip-storage-lifecycle",
+            "--skip-backup-drill",
             "--json-out",
             str(json_out),
             "--markdown-out",
@@ -270,6 +279,208 @@ def test_main_blocks_when_spend_guard_snapshots_are_missing(tmp_path: Path) -> N
     assert post["status"] == "failed"
     assert pre["blockers"] == ["spend_guard_snapshot_path_missing"]
     assert post["blockers"] == ["spend_guard_snapshot_path_missing"]
+
+
+def test_main_runs_storage_rules_cross_repo_parity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    capture_repo = tmp_path / "BlueprintCapture"
+    webapp_repo = tmp_path / "Blueprint-WebApp"
+    capture_repo.mkdir()
+    webapp_repo.mkdir()
+    json_out = tmp_path / "external_alpha_launch_gate.json"
+    markdown_out = tmp_path / "external_alpha_launch_gate.md"
+    commands: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd, *, cwd, env=None, timeout_seconds=None):  # type: ignore[no-untyped-def]
+        commands.append((list(cmd), cwd))
+
+    monkeypatch.setattr(gate, "_run", fake_run)
+
+    exit_code = gate.main(
+        [
+            "--capture-repo",
+            str(capture_repo),
+            "--webapp-repo",
+            str(webapp_repo),
+            "--pipeline-repo",
+            str(tmp_path),
+            "--skip-capture-cloud",
+            "--skip-ios",
+            "--skip-android",
+            "--skip-pipeline",
+            "--skip-spend-guard",
+            "--skip-storage-lifecycle",
+            "--skip-backup-drill",
+            "--json-out",
+            str(json_out),
+            "--markdown-out",
+            str(markdown_out),
+        ]
+    )
+
+    assert exit_code == 0
+    assert commands == [
+        (
+            [
+                "bash",
+                "scripts/check-storage-rules-parity.sh",
+                "--ios-rules",
+                str(capture_repo / "storage.rules"),
+            ],
+            webapp_repo,
+        )
+    ]
+    report = json.loads(json_out.read_text(encoding="utf-8"))
+    parity = next(
+        check for check in report["checks"] if check["id"] == "storage_rules_cross_repo_parity"
+    )
+    assert parity["status"] == "passed"
+
+
+def test_main_runs_primary_capture_bucket_lifecycle_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    capture_repo = tmp_path / "BlueprintCapture"
+    webapp_repo = tmp_path / "Blueprint-WebApp"
+    pipeline_repo = tmp_path / "BlueprintCapturePipeline"
+    capture_repo.mkdir()
+    webapp_repo.mkdir()
+    pipeline_repo.mkdir()
+    json_out = tmp_path / "external_alpha_launch_gate.json"
+    markdown_out = tmp_path / "external_alpha_launch_gate.md"
+    validated: dict[str, Path] = {}
+
+    def fake_validate(repo_root: Path) -> dict[str, object]:
+        validated["repo_root"] = repo_root
+        return {
+            "status": "passed",
+            "lifecycle_path": str(
+                repo_root / "deploy" / "storage" / "primary-capture-bucket-lifecycle.json"
+            ),
+            "external_users": 100,
+            "modeled_captures_per_month": 300,
+            "target_concurrent_uploaders": 25,
+        }
+
+    monkeypatch.setattr(gate, "validate_beta_capacity_storage_files", fake_validate)
+
+    exit_code = gate.main(
+        [
+            "--capture-repo",
+            str(capture_repo),
+            "--webapp-repo",
+            str(webapp_repo),
+            "--pipeline-repo",
+            str(pipeline_repo),
+            "--skip-storage-rules-parity",
+            "--skip-capture-cloud",
+            "--skip-ios",
+            "--skip-android",
+            "--skip-pipeline",
+            "--skip-spend-guard",
+            "--skip-backup-drill",
+            "--json-out",
+            str(json_out),
+            "--markdown-out",
+            str(markdown_out),
+        ]
+    )
+
+    assert exit_code == 0
+    assert validated["repo_root"] == pipeline_repo.resolve()
+    report = json.loads(json_out.read_text(encoding="utf-8"))
+    lifecycle = next(
+        check
+        for check in report["checks"]
+        if check["id"] == "primary_capture_bucket_lifecycle_contract"
+    )
+    assert lifecycle["status"] == "passed"
+    assert lifecycle["external_users"] == 100
+    assert lifecycle["target_concurrent_uploaders"] == 25
+
+
+def test_main_runs_capture_truth_backup_restore_drill_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    capture_repo = tmp_path / "BlueprintCapture"
+    webapp_repo = tmp_path / "Blueprint-WebApp"
+    pipeline_repo = tmp_path / "BlueprintCapturePipeline"
+    capture_repo.mkdir()
+    webapp_repo.mkdir()
+    pipeline_repo.mkdir()
+    drill_artifact = tmp_path / "capture_truth_restore_drill.json"
+    drill_artifact.write_text("{}", encoding="utf-8")
+    json_out = tmp_path / "external_alpha_launch_gate.json"
+    markdown_out = tmp_path / "external_alpha_launch_gate.md"
+    validated: dict[str, object] = {}
+
+    def fake_validate_backup_policy(
+        repo_root: Path,
+        restore_drill_artifact: Path | None = None,
+        *,
+        require_restore_drill: bool = False,
+    ) -> dict[str, object]:
+        validated["repo_root"] = repo_root
+        validated["restore_drill_artifact"] = restore_drill_artifact
+        validated["require_restore_drill"] = require_restore_drill
+        return {
+            "status": "passed",
+            "script": str(repo_root / "scripts" / "apply_capture_truth_backup_policy.sh"),
+            "runbook": str(repo_root / "docs" / "CAPTURE_TRUTH_BACKUP_DR_RUNBOOK_2026-07-08.md"),
+            "restore_drill_artifact": str(restore_drill_artifact),
+            "source_project_id": "blueprint-prod",
+            "restore_project_id": "blueprint-restore-drill",
+        }
+
+    monkeypatch.setattr(gate, "validate_backup_policy", fake_validate_backup_policy)
+
+    exit_code = gate.main(
+        [
+            "--capture-repo",
+            str(capture_repo),
+            "--webapp-repo",
+            str(webapp_repo),
+            "--pipeline-repo",
+            str(pipeline_repo),
+            "--skip-storage-rules-parity",
+            "--skip-storage-lifecycle",
+            "--skip-capture-cloud",
+            "--skip-ios",
+            "--skip-android",
+            "--skip-pipeline",
+            "--skip-spend-guard",
+            "--backup-drill-artifact",
+            str(drill_artifact),
+            "--json-out",
+            str(json_out),
+            "--markdown-out",
+            str(markdown_out),
+        ]
+    )
+
+    assert exit_code == 0
+    assert validated == {
+        "repo_root": pipeline_repo.resolve(),
+        "restore_drill_artifact": drill_artifact.resolve(),
+        "require_restore_drill": True,
+    }
+    report = json.loads(json_out.read_text(encoding="utf-8"))
+    backup = next(
+        check
+        for check in report["checks"]
+        if check["id"] == "capture_truth_backup_restore_drill"
+    )
+    assert backup["status"] == "passed"
+    assert backup["restore_drill_artifact"] == str(drill_artifact.resolve())
+    assert backup["source_project_id"] == "blueprint-prod"
+    assert backup["restore_project_id"] == "blueprint-restore-drill"
 
 
 def test_spend_guard_snapshot_check_requires_fresh_passed_fleet_budget(

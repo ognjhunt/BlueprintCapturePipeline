@@ -3,7 +3,6 @@ from __future__ import annotations
 import builtins
 import json
 import math
-import runpy
 import struct
 import sys
 from pathlib import Path
@@ -13,6 +12,7 @@ import pytest
 
 from blueprint_pipeline import scene_asset_preflight as sap
 from blueprint_pipeline.common import PipelineError
+from tests.runpy_entrypoint import run_module_as_main
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -631,5 +631,5 @@ def test_scene_asset_preflight_blocked_outputs_and_main_edges(
     _write_ascii_ply(module_ply)
     monkeypatch.setattr(sys, "argv", ["scene_asset_preflight", "--capture-root", str(module_capture_root), "--scene-asset", str(module_ply)])
     with pytest.raises(SystemExit) as exc:
-        runpy.run_module("blueprint_pipeline.scene_asset_preflight", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.scene_asset_preflight")
     assert exc.value.code == 0

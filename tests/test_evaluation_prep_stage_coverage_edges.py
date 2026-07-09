@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import runpy
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +11,7 @@ import pytest
 import blueprint_pipeline.evaluation_prep_stage as eps
 from blueprint_pipeline.common import PipelineError, write_json
 from blueprint_pipeline.world_model_policy import WorldModelPolicy
+from tests.runpy_entrypoint import run_module_as_main
 
 
 def _context(tmp_path: Path):
@@ -729,7 +729,7 @@ def test_main_success_failure_and_module_entrypoint(monkeypatch: pytest.MonkeyPa
     capture_root = tmp_path / "storage" / "local-blueprint" / "scenes" / "scene-entry" / "captures" / "capture-entry"
     monkeypatch.setattr(sys, "argv", ["evaluation_prep_stage.py", "--capture-root", str(capture_root)])
     with pytest.raises(SystemExit) as exc:
-        runpy.run_module("blueprint_pipeline.evaluation_prep_stage", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.evaluation_prep_stage")
     assert exc.value.code == 1
 
 

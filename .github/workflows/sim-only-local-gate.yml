@@ -6,6 +6,9 @@ on:
       - ".github/workflows/sim-only-local-gate.yml"
       - "pyproject.toml"
       - "uv.lock"
+      - "docs/CI_PYTHON_INTERPRETER_MATRIX.json"
+      - "docs/CI_PYTHON_INTERPRETER_MATRIX.md"
+      - "scripts/validate_python_interpreter_matrix.py"
       - "scripts/run_sim_only_beta_local_gate.py"
       - "src/blueprint_pipeline/**"
       - "tests/fixtures/sim_only_beta_local_capture/**"
@@ -16,6 +19,9 @@ on:
       - ".github/workflows/sim-only-local-gate.yml"
       - "pyproject.toml"
       - "uv.lock"
+      - "docs/CI_PYTHON_INTERPRETER_MATRIX.json"
+      - "docs/CI_PYTHON_INTERPRETER_MATRIX.md"
+      - "scripts/validate_python_interpreter_matrix.py"
       - "scripts/run_sim_only_beta_local_gate.py"
       - "src/blueprint_pipeline/**"
       - "tests/fixtures/sim_only_beta_local_capture/**"
@@ -97,6 +103,10 @@ jobs:
         run: |
           uv sync --extra dev
           uv pip install -e ../BlueprintContracts
+
+      - name: Validate Python interpreter matrix
+        working-directory: BlueprintCapturePipeline
+        run: uv run python scripts/validate_python_interpreter_matrix.py --assert-current
 
       - name: Verify shared robot-eval request contract
         working-directory: BlueprintCapturePipeline

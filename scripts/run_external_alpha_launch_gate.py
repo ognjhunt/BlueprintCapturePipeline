@@ -13,20 +13,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from blueprint_pipeline.safe_env import contract_test_env, load_env_files  # noqa: E402
 from blueprint_pipeline.source_metadata import git_source_metadata  # noqa: E402
+from scripts.validate_capture_truth_backup_policy import validate_backup_policy  # noqa: E402
+from scripts.validate_beta_capacity_storage import validate_files as validate_beta_capacity_storage_files  # noqa: E402
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return REPO_ROOT
 
 
 def _default_capture_repo() -> Path:
     return _repo_root().parent / "BlueprintCapture"
+
+
+def _default_webapp_repo() -> Path:
+    return _repo_root().parent / "Blueprint-WebApp"
 
 
 def _desktop_capture_repo() -> Path:
@@ -416,7 +425,12 @@ def _render_markdown(report: Mapping[str, Any]) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture-repo", type=Path, default=_default_capture_repo())
+    parser.add_argument("--webapp-repo", type=Path, default=_default_webapp_repo())
     parser.add_argument("--pipeline-repo", type=Path, default=_repo_root())
+    parser.add_argument("--skip-storage-rules-parity", action="store_true")
+    parser.add_argument("--skip-storage-lifecycle", action="store_true")
+    parser.add_argument("--skip-backup-drill", action="store_true")
+    parser.add_argument("--backup-drill-artifact", type=Path)
     parser.add_argument("--skip-ios", action="store_true")
     parser.add_argument("--skip-android", action="store_true")
     parser.add_argument("--skip-capture-cloud", action="store_true")
@@ -449,6 +463,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     capture_repo = args.capture_repo.resolve()
+    webapp_repo = args.webapp_repo.resolve()
     pipeline_repo = args.pipeline_repo.resolve()
     desktop_repo = _desktop_capture_repo()
     load_env_files([pipeline_repo, capture_repo])
@@ -460,11 +475,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             repo_name="BlueprintCapturePipeline",
         ),
         "capture_repo": str(capture_repo),
+        "webapp_repo": str(webapp_repo),
         "pipeline_repo": str(pipeline_repo),
         "checks": [],
     }
 
     print(f"[external-alpha-gate] canonical capture repo: {capture_repo}")
+    print(f"[external-alpha-gate] canonical webapp repo: {webapp_repo}")
     print(f"[external-alpha-gate] canonical pipeline repo: {pipeline_repo}")
     if desktop_repo.exists() and desktop_repo.resolve() != capture_repo:
         print(
@@ -473,6 +490,84 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     try:
+        if args.skip_storage_rules_parity:
+            _record_check(
+                report,
+                check_id="storage_rules_cross_repo_parity",
+                status="skipped",
+                detail=(
+                    "Storage-rules parity skipped; this is not proof that WebApp "
+                    "and Capture deploy the same Firebase Storage ruleset."
+                ),
+            )
+        else:
+            _run(
+                [
+                    "bash",
+                    "scripts/check-storage-rules-parity.sh",
+                    "--ios-rules",
+                    str(capture_repo / "storage.rules"),
+                ],
+                cwd=webapp_repo,
+            )
+            _record_check(
+                report,
+                check_id="storage_rules_cross_repo_parity",
+                status="passed",
+                webapp_rules=str(webapp_repo / "storage.rules"),
+                capture_rules=str(capture_repo / "storage.rules"),
+            )
+
+        if args.skip_storage_lifecycle:
+            _record_check(
+                report,
+                check_id="primary_capture_bucket_lifecycle_contract",
+                status="skipped",
+                detail=(
+                    "Primary capture bucket lifecycle validation skipped; this is not "
+                    "proof that raw, temporary, hosted, or buyer-delivery storage "
+                    "retention is bounded."
+                ),
+            )
+        else:
+            lifecycle_result = validate_beta_capacity_storage_files(pipeline_repo)
+            _record_check(
+                report,
+                check_id="primary_capture_bucket_lifecycle_contract",
+                status="passed",
+                lifecycle_path=lifecycle_result.get("lifecycle_path"),
+                target_concurrent_uploaders=lifecycle_result.get("target_concurrent_uploaders"),
+                external_users=lifecycle_result.get("external_users"),
+                modeled_captures_per_month=lifecycle_result.get("modeled_captures_per_month"),
+            )
+
+        if args.skip_backup_drill:
+            _record_check(
+                report,
+                check_id="capture_truth_backup_restore_drill",
+                status="skipped",
+                detail=(
+                    "Capture-truth backup/restore drill skipped; this is not proof "
+                    "that Firestore or primary-bucket restore works."
+                ),
+            )
+        else:
+            backup_result = validate_backup_policy(
+                pipeline_repo,
+                args.backup_drill_artifact.resolve() if args.backup_drill_artifact else None,
+                require_restore_drill=True,
+            )
+            _record_check(
+                report,
+                check_id="capture_truth_backup_restore_drill",
+                status="passed",
+                script=backup_result.get("script"),
+                runbook=backup_result.get("runbook"),
+                restore_drill_artifact=backup_result.get("restore_drill_artifact"),
+                source_project_id=backup_result.get("source_project_id"),
+                restore_project_id=backup_result.get("restore_project_id"),
+            )
+
         if args.skip_spend_guard:
             _record_check(
                 report,

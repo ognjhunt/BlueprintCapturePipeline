@@ -7,6 +7,11 @@ import stat
 from pathlib import Path
 from typing import Any, Sequence
 
+from .secret_artifact_policy import (
+    redacted_secret_file_status,
+    secret_path_disclosure_policy,
+)
+
 
 HF_TOKEN_ENV_ALIASES = (
     "HUGGINGFACE_HUB_TOKEN",
@@ -103,17 +108,22 @@ def _file_status(
         except OSError:
             mode = None
             size_bytes = None
-    return {
-        "env_name": env_name,
-        "configured_by_env": configured_by_env,
-        "path": str(path),
-        "present": bool(is_file),
-        "mode": mode,
-        "size_bytes": size_bytes,
-        "permission_recommended": "0600",
-        "secret_value_written_to_artifacts": False,
-        "secret_hash_written_to_artifacts": False,
-    }
+    status = redacted_secret_file_status(
+        path,
+        env_name=env_name,
+        configured_by_env=configured_by_env,
+        raw_secret_field="secret_value_written_to_artifacts",
+    )
+    status.update(
+        {
+            "present": bool(is_file),
+            "mode": mode,
+            "size_bytes": size_bytes,
+            "permission_recommended": "0600",
+            "secret_hash_written_to_artifacts": False,
+        }
+    )
+    return status
 
 
 def _secret_group_status(
@@ -140,7 +150,7 @@ def _secret_group_status(
         "file_env_aliases": list(file_env_names),
         "file_candidates": file_candidates,
         "file_secret_configured": bool(ready_file),
-        "selected_file_path": ready_file.get("path") if ready_file else None,
+        "selected_file_path_redacted": bool(ready_file),
         "auth_ready": bool(env_name or ready_file),
         "raw_secret_written_to_artifacts": False,
         "secret_hash_written_to_artifacts": False,
@@ -198,6 +208,7 @@ def model_access_secret_status() -> dict[str, Any]:
         "ngc": ngc_status,
         "raw_secret_written_to_artifacts": False,
         "secret_hash_written_to_artifacts": False,
+        "secret_artifact_policy": secret_path_disclosure_policy(),
         "claim_boundary": {
             "tokens_provide_model_or_container_access_only": True,
             "tokens_do_not_provide_gpu_compute": True,

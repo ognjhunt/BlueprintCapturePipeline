@@ -335,8 +335,31 @@ def _write_geometry_lane(monkeypatch) -> None:  # type: ignore[no-untyped-def]
 
 def _operator_launch_evidence_fields(check_id: str) -> dict[str, object]:
     base_uri = f"gs://local-blueprint/operator-evidence/{check_id}.json"
-    if check_id in {"legal_consent_posture_signoff", "operator_dpa_data_processing_terms"}:
+    if check_id == "legal_consent_posture_signoff":
         return {"signed_record_uri": base_uri}
+    if check_id == "operator_dpa_data_processing_terms":
+        return {
+            "signed_record_uri": base_uri,
+            "document_uri": "gs://local-blueprint/operator-evidence/operator-dpa.pdf",
+            "retention_policy_uri": "gs://local-blueprint/operator-evidence/beta-retention-policy.pdf",
+            "subprocessor_list_uri": "gs://local-blueprint/operator-evidence/subprocessors.pdf",
+            "subprocessors": [
+                {
+                    "name": "Google Cloud",
+                    "service_scope": "storage_and_pipeline_runtime",
+                }
+            ],
+            "access_audit_terms_uri": "gs://local-blueprint/operator-evidence/access-audit-terms.pdf",
+            "access_audit_report_uri": "gs://local-blueprint/operator-evidence/access-audit-log.json",
+        }
+    if check_id == "cross_border_data_residency_posture":
+        return {
+            "data_residency_policy_uri": "gs://local-blueprint/operator-evidence/data-residency-policy.pdf",
+            "us_only_beta_scope_uri": "gs://local-blueprint/operator-evidence/us-only-beta-scope.pdf",
+            "allowed_tester_countries": ["US"],
+            "allowed_site_countries": ["US"],
+            "non_us_participants_blocked": True,
+        }
     if check_id == "industrial_site_authorization_ehs_signoff":
         return {
             "signed_record_uri": base_uri,
@@ -629,6 +652,93 @@ def test_industrial_authorization_evidence_requires_specific_legal_ehs_fields() 
     assert verified["remaining_ids"] == []
 
 
+def test_operator_dpa_evidence_requires_subprocessor_and_access_audit_terms() -> None:
+    incomplete = {
+        "schema_version": "operator_launch_evidence.v1",
+        "checks": {
+            "operator_dpa_data_processing_terms": {
+                "status": "verified",
+                "signed_record_uri": "gs://local-blueprint/operator-evidence/dpa.pdf",
+                "verified_at": "2026-07-04T00:00:00+00:00",
+                "verified_by": "ops-owner",
+            }
+        },
+    }
+    blocked = validate_operator_launch_evidence(
+        incomplete,
+        ["operator_dpa_data_processing_terms"],
+    )
+
+    assert blocked["status"] == "blocked"
+    failures = blocked["checks"][0]["evidence_validation_errors"]
+    assert "missing_retention_policy_terms" in failures
+    assert "missing_subprocessor_list" in failures
+    assert "missing_access_audit_terms" in failures
+
+    complete = {
+        "schema_version": "operator_launch_evidence.v1",
+        "checks": {
+            "operator_dpa_data_processing_terms": {
+                "status": "verified",
+                "evidence_uri": "gs://local-blueprint/operator-evidence/operator-dpa-record.json",
+                "verified_at": "2026-07-04T00:00:00+00:00",
+                "verified_by": "ops-owner",
+                **_operator_launch_evidence_fields("operator_dpa_data_processing_terms"),
+            }
+        },
+    }
+    verified = validate_operator_launch_evidence(
+        complete,
+        ["operator_dpa_data_processing_terms"],
+    )
+
+    assert verified["status"] == "verified"
+    assert verified["remaining_ids"] == []
+
+
+def test_cross_border_residency_evidence_requires_us_scope_or_transfer_terms() -> None:
+    incomplete = {
+        "schema_version": "operator_launch_evidence.v1",
+        "checks": {
+            "cross_border_data_residency_posture": {
+                "status": "verified",
+                "data_residency_policy_uri": "gs://local-blueprint/operator-evidence/residency.pdf",
+                "verified_at": "2026-07-04T00:00:00+00:00",
+                "verified_by": "ops-owner",
+            }
+        },
+    }
+    blocked = validate_operator_launch_evidence(
+        incomplete,
+        ["cross_border_data_residency_posture"],
+    )
+
+    assert blocked["status"] == "blocked"
+    assert "missing_us_only_scope_or_signed_transfer_terms" in (
+        blocked["checks"][0]["evidence_validation_errors"]
+    )
+
+    complete = {
+        "schema_version": "operator_launch_evidence.v1",
+        "checks": {
+            "cross_border_data_residency_posture": {
+                "status": "verified",
+                "evidence_uri": "gs://local-blueprint/operator-evidence/residency-record.json",
+                "verified_at": "2026-07-04T00:00:00+00:00",
+                "verified_by": "ops-owner",
+                **_operator_launch_evidence_fields("cross_border_data_residency_posture"),
+            }
+        },
+    }
+    verified = validate_operator_launch_evidence(
+        complete,
+        ["cross_border_data_residency_posture"],
+    )
+
+    assert verified["status"] == "verified"
+    assert verified["remaining_ids"] == []
+
+
 def test_launch_gate_does_not_treat_blocked_bundle_file_as_ready(tmp_path: Path) -> None:
     capture_root, _descriptor_uri = _build_capture(
         tmp_path,
@@ -740,6 +850,7 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
     assert {
         "legal_consent_posture_signoff",
         "operator_dpa_data_processing_terms",
+        "cross_border_data_residency_posture",
         "paperclip_ops_relay_secret_rotation",
         "buyer_payment_settlement",
         "identity_kyc_provider_decision",

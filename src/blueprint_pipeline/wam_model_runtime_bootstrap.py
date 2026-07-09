@@ -28,6 +28,10 @@ from .oscar_official_release import (
     OFFICIAL_OSCAR_SOURCE_WEB_URL,
     official_release_contract,
 )
+from .secret_artifact_policy import (
+    redacted_secret_file_status_from_env,
+    secret_path_disclosure_policy,
+)
 
 
 BOOTSTRAP_SCHEMA_VERSION = "wam_model_runtime_bootstrap.v1"
@@ -131,19 +135,13 @@ def _env_truthy(name: str) -> bool:
 
 
 def _secret_file_status(env_name: str, default_path: str) -> dict[str, Any]:
-    configured = _string(os.getenv(env_name))
-    path = Path(configured or default_path).expanduser()
-    mode = oct(path.stat().st_mode & 0o777) if path.exists() else None
-    return {
-        "env_name": env_name,
-        "path": str(path),
-        "configured_by_env": bool(configured),
-        "present": path.is_file(),
-        "mode": mode,
-        "mode_is_0600": mode == "0o600",
-        "raw_secret_written_to_artifacts": False,
-        "secret_hash_written_to_artifacts": False,
-    }
+    status = redacted_secret_file_status_from_env(
+        env_name,
+        default_path,
+        raw_secret_field="raw_secret_written_to_artifacts",
+    )
+    status["secret_hash_written_to_artifacts"] = False
+    return status
 
 
 def _path_status(path: Path | None) -> dict[str, Any]:
@@ -431,6 +429,7 @@ def _provider_gate_status() -> dict[str, Any]:
         "providers": providers,
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
+        "secret_artifact_policy": secret_path_disclosure_policy(),
     }
 
 
@@ -474,6 +473,7 @@ def _provider_image_plan(*, candidate_id: str, output_dir: Path) -> dict[str, An
             "chat_pasted_tokens_must_be_rotated_before_use": True,
             "raw_secret_values_recorded": False,
             "secret_hashes_recorded": False,
+            "secret_artifact_policy": secret_path_disclosure_policy(),
         },
         "commands": {
             "build": (

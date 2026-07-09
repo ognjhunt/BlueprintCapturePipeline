@@ -682,6 +682,7 @@ def _scenario_family_library(scene: Mapping[str, Any], *, generated_at: str) -> 
         "schema_version": "scenario_family_library.v1",
         "source_mode": "external_mujoco_scene_asset",
         "family_count": len(families),
+        "variation_names_required": list(SCENARIO_VARIATION_NAMES),
         "families": families,
     }
 

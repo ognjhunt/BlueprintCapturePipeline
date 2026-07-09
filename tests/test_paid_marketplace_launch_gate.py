@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -133,9 +134,10 @@ def test_summarize_sources_android_operator_toolchain_manual_status() -> None:
     sources = _source_map(gate.summarize_sources(results))
 
     assert sources["Android"]["status"] == (
-        "internal_only_contract_ready_operator_toolchain_evidence_required"
+        "android_contract_evidence_missing_operator_toolchain_required"
     )
-    assert "operator/toolchain requirement" in sources["Android"]["automated_claim"]
+    assert "Android is not contract-ready from this report" in sources["Android"]["automated_claim"]
+    assert "live-device proof" in sources["Android"]["automated_claim"]
 
 
 def test_summarize_sources_android_manual_without_toolchain_class() -> None:
@@ -151,8 +153,9 @@ def test_summarize_sources_android_manual_without_toolchain_class() -> None:
     sources = _source_map(gate.summarize_sources(results))
 
     assert sources["Android"]["status"] == (
-        "internal_only_contract_ready_manual_bundle_confirmation_required"
+        "android_contract_evidence_missing_manual_bundle_confirmation_required"
     )
+    assert "Android is not contract-ready from this report" in sources["Android"]["automated_claim"]
 
 
 def test_build_claims_blocks_claims_when_blocking_result_failed() -> None:
@@ -167,6 +170,52 @@ def test_build_claims_blocks_claims_when_blocking_result_failed() -> None:
         "Do not claim the paid marketplace beta gate passes while any blocking automated "
         "contract suite is failing."
     ) in claims["not_justified"]
+
+
+def test_build_claims_names_noncanonical_python_failure() -> None:
+    gate = _load_gate_module()
+
+    claims = gate.build_claims(
+        [
+            _result(
+                gate,
+                "pipeline_python_interpreter_matrix",
+                status="failed",
+                blocking=True,
+            )
+        ]
+    )
+
+    assert claims["justified"] == []
+    assert (
+        "Do not use non-canonical Python interpreter output as launch proof; "
+        "rerun the paid gate on Python 3.12."
+    ) in claims["not_justified"]
+
+
+def test_python_interpreter_launch_evidence_result_uses_canonical_matrix() -> None:
+    gate = _load_gate_module()
+    repo = Path(__file__).resolve().parents[1]
+
+    result = gate.python_interpreter_launch_evidence_result(repo)
+
+    assert result.status == "passed"
+    assert result.evidence_class == "canonical_python_interpreter"
+
+
+def test_python_interpreter_launch_evidence_result_blocks_python_313(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _load_gate_module()
+    repo = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr(gate.sys, "version_info", SimpleNamespace(major=3, minor=13))
+
+    result = gate.python_interpreter_launch_evidence_result(repo)
+
+    assert result.status == "failed"
+    assert result.blocking is True
+    assert result.evidence_class == "canonical_python_interpreter_required"
+    assert result.skip_reason == "current_python_3.13_not_canonical_3.12"
 
 
 def test_build_claims_all_pass_has_contract_level_justified_claims() -> None:
@@ -229,6 +278,7 @@ def test_manual_checks_include_full_operator_legal_payments_and_delivery_ledger(
     assert {
         "legal_consent_posture_signoff",
         "operator_dpa_data_processing_terms",
+        "cross_border_data_residency_posture",
         "paperclip_ops_relay_secret_rotation",
         "iphone_real_device_claim_flow",
         "glasses_real_device_claim_flow",
@@ -266,6 +316,30 @@ def test_closeout_summary_does_not_claim_passed_contracts_on_automation_failure(
             "skip_reason": None,
         }
     ]
+
+
+def test_closeout_summary_treats_operator_toolchain_rows_as_missing_evidence() -> None:
+    gate = _load_gate_module()
+    report = {
+        "overall_status": "automated_contracts_passed_manual_ops_required",
+        "automated_checks": [
+            {
+                "id": "android_bundle_contracts",
+                "label": "Android bundle contract",
+                "status": "manual_required",
+                "blocking": True,
+                "evidence_class": "operator_toolchain_required",
+            },
+            {"id": "pipeline_launch_gate", "label": "Pipeline launch gate", "status": "passed"},
+        ],
+        "manual_checks": [],
+    }
+
+    summary = gate.closeout_summary(report)
+
+    assert "operator-toolchain checks did not run" in summary["operator_readout"]
+    assert "missing evidence, not passed contracts" in summary["operator_readout"]
+    assert "Automated repository contracts passed." not in summary["operator_readout"]
 
 
 def test_default_specs_include_buyer_artifact_access_contracts(tmp_path: Path) -> None:

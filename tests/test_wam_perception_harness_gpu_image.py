@@ -197,9 +197,14 @@ def test_wam_perception_harness_gpu_image_context_does_not_copy_secret_values(
 
     assert manifest["registry_auth"]["docker_username_file"]["present"] is True
     assert manifest["registry_auth"]["docker_pat_file"]["mode_is_0600"] is True
+    assert manifest["registry_auth"]["docker_username_file"]["path_redacted"] is True
+    assert "path" not in manifest["registry_auth"]["docker_username_file"]
+    assert manifest["registry_auth"]["secret_artifact_policy"]["local_secret_file_paths_recorded"] is False
     serialized_manifest = json.dumps(manifest, sort_keys=True)
     assert "registry-user" not in serialized_manifest
     assert "dckr_pat_test_secret_value" not in serialized_manifest
+    assert str(username_file) not in serialized_manifest
+    assert str(pat_file) not in serialized_manifest
     for path in Path(str(manifest["job_dir"])).rglob("*"):
         if path.is_file():
             text = path.read_text(encoding="utf-8", errors="ignore")

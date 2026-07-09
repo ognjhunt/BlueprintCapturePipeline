@@ -15,9 +15,12 @@ This gate is intentionally contract-first. It proves the paid beta path across t
 Operator readout:
 
 - `overall_status=automated_contracts_passed_manual_ops_required` means repository contracts passed and the remaining blockers are manual/live evidence requirements.
+- If any automated row is `manual_required` with
+  `operator_toolchain_required`, that row did not run and must be treated as
+  missing evidence, not a passed contract.
 - It does not mean Operational Launch Ready.
 - Treat the generated `Operator Closeout` section as the closeout packet: it lists what automation proved, what automation did not prove, and the exact evidence ids still open.
-- Android unit evidence can be `operator_toolchain_required` when this shell lacks `ANDROID_HOME` / `ANDROID_SDK_ROOT`; that is not a product pass and it is not real-device proof.
+- Android unit evidence can be `operator_toolchain_required` when this shell lacks `ANDROID_HOME` / `ANDROID_SDK_ROOT`; in that case Android is not contract-ready from that report, and the missing row is not product readiness or real-device proof.
 
 Production truth guardrails now enforced in code:
 
@@ -35,7 +38,7 @@ What the automated gate proves:
 - Buyer fulfillment metadata and creator payout transitions are contract-covered.
 - Buyer artifact access is contract-covered at the route/storage-rule level: a provisioned entitlement can mint a short-lived signed artifact URL, and the internal Pipeline access-check route records buyer-access status.
 - Payout marketing copy and open-capture copy are repo-guarded so backend URL, publishable key, and mocked Stripe tests do not become live payout readiness claims.
-- Missing Android SDK env (`ANDROID_HOME` / `ANDROID_SDK_ROOT`) is classified as operator/toolchain evidence, not product readiness or Android external readiness.
+- Missing Android SDK env (`ANDROID_HOME` / `ANDROID_SDK_ROOT`) is classified as operator/toolchain evidence. It is not Android contract readiness, product readiness, real-device proof, or Android external readiness.
 
 What the automated gate does not prove:
 
@@ -68,6 +71,17 @@ Required operator evidence:
   Category: legal/EHS. Evidence: signature over the current capture consent, rights, redaction, and delivery posture.
 - `operator_dpa_data_processing_terms`
   Category: legal/privacy ops. Evidence: operator DPA or equivalent data-processing terms covering retention policy, subprocessor list, and access-audit terms for delivered packages and hosted review access.
+  The `operator_launch_evidence.v1` entry must include a signed record or
+  document URI plus retention-policy terms (`retention_policy_uri` or
+  equivalent), subprocessor terms (`subprocessor_list_uri` or a non-empty
+  `subprocessors` list), and access-audit terms (`access_audit_terms_uri`,
+  `access_audit_log_policy_uri`, or equivalent). A generic evidence URI does
+  not satisfy this gate.
+- `cross_border_data_residency_posture`
+  Category: legal/privacy ops. Evidence: signed US-only beta scope for testers
+  and capture sites, or signed DPA/SCC-equivalent international-transfer terms
+  with transfer-impact, subprocessor-residency, and regional-processing posture.
+  A declared policy artifact alone does not admit non-US testers or non-US sites.
 - `industrial_site_authorization_ehs_signoff`
   Category: legal/EHS industrial-site authorization. Required when the capture descriptor or raw manifest marks the site as warehouse, manufacturing, fulfillment, factory, brownfield, `industrial_unknown`, or another industrial category. Evidence: signed site authorization by a named authorizer/role, EHS or safety sign-off, worker-PII or works-council posture, NDA/proprietary-data terms, PPE and escort acknowledgements, and restricted-zone controls for forklift lanes, LOTO, machine guards, and other non-public areas.
 - `paperclip_ops_relay_secret_rotation`

@@ -66,6 +66,8 @@ def tail_text(text: str, limit: int = 80) -> str:
 DEFAULT_IOS_SIMULATOR_NAME = "iPhone 17 Pro"
 DEFAULT_IOS_TEST_TIMEOUT_SECONDS = 900
 ANDROID_SDK_MISSING_REASON = "ANDROID_HOME or ANDROID_SDK_ROOT is not configured in this shell."
+PYTHON_INTERPRETER_MATRIX_PATH = Path("docs") / "CI_PYTHON_INTERPRETER_MATRIX.json"
+PYTHON_INTERPRETER_MATRIX_SCHEMA_VERSION = "blueprint_python_interpreter_matrix.v1"
 
 
 def positive_int(value: str) -> int:
@@ -318,6 +320,66 @@ def resolve_repo(root: Path, explicit: str | None, sibling_name: str) -> Path:
     return (root.parent / sibling_name).resolve()
 
 
+def current_python_minor() -> str:
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+def python_interpreter_launch_evidence_result(pipeline_repo: Path) -> CommandResult:
+    matrix_path = pipeline_repo / PYTHON_INTERPRETER_MATRIX_PATH
+    try:
+        matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return CommandResult(
+            id="pipeline_python_interpreter_matrix",
+            label="Pipeline Python interpreter launch-evidence matrix",
+            repo="BlueprintCapturePipeline",
+            command=[sys.executable, "--version"],
+            cwd=str(pipeline_repo),
+            status="failed",
+            blocking=True,
+            source_tags=("iphone", "glasses", "android"),
+            skip_reason=f"python_interpreter_matrix_unavailable: {exc}",
+            evidence_class="canonical_python_interpreter_required",
+            evidence_note=(
+                "Paid marketplace launch proof requires the checked-in Python "
+                "interpreter matrix; rerun after restoring the matrix."
+            ),
+        )
+    canonical = str(matrix.get("canonical_launch_evidence_python") or "").strip()
+    schema_version = str(matrix.get("schema_version") or "").strip()
+    current = current_python_minor()
+    blockers: list[str] = []
+    if schema_version != PYTHON_INTERPRETER_MATRIX_SCHEMA_VERSION:
+        blockers.append("python_interpreter_matrix_schema_mismatch")
+    if not canonical:
+        blockers.append("canonical_launch_evidence_python_missing")
+    if canonical and current != canonical:
+        blockers.append(f"current_python_{current}_not_canonical_{canonical}")
+
+    passed = not blockers
+    return CommandResult(
+        id="pipeline_python_interpreter_matrix",
+        label="Pipeline Python interpreter launch-evidence matrix",
+        repo="BlueprintCapturePipeline",
+        command=[sys.executable, "--version"],
+        cwd=str(pipeline_repo),
+        status="passed" if passed else "failed",
+        blocking=True,
+        source_tags=("iphone", "glasses", "android"),
+        exit_code=0 if passed else 1,
+        skip_reason=", ".join(blockers) if blockers else None,
+        evidence_class=(
+            "canonical_python_interpreter"
+            if passed
+            else "canonical_python_interpreter_required"
+        ),
+        evidence_note=(
+            f"Current Python {current}; canonical launch-evidence Python {canonical}. "
+            "Python 3.13 output must be rerun under Python 3.12 before supporting launch claims."
+        ),
+    )
+
+
 def default_specs(
     *,
     pipeline_repo: Path,
@@ -526,17 +588,23 @@ def summarize_sources(results: Sequence[CommandResult]) -> list[dict[str, str]]:
         android_status = "internal_only_contract_ready"
     elif android_ok == "manual_required" and webapp_ok and capture_ok and pipeline_ok:
         if android_result.evidence_class == "operator_toolchain_required":
-            android_status = "internal_only_contract_ready_operator_toolchain_evidence_required"
+            android_status = "android_contract_evidence_missing_operator_toolchain_required"
         else:
-            android_status = "internal_only_contract_ready_manual_bundle_confirmation_required"
+            android_status = "android_contract_evidence_missing_manual_bundle_confirmation_required"
     else:
         android_status = "blocked"
     android_claim = "Internal-only contract-ready; external site-faithful claims remain blocked."
     if android_result.evidence_class == "operator_toolchain_required":
         android_claim = (
-            "Internal-only contract-ready from WebApp, Capture bridge, and Pipeline suites; "
-            "Android SDK unit evidence is an operator/toolchain requirement in this shell, "
-            "not product readiness or live-device proof."
+            "WebApp, Capture bridge, and Pipeline cross-source contracts passed, but this "
+            "run did not execute Android SDK unit evidence. Android is not contract-ready "
+            "from this report; the missing row is operator/toolchain evidence, not product "
+            "readiness or live-device proof."
+        )
+    elif android_ok == "manual_required":
+        android_claim = (
+            "Android is not contract-ready from this report because the Android bundle "
+            "confirmation row is manual-required. This is separate from real-device proof."
         )
     sources.append(
         {
@@ -563,6 +631,13 @@ def manual_checks() -> list[dict[str, str]]:
             "status": "manual_signoff_required",
             "required_evidence": "Operator DPA or equivalent data-processing terms covering retention policy, subprocessors, and access-audit terms.",
             "not_proven_by_automation": "Repository contracts do not prove signed operator data-processing terms or privacy-ops approval.",
+        },
+        {
+            "id": "cross_border_data_residency_posture",
+            "category": "legal_privacy_ops",
+            "status": "manual_signoff_required",
+            "required_evidence": "Signed US-only beta scope or signed international-transfer terms covering DPA/SCC, transfer-impact assessment, subprocessors, and residency posture.",
+            "not_proven_by_automation": "Repository contracts do not prove non-US testers/sites are blocked or that international-transfer terms were signed.",
         },
         {
             "id": "paperclip_ops_relay_secret_rotation",
@@ -654,11 +729,16 @@ def manual_checks() -> list[dict[str, str]]:
 def build_claims(results: Sequence[CommandResult]) -> dict[str, list[str]]:
     blocking_failed = [result for result in results if result.blocking and result.status == "failed"]
     if blocking_failed:
+        not_justified = [
+            "Do not claim the paid marketplace beta gate passes while any blocking automated contract suite is failing.",
+        ]
+        if any(result.id == "pipeline_python_interpreter_matrix" for result in blocking_failed):
+            not_justified.append(
+                "Do not use non-canonical Python interpreter output as launch proof; rerun the paid gate on Python 3.12."
+            )
         return {
             "justified": [],
-            "not_justified": [
-                "Do not claim the paid marketplace beta gate passes while any blocking automated contract suite is failing.",
-            ],
+            "not_justified": not_justified,
         }
     return {
         "justified": [
@@ -677,6 +757,17 @@ def build_claims(results: Sequence[CommandResult]) -> dict[str, list[str]]:
 
 
 def evidence_boundary(results: Sequence[CommandResult]) -> dict[str, object]:
+    python_interpreter = [
+        {
+            "id": result.id,
+            "label": result.label,
+            "status": result.status,
+            "reason": result.skip_reason,
+            "note": result.evidence_note,
+        }
+        for result in results
+        if result.id == "pipeline_python_interpreter_matrix"
+    ]
     operator_toolchain = [
         {
             "id": result.id,
@@ -699,6 +790,7 @@ def evidence_boundary(results: Sequence[CommandResult]) -> dict[str, object]:
             "from real devices, Stripe/live provider state, buyer access, and finance ownership "
             "are attached."
         ),
+        "python_interpreter_evidence": python_interpreter,
         "operator_toolchain_evidence": operator_toolchain,
     }
 
@@ -724,16 +816,27 @@ def closeout_summary(report: dict) -> dict[str, object]:
         for item in report["manual_checks"]
         if item["status"].startswith("manual_")
     ]
+    operator_toolchain_required = [
+        result
+        for result in report["automated_checks"]
+        if result.get("evidence_class") == "operator_toolchain_required"
+        and result.get("status") == "manual_required"
+    ]
     if report.get("overall_status") == "automation_failed":
         readout = (
             "Automated repository contracts did not pass. This is a failing "
             "launch-gate closeout, not manual-ops-ready proof."
         )
+    elif operator_toolchain_required:
+        readout = (
+            "Blocking automated failures are absent, but one or more operator-toolchain "
+            "checks did not run. Treat those rows as missing evidence, not passed "
+            "contracts; this is not Operational Launch Ready proof."
+        )
     else:
         readout = (
-            "Automated repository contracts passed, with any listed toolchain "
-            "items marked as operator-required in this shell. This is a "
-            "manual-ops closeout, not Operational Launch Ready proof."
+            "Automated repository contracts passed. This is a manual-ops closeout, "
+            "not Operational Launch Ready proof."
         )
     return {
         "operator_readout": readout,
@@ -810,6 +913,12 @@ def render_markdown(report: dict) -> str:
             lines.append(f"- Automated proof: {boundary['automated_proof_scope']}")
         if boundary.get("manual_live_evidence_scope"):
             lines.append(f"- Manual/live evidence: {boundary['manual_live_evidence_scope']}")
+        for item in boundary.get("python_interpreter_evidence") or []:
+            lines.append(f"- Python interpreter: {item['label']}: `{item['status']}`")
+            if item.get("reason"):
+                lines.append(f"  Reason: {item['reason']}")
+            if item.get("note"):
+                lines.append(f"  Note: {item['note']}")
         for item in boundary.get("operator_toolchain_evidence") or []:
             lines.append(f"- Operator toolchain: {item['label']}: {item['note']}")
     lines.extend(["", "## Source Status", ""])
@@ -877,7 +986,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         ios_test_timeout_seconds=args.ios_test_timeout_seconds,
     )
 
-    results: list[CommandResult] = []
+    results: list[CommandResult] = [python_interpreter_launch_evidence_result(pipeline_repo)]
     for spec in specs:
         reason = should_skip(spec)
         results.append(skipped_result(spec, reason) if reason else run_command(spec))

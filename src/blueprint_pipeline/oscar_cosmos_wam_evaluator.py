@@ -33,6 +33,7 @@ from .failure_diagnosis_contract import (
     remediation_candidate as _failure_remediation_candidate,
     review_status_for_failure_label as _failure_review_status,
 )
+from .secret_artifact_policy import redacted_secret_file_status_from_env
 from .model_access_env import model_access_secret_status, normalize_model_access_env
 from .policy_model_runtime_proofs import (
     discover_openvla_provider_smoke_proof,
@@ -1126,17 +1127,14 @@ def _local_host_probe() -> dict[str, Any]:
 
 
 def _secret_file_probe(env_name: str, default_path: str) -> dict[str, Any]:
-    configured_path = _string(os.getenv(env_name))
-    path = Path(configured_path or default_path).expanduser()
-    return {
-        "env_name": env_name,
-        "path": str(path),
-        "configured_by_env": bool(configured_path),
-        "present": path.is_file(),
-        "permission_recommended": "0600",
-        "raw_secret_written_to_artifacts": False,
-        "secret_hash_written_to_artifacts": False,
-    }
+    status = redacted_secret_file_status_from_env(
+        env_name,
+        default_path,
+        raw_secret_field="raw_secret_written_to_artifacts",
+    )
+    status["permission_recommended"] = "0600"
+    status["secret_hash_written_to_artifacts"] = False
+    return status
 
 
 def build_policy_model_endpoint_readiness_manifest(

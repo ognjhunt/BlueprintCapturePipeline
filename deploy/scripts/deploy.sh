@@ -9,7 +9,16 @@
 #   ./deploy.sh --docker-only      # Only build and push Docker image
 #   ./deploy.sh --terraform-only   # Only apply Terraform
 #   ./deploy.sh --function-only    # Only deploy Cloud Function
+#   ./deploy.sh --rollback --rollback-image-tag <tag>
+#                                  # Roll Cloud Run jobs back to a known-good image tag
 #   ./deploy.sh --dry-run          # Show what would be done
+#
+# Deploy gate:
+#   FULL_TEST_LANE_COMMIT="$(git rev-parse HEAD)" \
+#   FULL_TEST_LANE_EVIDENCE_URI="https://github.com/.../actions/runs/..." \
+#     ./deploy.sh
+#
+# Release tags default to the current git SHA prefix. Do not deploy `latest`.
 #
 # Prerequisites:
 #   - gcloud CLI authenticated with appropriate permissions
@@ -30,7 +39,7 @@ PRIMARY_REGION="${PRIMARY_REGION:-us-central1}"
 SECONDARY_REGIONS="${SECONDARY_REGIONS:-us-east1,europe-west1}"
 STORAGE_BUCKET="${STORAGE_BUCKET:-${PROJECT_ID}.appspot.com}"
 IMAGE_NAME="${IMAGE_NAME:-blueprint-pipeline}"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+IMAGE_TAG="${IMAGE_TAG:-}"
 SAM3_IMAGE_NAME="${SAM3_IMAGE_NAME:-sam3-privacy}"
 VIP_IMAGE_NAME="${VIP_IMAGE_NAME:-vip-privacy}"
 DEEPPRIVACY2_IMAGE_NAME="${DEEPPRIVACY2_IMAGE_NAME:-deepprivacy2-privacy}"
@@ -60,6 +69,21 @@ VIDEO_TO_WORLD_COMMAND_TEMPLATE="${VIDEO_TO_WORLD_COMMAND_TEMPLATE:-}"
 PIPELINE_SYNC_WEBAPP_URL="${PIPELINE_SYNC_WEBAPP_URL:-}"
 PIPELINE_SYNC_TOKEN="${PIPELINE_SYNC_TOKEN:-}"
 WORLDLABS_API_KEY="${WORLDLABS_API_KEY:-}"
+ROLLBACK_IMAGE_TAG="${ROLLBACK_IMAGE_TAG:-}"
+ROLLBACK_VERIFY_COMMAND="${ROLLBACK_VERIFY_COMMAND:-python -m pytest tests/test_deploy_systemd_contract.py tests/test_launch_readiness_packet.py}"
+ROLLBACK_HEALTH_CHECK="${ROLLBACK_HEALTH_CHECK:-true}"
+FULL_TEST_LANE_REQUIRED="${FULL_TEST_LANE_REQUIRED:-true}"
+FULL_TEST_LANE_COMMIT="${FULL_TEST_LANE_COMMIT:-}"
+FULL_TEST_LANE_EVIDENCE_URI="${FULL_TEST_LANE_EVIDENCE_URI:-}"
+FULL_TEST_LANE_BYPASS_REASON="${FULL_TEST_LANE_BYPASS_REASON:-}"
+GIT_SHA="${GIT_SHA:-}"
+RELEASE_ID="${RELEASE_ID:-}"
+DEPLOYMENT_MANIFEST_PATH="${DEPLOYMENT_MANIFEST_PATH:-}"
+IMAGE_DIGEST_URI="${IMAGE_DIGEST_URI:-}"
+SAM3_IMAGE_DIGEST_URI="${SAM3_IMAGE_DIGEST_URI:-}"
+VIP_IMAGE_DIGEST_URI="${VIP_IMAGE_DIGEST_URI:-}"
+DEEPPRIVACY2_IMAGE_DIGEST_URI="${DEEPPRIVACY2_IMAGE_DIGEST_URI:-}"
+VIDEO_TO_WORLD_IMAGE_DIGEST_URI="${VIDEO_TO_WORLD_IMAGE_DIGEST_URI:-}"
 
 # Directories
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,6 +91,17 @@ DEPLOY_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="$(dirname "$DEPLOY_DIR")"
 TERRAFORM_DIR="$DEPLOY_DIR/terraform"
 FUNCTIONS_DIR="$PROJECT_ROOT/functions"
+
+GIT_SHA="${GIT_SHA:-$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true)}"
+if [[ -z "$IMAGE_TAG" ]]; then
+    if [[ -n "$GIT_SHA" ]]; then
+        IMAGE_TAG="${GIT_SHA:0:12}"
+    else
+        IMAGE_TAG="manual-$(date -u +%Y%m%d%H%M%S)"
+    fi
+fi
+RELEASE_ID="${RELEASE_ID:-$IMAGE_TAG}"
+DEPLOYMENT_MANIFEST_PATH="${DEPLOYMENT_MANIFEST_PATH:-$PROJECT_ROOT/output/deployments/pipeline-deployment-manifest.json}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -111,6 +146,109 @@ confirm() {
     [[ $REPLY =~ ^[Yy]$ ]]
 }
 
+current_git_sha() {
+    git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true
+}
+
+validate_release_image_tag() {
+    if [[ -z "$IMAGE_TAG" ]]; then
+        log_error "IMAGE_TAG must be non-empty."
+        exit 2
+    fi
+    case "$IMAGE_TAG" in
+        latest|dev|test|local)
+            log_error "IMAGE_TAG must be a release tag or git SHA, not '${IMAGE_TAG}'."
+            exit 2
+            ;;
+        *[!A-Za-z0-9_.-]*)
+            log_error "IMAGE_TAG contains unsupported characters: ${IMAGE_TAG}"
+            exit 2
+            ;;
+    esac
+}
+
+resolve_image_digest_uri() {
+    local tagged_uri="$1"
+    local repo="${tagged_uri%:*}"
+    local digest_uri
+    local digest
+
+    digest_uri="$(gcloud container images describe "$tagged_uri" \
+        --format='get(image_summary.fully_qualified_digest)' 2>/dev/null || true)"
+    if [[ -n "$digest_uri" && "$digest_uri" != "None" ]]; then
+        echo "$digest_uri"
+        return 0
+    fi
+
+    digest="$(gcloud container images describe "$tagged_uri" \
+        --format='get(image_summary.digest)' 2>/dev/null || true)"
+    if [[ "$digest" == sha256:* ]]; then
+        echo "${repo}@${digest}"
+        return 0
+    fi
+
+    return 1
+}
+
+pin_pushed_image_digests() {
+    log_info "Resolving immutable image digests for release ${IMAGE_TAG}..."
+
+    IMAGE_DIGEST_URI="$(resolve_image_digest_uri "$IMAGE_URI")" || {
+        log_error "Could not resolve digest for $IMAGE_URI"
+        exit 1
+    }
+    SAM3_IMAGE_DIGEST_URI="$(resolve_image_digest_uri "$SAM3_IMAGE_URI")" || {
+        log_error "Could not resolve digest for $SAM3_IMAGE_URI"
+        exit 1
+    }
+    VIP_IMAGE_DIGEST_URI="$(resolve_image_digest_uri "$VIP_IMAGE_URI")" || {
+        log_error "Could not resolve digest for $VIP_IMAGE_URI"
+        exit 1
+    }
+    DEEPPRIVACY2_IMAGE_DIGEST_URI="$(resolve_image_digest_uri "$DEEPPRIVACY2_IMAGE_URI")" || {
+        log_error "Could not resolve digest for $DEEPPRIVACY2_IMAGE_URI"
+        exit 1
+    }
+    VIDEO_TO_WORLD_IMAGE_DIGEST_URI="$(resolve_image_digest_uri "$VIDEO_TO_WORLD_IMAGE_URI")" || {
+        log_error "Could not resolve digest for $VIDEO_TO_WORLD_IMAGE_URI"
+        exit 1
+    }
+}
+
+check_full_test_lane_deploy_gate() {
+    local current_sha
+    current_sha="$(current_git_sha)"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY-RUN] Would require Full Test Lane success for ${current_sha:-<unknown git sha>} before deploy"
+        return
+    fi
+
+    if [[ "$FULL_TEST_LANE_REQUIRED" != "true" ]]; then
+        if [[ -z "$FULL_TEST_LANE_BYPASS_REASON" ]]; then
+            log_error "FULL_TEST_LANE_REQUIRED=false requires FULL_TEST_LANE_BYPASS_REASON."
+            exit 2
+        fi
+        log_warning "Full Test Lane deploy gate bypassed: ${FULL_TEST_LANE_BYPASS_REASON}"
+        return
+    fi
+
+    if [[ -z "$current_sha" ]]; then
+        log_error "Could not determine the current git SHA; refusing deploy without Full Test Lane commit evidence."
+        exit 2
+    fi
+    if [[ "$FULL_TEST_LANE_COMMIT" != "$current_sha" ]]; then
+        log_error "Full Test Lane deploy gate failed. Set FULL_TEST_LANE_COMMIT=${current_sha} only after Full Test Lane / Full pytest lane on CPU runner passed for this exact commit."
+        exit 2
+    fi
+    if [[ -z "$FULL_TEST_LANE_EVIDENCE_URI" ]]; then
+        log_error "FULL_TEST_LANE_EVIDENCE_URI must point to the successful Full Test Lane run or archived artifact for ${current_sha}."
+        exit 2
+    fi
+
+    log_success "Full Test Lane deploy gate satisfied for ${current_sha}: ${FULL_TEST_LANE_EVIDENCE_URI}"
+}
+
 # =============================================================================
 # Deployment Functions
 # =============================================================================
@@ -125,6 +263,8 @@ check_prerequisites() {
     check_command python3
 
     python3 "$PROJECT_ROOT/scripts/validate_pubsub_handoff_infra.py"
+    check_full_test_lane_deploy_gate
+    validate_release_image_tag
 
     # Check gcloud authentication
     if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" | head -n1 > /dev/null 2>&1; then
@@ -142,6 +282,73 @@ check_prerequisites() {
     fi
 
     log_success "Prerequisites check passed"
+}
+
+check_rollback_prerequisites() {
+    log_info "Checking rollback prerequisites..."
+
+    check_command gcloud
+    check_command jq
+    if [[ -n "$ROLLBACK_VERIFY_COMMAND" ]]; then
+        check_command bash
+    fi
+
+    log_success "Rollback prerequisites check passed"
+}
+
+rollback_deployment() {
+    if [[ -z "$ROLLBACK_IMAGE_TAG" ]]; then
+        log_error "Rollback requires --rollback-image-tag <tag> or ROLLBACK_IMAGE_TAG."
+        exit 2
+    fi
+
+    check_rollback_prerequisites
+
+    local rollback_image_uri="gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${ROLLBACK_IMAGE_TAG}"
+    IFS=',' read -ra REGIONS <<< "${PRIMARY_REGION},${SECONDARY_REGIONS}"
+
+    log_warning "Rolling blueprint-pipeline Cloud Run jobs back to ${rollback_image_uri}"
+    for region in "${REGIONS[@]}"; do
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log_info "[DRY-RUN] Would update Cloud Run Job blueprint-pipeline in ${region} to ${rollback_image_uri}"
+            continue
+        fi
+
+        gcloud run jobs update blueprint-pipeline \
+            --image "$rollback_image_uri" \
+            --region "$region" \
+            --quiet
+    done
+
+    if [[ -n "$ROLLBACK_VERIFY_COMMAND" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log_info "[DRY-RUN] Would run rollback verification: ${ROLLBACK_VERIFY_COMMAND}"
+        else
+            log_info "Running rollback verification: ${ROLLBACK_VERIFY_COMMAND}"
+            (cd "$PROJECT_ROOT" && bash -lc "$ROLLBACK_VERIFY_COMMAND")
+        fi
+    fi
+
+    if [[ "$ROLLBACK_HEALTH_CHECK" == "true" ]]; then
+        for region in "${REGIONS[@]}"; do
+            if [[ "$DRY_RUN" == "true" ]]; then
+                log_info "[DRY-RUN] Would verify deployed image for blueprint-pipeline in ${region}"
+                continue
+            fi
+
+            local actual_image
+            actual_image="$(gcloud run jobs describe blueprint-pipeline \
+                --region "$region" \
+                --format=json | jq -r '.template.template.containers[0].image // ""')"
+            if [[ "$actual_image" != "$rollback_image_uri" ]]; then
+                log_error "Rollback health check failed in ${region}: expected ${rollback_image_uri}, got ${actual_image:-<empty>}"
+                exit 1
+            fi
+            log_success "Rollback health check passed in ${region}: ${actual_image}"
+        done
+    fi
+
+    log_success "Rollback complete. Record the image tag, verification output, and incident id before closing."
 }
 
 enable_apis() {
@@ -246,6 +453,7 @@ push_docker_image() {
     docker push "$VIP_IMAGE_URI"
     docker push "$DEEPPRIVACY2_IMAGE_URI"
     docker push "$VIDEO_TO_WORLD_IMAGE_URI"
+    pin_pushed_image_digests
 
     log_success "Docker images pushed"
 }
@@ -255,6 +463,12 @@ apply_terraform() {
 
     cd "$TERRAFORM_DIR"
 
+    local pipeline_image="${IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}}"
+    local sam3_image="${SAM3_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}}"
+    local vip_image="${VIP_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}}"
+    local deepprivacy2_image="${DEEPPRIVACY2_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}}"
+    local video_to_world_image_ref="${VIDEO_TO_WORLD_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${VIDEO_TO_WORLD_IMAGE_NAME}:${IMAGE_TAG}}"
+
     # Create terraform.tfvars if it doesn't exist
     if [[ ! -f "terraform.tfvars" ]]; then
         log_info "Creating terraform.tfvars from example..."
@@ -263,11 +477,11 @@ project_id         = "${PROJECT_ID}"
 primary_region     = "${PRIMARY_REGION}"
 secondary_regions  = [$(echo "$SECONDARY_REGIONS" | tr ',' '\n' | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')]
 storage_bucket     = "${STORAGE_BUCKET}"
-docker_image       = "gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}"
-privacy_sam3_image = "gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}"
-privacy_vip_image  = "gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}"
-privacy_deepprivacy2_image = "gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}"
-video_to_world_image = "gcr.io/${PROJECT_ID}/${VIDEO_TO_WORLD_IMAGE_NAME}:${IMAGE_TAG}"
+docker_image       = "${pipeline_image}"
+privacy_sam3_image = "${sam3_image}"
+privacy_vip_image  = "${vip_image}"
+privacy_deepprivacy2_image = "${deepprivacy2_image}"
+video_to_world_image = "${video_to_world_image_ref}"
 privacy_runner_token = "${PRIVACY_RUNNER_TOKEN}"
 video_to_world_runner_token = "${VIDEO_TO_WORLD_RUNNER_TOKEN}"
 video_to_world_pipeline_preset = "${VIDEO_TO_WORLD_PIPELINE_PRESET}"
@@ -344,7 +558,7 @@ deploy_cloud_function() {
 create_cloud_run_jobs() {
     log_info "Creating Cloud Run Jobs..."
 
-    IMAGE_URI="gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}"
+    IMAGE_URI="${IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}}"
 
     # Split regions
     IFS=',' read -ra REGIONS <<< "${PRIMARY_REGION},${SECONDARY_REGIONS}"
@@ -540,15 +754,17 @@ print_summary() {
     echo "=============================================="
     echo ""
     echo "Project: $PROJECT_ID"
+    echo "Release ID: $RELEASE_ID"
+    echo "Git SHA: ${GIT_SHA:-unknown}"
     echo "Primary Region: $PRIMARY_REGION"
     echo "Secondary Regions: $SECONDARY_REGIONS"
     echo ""
     echo "Resources:"
-    echo "  - Docker Image: gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}"
-    echo "  - Privacy Service Image (SAM3): gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}"
-    echo "  - Privacy Service Image (VIP): gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}"
-    echo "  - Privacy Service Image (DeepPrivacy2): gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}"
-    echo "  - Geometry Service Image (video_to_world): gcr.io/${PROJECT_ID}/${VIDEO_TO_WORLD_IMAGE_NAME}:${IMAGE_TAG}"
+    echo "  - Docker Image: ${IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}}"
+    echo "  - Privacy Service Image (SAM3): ${SAM3_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}}"
+    echo "  - Privacy Service Image (VIP): ${VIP_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}}"
+    echo "  - Privacy Service Image (DeepPrivacy2): ${DEEPPRIVACY2_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}}"
+    echo "  - Geometry Service Image (video_to_world): ${VIDEO_TO_WORLD_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${VIDEO_TO_WORLD_IMAGE_NAME}:${IMAGE_TAG}}"
     echo "  - Cloud Run Job (CPU): blueprint-pipeline"
     echo "  - Cloud Run Services (GPU): sam3-detect, vip-inpaint, deepprivacy2-anonymize, video-to-world"
     echo "  - Cloud Function: storage-trigger"
@@ -570,6 +786,54 @@ print_summary() {
     echo ""
 }
 
+write_deployment_manifest() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY-RUN] Would write deployment manifest to ${DEPLOYMENT_MANIFEST_PATH}"
+        return
+    fi
+
+    mkdir -p "$(dirname "$DEPLOYMENT_MANIFEST_PATH")"
+    jq -n \
+        --arg schema_version "blueprint.pipeline_deployment_manifest.v1" \
+        --arg created_at_utc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg release_id "$RELEASE_ID" \
+        --arg git_sha "${GIT_SHA:-}" \
+        --arg image_tag "$IMAGE_TAG" \
+        --arg pipeline_image "${IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}}" \
+        --arg sam3_image "${SAM3_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}}" \
+        --arg vip_image "${VIP_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}}" \
+        --arg deepprivacy2_image "${DEEPPRIVACY2_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}}" \
+        --arg video_to_world_image "${VIDEO_TO_WORLD_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${VIDEO_TO_WORLD_IMAGE_NAME}:${IMAGE_TAG}}" \
+        --arg full_test_lane_commit "$FULL_TEST_LANE_COMMIT" \
+        --arg full_test_lane_evidence_uri "$FULL_TEST_LANE_EVIDENCE_URI" \
+        --argjson full_test_lane_required "$([[ "$FULL_TEST_LANE_REQUIRED" == "true" ]] && echo true || echo false)" \
+        '{
+          schema_version: $schema_version,
+          created_at_utc: $created_at_utc,
+          release_id: $release_id,
+          git_sha: $git_sha,
+          image_tag: $image_tag,
+          images: {
+            pipeline: $pipeline_image,
+            privacy_sam3: $sam3_image,
+            privacy_vip: $vip_image,
+            privacy_deepprivacy2: $deepprivacy2_image,
+            video_to_world: $video_to_world_image
+          },
+          full_test_lane: {
+            required: $full_test_lane_required,
+            commit: $full_test_lane_commit,
+            evidence_uri: $full_test_lane_evidence_uri
+          },
+          rollback: {
+            command_template: "deploy/scripts/deploy.sh --rollback --rollback-image-tag " + $image_tag,
+            rollback_image_tag: $image_tag
+          },
+          claim_boundary: "Local deployment manifest from deploy script; verify Cloud Run/GCP live state before claiming production parity."
+        }' > "$DEPLOYMENT_MANIFEST_PATH"
+    log_success "Deployment manifest written: ${DEPLOYMENT_MANIFEST_PATH}"
+}
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -580,6 +844,7 @@ main() {
     local FUNCTION_ONLY=false
     local DRY_RUN=false
     local SKIP_DOCKER=false
+    local ROLLBACK=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -594,6 +859,34 @@ main() {
                 ;;
             --function-only)
                 FUNCTION_ONLY=true
+                shift
+                ;;
+            --rollback)
+                ROLLBACK=true
+                shift
+                ;;
+            --rollback-image-tag|--rollback-tag)
+                if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == --* ]]; then
+                    log_error "$1 requires a non-empty image tag."
+                    exit 2
+                fi
+                ROLLBACK_IMAGE_TAG="${2:-}"
+                shift 2
+                ;;
+            --verify-command)
+                if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == --* ]]; then
+                    log_error "$1 requires a non-empty command."
+                    exit 2
+                fi
+                ROLLBACK_VERIFY_COMMAND="${2:-}"
+                shift 2
+                ;;
+            --skip-rollback-verify)
+                ROLLBACK_VERIFY_COMMAND=""
+                shift
+                ;;
+            --skip-rollback-health)
+                ROLLBACK_HEALTH_CHECK=false
                 shift
                 ;;
             --dry-run)
@@ -612,6 +905,15 @@ main() {
                 echo "  --terraform-only  Only apply Terraform configuration"
                 echo "  --function-only   Only deploy Cloud Function"
                 echo "  --skip-docker     Skip Docker build (use existing image)"
+                echo "  --rollback        Roll Cloud Run jobs back to --rollback-image-tag"
+                echo "  --rollback-image-tag <tag>"
+                echo "                    Known-good ${IMAGE_NAME} image tag to restore"
+                echo "  --verify-command <cmd>"
+                echo "                    Local rollback verification command"
+                echo "  --skip-rollback-verify"
+                echo "                    Do not run the local rollback verification command"
+                echo "  --skip-rollback-health"
+                echo "                    Do not verify the deployed Cloud Run job image"
                 echo "  --dry-run         Show what would be done without making changes"
                 echo "  --help            Show this help message"
                 exit 0
@@ -628,6 +930,11 @@ main() {
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_warning "DRY-RUN mode - no changes will be made"
+    fi
+
+    if [[ "$ROLLBACK" == "true" ]]; then
+        rollback_deployment
+        exit 0
     fi
 
     # Run deployment steps
@@ -663,6 +970,7 @@ main() {
     create_cloud_run_jobs
     deploy_cloud_function
 
+    write_deployment_manifest
     # Optionally apply Terraform (alternative to manual resource creation)
     # apply_terraform
 

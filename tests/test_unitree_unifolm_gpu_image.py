@@ -95,6 +95,9 @@ def test_unitree_unifolm_gpu_image_context_writes_cuda124_contract(
         tmp_path / "image-context" / "unitree_unifolm_gpu_image_manifest.json"
     )
     assert persisted["truth_boundary"]["no_raw_tokens_or_hashes_written"] is True
+    assert persisted["registry_auth"]["docker_pat_file"]["path_redacted"] is True
+    assert "path" not in persisted["registry_auth"]["docker_pat_file"]
+    assert persisted["registry_auth"]["secret_artifact_policy"]["local_secret_file_paths_recorded"] is False
     assert persisted["runtime_contract"]["model_checkpoint_baked_into_image"] is False
     assert persisted["runtime_contract"]["vlm_checkpoint_baked_into_image"] is False
     assert persisted["runtime_contract"]["unitree_qwen_attention_patch_applied"] is True

@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .common import ensure_dir, read_json, utc_now_iso, write_json
+from .secret_artifact_policy import (
+    redacted_secret_file_status,
+    secret_path_disclosure_policy,
+)
 
 
 GPU_PROVIDER_KEY_ROTATION_MANIFEST_SCHEMA_VERSION = (
@@ -138,22 +142,28 @@ def _file_status(path: Path) -> dict[str, Any]:
     try:
         stat_result = path.stat()
     except OSError as exc:
-        return {
-            "path": str(path),
-            "present": False,
-            "error": type(exc).__name__,
-            "secret_value_recorded": False,
+        status = redacted_secret_file_status(
+            path,
+            raw_secret_field="secret_value_recorded",
+        )
+        status.update({"present": False, "error": type(exc).__name__})
+        return status
+    status = redacted_secret_file_status(
+        path,
+        raw_secret_field="secret_value_recorded",
+    )
+    status.update(
+        {
+            "present": path.is_file(),
+            "modified_at": _isoformat_utc(
+                datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc)
+            )
+            if path.is_file()
+            else None,
+            "mode_octal": oct(stat_result.st_mode & 0o777),
         }
-    return {
-        "path": str(path),
-        "present": path.is_file(),
-        "size_bytes": stat_result.st_size if path.is_file() else None,
-        "modified_at": _isoformat_utc(
-            datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc)
-        ),
-        "mode_octal": oct(stat_result.st_mode & 0o777),
-        "secret_value_recorded": False,
-    }
+    )
+    return status
 
 
 def _present_env_names(names: Iterable[str], env: Mapping[str, str]) -> list[str]:
@@ -286,7 +296,7 @@ def build_gpu_provider_key_rotation_manifest(
             "display_name": descriptor.display_name,
             "status": provider_status,
             "blockers": provider_blockers,
-            "default_secret_file": str(secrets_root / descriptor.default_secret_filename),
+            "default_secret_file_path_redacted": True,
             "secret_file": file_status,
             "secret_file_source": secret_path_source,
             "inline_secret_env_vars_present": inline_env_present,
@@ -310,11 +320,12 @@ def build_gpu_provider_key_rotation_manifest(
         "blockers": blockers,
         "provider_count": len(provider_payloads),
         "max_age_days": int(max_age_days),
-        "secrets_dir": str(secrets_root),
-        "ledger_path": str(ledger_path.expanduser()),
+        "secrets_dir_path_redacted": True,
+        "ledger_path_redacted": True,
         "ledger_schema_version": ledger.get("schema_version"),
         "providers": provider_payloads,
         "secret_values_recorded": False,
+        "secret_artifact_policy": secret_path_disclosure_policy(),
     }
     return manifest
 

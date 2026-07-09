@@ -45,6 +45,64 @@ _TASK_SUCCESS_REQUIRED_METRIC_KEYS = (
     "max_path_deviation_m",
 )
 
+BUYER_BLOCKER_CLASS_COPY: dict[str, dict[str, str]] = {
+    "export_manifest_not_ready": {
+        "headline": "Package is not ready for review.",
+        "body": "The export manifest is missing, blocked, or not in the review-ready state.",
+        "next_step": "Regenerate the package export and retry the buyer readout.",
+    },
+    "cards": {
+        "headline": "Package cards are incomplete.",
+        "body": "One or more site, task, scenario, or evaluation cards are missing.",
+        "next_step": "Rebuild the robot-evaluation dataset cards before delivery.",
+    },
+    "rights_privacy_provenance": {
+        "headline": "Rights, privacy, or provenance evidence is incomplete.",
+        "body": "The package cannot be delivered until the rights packet and provenance boundary are present.",
+        "next_step": "Resolve the rights/privacy review and regenerate the package.",
+    },
+    "robot_pov_evidence": {
+        "headline": "Robot point-of-view evidence is incomplete.",
+        "body": "The package is missing robot POV media, loadable training layout, or measured state provenance.",
+        "next_step": "Materialize robot POV evidence and rerun export validation.",
+    },
+    "failure_evidence": {
+        "headline": "Failure-case evidence is incomplete.",
+        "body": "The package must include failure labels or an explicit reviewed-zero-failures attestation.",
+        "next_step": "Add reviewed failure evidence before buyer delivery.",
+    },
+    "task_success_criteria": {
+        "headline": "Task-success criteria are incomplete.",
+        "body": "Required success metrics, coverage rows, or task/eval sources are missing.",
+        "next_step": "Complete the task-success metrics and rerun the export.",
+    },
+    "calibration": {
+        "headline": "Calibration evidence is incomplete.",
+        "body": "The package cannot make calibration-bounded claims without a calibration report.",
+        "next_step": "Attach the calibration report or keep calibration claims disabled.",
+    },
+    "media_provenance": {
+        "headline": "Media provenance needs correction.",
+        "body": "Generated or augmented media must stay separate from raw capture evidence.",
+        "next_step": "Fix the media provenance labels and regenerate the package.",
+    },
+    "export_integrity": {
+        "headline": "Export integrity is incomplete.",
+        "body": "Checksums, file inventory, or round-trip validation are missing or blocked.",
+        "next_step": "Regenerate the export and confirm the buyer-loadable files validate.",
+    },
+    "replay_review": {
+        "headline": "Replay review instructions are missing.",
+        "body": "A buyer cannot inspect the package without replay review instructions.",
+        "next_step": "Add replay review instructions before delivery.",
+    },
+    "revocation_takedown": {
+        "headline": "Consent revocation blocks package use.",
+        "body": "The package must stay blocked until takedown and downstream-use actions are resolved.",
+        "next_step": "Complete the rights/privacy takedown workflow before restoring access.",
+    },
+}
+
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
@@ -93,6 +151,79 @@ def _string_list(value: Any) -> list[str]:
 
 def _section(status: str, blockers: list[str], **fields: Any) -> dict[str, Any]:
     return {"status": status, "blockers": sorted(set(blockers)), **fields}
+
+
+def _blocker_class(blocker: str) -> str:
+    if blocker.startswith("export_manifest_not_ready:"):
+        return "export_manifest_not_ready"
+    prefix = blocker.split(":", 1)[0]
+    return prefix if prefix in BUYER_BLOCKER_CLASS_COPY else "unknown"
+
+
+def _customer_facing_status(
+    *,
+    status: str,
+    blockers: list[str],
+    claim_boundary: Mapping[str, Any],
+) -> dict[str, Any]:
+    blocker_messages: list[dict[str, str]] = []
+    unmapped_blockers: list[str] = []
+    for blocker in sorted(set(blockers)):
+        blocker_class = _blocker_class(blocker)
+        copy = BUYER_BLOCKER_CLASS_COPY.get(blocker_class)
+        if copy is None:
+            unmapped_blockers.append(blocker)
+            copy = {
+                "headline": "Package needs operator review.",
+                "body": "An unmapped blocker is present; the package must remain blocked until an operator reviews it.",
+                "next_step": "Ask Blueprint support to review the blocker before relying on this package.",
+            }
+        blocker_messages.append(
+            {
+                "blocker": blocker,
+                "blocker_class": blocker_class,
+                "headline": copy["headline"],
+                "body": copy["body"],
+                "next_step": copy["next_step"],
+            }
+        )
+
+    blocked = bool(blockers)
+    no_calibration_anchors = claim_boundary.get("no_real_world_calibration_anchors_present") is True
+    return {
+        "schema_version": "buyer_package_customer_status_copy.v1",
+        "state": "blocked" if blocked else "review_required",
+        "headline": (
+            "Package is blocked and not ready for buyer review."
+            if blocked
+            else "Package is available for review with explicit claim limits."
+        ),
+        "body": (
+            "Blueprint has found evidence gaps that must be resolved before this package can be delivered."
+            if blocked
+            else "The package can be reviewed, but it is not deployment approval or real-world performance proof."
+        ),
+        "primary_action": (
+            "Resolve the listed blockers and regenerate the package readout."
+            if blocked
+            else "Review the evidence and claim boundary before using the package."
+        ),
+        "blocker_messages": blocker_messages,
+        "unmapped_blockers": unmapped_blockers,
+        "all_blocker_classes_have_customer_copy": not unmapped_blockers,
+        "degraded_state_copy": [
+            {
+                "degraded_class": "no_real_world_calibration_anchors",
+                "headline": "Simulator results are review-grade only.",
+                "body": (
+                    "No accepted real-world calibration anchors are included, so results must not be treated "
+                    "as real-world performance predictions."
+                ),
+            }
+        ]
+        if no_calibration_anchors
+        else [],
+    }
 
 
 def _presence_section(
@@ -640,6 +771,11 @@ def build_buyer_package_readout(
     status = "buyer_readout_ready_review_required" if not blockers else (
         "blocked_incomplete_package"
     )
+    customer_facing_status = _customer_facing_status(
+        status=status,
+        blockers=blockers,
+        claim_boundary=readout_claim_boundary,
+    )
     return {
         "schema_version": BUYER_PACKAGE_READOUT_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
@@ -649,6 +785,7 @@ def build_buyer_package_readout(
         "export_manifest_status": export_status or None,
         "status": status,
         "blockers": sorted(set(blockers)),
+        "customer_facing_status": customer_facing_status,
         "sections": sections,
         "claim_boundary": readout_claim_boundary,
     }
@@ -676,6 +813,31 @@ def render_buyer_package_readout_markdown(readout: Mapping[str, Any]) -> str:
         for blocker in section_map.get("blockers") or []:
             lines.append(f"  - blocker: {blocker}")
     blockers = data.get("blockers") or []
+    customer_status = _mapping(data.get("customer_facing_status"))
+    if customer_status:
+        lines.extend(
+            [
+                "",
+                "## Customer Status",
+                "",
+                f"- State: {customer_status.get('state')}",
+                f"- {customer_status.get('headline')}",
+                f"- {customer_status.get('body')}",
+            ]
+        )
+        for message in customer_status.get("blocker_messages") or []:
+            message_map = _mapping(message)
+            lines.append(
+                "- "
+                f"{message_map.get('blocker_class')}: {message_map.get('headline')} "
+                f"{message_map.get('next_step')}"
+            )
+        for degraded in customer_status.get("degraded_state_copy") or []:
+            degraded_map = _mapping(degraded)
+            lines.append(
+                "- "
+                f"{degraded_map.get('degraded_class')}: {degraded_map.get('headline')}"
+            )
     if blockers:
         lines.extend(["", "## Blockers", ""])
         lines.extend(f"- {blocker}" for blocker in blockers)

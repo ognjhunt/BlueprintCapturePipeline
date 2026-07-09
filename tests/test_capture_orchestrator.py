@@ -9,19 +9,8 @@ from blueprint_pipeline.capture_orchestrator import (
     resolve_requested_lanes,
     run_capture_pipeline,
 )
-
-STANDARD_SCENARIO_VARIATION_NAMES = (
-    "lighting_variation",
-    "object_rotation",
-    "cart_shifted",
-    "blocked_path",
-    "human_crossing",
-    "forklift_nearby",
-    "occlusion",
-    "glare",
-    "missing_label",
-    "wrong_object_nearby",
-    "narrow_approach_angle",
+from blueprint_pipeline.scenario_variation_instantiator import (
+    SCENARIO_VARIATION_NAMES as STANDARD_SCENARIO_VARIATION_NAMES,
 )
 STANDARD_SIMULATOR_ENGINE_NAMES = ("isaac_sim", "isaac_lab_arena", "mujoco", "pybullet", "newton")
 STANDARD_WORLD_MODEL_ENGINE_NAMES = (

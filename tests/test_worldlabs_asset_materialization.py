@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import runpy
 import sys
 from hashlib import sha256
 from pathlib import Path
@@ -9,6 +8,7 @@ from pathlib import Path
 from blueprint_pipeline.marble_sim_assets import build_marble_sim_assets
 from blueprint_pipeline import worldlabs_asset_materialization as w
 from blueprint_pipeline.worldlabs_asset_materialization import materialize_worldlabs_assets
+from tests.runpy_entrypoint import run_module_as_main
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -349,6 +349,6 @@ def test_worldlabs_asset_materialization_statuses_and_cli(
 
     monkeypatch.setattr(sys, "argv", ["worldlabs_asset_materialization", "--capture-root", str(capture_root)])
     try:
-        runpy.run_module("blueprint_pipeline.worldlabs_asset_materialization", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.worldlabs_asset_materialization")
     except SystemExit as exc:
         assert exc.code == 0

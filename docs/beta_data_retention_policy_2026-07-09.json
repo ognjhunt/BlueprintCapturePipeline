@@ -1,0 +1,142 @@
+{
+  "schema_version": "blueprint.beta_data_retention_policy.v1",
+  "policy_id": "beta_data_retention_policy_2026_07_09",
+  "policy_date": "2026-07-09",
+  "status": "declared_validator_enforced_operator_signoff_required",
+  "effective_for": {
+    "program": "100_external_user_beta",
+    "external_users": 100,
+    "modeled_captures_per_month": 300,
+    "target_concurrent_uploaders": 25,
+    "applies_to": [
+      "raw capture truth",
+      "temporary processing artifacts",
+      "buyer delivery packages",
+      "hosted review sessions",
+      "robot evaluation job artifacts",
+      "local output snapshots",
+      "repo-root robot_eval_jobs cache"
+    ]
+  },
+  "source_of_truth": {
+    "capacity_model": "docs/beta_capacity_cost_storage_model_2026-07-08.json",
+    "gcs_lifecycle_policy": "deploy/storage/primary-capture-bucket-lifecycle.json",
+    "gcs_lifecycle_apply_script": "scripts/apply_primary_capture_bucket_lifecycle.sh",
+    "local_output_retention_runbook": "docs/runbooks/output-artifact-retention.md",
+    "local_retention_tool": "scripts/manage_output_artifact_retention.py",
+    "support_incident_runbook": "docs/runbooks/beta-ops-incident-response.md"
+  },
+  "data_classes": {
+    "raw_capture_truth": {
+      "prefixes": [
+        "scenes/",
+        "targets/"
+      ],
+      "authoritative_truth": true,
+      "nearline_after_days": 30,
+      "coldline_after_days": 90,
+      "delete_after_days": 180,
+      "support_purpose": "Preserve raw capture, timestamp, pose, rights, privacy, and provenance evidence long enough for beta support review.",
+      "legal_hold_may_override": true
+    },
+    "temporary_processing": {
+      "prefixes": [
+        "tmp/",
+        "staging/",
+        "debug/"
+      ],
+      "delete_after_days": 14,
+      "support_purpose": "Keep transient processing evidence only long enough to debug failed ingest, privacy processing, provider staging, or package assembly.",
+      "legal_hold_may_override": true
+    },
+    "buyer_eval_hosted_artifacts": {
+      "prefixes": [
+        "buyer_delivery/",
+        "marketplace/",
+        "hosted_sessions/",
+        "robot_eval_jobs/"
+      ],
+      "delete_after_days": 365,
+      "contract_specific_hold_may_override": true,
+      "support_purpose": "Retain delivered package, hosted-review, and robot-evaluation evidence for buyer support, dispute review, and provenance audit.",
+      "legal_hold_may_override": true
+    },
+    "local_output_snapshots": {
+      "root": "output/",
+      "retention_tool": "scripts/manage_output_artifact_retention.py",
+      "default_manifest": "output/output_artifact_retention_manifest.json",
+      "canonical_launch_evidence_days": 365,
+      "ci_or_capacity_artifact_days": 90,
+      "provider_runtime_or_paid_run_days": 30,
+      "local_preflight_or_dry_run_days": 14,
+      "external_asset_cache_auto_delete": false,
+      "support_purpose": "Keep local proof snapshots bounded and make current launch artifacts explicit before operator handoff.",
+      "claim_boundary": "Local output snapshots are not authoritative raw capture storage, live provider proof, legal deletion proof, or bucket lifecycle proof."
+    },
+    "local_robot_eval_jobs_cache": {
+      "root": "robot_eval_jobs/",
+      "retention_tool": "scripts/manage_output_artifact_retention.py",
+      "dry_run_manifest": "output/robot_eval_jobs_retention_manifest.json",
+      "delete_after_days": 30,
+      "review_threshold_gib": 25,
+      "hard_stop_gib": 50,
+      "modeled_captures_per_month": 300,
+      "planned_robot_eval_jobs_per_month": 75,
+      "support_purpose": "Bound developer-machine robot-eval scratch/cache growth while preserving current launch evidence only when explicitly selected.",
+      "claim_boundary": "Repo-root robot_eval_jobs entries are local cache snapshots and are not launch proof unless selected by the current launch readiness packet or copied into a current operator evidence bundle."
+    }
+  },
+  "support_operations": {
+    "default_support_evidence_window_days": 90,
+    "incident_response_runbook": "docs/runbooks/beta-ops-incident-response.md",
+    "required_ticket_fields": [
+      "capture_id_or_capture_job_id",
+      "site_or_buyer_request_id",
+      "affected_data_class",
+      "artifact_uri_or_manifest_path",
+      "requested_action",
+      "privacy_or_rights_sensitivity",
+      "legal_hold_status",
+      "operator_decision_owner"
+    ],
+    "deletion_request_routing": "rights_privacy_ops_review_before_storage_action",
+    "local_retention_inventory_commands": [
+      "python scripts/manage_output_artifact_retention.py",
+      "python scripts/manage_output_artifact_retention.py --output-root robot_eval_jobs --manifest-path output/robot_eval_jobs_retention_manifest.json"
+    ]
+  },
+  "legal_hold_and_deletion": {
+    "legal_hold_overrides_retention": true,
+    "user_deletion_requests_require_operator_review": true,
+    "contract_specific_retention_hold_may_override_buyer_artifacts": true,
+    "raw_capture_truth_deletion_requires_provenance_and_rights_review": true,
+    "support_only_deletion_is_not_automatic": true
+  },
+  "operator_signoff": {
+    "required_evidence_id": "operator_dpa_data_processing_terms",
+    "status": "manual_signoff_required",
+    "required_before_external_paid_beta": true,
+    "required_evidence": "Operator DPA or equivalent data-processing terms covering retention policy, subprocessor list, and access-audit terms for delivered packages and hosted review access.",
+    "claim_boundary": "This artifact declares and validates Blueprint's beta retention policy; it does not prove signed operator approval or access-audit terms."
+  },
+  "verification": {
+    "validator": "scripts/validate_beta_capacity_storage.py",
+    "launch_readiness_artifact_id": "beta_data_retention_policy_json",
+    "launch_readiness_packet_builder": "scripts/build_launch_readiness_packet.py",
+    "required_checks": [
+      "policy schema and status are pinned",
+      "policy data classes match the committed GCS lifecycle classes",
+      "local output and robot_eval_jobs retention limits are pinned",
+      "support operations evidence window is pinned",
+      "operator DPA evidence id remains manual-required",
+      "claim boundaries forbid treating the artifact as signed DPA, live bucket apply proof, or user-deletion execution proof"
+    ]
+  },
+  "claim_boundary": {
+    "not_signed_dpa_or_access_audit_terms": true,
+    "not_live_bucket_apply_proof": true,
+    "not_user_deletion_execution_proof": true,
+    "not_backup_restore_drill_proof": true,
+    "not_live_support_ticket_sla_proof": true
+  }
+}

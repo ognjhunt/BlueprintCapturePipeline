@@ -38,10 +38,14 @@ def test_wam_provider_object_store_blocks_without_file_based_credentials(
     assert "missing_object_store_secret_access_key_file" in manifest["blockers"]
     assert "missing_object_store_bucket_or_network_volume_id_file" in manifest["blockers"]
     access_candidates = manifest["object_store"]["access_key_id"]["candidate_files"]
-    assert any("digitalocean_spaces_access_key_id" in row["path"] for row in access_candidates)
+    assert access_candidates
+    assert all(row["path_redacted"] is True for row in access_candidates)
+    assert all("path" not in row for row in access_candidates)
+    assert manifest["secret_artifact_policy"]["local_secret_file_paths_recorded"] is False
     persisted = (tmp_path / "job" / "wam_provider_object_store_staging_manifest.json").read_text(
         encoding="utf-8"
     )
+    assert ".blueprint-secrets" not in persisted
     assert "raw_secret" not in persisted.lower() or '"raw_secret_values_recorded": false' in persisted
 
 

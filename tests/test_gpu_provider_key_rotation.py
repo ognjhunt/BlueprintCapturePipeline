@@ -39,9 +39,13 @@ def test_rotation_manifest_blocks_missing_metadata_without_secret_leakage(tmp_pa
     for provider in GPU_PROVIDER_KEY_DESCRIPTORS:
         assert f"{provider}:rotation_metadata_missing" in manifest["blockers"]
         assert manifest["providers"][provider]["secret_file"]["present"] is True
+        assert manifest["providers"][provider]["secret_file"]["path_redacted"] is True
+        assert "path" not in manifest["providers"][provider]["secret_file"]
+        assert manifest["providers"][provider]["default_secret_file_path_redacted"] is True
         assert manifest["providers"][provider]["secret_value_recorded"] is False
 
     serialized = json.dumps(manifest)
+    assert str(secrets_dir) not in serialized
     assert "secret-value-that-must-not-leak" not in serialized
 
 

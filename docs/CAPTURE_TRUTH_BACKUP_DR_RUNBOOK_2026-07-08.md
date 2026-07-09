@@ -47,7 +47,7 @@ The script enables:
 ## Restore Drill Evidence
 
 Before external beta, archive one drill under `output/beta_capacity/backup_drill/`
-with:
+with a `capture_truth_restore_drill.v1` JSON artifact:
 
 - source project id and non-production restore project id
 - Firestore backup id or PITR timestamp used
@@ -56,6 +56,46 @@ with:
   `scenes/<scene_id>/captures/<capture_id>/raw/manifest.json`
 - restore command transcript with secrets redacted
 - validation result showing restored Firestore ids and storage object checksums
+
+Minimum artifact shape:
+
+```json
+{
+  "schema_version": "capture_truth_restore_drill.v1",
+  "status": "passed",
+  "source_project_id": "blueprint-prod",
+  "restore_project_id": "blueprint-restore-drill",
+  "non_production_restore_project": true,
+  "firestore_restore": {
+    "backup_id": "projects/.../backups/...",
+    "validation_status": "passed",
+    "restored_document_paths": ["capture_submissions/example-capture"]
+  },
+  "storage_restore": {
+    "bucket": "gs://primary-capture-bucket",
+    "restored_object": "restore-drill/scenes/example/captures/example/raw/manifest.json",
+    "raw_manifest_generation": "1700000000000000",
+    "restored_checksum_sha256": "redacted-example-checksum",
+    "validation_status": "passed"
+  },
+  "transcript": {
+    "path": "output/beta_capacity/backup_drill/transcript.redacted.txt",
+    "secrets_redacted": true
+  },
+  "claim_boundary": {
+    "live_restore_drill_executed": true,
+    "production_restore_performed": false
+  }
+}
+```
+
+Validate the archived drill before claiming readiness:
+
+```bash
+python scripts/validate_capture_truth_backup_policy.py \
+  --require-restore-drill \
+  --restore-drill-artifact output/beta_capacity/backup_drill/capture_truth_restore_drill.json
+```
 
 Do not claim backup readiness from this runbook alone. Backup readiness requires
 the apply script to be run against the real project and a restore drill artifact

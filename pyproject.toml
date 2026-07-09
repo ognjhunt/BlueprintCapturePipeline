@@ -3,7 +3,7 @@ name = "blueprint-capture-pipeline"
 version = "2.0.0"
 description = "Robot-eval package, World Labs preview, and simulation preflight pipeline for Blueprint captures"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 license = {text = "MIT"}
 authors = [{name = "Blueprint Team"}]
 keywords = [

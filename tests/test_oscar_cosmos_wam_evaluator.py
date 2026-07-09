@@ -1590,7 +1590,29 @@ def test_oscar_cosmos_wam_evaluator_reports_file_auth_without_secret_values(
 
     assert discovery["model_access_secret_status"]["huggingface"]["auth_ready"] is True
     assert discovery["model_access_secret_status"]["ngc"]["auth_ready"] is True
+    hf_candidate = next(
+        row
+        for row in discovery["model_access_secret_status"]["huggingface"]["file_candidates"]
+        if row["present"]
+    )
+    ngc_candidate = next(
+        row
+        for row in discovery["model_access_secret_status"]["ngc"]["file_candidates"]
+        if row["present"]
+    )
+    assert hf_candidate["path_redacted"] is True
+    assert ngc_candidate["path_redacted"] is True
+    assert "path" not in hf_candidate
+    assert "path" not in ngc_candidate
+    assert (
+        discovery["model_access_secret_status"]["secret_artifact_policy"][
+            "local_secret_file_paths_recorded"
+        ]
+        is False
+    )
     serialized = json.dumps(discovery, sort_keys=True)
+    assert str(hf_file) not in serialized
+    assert str(ngc_file) not in serialized
     assert "hf-secret-value" not in serialized
     assert "ngc-secret-value" not in serialized
 

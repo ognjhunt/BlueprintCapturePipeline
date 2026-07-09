@@ -1308,6 +1308,50 @@ def test_arena_ingest_delivery_upload_edge_states(
     assert manifest["blockers"] == ["delivery_command_output_missing_signed_or_local_access"]
 
 
+def test_arena_delivery_retention_policy_uses_primary_bucket_lifecycle(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "package"
+    output_dir.mkdir()
+
+    delivery = arena._build_delivery_artifacts(
+        output_dir=output_dir,
+        allow_delivery_upload=False,
+        delivery_command=None,
+        timeout_seconds=5,
+        generated_at="now",
+    )
+
+    retention = _read_json(output_dir / "retention_policy.json")
+    assert delivery["retention_policy"] == "retention_policy.json"
+    assert retention["status"] == "policy_declared_apply_required"
+    assert retention["primary_capture_bucket_lifecycle"] == {
+        "enforcement_layer": "gcs_bucket_lifecycle",
+        "policy_file": "deploy/storage/primary-capture-bucket-lifecycle.json",
+        "apply_script": "scripts/apply_primary_capture_bucket_lifecycle.sh",
+        "applies_to_primary_capture_bucket": True,
+        "enforced_after_apply": True,
+        "apply_proof_required_before_external_beta": True,
+        "live_bucket_policy_apply_proven": False,
+    }
+    assert retention["data_classes"]["raw_capture_truth"] == {
+        "prefixes": ["scenes/", "targets/"],
+        "nearline_after_days": 30,
+        "coldline_after_days": 90,
+        "delete_after_days": 180,
+        "enforcement_layer": "gcs_bucket_lifecycle",
+    }
+    assert retention["data_classes"]["temporary_processing"]["delete_after_days"] == 14
+    assert (
+        retention["data_classes"]["buyer_eval_hosted_artifacts"]["delete_after_days"]
+        == 365
+    )
+    assert "primary_capture_bucket_lifecycle_apply_proof_missing" in retention["blockers"]
+    assert retention["claim_boundary"]["gcs_lifecycle_policy_declared"] is True
+    assert retention["claim_boundary"]["live_bucket_lifecycle_apply_proven"] is False
+    assert retention["claim_boundary"]["retention_policy_is_legal_deletion_workflow"] is False
+
+
 def test_arena_ingest_live_operator_gates_and_fake_sdk_paths(
     tmp_path: Path,
     monkeypatch,

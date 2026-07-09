@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .secret_artifact_policy import (
+    redacted_secret_file_status_from_env,
+    secret_path_disclosure_policy,
+)
 
 
 UNITREE_UNIFOLM_GPU_IMAGE_SCHEMA_VERSION = "unitree_unifolm_gpu_image_context.v1"
@@ -51,19 +55,13 @@ def _image_ref_is_versioned(image_ref: str) -> bool:
 
 
 def _secret_file_status(env_name: str, default_path: str) -> dict[str, Any]:
-    configured = _string(os.getenv(env_name))
-    path = Path(configured or default_path).expanduser()
-    mode = oct(path.stat().st_mode & 0o777) if path.exists() else None
-    return {
-        "env_name": env_name,
-        "path": str(path),
-        "configured_by_env": bool(configured),
-        "present": path.is_file(),
-        "mode": mode,
-        "mode_is_0600": mode == "0o600",
-        "raw_secret_value_recorded": False,
-        "secret_hash_recorded": False,
-    }
+    status = redacted_secret_file_status_from_env(
+        env_name,
+        default_path,
+        raw_secret_field="raw_secret_value_recorded",
+    )
+    status["secret_hash_recorded"] = False
+    return status
 
 
 def _full_requirements() -> list[str]:
@@ -609,6 +607,7 @@ def build_unitree_unifolm_gpu_image_context(
         "docker_pat_file": _secret_file_status("DOCKER_PAT_FILE", "~/.blueprint-secrets/docker_pat"),
         "registry_auth_secret_values_written": False,
         "registry_auth_secret_hashes_written": False,
+        "secret_artifact_policy": secret_path_disclosure_policy(),
     }
     manifest = {
         "schema_version": UNITREE_UNIFOLM_GPU_IMAGE_SCHEMA_VERSION,

@@ -43,6 +43,9 @@ jobs:
           uv sync --extra dev
           uv pip install -e BlueprintContracts
 
+      - name: Validate Python interpreter matrix
+        run: uv run python scripts/validate_python_interpreter_matrix.py --assert-current
+
       - name: Verify shared robot-eval request contract
         run: |
           uv run python scripts/verify_robot_eval_job_request_contract.py \

@@ -1,5 +1,6 @@
 from blueprint_pipeline.buyer_package_readout import (
     BUYER_CRITICAL_SECTIONS,
+    BUYER_BLOCKER_CLASS_COPY,
     build_buyer_package_readout,
     render_buyer_package_readout_markdown,
 )
@@ -65,6 +66,11 @@ def test_empty_export_manifest_fails_closed() -> None:
     assert "replay_review:replay_review_instructions_missing" in blockers
     assert readout["claim_boundary"]["highest_truthful_claim"] == "no_claim"
     assert readout["claim_boundary"]["physical_deployment_ready"] is False
+    customer_status = readout["customer_facing_status"]
+    assert customer_status["state"] == "blocked"
+    assert customer_status["all_blocker_classes_have_customer_copy"] is True
+    assert customer_status["unmapped_blockers"] == []
+    assert len(customer_status["blocker_messages"]) == len(blockers)
 
 
 def test_complete_manifest_produces_buyer_readable_summary_without_overclaim() -> None:
@@ -98,9 +104,17 @@ def test_complete_manifest_produces_buyer_readable_summary_without_overclaim() -
     assert rights_section["subprocessor_list_present"] is False
     assert rights_section["access_audit_terms_present"] is False
     assert rights_section["dpa_approval_claimed"] is False
+    customer_status = readout["customer_facing_status"]
+    assert customer_status["state"] == "review_required"
+    assert customer_status["all_blocker_classes_have_customer_copy"] is True
+    assert customer_status["blocker_messages"] == []
+    assert customer_status["degraded_state_copy"][0]["degraded_class"] == (
+        "no_real_world_calibration_anchors"
+    )
 
     markdown = render_buyer_package_readout_markdown(readout)
     assert "Highest truthful claim: no_claim" in markdown
+    assert "Package is available for review with explicit claim limits." in markdown
     assert "not deployment approval" in markdown
     assert "Simulator results are not real-world outcomes." in markdown
     assert "not real-world performance predictions" in markdown
@@ -213,6 +227,53 @@ def test_blocked_export_status_blocks_readout() -> None:
 
     assert readout["status"] == "blocked_incomplete_package"
     assert "export_manifest_not_ready:blocked_missing_inputs" in readout["blockers"]
+    assert readout["customer_facing_status"]["blocker_messages"][0]["blocker_class"] == (
+        "export_manifest_not_ready"
+    )
+
+
+def test_customer_facing_status_copy_covers_every_blocker_class() -> None:
+    manifest = _complete_export_manifest()
+    manifest["status"] = "blocked_missing_inputs"
+    included = manifest["included_artifacts"]
+    for key in (
+        "site_card",
+        "rights_packet",
+        "proof_boundaries",
+        "robot_pov_observation_manifest",
+        "failure_labels",
+        "simulator_command_batch_metrics",
+        "calibration_report",
+        "replay_review_instructions",
+    ):
+        included.pop(key, None)
+    manifest["manifest_counts"]["failure_label_count"] = 0
+    manifest.pop("task_success_metrics")
+    manifest["export_policy"]["visual_augmentation_generated_videos_are_raw_capture_evidence"] = True
+    manifest.pop("checksums_path")
+    manifest.pop("replay_review_instructions_path")
+    manifest["package_files"] = {}
+    manifest["consent_evidence"] = {"consent_revoked": True}
+
+    readout = build_buyer_package_readout(export_manifest=manifest)
+    customer_status = readout["customer_facing_status"]
+    message_classes = {
+        message["blocker_class"]
+        for message in customer_status["blocker_messages"]
+    }
+
+    assert readout["status"] == "blocked_incomplete_package"
+    assert customer_status["state"] == "blocked"
+    assert customer_status["all_blocker_classes_have_customer_copy"] is True
+    assert customer_status["unmapped_blockers"] == []
+    assert set(BUYER_BLOCKER_CLASS_COPY).issubset(message_classes)
+    assert "unknown" not in message_classes
+    assert all(message["headline"] for message in customer_status["blocker_messages"])
+    assert all(message["next_step"] for message in customer_status["blocker_messages"])
+
+    markdown = render_buyer_package_readout_markdown(readout)
+    assert "## Customer Status" in markdown
+    assert "rights_privacy_provenance: Rights, privacy, or provenance evidence is incomplete." in markdown
 
 
 def test_revoked_consent_surfaces_takedown_blocker() -> None:

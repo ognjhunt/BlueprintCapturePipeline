@@ -1,0 +1,42 @@
+{
+  "schema_version": "blueprint.beta_data_residency_transfer_policy.v1",
+  "policy_id": "beta_data_residency_transfer_policy_2026_07_09",
+  "policy_date": "2026-07-09",
+  "status": "declared_us_only_scope_operator_signoff_required",
+  "effective_for": {
+    "program": "100_external_user_beta",
+    "default_scope": "us_testers_and_us_capture_sites_only",
+    "allowed_tester_countries": ["US"],
+    "allowed_site_countries": ["US"],
+    "non_us_participants_blocked_until_transfer_terms_signed": true
+  },
+  "operator_signoff": {
+    "required_evidence_id": "cross_border_data_residency_posture",
+    "status": "manual_signoff_required",
+    "required_before_external_paid_beta": true,
+    "acceptable_evidence_paths": [
+      "signed US-only beta scope covering testers and capture sites",
+      "signed DPA/SCC or equivalent international-transfer terms",
+      "transfer-impact assessment for non-US data subjects or capture sites",
+      "subprocessor residency terms and regional processing posture"
+    ]
+  },
+  "transfer_terms_required_to_admit_non_us": {
+    "signed_dpa_scc_uri_required": true,
+    "transfer_impact_assessment_uri_required": true,
+    "subprocessor_residency_terms_uri_required": true,
+    "data_residency_region_policy_uri_required": true
+  },
+  "verification": {
+    "operator_evidence_validator": "src/blueprint_pipeline/alpha_readiness.py",
+    "paid_gate_manual_check": "scripts/run_paid_marketplace_launch_gate.py",
+    "launch_readiness_artifact_id": "beta_data_residency_transfer_policy_json",
+    "operator_launch_evidence_template": "docs/operator_launch_evidence.template.json"
+  },
+  "claim_boundary": {
+    "not_signed_legal_terms": true,
+    "not_international_transfer_authorization": true,
+    "not_proof_of_regional_processing": true,
+    "non_us_beta_participants_remain_blocked_without_operator_evidence": true
+  }
+}

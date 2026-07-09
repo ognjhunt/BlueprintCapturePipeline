@@ -75,3 +75,38 @@ def test_provider_readiness_ready_when_image_and_credentials_present(
     assert result["providers"]["runpod"]["status"] == "ready_for_paid_canary"
     assert result["providers"]["digitalocean"]["status"] == "ready_for_paid_canary"
     assert result["next_required_action"] == "run_paid_provider_startup_canaries_before_task_episode"
+
+
+def test_provider_readiness_redacts_local_credential_paths(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    secret_dir = tmp_path / "home" / ".blueprint-secrets"
+    secret_dir.mkdir(parents=True)
+    (secret_dir / "runpod_api_key").write_text("runpod-secret\n", encoding="utf-8")
+    (secret_dir / "digitalocean_api_token").write_text("do-secret\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    manifest = json.dumps({"mediaType": "application/vnd.oci.image.index.v1+json"})
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout=manifest, stderr="")
+
+    monkeypatch.setattr(R.subprocess, "run", fake_run)
+
+    result = R.build_provider_readiness(
+        output_path=tmp_path / "readiness.json",
+        image_ref="registry.example/img:tag",
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+
+    assert result["status"] == "ready_for_paid_provider_canaries"
+    for provider in result["providers"].values():
+        credential = provider["credential"]
+        assert credential["path_redacted"] is True
+        assert credential["present"] is True
+        assert "path" not in credential
+    serialized = json.dumps(result, sort_keys=True)
+    assert ".blueprint-secrets" not in serialized
+    assert str(secret_dir) not in serialized
+    assert "runpod-secret" not in serialized
+    assert "do-secret" not in serialized

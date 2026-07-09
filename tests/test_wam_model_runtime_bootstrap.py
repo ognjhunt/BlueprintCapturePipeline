@@ -432,7 +432,12 @@ def test_wam_model_runtime_bootstrap_provider_image_plan_with_file_auth(
     assert image_plan["status"] == "ready_for_manual_image_build_and_push"
     assert image_plan["configured_image_ref_is_versioned"] is True
     assert image_plan["registry_auth"]["docker_pat_file"]["mode_is_0600"] is True
+    assert image_plan["registry_auth"]["docker_pat_file"]["path_redacted"] is True
+    assert "path" not in image_plan["registry_auth"]["docker_pat_file"]
+    assert image_plan["registry_auth"]["secret_artifact_policy"]["local_secret_file_paths_recorded"] is False
     assert "docker-token-should-not-leak" not in plan_path.read_text(encoding="utf-8")
+    assert str(pat) not in plan_path.read_text(encoding="utf-8")
+    assert str(username) not in plan_path.read_text(encoding="utf-8")
     dockerfile = Path(summary["artifact_paths"]["provider_dockerfile"]).read_text(encoding="utf-8")
     assert "torch==2.10.0" in dockerfile
     assert "install_transformer_engine_shim.py" in dockerfile

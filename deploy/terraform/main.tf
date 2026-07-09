@@ -59,43 +59,145 @@ variable "storage_bucket" {
 }
 
 variable "docker_image" {
-  description = "Docker image for the pipeline"
+  description = "Versioned or digest-pinned Docker image for the pipeline. Use the git-SHA tag produced by deploy/scripts/deploy.sh or an @sha256 digest; never use latest."
   type        = string
-  default     = "gcr.io/blueprint-8c1ca/blueprint-pipeline:latest"
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^.+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_.-]+)$", var.docker_image)) && !can(regex(":(latest|dev|test|local)$", var.docker_image))
+    error_message = "docker_image must be pinned to an immutable digest or a non-latest versioned release tag."
+  }
 }
 
 variable "privacy_sam3_image" {
-  description = "Docker image for the SAM3 privacy service"
+  description = "Versioned or digest-pinned Docker image for the SAM3 privacy service. Use the git-SHA tag produced by deploy/scripts/deploy.sh or an @sha256 digest; never use latest."
   type        = string
-  default     = "gcr.io/blueprint-8c1ca/sam3-privacy:latest"
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^.+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_.-]+)$", var.privacy_sam3_image)) && !can(regex(":(latest|dev|test|local)$", var.privacy_sam3_image))
+    error_message = "privacy_sam3_image must be pinned to an immutable digest or a non-latest versioned release tag."
+  }
 }
 
 variable "privacy_vip_image" {
-  description = "Docker image for the VIP privacy service"
+  description = "Versioned or digest-pinned Docker image for the VIP privacy service. Use the git-SHA tag produced by deploy/scripts/deploy.sh or an @sha256 digest; never use latest."
   type        = string
-  default     = "gcr.io/blueprint-8c1ca/vip-privacy:latest"
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^.+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_.-]+)$", var.privacy_vip_image)) && !can(regex(":(latest|dev|test|local)$", var.privacy_vip_image))
+    error_message = "privacy_vip_image must be pinned to an immutable digest or a non-latest versioned release tag."
+  }
 }
 
 variable "privacy_deepprivacy2_image" {
-  description = "Docker image for the DeepPrivacy2 service"
+  description = "Versioned or digest-pinned Docker image for the DeepPrivacy2 service. Use the git-SHA tag produced by deploy/scripts/deploy.sh or an @sha256 digest; never use latest."
   type        = string
-  default     = "gcr.io/blueprint-8c1ca/deepprivacy2-privacy:latest"
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^.+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_.-]+)$", var.privacy_deepprivacy2_image)) && !can(regex(":(latest|dev|test|local)$", var.privacy_deepprivacy2_image))
+    error_message = "privacy_deepprivacy2_image must be pinned to an immutable digest or a non-latest versioned release tag."
+  }
 }
 
 variable "video_to_world_image" {
-  description = "Docker image for the video_to_world geometry service"
+  description = "Versioned or digest-pinned Docker image for the video_to_world geometry service. Use the git-SHA tag produced by deploy/scripts/deploy.sh or an @sha256 digest; never use latest."
   type        = string
-  default     = "gcr.io/blueprint-8c1ca/video-to-world:latest"
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^.+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_.-]+)$", var.video_to_world_image)) && !can(regex(":(latest|dev|test|local)$", var.video_to_world_image))
+    error_message = "video_to_world_image must be pinned to an immutable digest or a non-latest versioned release tag."
+  }
 }
 
 variable "max_concurrent_jobs" {
-  description = "Maximum concurrent pipeline dispatches and GPU privacy/video-to-world service instances. External beta target requires at least 25."
+  description = "Maximum concurrent pipeline dispatches. External beta target requires at least 25. GPU privacy/video-to-world services use the narrower per-service caps below."
   type        = number
   default     = 25
 
   validation {
     condition     = var.max_concurrent_jobs >= 25
     error_message = "max_concurrent_jobs must be at least 25 for the external beta capacity target."
+  }
+}
+
+variable "pipeline_queue_depth_alert_threshold" {
+  description = "Cloud Tasks queue-depth alert threshold for beta tail-latency backpressure."
+  type        = number
+  default     = 50
+
+  validation {
+    condition     = var.pipeline_queue_depth_alert_threshold >= 25 && var.pipeline_queue_depth_alert_threshold <= 100
+    error_message = "pipeline_queue_depth_alert_threshold must stay between the 25-concurrency beta target and the old 100-task delayed alert."
+  }
+}
+
+variable "pipeline_queue_depth_alert_duration" {
+  description = "How long Cloud Tasks queue depth may exceed the beta threshold before alerting."
+  type        = string
+  default     = "300s"
+
+  validation {
+    condition     = can(regex("^[0-9]+s$", var.pipeline_queue_depth_alert_duration))
+    error_message = "pipeline_queue_depth_alert_duration must be a seconds value such as 300s."
+  }
+}
+
+variable "privacy_sam3_max_instances" {
+  description = "Maximum sam3-detect Cloud Run GPU instances. Keep this lower than pipeline dispatch concurrency to bound privacy-runner spend."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.privacy_sam3_max_instances >= 1 && var.privacy_sam3_max_instances <= 25
+    error_message = "privacy_sam3_max_instances must be between 1 and 25."
+  }
+}
+
+variable "privacy_vip_max_instances" {
+  description = "Maximum vip-inpaint Cloud Run GPU instances. Keep this lower than pipeline dispatch concurrency to bound privacy-runner spend."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.privacy_vip_max_instances >= 1 && var.privacy_vip_max_instances <= 25
+    error_message = "privacy_vip_max_instances must be between 1 and 25."
+  }
+}
+
+variable "privacy_deepprivacy2_max_instances" {
+  description = "Maximum deepprivacy2-anonymize Cloud Run GPU instances. Keep this lower than pipeline dispatch concurrency to bound privacy-runner spend."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.privacy_deepprivacy2_max_instances >= 1 && var.privacy_deepprivacy2_max_instances <= 25
+    error_message = "privacy_deepprivacy2_max_instances must be between 1 and 25."
+  }
+}
+
+variable "video_to_world_max_instances" {
+  description = "Maximum video-to-world Cloud Run GPU instances. Keep this lower than pipeline dispatch concurrency to bound geometry-runner spend."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.video_to_world_max_instances >= 1 && var.video_to_world_max_instances <= 25
+    error_message = "video_to_world_max_instances must be between 1 and 25."
+  }
+}
+
+variable "gpu_runner_billable_instance_time_alert_threshold" {
+  description = "Per-runner Cloud Run billable instance time rate threshold in instance-seconds per second before alerting."
+  type        = number
+  default     = 1.0
+
+  validation {
+    condition     = var.gpu_runner_billable_instance_time_alert_threshold > 0
+    error_message = "gpu_runner_billable_instance_time_alert_threshold must be greater than zero."
   }
 }
 
@@ -170,6 +272,43 @@ variable "pipeline_sync_token" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "capture_extract_frames_service_account_email" {
+  description = "Optional service account email for the BlueprintCapture extractFrames Cloud Function; when set, it can publish large-video ingest requests."
+  type        = string
+  default     = ""
+}
+
+variable "billing_account_id" {
+  description = "Optional Cloud Billing account id. When set, Terraform creates a project-scoped GPU fleet beta billing budget."
+  type        = string
+  default     = ""
+}
+
+variable "gpu_fleet_billing_budget_usd" {
+  description = "Project-scoped GCP billing budget amount for the beta GPU/provider fleet."
+  type        = number
+  default     = 5000
+
+  validation {
+    condition     = var.gpu_fleet_billing_budget_usd > 0 && floor(var.gpu_fleet_billing_budget_usd) == var.gpu_fleet_billing_budget_usd
+    error_message = "gpu_fleet_billing_budget_usd must be a positive whole-dollar amount."
+  }
+}
+
+variable "gpu_fleet_billing_budget_thresholds" {
+  description = "Alert thresholds for the optional GCP billing budget."
+  type        = list(number)
+  default     = [0.5, 0.8, 1.0]
+
+  validation {
+    condition = alltrue([
+      for threshold in var.gpu_fleet_billing_budget_thresholds :
+      threshold > 0 && threshold <= 1.5
+    ])
+    error_message = "gpu_fleet_billing_budget_thresholds values must be > 0 and <= 1.5."
+  }
 }
 
 variable "privacy_runner_token" {
@@ -255,6 +394,16 @@ locals {
     deepprivacy2   = google_cloud_run_v2_service.privacy_deepprivacy2.name
     video_to_world = google_cloud_run_v2_service.video_to_world.name
   }
+  privacy_runner_max_instances = {
+    sam3           = min(var.privacy_sam3_max_instances, var.max_concurrent_jobs)
+    vip            = min(var.privacy_vip_max_instances, var.max_concurrent_jobs)
+    deepprivacy2   = min(var.privacy_deepprivacy2_max_instances, var.max_concurrent_jobs)
+    video_to_world = min(var.video_to_world_max_instances, var.max_concurrent_jobs)
+  }
+  privacy_runner_monitoring_service_filter = join(" OR ", [
+    for service in values(local.privacy_runner_service_names) :
+    "resource.labels.service_name=\"${service}\""
+  ])
   privacy_runner_invoker_members = toset(concat(
     ["serviceAccount:${google_service_account.pipeline_runner.email}"],
     var.additional_privacy_runner_invoker_members,
@@ -293,10 +442,15 @@ resource "google_project_service" "required_apis" {
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "fcm.googleapis.com",
+    "billingbudgets.googleapis.com",
   ])
 
   service            = each.value
   disable_on_destroy = false
+}
+
+data "google_project" "current" {
+  project_id = var.project_id
 }
 
 # =============================================================================
@@ -504,6 +658,53 @@ resource "google_pubsub_topic" "capture_bridge_handoff" {
   labels = local.common_labels
 
   message_retention_duration = "86400s" # 24 hours
+}
+
+resource "google_pubsub_topic" "large_video_ingest" {
+  name   = "blueprint-large-video-ingest"
+  labels = local.common_labels
+
+  message_retention_duration = "86400s" # 24 hours
+}
+
+resource "google_pubsub_topic_iam_member" "capture_extract_frames_large_video_ingest_publisher" {
+  count = var.capture_extract_frames_service_account_email != "" ? 1 : 0
+
+  project = var.project_id
+  topic   = google_pubsub_topic.large_video_ingest.name
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:${var.capture_extract_frames_service_account_email}"
+}
+
+resource "google_billing_budget" "gpu_fleet_beta" {
+  count = var.billing_account_id != "" ? 1 : 0
+
+  billing_account = var.billing_account_id
+  display_name    = "Blueprint GPU Fleet Beta Budget"
+
+  budget_filter {
+    projects = ["projects/${data.google_project.current.number}"]
+  }
+
+  amount {
+    specified_amount {
+      currency_code = "USD"
+      units         = tostring(var.gpu_fleet_billing_budget_usd)
+    }
+  }
+
+  dynamic "threshold_rules" {
+    for_each = var.gpu_fleet_billing_budget_thresholds
+
+    content {
+      threshold_percent = threshold_rules.value
+      spend_basis       = "CURRENT_SPEND"
+    }
+  }
+
+  depends_on = [
+    google_project_service.required_apis["billingbudgets.googleapis.com"],
+  ]
 }
 
 # Dead letter topic for failed messages
@@ -766,7 +967,7 @@ resource "google_cloud_run_v2_service" "privacy_sam3" {
 
     scaling {
       min_instance_count = 0
-      max_instance_count = var.max_concurrent_jobs
+      max_instance_count = local.privacy_runner_max_instances.sam3
     }
 
     containers {
@@ -850,7 +1051,7 @@ resource "google_cloud_run_v2_service" "privacy_vip" {
 
     scaling {
       min_instance_count = 0
-      max_instance_count = var.max_concurrent_jobs
+      max_instance_count = local.privacy_runner_max_instances.vip
     }
 
     containers {
@@ -939,7 +1140,7 @@ resource "google_cloud_run_v2_service" "privacy_deepprivacy2" {
 
     scaling {
       min_instance_count = 0
-      max_instance_count = var.max_concurrent_jobs
+      max_instance_count = local.privacy_runner_max_instances.deepprivacy2
     }
 
     containers {
@@ -1023,7 +1224,7 @@ resource "google_cloud_run_v2_service" "video_to_world" {
 
     scaling {
       min_instance_count = 0
-      max_instance_count = var.max_concurrent_jobs
+      max_instance_count = local.privacy_runner_max_instances.video_to_world
     }
 
     containers {
@@ -1255,7 +1456,9 @@ resource "google_firestore_database" "default" {
   ]
 }
 
-# Firestore indexes for captures collection
+# Firestore indexes for captures collection. The legacy createdAt composites
+# stay for current readers; sharded companions are the scale-up path once
+# writers populate createdAtShard and readers aggregate per-shard queries.
 resource "google_firestore_index" "captures_status" {
   collection = "captures"
   database   = google_firestore_database.default.name
@@ -1277,6 +1480,46 @@ resource "google_firestore_index" "captures_user" {
 
   fields {
     field_path = "creatorId"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "createdAt"
+    order      = "DESCENDING"
+  }
+}
+
+resource "google_firestore_index" "captures_status_created_at_shard" {
+  collection = "captures"
+  database   = google_firestore_database.default.name
+
+  fields {
+    field_path = "status"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "createdAtShard"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "createdAt"
+    order      = "ASCENDING"
+  }
+}
+
+resource "google_firestore_index" "captures_user_created_at_shard" {
+  collection = "captures"
+  database   = google_firestore_database.default.name
+
+  fields {
+    field_path = "creatorId"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "createdAtShard"
     order      = "ASCENDING"
   }
 
@@ -1336,9 +1579,9 @@ resource "google_monitoring_alert_policy" "queue_depth" {
 
     condition_threshold {
       filter          = "resource.type=\"cloud_tasks_queue\" AND metric.type=\"cloudtasks.googleapis.com/queue/depth\""
-      duration        = "600s"
+      duration        = var.pipeline_queue_depth_alert_duration
       comparison      = "COMPARISON_GT"
-      threshold_value = 100
+      threshold_value = var.pipeline_queue_depth_alert_threshold
 
       aggregations {
         alignment_period   = "60s"
@@ -1357,7 +1600,47 @@ resource "google_monitoring_alert_policy" "queue_depth" {
   }
 
   documentation {
-    content   = "Pipeline queue depth exceeds 100 tasks for 10+ minutes. Consider scaling up or investigating processing issues."
+    content   = "Pipeline queue depth exceeds the beta backpressure threshold for the configured duration. Check dispatch latency, per-user intake pressure, and worker health before admitting more captures."
+    mime_type = "text/markdown"
+  }
+}
+
+# Alert policy for Firestore request latency. This is the runtime monitor for
+# possible createdAt index hotspotting during soak/load tests; Key Visualizer
+# remains the source for confirming a specific index-key hotspot.
+resource "google_monitoring_alert_policy" "firestore_request_latency" {
+  display_name = "Blueprint Firestore Request Latency"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Firestore p99 API latency"
+
+    condition_monitoring_query_language {
+      duration = "300s"
+      query    = <<-EOT
+        fetch consumed_api
+        | metric 'serviceruntime.googleapis.com/api/request_latencies'
+        | filter (resource.service == 'firestore.googleapis.com')
+        | group_by 5m,
+            [value_request_latencies_percentile:
+              percentile(value.request_latencies, 99)]
+        | every 5m
+        | condition val() > 0.25 's'
+      EOT
+    }
+  }
+
+  notification_channels = var.monitoring_notification_channels
+
+  lifecycle {
+    precondition {
+      condition     = var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0
+      error_message = "monitoring_notification_channels must include at least one channel for production alert policies. Set allow_empty_monitoring_notification_channels=true only for dry-run plans."
+    }
+  }
+
+  documentation {
+    content   = "Firestore p99 request latency exceeds 250ms for 5 minutes. During beta soak or scale-up, inspect captures.createdAt composite indexes, Key Visualizer index heatmaps, write rate, and sharded createdAtShard migration readiness before admitting more capture traffic."
     mime_type = "text/markdown"
   }
 }
@@ -1400,6 +1683,41 @@ resource "google_monitoring_alert_policy" "capture_handoff_listener_lag" {
   }
 }
 
+resource "google_monitoring_alert_policy" "gpu_runner_billable_instance_time" {
+  display_name = "Blueprint GPU Runner Billable Instance Time"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Sustained GPU runner billable instance time"
+
+    condition_threshold {
+      filter          = "resource.type=\"cloud_run_revision\" AND metric.type=\"run.googleapis.com/container/billable_instance_time\" AND (${local.privacy_runner_monitoring_service_filter})"
+      duration        = "900s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.gpu_runner_billable_instance_time_alert_threshold
+
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_RATE"
+      }
+    }
+  }
+
+  notification_channels = var.monitoring_notification_channels
+
+  lifecycle {
+    precondition {
+      condition     = var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0
+      error_message = "monitoring_notification_channels must include at least one channel for production alert policies. Set allow_empty_monitoring_notification_channels=true only for dry-run plans."
+    }
+  }
+
+  documentation {
+    content   = "GPU privacy/video-to-world Cloud Run billable instance time is sustained above the configured threshold. Confirm the jobs are operator-authorized and not retrying or over-scaling."
+    mime_type = "text/markdown"
+  }
+}
+
 # =============================================================================
 # Outputs
 # =============================================================================
@@ -1434,6 +1752,11 @@ output "privacy_runner_services" {
   }
 }
 
+output "privacy_runner_max_instances" {
+  description = "Per-service GPU runner max instances after applying the global pipeline concurrency ceiling."
+  value       = local.privacy_runner_max_instances
+}
+
 output "cloud_tasks_queues" {
   description = "Cloud Tasks Queue paths by region"
   value       = { for k, v in google_cloud_tasks_queue.pipeline_queue : k => v.id }
@@ -1447,6 +1770,16 @@ output "pubsub_topic" {
 output "pubsub_handoff_listener_subscription" {
   description = "Pull subscription consumed by blueprint-pubsub-handoff-listener"
   value       = google_pubsub_subscription.pipeline_handoff_listener.id
+}
+
+output "large_video_ingest_topic" {
+  description = "Pub/Sub topic that receives large-video ingest requests from BlueprintCapture extractFrames."
+  value       = google_pubsub_topic.large_video_ingest.id
+}
+
+output "gpu_fleet_billing_budget" {
+  description = "Optional GCP billing budget resource for the beta GPU/provider fleet."
+  value       = var.billing_account_id != "" ? google_billing_budget.gpu_fleet_beta[0].name : null
 }
 
 output "storage_trigger_function" {

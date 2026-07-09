@@ -225,6 +225,23 @@ is a narrower single-root fallback for one-site rehearsals. Without one of
 those overrides, the inbox runner quarantines the request instead of treating
 the public WebApp path as local capture truth.
 
+Before a multi-site beta, validate that every beta site slug is covered on both
+the WebApp preflight and Pipeline maps:
+
+```bash
+python scripts/validate_capture_root_by_site_coverage.py \
+  --expected-site-roots-json '{"site-one":"/captures/site-one","site-two":"/captures/site-two"}' \
+  --pipeline-site-roots-json "$ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON" \
+  --webapp-forwarding-preflight /path/to/Blueprint-WebApp/output/pipeline/robot_eval_job_requests/forwarding_preflight.json \
+  --require-paths-exist \
+  --output output/beta_capacity/capture_root_by_site_coverage.json
+```
+
+`capture_root_by_site_beta_coverage.v1` is coverage evidence only. It does not
+prove live forwarding, pipeline processing, simulator execution, or buyer
+delivery; it only proves the beta site slug map is complete before requests are
+allowed to fan out across multiple capture roots.
+
 The proof-boundary audit can also be run directly:
 
 ```bash

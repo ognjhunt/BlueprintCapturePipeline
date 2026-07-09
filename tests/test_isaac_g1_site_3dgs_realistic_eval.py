@@ -1246,6 +1246,11 @@ def test_isaac_helper_runtime_and_provider_plan_edges(
         generated_at="now",
     )
     assert "required_file_based_provider_secret_missing" in missing_plan["blockers"]
+    assert missing_plan["secret_artifact_policy"]["local_secret_file_paths_recorded"] is False
+    assert all(
+        "path" not in row and row["path_redacted"] is True
+        for row in missing_plan["file_based_secret_inputs"]
+    )
     assert "provider_fetchable_bundle_uri_missing" in missing_plan["blockers"]
     assert "prebuilt_isaac_eval_worker_image_ref_missing" in missing_plan["blockers"]
     assert missing_plan["provider_runtime_inputs"][
@@ -1273,6 +1278,13 @@ def test_isaac_helper_runtime_and_provider_plan_edges(
     assert "provider_fetchable_bundle_uri_unusable_by_builtin_fetcher" in unsupported_plan[
         "blockers"
     ]
+    assert all(
+        "path" not in row and row["path_redacted"] is True
+        for row in unsupported_plan["file_based_secret_inputs"]
+    )
+    unsupported_serialized = json.dumps(unsupported_plan, sort_keys=True)
+    assert str(ngc) not in unsupported_serialized
+    assert str(runpod) not in unsupported_serialized
     assert "provider_writable_artifact_output_uri_unsupported_scheme" in unsupported_plan[
         "blockers"
     ]

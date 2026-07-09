@@ -174,8 +174,14 @@ def test_async_provider_urls_and_blocked_result(tmp_path: Path) -> None:
 
     assert "/bundle.zip" in bundle_url
     assert "/output.zip" in output_url
-    assert token_status["path"] == str(tmp_path / "token")
+    assert token_status["path_redacted"] is True
+    assert token_status["path_disclosure_policy"] == (
+        "local_secret_file_paths_redacted_from_release_artifacts"
+    )
     assert token_status["present"] is True
+    assert token_status["mode_is_0600"] is True
+    assert token_status["token_recorded_in_manifest"] is False
+    assert "path" not in token_status
 
     result = runner._write_blocked_result(
         tmp_path,

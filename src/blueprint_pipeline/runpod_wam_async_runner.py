@@ -38,6 +38,11 @@ from .runpod_provider_adapter import (
     RUNPOD_API_KEY_ENV,
     RUNPOD_REST_API_BASE,
 )
+from .secret_artifact_policy import (
+    SECRET_PATH_DISCLOSURE_POLICY,
+    redacted_secret_file_status,
+    secret_path_disclosure_policy,
+)
 from .vast_bundle_staging import (
     BUNDLE_ROUTE,
     DEFAULT_OUTPUT_FILENAME,
@@ -404,24 +409,32 @@ def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
     try:
         key = key_file.read_text(encoding="utf-8").strip() if key_file.is_file() else ""
     except OSError as exc:
-        return "", {
+        status = redacted_secret_file_status(
+            key_file,
+            env_name=RUNPOD_API_KEY_FILE_ENV,
+            raw_secret_field="raw_secret_values_recorded",
+        )
+        status.update({
             "api_key_configured": False,
             "api_key_source": RUNPOD_API_KEY_FILE_ENV,
             "api_key_file_configured": True,
-            "api_key_file_path": str(key_file),
             "api_key_file_mode": mode,
             "api_key_file_read_error": type(exc).__name__,
-            "raw_secret_values_recorded": False,
-        }
-    return key, {
+        })
+        return "", status
+    status = redacted_secret_file_status(
+        key_file,
+        env_name=RUNPOD_API_KEY_FILE_ENV,
+        raw_secret_field="raw_secret_values_recorded",
+    )
+    status.update({
         "api_key_configured": bool(key),
         "api_key_source": RUNPOD_API_KEY_FILE_ENV if key else None,
         "api_key_file_configured": True,
-        "api_key_file_path": str(key_file),
         "api_key_file_mode": mode,
         "api_key_file_mode_is_0600": mode == "0o600",
-        "raw_secret_values_recorded": False,
-    }
+    })
+    return key, status
 
 
 def _read_sensitive_url_file(path_value: str, *, label: str) -> tuple[str, dict[str, Any]]:
@@ -459,7 +472,11 @@ def _read_sensitive_url_file(path_value: str, *, label: str) -> tuple[str, dict[
 
 
 def _secret_file_meta(path: Path, *, label: str, source: str) -> dict[str, Any]:
-    mode = oct(path.stat().st_mode & 0o777) if path.exists() else None
+    status = redacted_secret_file_status(
+        path,
+        path_source=source,
+        raw_secret_field="raw_secret_values_recorded",
+    )
     value_present = False
     read_error = None
     if path.is_file():
@@ -467,17 +484,13 @@ def _secret_file_meta(path: Path, *, label: str, source: str) -> dict[str, Any]:
             value_present = bool(path.read_text(encoding="utf-8").strip())
         except OSError as exc:
             read_error = type(exc).__name__
-    return {
+    status.update({
         "label": label,
         "source": source,
-        "path": str(path),
-        "present": path.is_file(),
-        "mode": mode,
-        "mode_is_0600": mode == "0o600",
         "value_present": value_present,
         "read_error": read_error,
-        "raw_secret_values_recorded": False,
-    }
+    })
+    return status
 
 
 def _read_model_secret_env() -> tuple[dict[str, str], dict[str, Any]]:
@@ -1685,7 +1698,8 @@ def create_runpod_wam_async_run(
     direct_provider_urls = bool(provider_bundle_url and provider_output_put_url)
     token_status: dict[str, Any] = {
         "present": False,
-        "path": str(resolved_token_file),
+        "path_redacted": True,
+        "path_disclosure_policy": SECRET_PATH_DISCLOSURE_POLICY,
         "token_recorded_in_manifest": False,
         "reason": "not_required_for_explicit_provider_urls"
         if direct_provider_urls
@@ -2166,8 +2180,9 @@ def create_runpod_wam_async_run(
         "prelaunch_spend_guard": prelaunch_spend_guard,
         "pre_spend_preflight": pre_spend_preflight,
         "pending_teardown_record": pending_teardown["path"],
-        "token_file": str(resolved_token_file),
-        "secret_env_file": str(resolved_secret_env_file),
+        "token_file_path_redacted": True,
+        "secret_env_file_path_redacted": True,
+        "secret_artifact_policy": secret_path_disclosure_policy(),
         "image_name": image_name,
         "gpu_type_ids": list(gpu_type_ids),
         "cloud_type": cloud_type,

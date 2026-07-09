@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import runpy
 import sys
 from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline.site_reference_backfill import main, run_site_reference_backfill
+from tests.runpy_entrypoint import run_module_as_main
 
 
 def _capture_root(root: Path, *, capture_id: str = "capture-1") -> Path:
@@ -364,6 +364,6 @@ def test_site_reference_backfill_main_and_module_entrypoint(
 
     monkeypatch.setattr(sys, "argv", ["site_reference_backfill.py", str(tmp_path)])
     with pytest.raises(SystemExit) as exc_info:
-        runpy.run_module("blueprint_pipeline.site_reference_backfill", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.site_reference_backfill")
     assert exc_info.value.code == 0
     assert json.loads(capsys.readouterr().out)["schema_version"] == "site_reference_backfill.v1"

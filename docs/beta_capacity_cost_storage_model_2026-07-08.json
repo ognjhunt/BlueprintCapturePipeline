@@ -38,30 +38,151 @@
     "total_new_storage_gib_p95_if_all_captures_p95": 8400,
     "absolute_raw_ingest_cap_gib_if_all_captures_hit_cap": 6000
   },
+  "cost_per_capture_model": {
+    "schema_version": "blueprint.beta_cost_per_capture_model.v1",
+    "status": "planning_estimate_not_live_billing_proof",
+    "claim_boundary": "Configured planning assumptions for beta budgeting; this is not provider invoice, GCP billing export, or live soak proof.",
+    "modeled_captures_per_month": 300,
+    "budget_cap_usd_per_capture": 16.67,
+    "budget_cap_usd_per_100_user_month": 5000,
+    "provider_spend_review_threshold_usd_per_capture": 8.33,
+    "provider_spend_review_threshold_usd_per_100_user_month": 2500,
+    "raw_media_gib_per_capture_p50": 1.2,
+    "derived_artifact_gib_per_capture_p50": 3.0,
+    "storage_gib_per_capture_p50": 4.2,
+    "raw_media_gib_per_capture_p95": 8,
+    "derived_artifact_gib_per_capture_p95": 20,
+    "storage_gib_per_capture_p95": 28,
+    "storage_egress_gib_per_capture_estimate": 1.0,
+    "provider_runs_per_capture": {
+      "extract_frames": 1,
+      "privacy_redaction": 1,
+      "robot_eval_runs_average": 0.25,
+      "hosted_session_runs_average": 0.1
+    },
+    "gpu_seconds_per_capture_estimate": 1200,
+    "planning_unit_costs": {
+      "gpu_hour_usd": 2.5,
+      "storage_gib_month_usd": 0.026,
+      "egress_gib_usd": 0.12,
+      "pipeline_cpu_per_capture_usd": 0.5,
+      "ops_buffer_per_capture_usd": 2.0
+    },
+    "estimated_usd_per_capture_p50": 3.56,
+    "estimated_usd_per_100_user_month_p50": 1068,
+    "budget_headroom_usd_per_100_user_month_p50": 3932
+  },
   "budget_guardrails": {
     "cohort_storage_review_threshold_gib": 2000,
     "cohort_provider_spend_review_threshold_usd": 2500,
     "cohort_hard_stop_threshold_usd": 5000,
     "requires_gpu_spend_guard": true,
-    "requires_storage_lifecycle_policy": true
+    "requires_storage_lifecycle_policy": true,
+    "requires_gcp_billing_budget": true,
+    "gcp_billing_budget_resource": "google_billing_budget.gpu_fleet_beta",
+    "gcp_billing_budget_thresholds": [0.5, 0.8, 1.0]
   },
   "runtime_capacity": {
     "target_concurrent_jobs": 25,
     "terraform_variable": "max_concurrent_jobs",
     "task_queue_max_concurrent_dispatches": 25,
+    "task_queue_depth_alert_threshold": 50,
+    "task_queue_depth_alert_duration_seconds": 300,
     "cloud_run_request_concurrency_per_instance": 1,
-    "cloud_run_max_instances_per_privacy_runner": 25,
+    "gpu_runner_max_instances": {
+      "sam3": 3,
+      "vip": 2,
+      "deepprivacy2": 2,
+      "video_to_world": 2
+    },
+    "gpu_runner_total_max_instances": 9,
+    "gpu_runner_capacity_policy": "per_service_spend_caps_below_dispatch_concurrency",
+    "large_video_ingest_topic": "blueprint-large-video-ingest",
+    "firestore_created_at_hotspot_policy": {
+      "schema_version": "blueprint.firestore_created_at_hotspot_policy.v1",
+      "collection": "captures",
+      "status": "beta_monitor_and_scale_up_migration_path_declared",
+      "claim_boundary": "This declares Terraform indexes, alerting, and soak-report evidence fields. It is not live Firestore latency proof and does not prove WebApp or Capture writers populate createdAtShard.",
+      "legacy_indexes_retained_for_current_readers": [
+        "google_firestore_index.captures_status",
+        "google_firestore_index.captures_user"
+      ],
+      "scale_up_sharded_indexes": [
+        "google_firestore_index.captures_status_created_at_shard",
+        "google_firestore_index.captures_user_created_at_shard"
+      ],
+      "shard_field": "createdAtShard",
+      "writer_requirement_before_scale_up": "Populate createdAtShard with a bounded random or hashed shard value before routing high-volume createdAt queries through sharded indexes.",
+      "reader_requirement_before_scale_up": "Aggregate per-shard createdAt result sets before removing the legacy createdAt composites.",
+      "legacy_index_removal_requirement": "After sharded writer and reader migration is proven, remove composite indexes that still route high-rate captures queries directly through monotonically increasing createdAt.",
+      "beta_without_sharding_max_write_rate_per_second": 500,
+      "monitoring_alert_policy": "google_monitoring_alert_policy.firestore_request_latency",
+      "latency_metric": "serviceruntime.googleapis.com/api/request_latencies",
+      "p99_alert_threshold_seconds": 0.25,
+      "p99_alert_duration_seconds": 300,
+      "soak_report_observation_field": "firestore_latency_observation"
+    },
     "validated_by": "scripts/validate_beta_capacity_storage.py"
   },
   "storage_lifecycle": {
     "policy_file": "deploy/storage/primary-capture-bucket-lifecycle.json",
     "apply_script": "scripts/apply_primary_capture_bucket_lifecycle.sh",
+    "enforcement_layer": "gcs_bucket_lifecycle",
+    "package_retention_artifact": "arena_delivery_retention_policy.v1",
+    "beta_data_retention_policy": {
+      "policy_file": "docs/beta_data_retention_policy_2026-07-09.json",
+      "policy_doc": "docs/BETA_DATA_RETENTION_POLICY_2026-07-09.md",
+      "schema_version": "blueprint.beta_data_retention_policy.v1",
+      "status": "declared_validator_enforced_operator_signoff_required",
+      "operator_signoff_evidence_id": "operator_dpa_data_processing_terms",
+      "launch_readiness_artifact_id": "beta_data_retention_policy_json",
+      "claim_boundary": "This points launch artifacts at the declared beta data retention policy. It is not signed DPA, live bucket lifecycle apply proof, or user-deletion execution proof."
+    },
     "raw_capture_prefixes": ["scenes/", "targets/"],
     "raw_nearline_after_days": 30,
     "raw_coldline_after_days": 90,
     "raw_delete_after_days": 180,
     "temporary_delete_after_days": 14,
-    "buyer_eval_hosted_delete_after_days": 365
+    "buyer_eval_hosted_delete_after_days": 365,
+    "local_robot_eval_jobs_retention": {
+      "schema_version": "blueprint.local_robot_eval_jobs_retention.v1",
+      "root": "robot_eval_jobs/",
+      "status": "local_cache_retention_required_before_operator_handoff",
+      "current_audit_size_gib": 2.9,
+      "retention_tool": "scripts/manage_output_artifact_retention.py",
+      "dry_run_command": "python scripts/manage_output_artifact_retention.py --output-root robot_eval_jobs --manifest-path output/robot_eval_jobs_retention_manifest.json",
+      "delete_after_days": 30,
+      "review_threshold_gib": 25,
+      "hard_stop_gib": 50,
+      "modeled_captures_per_month": 300,
+      "average_robot_eval_runs_per_capture": 0.25,
+      "planned_robot_eval_jobs_per_month": 75,
+      "max_local_cache_gib_per_modeled_month": 50,
+      "canonical_handoff_rule": "Repo-root robot_eval_jobs entries are local cache snapshots; they are not launch proof unless selected by the current launch readiness packet or copied into a current operator evidence bundle.",
+      "claim_boundary": "This local retention plan controls developer-machine disk pressure and operator handoff hygiene. It is not GCS lifecycle proof, legal deletion proof, or live provider result validity."
+    },
+    "data_classes": {
+      "raw_capture_truth": {
+        "prefixes": ["scenes/", "targets/"],
+        "nearline_after_days": 30,
+        "coldline_after_days": 90,
+        "delete_after_days": 180
+      },
+      "temporary_processing": {
+        "prefixes": ["tmp/", "staging/", "debug/"],
+        "delete_after_days": 14
+      },
+      "buyer_eval_hosted_artifacts": {
+        "prefixes": [
+          "buyer_delivery/",
+          "marketplace/",
+          "hosted_sessions/",
+          "robot_eval_jobs/"
+        ],
+        "delete_after_days": 365,
+        "contract_specific_hold_may_override": true
+      }
+    }
   },
   "verification": {
     "validator": "scripts/validate_beta_capacity_storage.py",

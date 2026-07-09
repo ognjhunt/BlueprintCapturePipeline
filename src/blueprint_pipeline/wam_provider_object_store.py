@@ -11,6 +11,10 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .secret_artifact_policy import (
+    redacted_secret_file_status,
+    secret_path_disclosure_policy,
+)
 
 
 SCHEMA_VERSION = "wam_provider_object_store_staging.v1"
@@ -120,6 +124,28 @@ def _file_status(path: Path, *, label: str, value_present: bool = False) -> dict
     }
 
 
+def _credential_file_status(
+    path: Path,
+    *,
+    label: str,
+    source: str,
+    value_present: bool = False,
+) -> dict[str, Any]:
+    status = redacted_secret_file_status(
+        path,
+        path_source=source,
+        raw_secret_field="raw_secret_values_recorded",
+    )
+    status.update(
+        {
+            "label": label,
+            "source": source,
+            "value_present": value_present,
+        }
+    )
+    return status
+
+
 def _read_first_file(
     *,
     explicit_path: str | Path | None,
@@ -152,12 +178,21 @@ def _read_first_file(
         try:
             value = resolved.read_text(encoding="utf-8").strip() if resolved.is_file() else ""
         except OSError as exc:
-            status = _file_status(resolved, label=label, value_present=False)
-            status.update({"source": source, "read_error": type(exc).__name__})
+            status = _credential_file_status(
+                resolved,
+                label=label,
+                source=source,
+                value_present=False,
+            )
+            status["read_error"] = type(exc).__name__
             statuses.append(status)
             continue
-        status = _file_status(resolved, label=label, value_present=bool(value))
-        status["source"] = source
+        status = _credential_file_status(
+            resolved,
+            label=label,
+            source=source,
+            value_present=bool(value),
+        )
         statuses.append(status)
         if value:
             return value, {
@@ -420,6 +455,7 @@ def stage_wam_provider_bundle_object_store(
         "blockers": sorted(set(blockers)),
         "raw_secret_values_recorded": False,
         "secret_hashes_recorded": False,
+        "secret_artifact_policy": secret_path_disclosure_policy(),
     }
     write_json(resolved_job_dir / "wam_provider_object_store_staging_manifest.json", manifest)
     return manifest

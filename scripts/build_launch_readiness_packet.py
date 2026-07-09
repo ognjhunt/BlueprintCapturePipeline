@@ -27,6 +27,10 @@ PIPELINE_SOURCE_REQUIRED_ARTIFACT_IDS = {
     "sim_only_beta_local_gate_report",
     "live_pipeline_setup_audit",
 }
+BETA_DATA_RETENTION_POLICY_JSON = "docs/beta_data_retention_policy_2026-07-09.json"
+BETA_DATA_RETENTION_POLICY_MD = "docs/BETA_DATA_RETENTION_POLICY_2026-07-09.md"
+BETA_DATA_RESIDENCY_TRANSFER_POLICY_JSON = "docs/beta_data_residency_transfer_policy_2026-07-09.json"
+BETA_DATA_RESIDENCY_TRANSFER_POLICY_MD = "docs/BETA_DATA_RESIDENCY_TRANSFER_POLICY_2026-07-09.md"
 
 
 def _repo_root() -> Path:
@@ -394,6 +398,10 @@ def build_launch_readiness_packet(
     pipeline_full_lane_evidence = pipeline_repo / "output" / "pipeline_full_test_lane_ci_evidence.json"
     pipeline_sim_only_evidence = pipeline_repo / "output" / "pipeline_sim_only_local_gate_ci_evidence.json"
     webapp_ci_evidence = pipeline_repo / "output" / "webapp_main_ci_evidence.json"
+    beta_data_retention_policy = pipeline_repo / BETA_DATA_RETENTION_POLICY_JSON
+    beta_data_retention_policy_md = pipeline_repo / BETA_DATA_RETENTION_POLICY_MD
+    beta_data_residency_transfer_policy = pipeline_repo / BETA_DATA_RESIDENCY_TRANSFER_POLICY_JSON
+    beta_data_residency_transfer_policy_md = pipeline_repo / BETA_DATA_RESIDENCY_TRANSFER_POLICY_MD
     resolved_operator_evidence_path = _operator_evidence_path(pipeline_repo, operator_evidence_path)
 
     artifacts = [
@@ -404,6 +412,22 @@ def build_launch_readiness_packet(
         _artifact("sim_only_beta_local_gate_report", sim_only_report, source_repo="BlueprintCapturePipeline"),
         _artifact("live_pipeline_setup_audit", live_setup, source_repo="BlueprintCapturePipeline"),
         _artifact("webapp_forwarding_preflight", forwarding_preflight, source_repo="Blueprint-WebApp"),
+        _artifact("beta_data_retention_policy_json", beta_data_retention_policy, source_repo="BlueprintCapturePipeline"),
+        _artifact(
+            "beta_data_retention_policy_markdown",
+            beta_data_retention_policy_md,
+            source_repo="BlueprintCapturePipeline",
+        ),
+        _artifact(
+            "beta_data_residency_transfer_policy_json",
+            beta_data_residency_transfer_policy,
+            source_repo="BlueprintCapturePipeline",
+        ),
+        _artifact(
+            "beta_data_residency_transfer_policy_markdown",
+            beta_data_residency_transfer_policy_md,
+            source_repo="BlueprintCapturePipeline",
+        ),
     ]
     if resolved_operator_evidence_path is not None:
         artifacts.append(
@@ -446,6 +470,8 @@ def build_launch_readiness_packet(
     live_payload = _read_json(live_setup)
     forwarding_payload = _read_json(forwarding_preflight)
     sim_payload = _read_json(sim_only_report)
+    beta_data_retention_policy_payload = _read_json(beta_data_retention_policy)
+    beta_data_residency_transfer_policy_payload = _read_json(beta_data_residency_transfer_policy)
     operator_evidence_payload = (
         _read_json(resolved_operator_evidence_path)
         if resolved_operator_evidence_path is not None
@@ -520,6 +546,10 @@ def build_launch_readiness_packet(
             "pipeline_full_test_lane_ci": ci_artifacts[1].get("conclusion"),
             "pipeline_sim_only_local_gate_ci": ci_artifacts[2].get("conclusion"),
             "webapp_main_ci": ci_artifacts[3].get("conclusion"),
+            "beta_data_retention_policy": beta_data_retention_policy_payload.get("status"),
+            "beta_data_residency_transfer_policy": (
+                beta_data_residency_transfer_policy_payload.get("status")
+            ),
             "operator_evidence": operator_evidence_status.get("status"),
         },
         "remaining_blockers": {
@@ -539,6 +569,7 @@ def build_launch_readiness_packet(
             "python scripts/run_paid_marketplace_launch_gate.py",
             "python scripts/run_external_alpha_launch_gate.py",
             "python scripts/run_sim_only_beta_local_gate.py",
+            "python scripts/validate_beta_capacity_storage.py",
             "python scripts/collect_github_actions_evidence.py --repo ognjhunt/BlueprintCapturePipeline --run-id <pipeline-ci-run-id> --evidence-id pipeline_main_ci_evidence --output output/pipeline_main_ci_evidence.json",
             "python scripts/collect_github_actions_evidence.py --repo ognjhunt/BlueprintCapturePipeline --run-id <full-lane-run-id> --evidence-id pipeline_full_test_lane_ci_evidence --junit <downloaded-junit.xml> --output output/pipeline_full_test_lane_ci_evidence.json",
             "python scripts/collect_github_actions_evidence.py --repo ognjhunt/BlueprintCapturePipeline --run-id <sim-only-local-gate-run-id> --evidence-id pipeline_sim_only_local_gate_ci_evidence --output output/pipeline_sim_only_local_gate_ci_evidence.json",
@@ -554,6 +585,10 @@ def build_launch_readiness_packet(
             "automated_contracts_do_not_prove_real_pubsub_delivery": True,
             "automated_contracts_do_not_prove_live_provider_execution": True,
             "operator_evidence_required_for_paid_beta": True,
+            "beta_data_retention_policy_is_declared_contract_not_signed_dpa": True,
+            "retention_policy_artifact_does_not_prove_user_deletion_or_access_audit_execution": True,
+            "data_residency_policy_is_declared_scope_not_signed_transfer_terms": True,
+            "non_us_beta_participants_remain_blocked_without_operator_evidence": True,
         },
     }
 
@@ -592,6 +627,21 @@ def _markdown(packet: Mapping[str, Any]) -> str:
         status = artifact.get("json_status") or ("present" if artifact.get("exists") else "missing")
         sha = artifact.get("sha256") or "missing"
         lines.append(f"- `{artifact.get('id')}`: `{status}` `{sha}`")
+
+    readiness = packet.get("readiness_summary")
+    if isinstance(readiness, Mapping):
+        lines.extend(
+            [
+                "",
+                "## Beta Data Retention",
+                f"- `beta_data_retention_policy`: `{readiness.get('beta_data_retention_policy') or 'missing'}`",
+                (
+                    "- `beta_data_residency_transfer_policy`: "
+                    f"`{readiness.get('beta_data_residency_transfer_policy') or 'missing'}`"
+                ),
+                "- Policy artifact is checksum-linked here, but signed operator DPA/access-audit evidence remains a manual legal/privacy gate.",
+            ]
+        )
 
     lines.extend(["", "## Remaining Blockers"])
     blockers = packet.get("remaining_blockers")

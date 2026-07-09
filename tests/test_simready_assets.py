@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import runpy
 import sys
 from pathlib import Path
 
@@ -20,6 +19,7 @@ from blueprint_pipeline.simready_assets import (
     build_simready_assets,
     main,
 )
+from tests.runpy_entrypoint import run_module_as_main
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -308,6 +308,6 @@ def test_simready_main_reports_success_failure_and_module_entrypoint(
 
     monkeypatch.setattr(sys, "argv", ["simready_assets.py", "--capture-root", str(capture_root)])
     with pytest.raises(SystemExit) as exc_info:
-        runpy.run_module("blueprint_pipeline.simready_assets", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.simready_assets")
     assert exc_info.value.code == 0
     assert "[simready] manifest=" in capsys.readouterr().out

@@ -26,6 +26,10 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .secret_artifact_policy import (
+    redacted_secret_file_status,
+    secret_path_disclosure_policy,
+)
 
 
 VAST_BUNDLE_STAGING_SCHEMA_VERSION = "vast_bundle_staging_manifest.v1"
@@ -62,14 +66,19 @@ def _read_or_create_token(path: Path) -> tuple[str, dict[str, Any]]:
         created = True
     path.chmod(0o600)
     mode = oct(path.stat().st_mode & 0o777)
-    return token, {
-        "path": str(path),
+    status = redacted_secret_file_status(
+        path,
+        path_source="staging_token_file",
+        raw_secret_field="token_recorded_in_manifest",
+    )
+    status.update({
         "created": created,
         "present": path.is_file(),
         "mode": mode,
         "mode_is_0600": mode == "0o600",
         "token_recorded_in_manifest": False,
-    }
+    })
+    return token, status
 
 
 def _url_with_token(base_url: str, route: str, token: str) -> str:
@@ -215,13 +224,18 @@ def _write_secret_env_file(
         encoding="utf-8",
     )
     path.chmod(0o600)
-    return {
-        "path": str(path),
+    status = redacted_secret_file_status(
+        path,
+        path_source="staging_secret_env_file",
+        raw_secret_field="raw_secret_values_recorded_in_manifest",
+    )
+    status.update({
         "present": path.is_file(),
         "mode": oct(path.stat().st_mode & 0o777),
         "mode_is_0600": (path.stat().st_mode & 0o777) == 0o600,
         "raw_secret_values_recorded_in_manifest": False,
-    }
+    })
+    return status
 
 
 def prepare_vast_bundle_staging(
@@ -308,6 +322,7 @@ def prepare_vast_bundle_staging(
         "output_path": str(resolved_output),
         "token_file": token_status,
         "secret_env_file": secret_env_status,
+        "secret_artifact_policy": secret_path_disclosure_policy(),
         "base_url_redacted": _redact_url(base_url) if base_url else None,
         "bundle_url_path": _redacted_url_path(BUNDLE_ROUTE),
         "output_put_url_path": _redacted_url_path(OUTPUT_ROUTE),
@@ -545,6 +560,7 @@ def run_local_staging_self_test(
         "bundle_path": str(resolved_bundle),
         "output_path": str(resolved_output),
         "token_file": token_status,
+        "secret_artifact_policy": secret_path_disclosure_policy(),
         "local_base_url": base_url,
         "provider_public_base_url_ready": False,
         "provider_public_base_url_blocker": "public_tunnel_not_started",

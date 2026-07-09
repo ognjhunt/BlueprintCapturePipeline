@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .common import ensure_dir, write_json
+from .secret_artifact_policy import (
+    redacted_secret_file_status,
+    secret_path_disclosure_policy,
+)
 from .unitree_groot_sonic_wam_image_remote_build_packet import DEFAULT_IMAGE_REF
 
 
@@ -43,16 +47,11 @@ def _read_json(path: str | Path | None) -> dict[str, Any]:
 
 
 def _file_status(path: str | Path) -> dict[str, Any]:
-    resolved = Path(path).expanduser()
-    present = resolved.is_file()
-    mode = oct(resolved.stat().st_mode & 0o777) if resolved.exists() else None
-    return {
-        "path": str(resolved),
-        "present": present,
-        "mode": mode,
-        "mode_is_0600": mode == "0o600",
-        "raw_secret_values_recorded": False,
-    }
+    return redacted_secret_file_status(
+        path,
+        path_source="default_blueprint_secret_file_path",
+        raw_secret_field="raw_secret_values_recorded",
+    )
 
 
 def _registry_manifest_status(image_ref: str) -> dict[str, Any]:
@@ -201,6 +200,7 @@ def build_provider_readiness(
             "semantic_task_success_pass_proven": False,
         },
         "raw_secret_values_recorded": False,
+        "secret_artifact_policy": secret_path_disclosure_policy(),
         "claim_boundary": {
             "readiness_audit_is_no_spend": True,
             "readiness_audit_is_not_provider_startup": True,

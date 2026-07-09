@@ -22,6 +22,10 @@ from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .secret_artifact_policy import (
+    redacted_secret_file_status_from_env,
+    secret_path_disclosure_policy,
+)
 from .g1_site_3dgs_mujoco_preview import (
     _attempt_visual_asset_mesh_conversion,
     _safe_id,
@@ -773,16 +777,12 @@ def detect_isaac_runtime(*, generated_at: str | None = None) -> dict[str, Any]:
 
 
 def _secret_file_status(name: str, default_path: str) -> dict[str, Any]:
-    explicit = _string(os.getenv(name))
-    selected = explicit or default_path
-    path = Path(selected).expanduser()
-    return {
-        "env_var": name,
-        "path": str(path),
-        "path_source": "env" if explicit else "default_blueprint_secret_file_path",
-        "present": path.is_file(),
-        "raw_secret_value_recorded": False,
-    }
+    return redacted_secret_file_status_from_env(
+        name,
+        default_path,
+        env_field="env_var",
+        raw_secret_field="raw_secret_value_recorded",
+    )
 
 
 def _configured_isaac_worker_image_ref() -> dict[str, Any]:
@@ -972,6 +972,7 @@ def build_provider_plan(
         "provider_api_calls_performed": False,
         "job_dir": str(job_dir),
         "file_based_secret_inputs": secret_files,
+        "secret_artifact_policy": secret_path_disclosure_policy(),
         "local_runtime_blockers": local_runtime_blockers,
         "provider_runtime_inputs": {
             "worker_image_ref_present": bool(worker_image_ref),

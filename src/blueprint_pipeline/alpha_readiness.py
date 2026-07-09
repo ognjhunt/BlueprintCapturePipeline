@@ -351,6 +351,14 @@ def _operator_evidence_has_ref(entry: Mapping[str, Any]) -> bool:
         "nda_or_proprietary_data_terms_uri",
         "nda_attestation_uri",
         "restricted_zone_controls_uri",
+        "data_residency_policy_uri",
+        "us_only_beta_scope_uri",
+        "signed_transfer_terms_uri",
+        "signed_dpa_scc_uri",
+        "standard_contractual_clauses_uri",
+        "transfer_impact_assessment_uri",
+        "subprocessor_residency_terms_uri",
+        "data_residency_region_policy_uri",
     ):
         return True
     for key in ("evidence", "artifacts", "refs", "metadata"):
@@ -405,6 +413,77 @@ def _entry_list_empty(entry: Mapping[str, Any], *keys: str) -> bool:
     return False
 
 
+def _entry_has_non_empty_list(entry: Mapping[str, Any], *keys: str) -> bool:
+    for key in keys:
+        value = entry.get(key)
+        metadata = entry.get("metadata")
+        if value is None and isinstance(metadata, Mapping):
+            value = metadata.get(key)
+        if isinstance(value, list) and value:
+            return True
+    return False
+
+
+def _entry_string_values(entry: Mapping[str, Any], *keys: str) -> list[str]:
+    values: list[str] = []
+    metadata = entry.get("metadata")
+    for key in keys:
+        value = entry.get(key)
+        if value is None and isinstance(metadata, Mapping):
+            value = metadata.get(key)
+        if isinstance(value, str):
+            candidates = [part.strip() for part in value.split(",")]
+        elif isinstance(value, list | tuple | set):
+            candidates = [str(item or "").strip() for item in value]
+        else:
+            candidates = []
+        for candidate in candidates:
+            if candidate and candidate not in values:
+                values.append(candidate)
+    return values
+
+
+def _country_codes_are_us_only(values: list[str]) -> bool:
+    normalized = {value.strip().upper().replace("-", "_") for value in values if value.strip()}
+    return bool(normalized) and normalized.issubset({"US", "USA", "UNITED_STATES"})
+
+
+def _entry_declares_us_only_beta_scope(entry: Mapping[str, Any]) -> bool:
+    tester_countries = _entry_string_values(
+        entry,
+        "allowed_tester_countries",
+        "allowed_participant_countries",
+    )
+    site_countries = _entry_string_values(
+        entry,
+        "allowed_site_countries",
+        "allowed_capture_site_countries",
+    )
+    return bool(
+        _entry_bool(entry, "non_us_participants_blocked")
+        and _country_codes_are_us_only(tester_countries)
+        and _country_codes_are_us_only(site_countries)
+        and _entry_has_any(entry, "us_only_beta_scope_uri", "data_residency_policy_uri")
+    )
+
+
+def _entry_declares_signed_transfer_terms(entry: Mapping[str, Any]) -> bool:
+    return bool(
+        _entry_has_any(
+            entry,
+            "signed_transfer_terms_uri",
+            "signed_dpa_scc_uri",
+            "standard_contractual_clauses_uri",
+        )
+        and _entry_has_any(entry, "transfer_impact_assessment_uri")
+        and _entry_has_any(
+            entry,
+            "subprocessor_residency_terms_uri",
+            "data_residency_region_policy_uri",
+        )
+    )
+
+
 def _entry_status_success(entry: Mapping[str, Any], *keys: str) -> bool:
     success_values = {"succeeded", "success", "ok", "passed", "verified", "200", "2xx", "http_200"}
     for key in keys:
@@ -442,6 +521,28 @@ def _operator_evidence_specific_failures(check_id: str, entry: Mapping[str, Any]
     if check_id in {"legal_consent_posture_signoff", "operator_dpa_data_processing_terms"}:
         if not _entry_has_any(entry, "signed_record_uri", "document_uri"):
             failures.append("missing_signed_legal_or_dpa_record")
+        if check_id == "operator_dpa_data_processing_terms":
+            if not _entry_has_any(
+                entry,
+                "retention_policy_uri",
+                "retention_policy_ref",
+                "retention_policy_terms_uri",
+                "retention_policy_schema",
+            ):
+                failures.append("missing_retention_policy_terms")
+            if not (
+                _entry_has_any(entry, "subprocessor_list_uri", "subprocessor_terms_uri")
+                or _entry_has_non_empty_list(entry, "subprocessors", "subprocessor_list")
+            ):
+                failures.append("missing_subprocessor_list")
+            if not _entry_has_any(
+                entry,
+                "access_audit_terms_uri",
+                "access_audit_log_policy_uri",
+                "access_audit_report_uri",
+                "access_audit_ref",
+            ):
+                failures.append("missing_access_audit_terms")
     elif check_id == _INDUSTRIAL_AUTHORIZATION_CHECK_ID:
         if not _entry_has_any(
             entry,
@@ -479,6 +580,21 @@ def _operator_evidence_specific_failures(check_id: str, entry: Mapping[str, Any]
             "loto_forklift_restricted_zone_policy_uri",
         ):
             failures.append("missing_restricted_zone_controls")
+    elif check_id == "cross_border_data_residency_posture":
+        if not _entry_has_any(
+            entry,
+            "data_residency_policy_uri",
+            "us_only_beta_scope_uri",
+            "signed_transfer_terms_uri",
+            "signed_dpa_scc_uri",
+            "standard_contractual_clauses_uri",
+        ):
+            failures.append("missing_data_residency_or_transfer_record")
+        if not (
+            _entry_declares_us_only_beta_scope(entry)
+            or _entry_declares_signed_transfer_terms(entry)
+        ):
+            failures.append("missing_us_only_scope_or_signed_transfer_terms")
     elif check_id == "paperclip_ops_relay_secret_rotation":
         if not _entry_has_any(entry, "secret_version_ref"):
             failures.append("missing_secret_version_ref")
@@ -1548,6 +1664,16 @@ def build_launch_gate_summary(
                 "Operator DPA or equivalent data-processing terms covering "
                 "retention policy, subprocessor list, and access-audit terms "
                 "for delivered packages and hosted review access."
+            ),
+            operator_evidence=operator_evidence,
+        ),
+        _operator_required_check(
+            check_id="cross_border_data_residency_posture",
+            scope="legal_privacy_ops",
+            required_evidence=(
+                "Either a signed US-only beta participant/site scope, or signed "
+                "international-transfer terms with SCC/DPA, transfer-impact, "
+                "subprocessor, and residency posture evidence."
             ),
             operator_evidence=operator_evidence,
         ),
