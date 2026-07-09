@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "finding": "R053",
+  "runbook": "Blueprint-WebApp/docs/runbooks/DATA_BACKUP_AND_DR_RUNBOOK.md",
+  "rpo_hours": 24,
+  "rto_hours": 4,
+  "notes": [
+    "Disaster-recovery / durability config for Blueprint's AUTHORITATIVE data",
+    "(Firestore control-plane + GCS storage buckets), GCP project blueprint-8c1ca.",
+    "Firestore is protected by a scheduled managed export to a SEPARATE backup bucket;",
+    "the primary storage buckets are protected by object versioning + a soft-delete window.",
+    "What is committed config vs a human/dashboard step is called out per field and in the runbook."
+  ],
+  "firestore_export": {
+    "project_id": "blueprint-8c1ca",
+    "database": "(default)",
+    "destination_bucket": "blueprint-8c1ca-backups",
+    "destination_prefix": "firestore-exports",
+    "collection_ids": [],
+    "schedule_cron": "0 7 * * *",
+    "schedule_timezone": "Etc/UTC",
+    "backup_retention_days": 90,
+    "gcloud_command_template": "gcloud firestore export gs://{destination_bucket}/{destination_prefix}/{timestamp} --project={project_id} --database=\"{database}\"",
+    "enforced_by": "scheduled_job",
+    "note": "collection_ids empty = export ALL collections (whole authoritative control-plane). Scheduled via the committed systemd timer scaffold (deploy/systemd/blueprint-firestore-backup.timer) OR a Cloud Scheduler + Firestore managed-backup job created in the console (documented human step)."
+  },
+  "storage_buckets": [
+    {
+      "bucket": "blueprint-8c1ca.appspot.com",
+      "role": "primary_authoritative",
+      "object_versioning": true,
+      "versioning_retention_days": 2555,
+      "soft_delete_days": 30,
+      "enforced_by": "dashboard",
+      "note": "Raw capture truth + derived/hosted artifacts. Object versioning + soft-delete are the bucket DR mechanism (recover overwritten/deleted objects). Enabling versioning is a human/gcloud step; retention floor mirrors the capture-truth floor."
+    },
+    {
+      "bucket": "blueprint-8c1ca-backups",
+      "role": "backup_target",
+      "object_versioning": true,
+      "versioning_retention_days": 90,
+      "soft_delete_days": 30,
+      "enforced_by": "dashboard",
+      "note": "Dedicated backup bucket for Firestore exports. MUST be distinct from the primary bucket so a primary-bucket incident cannot take out the backups. Restrict IAM to the backup service account."
+    }
+  ],
+  "restore": {
+    "firestore_import_command_template": "gcloud firestore import gs://{destination_bucket}/{destination_prefix}/{export_id} --project={project_id} --database=\"{database}\"",
+    "runbook_section": "Restore procedure",
+    "note": "Import is the inverse of export. Restore to a NON-default recovery database first, verify, then cut over. Full step-by-step in the runbook."
+  }
+}
