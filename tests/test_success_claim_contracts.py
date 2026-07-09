@@ -770,13 +770,14 @@ def _preflight_manifest_for(request_path: Path) -> Path:
 def test_hermetic_kitchen_fixture_present() -> None:
     # The committed fixtures are what keep the artifact-shaped truth gates below
     # executing in every checkout; if they disappear they would silently degrade
-    # to an empty parametrization. Both the kitchen manipulation lane AND the
-    # industrial warehouse lane must ship a committed truth fixture so neither
-    # primary site type can regress unproven.
+    # to an empty parametrization. The kitchen manipulation lane AND both
+    # industrial lanes (warehouse logistics + factory/manufacturing) must ship a
+    # committed truth fixture so no primary site type can regress unproven.
     assert _FIXTURE_REQUESTS, "tests/fixtures/*_task_min committed fixtures are missing"
     fixture_dirs = {p.parent.name for p in _FIXTURE_REQUESTS}
     assert "kitchen_task_min" in fixture_dirs, "kitchen truth fixture is missing"
-    assert "warehouse_task_min" in fixture_dirs, "industrial truth fixture is missing"
+    assert "warehouse_task_min" in fixture_dirs, "warehouse truth fixture is missing"
+    assert "factory_task_min" in fixture_dirs, "factory truth fixture is missing"
     for request_path in _FIXTURE_REQUESTS:
         fixture_manifest = _preflight_manifest_for(request_path)
         assert fixture_manifest.is_file(), f"missing preflight manifest for {request_path}"
