@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 45 fixed · 4 scaffolded · 70 todo · 119 total.**
+**Progress: 52 fixed · 4 scaffolded · 63 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -56,7 +56,7 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R048 | P1 |  | cross-repo | Data-retention policy is agent-scoped to WebApp Firestore only, unenforced, and does not reach pipel | ✅ fixed | Enforceable cross-surface retention contract (configs/data_retention_policy.json) + fail-closed validator (23 tests) w/ capture-truth invariants; legacy agent doc subordinated. Hum |
 | R049 | P1 |  | pipeline | Takedown propagation enumerates but never executes recall, and no takedown drill has been run | ✅ fixed | Takedown now executes recall (quarantine/delete/mark derived deliverables + recall markers + entitlement-revocation handoff + executed audit record) with fail-closed blocked-needs- |
 | R050 | P1 |  | cross-repo | No cross-border / data-residency or international-transfer handling for non-US testers | ⬜ todo |  |
-| R051 | P1 |  | capture | No mobile crash/error telemetry on the capture clients (the primary data-collection tool is observab | ⬜ todo |  |
+| R051 | P1 |  | capture | No mobile crash/error telemetry on the capture clients (the primary data-collection tool is observab | ✅ fixed | Client crash (uncaught+signal handlers, persist-then-upload-next-launch) + error telemetry to Firestore clientCrashReports/clientErrorTelemetry, reusing Firebase; PII/raw excluded; |
 | R052 | P1 |  | cross-repo | No client version enforcement / force-update / remote kill-switch / maintenance mode for the capture | ⬜ todo |  |
 | R053 | P1 |  | cross-repo | No backup / disaster-recovery / durability strategy for authoritative capture truth (Firestore + sto | ✅ fixed | Backup/DR: firestore_backup_schedule.json + validator (18 tests) + emit command + systemd scaffold + DR runbook (RPO<=24h/RTO<=4h). Human infra steps documented. 47 tests green. [p |
 | R054 | P1 |  | cross-repo | No tester-facing beta cohort onboarding / what-to-expect / support-escalation doc exists | ✅ fixed | docs/beta/ README + capturer + buyer onboarding guides, code-grounded + honest (cites real proof boundaries, no overclaiming). [webapp (this commit)] |
@@ -65,8 +65,8 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R057 | P1 |  | pipeline | No platform-wide cumulative spend / GPU concurrency ceiling — spend gate is a per-run manual boolean | ✅ fixed | Duplicate of R041 — platform-wide cumulative/daily/monthly spend + max-concurrent-GPU ceiling implemented by fleet_spend_ledger.py (BLUEPRINT_FLEET_DAILY/MONTHLY_SPEND_USD, MAX_CON |
 | R058 | P1 |  | pipeline | Customer-eval cross-provider failover runtime is not implemented — eval GPU launches are single-prov | ⬜ todo |  |
 | R059 | P1 |  | pipeline | Lambda single-adapter path never confirms teardown — termination is fire-and-forget, leaving open bi | ⬜ todo |  |
-| R060 | P2 | 🌐 | pipeline | Industrial hazard ontology (forklift lanes, shared traffic, barriers, human-interaction zones) lives | ⬜ todo |  |
-| R061 | P2 | 🌐 | pipeline | scene_placement/target_resolver openable + synonym affordance tables are kitchen/home-biased and are | ⬜ todo |  |
+| R060 | P2 | 🌐 | pipeline | Industrial hazard ontology (forklift lanes, shared traffic, barriers, human-interaction zones) lives | ✅ fixed | industrial_ontology hazard classification now consumed in scene_eval_autogen (derive_hazard_grounding) + threaded into scenario families; no longer stranded in qualification. Claim |
+| R061 | P2 | 🌐 | pipeline | scene_placement/target_resolver openable + synonym affordance tables are kitchen/home-biased and are | ✅ fixed | scene_placement/target_resolver gains 8 industrial openable groups (dock/rolling door, gate, cage, locker, container, tote_lid, conveyor_guard) so industrial openables become open_ |
 | R062 | P2 | 🌐 | capture | Live 'coverage %' hardcodes a 100 sq m target — false/meaningless for warehouse-scale sites | ⬜ todo |  |
 | R063 | P2 | 🌐 | capture | Open-capture site identity is ephemeral per app launch — no multi-visit stitching for sites too big  | ⬜ todo |  |
 | R064 | P2 | 🌐 | capture | No maximum-duration safeguard or mid-recording checkpointing for long single captures | ⬜ todo |  |
@@ -78,17 +78,17 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R070 | P2 | 🌐 | webapp | Buyer-facing marketplace location taxonomy omits factory / manufacturing despite it being the founde | ⬜ todo |  |
 | R071 | P2 | 🌐 | cross-repo | No structured site environmental / operating-condition metadata (cold storage, floor surface, lighti | ⬜ todo |  |
 | R072 | P2 | 🌐 | capture | First-capture onboarding is consumer/nearby-space oriented with no industrial or assigned-site path | ⬜ todo |  |
-| R073 | P2 |  | pipeline | Task-aware detection-prompt augmentation hard-codes kitchen/home affordance expansions with no indus | ⬜ todo |  |
+| R073 | P2 |  | pipeline | Task-aware detection-prompt augmentation hard-codes kitchen/home affordance expansions with no indus | ✅ fixed | Detection-prompt augmentation gains industrial affordance expansions keyed off site_taxonomy.is_industrial; object_index_stage passes site_type. Kitchen unaffected. [pipeline 71848 |
 | R074 | P2 |  | cross-repo | Declared bundle hashes are never recomputed/compared server-side (bridge or pipeline) — canonical in | ⬜ todo |  |
 | R075 | P2 |  | capture | Background-upload completion state is in-memory only; app termination mid-upload strands captures in | ⬜ todo |  |
 | R076 | P2 |  | capture | Bridge is permissive: manifest-validation failure and a missing manifest are recorded but do not sto | ⬜ todo |  |
-| R077 | P2 |  | pipeline | capture_batch_registry aborts the whole registry build if any one capture is malformed | ⬜ todo |  |
-| R078 | P2 |  | pipeline | run_e2e --resume-completed-stages replays cached stage snapshots without validating upstream inputs  | ⬜ todo |  |
+| R077 | P2 |  | pipeline | capture_batch_registry aborts the whole registry build if any one capture is malformed | ✅ fixed | capture_batch_registry isolates each capture (try/except); malformed capture quarantined + skipped, registry builds from good ones (skipped_captures reported). 42 tests. [pipeline  |
+| R078 | P2 |  | pipeline | run_e2e --resume-completed-stages replays cached stage snapshots without validating upstream inputs  | ✅ fixed | run_e2e resume now fingerprints upstream inputs (content sha256) per completed stage; changed input invalidates+recomputes, unchanged reuses cache. Tests pass. [pipeline 1d0c759] |
 | R079 | P2 |  | pipeline | No real-world calibration anchors exist for any site, so sim-vs-real / digital-twin fidelity claims  | ⬜ todo |  |
 | R080 | P2 |  | pipeline | LeRobot export action contract is hardcoded to a 7D single-end-effector delta pose — no bimanual/who | ⬜ todo |  |
 | R081 | P2 |  | pipeline | Clip curation's default static-camera constraint rejects mobile-base capture needed for large indust | ⬜ todo |  |
 | R082 | P2 |  | cross-repo | Lineage-ID enforcement asymmetry: WebApp validator omits request_id/owner_system that Pipeline intak | ⬜ todo |  |
-| R083 | P2 |  | pipeline | Intake auth is a single static shared bearer with non-constant-time compare and no request signing/n | ⬜ todo |  |
+| R083 | P2 |  | pipeline | Intake auth is a single static shared bearer with non-constant-time compare and no request signing/n | ✅ fixed | Intake bearer uses hmac.compare_digest (constant-time) + optional replay protection (timestamp window + one-time nonce + optional HMAC); backward-compatible. Tests pass. [pipeline  |
 | R084 | P2 |  | cross-repo | Single control-plane capture_root will block a multi-site beta unless per-site override JSON is conf | ⬜ todo |  |
 | R085 | P2 |  | webapp | No expiration / license-term enforcement on entitlements — access is durable-forever until manual re | ⬜ todo |  |
 | R086 | P2 |  | webapp | Hosted-session isolation collapses to site-world entitlement granularity: a co-entitled buyer can re | ⬜ todo |  |
