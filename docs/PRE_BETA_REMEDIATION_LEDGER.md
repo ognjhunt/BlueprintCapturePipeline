@@ -2,7 +2,7 @@
 
 Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.md`. Statuses: **fixed** (code merged/pushed + verified where possible), **scaffolded** (engineering done; blocked on a human/legal/infra decision, clearly noted), **todo**.
 
-**Progress: 32 fixed · 4 scaffolded · 83 todo · 119 total.**
+**Progress: 36 fixed · 4 scaffolded · 79 todo · 119 total.**
 
 | # | Sev | 🌐 | Repo | Finding | Status | Evidence / note |
 |---|-----|----|------|---------|--------|-----------------|
@@ -42,16 +42,16 @@ Tracks remediation of the 119 findings in `PRE_BETA_LAUNCH_GAP_AUDIT_2026-07-08.
 | R034 | P1 |  | cross-repo | Live buyer-payment and capturer-payout settlement are unproven — only mock/contract readiness exists | ⬜ todo |  |
 | R035 | P1 |  | cross-repo | No named human finance-review owner for payout exceptions | ⬜ todo |  |
 | R036 | P1 |  | webapp | Operator console (/ops/*) is entirely mock data with no backend and is publicly routed without auth | ⬜ todo |  |
-| R037 | P1 |  | webapp | No observability alerting for core beta failure classes (uploads, intake, provider, package, buyer-a | ⬜ todo |  |
+| R037 | P1 |  | webapp | No observability alerting for core beta failure classes (uploads, intake, provider, package, buyer-a | ✅ fixed | emitOperatorAlert layer (7 failure-class enum) reusing Slack+Firestore+logger, never-throws; wired into payout/package-delivery/buyer-access/intake failure branches. tsc 0; 4 new + |
 | R038 | P1 |  | cross-repo | No beta-ops incident-response runbook (owner, escalation, rollback, takedown, customer-comms) and de | ✅ fixed | Beta incident-response runbook (ownership/escalation/detection, takedown drill, 4 degraded-state playbooks + comms) + health-checked Render rollback script (shellcheck-clean) + DEP |
 | R039 | P1 |  | cross-repo | capture_submissions.status is client-writable despite rules comment claiming backend-only — a captur | ✅ fixed | capture_submissions.status confined to client lifecycle states; approved/paid remain Admin-SDK-only. [webapp 8e8313d, capture 411ca0f] |
 | R040 | P1 |  | webapp | Firestore scenes collection lets any authenticated user read, update, or delete ANY scene (broken ob | ✅ fixed | scenes locked to admin read + backend-only writes (was world read/update/delete over contact PII). [webapp 8e8313d, capture 411ca0f] |
 | R041 | P1 |  | pipeline | No aggregate/fleet spend budget ceiling — GPU cost guardrails are strictly per-job | ✅ fixed | New fleet_spend_ledger.py: rolling daily+monthly spend + concurrent-GPU ledger with fail-closed caps (BLUEPRINT_FLEET_DAILY/MONTHLY_SPEND_USD, MAX_CONCURRENT_GPU) + kill switch, in |
 | R042 | P1 |  | pipeline | No storage lifecycle/retention on the primary capture bucket — unbounded storage cost | ✅ fixed | GCS lifecycle policy (NEARLINE@90d/COLDLINE@365d/Delete@3650d, scoped to scenes/) + fail-closed validator (14 tests) enforcing 90d review-window protection + 7y delete floor + tier |
 | R043 | P1 |  | cross-repo | No load/soak test, capacity model, or cost-per-capture model in any repo | 🟡 scaffolded | Quantitative capacity+cost model (~$2.60/capture, ~$3.9-4.5k/100-user-mo, peak ~13 uploads/~16 GPU jobs > current ~10 ceiling) + runnable k6 intake load/soak harness (safe dry defa |
-| R044 | P1 |  | pipeline | Slow/integration/GPU lane never gates a merge or deploy | ⬜ todo |  |
-| R045 | P1 |  | webapp | Render autoDeploy is decoupled from CI — a red build still deploys to production | ⬜ todo |  |
-| R046 | P1 |  | cross-repo | No versioned release artifact, deploy SHA/tag, or rollback target | ⬜ todo |  |
+| R044 | P1 |  | pipeline | Slow/integration/GPU lane never gates a merge or deploy | ✅ fixed | full-test-lane.yml runs pr-slow-lane (pytest -m 'slow or gpu', 75min) on PRs to main — slow/gpu paths now gate PRs; heavy full-pytest stays schedule/dispatch. Required-check = docu |
+| R045 | P1 |  | webapp | Render autoDeploy is decoupled from CI — a red build still deploys to production | ✅ fixed | render.yaml autoDeploy=false; deploy.yml deploys via Render hook only when CI concludes success on main, pinned to green SHA; fails loud if hook secret missing. Human steps (Render |
+| R046 | P1 |  | cross-repo | No versioned release artifact, deploy SHA/tag, or rollback target | ✅ fixed | generate-build-info.mjs stamps dist/public/version.json (SHA + release tag vX.Y.Z+sha) at build; served at /version.json; ties into health-gated rollback-deploy.sh + rollback runbo |
 | R047 | P1 |  | webapp | Buyers and site operators accept no Terms/Privacy at webapp signup (only the capturer application do | ✅ fixed | Buyer/operator signup requires + records Terms/Privacy acceptance: UI gate + server-authoritative terms_acceptance on inboundRequests (server-derived versions) + users doc; 400 on  |
 | R048 | P1 |  | cross-repo | Data-retention policy is agent-scoped to WebApp Firestore only, unenforced, and does not reach pipel | ⬜ todo |  |
 | R049 | P1 |  | pipeline | Takedown propagation enumerates but never executes recall, and no takedown drill has been run | ⬜ todo |  |
