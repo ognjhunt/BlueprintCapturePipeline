@@ -11103,6 +11103,78 @@ def _write_processed_request_marker(
     return {"path": str(marker_path), **marker}
 
 
+def _write_failed_request_marker(
+    *,
+    processed_dir: Path,
+    request_path: Path,
+    digest: str,
+    job_id: str,
+    generated_at: str,
+    phase: str,
+    error_type: str,
+    error: str,
+) -> Dict[str, Any]:
+    """Write a dead-letter / quarantine marker for a request that failed to process.
+
+    The marker lives in the same ``.processed`` area (and shares the content-addressed
+    marker path) so a quarantined request is not silently retried on every pass while an
+    unchanged poison payload remains in the inbox. Editing the request file changes its
+    digest and produces a fresh marker path, so fix-and-retry still works.
+    """
+
+    ensure_dir(processed_dir)
+    marker = {
+        "schema_version": "robot_eval_job_request_quarantine_marker.v1",
+        "generated_at": generated_at,
+        "source_request_path": str(request_path),
+        "source_request_sha256": digest,
+        "status": "failed",
+        "job_id": job_id,
+        "phase": phase,
+        "error_type": error_type,
+        "error": error,
+        "reason": "quarantined_after_request_processing_error",
+    }
+    marker_path = _processed_request_marker_path(processed_dir, request_path, digest)
+    write_json(marker_path, marker)
+    return {"path": str(marker_path), **marker}
+
+
+def _quarantine_inbox_request(
+    *,
+    processed_dir: Path,
+    request_path: Path,
+    digest: str,
+    job_id: str,
+    generated_at: str,
+    phase: str,
+    error: BaseException,
+) -> Dict[str, Any]:
+    """Quarantine a single failing inbox request and return its batch-summary entry."""
+
+    error_type = type(error).__name__
+    error_message = str(error)
+    marker = _write_failed_request_marker(
+        processed_dir=processed_dir,
+        request_path=request_path,
+        digest=digest,
+        job_id=job_id,
+        generated_at=generated_at,
+        phase=phase,
+        error_type=error_type,
+        error=error_message,
+    )
+    return {
+        "job_id": job_id,
+        "source_request_path": str(request_path),
+        "source_request_sha256": digest,
+        "phase": phase,
+        "error_type": error_type,
+        "error": error_message,
+        "quarantine_marker_path": marker["path"],
+    }
+
+
 def run_robot_eval_job_request_inbox(
     *,
     capture_root: str | Path,
@@ -11157,6 +11229,7 @@ def run_robot_eval_job_request_inbox(
     )
     loaded_requests: List[Dict[str, Any]] = []
     skipped_processed_requests: List[Dict[str, Any]] = []
+    failed_requests: List[Dict[str, Any]] = []
     for request_path in request_paths:
         request_digest = _sha_file(request_path)
         marker_path = _processed_request_marker_path(
@@ -11165,24 +11238,45 @@ def run_robot_eval_job_request_inbox(
             request_digest,
         )
         if marker_path.is_file():
+            existing_marker = _read_optional_mapping(marker_path)
+            skip_reason = (
+                "already_quarantined_same_content"
+                if existing_marker.get("status") == "failed"
+                else "already_processed_same_content"
+            )
             skipped_processed_requests.append(
                 {
                     "source_request_path": str(request_path),
                     "source_request_sha256": request_digest,
                     "processed_marker_path": str(marker_path),
-                    "reason": "already_processed_same_content",
+                    "reason": skip_reason,
                 }
             )
             continue
-        request = _read_job_request(request_path)
-        request.setdefault("schema_version", JOB_REQUEST_SCHEMA_VERSION)
+        try:
+            request = _read_job_request(request_path)
+            request.setdefault("schema_version", JOB_REQUEST_SCHEMA_VERSION)
+            identity = _webapp_request_identity(request)
+        except Exception as exc:  # noqa: BLE001 - isolate one poison request from the batch
+            failed_requests.append(
+                _quarantine_inbox_request(
+                    processed_dir=processed_dir,
+                    request_path=request_path,
+                    digest=request_digest,
+                    job_id=request_path.stem,
+                    generated_at=generated_at,
+                    phase="read_job_request",
+                    error=exc,
+                )
+            )
+            continue
         loaded_requests.append(
             {
                 "path": request_path,
                 "request": request,
                 "sha256": request_digest,
                 "processed_marker_path": marker_path,
-                "identity": _webapp_request_identity(request),
+                "identity": identity,
                 "sort_key": _inbox_request_sort_key(request_path),
             }
         )
@@ -11210,61 +11304,76 @@ def run_robot_eval_job_request_inbox(
     for item in selected_requests:
         request_path = item["path"]
         request = dict(item["request"])
-        job_id = _job_id_from_request(request_path, request)
-        request_capture_root = _request_capture_root(request, context.capture_root)
-        request_context = (
-            resolve_local_capture_context(request_capture_root)
-            if request_capture_root != context.capture_root
-            else context
-        )
-        request["job_id"] = job_id
-        request["capture_root"] = str(request_context.capture_root)
-        job_queue_root = request_context.pipeline_root / "robot_eval_job_requests"
-        ensure_dir(job_queue_root)
-        queued_dir = job_queue_root / job_id
-        ensure_dir(queued_dir)
-        write_json(queued_dir / "job_request.json", request)
-        result = build_robot_eval_job(
-            capture_root=request_context.capture_root,
-            job_request=request,
-            job_id=job_id,
-            agent_adapter=agent_adapter,
-            provisioner=provisioner,
-            simulator=simulator,
-            evaluation_substrate=evaluation_substrate,
-            allow_wam_provider=allow_wam_provider,
-            wam_provider_command=wam_provider_command,
-            wam_provider_commands=wam_provider_commands or {},
-            wam_artifact_output_uri=wam_artifact_output_uri,
-            wam_provider_max_retries=wam_provider_max_retries,
-            wam_provider_timeout_seconds=wam_provider_timeout_seconds,
-            allow_gpu_provisioning=allow_gpu_provisioning,
-            allow_simulator_execution=allow_simulator_execution,
-            allowed_simulators=allowed_simulators,
-            simulator_commands=simulator_commands or {},
-            allow_cpu_simulator_preflight=allow_cpu_simulator_preflight,
-            cpu_preflight_backends=cpu_preflight_backends,
-            cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
-            allow_cpu_preflight_render=allow_cpu_preflight_render,
-            allow_training=allow_training,
-            training_command=training_command,
-            allow_policy_execution=allow_policy_execution,
-            policy_execution_commands=policy_execution_commands or {},
-            timeout_seconds=timeout_seconds,
-            budget_usd=budget_usd,
-            arena_results_dir=arena_results_dir,
-            arena_scenario_count=arena_scenario_count,
-            arena_shard_size=arena_shard_size,
-            arena_num_envs=arena_num_envs,
-            arena_retry_budget=arena_retry_budget,
-            allow_rollout_vision_labeling=allow_rollout_vision_labeling,
-            vision_labeling_command=vision_labeling_command,
-            allow_delivery_upload=allow_delivery_upload,
-            delivery_command=delivery_command,
-            arena_operator_mode=arena_operator_mode,
-            allow_live_agents_sdk=allow_live_agents_sdk,
-            allow_live_codex_sdk=allow_live_codex_sdk,
-        )
+        try:
+            job_id = _job_id_from_request(request_path, request)
+            request_capture_root = _request_capture_root(request, context.capture_root)
+            request_context = (
+                resolve_local_capture_context(request_capture_root)
+                if request_capture_root != context.capture_root
+                else context
+            )
+            request["job_id"] = job_id
+            request["capture_root"] = str(request_context.capture_root)
+            job_queue_root = request_context.pipeline_root / "robot_eval_job_requests"
+            ensure_dir(job_queue_root)
+            queued_dir = job_queue_root / job_id
+            ensure_dir(queued_dir)
+            write_json(queued_dir / "job_request.json", request)
+            result = build_robot_eval_job(
+                capture_root=request_context.capture_root,
+                job_request=request,
+                job_id=job_id,
+                agent_adapter=agent_adapter,
+                provisioner=provisioner,
+                simulator=simulator,
+                evaluation_substrate=evaluation_substrate,
+                allow_wam_provider=allow_wam_provider,
+                wam_provider_command=wam_provider_command,
+                wam_provider_commands=wam_provider_commands or {},
+                wam_artifact_output_uri=wam_artifact_output_uri,
+                wam_provider_max_retries=wam_provider_max_retries,
+                wam_provider_timeout_seconds=wam_provider_timeout_seconds,
+                allow_gpu_provisioning=allow_gpu_provisioning,
+                allow_simulator_execution=allow_simulator_execution,
+                allowed_simulators=allowed_simulators,
+                simulator_commands=simulator_commands or {},
+                allow_cpu_simulator_preflight=allow_cpu_simulator_preflight,
+                cpu_preflight_backends=cpu_preflight_backends,
+                cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
+                allow_cpu_preflight_render=allow_cpu_preflight_render,
+                allow_training=allow_training,
+                training_command=training_command,
+                allow_policy_execution=allow_policy_execution,
+                policy_execution_commands=policy_execution_commands or {},
+                timeout_seconds=timeout_seconds,
+                budget_usd=budget_usd,
+                arena_results_dir=arena_results_dir,
+                arena_scenario_count=arena_scenario_count,
+                arena_shard_size=arena_shard_size,
+                arena_num_envs=arena_num_envs,
+                arena_retry_budget=arena_retry_budget,
+                allow_rollout_vision_labeling=allow_rollout_vision_labeling,
+                vision_labeling_command=vision_labeling_command,
+                allow_delivery_upload=allow_delivery_upload,
+                delivery_command=delivery_command,
+                arena_operator_mode=arena_operator_mode,
+                allow_live_agents_sdk=allow_live_agents_sdk,
+                allow_live_codex_sdk=allow_live_codex_sdk,
+            )
+        except Exception as exc:  # noqa: BLE001 - isolate one poison request from the batch
+            fallback_job_id = _job_id_from_request(request_path, item["request"])
+            failed_requests.append(
+                _quarantine_inbox_request(
+                    processed_dir=processed_dir,
+                    request_path=request_path,
+                    digest=str(item["sha256"]),
+                    job_id=fallback_job_id,
+                    generated_at=generated_at,
+                    phase="build_robot_eval_job",
+                    error=exc,
+                )
+            )
+            continue
         jobs.append(
             {
                 "job_id": job_id,
@@ -11300,7 +11409,12 @@ def run_robot_eval_job_request_inbox(
                 reason="superseded_by_newer_webapp_request_for_same_identity",
             )
         )
-    status = "completed" if jobs else "empty"
+    if jobs:
+        status = "completed"
+    elif failed_requests:
+        status = "failed"
+    else:
+        status = "empty"
     manifest = {
         "schema_version": JOB_REQUEST_INBOX_RUN_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -11312,6 +11426,10 @@ def run_robot_eval_job_request_inbox(
         "skipped_processed_request_count": len(skipped_processed_requests),
         "skipped_processed_requests": skipped_processed_requests,
         "processed_count": len(jobs),
+        "processed_ok_count": len(jobs),
+        "failed_request_count": len(failed_requests),
+        "failed_request_ids": [entry["job_id"] for entry in failed_requests],
+        "failed_requests": failed_requests,
         "superseded_request_count": len(superseded_requests),
         "superseded_requests": [
             {

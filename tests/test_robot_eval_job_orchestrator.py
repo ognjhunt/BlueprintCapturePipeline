@@ -7548,6 +7548,100 @@ def test_robot_eval_job_request_inbox_skips_processed_same_content_until_changed
     assert third["jobs"][0]["job_id"] == "webapp-job-2"
 
 
+def test_robot_eval_job_request_inbox_isolates_poison_requests_into_dead_letter(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+
+    # Three well-formed requests that must all still process despite sibling failures.
+    good_job_ids = ["good-1", "good-2", "good-3"]
+    for job_id in good_job_ids:
+        request = _full_job_request(capture_root)
+        request["job_id"] = job_id
+        _write_json(inbox_dir / f"{job_id}.json", request)
+
+    # Poison request #1: non-object payload -> _read_job_request raises during load.
+    poison_read_path = inbox_dir / "poison-read.json"
+    poison_read_path.parent.mkdir(parents=True, exist_ok=True)
+    poison_read_path.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+
+    # Poison request #2: well-formed object but capture_root cannot be resolved, so
+    # resolve_local_capture_context raises during the build phase.
+    poison_build = _full_job_request(capture_root)
+    poison_build["job_id"] = "poison-build"
+    poison_build["site_package"] = {
+        **poison_build["site_package"],
+        "capture_root": str(tmp_path / "not-a-capture-tree"),
+    }
+    _write_json(inbox_dir / "poison-build.json", poison_build)
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    # The batch completed and every good request produced a job.
+    assert result["status"] == "completed"
+    assert result["processed_ok_count"] == 3
+    assert result["processed_count"] == 3
+    assert {job["job_id"] for job in result["jobs"]} == set(good_job_ids)
+
+    # Both poison requests were quarantined, not fatal to the batch.
+    assert result["failed_request_count"] == 2
+    assert set(result["failed_request_ids"]) == {"poison-read", "poison-build"}
+
+    failed_by_id = {entry["job_id"]: entry for entry in result["failed_requests"]}
+    read_failure = failed_by_id["poison-read"]
+    build_failure = failed_by_id["poison-build"]
+    assert read_failure["phase"] == "read_job_request"
+    assert read_failure["error_type"] == "ValueError"
+    assert build_failure["phase"] == "build_robot_eval_job"
+    assert build_failure["error_type"] == "PipelineError"
+    assert build_failure["error"]  # non-empty error message captured
+
+    # Each poison request has a dead-letter marker under the .processed area, status=failed.
+    processed_dir = inbox_dir / ".processed"
+    for failure in (read_failure, build_failure):
+        marker_path = Path(failure["quarantine_marker_path"])
+        assert marker_path.parent == processed_dir
+        assert marker_path.is_file()
+        marker = _read_json(marker_path)
+        assert marker["status"] == "failed"
+        assert marker["schema_version"] == "robot_eval_job_request_quarantine_marker.v1"
+        assert marker["error_type"] == failure["error_type"]
+        assert marker["error"]
+        assert marker["source_request_path"] == failure["source_request_path"]
+
+    # Good requests wrote real job run manifests; the build-phase poison made no job dir.
+    for job_id in good_job_ids:
+        assert (
+            capture_root / "pipeline" / "robot_eval_jobs" / job_id / "job_run_manifest.json"
+        ).is_file()
+    assert not (capture_root / "pipeline" / "robot_eval_jobs" / "poison-build").exists()
+
+    # Re-running deterministically skips the already-quarantined poison requests.
+    rerun = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+    assert rerun["failed_request_count"] == 0
+    quarantine_skips = {
+        Path(entry["source_request_path"]).name
+        for entry in rerun["skipped_processed_requests"]
+        if entry["reason"] == "already_quarantined_same_content"
+    }
+    assert quarantine_skips == {"poison-read.json", "poison-build.json"}
+
+
 def test_robot_eval_job_request_inbox_uses_request_capture_root(
     tmp_path: Path,
 ) -> None:
