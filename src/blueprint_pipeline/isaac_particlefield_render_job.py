@@ -54,6 +54,16 @@ POST_MARKER_NO_PROGRESS_TIMEOUT_ENV = "BLUEPRINT_POST_MARKER_NO_PROGRESS_TIMEOUT
 # A booted worker that stops changing bootstrap phase for this long is a stall,
 # not patience — it gets terminated instead of billing until max_seconds.
 DEFAULT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS = 900
+# R056(b): pod-side hard-TTL self-kill backstop. The host-side watch loop
+# (max_seconds) and stall watchdog (post-marker no-progress) can only tear a pod
+# down while the host process is alive; if the host itself dies, a booted render
+# pod would bill until manual reaping. This wall-clock ceiling is baked into the
+# bootstrap env and self-terminates the container from inside. Mirrors the eval
+# worker's BLUEPRINT_GPU_PROVIDER_EXTERNAL_WATCHDOG_TTL_SECONDS. It is set far
+# above the host watch window + stall timeout so it never fires on a healthy
+# monitored render — only when the host is gone. 0 disables it.
+EXTERNAL_WATCHDOG_TTL_ENV = "BLUEPRINT_GPU_PROVIDER_EXTERNAL_WATCHDOG_TTL_SECONDS"
+DEFAULT_EXTERNAL_WATCHDOG_TTL_SECONDS = 7200
 SECRETS = Path.home() / ".blueprint-secrets"
 DEFAULT_WARM_CANDIDATES = (
     "pwbu7wxsvxpr0x", "9zxerj0nm3ow76", "qzgtsh4t27hi7f", "v4bd9u2qhwivb8",
@@ -109,6 +119,19 @@ def mark(ph, **k):
 def hb():
     while True:
         time.sleep(25); putout()
+def _watchdog():
+    # R056(b): pod-side hard-TTL self-kill. If the launching host dies, nothing else
+    # tears this pod down; after the TTL (wall-clock since boot) the container exits
+    # so provider compute billing stops. Env-gated: absent/<=0 disables it.
+    try: ttl=float(os.environ.get("BLUEPRINT_GPU_PROVIDER_EXTERNAL_WATCHDOG_TTL_SECONDS","0") or 0)
+    except Exception: ttl=0.0
+    if ttl<=0: return
+    deadline=time.time()+ttl
+    while time.time()<deadline:
+        time.sleep(min(30.0, max(1.0, deadline-time.time())))
+    mark("watchdog_self_terminate", reason="external_watchdog_ttl_expired", ttl_seconds=ttl)
+    os._exit(42)
+threading.Thread(target=_watchdog, daemon=True).start()
 mark("bootstrap_fetching")
 data=urllib.request.urlopen(GETB, timeout=600).read()
 zipfile.ZipFile(io.BytesIO(data)).extractall(BUNDLE)
@@ -314,8 +337,9 @@ def stage_bundle(bundle_zip: Path, job_dir: Path, *, key_prefix: str = "blueprin
 # ----------------------------- provider-agnostic launch spec -----------------------------
 
 def _env_for(bundle_url: str, put_url: str, cameras_file: str, *, width: int, height: int,
-             subframes: int, rt_subframes: int, warmup: int) -> dict:
-    return {
+             subframes: int, rt_subframes: int, warmup: int,
+             watchdog_ttl_seconds: int = DEFAULT_EXTERNAL_WATCHDOG_TTL_SECONDS) -> dict:
+    env = {
         "ACCEPT_EULA": "Y", "PRIVACY_CONSENT": "Y", "CUDA_VISIBLE_DEVICES": "0",
         "BLUEPRINT_EVAL_MANIFEST_URI": bundle_url,
         "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL": put_url,
@@ -324,6 +348,11 @@ def _env_for(bundle_url: str, put_url: str, cameras_file: str, *, width: int, he
         "RENDER_SUBFRAMES": str(subframes), "RENDER_RT_SUBFRAMES": str(rt_subframes),
         "RENDER_WARMUP_FRAMES": str(warmup),
     }
+    # R056(b): bake the pod-side self-kill TTL into the launch env so a booted pod
+    # whose host died cannot bill indefinitely. Positive-only so it stays opt-out.
+    if watchdog_ttl_seconds and int(watchdog_ttl_seconds) > 0:
+        env[EXTERNAL_WATCHDOG_TTL_ENV] = str(int(watchdog_ttl_seconds))
+    return env
 
 
 def build_render_launch_spec(
@@ -331,13 +360,15 @@ def build_render_launch_spec(
     subframes: int = 8, rt_subframes: int = 64, warmup: int = 30, container_disk_gb: int = 140,
     volume_gb: int = 80, gpu_types: Sequence[str] = ("NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation"),
     max_hourly_rate_usd: float = 2.0, min_gpu_ram_mb: int = 24000,
+    watchdog_ttl_seconds: int = DEFAULT_EXTERNAL_WATCHDOG_TTL_SECONDS,
 ) -> RenderLaunchSpec:
     """Provider-neutral render launch spec (image + env + bootstrap + GPU sizing). The
     env carries the signed bundle GET + output PUT URLs, so any provider just forwards it."""
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = _env_for(bundle_url, put_url, cameras_file, width=width, height=height,
-                   subframes=subframes, rt_subframes=rt_subframes, warmup=warmup)
+                   subframes=subframes, rt_subframes=rt_subframes, warmup=warmup,
+                   watchdog_ttl_seconds=watchdog_ttl_seconds)
     return RenderLaunchSpec(
         name="blueprint-isaac-splat-render", image=image, env=env,
         bootstrap_argv=docker_start_cmd(), entrypoint=["bash"],

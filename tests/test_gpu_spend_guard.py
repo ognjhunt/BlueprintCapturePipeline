@@ -202,6 +202,111 @@ def test_default_warm_candidate_ids_are_never_reapable_without_owner_process() -
         assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is False
 
 
+# ------------------- R056: booted-orphan reap rules (careful) -------------------
+
+
+def _booted_inst(**over: object) -> "guard.GpuInstance":
+    base = dict(
+        provider="runpod",
+        id="pod-booted",
+        name="booted",
+        state="running",
+        booted=True,
+        live=True,
+        cost_per_hr=0.79,
+        age_seconds=30_000.0,
+    )
+    base.update(over)
+    return guard.GpuInstance(**base)  # type: ignore[arg-type]
+
+
+def test_booted_orphan_reaping_off_by_default_keeps_booted_pod() -> None:
+    # Legacy behavior preserved: without the hard-age ceiling, no booted pod is reaped.
+    inst = _booted_inst()
+    assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is False
+
+
+def test_booted_orphan_old_and_unowned_is_reapable_when_enabled() -> None:
+    inst = _booted_inst(age_seconds=30_000.0)
+    assert (
+        guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids=set(),
+            orphan_booted_max_age_seconds=21_600,
+        )
+        is True
+    )
+
+
+def test_booted_orphan_within_hard_age_is_not_reapable() -> None:
+    inst = _booted_inst(age_seconds=600.0)
+    assert (
+        guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids=set(),
+            orphan_booted_max_age_seconds=21_600,
+        )
+        is False
+    )
+
+
+def test_booted_orphan_with_unknown_age_is_not_reapable() -> None:
+    inst = _booted_inst(age_seconds=None)
+    assert (
+        guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids=set(),
+            orphan_booted_max_age_seconds=21_600,
+        )
+        is False
+    )
+
+
+def test_booted_warm_serve_protected_pod_is_never_reaped_even_when_old() -> None:
+    # A live warm-serve pod (its id in protected_ids via the serving marker) must
+    # survive booted-orphan reaping no matter how old it is.
+    inst = _booted_inst(id="pod-serve", age_seconds=999_999.0)
+    assert (
+        guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids={"pod-serve"},
+            orphan_booted_max_age_seconds=21_600,
+        )
+        is False
+    )
+
+
+def test_booted_warm_candidate_id_is_never_reaped_even_when_old() -> None:
+    for pod_id in guard.DEFAULT_WARM_CANDIDATE_IDS:
+        inst = _booted_inst(id=pod_id, age_seconds=999_999.0)
+        assert (
+            guard.is_reapable(
+                inst,
+                max_boot_seconds=480,
+                protected_ids=set(),
+                orphan_booted_max_age_seconds=21_600,
+            )
+            is False
+        )
+
+
+def test_booted_fresh_owner_pod_is_never_reaped() -> None:
+    inst = _booted_inst(id="pod-owned", age_seconds=999_999.0)
+    assert (
+        guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids={"pod-owned"},
+            orphan_booted_max_age_seconds=21_600,
+        )
+        is False
+    )
+
+
 # --------------------------- ownership / live owner ---------------------------
 
 
@@ -472,3 +577,116 @@ def test_main_json_report_records_reap_results(patched_guard) -> None:
     assert snapshot["reap_results"] == [
         {"provider": "runpod", "id": "pod-dud", "status": "terminated", "http": 200}
     ]
+    # New R055/R056 evidence fields on the snapshot.
+    assert snapshot["booted_orphan_reaping_enabled"] is False  # not enabled in this run
+    assert snapshot["orphan_booted_max_age_seconds"] == 0
+    assert snapshot["credentials_available"] is True
+
+
+# ------------------- R055: durable snapshot without credentials -------------------
+
+
+def test_main_no_credentials_still_writes_snapshot_for_scheduled_evidence(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import json as _json
+
+    monkeypatch.setattr(guard, "_read_secret", lambda name, **_kw: None)
+    report_path = tmp_path / "snap.json"
+    rc = guard.main(["--reap", "--json-report", str(report_path)])
+    assert rc == 0
+    snapshot = _json.loads(report_path.read_text())
+    assert snapshot["schema_version"] == guard.SCHEMA_VERSION
+    assert snapshot["reap_mode"] is True
+    assert snapshot["credentials_available"] is False
+    assert snapshot["live_instance_count"] == 0
+    assert snapshot["instances"] == []
+
+
+# ------------------- R056: booted-orphan reap end-to-end via main() -------------------
+
+
+@pytest.fixture()
+def patched_booted_orphan_guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Four booted pods: a leaked orphan (reaped), a live warm-serve pod (kept via
+    its serving marker), a live-owned pod (kept), and a fresh orphan (kept, too young)."""
+    now = _epoch(2026, 6, 27, 12, 0, 0)
+
+    owned_out_dir = _make_started_pod_id_file(tmp_path, "pod-owned-booted")
+
+    serve_dir = tmp_path / "output" / "warm_worker_kitchen"
+    serve_dir.mkdir(parents=True)
+    (serve_dir / guard.WARM_SERVE_MARKER_FILENAME).write_text(
+        __import__("json").dumps(
+            {"status": "serving", "pod_id": "pod-warm-serve", "provider": "runpod"}
+        )
+    )
+
+    runpod_pods = [
+        # booted, old, unowned, no marker -> leaked orphan -> reaped
+        {"id": "pod-leaked-booted", "name": "leaked", "desiredStatus": "RUNNING",
+         "runtime": {"uptimeInSeconds": 30000}, "costPerHr": 0.79},
+        # booted, old, live warm-serve marker -> kept
+        {"id": "pod-warm-serve", "name": "serve", "desiredStatus": "RUNNING",
+         "runtime": {"uptimeInSeconds": 30000}, "costPerHr": 0.69},
+        # booted, old, owned by a live process -> kept
+        {"id": "pod-owned-booted", "name": "owned", "desiredStatus": "RUNNING",
+         "runtime": {"uptimeInSeconds": 30000}, "costPerHr": 0.79},
+        # booted, recent -> under the hard age ceiling -> kept
+        {"id": "pod-fresh-booted", "name": "fresh", "desiredStatus": "RUNNING",
+         "runtime": {"uptimeInSeconds": 120}, "costPerHr": 0.79},
+    ]
+
+    monkeypatch.setattr(guard, "_now", lambda: now)
+    monkeypatch.setattr(guard, "_read_secret",
+                        lambda name, **_kw: {"runpod_api_key": "rp-secret"}.get(name))
+    monkeypatch.setattr(guard, "fetch_runpod_pods", lambda key, **_kw: list(runpod_pods))
+    monkeypatch.setattr(guard, "fetch_vast_instances", lambda key, **_kw: [])
+    monkeypatch.setattr(
+        guard, "list_process_cmdlines",
+        lambda: [f"python -m blueprint_pipeline.isaac_particlefield_render_job "
+                 f"--out-dir {owned_out_dir} --allow-paid"],
+    )
+
+    terminated: list[str] = []
+
+    def fake_http_request(method, url, *, key=None, body=None, timeout=30):
+        if method == "DELETE":
+            terminated.append(url)
+        return 200, {}
+
+    monkeypatch.setattr(guard, "_http_request", fake_http_request)
+    return tmp_path, terminated
+
+
+def test_main_reaps_only_leaked_booted_orphan(patched_booted_orphan_guard) -> None:
+    tmp_path, terminated = patched_booted_orphan_guard
+    rc = guard.main([
+        "--reap",
+        "--output-root", str(tmp_path),
+        "--orphan-booted-max-age-seconds", "21600",
+    ])
+    assert rc == 0
+    assert len(terminated) == 1
+    assert "pod-leaked-booted" in terminated[0]
+    for kept in ("pod-warm-serve", "pod-owned-booted", "pod-fresh-booted"):
+        assert all(kept not in url for url in terminated)
+
+
+def test_main_booted_orphan_disabled_by_default_reaps_nothing(
+    patched_booted_orphan_guard,
+) -> None:
+    tmp_path, terminated = patched_booted_orphan_guard
+    # No --orphan-booted-max-age-seconds and no env -> feature off -> no booted reaping.
+    rc = guard.main(["--reap", "--output-root", str(tmp_path)])
+    assert rc == 0
+    assert terminated == []
+
+
+def test_main_booted_orphan_enabled_via_env(patched_booted_orphan_guard, monkeypatch) -> None:
+    tmp_path, terminated = patched_booted_orphan_guard
+    monkeypatch.setenv(guard.ORPHAN_BOOTED_MAX_AGE_ENV, "21600")
+    rc = guard.main(["--reap", "--output-root", str(tmp_path)])
+    assert rc == 0
+    assert len(terminated) == 1
+    assert "pod-leaked-booted" in terminated[0]

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Blueprint GPU spend guard (reap orphans) on a short interval
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=blueprint-gpu-spend-guard.service
+
+[Install]
+WantedBy=timers.target
