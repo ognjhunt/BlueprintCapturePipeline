@@ -328,6 +328,37 @@ def test_archive_fifo_member_rejected(tmp_path: Path) -> None:
     assert "kitchen_archive_unsupported_member_type" in result["blockers"]
 
 
+def test_extraction_site_guard_rejects_escaping_members(tmp_path: Path) -> None:
+    """Defense in depth: even a member that slipped past the pre-scan must be
+    refused at the extract call itself, never written outside dest."""
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    traversal = tarfile.TarInfo(name="../evil.txt")
+    with pytest.raises(tarfile.TarError, match="unsafe_member_path"):
+        gate._reject_unsafe_member(traversal, dest)
+
+    absolute = tarfile.TarInfo(name="/etc/passwd")
+    with pytest.raises(tarfile.TarError, match="unsafe_member_path"):
+        gate._reject_unsafe_member(absolute, dest)
+
+    escaping_link = tarfile.TarInfo(name="link")
+    escaping_link.type = tarfile.SYMTYPE
+    escaping_link.linkname = "../../outside"
+    with pytest.raises(tarfile.TarError, match="unsafe_member_link"):
+        gate._reject_unsafe_member(escaping_link, dest)
+
+    fifo = tarfile.TarInfo(name="pipe")
+    fifo.type = tarfile.FIFOTYPE
+    with pytest.raises(tarfile.TarError, match="unsupported_member_type"):
+        gate._reject_unsafe_member(fifo, dest)
+
+    # A plain relative regular file passes.
+    gate._reject_unsafe_member(
+        tarfile.TarInfo(name="Collected_KitchenRoom/KitchenRoom.usd"), dest
+    )
+
+
 def test_verify_archive_safety_reports_digest_and_flags(tmp_path: Path) -> None:
     tree = _make_tree(tmp_path)
     archive = _make_archive(tmp_path / "kitchen.tar.gz", tree)

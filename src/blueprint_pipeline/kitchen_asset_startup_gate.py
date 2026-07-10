@@ -100,6 +100,24 @@ def _link_escapes(member: tarfile.TarInfo) -> bool:
     return False
 
 
+def _reject_unsafe_member(member: tarfile.TarInfo, dest: Path) -> None:
+    """Extraction-site guard: raise before extracting any escaping member.
+
+    verify_archive_safety screens the archive first, but this re-check at the
+    extract call means even an archive modified between scan and extraction
+    can never write outside ``dest``.
+    """
+    if _is_unsafe_relpath(member.name):
+        raise tarfile.TarError(f"unsafe_member_path:{member.name}")
+    if (member.issym() or member.islnk()) and _link_escapes(member):
+        raise tarfile.TarError(f"unsafe_member_link:{member.name}")
+    if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+        raise tarfile.TarError(f"unsupported_member_type:{member.name}")
+    resolved = (dest / member.name).resolve()
+    if not resolved.is_relative_to(dest.resolve()):
+        raise tarfile.TarError(f"member_escapes_destination:{member.name}")
+
+
 # ---------------------------------------------------------------------------
 # Expected-inventory contract (kitchen_asset_inventory_checksums.v1).
 # ---------------------------------------------------------------------------
@@ -455,9 +473,10 @@ def run_kitchen_asset_startup_gate(
                 }
 
             # The PEP 706 "data" filter is absent on pre-3.10.12/3.11.4
-            # interpreters; extraction stays safe there because
-            # verify_archive_safety already rejected traversal/link/device
-            # members before this point.
+            # interpreters. verify_archive_safety already screened the archive,
+            # and _reject_unsafe_member re-checks every member at the
+            # extraction site so even a file swapped in between scan and
+            # extract cannot write outside dest.
             try:
                 tarfile.data_filter  # noqa: B018 - feature probe
                 extract_kwargs: dict[str, Any] = {"filter": "data"}
@@ -466,6 +485,7 @@ def run_kitchen_asset_startup_gate(
             try:
                 with tarfile.open(archive, mode="r:*") as tar:
                     for member in tar:
+                        _reject_unsafe_member(member, dest)
                         tar.extract(member, path=dest, **extract_kwargs)
                         if member.isfile():
                             files_extracted += 1
