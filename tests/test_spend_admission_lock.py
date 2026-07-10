@@ -21,14 +21,19 @@ from blueprint_pipeline.spend_admission_lock import (
 NOW = datetime(2026, 7, 9, 18, 0, tzinfo=timezone.utc)
 
 
-def _billing(total: float, *, status: str = "reconciled") -> dict[str, object]:
+def _billing(
+    total: float, *, status: str = "reconciled", now: datetime = NOW
+) -> dict[str, object]:
     return {
         "status": status,
         "required": True,
         "billing_export_schema_version": "blueprint.provider_billing_export.v1",
         "billing_export_sha256": f"sha256:{'a' * 64}",
         "billing_export_mode_octal": "0600",
-        "generated_at": NOW.isoformat(),
+        # Anchor billing freshness to the lock's own clock: a fixed timestamp
+        # here turned into a 24h time bomb (MAX_BILLING_AGE_SECONDS) that
+        # broke every CI run after 2026-07-10T18:00Z.
+        "generated_at": now.isoformat(),
         "currency": "USD",
         "scope": "blueprint_beta_100_user_cohort",
         "provider_totals_usd": {
@@ -74,7 +79,7 @@ def _lock(
 ) -> dict[str, object]:
     return build_spend_admission_lock(
         fleet_budget=_fleet(total, blocked_for_total=blocked_for_total),
-        billing_reconciliation=_billing(total),
+        billing_reconciliation=_billing(total, now=now),
         instances=instances or [],
         reap_results=[],
         inventory_results=_inventory(),

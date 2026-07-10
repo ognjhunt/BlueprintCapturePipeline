@@ -486,6 +486,18 @@ def run_kitchen_asset_startup_gate(
                 with tarfile.open(archive, mode="r:*") as tar:
                     for member in tar:
                         _reject_unsafe_member(member, dest)
+                        member_target = os.path.abspath(
+                            os.path.join(str(dest), member.name)
+                        )
+                        if (
+                            os.path.commonprefix(
+                                [os.path.abspath(str(dest)), member_target]
+                            )
+                            != os.path.abspath(str(dest))
+                        ):
+                            raise tarfile.TarError(
+                                f"member_escapes_destination:{member.name}"
+                            )
                         tar.extract(member, path=dest, **extract_kwargs)
                         if member.isfile():
                             files_extracted += 1
