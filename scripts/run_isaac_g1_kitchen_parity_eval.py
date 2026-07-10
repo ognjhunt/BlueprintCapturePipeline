@@ -1367,6 +1367,7 @@ def plan_task_stance(
     floor_z_hint: float | None = None,
     robot_footprint_half_extent: Sequence[float] | None = None,
     placement_validator=None,
+    angle_offsets_deg: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """Select a task start pose around a target object without scene-specific coordinates.
 
@@ -1421,8 +1422,13 @@ def plan_task_stance(
     accepted_candidate_indices: list[int] = []
     rejected_by_placement_validation = 0
     rejected_by_reachability = 0
+    offsets = (
+        tuple(float(v) for v in angle_offsets_deg)
+        if angle_offsets_deg is not None
+        else TASK_STANCE_ANGLE_OFFSETS_DEG
+    )
     for distance_m in distances:
-        for offset_deg in TASK_STANCE_ANGLE_OFFSETS_DEG:
+        for offset_deg in offsets:
             angle = primary_angle + math.radians(float(offset_deg))
             ux, uy = math.cos(angle), math.sin(angle)
             target_surface_offset = (
@@ -1451,7 +1457,11 @@ def plan_task_stance(
                 "target_surface_offset_m": round(float(target_surface_offset), 6),
                 "stance_focus_xyz": [round(float(v), 6) for v in stance_focus],
                 "stance_focus_source": stance_focus_source,
-                "angle_offset_deg": int(offset_deg),
+                "angle_offset_deg": (
+                    int(offset_deg)
+                    if float(offset_deg).is_integer()
+                    else round(float(offset_deg), 2)
+                ),
                 "approach_bias_enabled": bool(approach is not None),
                 "scene_collision_contact_count": collision_count,
             }
@@ -4513,6 +4523,177 @@ def _scene_placement_stand_plan(
     }
 
 
+STANCE_SEARCH_ADAPTIVE_BLOCKERS = frozenset(
+    {
+        "no_reach_seed_task_stance_candidate",
+        "no_validated_task_stance_candidate",
+        "no_collision_free_task_stance_candidate",
+    }
+)
+STANCE_SEARCH_MAX_ROUNDS = 8
+STANCE_SEARCH_MAX_STAGING_ANCHORS = 2
+
+
+def _import_stance_search_agent():
+    try:
+        import stance_configuration_agent as agent_mod  # bundle (worker)
+    except Exception:  # noqa: BLE001
+        from blueprint_pipeline import stance_configuration_agent as agent_mod  # repo (tests)
+    return agent_mod
+
+
+def _staging_anchor_candidates_from_plan(
+    plan: Mapping[str, Any],
+    *,
+    max_anchors: int = 4,
+) -> list[dict[str, Any]]:
+    """Navigable staging anchors: collision-free swept poses, farthest and most
+    angle-diverse first. These are measured collision-probe results from the failed
+    sweep, never invented coordinates."""
+    candidates = plan.get("candidates")
+    if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+        return []
+    open_poses: list[tuple[float, float, list[float]]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        try:
+            contact_count = int(candidate.get("scene_collision_contact_count"))
+        except (TypeError, ValueError):
+            continue
+        if contact_count != 0:
+            continue
+        pose = candidate.get("pose")
+        if not (isinstance(pose, Sequence) and len(pose) >= 3):
+            continue
+        try:
+            standoff = float(candidate.get("standoff_from_target_surface_m"))
+            angle = float(candidate.get("angle_offset_deg"))
+        except (TypeError, ValueError):
+            continue
+        open_poses.append((standoff, angle, [float(v) for v in pose[:3]]))
+    open_poses.sort(key=lambda item: (-item[0], abs(item[1])))
+    anchors: list[dict[str, Any]] = []
+    used_angles: list[float] = []
+    for standoff, angle, pose in open_poses:
+        if any(abs(angle - seen) < 30.0 for seen in used_angles):
+            continue
+        used_angles.append(angle)
+        anchors.append(
+            {
+                "xyz": [round(v, 4) for v in pose],
+                "source": "collision_free_sweep_candidate",
+                "standoff_from_target_surface_m": round(standoff, 4),
+                "angle_offset_deg": angle,
+            }
+        )
+        if len(anchors) >= max_anchors:
+            break
+    return anchors
+
+
+def _adaptive_task_stance_search(
+    *,
+    stance_scenario: Mapping[str, Any],
+    manipulation_look_at,
+    probe,
+    placement_validator,
+    initial_plan: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Bounded feedback-driven re-parameterization of the blocked stance sweep.
+
+    The agent consumes the sweep's quantitative rejection evidence (reach shortfalls,
+    clearance gaps, contact counts) and re-invokes the SAME ``plan_task_stance``
+    gates with revised standoffs/angle fans/approach anchors. It cannot loosen any
+    threshold or accept a pose itself; a still-blocked search returns the original
+    blocked plan annotated with the search evidence. Returns None when the search is
+    not applicable (so the caller keeps the original plan untouched)."""
+    blockers = {str(b) for b in (initial_plan.get("blockers") or []) if b}
+    if not blockers & STANCE_SEARCH_ADAPTIVE_BLOCKERS:
+        return None
+    if initial_plan.get("task_affordance_xyz") is None:
+        # Without a resolved affordance there is no quantitative reach signal to
+        # drive the loop; the structured sweep result stands.
+        return None
+    try:
+        agent_mod = _import_stance_search_agent()
+    except Exception as exc:  # noqa: BLE001 - agent unavailable keeps the blocked plan
+        annotated = dict(initial_plan)
+        annotated["stance_search_status"] = "agent_unavailable"
+        annotated["stance_search_error"] = repr(exc)
+        return annotated
+    distances = task_stance_distance_candidates(stance_scenario)
+    if not distances:
+        return None
+    hard_min = float(ROBOT_FOOTPRINT_HALF_EXTENT[0])
+    scenario_min = stance_scenario.get("min_stance_distance_m")
+    if scenario_min is not None:
+        hard_min = max(hard_min, float(scenario_min))
+    hard_max = max(distances) * 2.5
+    scenario_max = stance_scenario.get("max_stance_distance_m")
+    if scenario_max is not None:
+        hard_max = min(hard_max, float(scenario_max))
+    hard_max = max(hard_max, hard_min + 0.30)
+    limits = agent_mod.StanceSearchLimits(
+        min_standoff_m=round(hard_min, 4),
+        max_standoff_m=round(hard_max, 4),
+        max_rounds=STANCE_SEARCH_MAX_ROUNDS,
+        max_staging_anchors=STANCE_SEARCH_MAX_STAGING_ANCHORS,
+    )
+
+    def attempt_sweep(parameters) -> dict[str, Any]:
+        sweep_scenario = dict(stance_scenario)
+        sweep_scenario["stance_distance_candidates_m"] = [
+            float(v) for v in parameters.standoff_candidates_m
+        ]
+        # Agent-proposed distances are already ordered/bounded; a stale preferred
+        # distance or min/max filter must not silently drop them.
+        sweep_scenario.pop("preferred_stance_distance_m", None)
+        sweep_scenario.pop("min_stance_distance_m", None)
+        sweep_scenario.pop("max_stance_distance_m", None)
+        if parameters.approach_anchor_xyz is not None:
+            sweep_scenario["approach_position_xyz"] = [
+                float(v) for v in parameters.approach_anchor_xyz
+            ]
+        return plan_task_stance(
+            scenario=sweep_scenario,
+            manipulation_look_at=manipulation_look_at,
+            probe_collision=probe,
+            floor_z_hint=stance_scenario.get("floor_z_hint"),
+            placement_validator=placement_validator,
+            angle_offsets_deg=parameters.angle_offsets_deg,
+        )
+
+    initial_parameters = agent_mod.StanceSweepParameters(
+        approach_mode=agent_mod.APPROACH_MODE_DIRECT,
+        standoff_candidates_m=tuple(float(v) for v in distances),
+        angle_offsets_deg=None,
+    )
+    search = agent_mod.run_stance_configuration_search(
+        attempt_sweep=attempt_sweep,
+        initial_plan=initial_plan,
+        initial_parameters=initial_parameters,
+        limits=limits,
+        staging_anchor_candidates=_staging_anchor_candidates_from_plan(initial_plan),
+    )
+    search_evidence = {k: v for k, v in search.items() if k != "accepted_plan"}
+    if search.get("status") == "accepted" and isinstance(search.get("accepted_plan"), Mapping):
+        accepted = dict(search["accepted_plan"])
+        accepted["stance_search"] = search_evidence
+        accepted["stance_search_status"] = "accepted"
+        accepted_parameters = search.get("accepted_parameters")
+        if isinstance(accepted_parameters, Mapping):
+            accepted["approach_mode"] = accepted_parameters.get("approach_mode")
+            accepted["stance_search_approach_anchor_xyz"] = accepted_parameters.get(
+                "approach_anchor_xyz"
+            )
+        return accepted
+    annotated = dict(initial_plan)
+    annotated["stance_search"] = search_evidence
+    annotated["stance_search_status"] = str(search.get("status") or "unknown")
+    return annotated
+
+
 def _plan_task_stance_for_stage(
     *,
     stage,
@@ -4718,6 +4899,16 @@ def _plan_task_stance_for_stage(
         floor_z_hint=stance_scenario.get("floor_z_hint"),
         placement_validator=placement_validator,
     )
+    if str(stance_plan.get("status") or "") != "accepted":
+        adaptive_plan = _adaptive_task_stance_search(
+            stance_scenario=stance_scenario,
+            manipulation_look_at=manipulation_look_at,
+            probe=probe,
+            placement_validator=placement_validator,
+            initial_plan=stance_plan,
+        )
+        if adaptive_plan is not None:
+            stance_plan = adaptive_plan
     if target_resolution is not None:
         stance_plan["target_resolution"] = target_resolution
     return _with_affordance_resolution(stance_plan)

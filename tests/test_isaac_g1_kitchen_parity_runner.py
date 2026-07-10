@@ -4919,3 +4919,203 @@ def test_software_denoise_applies_to_pathtraced_review_saves_unless_disabled(mon
     assert M._effective_software_denoise(True, None) is True
     monkeypatch.setenv("PARITY_SOFTWARE_DENOISE_PATH_TRACED", "raw")
     assert M._effective_software_denoise(True, {"use_pathtraced": True}) is False
+
+
+# --------------------------------------------------------------------------
+# Feedback-driven stance-configuration search (bounded scene-configuration agent)
+# --------------------------------------------------------------------------
+
+
+def test_plan_task_stance_honors_custom_angle_offsets() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [1.0],
+        "floor_z_hint": 0.05,
+    }
+    plan = M.plan_task_stance(
+        scenario=scenario,
+        probe_collision=lambda pose, yaw: 0,
+        angle_offsets_deg=(7.5,),
+    )
+    assert plan["status"] == "accepted"
+    assert [c["angle_offset_deg"] for c in plan["candidates"]] == [7.5]
+
+
+def test_staging_anchor_candidates_prefer_far_collision_free_diverse_angles() -> None:
+    plan = {
+        "candidates": [
+            {"pose": [1.0, 0.0, 0.79], "standoff_from_target_surface_m": 0.4,
+             "angle_offset_deg": 0, "scene_collision_contact_count": 2},
+            {"pose": [2.0, 0.0, 0.79], "standoff_from_target_surface_m": 1.2,
+             "angle_offset_deg": 0, "scene_collision_contact_count": 0},
+            {"pose": [2.0, 0.3, 0.79], "standoff_from_target_surface_m": 1.2,
+             "angle_offset_deg": 15, "scene_collision_contact_count": 0},
+            {"pose": [1.4, -1.4, 0.79], "standoff_from_target_surface_m": 1.2,
+             "angle_offset_deg": -45, "scene_collision_contact_count": 0},
+        ]
+    }
+    anchors = M._staging_anchor_candidates_from_plan(plan)
+    assert anchors
+    assert all(a["source"] == "collision_free_sweep_candidate" for a in anchors)
+    angles = [a["angle_offset_deg"] for a in anchors]
+    assert 0 in angles and -45 in angles and 15 not in angles  # <30 deg from 0 -> skipped
+    assert all(a["standoff_from_target_surface_m"] == pytest.approx(1.2) for a in anchors)
+
+
+def test_adaptive_stance_search_recovers_reach_blocked_ladder() -> None:
+    # Every ladder distance leaves the affordance beyond the seed reach envelope;
+    # the agent must descend below the ladder using the measured shortfall and get
+    # a pose accepted by the SAME sweep gates (no thresholds touched).
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "task_affordance_xyz": [0.0, 0.0, 1.0],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [0.9, 1.1],
+        "floor_z_hint": 0.05,
+    }
+    initial = M.plan_task_stance(scenario=scenario, probe_collision=lambda pose, yaw: 0)
+    assert initial["status"] == "blocked"
+    assert initial["blockers"] == ["no_reach_seed_task_stance_candidate"]
+
+    plan = M._adaptive_task_stance_search(
+        stance_scenario=scenario,
+        manipulation_look_at=None,
+        probe=lambda pose, yaw: 0,
+        placement_validator=None,
+        initial_plan=initial,
+    )
+    assert plan is not None
+    assert plan["status"] == "accepted"
+    assert plan["stance_search_status"] == "accepted"
+    search = plan["stance_search"]
+    assert search["schema_version"] == "stance_configuration_search.v1"
+    assert search["status"] == "accepted"
+    assert search["round_count"] >= 2
+    assert search["rounds"][0]["strategy_id"] == "initial_structured_sweep"
+    assert search["rounds"][-1]["strategy_id"] in set(search["registered_strategy_ids"])
+    # The accepted pose is closer than any original ladder standoff.
+    chosen = plan["candidates"][plan["selected_candidate_index"]]
+    assert chosen["standoff_from_target_surface_m"] < 0.9
+    assert chosen["reachability_estimate"]["status"] == "PASS"
+    assert plan["reach_seed_gate"]["status"] == "PASS"
+    # The search only re-parameterized the sweep; acceptance evidence is sweep-shaped.
+    assert "accepted_pose" in plan and "accepted_yaw" in plan
+
+
+def test_adaptive_stance_search_reports_proved_infeasibility() -> None:
+    # Close poses collide, far poses cannot reach: contradictory measured bounds in
+    # every direction and via every staging anchor -> proved infeasibility, with the
+    # original blocked plan and blockers preserved (fail-closed).
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "task_affordance_xyz": [0.0, 0.0, 1.0],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [0.9, 1.2],
+        "floor_z_hint": 0.05,
+    }
+
+    def probe(pose, yaw):
+        return 1 if math.dist(pose[:2], [0.0, 0.0]) < 1.05 else 0
+
+    initial = M.plan_task_stance(scenario=scenario, probe_collision=probe)
+    assert initial["status"] == "blocked"
+
+    plan = M._adaptive_task_stance_search(
+        stance_scenario=scenario,
+        manipulation_look_at=None,
+        probe=probe,
+        placement_validator=None,
+        initial_plan=initial,
+    )
+    assert plan is not None
+    assert plan["status"] == "blocked"
+    assert plan["blockers"] == initial["blockers"]
+    assert plan["stance_search_status"] in {"infeasible", "budget_exhausted", "search_stalled"}
+    search = plan["stance_search"]
+    if plan["stance_search_status"] == "infeasible":
+        proof = search["infeasibility_proof"]
+        assert proof["per_direction"]
+        assert all(d["window_is_empty"] for d in proof["per_direction"])
+    assert "accepted_plan" not in search
+
+
+def test_adaptive_stance_search_requires_resolved_affordance() -> None:
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [0.4],
+        "floor_z_hint": 0.05,
+    }
+    blocked = {
+        "status": "blocked",
+        "blockers": ["no_collision_free_task_stance_candidate"],
+        "candidates": [],
+    }
+    assert (
+        M._adaptive_task_stance_search(
+            stance_scenario=scenario,
+            manipulation_look_at=None,
+            probe=lambda pose, yaw: 0,
+            placement_validator=None,
+            initial_plan=blocked,
+        )
+        is None
+    )
+
+
+def test_adaptive_stance_search_ignores_non_geometric_blockers() -> None:
+    blocked = {
+        "status": "blocked",
+        "blockers": ["missing_task_stance_target"],
+        "task_affordance_xyz": [0.0, 0.0, 1.0],
+        "candidates": [],
+    }
+    assert (
+        M._adaptive_task_stance_search(
+            stance_scenario={},
+            manipulation_look_at=None,
+            probe=lambda pose, yaw: 0,
+            placement_validator=None,
+            initial_plan=blocked,
+        )
+        is None
+    )
+
+
+def test_adaptive_stance_search_still_runs_placement_validator_on_new_poses() -> None:
+    # The agent's re-sweeps must pass through the same placement validator; a
+    # validator that rejects everything keeps the plan blocked no matter what the
+    # search proposes.
+    scenario = {
+        "task_target_position_xyz": [0.0, 0.0, 0.9],
+        "task_affordance_xyz": [0.0, 0.0, 1.0],
+        "robot_start_position_xyz": [-3.0, 0.0, 0.05],
+        "stance_distance_candidates_m": [0.9, 1.1],
+        "floor_z_hint": 0.05,
+    }
+    validated_poses = []
+
+    def rejecting_validator(pose, yaw, record):
+        validated_poses.append(tuple(pose))
+        return {"status": "blocked", "blockers": ["placed_robot_target_gap_below_threshold"]}
+
+    initial = M.plan_task_stance(
+        scenario=scenario,
+        probe_collision=lambda pose, yaw: 0,
+        placement_validator=rejecting_validator,
+    )
+    assert initial["status"] == "blocked"
+    before = len(validated_poses)
+
+    plan = M._adaptive_task_stance_search(
+        stance_scenario=scenario,
+        manipulation_look_at=None,
+        probe=lambda pose, yaw: 0,
+        placement_validator=rejecting_validator,
+        initial_plan=initial,
+    )
+    assert plan is not None
+    assert plan["status"] == "blocked"
+    assert len(validated_poses) > before, "re-swept poses must hit the same validator"
+    assert plan["stance_search_status"] in {"infeasible", "budget_exhausted", "search_stalled"}

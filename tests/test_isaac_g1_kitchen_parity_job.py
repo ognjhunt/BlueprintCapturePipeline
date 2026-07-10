@@ -222,6 +222,8 @@ def test_build_parity_bundle_contains_runner_policy_request_and_assets(tmp_path:
         manifest = json.loads(zf.read("bundle_manifest.json"))
     assert "run_isaac_g1_kitchen_parity_eval.py" in names
     assert "isaac_g1_policy.py" in names  # policy module shipped for the worker import
+    # feedback-driven stance search agent shipped flat for the runner's bundle-first import
+    assert "stance_configuration_agent.py" in names
     assert "render_visual_qc.py" in names  # Gemini placement QC module shipped for worker import
     assert "request.json" in names
     assert "kitchen/Collected_KitchenRoom/KitchenRoom.usd" in names
