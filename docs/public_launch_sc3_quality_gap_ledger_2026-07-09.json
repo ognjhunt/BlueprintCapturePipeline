@@ -3994,7 +3994,7 @@
             {
               "artifact_id": "RUN-04-AC-01-EV-01",
               "path": "src/blueprint_pipeline/robot_eval_job_orchestrator.py",
-              "sha256": "sha256:62b0acd5f6d4018518eaf0445cfb7815a3e3b807cbec6756779f55aba562185f",
+              "sha256": "sha256:4e04199d10fd67efa4af273236f078b53a442c25a930b05a53ee9bab94ececef",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",

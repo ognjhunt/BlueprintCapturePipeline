@@ -840,22 +840,32 @@ def _claim_robot_eval_job_execution(
         "final_commit_required": True,
     }
     encoded = (json.dumps(claim, sort_keys=True, indent=2) + "\n").encode("utf-8")
-    try:
-        descriptor = os.open(
-            claim_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-    except FileExistsError as exc:
-        existing = _read_optional_mapping(claim_path)
-        if existing.get("request_fingerprint") != request_fingerprint:
-            raise ValueError("robot_eval_job_id_request_fingerprint_mismatch") from exc
-        raise ValueError("robot_eval_job_id_already_claimed") from exc
+    # Publish the claim atomically: write the full payload to a private temp file
+    # first, then hard-link it to the claim path. os.link fails with EEXIST for
+    # every claimant but one, and any claimant that loses the race reads a claim
+    # file that already carries its complete content — creating the final path
+    # with O_EXCL and writing afterwards let a concurrent loser read an empty
+    # claim and misreport a same-fingerprint claim as a fingerprint mismatch.
+    temp_path = job_dir / f".job_claim.{server_attempt_id}.tmp"
+    descriptor = os.open(
+        temp_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
     try:
         os.write(descriptor, encoded)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    try:
+        os.link(temp_path, claim_path)
+    except FileExistsError as exc:
+        os.unlink(temp_path)
+        existing = _read_optional_mapping(claim_path)
+        if existing.get("request_fingerprint") != request_fingerprint:
+            raise ValueError("robot_eval_job_id_request_fingerprint_mismatch") from exc
+        raise ValueError("robot_eval_job_id_already_claimed") from exc
+    os.unlink(temp_path)
     directory_descriptor = os.open(job_dir, os.O_RDONLY)
     try:
         os.fsync(directory_descriptor)
