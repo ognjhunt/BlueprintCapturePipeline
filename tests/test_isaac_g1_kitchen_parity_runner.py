@@ -5171,4 +5171,16 @@ def test_runner_attaches_graded_trace_consistency_to_episode_outcome() -> None:
     source = _RUNNER.read_text()
     assert "compute_episode_trace_consistency(actions=actions)" in source
     assert 'outcome["episode_trace_consistency"] = trace_consistency' in source
-    assert "episode_trace_consistency_gate_blockers(" in source
+    gate_call = source.index(
+        "trace_gate_blockers = episode_trace_consistency_gate_blockers("
+    )
+    # The gate must run AFTER the success contract can promote task_success and
+    # BEFORE the outcome is recorded, and it must demote the scenario outcome
+    # itself — otherwise scenarios_passed still counts the episode as passed.
+    contract_call = source.index(
+        "contract_result = _apply_visible_reach_to_affordance_success_contract("
+    )
+    append_call = source.index("outcomes.append(outcome)")
+    assert contract_call < gate_call < append_call
+    demotion = source.index('outcome["task_success"] = False', gate_call)
+    assert gate_call < demotion < append_call

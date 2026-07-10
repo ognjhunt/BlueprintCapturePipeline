@@ -11580,16 +11580,6 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             outcome["episode_termination"] = dict(dynamic_episode_report or {})
             trace_consistency = policy_mod.compute_episode_trace_consistency(actions=actions)
             outcome["episode_trace_consistency"] = trace_consistency
-            for gate_blocker in episode_trace_consistency_gate_blockers(
-                outcome, trace_consistency
-            ):
-                if gate_blocker not in blockers:
-                    blockers.append(gate_blocker)
-                    _log(
-                        f"scenario {sid}: strict trace-consistency gate blocked success "
-                        f"claim ({gate_blocker}; score="
-                        f"{trace_consistency.get('consistency_score')})"
-                    )
             outcome["per_frame_camera_contract_emitted"] = bool(camera_contract_rows)
             outcome["per_frame_camera_contract_frames"] = len(camera_contract_rows)
             outcome["per_frame_camera_contract_available_intrinsics_frames"] = sum(
@@ -11778,6 +11768,36 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     "manipulation camera plus review-ready robot/action geometry."
                 ),
             }
+            # Strict graded-consistency gate, applied AFTER every success-contract
+            # mutation (visible_reach_to_affordance can promote task_success above):
+            # a claimed success without a scored, passing trace-consistency score is
+            # demoted on the scenario outcome itself, so scenarios_passed and the
+            # review-grade counters can never report it as passed. Fail-closed
+            # direction only — the score never upgrades a failed outcome.
+            trace_gate_blockers = episode_trace_consistency_gate_blockers(
+                outcome, outcome.get("episode_trace_consistency") or {}
+            )
+            outcome["episode_trace_consistency_gate"] = {
+                "schema_version": "episode_trace_consistency_gate.v1",
+                "status": "FAIL" if trace_gate_blockers else "PASS",
+                "applied_after_success_contract_mutations": True,
+                "blockers": list(trace_gate_blockers),
+            }
+            if trace_gate_blockers:
+                outcome["task_success"] = False
+                outcome["task_status"] = "failed_task_criteria"
+                failure_ids = [str(f) for f in (outcome.get("failure_mode_ids") or [])]
+                failure_ids.extend(b for b in trace_gate_blockers if b not in failure_ids)
+                outcome["failure_mode_ids"] = failure_ids
+                outcome["failure_reason"] = ",".join(failure_ids)
+                for gate_blocker in trace_gate_blockers:
+                    if gate_blocker not in blockers:
+                        blockers.append(gate_blocker)
+                _log(
+                    f"scenario {sid}: strict trace-consistency gate demoted success "
+                    f"claim ({trace_gate_blockers}; score="
+                    f"{(outcome.get('episode_trace_consistency') or {}).get('consistency_score')})"
+                )
             outcomes.append(outcome)  # record BEFORE MP4 — MP4 is optional, frames already uploaded
             for name in ("overview", "robot_pov", "placement_topdown"):
                 glob = str(sdir / "frames" / f"{name}_*.png")

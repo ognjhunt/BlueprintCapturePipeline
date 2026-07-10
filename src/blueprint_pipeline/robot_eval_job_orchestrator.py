@@ -43,13 +43,11 @@ from .agent_operator_runtime import (
 )
 from .arena_result_ingest import build_arena_result_ingest
 from .action_normalization import build_action_normalization_from_trace
-from .buyer_claim_ceiling import build_buyer_claim_ceiling
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
 from .failure_diagnosis_contract import (
     FAILURE_LABEL_PROOF_EFFECT,
-    build_failure_diagnosis_audit,
     dedupe as _dedupe_refs,
     evidence_refs as _failure_evidence_refs,
     failure_root_cause_category as _failure_root_cause_category,

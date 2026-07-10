@@ -12,13 +12,13 @@ from .robot_eval_closure_common import (
     _artifact_paths,
     _boolish,
     _capture_root_from_job_dir,
-    _dedupe,
+    _explicitly_blocked_scenario_eval_run_records,
     _mapping,
-    _number,
     _read_optional_mapping,
     _scenario_eval_matrix_runs,
     _string,
     _string_list,
+    _valid_explicitly_blocked_scenario_eval_run_ids,
 )
 from .robot_eval_execution import POLICY_ACTION_SCHEMA_ID, POLICY_OBSERVATION_SCHEMA_ID
 
