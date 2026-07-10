@@ -104,6 +104,75 @@ def test_runpod_build_request_is_pod_body(tmp_path: Path) -> None:
     assert body["cloudType"] == "SECURE"
 
 
+def test_runpod_capacity_preflight_requires_secure_rtx_stock(monkeypatch) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+
+    def fake_graphql(query, *, key, timeout=60):
+        assert key == "rp-key"
+        assert "secureCloud: true" in query
+        return 200, {
+            "data": {
+                "gpuTypes": [
+                    {
+                        "id": "NVIDIA L40S",
+                        "displayName": "L40S",
+                        "memoryInGb": 48,
+                        "secureCloud": True,
+                        "lowestPrice": {
+                            "stockStatus": "Medium",
+                            "uninterruptablePrice": 1.14,
+                            "availableGpuCounts": None,
+                        },
+                    },
+                    {
+                        "id": "NVIDIA RTX A6000",
+                        "displayName": "RTX A6000",
+                        "memoryInGb": 48,
+                        "secureCloud": True,
+                        "lowestPrice": {
+                            "stockStatus": "None",
+                            "uninterruptablePrice": None,
+                            "availableGpuCounts": [],
+                        },
+                    },
+                ]
+            }
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        fake_graphql,
+    )
+    result = RunPodRenderProvider().capacity_preflight(
+        {"min_gpu_ram_mb": 48000, "requires_rtx": True}
+    )
+
+    assert result["status"] == "available"
+    assert [row["gpu_type_id"] for row in result["viable_gpu_types"]] == ["NVIDIA L40S"]
+    assert result["viable_gpu_types"][0]["available_gpu_counts"] == []
+    a6000 = next(
+        row for row in result["considered_gpu_types"]
+        if row["gpu_type_id"] == "NVIDIA RTX A6000"
+    )
+    assert "single_gpu_stock_unavailable" in a6000["blockers"]
+
+
+def test_runpod_capacity_preflight_fails_closed_on_query_error(monkeypatch) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        lambda query, *, key, timeout=60: (503, {"error": "redacted"}),
+    )
+
+    result = RunPodRenderProvider().capacity_preflight(
+        {"min_gpu_ram_mb": 48000, "requires_rtx": True}
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["runpod_capacity_probe_failed"]
+    assert result["raw_provider_response_recorded"] is False
+
+
 def test_runpod_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> None:
     # point secret lookups at an empty dir so no key is found and no network call happens
     monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.SECRETS", tmp_path)
@@ -136,6 +205,62 @@ def test_runpod_launch_blocks_without_prelaunch_guard_before_provider_call(
     assert res["status"] == "blocked"
     assert "runpod_render_prelaunch_spend_guard_missing" in res["blockers"]
     assert calls == []
+
+
+def test_runpod_launch_strips_internal_guard_fields_before_create(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    observed: list[dict] = []
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        assert (method, path, key) == ("POST", "/pods", "rp-key")
+        observed.append(dict(body))
+        return 201, {"id": "pod-1"}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call",
+        fake_call,
+    )
+    request = _guarded_runpod_request()
+    request["pending_teardown_record"] = "/tmp/internal-record.json"
+    result = RunPodRenderProvider().launch(tmp_path, request, cold=True)
+
+    assert result["status"] == "launched"
+    assert result["instance_id"] == "pod-1"
+    assert "prelaunch_spend_guard" not in observed[0]
+    assert "pending_teardown_record" not in observed[0]
+
+
+def test_runpod_launch_classifies_create_resource_500_as_capacity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call",
+        lambda method, path, body, *, key, timeout=90: (
+            500,
+            {
+                "error": (
+                    '{"error":"create pod: This machine does not have the resources '
+                    'to deploy your pod. Please try a different machine","status":500}'
+                )
+            },
+        ),
+    )
+
+    result = RunPodRenderProvider().launch(
+        tmp_path,
+        _guarded_runpod_request(),
+        cold=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        "runpod_secure_cloud_create_capacity_unavailable",
+        "no_pod_started",
+    ]
+    assert result["attempts"][0]["pod_id"] is None
 
 
 def test_runpod_warm_start_rejection_is_recorded_before_cold_fallback(tmp_path: Path, monkeypatch) -> None:
@@ -663,6 +788,76 @@ def test_watch_and_collect_stops_blocked_runner_pod_for_warm_reuse(tmp_path: Pat
     assert res["teardown"]["status"] == "stopped"
 
 
+def test_watch_and_collect_terminates_blocked_startup_canary(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import isaac_particlefield_render_job as job
+
+    class _FakeProvider:
+        name = "runpod"
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.terminated: str | None = None
+
+        def inspect(self, instance_id: str) -> dict:
+            return {
+                "status": "observed",
+                "http": 200,
+                "instance_id": instance_id,
+                "machineId": "machine-bad-driver",
+            }
+
+        def stop(self, instance_id: str) -> dict:
+            self.stopped = instance_id
+            return {"status": "stopped", "http": 204}
+
+        def terminate(self, instance_id: str) -> dict:
+            self.terminated = instance_id
+            return {"status": "terminated", "http": 204}
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bootstrap.json", json.dumps({"phase": "runner_done", "rc": 2}))
+        zf.writestr(
+            "isaac_g1_kitchen_parity_result.json",
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": ["isaac_sim_6_rtx_driver_unsupported"],
+                    "image_startup_canary": True,
+                }
+            ),
+        )
+    payload_bytes = payload.getvalue()
+
+    class _Response:
+        def read(self) -> bytes:
+            return payload_bytes
+
+    monkeypatch.setattr(job.urllib.request, "urlopen", lambda _url, timeout=60: _Response())
+    monkeypatch.setattr(job.time, "sleep", lambda _seconds: None)
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
+    fake = _FakeProvider()
+
+    res = job.watch_and_collect(
+        job_dir,
+        tmp_path / "out",
+        "inst-9",
+        provider=fake,
+        max_seconds=1,
+        poll=1,
+        preserve_instance=True,
+        preserve_blocked_instance=False,
+    )
+
+    assert res["status"] == "blocked"
+    assert fake.stopped is None
+    assert fake.terminated == "inst-9"
+    assert res["teardown"]["status"] == "terminated"
+    assert res["provider_snapshot_before_teardown"]["machineId"] == "machine-bad-driver"
+
+
 def test_watch_and_collect_terminates_runner_timeout(tmp_path: Path, monkeypatch) -> None:
     from blueprint_pipeline import isaac_particlefield_render_job as job
 
@@ -972,6 +1167,7 @@ def test_digitalocean_build_request_wraps_worker_in_user_data(monkeypatch, tmp_p
     assert body["region"] == "atl1"
     assert body["image"] == "gpu-h100x1-base"     # NVIDIA AI/ML-ready (drivers+docker)
     assert body["min_gpu_ram_mb"] == spec.min_gpu_ram_mb
+    assert body["requires_rtx"] is True
     assert "max_hourly_rate_usd" not in body
     ud = body["user_data"]
     assert "set -x" not in ud
@@ -1039,7 +1235,7 @@ def test_digitalocean_capacity_preflight_blocks_empty_gpu_region_lists(
     assert calls == [("GET", "/sizes?per_page=200")]
 
 
-def test_digitalocean_capacity_preflight_uses_h100_h200_fallbacks_when_budget_allows(
+def test_digitalocean_capacity_preflight_rejects_h100_h200_for_rtx_render(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1102,10 +1298,34 @@ def test_digitalocean_capacity_preflight_uses_h100_h200_fallbacks_when_budget_al
     assert {
         row["size"] for row in default_budget["budget_policy"]["rejected_size_candidates"]
     } == {"gpu-h100x1-80gb", "gpu-h200x1-141gb"}
-    assert launcher_budget["status"] == "available"
-    assert launcher_budget["viable_size_regions"][0]["size"] == "gpu-h100x1-80gb"
-    assert launcher_budget["viable_size_regions"][0]["matching_regions"] == ["nyc2"]
-    assert "gpu-h200x1-141gb" in launcher_budget["size_candidates"]
+    assert launcher_budget["status"] == "blocked"
+    assert launcher_budget["blockers"] == ["digitalocean_gpu_size_region_unavailable"]
+    rejected = launcher_budget["render_capability_policy"]["rejected_size_candidates"]
+    assert {row["size"] for row in rejected} == {
+        "gpu-h100x1-80gb",
+        "gpu-h200x1-141gb",
+    }
+    assert all(row["reason"] == "rtx_render_capability_missing" for row in rejected)
+
+    monkeypatch.setenv(
+        "BLUEPRINT_DO_GPU_SIZES",
+        "gpu-h100x1-80gb,gpu-h200x1-141gb",
+    )
+    rtx_only = G.DigitalOceanRenderProvider().capacity_preflight(
+        {"min_gpu_ram_mb": 48000, "max_hourly_rate_usd": 3.5}
+    )
+    assert rtx_only["status"] == "blocked"
+    assert rtx_only["blockers"] == ["digitalocean_gpu_size_not_rtx_capable"]
+
+    compute_only = G.DigitalOceanRenderProvider().capacity_preflight(
+        {
+            "min_gpu_ram_mb": 48000,
+            "max_hourly_rate_usd": 3.5,
+            "requires_rtx": False,
+        }
+    )
+    assert compute_only["status"] == "available"
+    assert compute_only["viable_size_regions"][0]["size"] == "gpu-h100x1-80gb"
 
 
 def test_digitalocean_capacity_preflight_reports_viable_size_region(

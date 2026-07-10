@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,6 +17,16 @@ from .common import ensure_dir, utc_now_iso, write_json
 ISAAC_WORKER_RUNTIME_PREFLIGHT_SCHEMA_VERSION = "isaac_worker_runtime_preflight.v1"
 WORKER_PREFLIGHT_DETAIL_OUTPUT_ENV = "BLUEPRINT_RUNTIME_PREFLIGHT_DETAIL_OUTPUT"
 WORKER_PREFLIGHT_OUTPUT_ENV = "BLUEPRINT_RUNTIME_PREFLIGHT_OUTPUT"
+ISAAC_SIM_MAJOR_VERSION = 6
+RTX_SMOKE_WIDTH = 64
+RTX_SMOKE_HEIGHT = 64
+RTX_SMOKE_MAX_ASSET_LOADING_SECONDS = 10
+
+# Isaac Sim 6's own RTX verifier rejects this Linux R570 interval.  Keep this
+# narrow: the rendered-frame check remains the authoritative compatibility
+# proof for every driver outside the explicitly known-bad range.
+ISAAC_SIM_6_UNSUPPORTED_R570_MIN = (570, 0, 0)
+ISAAC_SIM_6_UNSUPPORTED_R570_MAX_EXCLUSIVE = (570, 158, 1)
 
 
 def _string(value: Any) -> str:
@@ -24,6 +35,104 @@ def _string(value: Any) -> str:
 
 def _check(name: str, status: str, **details: Any) -> dict[str, Any]:
     return {"name": name, "status": status, **details}
+
+
+def _driver_version_tuple(value: str) -> tuple[int, int, int] | None:
+    match = re.fullmatch(r"\s*(\d+)\.(\d+)(?:\.(\d+))?\s*", value)
+    if not match:
+        return None
+    return tuple(int(part or 0) for part in match.groups())  # type: ignore[return-value]
+
+
+def _nvidia_inventory_rows(stdout: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw_line in stdout.splitlines():
+        parts = [part.strip() for part in raw_line.split(",", 2)]
+        if len(parts) != 3:
+            continue
+        version_tuple = _driver_version_tuple(parts[1])
+        rows.append(
+            {
+                "gpu_name": parts[0],
+                "driver_version": parts[1],
+                "driver_version_components": list(version_tuple) if version_tuple else None,
+                "memory_total": parts[2],
+            }
+        )
+    return rows
+
+
+def _isaac_rtx_driver_check(
+    nvidia_check: Mapping[str, Any], *, required: bool
+) -> tuple[dict[str, Any], list[str]]:
+    if not required:
+        return (
+            _check(
+                "isaac_rtx_driver_compatibility",
+                "skipped_not_required",
+                isaac_sim_major_version=ISAAC_SIM_MAJOR_VERSION,
+            ),
+            [],
+        )
+    inventory = nvidia_check.get("gpu_inventory")
+    if not isinstance(inventory, list) or not inventory:
+        return (
+            _check(
+                "isaac_rtx_driver_compatibility",
+                "blocked",
+                isaac_sim_major_version=ISAAC_SIM_MAJOR_VERSION,
+                reason="nvidia_smi_driver_version_unavailable",
+            ),
+            ["nvidia_smi_driver_version_unavailable"],
+        )
+    versions: list[tuple[int, int, int]] = []
+    for row in inventory:
+        components = row.get("driver_version_components") if isinstance(row, Mapping) else None
+        if not isinstance(components, list) or len(components) != 3:
+            return (
+                _check(
+                    "isaac_rtx_driver_compatibility",
+                    "blocked",
+                    isaac_sim_major_version=ISAAC_SIM_MAJOR_VERSION,
+                    reason="nvidia_smi_driver_version_unparseable",
+                    gpu_inventory=inventory,
+                ),
+                ["nvidia_smi_driver_version_unparseable"],
+            )
+        versions.append(tuple(int(part) for part in components))
+    rejected = [
+        list(version)
+        for version in versions
+        if ISAAC_SIM_6_UNSUPPORTED_R570_MIN
+        <= version
+        < ISAAC_SIM_6_UNSUPPORTED_R570_MAX_EXCLUSIVE
+    ]
+    if rejected:
+        return (
+            _check(
+                "isaac_rtx_driver_compatibility",
+                "blocked",
+                isaac_sim_major_version=ISAAC_SIM_MAJOR_VERSION,
+                reason="known_unsupported_isaac_sim_6_linux_rtx_driver_range",
+                rejected_driver_versions=rejected,
+                unsupported_range={
+                    "min_inclusive": list(ISAAC_SIM_6_UNSUPPORTED_R570_MIN),
+                    "max_exclusive": list(ISAAC_SIM_6_UNSUPPORTED_R570_MAX_EXCLUSIVE),
+                },
+                gpu_inventory=inventory,
+            ),
+            ["isaac_sim_6_rtx_driver_unsupported"],
+        )
+    return (
+        _check(
+            "isaac_rtx_driver_compatibility",
+            "passed_no_known_blocker",
+            isaac_sim_major_version=ISAAC_SIM_MAJOR_VERSION,
+            gpu_inventory=inventory,
+            rendered_frame_still_required=True,
+        ),
+        [],
+    )
 
 
 def _nvidia_smi_check(*, env: Mapping[str, str], required: bool) -> tuple[dict[str, Any], list[str]]:
@@ -54,6 +163,7 @@ def _nvidia_smi_check(*, env: Mapping[str, str], required: bool) -> tuple[dict[s
         env=dict(env),
     )
     success = completed.returncode == 0
+    gpu_inventory = _nvidia_inventory_rows(completed.stdout) if success else []
     blockers = ["nvidia_smi_failed"] if required and not success else []
     return (
         _check(
@@ -64,6 +174,7 @@ def _nvidia_smi_check(*, env: Mapping[str, str], required: bool) -> tuple[dict[s
             exit_code=completed.returncode,
             stdout=completed.stdout.strip()[:2000],
             stderr=completed.stderr.strip()[:2000],
+            gpu_inventory=gpu_inventory,
         ),
         blockers,
     )
@@ -74,7 +185,7 @@ def _isaac_smoke_checks(
     smoke_steps: int,
     require_rtx_render: bool,
     env: Mapping[str, str],  # noqa: ARG001 - retained for parity with MuJoCo preflight
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str], Any | None]:
     checks: list[dict[str, Any]] = []
     blockers: list[str] = []
     try:
@@ -88,7 +199,7 @@ def _isaac_smoke_checks(
                 error=str(exc)[:2000],
             )
         )
-        return checks, ["python_import_isaacsim_failed"]
+        return checks, ["python_import_isaacsim_failed"], None
 
     checks.append(_check("python_import_isaacsim", "passed"))
     renderer = "RayTracedLighting"
@@ -108,20 +219,39 @@ def _isaac_smoke_checks(
                 require_rtx_render=False,
             )
         )
-        return checks, blockers
+        return checks, blockers, None
 
     simulation_app = None
     try:
         simulation_app = SimulationApp({"headless": True, "renderer": renderer})
         import omni.replicator.core as rep  # type: ignore[import-not-found]
 
+        asset_loading_timeout_configured = False
+        try:
+            import carb  # type: ignore[import-not-found]
+
+            carb.settings.get_settings().set(
+                "/exts/omni.replicator.core/maxAssetLoadingTime",
+                RTX_SMOKE_MAX_ASSET_LOADING_SECONDS,
+            )
+            asset_loading_timeout_configured = True
+        except Exception:
+            # Older Isaac carriers may not expose this setting through the
+            # Python module. The rendered-frame gate remains authoritative.
+            pass
+
         camera = rep.create.camera(position=(0, 0, 2), look_at=(0, 0, 0))
-        render_product = rep.create.render_product(camera, (16, 16))
+        render_product = rep.create.render_product(camera, (RTX_SMOKE_WIDTH, RTX_SMOKE_HEIGHT))
         annot = rep.AnnotatorRegistry.get_annotator("rgb")
         annot.attach([render_product])
+        pixels = None
+        steps_executed = 0
         for _ in range(max(1, int(smoke_steps))):
             rep.orchestrator.step()
-        pixels = annot.get_data()
+            steps_executed += 1
+            pixels = annot.get_data()
+            if int(getattr(pixels, "size", 0) or 0) > 0:
+                break
         pixel_count = int(getattr(pixels, "size", 0) or 0)
         if pixel_count <= 0:
             raise RuntimeError("empty_rtx_smoke_frame")
@@ -130,10 +260,14 @@ def _isaac_smoke_checks(
             _check(
                 "rtx_smoke_frame_render",
                 "passed",
-                width=16,
-                height=16,
+                width=RTX_SMOKE_WIDTH,
+                height=RTX_SMOKE_HEIGHT,
                 pixel_count=pixel_count,
                 pixel_shape=shape,
+                max_steps=max(1, int(smoke_steps)),
+                steps_executed=steps_executed,
+                max_asset_loading_time_seconds=RTX_SMOKE_MAX_ASSET_LOADING_SECONDS,
+                asset_loading_timeout_configured=asset_loading_timeout_configured,
             )
         )
     except Exception as exc:
@@ -146,13 +280,10 @@ def _isaac_smoke_checks(
             )
         )
         blockers.append("rtx_smoke_frame_render_failed")
-    finally:
-        if simulation_app is not None:
-            try:
-                simulation_app.close()
-            except Exception:
-                pass
-    return checks, blockers
+    # Do not close here. Isaac's fastShutdown can terminate the Python process from close(), which
+    # previously happened before the caller persisted the preflight JSON. The caller writes first,
+    # then closes the app.
+    return checks, blockers, simulation_app
 
 
 def run_isaac_worker_runtime_preflight(
@@ -175,13 +306,32 @@ def run_isaac_worker_runtime_preflight(
     checks.append(nvidia_check)
     blockers.extend(nvidia_blockers)
 
-    isaac_checks, isaac_blockers = _isaac_smoke_checks(
-        smoke_steps=smoke_steps,
-        require_rtx_render=require_rtx_render,
-        env=runtime_env,
+    driver_check, driver_blockers = _isaac_rtx_driver_check(
+        nvidia_check,
+        required=require_rtx_render and require_nvidia_smi,
     )
-    checks.extend(isaac_checks)
-    blockers.extend(isaac_blockers)
+    checks.append(driver_check)
+    blockers.extend(driver_blockers)
+
+    simulation_app = None
+    if driver_blockers:
+        checks.append(
+            _check(
+                "rtx_smoke_frame_render",
+                "blocked_not_run",
+                reason="isaac_rtx_driver_compatibility_failed",
+                width=RTX_SMOKE_WIDTH,
+                height=RTX_SMOKE_HEIGHT,
+            )
+        )
+    else:
+        isaac_checks, isaac_blockers, simulation_app = _isaac_smoke_checks(
+            smoke_steps=smoke_steps,
+            require_rtx_render=require_rtx_render,
+            env=runtime_env,
+        )
+        checks.extend(isaac_checks)
+        blockers.extend(isaac_blockers)
 
     payload = {
         "schema_version": ISAAC_WORKER_RUNTIME_PREFLIGHT_SCHEMA_VERSION,
@@ -207,6 +357,11 @@ def run_isaac_worker_runtime_preflight(
         "secret_values_in_artifact": False,
     }
     write_json(Path(output_path), payload)
+    if simulation_app is not None:
+        try:
+            simulation_app.close()
+        except Exception:
+            pass
     return payload
 
 

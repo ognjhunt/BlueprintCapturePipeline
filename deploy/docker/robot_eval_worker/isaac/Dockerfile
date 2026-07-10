@@ -33,6 +33,10 @@ COPY src/ src/
 
 RUN python3 -m pip install ".[cloud,validation]"
 
+# Build-time content contract. GPU/CUDA/RTX checks run in the paid startup canary, where a real
+# NVIDIA device is present.
+RUN python3 -m blueprint_pipeline.isaac_worker_image_healthcheck --build-time
+
 RUN groupadd --gid "${APP_GID}" blueprint \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
     && mkdir -p /workspace/outputs /tmp/blueprint_pipeline \

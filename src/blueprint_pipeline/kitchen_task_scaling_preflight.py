@@ -239,6 +239,10 @@ def affordance_object_id_candidates_for_task(task_spec: Mapping[str, Any]) -> li
         return ["knob", "dial", "control", "burner"]
     if task_id == "top_cabinet":
         return ["handle", "pull", "knob"]
+    if task_id == "microwave_door":
+        return ["microwave_handle", "handle", "door"]
+    if task_id == "dishwasher_door":
+        return ["dishwasher_handle", "handle", "door"]
     return []
 
 
@@ -310,6 +314,12 @@ def _both_hands_wrists_visible(geometry: Mapping[str, Any]) -> bool:
     if not isinstance(required, Sequence) or isinstance(required, (str, bytes)):
         required = ["left", "right"]
     roles_by_arm = _roles_by_arm(geometry)
+    if len(required) == 1 and not roles_by_arm:
+        active_roles = geometry.get("arm_roles_in_frame")
+        if isinstance(active_roles, Sequence) and not isinstance(
+            active_roles, (str, bytes)
+        ):
+            roles_by_arm = {str(required[0]): {str(role) for role in active_roles}}
     for arm in required:
         roles = roles_by_arm.get(str(arm), set())
         if not {"hand", "wrist"}.issubset(roles):
@@ -540,7 +550,7 @@ def evaluate_local_task_gates(
             evidence={"path": str(geometry_path), "target_in_frame": geometry.get("target_in_frame")},
         ),
         _gate(
-            "both hands/wrists visible",
+            "required reaching hand/wrist chain visible",
             _both_hands_wrists_visible(geometry),
             evidence={
                 "path": str(geometry_path),
@@ -738,7 +748,7 @@ def build_dry_render_command(
         str(out_dir),
         "--dry-render",
         "--manipulation-reach-arm",
-        "both",
+        "auto",
         "--width",
         "1280",
         "--height",

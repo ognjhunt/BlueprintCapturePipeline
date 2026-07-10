@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dockerfile="$repo_root/deploy/docker/robot_eval_worker/isaac/Dockerfile"
 image_ref="${BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF:-${BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF:-}}"
 platform="${BLUEPRINT_ISAAC_WORKER_PLATFORM:-linux/amd64}"
-base_image="${BLUEPRINT_ISAAC_SIM_BASE_IMAGE:-nvcr.io/nvidia/isaac-sim:6.0.0}"
+base_image="${BLUEPRINT_ISAAC_SIM_BASE_IMAGE:-nvcr.io/nvidia/isaac-sim:6.0.0@sha256:68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d}"
 allow_push="${BLUEPRINT_ALLOW_ISAAC_WORKER_IMAGE_PUSH:-false}"
 manifest_output="${BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_OUTPUT:-$repo_root/output/isaac_worker_image_manifest_diagnostic.json}"
 
@@ -118,8 +118,8 @@ else:
             "total_compressed_size_bytes": total_size,
             "largest_layer_size_bytes": largest_layer,
             "large_image_pull_risk": bool(
-                (total_size is not None and total_size >= 12_000_000_000)
-                or (largest_layer is not None and largest_layer >= 8_000_000_000)
+                (total_size is not None and total_size >= 8_000_000_000)
+                or (largest_layer is not None and largest_layer >= 3_000_000_000)
             ),
             "layers": normalized_layers,
             "proof_boundary": (

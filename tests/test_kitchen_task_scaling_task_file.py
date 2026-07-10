@@ -131,6 +131,7 @@ def test_build_dry_render_command_threads_robot_flags(tmp_path):
     )
     assert "--robot-id" in cmd and cmd[cmd.index("--robot-id") + 1] == "custom_bot"
     assert "--robot-profile-json" in cmd
+    assert cmd[cmd.index("--manipulation-reach-arm") + 1] == "auto"
     # default: no robot flags injected
     cmd2 = build_dry_render_command(
         request_path=tmp_path / "req.json", kitchen_usd=tmp_path / "k.usd", out_dir=tmp_path)

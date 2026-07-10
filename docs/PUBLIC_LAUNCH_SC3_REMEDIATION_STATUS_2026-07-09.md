@@ -13,6 +13,10 @@ The authoritative row-by-row source is the v2 machine ledger:
   maps its authored exit/acceptance block to a criterion ID, exact audit line,
   criterion-text digest, scope, evidence records, command result, freshness,
   binding state, supersession set, and explicit remaining work.
+- The normalized 107-criterion mapping from acceptance-text digest to artifact
+  path/role/support flags and applicable command is locked by its own SHA-256.
+  That regression lock detects an unrelated-file substitution, but remains a
+  control check rather than closure evidence.
 - 91 rows and criteria are `partial`: at least one current, digest-valid,
   non-control remediation artifact exists, but the authored criterion is not
   fully proven and is not commit/release bound.

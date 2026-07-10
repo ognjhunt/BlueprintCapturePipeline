@@ -35,6 +35,7 @@ from typing import Any, Mapping, Sequence
 SCHEMA_VERSION = "gpu_render_providers.v1"
 SECRETS = Path.home() / ".blueprint-secrets"
 RUNPOD_API = "https://rest.runpod.io/v1"
+RUNPOD_GRAPHQL_API = "https://api.runpod.io/graphql"
 
 
 def _read_secret(name: str) -> str | None:
@@ -92,6 +93,10 @@ class RenderLaunchSpec:
     # Vast offer selection (RT-capable GPU under this hourly rate / VRAM floor).
     max_hourly_rate_usd: float = 5.0
     min_gpu_ram_mb: int = 24000
+    # Render capability is separate from CUDA support and VRAM size. Hopper
+    # compute GPUs can be valid model-inference workers without satisfying the
+    # RT-core contract for Isaac RTX review media.
+    requires_rtx: bool = True
 
     @property
     def bootstrap_script(self) -> str:
@@ -165,6 +170,28 @@ def _runpod_call(method: str, path: str, body: dict | None, *, key: str, timeout
         return 0, {"error": repr(e)[:300]}
 
 
+def _runpod_graphql_call(query: str, *, key: str, timeout: int = 60):
+    """Execute a read-only RunPod GraphQL query without recording the API key."""
+    request = urllib.request.Request(
+        RUNPOD_GRAPHQL_API,
+        data=json.dumps({"query": query}).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "User-Agent": "BlueprintCapturePipeline/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            return response.status, json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as exc:
+        return exc.code, {"error": "runpod_graphql_http_error"}
+    except Exception as exc:  # noqa: BLE001
+        return 0, {"error": type(exc).__name__}
+
+
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
@@ -177,6 +204,21 @@ def _string_list(value: Any) -> list[str]:
 
 def _runpod_render_prelaunch_guard_blockers(request: Mapping[str, Any]) -> list[str]:
     return _render_prelaunch_guard_blockers(request, provider_name="runpod")
+
+
+def _runpod_create_capacity_unavailable(status: int, response: Any) -> bool:
+    if int(status or 0) not in {409, 429, 500, 503}:
+        return False
+    error = str(_mapping(response).get("error") or "").lower()
+    return any(
+        marker in error
+        for marker in (
+            "does not have the resources to deploy your pod",
+            "no available machine",
+            "insufficient capacity",
+            "capacity unavailable",
+        )
+    )
 
 
 def _render_prelaunch_guard_blockers(
@@ -210,6 +252,109 @@ class RunPodRenderProvider(GpuRenderProvider):
         return {"provider": self.name, "available": bool(key),
                 "reason": None if key else "runpod_api_key_missing"}
 
+    def capacity_preflight(self, request: Mapping[str, Any] | None = None) -> dict:
+        """Read-only Secure Cloud RTX stock and price probe."""
+
+        key = self._key()
+        if not key:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "blockers": ["runpod_api_key_missing"],
+            }
+        req = _mapping(request)
+        requested_types = tuple(
+            _string_list(req.get("gpuTypeIds")) or _runpod_gpu_types_from_env()
+        )
+        min_gpu_ram_mb = _positive_int(req.get("min_gpu_ram_mb")) or 0
+        requires_rtx = req.get("requires_rtx") is not False
+        query = """
+        query BlueprintRenderCapacity {
+          gpuTypes {
+            id
+            displayName
+            memoryInGb
+            secureCloud
+            lowestPrice(input: {gpuCount: 1, secureCloud: true}) {
+              stockStatus
+              uninterruptablePrice
+              availableGpuCounts
+            }
+          }
+        }
+        """
+        status, payload = _runpod_graphql_call(query, key=key, timeout=60)
+        data = _mapping(_mapping(payload).get("data"))
+        rows = [
+            dict(row)
+            for row in data.get("gpuTypes", [])
+            if isinstance(row, Mapping)
+        ]
+        if status != 200 or not rows or _mapping(payload).get("errors"):
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "blockers": ["runpod_capacity_probe_failed"],
+                "http": status,
+                "requested_gpu_types": list(requested_types),
+                "raw_provider_response_recorded": False,
+            }
+        by_id = {str(row.get("id") or ""): row for row in rows}
+        considered: list[dict[str, Any]] = []
+        viable: list[dict[str, Any]] = []
+        for gpu_type in requested_types:
+            row = _mapping(by_id.get(gpu_type))
+            price = _mapping(row.get("lowestPrice"))
+            memory_gb = _positive_int(row.get("memoryInGb")) or 0
+            stock = str(price.get("stockStatus") or "None")
+            counts = [
+                int(value)
+                for value in (price.get("availableGpuCounts") or [])
+                if isinstance(value, int) and not isinstance(value, bool)
+            ]
+            record = {
+                "gpu_type_id": gpu_type,
+                "display_name": row.get("displayName"),
+                "memory_in_gb": memory_gb or None,
+                "secure_cloud": row.get("secureCloud") is True,
+                "stock_status": stock,
+                "available_gpu_counts": counts,
+                "on_demand_price_usd_per_hour": price.get("uninterruptablePrice"),
+                "rtx_required": requires_rtx,
+            }
+            blockers: list[str] = []
+            if not row:
+                blockers.append("gpu_type_not_listed")
+            if row.get("secureCloud") is not True:
+                blockers.append("secure_cloud_unavailable")
+            if min_gpu_ram_mb and memory_gb * 1000 < min_gpu_ram_mb:
+                blockers.append("below_min_gpu_ram")
+            if requires_rtx and gpu_type not in DEFAULT_RUNPOD_RENDER_GPU_TYPES:
+                blockers.append("rtx_render_capability_unregistered")
+            if stock.lower() == "none" or (counts and 1 not in counts):
+                blockers.append("single_gpu_stock_unavailable")
+            if _positive_float(price.get("uninterruptablePrice")) is None:
+                blockers.append("on_demand_price_missing")
+            record["blockers"] = blockers
+            if not blockers:
+                viable.append(record)
+            considered.append(record)
+        return {
+            "status": "available" if viable else "blocked",
+            "provider": self.name,
+            "blockers": [] if viable else ["runpod_secure_rtx_capacity_unavailable"],
+            "requested_gpu_types": list(requested_types),
+            "min_gpu_ram_mb": min_gpu_ram_mb,
+            "requires_rtx": requires_rtx,
+            "viable_gpu_types": viable,
+            "considered_gpu_types": considered,
+            "raw_provider_response_recorded": False,
+            "claim_boundary": (
+                "This is a read-only Secure Cloud stock/price snapshot. It does not "
+                "reserve capacity or prove pod creation, image startup, or rendering."
+            ),
+        }
+
     def build_request(self, spec: RenderLaunchSpec, job_dir: Path) -> dict:
         return {
             "name": spec.name, "imageName": spec.image,
@@ -242,11 +387,16 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard"))
                 or None,
             }
+        launch_request = dict(request)
+        # Internal admission/cleanup evidence is consumed locally and is not
+        # part of RunPod's public Pod request schema.
+        launch_request.pop("prelaunch_spend_guard", None)
+        launch_request.pop("pending_teardown_record", None)
         attempts: list[dict] = []
         if not cold and self.warm_candidates:
-            upd = {k: request[k] for k in (
+            upd = {k: launch_request[k] for k in (
                 "imageName", "containerDiskInGb", "volumeInGb", "volumeMountPath",
-                "env", "dockerEntrypoint", "dockerStartCmd") if k in request}
+                "env", "dockerEntrypoint", "dockerStartCmd") if k in launch_request}
             for pid in self.warm_candidates:
                 attempt: dict = {"pod_id": pid}
                 s, get_body = _runpod_call("GET", f"/pods/{pid}", None, key=key)
@@ -283,7 +433,7 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "blockers": ["warm_restart_failed_cold_fallback_disabled"],
                 "attempts": attempts,
             }
-        s, r = _runpod_call("POST", "/pods", request, key=key)
+        s, r = _runpod_call("POST", "/pods", launch_request, key=key)
         pid = r.get("id") if isinstance(r, dict) else None
         attempts.append({"cold_create_status": s, "pod_id": pid,
                          "error": r.get("error") if isinstance(r, dict) else None})
@@ -291,7 +441,10 @@ class RunPodRenderProvider(GpuRenderProvider):
             (job_dir / "started_pod_id.txt").write_text(pid)
             return {"status": "launched", "instance_id": pid,
                     "mode": "cold_create", "attempts": attempts}
-        return {"status": "blocked", "blockers": ["no_pod_started"], "attempts": attempts}
+        blockers = ["no_pod_started"]
+        if _runpod_create_capacity_unavailable(s, r):
+            blockers.insert(0, "runpod_secure_cloud_create_capacity_unavailable")
+        return {"status": "blocked", "blockers": blockers, "attempts": attempts}
 
     def stop(self, instance_id: str) -> dict:
         key = self._key()
@@ -523,6 +676,14 @@ DO_GPU_SIZE_VRAM_MB = {
     "gpu-h100x1-80gb": 80000,
     "gpu-h200x1-141gb": 141000,
 }
+DO_GPU_SIZE_RTX_CAPABLE = {
+    "gpu-4000adax1-20gb": True,
+    "gpu-l40sx1-48gb": True,
+    "gpu-6000adax1-48gb": True,
+    "gpu-mi300x1-192gb": False,
+    "gpu-h100x1-80gb": False,
+    "gpu-h200x1-141gb": False,
+}
 DEFAULT_DO_MAX_HOURLY_RATE_USD = 1.75
 DO_GPU_SIZE_CANDIDATES_ENV = "BLUEPRINT_DO_GPU_SIZES"
 DO_GPU_REGION_CANDIDATES_ENV = "BLUEPRINT_DO_GPU_REGIONS"
@@ -747,6 +908,43 @@ def _filter_do_size_candidates_by_gpu_ram(
     }
 
 
+def _filter_do_size_candidates_by_render_capability(
+    size_candidates: Sequence[str],
+    request: Mapping[str, Any] | None = None,
+) -> tuple[list[str], dict]:
+    req = _mapping(request)
+    requires_rtx = req.get("requires_rtx") is not False
+    if not requires_rtx:
+        allowed = list(size_candidates)
+        return allowed, {
+            "requires_rtx": False,
+            "allowed_size_candidates": allowed,
+            "rejected_size_candidates": [],
+        }
+    allowed: list[str] = []
+    rejected: list[dict] = []
+    for size in size_candidates:
+        if DO_GPU_SIZE_RTX_CAPABLE.get(size) is True:
+            allowed.append(size)
+        else:
+            rejected.append(
+                {
+                    "size": size,
+                    "rtx_capable": DO_GPU_SIZE_RTX_CAPABLE.get(size),
+                    "reason": "rtx_render_capability_missing",
+                }
+            )
+    return allowed, {
+        "requires_rtx": True,
+        "allowed_size_candidates": allowed,
+        "rejected_size_candidates": rejected,
+        "claim_boundary": (
+            "RTX capability is a render-lane requirement, separate from CUDA model "
+            "inference support and GPU memory capacity."
+        ),
+    }
+
+
 def _do_size_region_unavailable(body: dict) -> bool:
     text = json.dumps(body, sort_keys=True).lower() if isinstance(body, dict) else ""
     return "size is not available in this region" in text
@@ -863,6 +1061,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             "_blueprint_bootstrap_argv": list(spec.bootstrap_argv),
             "_blueprint_entrypoint": list(spec.entrypoint),
             "min_gpu_ram_mb": int(spec.min_gpu_ram_mb),
+            "requires_rtx": bool(spec.requires_rtx),
             "tags": ["blueprint-isaac-render"],
             "ipv6": False,
             "monitoring": False,
@@ -896,17 +1095,23 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             size_candidates,
             req,
         )
+        size_candidates, render_capability_policy = (
+            _filter_do_size_candidates_by_render_capability(size_candidates, req)
+        )
         region_candidates = _do_region_candidates(initial_region)
         if not size_candidates:
             blockers = ["digitalocean_gpu_size_below_min_vram"]
             if budget_policy.get("allowed_size_candidates") == []:
                 blockers = ["digitalocean_gpu_size_over_budget"]
+            elif gpu_ram_policy.get("allowed_size_candidates"):
+                blockers = ["digitalocean_gpu_size_not_rtx_capable"]
             return {
                 "status": "blocked",
                 "provider": self.name,
                 "blockers": blockers,
                 "budget_policy": budget_policy,
                 "gpu_ram_policy": gpu_ram_policy,
+                "render_capability_policy": render_capability_policy,
                 "size_candidates": [],
                 "region_candidates": region_candidates,
                 "raw_provider_response_recorded": False,
@@ -920,6 +1125,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                 "http": status,
                 "budget_policy": budget_policy,
                 "gpu_ram_policy": gpu_ram_policy,
+                "render_capability_policy": render_capability_policy,
                 "size_candidates": size_candidates,
                 "region_candidates": region_candidates,
                 "raw_provider_response_recorded": False,
@@ -961,6 +1167,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                 "blockers": [],
                 "budget_policy": budget_policy,
                 "gpu_ram_policy": gpu_ram_policy,
+                "render_capability_policy": render_capability_policy,
                 "size_candidates": size_candidates,
                 "region_candidates": region_candidates,
                 "viable_size_regions": viable,
@@ -978,6 +1185,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             "blockers": ["digitalocean_gpu_size_region_unavailable"],
             "budget_policy": budget_policy,
             "gpu_ram_policy": gpu_ram_policy,
+            "render_capability_policy": render_capability_policy,
             "size_candidates": size_candidates,
             "region_candidates": region_candidates,
             "considered_size_regions": considered,
@@ -1018,12 +1226,14 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         entrypoint = launch_request.pop("_blueprint_entrypoint", None)
         min_gpu_ram_mb = _requested_do_min_gpu_ram_mb(launch_request)
         launch_request.pop("min_gpu_ram_mb", None)
+        requires_rtx = launch_request.pop("requires_rtx", True) is not False
         budget_request = {
             "max_hourly_rate_usd": launch_request.pop("max_hourly_rate_usd", None)
         }
         size_filter_request = {
             **budget_request,
             "min_gpu_ram_mb": min_gpu_ram_mb,
+            "requires_rtx": requires_rtx,
         }
         if (
             isinstance(worker_env, dict)
@@ -1066,15 +1276,24 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             size_candidates,
             size_filter_request,
         )
+        size_candidates, render_capability_policy = (
+            _filter_do_size_candidates_by_render_capability(
+                size_candidates,
+                size_filter_request,
+            )
+        )
         if not size_candidates:
             blockers = ["digitalocean_gpu_size_below_min_vram"]
             if budget_policy.get("allowed_size_candidates") == []:
                 blockers = ["digitalocean_gpu_size_over_budget"]
+            elif gpu_ram_policy.get("allowed_size_candidates"):
+                blockers = ["digitalocean_gpu_size_not_rtx_capable"]
             return {
                 "status": "blocked",
                 "blockers": blockers,
                 "budget_policy": budget_policy,
                 "gpu_ram_policy": gpu_ram_policy,
+                "render_capability_policy": render_capability_policy,
                 "ssh_key_configuration": ssh_key_detail,
             }
         for size in size_candidates:
@@ -1097,6 +1316,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                         "ssh_key_configuration": ssh_key_detail,
                         "budget_policy": budget_policy,
                         "gpu_ram_policy": gpu_ram_policy,
+                        "render_capability_policy": render_capability_policy,
                         "attempts": create_attempts,
                     }
                 attempt = {
@@ -1117,6 +1337,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                         "attempts": create_attempts,
                         "budget_policy": budget_policy,
                         "gpu_ram_policy": gpu_ram_policy,
+                        "render_capability_policy": render_capability_policy,
                         "ssh_key_configuration": ssh_key_detail,
                     }
         return {
@@ -1125,6 +1346,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             "attempts": create_attempts,
             "budget_policy": budget_policy,
             "gpu_ram_policy": gpu_ram_policy,
+            "render_capability_policy": render_capability_policy,
             "ssh_key_configuration": ssh_key_detail,
         }
 
