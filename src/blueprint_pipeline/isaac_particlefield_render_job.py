@@ -472,6 +472,7 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
                       stop_on_success: bool = True,
                       preserve_instance: bool = False,
                       keep_running: bool = False,
+                      preserve_blocked_instance: bool = True,
                       progress_timeout_seconds: int = 0,
                       progress_stall_phases: Sequence[str] | None = None) -> dict:
     """Poll the heartbeat-uploaded output (provider-neutral signed GET url), then stop the
@@ -582,10 +583,23 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
     timed_out_without_runner_done = not done
     provider_name = str(getattr(provider, "name", "") or "").strip().lower()
     stop_releases_compute = provider_name != "digitalocean"
+    provider_snapshot_before_teardown: dict[str, Any] = {}
+    if hasattr(provider, "inspect"):
+        try:
+            snapshot = provider.inspect(instance_id)
+            if isinstance(snapshot, Mapping):
+                provider_snapshot_before_teardown = dict(snapshot)
+        except Exception as exc:  # noqa: BLE001 - teardown remains authoritative
+            provider_snapshot_before_teardown = {
+                "status": "unavailable",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
     should_preserve_for_warm_reuse = bool(
         done
         and runner_done_observed
         and not done_from_final_result_without_runner_done
+        and (completed or preserve_blocked_instance)
         and stop_releases_compute
         and (preserve_instance or (stop_on_success and runner_started))
         and hasattr(provider, "stop")
@@ -637,6 +651,7 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             "runner_done_observed": runner_done_observed,
             "runner_timeout_observed": runner_timeout_observed,
             "final_result_without_runner_done": done_from_final_result_without_runner_done,
+            "provider_snapshot_before_teardown": provider_snapshot_before_teardown,
             "elapsed_seconds": round(time.time() - t0, 1)}
 
 

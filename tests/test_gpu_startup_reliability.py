@@ -4,7 +4,7 @@ Covers the three levers wired on 2026-07-02 (no network, no GPU, no secrets):
 
 1. same-provider cold-create racing (``resolve_cold_race_contenders`` +
    ``_ColdCreateContender`` + ``race_launch`` with same-name contenders),
-2. the earlier no-runtime dud guard defaulting on (600s),
+2. the image-aware no-runtime guard defaulting on (900s before a manifest floor),
 3. the warm serve worker control plane (``scripts/run_warm_render_worker.py``)
    and gpu_spend_guard's expected-serve-pod tagging.
 """
@@ -29,7 +29,7 @@ from scripts import run_warm_render_worker as worker
 def test_resolve_cold_race_contenders_default_env_clamp(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(J.COLD_RACE_CONTENDERS_ENV, raising=False)
     assert J.resolve_cold_race_contenders() == J.DEFAULT_COLD_RACE_CONTENDERS
-    assert J.DEFAULT_COLD_RACE_CONTENDERS == 2
+    assert J.DEFAULT_COLD_RACE_CONTENDERS == 1
 
     assert J.resolve_cold_race_contenders(1) == 1        # explicit disable
     assert J.resolve_cold_race_contenders(0) == 1        # floor
@@ -106,10 +106,10 @@ def test_same_provider_race_keeps_first_boot_and_terminates_loser(tmp_path: Path
     assert outcomes["pod-dud"] in ("no_boot", "aborted")
 
 
-def test_paid_single_provider_job_races_two_cold_creates_by_default(
+def test_paid_single_provider_job_can_opt_in_to_two_cold_creates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end through run_isaac_g1_kitchen_parity_job: default cold_race_contenders=2
+    """End-to-end through run_isaac_g1_kitchen_parity_job: explicit cold_race_contenders=2
     launches two contenders on the one provider, keeps the marker winner, terminates the
     dud, and collects from the winner's contender dir."""
     monkeypatch.delenv(J.COLD_RACE_CONTENDERS_ENV, raising=False)
@@ -184,6 +184,8 @@ def test_paid_single_provider_job_races_two_cold_creates_by_default(
         provider="runpod",
         allow_paid=True,
         allow_dirty_paid_launch=True,
+        max_spend_usd=20.0,
+        cold_race_contenders=2,
         # keeps race_launch's poll_interval (min(15, marker_timeout)) at 1s so the losing
         # contender's abort check fires immediately — hermetic-fast, same code path
         marker_timeout=1,
@@ -209,9 +211,9 @@ def test_job_signature_defaults_enable_race_and_no_runtime_guard() -> None:
     assert (
         sig.parameters["startup_no_runtime_timeout"].default
         == J.DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS
-        == 600
+        == 900
     )
-    # None -> resolve_cold_race_contenders() -> default 2 (env-overridable)
+    # None -> resolve_cold_race_contenders() -> one-resource default (env-overridable).
     assert sig.parameters["cold_race_contenders"].default is None
 
 

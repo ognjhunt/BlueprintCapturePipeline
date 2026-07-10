@@ -68,6 +68,41 @@ def test_default_provider_is_digitalocean_for_isaac_review_lane_only() -> None:
     assert J._provider_names("runpod,vast") == ["runpod", "vast"]
 
 
+def test_image_manifest_floor_prevents_premature_large_pull_teardown() -> None:
+    policy = J._effective_startup_no_runtime_timeout(
+        600,
+        {"recommended_startup_no_runtime_timeout_seconds": 1446},
+    )
+    assert policy["effective_seconds"] == 1446
+    assert policy["raised_to_image_manifest_floor"] is True
+
+    disabled = J._effective_startup_no_runtime_timeout(
+        0,
+        {"recommended_startup_no_runtime_timeout_seconds": 1446},
+    )
+    assert disabled["effective_seconds"] == 0
+    assert disabled["disabled"] is True
+
+
+def test_prelaunch_spend_guard_budgets_all_sequential_startup_attempts() -> None:
+    guard = J._isaac_g1_prelaunch_spend_guard(
+        allow_paid=True,
+        provider_name="runpod",
+        max_spend_usd=2.0,
+        max_seconds=3600,
+        max_hourly_rate_usd=1.0,
+        contender_count=1,
+        marker_timeout_seconds=1500,
+        startup_no_runtime_timeout_seconds=1200,
+        max_attempts=3,
+    )
+    assert guard["startup_budget_seconds"] == 3600
+    assert guard["render_budget_seconds"] == 3600
+    assert guard["billable_budget_seconds"] == 7200
+    assert guard["estimated_max_spend_usd"] == 2.0
+    assert guard["can_launch"] is True
+
+
 def test_cli_persists_manifest_even_when_blocked(monkeypatch, tmp_path: Path) -> None:
     scenarios_path = tmp_path / "scenarios.json"
     out_dir = tmp_path / "out"
@@ -399,12 +434,18 @@ def test_docker_start_cmd_can_run_image_startup_canary() -> None:
     body = dsc[1]
     assert "container_bash_started" in body
     assert "parity_image_startup_canary.py" in body
-    assert "isaac_g1_parity_image_startup_canary.v1" in body
+    assert "isaac_g1_parity_image_startup_canary.v2" in body
+    assert "blueprint_pipeline.isaac_worker_runtime_preflight" in body
+    assert "split_isaac_carrier_plus_signed_blueprint_bundle" in body
+    assert "BLUEPRINT_EVAL_MANIFEST_URI" in body
+    assert "canary_bundle" in body
+    assert "--require-nvidia-smi" in body
+    assert "--require-rtx-render" in body
     assert "python3 /workspace/parity_image_startup_canary.py" in body
     assert "python /workspace/parity_image_startup_canary.py" in body
     assert "/isaac-sim/python.sh /workspace/parity_image_startup_canary.py" in body
     assert "run_isaac_g1_kitchen_parity_eval.py" not in body
-    assert 'mark("runner_done", rc=0, image_startup_canary=True)' in body
+    assert 'mark("runner_done", rc=preflight_rc, image_startup_canary=True' in body
 
 
 def test_build_launch_spec_carries_policy_and_signed_urls(tmp_path: Path) -> None:
@@ -570,7 +611,6 @@ def test_manipulation_cam_flag_threads_env_and_bootstrap(tmp_path: Path) -> None
     assert on.env["PARITY_MANIPULATION_CAM"] == "1"
     body = J.docker_start_cmd()[1]
     assert 'PARITY_MANIPULATION_CAM' in body and '--manipulation-cam' in body
-
     reach = J.build_launch_spec(
         jd,
         image="img:tag",
@@ -581,6 +621,25 @@ def test_manipulation_cam_flag_threads_env_and_bootstrap(tmp_path: Path) -> None
     assert reach.env["PARITY_MANIPULATION_REACH"] == "1"
     assert reach.env["PARITY_MANIPULATION_REACH_ARM"] == "auto"
     assert 'PARITY_MANIPULATION_REACH_ARM' in body and '--manipulation-reach-arm' in body
+
+
+def test_negative_manipulation_look_at_is_serialized_as_attached_option(tmp_path: Path) -> None:
+    jd = tmp_path / "object_store_real_run"
+    jd.mkdir()
+    (jd / "provider_bundle_url.txt").write_text("https://spaces.example/bundle.zip?sig=A")
+    (jd / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
+    spec = J.build_launch_spec(
+        jd,
+        image="img:tag",
+        policy_id="p",
+        steps=8,
+        manipulation_look_at="-1.591312,1.471274,1.241574",
+    )
+
+    assert spec.env["PARITY_MANIPULATION_LOOK_AT"] == "-1.591312,1.471274,1.241574"
+    body = J.docker_start_cmd()[1]
+    assert '"--manipulation-look-at=" + os.environ["PARITY_MANIPULATION_LOOK_AT"]' in body
+    assert '["--manipulation-look-at", os.environ["PARITY_MANIPULATION_LOOK_AT"]]' not in body
 
 
 def test_dynamic_episode_termination_threads_env_and_bootstrap(tmp_path: Path) -> None:
@@ -1030,11 +1089,13 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
         }
 
     def _fake_watch(job_dir, render_out, instance_id, *, provider=None, max_seconds=0,
-                    preserve_instance=False, progress_timeout_seconds=0):
+                    preserve_instance=False, preserve_blocked_instance=True,
+                    progress_timeout_seconds=0):
         captured["collect_job_dir"] = Path(job_dir)
         captured["collect_provider"] = provider.name
         captured["collect_instance_id"] = instance_id
         captured["progress_timeout_seconds"] = progress_timeout_seconds
+        captured["preserve_blocked_instance"] = preserve_blocked_instance
         return {
             "status": "completed",
             "elapsed_seconds": 1,
@@ -1057,6 +1118,7 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
         provider="runpod,vast",
         allow_paid=True,
         allow_dirty_paid_launch=True,
+        max_spend_usd=20.0,
     )
 
     assert m["status"] == "completed"
@@ -1214,7 +1276,8 @@ def test_paid_digitalocean_capacity_preflight_blocks_before_staging(
         def available(self):
             return {"provider": self.name, "available": True, "reason": None}
 
-        def capacity_preflight(self):
+        def capacity_preflight(self, request=None):
+            assert request == {"min_gpu_ram_mb": 48000, "requires_rtx": True}
             return {
                 "status": "blocked",
                 "provider": self.name,
@@ -1562,7 +1625,7 @@ def test_paid_image_startup_canary_bypasses_large_image_block_without_harness(
             "last_bootstrap": {"phase": "runner_done", "image_startup_canary": True},
             "timed_out_without_runner_done": False,
             "runner_result": {
-                "schema_version": "isaac_g1_parity_image_startup_canary.v1",
+                "schema_version": "isaac_g1_parity_image_startup_canary.v2",
                 "status": "completed",
                 "image_startup_canary": True,
             },
@@ -1956,6 +2019,38 @@ def test_launch_with_marker_retry_reports_provider_capacity_before_instance(
     assert trace["blockers"] == res["blockers"]
 
 
+def test_launch_with_marker_retry_reports_runpod_create_capacity_before_instance(
+    tmp_path: Path,
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+
+    class _CapacityBlockedProvider:
+        name = "runpod"
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            return {
+                "status": "blocked",
+                "blockers": [
+                    "runpod_secure_cloud_create_capacity_unavailable",
+                    "no_pod_started",
+                ],
+            }
+
+    res = J.launch_with_marker_retry(
+        _CapacityBlockedProvider(),
+        jd,
+        {"img": "x"},
+        max_attempts=1,
+    )
+
+    assert res["status"] == "blocked"
+    assert res["blockers"] == [
+        "runpod_secure_cloud_create_capacity_unavailable",
+        "provider_capacity_unavailable_before_instance_created",
+    ]
+
+
 def test_launch_with_marker_retry_blocks_prelaunch_guard_before_launch(
     tmp_path: Path,
 ) -> None:
@@ -2193,6 +2288,69 @@ def test_launch_with_marker_retry_terminates_pre_runtime_stall(
     trace = json.loads((jd / J.LAUNCH_ATTEMPT_TRACE_FILENAME).read_text(encoding="utf-8"))
     assert "provider_startup_no_runtime_timeout" in trace["blockers"]
     assert trace["attempts"][0]["result"] == "startup_no_runtime_timeout_terminated"
+
+
+def test_launch_with_marker_retry_quarantines_repeated_bad_machine_without_second_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+
+    class _RepeatedMachineProvider:
+        name = "runpod"
+
+        def __init__(self) -> None:
+            self.launch_count = 0
+            self.terminated: list[str] = []
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            instance_id = f"pod{self.launch_count}"
+            self.launch_count += 1
+            return {"status": "launched", "instance_id": instance_id, "mode": "cold_create"}
+
+        def inspect(self, instance_id):
+            return {
+                "status": "observed",
+                "http": 200,
+                "instance_id": instance_id,
+                "desiredStatus": "RUNNING",
+                "runtime_present": False,
+                "public_ip_present": False,
+                "machineId": "machine-repeated",
+                "raw_provider_response_recorded": False,
+            }
+
+        def terminate(self, instance_id):
+            self.terminated.append(instance_id)
+            return {"status": "terminated", "http": 204}
+
+    provider = _RepeatedMachineProvider()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(J.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(J.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(J.urllib.request, "urlopen", _make_fake_provider()(marker=False).urlopen)
+
+    res = J.launch_with_marker_retry(
+        provider,
+        jd,
+        {"env": {}},
+        max_attempts=2,
+        marker_timeout=100,
+        startup_no_runtime_timeout=3,
+        poll=1,
+    )
+
+    assert res["status"] == "blocked"
+    assert provider.terminated == ["pod0", "pod1"]
+    assert res["attempts"][0]["elapsed_seconds"] == 3.0
+    assert res["attempts"][1]["elapsed_seconds"] == 1.0
+    assert res["attempts"][1]["result"] == "quarantined_machine_terminated"
+    assert res["attempts"][1]["quarantined_machine_snapshot"]["machineId"] == "machine-repeated"
+    assert "provider_repeated_quarantined_machine" in res["blockers"]
+    trace = json.loads((jd / J.LAUNCH_ATTEMPT_TRACE_FILENAME).read_text(encoding="utf-8"))
+    assert trace["quarantined_machine_ids"] == ["machine-repeated"]
 
 
 def test_launch_with_marker_retry_ignores_stale_bootstrap_marker(tmp_path: Path, monkeypatch) -> None:

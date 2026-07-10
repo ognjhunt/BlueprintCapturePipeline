@@ -1,0 +1,147 @@
+{
+  "schema_version": "kitchen_unitree_g1_task_registry.v1",
+  "tasks": [
+    {
+      "task_id": "dishwasher_door",
+      "scenario_id": "lightwheel_kitchen_task_dishwasher_door",
+      "description": "Stand at Dishwasher054 and open the dishwasher door.",
+      "required_target_terms": ["dishwasher", "door", "handle"],
+      "zone": "lower_front_manipulation",
+      "target_object_ids": ["dishwasher", "Dishwasher054"],
+      "affordance_object_ids": ["dishwasher_handle", "handle", "door"],
+      "policy_contract": {
+        "locomotion_provider": "unitree_g1_policy",
+        "manipulation_provider": "unitree_groot_n17_sonic_policy",
+        "action_command": "UNITREE_G1_SONIC",
+        "controller_fk_bridge_required": true
+      },
+      "completion_contract": {
+        "task_kind": "manipulation",
+        "registered_criteria": [
+          {
+            "criterion_id": "dishwasher_door_open_angle",
+            "observable_transition": "articulation_angle_rad",
+            "comparison": "increase_at_least",
+            "tolerance": 0.35,
+            "unit": "rad"
+          }
+        ]
+      }
+    },
+    {
+      "task_id": "microwave_door",
+      "scenario_id": "lightwheel_kitchen_task_microwave_door",
+      "description": "Stand at the microwave and open the microwave door.",
+      "required_target_terms": ["microwave", "door", "handle"],
+      "zone": "upper_appliance_manipulation",
+      "target_object_ids": ["microwave"],
+      "affordance_object_ids": ["microwave_handle", "handle", "door"],
+      "policy_contract": {
+        "locomotion_provider": "unitree_g1_policy",
+        "manipulation_provider": "unitree_groot_n17_sonic_policy",
+        "action_command": "UNITREE_G1_SONIC",
+        "controller_fk_bridge_required": true
+      },
+      "completion_contract": {
+        "task_kind": "manipulation",
+        "registered_criteria": [
+          {
+            "criterion_id": "microwave_door_open_angle",
+            "observable_transition": "articulation_angle_rad",
+            "comparison": "increase_at_least",
+            "tolerance": 0.35,
+            "unit": "rad"
+          }
+        ]
+      }
+    },
+    {
+      "task_id": "sink_faucet",
+      "scenario_id": "lightwheel_kitchen_task_01_sink_faucet",
+      "description": "Stand at the kitchen sink and turn on the faucet.",
+      "required_target_terms": ["faucet", "sink"],
+      "zone": "lower_front_manipulation",
+      "preferred_stance_distance_m": 0.24,
+      "stance_distance_candidates_m": [0.16, 0.18, 0.22, 0.24, 0.27, 0.3, 0.32, 0.38, 0.45, 0.55],
+      "target_object_ids": ["sink", "basin"],
+      "affordance_object_ids": ["handle", "lever", "mixer", "faucet", "tap"],
+      "policy_contract": {
+        "locomotion_provider": "unitree_g1_policy",
+        "manipulation_provider": "unitree_groot_n17_sonic_policy",
+        "action_command": "UNITREE_G1_SONIC",
+        "controller_fk_bridge_required": true
+      },
+      "completion_contract": {
+        "task_kind": "manipulation",
+        "registered_criteria": [
+          {
+            "criterion_id": "faucet_on_state",
+            "observable_transition": "faucet_state",
+            "comparison": "at_or_above",
+            "target_value": 1.0,
+            "tolerance": 0.05,
+            "unit": "normalized_state"
+          }
+        ]
+      }
+    },
+    {
+      "task_id": "stovetop_knob",
+      "scenario_id": "lightwheel_kitchen_task_02_stovetop_knob",
+      "description": "Stand at the stovetop and turn a front burner knob.",
+      "required_target_terms": ["knob", "stovetop", "stove", "burner"],
+      "zone": "side_appliance_manipulation",
+      "preferred_stance_distance_m": 0.24,
+      "stance_distance_candidates_m": [0.16, 0.18, 0.22, 0.24, 0.27, 0.3, 0.32, 0.38, 0.45, 0.55],
+      "target_object_ids": ["stovetop", "cooktop", "stove", "range"],
+      "affordance_object_ids": ["knob", "dial", "control", "burner"],
+      "policy_contract": {
+        "locomotion_provider": "unitree_g1_policy",
+        "manipulation_provider": "unitree_groot_n17_sonic_policy",
+        "action_command": "UNITREE_G1_SONIC",
+        "controller_fk_bridge_required": true
+      },
+      "completion_contract": {
+        "task_kind": "manipulation",
+        "registered_criteria": [
+          {
+            "criterion_id": "burner_knob_rotation",
+            "observable_transition": "articulation_angle_rad",
+            "comparison": "absolute_change_at_least",
+            "tolerance": 0.25,
+            "unit": "rad"
+          }
+        ]
+      }
+    },
+    {
+      "task_id": "top_cabinet",
+      "scenario_id": "lightwheel_kitchen_task_03_top_cabinet",
+      "description": "Stand at the upper kitchen cabinet and open the cabinet door by its handle.",
+      "required_target_terms": ["cabinet", "handle", "knob"],
+      "zone": "high_reach_manipulation",
+      "preferred_stance_distance_m": 0.55,
+      "stance_distance_candidates_m": [0.38, 0.45, 0.55, 0.65, 0.75, 0.9],
+      "target_object_ids": ["topcabinet", "top_cabinet", "upper cabinet", "cabinet"],
+      "affordance_object_ids": ["handle", "pull", "knob"],
+      "policy_contract": {
+        "locomotion_provider": "unitree_g1_policy",
+        "manipulation_provider": "unitree_groot_n17_sonic_policy",
+        "action_command": "UNITREE_G1_SONIC",
+        "controller_fk_bridge_required": true
+      },
+      "completion_contract": {
+        "task_kind": "manipulation",
+        "registered_criteria": [
+          {
+            "criterion_id": "cabinet_door_open_angle",
+            "observable_transition": "articulation_angle_rad",
+            "comparison": "increase_at_least",
+            "tolerance": 0.3,
+            "unit": "rad"
+          }
+        ]
+      }
+    }
+  ]
+}

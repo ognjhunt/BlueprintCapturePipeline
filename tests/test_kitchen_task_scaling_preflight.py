@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from blueprint_pipeline.kitchen_task_scaling_preflight import (
+    _both_hands_wrists_visible,
     affordance_object_id_candidates_for_task,
     export_all_policy_observations_from_preflight,
     build_request,
@@ -14,6 +15,23 @@ from blueprint_pipeline.kitchen_task_scaling_preflight import (
     run_preflight,
     target_object_id_candidates_for_task,
 )
+
+
+def test_single_auto_selected_arm_uses_flat_geometry_role_evidence() -> None:
+    assert _both_hands_wrists_visible(
+        {
+            "required_arms": ["left"],
+            "reach_arm": "left",
+            "arm_roles_in_frame": ["hand", "wrist"],
+        }
+    ) is True
+    assert _both_hands_wrists_visible(
+        {
+            "required_arms": ["left"],
+            "reach_arm": "left",
+            "arm_roles_in_frame": ["hand"],
+        }
+    ) is False
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -546,6 +564,12 @@ def test_target_object_candidates_separate_fixture_from_affordance() -> None:
     assert affordance_candidates.index("handle") < affordance_candidates.index("spout")
     assert top_cabinet_fixture_candidates[0] == "topcabinet"
     assert top_cabinet_fixture_candidates.index("topcabinet") < top_cabinet_fixture_candidates.index("cabinet")
+    assert affordance_object_id_candidates_for_task(
+        {"task_id": "microwave_door"}
+    ) == ["microwave_handle", "handle", "door"]
+    assert affordance_object_id_candidates_for_task(
+        {"task_id": "dishwasher_door"}
+    ) == ["dishwasher_handle", "handle", "door"]
 
 
 def test_run_preflight_blocks_without_full_kitchen_usd(tmp_path: Path) -> None:

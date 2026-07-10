@@ -2,9 +2,10 @@
   "schema_version": "blueprint.public_launch_sc3_quality_gap_ledger.v2",
   "ledger_id": "public-launch-sc3-quality-2026-07-09",
   "generated_at": "2026-07-10T13:01:59+00:00",
-  "updated_at": "2026-07-10T13:08:58+00:00",
+  "updated_at": "2026-07-10T13:13:27+00:00",
   "source_audit": "docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md",
   "source_audit_sha256": "sha256:0d700a385fb77c36b60b24321f2354b6177fe5886ba7cf768d321cf43c22a864",
+  "evidence_mapping_sha256": "sha256:f0f07a721e4ab15b290b4b42e2bdbc177f85f7b6d29c96be6b3861d2b3b6c011",
   "authoritative_for_current_status": true,
   "status_definitions": {
     "open": "No complete, current exit-criteria proof is recorded.",
@@ -11011,7 +11012,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:dfaa6477f2958ac3f18834dd0ed58d45a54188b5b7ab39bada324a61ddb4e89a",
+              "sha256": "sha256:0feb3d09d4cff62482a2bec7863a1e7cddcca067dfa0f662b6a8eaa87f0a5c55",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",

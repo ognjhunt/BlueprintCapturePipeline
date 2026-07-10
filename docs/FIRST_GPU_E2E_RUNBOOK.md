@@ -459,6 +459,24 @@ Isaac launch request generation reads the matching diagnostic from
 `BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC` or that default output path
 and includes it in `gpu_provider_launch_request.json`.
 
+For the Isaac kitchen review lane, inspect the exact published image before any
+paid canary and launch the resolved digest, not only the mutable tag:
+
+```bash
+blueprint-inspect-isaac-worker-image \
+  --image "$BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF" \
+  --output "$RUN_DIR/isaac_worker_image_manifest_diagnostic.json"
+export BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC="$RUN_DIR/isaac_worker_image_manifest_diagnostic.json"
+```
+
+The diagnostic records total compressed bytes, the largest layer, split-layer
+suitability, the resolved digest ref, and an image-size-derived startup timeout.
+The paid launcher uses the larger of the configured no-runtime timeout and this
+measured floor. Its marker timeout remains at least 120 seconds longer. The
+default cold contender count is one; more than one contender is an explicit
+opt-in and must be covered by the pre-spend estimate. The estimate includes
+every sequential startup attempt plus the render budget.
+
 For unattended RunPod Isaac runs, do not rely on the raw
 `nvcr.io/nvidia/isaac-sim:6.0.0` base image. The provider request now blocks
 before spend with `prebuilt_isaac_eval_worker_image_ref_missing` unless the
@@ -524,6 +542,24 @@ showing a large worker layer, fresh `on-demand-pod` attempts block before spend
 with `large_worker_image_requires_canary_or_warm_provider`. Set
 `BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START=true` only for an intentional
 debug retry with a wider observation window.
+
+The `blueprint-isaac-g1-kitchen-parity --image-startup-canary` path is stricter
+than the generic provider command-upload canary above. It requires the same RTX
+and 48 GB hardware contract as the review job and runs
+`blueprint_pipeline.isaac_worker_runtime_preflight` with `nvidia-smi`, headless
+`RayTracedLighting`, a structured Isaac-6 driver compatibility check, and a
+64x64 RGB render over up to three renderer steps. The smoke exits on the first
+non-empty frame and caps empty-scene Replicator asset loading at ten seconds.
+Known-bad Linux R570 versions in
+`[570.0.0, 570.158.1)` fail before the expensive RTX initialization; the RGB
+frame remains authoritative outside that narrow known-bad interval. A blocked
+startup canary is terminated instead of retained as a warm worker. Its PASS
+proves only CUDA/Isaac/RTX
+runtime readiness for that exact launch session; it does not prove kitchen scene
+load, G1 placement, policy execution, WAM quality, or task success. Repeated
+pre-runtime RunPod machine IDs are quarantined within the bounded launch so the
+same failed host is terminated after the first poll instead of consuming another
+full watchdog window.
 
 Lambda Cloud is the second managed-provider lane. Use the Lambda adapter only
 after the job has a `gpu_provider_launch_request.json` with

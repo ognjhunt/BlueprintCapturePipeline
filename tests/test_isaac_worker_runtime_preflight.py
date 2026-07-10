@@ -70,12 +70,16 @@ def test_isaac_worker_runtime_preflight_fake_rtx_smoke_passes(
     monkeypatch,
 ) -> None:
     closed: list[bool] = []
+    orchestrator_steps: list[bool] = []
+    output_path = tmp_path / "preflight.json"
 
     class FakeSimulationApp:
         def __init__(self, config):
             self.config = config
 
         def close(self):
+            assert output_path.is_file()
+            assert json.loads(output_path.read_text(encoding="utf-8"))["status"] == "passed"
             closed.append(True)
 
     class FakeAnnotator:
@@ -86,7 +90,7 @@ def test_isaac_worker_runtime_preflight_fake_rtx_smoke_passes(
             self.attached.append(list(render_products))
 
         def get_data(self):
-            return np.ones((16, 16, 3), dtype=np.uint8)
+            return np.ones((64, 64, 3), dtype=np.uint8)
 
     fake_annot = FakeAnnotator()
     fake_core = types.ModuleType("omni.replicator.core")
@@ -97,7 +101,9 @@ def test_isaac_worker_runtime_preflight_fake_rtx_smoke_passes(
     fake_core.AnnotatorRegistry = types.SimpleNamespace(
         get_annotator=lambda _name: fake_annot
     )
-    fake_core.orchestrator = types.SimpleNamespace(step=lambda: None)
+    fake_core.orchestrator = types.SimpleNamespace(
+        step=lambda: orchestrator_steps.append(True)
+    )
     fake_replicator = types.ModuleType("omni.replicator")
     fake_replicator.core = fake_core
     fake_omni = types.ModuleType("omni")
@@ -110,7 +116,7 @@ def test_isaac_worker_runtime_preflight_fake_rtx_smoke_passes(
     monkeypatch.setitem(sys.modules, "omni.replicator.core", fake_core)
 
     result = run_isaac_worker_runtime_preflight(
-        output_path=tmp_path / "preflight.json",
+        output_path=output_path,
         require_nvidia_smi=False,
         require_rtx_render=True,
         smoke_steps=2,
@@ -122,6 +128,11 @@ def test_isaac_worker_runtime_preflight_fake_rtx_smoke_passes(
     assert checks["python_import_isaacsim"]["status"] == "passed"
     assert checks["headless_rtx_context_selection"]["renderer"] == "RayTracedLighting"
     assert checks["rtx_smoke_frame_render"]["status"] == "passed"
+    assert checks["rtx_smoke_frame_render"]["width"] == 64
+    assert checks["rtx_smoke_frame_render"]["height"] == 64
+    assert checks["rtx_smoke_frame_render"]["max_steps"] == 2
+    assert checks["rtx_smoke_frame_render"]["steps_executed"] == 1
+    assert orchestrator_steps == [True]
     assert fake_annot.attached == [["render_product"]]
     assert closed == [True]
 
@@ -153,6 +164,7 @@ def test_isaac_worker_runtime_preflight_nvidia_check_branches(monkeypatch) -> No
     check, blockers = worker_preflight._nvidia_smi_check(env={"PATH": "/bin"}, required=True)
     assert check["status"] == "passed"
     assert blockers == []
+    assert check["gpu_inventory"][0]["gpu_name"] == "L40S"
 
     monkeypatch.setattr(
         worker_preflight.subprocess,
@@ -166,3 +178,44 @@ def test_isaac_worker_runtime_preflight_nvidia_check_branches(monkeypatch) -> No
     check, blockers = worker_preflight._nvidia_smi_check(env={"PATH": "/bin"}, required=True)
     assert check["status"] == "blocked"
     assert blockers == ["nvidia_smi_failed"]
+
+
+def test_isaac_worker_runtime_preflight_rejects_known_bad_isaac_6_rtx_driver() -> None:
+    check, blockers = worker_preflight._isaac_rtx_driver_check(
+        {
+            "gpu_inventory": [
+                {
+                    "gpu_name": "NVIDIA L40S",
+                    "driver_version": "570.124.06",
+                    "driver_version_components": [570, 124, 6],
+                    "memory_total": "46068 MiB",
+                }
+            ]
+        },
+        required=True,
+    )
+
+    assert check["status"] == "blocked"
+    assert check["reason"] == "known_unsupported_isaac_sim_6_linux_rtx_driver_range"
+    assert check["unsupported_range"]["max_exclusive"] == [570, 158, 1]
+    assert blockers == ["isaac_sim_6_rtx_driver_unsupported"]
+
+
+def test_isaac_worker_runtime_preflight_allows_fixed_r570_for_frame_test() -> None:
+    check, blockers = worker_preflight._isaac_rtx_driver_check(
+        {
+            "gpu_inventory": [
+                {
+                    "gpu_name": "NVIDIA RTX A6000",
+                    "driver_version": "570.158.01",
+                    "driver_version_components": [570, 158, 1],
+                    "memory_total": "49140 MiB",
+                }
+            ]
+        },
+        required=True,
+    )
+
+    assert check["status"] == "passed_no_known_blocker"
+    assert check["rendered_frame_still_required"] is True
+    assert blockers == []

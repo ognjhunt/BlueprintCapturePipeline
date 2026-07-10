@@ -19,6 +19,9 @@ P2_04_EVIDENCE_PATH = "docs/specs/launch-audit-2026-07-02/README.md"
 ID_PATTERN = re.compile(r"^(?:REL|DATA|SC3|RUN|P2|EVID)-\d{2}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+APPROVED_CRITERION_EVIDENCE_MAP_SHA256 = (
+    "sha256:f0f07a721e4ab15b290b4b42e2bdbc177f85f7b6d29c96be6b3861d2b3b6c011"
+)
 ALLOWED_STATUSES = {"open", "partial", "closed", "reopened"}
 ALLOWED_SCOPES = {"BASE", "SIM", "PTDP", "SC3", "PAID", "LIVE", "PHYSICAL"}
 CONTROL_ARTIFACTS = {
@@ -90,6 +93,48 @@ def _sha256(path: Path) -> str:
 
 def _text_sha256(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
+def _criterion_evidence_mapping_sha256(ledger: Mapping[str, Any]) -> str:
+    mapping = []
+    for gap in ledger.get("gaps", []):
+        if not isinstance(gap, Mapping):
+            continue
+        for criterion in gap.get("criteria", []):
+            if not isinstance(criterion, Mapping):
+                continue
+            artifacts = criterion.get("evidence_artifacts", [])
+            command = criterion.get("command_result", {})
+            mapping.append(
+                {
+                    "criterion_id": criterion.get("criterion_id"),
+                    "acceptance_text_sha256": criterion.get("acceptance_text_sha256"),
+                    "evidence_artifacts": [
+                        {
+                            field: artifact.get(field)
+                            for field in (
+                                "artifact_id",
+                                "path",
+                                "role",
+                                "supports_remediation",
+                                "supports_closure",
+                            )
+                        }
+                        for artifact in artifacts
+                        if isinstance(artifact, Mapping)
+                    ],
+                    "command": {field: command.get(field) for field in ("applicable", "command")}
+                    if isinstance(command, Mapping)
+                    else None,
+                }
+            )
+    canonical = json.dumps(
+        mapping,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return _text_sha256(canonical)
 
 
 def _parse_timestamp(value: object) -> datetime | None:
@@ -528,6 +573,7 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
         "updated_at",
         "source_audit",
         "source_audit_sha256",
+        "evidence_mapping_sha256",
         "authoritative_for_current_status",
         "status_definitions",
         "status_derivation",
@@ -570,9 +616,17 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
         errors.append("source_audit_path_invalid")
     if ledger.get("source_audit_sha256") != _sha256(AUDIT):
         errors.append("source_audit_digest_mismatch")
-    if ledger.get("remediation_status_document") != (
-        "docs/PUBLIC_LAUNCH_SC3_REMEDIATION_STATUS_2026-07-09.md"
-    ) or not STATUS.is_file():
+    computed_mapping_digest = _criterion_evidence_mapping_sha256(ledger)
+    if (
+        ledger.get("evidence_mapping_sha256") != computed_mapping_digest
+        or computed_mapping_digest != APPROVED_CRITERION_EVIDENCE_MAP_SHA256
+    ):
+        errors.append("criterion_evidence_mapping_digest_mismatch")
+    if (
+        ledger.get("remediation_status_document")
+        != ("docs/PUBLIC_LAUNCH_SC3_REMEDIATION_STATUS_2026-07-09.md")
+        or not STATUS.is_file()
+    ):
         errors.append("remediation_status_document_invalid")
     if ledger.get("authoritative_for_current_status") is not True:
         errors.append("ledger_not_authoritative")
@@ -699,9 +753,7 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
             errors.append(f"supersession_set_refs_invalid:{set_id}")
         else:
             supersession_paths_by_set[set_id] = {
-                supersession_paths_by_id[ref]
-                for ref in refs
-                if ref in supersession_paths_by_id
+                supersession_paths_by_id[ref] for ref in refs if ref in supersession_paths_by_id
             }
 
     errors.extend(
@@ -984,6 +1036,8 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
                     errors.append(
                         f"{criterion_prefix}:artifact_tracking_authority_mismatch:{path_text}"
                     )
+                if path_text not in tracked_paths:
+                    errors.append(f"{criterion_prefix}:artifact_not_git_tracked:{path_text}")
                 if artifact.get("supports_closure") is True:
                     accepted_authorities = set(closure_policy.get("accepted_authorities") or [])
                     if (
@@ -1229,6 +1283,7 @@ def test_current_gap_ledger_maps_all_107_acceptance_criteria_and_derives_status(
     assert len(audit_rows) == 107
     assert len({row["id"] for row in audit_rows}) == 107
     assert _validate_ledger(ledger) == []
+    assert ledger["evidence_mapping_sha256"] == (APPROVED_CRITERION_EVIDENCE_MAP_SHA256)
     assert ledger["status_counts"] == {
         "open": 16,
         "partial": 91,
